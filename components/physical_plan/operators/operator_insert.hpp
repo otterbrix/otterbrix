@@ -8,18 +8,14 @@
 namespace components::operators {
 
 #ifdef DEV_MODE
-    // Test-observable count of index-mirror sends an INSERT issues. Every send carries a DEEP
-    // COPY of the inserted chunk across a mailbox, and the index manager then walks the rows.
-    // On a table with NO indexes all of that produces nothing, so this must read zero there.
+    // Counts index-mirror sends (a deep copy per send); must read zero on a table with no indexes.
     uint64_t insert_index_mirror_sends() noexcept;
     void reset_insert_index_mirror_sends() noexcept;
 #endif
 
     class operator_insert final : public read_write_operator_t {
     public:
-        // `returning` holds the RETURNING projection columns (empty when absent). When non-empty,
-        // reads the appended segment back from storage and projects these columns, instead of an
-        // empty result chunk.
+        // `returning` is the RETURNING projection (empty when absent); read back from storage when set.
         operator_insert(std::pmr::memory_resource* resource,
                         log_t log,
                         catalog::oid_t table_oid,
@@ -27,41 +23,28 @@ namespace components::operators {
 
         catalog::oid_t table_oid() const noexcept { return table_oid_; }
 
-        // One entry per incoming chunk column, resolved by the validator: the name the
-        // (name-based) append routes on, and the cast that converts the column to its
-        // stored type. Renaming matters for 'INSERT INTO t (id, a.b) SELECT 5, 55',
-        // whose projection columns would otherwise leave id/a.b null.
+        // Per incoming column: the name the append routes on, and the cast to its stored type.
         void set_column_bindings(logical_plan::insert_column_bindings_t bindings) {
             column_bindings_ = std::move(bindings);
         }
 
-        // Columns this statement did NOT write, with their fill values (resolved by enrich from
-        // pg_attribute.attdefspec — the ONLY place a default is read on the write path). push()
-        // materialises them so storage never substitutes anything itself.
+        // Omitted columns' fill values, resolved by enrich from pg_attribute.attdefspec (the only
+        // place a default is read); push() materialises them so storage never substitutes anything.
         void set_fill_list(logical_plan::insert_fill_list_t fill) { fill_list_ = std::move(fill); }
 
-        // Whether the target table has any index (stamped by enrich onto the plan node).
-        // False skips the index mirror entirely. Defaults to true so an unstamped plan
-        // behaves exactly as before.
+        // Stamped by enrich; false skips the index mirror. Defaults to true for unstamped plans.
         void set_table_has_indexes(bool value) noexcept { table_has_indexes_ = value; }
 
-        // The insert is a SINK on its input: push() folds each batch into a bounded accumulator and
-        // emits nothing; await_async_and_resume then drives the async WAL->storage->index commit
-        // after the pump. Streams over both a scan source (INSERT...SELECT) and a raw_data source
-        // (INSERT...VALUES).
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
         [[nodiscard]] core::error_t
         push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& out) override;
 
-        // Self-contained DML side-effects. Performs storage_append +
-        // WAL physical_insert + index::insert_rows, populates ctx->dml_*
-        // swap-info fields, then mark_executed.
+        // storage_append writes its WAL entry atomically inside the disk agent, unlike DELETE's
+        // separate storage-then-WAL -- then index::insert_rows runs and mark_executed fires.
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
-        // Rows folded into output_ but not yet flushed to storage. The executor's
-        // mid-pump flush gate compares this to the flush threshold. Catalog
-        // inserts stay single-shot (return 0) so the gate never mid-flushes them.
+        // Compared against the mid-pump flush threshold; catalog inserts return 0 so it never mid-flushes.
         [[nodiscard]] uint64_t buffered_rows() const noexcept override {
             return (output_ && !components::catalog::is_catalog_table(table_oid_)) ? output_->size() : 0;
         }
@@ -70,10 +53,7 @@ namespace components::operators {
         catalog::oid_t table_oid_;
         std::pmr::vector<projected_column_t> returning_;
         std::unique_ptr<execution_dag::execution_dag_t> returning_graph_;
-        // Cross-flush accumulators for the incremental drive. RETURNING rows are
-        // projected into returning_accum_ as each slice is read back; when the
-        // statement has no RETURNING, affected_rows_ tallies the appended count.
-        // Both are materialized into output_ only on the final (is_final) drive.
+        // Accumulates RETURNING rows (or tallies affected_rows_ without RETURNING) until the final drive.
         chunks_vector_t returning_accum_{resource_};
         uint64_t affected_rows_{0};
         logical_plan::insert_column_bindings_t column_bindings_{resource_};

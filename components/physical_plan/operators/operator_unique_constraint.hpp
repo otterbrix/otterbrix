@@ -11,37 +11,15 @@
 namespace components::operators {
 
 #ifdef DEV_MODE
-    // Test-observable counter of the scan_by_keys sends the EXISTING-ROW layer
-    // issues. Each send is one FULL pass over the target table, so a statement that
-    // cannot change any unique key must leave this counter untouched.
+    // Counts scan_by_keys sends from the existing-row duplicate check — each is a full table
+    // scan, so it must stay unchanged when no statement can change a unique key.
     uint64_t unique_constraint_scan_sends() noexcept;
 #endif
 
-    // Enforces UNIQUE / PRIMARY KEY constraints on an INSERT or UPDATE chunk.
-    //
-    // One instance carries the column groups of every UNIQUE/PK constraint on the
-    // target table (unique_groups_[g] = the ordered column list of constraint g).
-    // Shaped EXACTLY like operator_fk_check_t: a sourceless streaming-constraint
-    // SINK whose push()/finalize() are no-ops and whose validation runs in the
-    // executor's bottom-up async-finalize drive — it reads the child DML's
-    // constraint_input() snapshot of the just-written rows (the DML committed
-    // first, so those rows are already txn-visible in the table too).
-    //
-    // Duplicate detection has two independent layers, per constraint group:
-    //   (1) WITHIN-BATCH: two rows in the SAME write-set sharing a key. Detected by
-    //       a typed hash + verify (R1: no logical_value_t round-trip; the verify
-    //       mirrors operator_hash_group.cpp's vector::cells_equal — NULL-aware).
-    //   (2) EXISTING-ROW: an already-committed table row with the same key that is
-    //       NOT the row being written. The DML ran first (bottom-up), so its rows
-    //       are visible to scan_by_keys; a key whose scan returns MORE than the one
-    //       just-written row therefore collides with a pre-existing distinct row.
-    //
-    // NULL handling: a key with any NULL column is SKIPPED (SQL UNIQUE treats NULLs
-    // as distinct; PRIMARY KEY columns are NOT NULL, enforced upstream by
-    // operator_check_constraint). Every table column is already IN the rows this reads (an omitted
-    // INSERT column was expanded to its DEFAULT/NULL before the append), so the key comes from what
-    // was STORED, not from the plan's own copy of the default. On the first duplicate it
-    // sets a core::error_t — no silent dedup, no throw across the mailbox (R2/R9).
+    // Duplicate detection (per constraint group) runs after the child DML commits: within-batch
+    // collisions via a typed hash + verify, existing-row collisions via scan_by_keys — a key
+    // whose scan returns more than the just-written row collides with a pre-existing one.
+    // A key with any NULL column is skipped, since SQL UNIQUE treats NULLs as distinct.
     class operator_unique_constraint_t final : public read_write_operator_t {
     public:
         operator_unique_constraint_t(std::pmr::memory_resource* resource,
@@ -51,9 +29,7 @@ namespace components::operators {
 
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
-        // No streaming input of its own: the child DML sink drains the pumped
-        // stream, so push() is never reached with rows. Explicit no-ops keep the
-        // operator off the base "not a pipeline operator" error path.
+        // No-ops (no streaming input reaches them); kept explicit to skip the base "not a pipeline operator" error.
         [[nodiscard]] core::error_t push(pipeline::context_t*, vector::data_chunk_t&&, chunks_vector_t&) override {
             return core::error_t::no_error();
         }

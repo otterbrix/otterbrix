@@ -1,7 +1,6 @@
 // txn_accumulate_msg is the only path for a statement's finished work to reach the transaction;
-// its two callers in execute_plan_full used to await it without checking the result, so a
-// refusal there let commit report success over an empty transaction. No SQL route can reach it
-// without an active txn, so these cases pin success <=> visible as an equality instead.
+// an unchecked refusal there would let commit report success over an empty transaction. No SQL
+// route reaches it without an active txn, so these cases pin success <=> visible as an equality.
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"
@@ -20,8 +19,6 @@ namespace {
         return dispatcher->execute_sql(session, sql);
     }
 
-    // A fresh session/snapshot distinguishes published rows from ones merely appended to the
-    // heap by an unparked statement.
     std::size_t visible_rows(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& table) {
         auto cur = test_helpers::exec(dispatcher, "SELECT * FROM " + table + ";");
         REQUIRE(cur->is_success());
@@ -81,8 +78,7 @@ TEST_CASE("integration::cpp::accumulate_refusal::an_explicit_transaction_publish
     REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE AccDb;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE AccDb.t (id bigint, val bigint);")->is_success());
 
-    // No implicit commit follows a statement here, so a refused park would leave the later
-    // COMMIT with nothing to publish.
+    // No implicit commit follows a statement here, so a refused park would leave COMMIT nothing to publish.
     auto txn = otterbrix::session_id_t();
     REQUIRE(exec(dispatcher, txn, "BEGIN;")->is_success());
     auto ins = exec(dispatcher, txn, "INSERT INTO AccDb.t (id, val) VALUES (1, 10), (2, 20);");
@@ -105,8 +101,7 @@ TEST_CASE("integration::cpp::accumulate_refusal::a_successful_ddl_statement_has_
 
     REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE AccDb;")->is_success());
 
-    // The DDL tail ships pg_class/pg_attribute/pg_depend rows and the created oid through the
-    // same door.
+    // The DDL tail ships pg_class/pg_attribute/pg_depend rows and the created oid through the same door.
     {
         auto ddl = test_helpers::exec(dispatcher, "CREATE TABLE AccDb.t (id bigint, val bigint);");
         auto use = test_helpers::exec(dispatcher, "INSERT INTO AccDb.t (id, val) VALUES (1, 10);");
@@ -116,9 +111,7 @@ TEST_CASE("integration::cpp::accumulate_refusal::a_successful_ddl_statement_has_
         REQUIRE(reported_success);
     }
 
-    // Unconditional, not an equality: a table without an index still scans, so the row must
-    // stay findable even if CREATE INDEX's ranges were never parked and the (registered
-    // anyway) index captures the lookup instead of falling back to a scan.
+    // Unconditional, not an equality: an unindexed table still scans, so the row stays findable.
     {
         auto ddl = test_helpers::exec(dispatcher, "CREATE INDEX idx_acc ON AccDb.t (id);");
         auto use = test_helpers::exec(dispatcher, "SELECT * FROM AccDb.t WHERE id = 1;");

@@ -15,10 +15,8 @@
 #include <vector>
 
 // SQL DML must never reach a pg_catalog table: pg_class IS the list of relations, so a landed
-// `DELETE FROM pg_class` leaves the storage file on disk while the row naming it is gone.
-//
-// These cases pin the OUTCOME (an error cursor), not today's refusal message, which is only a
-// side effect of pg_class being unaddressable and would go stale once a read fix lands.
+// DELETE leaves the storage file on disk while its naming row is gone. These cases pin the
+// OUTCOME (an error cursor), not today's refusal message, which would go stale.
 
 using namespace components;
 
@@ -34,7 +32,6 @@ namespace {
                     ->is_success());
     }
 
-    // Checked through SQL, not the filesystem: a scrubbed pg_class row leaves the .otbx untouched.
     void require_user_table_intact(otterbrix::wrapper_dispatcher_t* dispatcher) {
         auto cursor = test_helpers::exec(dispatcher, "SELECT * FROM guarddb.alpha;");
         REQUIRE(cursor);
@@ -68,8 +65,7 @@ TEST_CASE("integration::cpp::pg_catalog_dml_guard::delete_from_pg_class_cannot_e
     require_user_table_intact(dispatcher);
 }
 
-// pg_attribute is the column list; scrubbing it loses the schema rather than the relation, so
-// it needs its own case -- a guard that only covered pg_class would pass the one above.
+// pg_attribute is the column list; a guard covering only pg_class would pass this one.
 TEST_CASE("integration::cpp::pg_catalog_dml_guard::delete_from_pg_attribute_cannot_erase_columns") {
     auto config = test_helpers::make_test_config(integration_fixture_path("pg_catalog_dml_guard/delete_pg_attribute"),
                                                  /*wal_on=*/true);
@@ -82,8 +78,7 @@ TEST_CASE("integration::cpp::pg_catalog_dml_guard::delete_from_pg_attribute_cann
     require_user_table_intact(dispatcher);
 }
 
-// UPDATE, not DELETE: renaming a pg_class row leaves the count intact and still detaches the
-// table from its name, so a guard written against row counts would miss it.
+// UPDATE, not DELETE: renaming leaves the row count intact, so a guard keyed on row counts would miss it.
 TEST_CASE("integration::cpp::pg_catalog_dml_guard::update_of_pg_class_cannot_rename_a_user_table") {
     auto config = test_helpers::make_test_config(integration_fixture_path("pg_catalog_dml_guard/update_pg_class"),
                                                  /*wal_on=*/true);
@@ -99,8 +94,8 @@ TEST_CASE("integration::cpp::pg_catalog_dml_guard::update_of_pg_class_cannot_ren
     require_user_table_intact(dispatcher);
 }
 
-// INSERT mints a relation the engine never created: a pg_class row with no storage behind it,
-// and an oid the allocator will hand out again after the next restart reseeds from max+1.
+// INSERT would mint a pg_class row with no storage behind it, and an oid future allocations could
+// reuse once a restart reseeds from max+1.
 TEST_CASE("integration::cpp::pg_catalog_dml_guard::insert_into_pg_class_cannot_mint_a_relation") {
     auto config = test_helpers::make_test_config(integration_fixture_path("pg_catalog_dml_guard/insert_pg_class"),
                                                  /*wal_on=*/true);
@@ -129,13 +124,12 @@ TEST_CASE("integration::cpp::pg_catalog_dml_guard::ddl_cannot_drop_or_alter_the_
     require_refused(dispatcher, "ALTER TABLE pg_catalog.pg_class ADD COLUMN smuggled BIGINT;");
     require_user_table_intact(dispatcher);
 
-    // PostgreSQL refuses to drop pg_catalog because the database system requires it; so does otterbrix.
     require_refused(dispatcher, "DROP DATABASE pg_catalog;");
     require_user_table_intact(dispatcher);
 }
 
-// CREATE INDEX neither drops nor alters, so the guards above don't cover it. PostgreSQL refuses
-// this unless allow_system_table_mods is set; otterbrix has no such escape hatch.
+// CREATE INDEX neither drops nor alters, so the guards above don't cover it; PostgreSQL allows it
+// via allow_system_table_mods, otterbrix has no such escape hatch.
 TEST_CASE("integration::cpp::pg_catalog_dml_guard::create_index_cannot_target_the_catalog") {
     auto config = test_helpers::make_test_config(integration_fixture_path("pg_catalog_dml_guard/index_pg_class"),
                                                  /*wal_on=*/true);
@@ -150,14 +144,12 @@ TEST_CASE("integration::cpp::pg_catalog_dml_guard::create_index_cannot_target_th
     require_refused(dispatcher, "CREATE INDEX smuggled_attr_idx ON pg_catalog.pg_attribute (attname);");
     require_user_table_intact(dispatcher);
 
-    // Positive control: the same statement still succeeds against the user table.
     REQUIRE(test_helpers::exec(dispatcher, "CREATE INDEX smuggled_idx ON guarddb.alpha (name);")->is_success());
     require_user_table_intact(dispatcher);
 }
 
-// The guard above only fires for a create_index ROOT: only the root's create-index arm checks the
-// catalog. A raw plan (built here like test_constraint_entry_lost_target) can nest create_index
-// under a sequence_t, whose child arm has no catalog check; this case walks that arm.
+// The catalog check only fires for a create_index ROOT. Nested under a sequence_t (built here as
+// a raw plan) the child arm has no such check -- this case walks that arm.
 TEST_CASE("integration::cpp::pg_catalog_dml_guard::sequence_wrapped_create_index_cannot_reach_the_catalog") {
     auto config = test_helpers::make_test_config(integration_fixture_path("pg_catalog_dml_guard/index_pg_class_seq"),
                                                  /*wal_on=*/true);

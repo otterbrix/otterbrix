@@ -29,17 +29,6 @@
 #include <services/wal/wal_page.hpp>
 #include <services/wal/wal_page_reader.hpp>
 
-// The chain and the buffer must describe the journal, not the intention. Three failures on the
-// write path: (1) last_crc_ advancing at ENCODE time, before anything is written, so a then-
-// refused write leaves the chain pointing at a record not in the journal; (2) a refused page
-// flush mid-append() leaving the partially copied record IN the buffered page, so the next
-// record is appended behind it and swallowed into a span that never completes; (3) the same
-// refusal after one page already flushed, leaving a continuation-only page still flagged
-// PARTIAL_CONT that the next record would land on and be read as continuation bytes.
-//
-// Assertions read the segment files back with wal_page_reader_t and check the DECODED records:
-// which ids are present, and whose crc each record's last_crc32 names.
-
 using namespace services;
 using namespace services::wal;
 namespace catalog = components::catalog;
@@ -58,8 +47,6 @@ namespace {
         return p;
     }
 
-    // Same seam-scoping shape as test_wal_write_refusal.cpp: both knobs are live data, armed
-    // only around the one operation that must meet the fault.
     class wal_fault_scope_t final : public wal_file_interposer_t {
     public:
         wal_fault_scope_t() { dev_set_wal_file_interposer(this); }
@@ -101,8 +88,6 @@ namespace {
         return chunks;
     }
 
-    // A record wide enough to span several pages: the whole batch is concatenated into ONE
-    // WAL record, and each chunk stays under DEFAULT_VECTOR_CAPACITY (1024 rows).
     std::pmr::vector<data_chunk_t> wide_batch(std::pmr::memory_resource* arena, size_t chunk_count, size_t rows) {
         std::pmr::vector<data_chunk_t> chunks(arena);
         for (size_t i = 0; i < chunk_count; ++i) {
@@ -148,10 +133,7 @@ namespace {
             manager_.reset();
         }
 
-        // Built on the fixture's own arena (core::pmr::otterbrix_resource, resource_tracer_t under
-        // ASAN), mirroring production (agent_disk_t::storage_append_inner builds off resource()).
-        // resource_ is declared FIRST so it outlives ~wal_env_t's teardown of manager_. Extracted
-        // so a test can assert the ARENA of a REAL payload before it's moved into the message.
+        // resource_ must be declared first so it outlives ~wal_env_t's teardown of manager_.
         std::pmr::vector<data_chunk_t> make_insert_batch(size_t rows) {
             return one_chunk(&resource_, rows);
         }
@@ -169,7 +151,6 @@ namespace {
             return std::move(fut);
         }
 
-        // Same contract, and the same arena, for the multi-chunk record.
         std::pmr::vector<data_chunk_t> make_wide_batch(size_t chunk_count, size_t rows) {
             return wide_batch(&resource_, chunk_count, rows);
         }
@@ -210,8 +191,6 @@ namespace {
         std::unique_ptr<manager_wal_replicate_t, actor_zeta::pmr::deleter_t> manager_;
     };
 
-    // Decode EVERY record from every segment in the directory (no committed-txn filter, no
-    // after-id filter: the assertion is about the journal's bytes, not about replay policy).
     std::vector<record_t> read_journal(const std::filesystem::path& db_dir, std::pmr::memory_resource* resource) {
         std::vector<std::filesystem::path> segments;
         for (const auto& entry : std::filesystem::directory_iterator(db_dir)) {
@@ -244,20 +223,15 @@ namespace {
         return nullptr;
     }
 
-} // namespace
+}
 
-// A refused write must not advance the chain: the write here never touches the device (the
-// rotation target will not OPEN), so the record was only ENCODED.
-// BEFORE: the first record of the new segment carried last_crc32 = crc of the refused record, a
-// link into a record that is not in the journal.
 TEST_CASE("wal::chain::a_refused_write_does_not_advance_the_crc_chain") {
     wal_fault_scope_t fault;
 
-    // max_segment_size 8192 = header page + one data page: the first flushed segment is
-    // immediately full, so the NEXT write must rotate into segment 000001.
+    // 8192 = header page + one data page, so the first segment is already full and the next
+    // write must rotate into segment 000001.
     wal_env_t env(base_path() / "refused_rotation", /*max_segment_size=*/8192);
 
-    // id 1: insert A (buffered). id 2: commit txn 1 (flushes -> seg 000000 reaches 8192).
     {
         auto fut = env.send_insert(/*txn_id=*/1, /*rows=*/4);
         auto r = await_ready(fut);
@@ -270,7 +244,6 @@ TEST_CASE("wal::chain::a_refused_write_does_not_advance_the_crc_chain") {
     }
     REQUIRE(std::filesystem::file_size(env.db_dir() / segment_name(0)) >= 8192);
 
-    // id 3: the refused record — the rotation target does not open.
     fault.refuse_open_marker = segment_name(1);
     {
         auto fut = env.send_insert(/*txn_id=*/2, /*rows=*/4);
@@ -280,7 +253,6 @@ TEST_CASE("wal::chain::a_refused_write_does_not_advance_the_crc_chain") {
     }
     fault.refuse_open_marker.clear();
 
-    // id 4: the first record that lands in segment 000001. id 5: its commit (flushes).
     {
         auto fut = env.send_insert(/*txn_id=*/3, /*rows=*/4);
         auto r = await_ready(fut);
@@ -295,35 +267,30 @@ TEST_CASE("wal::chain::a_refused_write_does_not_advance_the_crc_chain") {
     core::pmr::otterbrix_resource resource;
     auto records = read_journal(env.db_dir(), &resource);
 
-    const auto* commit1 = find_id(records, 2); // last record that actually reached the journal
-    const auto* next = find_id(records, 4);    // first record written after the refusal
+    const auto* commit1 = find_id(records, 2);
+    const auto* next = find_id(records, 4);
     REQUIRE(commit1 != nullptr);
     REQUIRE(next != nullptr);
-    REQUIRE(find_id(records, 3) == nullptr); // the refused record is not in the journal
+    REQUIRE(find_id(records, 3) == nullptr);
 
     INFO("record id 4 must chain to the last record IN the journal (id 2), not to the refused id 3");
     REQUIRE(next->last_crc32 == commit1->crc32);
 }
 
-// A record whose first page flush was refused must leave the buffered page as it was: record A
-// and everything written AFTER the refusal must still be readable.
-// BEFORE: the refused record's prefix stayed in the buffered page, the next record landed
-// behind it, and the reader swallowed it into a span that never completes.
 TEST_CASE("wal::chain::a_refused_first_page_flush_rolls_the_record_out_of_the_buffer") {
     wal_fault_scope_t fault;
     fault.faulty_marker = "wal_";
 
     wal_env_t env(base_path() / "refused_first_flush");
 
-    // id 1: small insert A — buffered, meets no device write.
     {
         auto fut = env.send_insert(/*txn_id=*/1, /*rows=*/4);
         auto r = await_ready(fut);
         REQUIRE_FALSE(r.has_error());
     }
 
-    // id 2: a record wider than one page. Its append must flush the page holding A — and that
-    // write (the 2nd on the handle; the 1st was the segment file header) is refused.
+    // fail_writes_from=2 targets the flush of the page holding A: write 1 is the segment file
+    // header, write 2 is the first data page.
     fault.plan.fail_writes_from = 2;
     {
         auto fut = env.send_insert(/*txn_id=*/2, /*rows=*/600);
@@ -334,7 +301,6 @@ TEST_CASE("wal::chain::a_refused_first_page_flush_rolls_the_record_out_of_the_bu
     }
     fault.plan.fail_writes_from = 0;
 
-    // id 3: the record written after the refusal. id 4: commit (flushes everything).
     {
         auto fut = env.send_insert(/*txn_id=*/3, /*rows=*/4);
         auto r = await_ready(fut);
@@ -359,26 +325,20 @@ TEST_CASE("wal::chain::a_refused_first_page_flush_rolls_the_record_out_of_the_bu
     REQUIRE(find_id(records, 3)->last_crc32 == find_id(records, 1)->crc32);
 }
 
-// The same refusal after a page of the record already landed: the flushed page is an ORPHAN
-// continuation the reader abandons, but the BUFFERED page still holds continuation bytes and
-// must not receive the next record.
-// BEFORE: the record written after the refusal was read as continuation bytes of the refused
-// record and never came back.
 TEST_CASE("wal::chain::a_refused_mid_record_flush_discards_the_continuation_buffer") {
     wal_fault_scope_t fault;
     fault.faulty_marker = "wal_";
 
     wal_env_t env(base_path() / "refused_mid_flush");
 
-    // id 1: small insert A — buffered.
     {
         auto fut = env.send_insert(/*txn_id=*/1, /*rows=*/4);
         auto r = await_ready(fut);
         REQUIRE_FALSE(r.has_error());
     }
 
-    // id 2: a record spanning at least three pages. Write 1 = file header, write 2 = the page
-    // holding A + the record's first chunk (allowed), write 3 = the second chunk (refused).
+    // fail_writes_from=3 targets the record's second chunk: write 1 is the segment header,
+    // write 2 flushes A plus the record's first chunk (allowed).
     fault.plan.fail_writes_from = 3;
     {
         auto fut = env.send_wide_insert(/*txn_id=*/2, /*chunks=*/3, /*rows=*/600);
@@ -389,7 +349,6 @@ TEST_CASE("wal::chain::a_refused_mid_record_flush_discards_the_continuation_buff
     }
     fault.plan.fail_writes_from = 0;
 
-    // id 3: the record written after the refusal. id 4: commit (flushes).
     {
         auto fut = env.send_insert(/*txn_id=*/3, /*rows=*/4);
         auto r = await_ready(fut);
@@ -412,8 +371,8 @@ TEST_CASE("wal::chain::a_refused_mid_record_flush_discards_the_continuation_buff
     REQUIRE(find_id(records, 3) != nullptr);
 }
 
-// Insert payload built on the fixture's own arena (see make_insert_batch above); the batch is
-// unobservable after send, so the assertion is made on make_insert_batch's own output.
+// The batch is unobservable after send (moved into the message), so the assertion runs on
+// make_insert_batch's own output instead.
 TEST_CASE("wal::chain::the_insert_payload_is_built_on_the_fixture_arena") {
     const auto path = base_path() / "payload_arena";
     std::filesystem::remove_all(path);
@@ -425,7 +384,6 @@ TEST_CASE("wal::chain::the_insert_payload_is_built_on_the_fixture_arena") {
     REQUIRE(batch.get_allocator().resource() == &env.resource_);
     REQUIRE(batch.front().resource() == &env.resource_);
 
-    // The multi-chunk record travels the same way and must answer the same.
     auto wide = env.make_wide_batch(3, 4);
     REQUIRE(wide.size() == 3);
     REQUIRE(wide.get_allocator().resource() == &env.resource_);

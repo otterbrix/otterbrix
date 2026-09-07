@@ -1,6 +1,5 @@
-// Every row a reader can see through the table must be reachable through the index: the index
-// tolerates a superset of ids (the table's visibility check drops extras), but a missing id is a
-// defect nothing downstream can repair.
+// Every row a reader can see through the table must be reachable through the index: the index tolerates a
+// superset of ids (the table's visibility check drops extras), but a missing id is an unrepairable defect.
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"
@@ -12,8 +11,6 @@
 #include <string>
 #include <thread>
 
-// DEV_MODE seams defined in services/collection/executor.cpp; declared here rather than in a
-// header so the seam stays out of every production include path (drift = loud link error).
 namespace services::collection::executor {
     void dev_set_dml_pre_drive_hook(void (*hook)(uint64_t session_data)) noexcept;
     uint64_t index_reconcile_staged_ranges() noexcept;
@@ -23,9 +20,6 @@ using namespace test_helpers;
 
 namespace {
 
-    // One-shot pre-drive latch for exactly one session: holds that session's statement between
-    // its (already finished) planning and its first append, on the executor's own thread.
-    // Deadline-bounded so a wiring mistake reports instead of hanging the suite.
     std::atomic<uint64_t> g_pause_session{0};
     std::atomic<bool> g_paused{false};
     std::atomic<bool> g_release{false};
@@ -74,8 +68,8 @@ TEST_CASE("integration::cpp::create_index_inflight_dml::uncommitted_insert_lands
         REQUIRE(cur->size() == 1);
     }
 
-    // The build's snapshot scan cannot see a foreign transaction's uncommitted insert; since the
-    // row's DML predates the build, no mirror or later feed carries it once it commits.
+    // The build's snapshot cannot see this foreign uncommitted insert, but the index already exists by the
+    // time it commits, so ordinary commit-time maintenance -- not reconciliation -- must carry the row.
     REQUIRE(exec(d, "CREATE TABLE db.probe (id bigint, v bigint);")->is_success());
     REQUIRE(seed_rows(d, "db.probe", "id, v", 2000, [](unsigned i) {
                 return "(" + std::to_string(i) + ", " + std::to_string(i) + ")";
@@ -112,8 +106,7 @@ TEST_CASE("integration::cpp::create_index_inflight_dml::uncommitted_insert_lands
     }
 }
 
-// A DELETE held uncommitted across the build, then rolled back: the surviving row must still be
-// reachable through the index, since the build may not act on an undecided delete.
+// A DELETE held uncommitted across the build, then rolled back: the build may not act on an undecided delete.
 TEST_CASE("integration::cpp::create_index_inflight_dml::rolled_back_delete_keeps_the_row_indexed") {
     auto config = make_test_config(integration_fixture_path("test_create_index_inflight_dml/rolled_back_delete"),
                                    /*wal_on=*/true);
@@ -148,9 +141,8 @@ TEST_CASE("integration::cpp::create_index_inflight_dml::rolled_back_delete_keeps
     }
 }
 
-// The INSERT is planned while the table has no index (stamped "mirror nothing"), then frozen at
-// the pre-drive seam while CREATE INDEX finishes elsewhere; only the executor's post-append
-// reconciliation with manager_index can carry its rows into the index.
+// Planned while the table has no index, then frozen at the pre-drive seam while CREATE INDEX finishes
+// elsewhere; only post-append reconciliation with manager_index can carry its rows into the index.
 TEST_CASE("integration::cpp::create_index_inflight_dml::stale_planned_insert_reaches_the_built_index") {
     auto config = make_test_config(integration_fixture_path("test_create_index_inflight_dml/stale_plan"),
                                    /*wal_on=*/true);

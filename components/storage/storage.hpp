@@ -16,14 +16,7 @@
 
 namespace components::storage {
 
-    // ACTIVE (scan_position_t + storage_t::fetch_next_batch below): the per-batch bounded scan
-    // transport, driven by the streaming scan sources via storage_fetch_next_batch.
-    // Position-only resume cursor for the streaming fetch-next scan (STEP 3). Holds the
-    // absolute next source row to read (row offset from the table start) and the source-row
-    // upper bound for this scan; NO pins, NO live scan state — the whole point is that nothing
-    // survives a mailbox round-trip. fetch_next_batch re-seeks from `next_row` each call,
-    // reads ONE batch, then advances `next_row` and reports `drained`. `next_row >= max_row`
-    // (or drained) means the scan is exhausted.
+    // No pins or live scan state may survive a call — only this resume position crosses the mailbox.
     struct scan_position_t {
         int64_t next_row{0}; // absolute source row to resume from
         int64_t max_row{0};  // exclusive source-row upper bound (table total_rows snapshot)
@@ -51,9 +44,6 @@ namespace components::storage {
             scan(output, filter, limit);
         }
 
-        // Scan only a subset of columns. Caller is expected to have constructed `output`
-        // as a sparse data_chunk_t with placeholder vectors for columns outside projected_cols.
-        // Default implementation falls back to full scan.
         virtual void scan_projected(vector::data_chunk_t& output,
                                     const table::table_filter_t* filter,
                                     int limit,
@@ -68,13 +58,7 @@ namespace components::storage {
             scan_projected(output, filter, limit, projected_cols);
         }
 
-        // Batched scan: emit one ≤DEFAULT_VECTOR_CAPACITY chunk per scan vector directly,
-        // avoiding the accumulate-then-split round-trip. `projected_cols == nullptr` means
-        // scan all columns; otherwise sparse projection.
-        // Returns a buffer-pool OOM / data_corruption error_t surfaced by the table-layer
-        // scan; true on success. Default implementation does a regular scan into one chunk
-        // (the void scan path leaves no scan_error), so it always reports success; subclasses
-        // that drive a batched scan override to read state.table_state.scan_error.
+        // `projected_cols == nullptr` means every column; errors surface as buffer-pool OOM / data_corruption.
         [[nodiscard]] virtual core::result_wrapper_t<bool> scan_batched(std::pmr::vector<vector::data_chunk_t>& batches,
                                                                         const table::table_filter_t* filter,
                                                                         int64_t limit,
@@ -93,15 +77,7 @@ namespace components::storage {
             return true;
         }
 
-        // Streaming fetch-next (STEP 3 / index-resume). Reads ONE ≤DEFAULT_VECTOR_CAPACITY batch
-        // starting at `pos.next_row`, applying `filter`/`projected_cols`/`txn` exactly as
-        // scan_batched does, then advances `pos.next_row` past the SOURCE rows consumed and sets
-        // `pos.drained` when the scan reaches `pos.max_row`. `output` is filled in place (the
-        // caller constructs it with the projected schema). A live cursor is built transiently
-        // inside this call and destroyed before it returns, so ZERO buffer pins survive — the
-        // resume position alone (pos) is what crosses the mailbox between calls. Returns a
-        // buffer-pool OOM / data_corruption error surfaced by the table-layer scan, else true.
-        // Default fallback: one scan into `output` from next_row==0 (no resume), then drained.
+        // Advances `pos.next_row`/`pos.drained`; its cursor dies within the call, so ZERO pins survive it.
         [[nodiscard]] virtual core::result_wrapper_t<bool> fetch_next_batch(vector::data_chunk_t& output,
                                                                             scan_position_t& pos,
                                                                             const table::table_filter_t* filter,
@@ -120,16 +96,7 @@ namespace components::storage {
             return true;
         }
 
-        // projected_cols holds storage chunk indices; EMPTY means every column, which is the same
-        // contract fetch_next_batch already uses. Columns outside the set keep their ordinal slot in
-        // the output chunk and are left as buffer-less stubs, so a consumer indexes the result the
-        // same way whether or not it asked for a projection.
-        // Error, if any, is in output's column_fetch_state::fetch_error — `true` alone does
-        // not mean no error, callers must check it.
-        // SNAPSHOT: rows invisible to `txn` are dropped, so the reply is SHORTER than the
-        // request; `output.row_ids` names what actually came back. RAW: no visibility check,
-        // used only by CREATE INDEX backfill to recover deleted rows' key columns. An empty
-        // `txn` is NOT raw — it means "every committed row", so a committed delete still hides.
+        // `true` alone does NOT mean no error — check output's column_fetch_state::fetch_error.
         [[nodiscard]] virtual core::result_wrapper_t<bool> fetch(vector::data_chunk_t& output,
                                                                  const vector::vector_t& row_ids,
                                                                  uint64_t count,
@@ -137,23 +104,12 @@ namespace components::storage {
                                                                  const table::transaction_data& txn,
                                                                  table::fetch_visibility_t visibility) = 0;
 
-        // No default `append(data)` overload: an assert-based fallback compiles away under
-        // NDEBUG, silently reusing a failed append's start_row. The replay path passes
-        // transaction_data{0, 0} explicitly instead. Returns write_conflict / out_of_memory
-        // from the table-layer append chain; start_row on success.
+        // No default overload: an NDEBUG-compiled-away assert would silently reuse a failed append's start_row.
         [[nodiscard]] virtual core::result_wrapper_t<uint64_t> append(vector::data_chunk_t& data,
                                                                       table::transaction_data txn) = 0;
 
-        // Replay update: rewrites rows IN PLACE (vs. the txn overload's MVCC delete+append
-        // below). Returns error_t, not void, so a refusal (unmaterialised column, out_of_memory,
-        // write_conflict) can't be swallowed by an NDEBUG-only assert and reported as restored.
-        // Recover-then-report: the materialized part of the payload is written even on
-        // failure; no_error means the WHOLE payload landed. The txn overload instead refuses
-        // up front, before anything is journalled.
+        // IN-PLACE rewrite for replay (vs. MVCC delete+append below); may land part of the payload on failure.
         [[nodiscard]] virtual core::error_t update(vector::vector_t& row_ids, vector::data_chunk_t& data) = 0;
-        // Returns write_conflict / out_of_memory from the table-layer update; on success
-        // {start_row, affected-row count}. No default body: forwarding to the replay overload
-        // could only fake a {0, 0} count.
         [[nodiscard]] virtual core::result_wrapper_t<std::pair<int64_t, uint64_t>>
         update(vector::vector_t& row_ids, vector::data_chunk_t& data, table::transaction_data txn) = 0;
 

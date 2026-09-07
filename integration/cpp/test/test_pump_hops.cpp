@@ -5,15 +5,10 @@
 #include <services/dispatcher/dispatcher.hpp>
 #include <string>
 
-// A statement's floor is hops * the pump's in-flight tick. This pins the first factor.
-//
-// While work is in flight a completed future notifies nobody, so a pump discovers readiness by its
-// wait timing out and resumes the continuation — one resume per hop. The count is the same on a
-// loaded machine as on an idle one, which is what makes it testable; the latency it multiplies out
-// to is not. A wall-clock assertion was tried twice and failed on CI both times: a runner resolves a
-// 5 us wait as 63-77 us and has 3-4 cores, so the floor there is set by the environment.
-//
-// Adding a round trip to the statement path is the regression this catches.
+// A statement's floor is hops * the pump's in-flight tick; this pins the first factor. Hop count
+// is stable under load (unlike latency), since a pump discovers readiness by wait-timeout, one
+// resume per hop — a wall-clock assertion failed on CI twice instead: a runner resolved a 5 us
+// wait as 63-77 us on 3-4 cores. Adding a round trip to the statement path is the regression this catches.
 
 TEST_CASE("integration::cpp::test_pump_hops::a_single_statement_crosses_a_bounded_number_of_hops") {
     auto config = test_create_config(integration_fixture_path("test_pump_hops/single"));
@@ -45,8 +40,7 @@ TEST_CASE("integration::cpp::test_pump_hops::a_single_statement_crosses_a_bounde
 
     // Positive control: a counter reading zero would satisfy any upper bound.
     REQUIRE(hops > 0);
-    // Measured at exactly 8 here, stable across repeats and under 40 threads of load. The bound
-    // allows drift but not a new round trip; the WARN above reports the real number, so a CI log
-    // says whether it is 8 there too.
+    // Measured at exactly 8 here, stable across repeats and under 40 threads of load; the bound
+    // allows drift but not a new round trip (WARN above reports the real number for CI logs).
     CHECK(per_statement <= 12.0);
 }

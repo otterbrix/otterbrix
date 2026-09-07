@@ -1,9 +1,7 @@
-// Measures the in-place storage update (data_table_t::update), not the SQL UPDATE path: a user
-// UPDATE goes through table_storage_adapter.hpp's three-argument update (delete-stamp + append);
-// this two-argument overload is reached only from agent_disk.cpp's direct_update_sync (WAL
-// replay, pg_attribute patches).
-// The two [!shouldfail] cases assert what a version-chained update WOULD do; they must go red
-// once someone implements the chain -- the signal to drop the tag, not weaken it.
+// Measures the in-place storage update (data_table_t::update) reached only from agent_disk.cpp's
+// direct_update_sync (WAL replay, pg_attribute patches) -- not the three-argument SQL UPDATE path.
+// The two [!shouldfail] cases assert what a version-chained update WOULD do; they must go red once
+// implemented -- the signal to drop the tag, not weaken it.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/data_table.hpp>
@@ -21,7 +19,6 @@ using namespace components::table;
 
 namespace {
 
-    // pid-qualified so concurrent runs don't share one .otbx.
     std::string update_rollback_db_path() {
         static std::string path = "/tmp/test_otterbrix_storage_update_rollback_" + std::to_string(::getpid()) + ".otbx";
         return path;
@@ -68,8 +65,6 @@ namespace {
         table.finalize_append(state, transaction_data{0, 0});
     }
 
-    // The signature carries no transaction id -- there is nothing to compare a conflicting
-    // writer against (components/table/data_table.hpp).
     core::result_wrapper_t<std::pair<int64_t, uint64_t>>
     update_in_place(data_table_t& table, update_env& env, int64_t row_id, int64_t new_value) {
         auto types = table.copy_types();
@@ -97,8 +92,6 @@ namespace {
 
 } // anonymous namespace
 
-// update_info_t carries no transaction or commit stamp (components/table/update_segment.hpp),
-// so the overlay is published to every reader the instant update() returns.
 TEST_CASE("components::table::update_segment::snapshot_predating_an_in_place_update_still_reads_the_old_value",
           "[!shouldfail]") {
     update_env env;
@@ -117,8 +110,6 @@ TEST_CASE("components::table::update_segment::snapshot_predating_an_in_place_upd
     REQUIRE(seen == 1);
 }
 
-// data_table_t offers revert_append (physical rows) and revert_all_deletes (delete stamps);
-// neither touches update_segment_t, which exposes no undo of its own.
 TEST_CASE("components::table::update_segment::an_abandoned_in_place_update_leaves_the_row_at_its_old_value",
           "[!shouldfail]") {
     update_env env;
@@ -137,14 +128,12 @@ TEST_CASE("components::table::update_segment::an_abandoned_in_place_update_leave
     REQUIRE(seen == 1);
 }
 
-// update() must refuse like append_lock/update_column already do (data_table.cpp) when a table
-// was superseded by an ALTER, or it silently writes into a collection no reader reopens.
+// update() must refuse a superseded table, or it silently writes into a collection no reader reopens.
 TEST_CASE("components::table::update_segment::updating_a_superseded_table_is_refused") {
     update_env env;
     auto table = make_one_column_table(env);
     append_committed_row(*table, env, 1);
 
-    // ALTER TABLE ADD COLUMN: successor becomes root, `table` stops being one.
     column_definition_t added("added", complex_logical_type(logical_type::BIGINT));
     auto successor = std::make_unique<data_table_t>(*table, added);
 
@@ -154,8 +143,7 @@ TEST_CASE("components::table::update_segment::updating_a_superseded_table_is_ref
     REQUIRE(updated.error().type == core::error_code_t::write_conflict);
 }
 
-// Control (not [!shouldfail]): pins that the overlay IS applied, so the two cases above fail on
-// "no MVCC," not "the update never landed."
+// Control (not [!shouldfail]): the overlay IS applied, so the two cases above fail on "no MVCC."
 TEST_CASE("components::table::update_segment::an_in_place_update_is_published_to_the_next_reader") {
     update_env env;
     auto table = make_one_column_table(env);

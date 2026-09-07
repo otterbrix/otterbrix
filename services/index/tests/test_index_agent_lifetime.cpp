@@ -1,6 +1,5 @@
-// An agent may not be destroyed while a request the manager itself issued is still unanswered:
-// destroying it closes the mailbox and cancels the reply's promise (which lives in the message),
-// but the waiter's co_await still resumes and reads that cancelled state as a value under NDEBUG
+// An agent may not be destroyed while a request the manager itself issued is unanswered: destroying it
+// cancels the reply's promise, but the waiter's co_await still resumes and reads that as a value under NDEBUG
 // (actor-zeta mailbox/message.hpp init_future_slot / impl/mailbox/default_mailbox.ipp close_impl).
 
 // clang-format off
@@ -78,7 +77,7 @@ namespace {
         return keys;
     }
 
-} // namespace
+}
 
 TEST_CASE("services::index::drop_index keeps the agent alive under an outstanding read") {
     auto resource = core::pmr::otterbrix_resource();
@@ -101,8 +100,6 @@ TEST_CASE("services::index::drop_index keeps the agent alive under an outstandin
                                                       /*btree_flush_threshold=*/1000);
 
     manager->bootstrap_engine_sync(kTableOid);
-    // The manager spawns the agent itself (one factory picks bitcask vs b+tree by index type);
-    // index_type::single is the ORDERED family, hence the b+tree accessor.
     REQUIRE_FALSE(manager
                       ->bootstrap_index_sync(kTableOid,
                                              kIndexOid,
@@ -132,14 +129,12 @@ TEST_CASE("services::index::drop_index keeps the agent alive under an outstandin
     // Mailbox is FIFO and drop() was posted first, so this resume is the drop; the search stays queued.
     agent_raw->resume(1);
 
-    // drop_index erases the owning pointer here, destroying the agent.
+    // drop_index erases the owning pointer here, destroying the agent -- nothing below may touch agent_raw.
     REQUIRE(resume_awaited(drop_future));
     REQUIRE(drop_future.is_ready());
-    // agent_raw is dead from here on -- nothing below may touch it.
 
     REQUIRE_FALSE(awaited_request_failed(search_future));
 
-    // An empty vector from search means only "no match", never a refusal.
     REQUIRE(search_future.is_ready());
     auto answer = std::move(search_future).take_ready();
     REQUIRE(answer.has_error());

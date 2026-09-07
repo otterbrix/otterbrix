@@ -1,8 +1,6 @@
 #pragma once
 
-// Holds btree_index_disk_t by value and by its concrete type, not through a virtual interface
-// (see index_agent_contract.hpp for why). Also holds the uncommitted buffer beside the tree, so
-// read_rows below returns both halves already merged instead of stitching them post-hoc.
+// Held by value so read_rows below merges the uncommitted buffer with the tree, not stitching post-hoc.
 
 #include "btree_index_disk.hpp"
 #include "index_agent_contract.hpp"
@@ -34,8 +32,7 @@
 
 namespace services::index {
 
-    // No separate DROP TABLE handler: manager_index_t's unregister_collection sends the same
-    // drop() to every agent when the owning table is dropped (services/index/manager_index.cpp).
+    // manager_index_t's unregister_collection sends the same drop() to every agent when the table is dropped.
     class btree_index_agent_t final : public actor_zeta::basic_actor<btree_index_agent_t> {
         using path_t = std::filesystem::path;
         using session_id_t = index_agent_contract::session_id_t;
@@ -48,19 +45,14 @@ namespace services::index {
         // Must name the concrete class: actor_zeta::pmr::deleter_t deallocates sizeof(static type).
         using agent_ptr_t = std::unique_ptr<btree_index_agent_t, actor_zeta::pmr::deleter_t>;
 
-        // Copied by manager_index_t into its per-index record; the only thing that tells an
-        // ordered index from a hashed one over the same column. `single` because SQL's only
-        // explicit spelling is `USING hash`; everything else this family builds is `single`.
+        // Named `single` because SQL's only explicit spelling is `USING hash`; everything else defaults to `single`.
         static constexpr components::logical_plan::index_type index_type_v =
             components::logical_plan::index_type::single;
 
-        // Copied into the manager's record; can_use_index refuses lt/lte/gt/gte unless a
-        // non-hashed index covers the key.
+        // can_use_index refuses lt/lte/gt/gte unless a non-hashed index covers the key.
         static constexpr bool supports_ordered_probe_v = true;
 
-        // No segment-record limit or WAL committed-txn set here: this family owns no segments
-        // and no txn log, so there's no recover gate to arm. index_oid = pg_index.indexrelid;
-        // the on-disk directory is ${path_db}/${table_oid}/${index_oid}/, oid-keyed.
+        // This family owns no segments or txn log; on-disk directory is ${path_db}/${table_oid}/${index_oid}/.
         [[nodiscard]] static core::result_wrapper_t<agent_ptr_t> create(std::pmr::memory_resource* resource,
                                                                         const path_t& path_db,
                                                                         components::catalog::oid_t table_oid,
@@ -68,9 +60,8 @@ namespace services::index {
                                                                         uint64_t flush_threshold,
                                                                         log_t& log);
 
-        // No deferred open unlike the hashed family: btree_t::load() is void and cannot fail,
-        // so an open() step here would only ever answer no_error(). The store is opened directly
-        // in the member initializer list. Public because actor_zeta::spawn placement-news the actor.
+        // btree_t::load() is void and cannot fail, so the store opens directly in the initializer
+        // list (no deferred open, unlike the hashed family). Public: actor_zeta::spawn placement-news the actor.
         btree_index_agent_t(std::pmr::memory_resource* resource,
                             const path_t& path_db,
                             components::catalog::oid_t table_oid,
@@ -87,8 +78,7 @@ namespace services::index {
         stage_inserts(session_id_t session, uint64_t txn_id, std::vector<std::pair<value_t, size_t>> values);
         unique_future<core::error_t>
         stage_deletes(session_id_t session, uint64_t txn_id, std::vector<std::pair<value_t, size_t>> values);
-        // commit_id is unused here: this family keeps no journal, but the contract is positional
-        // by msg_id, so both classes must carry the parameter or neither does.
+        // commit_id is unused (no journal here) but kept: the contract is positional by msg_id.
         unique_future<core::error_t> commit_inserts(session_id_t session, uint64_t txn_id, uint64_t commit_id);
         unique_future<core::error_t> commit_deletes(session_id_t session, uint64_t txn_id, uint64_t commit_id);
         unique_future<core::error_t> revert_inserts(session_id_t session, uint64_t txn_id);
@@ -97,8 +87,8 @@ namespace services::index {
         read_rows(session_id_t session, components::expressions::compare_type compare, value_t key, uint64_t txn_id);
         unique_future<core::error_t> force_flush(session_id_t session);
 
-        // Bound in the contract's order, so msg_id is the same number across both families --
-        // the only reason manager_index_t may send to a bare address.
+        // Order must match bitcask_index_agent_t's dispatch_traits exactly -- msg_id positions are
+        // what let manager_index_t send to a bare address across both families.
         using dispatch_traits = actor_zeta::implements<index_agent_contract,
                                                        &btree_index_agent_t::drop,
                                                        &btree_index_agent_t::clear,
@@ -117,31 +107,22 @@ namespace services::index {
     private:
         log_t log_;
         components::catalog::oid_t table_oid_;
-        // By value, not unique_ptr: this agent is the sole owner and the type is fixed at
-        // compile time, which is what keeps the ordered scan_range contract reachable
-        // without a runtime question.
+        // Fixed type at compile time keeps the ordered scan_range contract reachable without a runtime question.
         btree_index_disk_t store_;
         bool is_dropped_{false};
 
-        // Per-transaction buckets of uncommitted rows. Keys are kept encoded in the b+tree's
-        // own record format (codec::append_logical_value) so a staged key compares the same
-        // way the committed half does, via the same decoder the tree's key getter uses.
-        //
-        // Bucket 0 is "committed for everyone but not yet durable": the rebuild feed stages
-        // into it, and commit_inserts publishes it alongside whatever transaction is committing.
+        // Keys are encoded in the b+tree's own record format so a staged key compares the same way
+        // the committed half does. Bucket 0 is committed-but-not-yet-durable, published by commit_inserts.
         using pending_row_t = std::pair<std::pmr::string, int64_t>;
         using pending_rows_t = std::pmr::vector<pending_row_t>;
         using pending_txn_map_t = std::pmr::unordered_map<uint64_t, pending_rows_t>;
         pending_txn_map_t pending_inserts_;
         pending_txn_map_t pending_deletes_;
 
-        // No normalization: the tree stores and compares the column's own type, which is the
-        // hashed family's step, not this one's.
+        // No normalization: the tree compares the column's own type -- that step belongs to the hashed family.
         [[nodiscard]] std::pmr::string encode_key(const value_t& key) const;
 
-        // Publish one bucket pair ({txn_id} and 0) into the tree and erase them. Shared by
-        // the insert and delete legs, which differ only in which map they take from and
-        // which store call they make -- that difference is the `apply` callable.
+        // Publishes the ({txn_id}, 0) bucket pair; `apply` is the only difference between insert and delete.
         template<typename ApplyFn>
         [[nodiscard]] core::error_t publish_buckets(pending_txn_map_t& buckets, uint64_t txn_id, ApplyFn&& apply);
     };

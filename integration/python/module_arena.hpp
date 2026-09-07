@@ -7,18 +7,12 @@
 
 namespace otterbrix {
 
-    //! The Python module's arena: pybind entry points have no connection/space/caller object
-    //! to borrow one from, so the module owns one and passes it down as an argument, not a
-    //! file-local static. Three reasons for that shape:
-    //!   (1) Named ownership: `otterbrix.__arena__` (integration/python/main.cpp) is the
-    //!       capsule holding it, not an anonymous static.
-    //!   (2) Substitutable: a test can pass in a core::resource_tracer_t to measure leaks.
-    //!   (3) Outlives the capsule safely: a python object holding pmr data allocated here
-    //!       (e.g. an OtterBrixPyType's STRUCT/MAP field list, components/types/types.cpp)
-    //!       keeps its own reference, so the arena outlives the module dict when it must.
+    //! The Python module's arena: pybind entry points have no connection/space/caller to borrow
+    //! one from, so the module owns it and passes it down by ref-counted pointer — a python object
+    //! holding pmr data allocated here keeps its own reference, so the arena outlives the module dict.
     struct module_arena_t : boost::intrusive_ref_counter<module_arena_t> {
-        // Same resource type a space uses (integration/cpp/base_spaces.hpp): a pool normally,
-        // resource_tracer_t under ASAN, so a leak here is reported instead of hidden in a pool block.
+        // Same resource type a space uses (base_spaces.hpp): a pool normally, resource_tracer_t
+        // under ASAN, so a leak here is reported instead of hidden in a pool block.
         core::pmr::otterbrix_resource resource;
     };
 

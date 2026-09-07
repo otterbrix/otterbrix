@@ -20,15 +20,7 @@ namespace actor_zeta {
 
     namespace otterbrix {
 
-        // The only way this tree sends to an address; a bare actor_zeta::send(address, ...)
-        // outside this file is a regression. The library's own overload guards the same
-        // precondition with an assert, which a Release actor-zeta PACKAGE compiles out
-        // regardless of how we build -- an empty address then walks a null resource into
-        // address.ipp's enqueue_fn_ (SIGSEGV, no message). fputs+abort here is identical in
-        // Debug/Release and whichever package variant is linked.
-        //
-        // Does not make an unguarded send correct: sites that legitimately hold a possibly-empty
-        // address (a WAL manager never spawned) still need their own `!= empty_address()` check.
+        // A Release actor-zeta build compiles out its empty-address assert, so an unguarded send() SIGSEGVs silently.
         template<typename Method,
                  typename... Args,
                  typename Actor = typename type_traits::callable_trait<Method>::class_type>
@@ -38,21 +30,12 @@ namespace actor_zeta {
 
             static_assert(type_traits::is_unique_future_v<result_type>, "Method must return unique_future<T>");
 
-            // Kept from the library's send(): the method must be registered in
-            // Actor::dispatch_traits and belong to Actor. Checked by SIGNATURE
-            // (method_signature_exists_v), not identity, so two registered methods sharing a
-            // signature are indistinguishable to it -- un-registering one won't fail this
-            // static_assert; runtime_dispatch_helper's terminal abort catches it instead, loud
-            // in every build but not from the compiler.
+            // Checked by signature, not identity: un-registering a same-signature method won't fail this static_assert.
             static_assert(detail::validate_method_for_send<Actor, Method>::valid,
                           "send(): Method validation failed - see above for details");
 
             if (!target) {
-                // A ready future with a default value would dress "nobody is listening" as
-                // "answered, with nothing" -- and couldn't even do that, since it would build on
-                // target.resource(), null for an empty address (assert-abort in Debug, SIGSEGV
-                // under NDEBUG). Every live call site targets a spawned actor, so this branch
-                // only needs to refuse cleanly instead of via UB.
+                // A default-valued ready future would disguise "nobody is listening" as valid, needing a null resource.
                 std::fputs("actor_zeta::otterbrix::send: refusing to send to an empty target address\n", stderr);
                 std::abort();
             }
@@ -65,11 +48,7 @@ namespace actor_zeta {
                                                                              std::forward<Args>(args)...);
         }
 
-        // Is this exact method pointer one of the contract's registered methods? Asked by
-        // IDENTITY, not by signature: actor_zeta::detail::find_method_index answers 0 for a
-        // method it cannot find, which would silently address the contract's FIRST handler,
-        // and method_signature_exists_v cannot tell two same-shaped methods apart. Purely
-        // type-level, so it takes no addresses.
+        // Checks by identity: find_method_index returns 0 (a valid index) for "not found", risking silent misdispatch.
         template<auto SearchPtr, typename MethodList>
         struct contract_declares_method;
 
@@ -78,20 +57,7 @@ namespace actor_zeta {
             static constexpr bool value = (detail::is_same_ptr_v<SearchPtr, MethodPtrs> || ...);
         };
 
-        // Send through a contract, naming the method at compile time -- for when one address may
-        // belong to any of several actor classes implementing the same contract (implements<>)
-        // and the caller has no concrete class to name (manager_index_t addressing either a
-        // bitcask or a btree index agent). The message id is the method's POSITION in the
-        // contract's dispatch_traits list.
-        //
-        // Not actor_zeta::send(target, &contract::method, ...): the library's runtime-polymorphic
-        // send compares the method pointer by VALUE against every contract entry at runtime,
-        // which ODR-uses each one and forces the linker to demand a body nothing ever calls.
-        // Naming the method as a template argument resolves the same positional id at compile
-        // time instead, asking nothing of the contract but its declarations.
-        //
-        // Empty target refused exactly like send() above; every caller here holds an address
-        // from a live agent.
+        // The message id is the method's position in dispatch_traits, fixed at compile time, not a runtime compare.
         template<auto MethodPtr,
                  typename... Args,
                  typename Interface = typename type_traits::callable_trait<decltype(MethodPtr)>::class_type>

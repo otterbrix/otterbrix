@@ -16,7 +16,7 @@ namespace {
             config.log.level = log_t::level::off;
         }
     };
-} // namespace
+}
 
 #define MAKE_ENV(dirname)                                                                                              \
     env_t env(dirname);                                                                                                \
@@ -34,10 +34,8 @@ namespace {
     };                                                                                                                 \
     REQUIRE(exec("CREATE DATABASE c;")->is_success())
 
-// These forms used to fall outside a 4-shape recogniser (`column OP constant`, `column IS
-// [NOT] NULL`, `(A) AND/OR (B)`, `NOT (A)`) and silently compiled to constant TRUE;
-// column-vs-column also misread its second column as the literal 0. Upstream #629 evaluates
-// them instead of accepting-and-ignoring.
+// These forms fell outside a 4-shape recogniser and silently compiled to constant TRUE;
+// column-vs-column also misread its second column as literal 0. Upstream #629 evaluates them instead.
 TEST_CASE("integration::cpp::check_expr_unenforceable::arithmetic_operand", "[checkexpr]") {
     MAKE_ENV("arith_operand");
     REQUIRE(exec("CREATE TABLE c.t (a bigint, b bigint);")->is_success());
@@ -60,7 +58,6 @@ TEST_CASE("integration::cpp::check_expr_unenforceable::arithmetic_constant", "[c
     INFO("the bound is folded to 2, not read as 1");
     CHECK(declared->is_success());
 
-    // a = 2 violates `a > 1 + 1`; a recogniser that misread the bound as 1 would admit it.
     const bool admitted = exec("INSERT INTO c.t (a) VALUES (2);")->is_success();
     INFO("declared=" << declared->is_success() << " admitted=" << admitted);
     CHECK_FALSE(admitted);
@@ -75,8 +72,7 @@ TEST_CASE("integration::cpp::check_expr_unenforceable::column_against_column", "
     INFO("two columns compare against each other, not against a mis-read 0");
     CHECK(declared->is_success());
 
-    // (1, 10) satisfies `lo <= hi`; the mis-read (lo <= 0) rejected it -- the opposite
-    // failure from the other cases.
+    // The mis-read (lo <= 0) would reject (1, 10) -- the opposite failure from the other cases.
     const bool rejected = exec("INSERT INTO c.t (lo, hi) VALUES (1, 10);")->is_error();
     INFO("declared=" << declared->is_success() << " rejected=" << rejected);
     CHECK_FALSE(rejected);
@@ -85,8 +81,7 @@ TEST_CASE("integration::cpp::check_expr_unenforceable::column_against_column", "
     CHECK(exec("INSERT INTO c.t (lo, hi) VALUES (10, 1);")->is_error());
 }
 
-// Column-level and table-level inline CHECKs go through separate extractors into the same
-// evaluator, so both need coverage.
+// Column-level and table-level inline CHECKs go through separate extractors into one evaluator.
 TEST_CASE("integration::cpp::check_expr_unenforceable::inline_table_level", "[checkexpr]") {
     MAKE_ENV("inline_table");
     auto declared = exec("CREATE TABLE c.t (a bigint, b bigint, CHECK (a + b > 0));");
@@ -109,8 +104,7 @@ TEST_CASE("integration::cpp::check_expr_unenforceable::inline_column_level", "[c
     CHECK_FALSE((declared->is_success() && admitted));
 }
 
-// The operator search used to scan the literal text for " > " without regard to quoting,
-// misreading it as the predicate's operator.
+// The operator search used to scan literal text for " > " without regard to quoting.
 TEST_CASE("integration::cpp::check_expr_unenforceable::operator_inside_a_string_literal", "[checkexpr]") {
     MAKE_ENV("op_in_literal");
     REQUIRE(exec("CREATE TABLE c.t (id bigint, name text);")->is_success());
@@ -124,9 +118,8 @@ TEST_CASE("integration::cpp::check_expr_unenforceable::operator_inside_a_string_
     CHECK(count_of("SELECT COUNT(*) FROM c.t WHERE id = 2;") == 0);
 }
 
-// A CHECK naming a nonexistent column used to compile to constant TRUE (find_col_index missed
-// it) and silently pass every row. Upstream #629 resolves CHECK columns at DDL time, so ALTER
-// refuses upfront; the inline forms still rely on the write-time find_col_index floor.
+// A CHECK naming a nonexistent column used to compile to TRUE (find_col_index missed it). Upstream
+// #629 resolves columns at DDL time, so ALTER refuses upfront; inline forms rely on the write-time floor.
 
 TEST_CASE("integration::cpp::check_expr_unenforceable::unknown_column_alter_refuses_at_write", "[checkexpr]") {
     MAKE_ENV("unknown_col_alter");
@@ -138,8 +131,7 @@ TEST_CASE("integration::cpp::check_expr_unenforceable::unknown_column_alter_refu
     INFO("ddl error: " << ddl_what);
     CHECK(ddl_what.find("nosuchcol") != std::string::npos);
 
-    // A refused declaration leaves no constraint, so admission is unconstrained; only
-    // declared&&admitted must never both hold.
+    // A refused declaration leaves no constraint, so only declared&&admitted must never both hold.
     const bool admitted = exec("INSERT INTO c.t (a) VALUES (-1);")->is_success();
     INFO("declared=" << declared->is_success() << " admitted=" << admitted);
     CHECK_FALSE((declared->is_success() && admitted));
@@ -168,7 +160,6 @@ TEST_CASE("integration::cpp::check_expr_unenforceable::unknown_column_inline_col
     }
 }
 
-// The floor triggers only on a genuinely missing column; a valid sibling reference stays legal.
 TEST_CASE("integration::cpp::check_expr_unenforceable::sibling_column_stays_legal", "[checkexpr]") {
     MAKE_ENV("sibling_col");
     REQUIRE(exec("CREATE TABLE c.t (a bigint, b bigint CHECK (a > 0));")->is_success());

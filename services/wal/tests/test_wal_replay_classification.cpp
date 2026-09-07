@@ -26,10 +26,9 @@
 #include <thread>
 #include <unistd.h>
 
-// A directory name that doesn't round-trip through to_string(oid) is FOREIGN and must be skipped by both
-// manager_wal_replicate_t's classification and wal_reader_t's replay, or its ids escape next_wal_id() while
-// its records still replay. parse_segment_index had the same half-parsing bug via `catch (...)` around
-// std::stoul: "000012.bak"/"12abc" parsed as 12.
+// A directory name that doesn't round-trip through to_string(oid) is foreign and must be skipped by both
+// manager_wal_replicate_t's classification and wal_reader_t's replay, or its ids escape next_wal_id()
+// while its records still replay; parse_segment_index had the same half-parsing bug via `catch (...)`.
 
 using namespace services::wal;
 using namespace components::session;
@@ -61,8 +60,7 @@ namespace {
         return batch;
     }
 
-    // Unlike the sibling fixtures, does NOT wipe the path on destruction: the journal it wrote is the
-    // input of the reader assertions that follow.
+    // Unlike the sibling fixtures, this does not wipe the path on destruction: later reads depend on it.
     struct journal_writer_t {
         explicit journal_writer_t(const std::filesystem::path& path)
             : resource_()
@@ -87,8 +85,7 @@ namespace {
             manager_.reset();
         }
 
-        // Mirrors production (agent_disk_t::storage_append_inner builds off resource()); resource_ is
-        // declared FIRST so it outlives ~journal_writer_t's teardown of manager_.
+        // resource_ must be declared first so it outlives ~journal_writer_t's teardown of manager_.
         std::pmr::vector<data_chunk_t> make_insert_batch(size_t rows) {
             return to_batch(gen_data_chunk(rows, &resource_));
         }
@@ -123,7 +120,7 @@ namespace {
         std::unique_ptr<manager_wal_replicate_t, actor_zeta::pmr::deleter_t> manager_;
     };
 
-} // namespace
+}
 
 TEST_CASE("wal::classification::replay_skips_a_foreign_named_directory") {
     const auto path = base_path() / "foreign_replay";
@@ -143,7 +140,6 @@ TEST_CASE("wal::classification::replay_skips_a_foreign_named_directory") {
     const auto db_dir = config.path / std::to_string(static_cast<unsigned>(kMainDb));
     REQUIRE(std::filesystem::exists(db_dir));
 
-    // Control: in its own directory the transaction replays.
     {
         wal_reader_t reader(&resource, config, log);
         auto records = reader.read_committed_records(services::wal::id_t{0});
@@ -151,7 +147,6 @@ TEST_CASE("wal::classification::replay_skips_a_foreign_named_directory") {
         REQUIRE_FALSE(records.value().empty());
     }
 
-    // The same segment under a name the engine never writes is foreign content.
     const auto foreign_dir = config.path / "backup_9zz";
     std::filesystem::rename(db_dir, foreign_dir);
     {
@@ -181,7 +176,6 @@ TEST_CASE("wal::classification::segment_index_parses_the_whole_suffix_or_refuses
     REQUIRE(wal_worker_t::parse_segment_index("/j/wal_5_000012", "5") == 12u);
     REQUIRE(wal_worker_t::parse_segment_index("/j/wal_5_000000", "5") == 0u);
 
-    // A suffix that only begins with digits is a refusal, not its digit prefix.
     REQUIRE(wal_worker_t::parse_segment_index("/j/wal_5_000012.bak", "5") == refused);
     REQUIRE(wal_worker_t::parse_segment_index("/j/wal_5_12abc", "5") == refused);
 
@@ -189,7 +183,6 @@ TEST_CASE("wal::classification::segment_index_parses_the_whole_suffix_or_refuses
     REQUIRE(wal_worker_t::parse_segment_index("/j/wal_9_000012", "5") == refused);
     REQUIRE(wal_worker_t::parse_segment_index("/j/wal_5_", "5") == refused);
 
-    // Out of uint32 range already refused under the old catch(...).
     REQUIRE(wal_worker_t::parse_segment_index("/j/wal_5_99999999999999999999", "5") == refused);
 }
 

@@ -10,28 +10,25 @@
 #include <string>
 
 // pg_attribute.attdefspec replaces a flat-text form ("type_name:value") that silently lost data as "" (read
-// back as "no default"): (1) composite types were not persisted at all; (2) most non-trivial scalars
-// (DATE/TIME/TIMESTAMP/DECIMAL) fell into the same "" case; (3) `DEFAULT NULL` was indistinguishable from no
-// default; (4) floats were rendered via std::to_string's six digits, rounding DOUBLE defaults on disk.
+// back as "no default"): composites were not persisted at all, most non-trivial scalars fell into the same
+// "" case, DEFAULT NULL was indistinguishable from no default, and floats were rounded to six digits.
 
 using namespace components::catalog;
 using namespace components::types;
 
 namespace {
-    // This file's one DECIMAL arena; not the process-global one.
     std::pmr::memory_resource* decimal_resource() {
         static core::pmr::otterbrix_resource arena;
         return &arena;
     }
 
-    // Every width/scale used in this file is in-window, so the check below never fires.
     components::types::complex_logical_type
     make_decimal(uint8_t width, uint8_t scale, std::string alias = "") {
         auto created = components::types::complex_logical_type::create_decimal(decimal_resource(), width, scale, std::move(alias));
         REQUIRE_FALSE(created.has_error());
         return std::move(created.value());
     }
-} // namespace
+}
 
 namespace {
     auto* g_resource = decimal_resource();
@@ -40,7 +37,7 @@ namespace {
     std::optional<logical_value_t> round_trip(const logical_value_t& v, const complex_logical_type& column_type) {
         std::string spec;
         REQUIRE_FALSE(encode_default_spec(g_resource, v, spec).contains_error());
-        REQUIRE_FALSE(spec.empty()); // "" means NO DEFAULT and must never encode a value
+        REQUIRE_FALSE(spec.empty());
         std::optional<logical_value_t> out;
         REQUIRE_FALSE(decode_default_spec(g_resource, column_type, spec, out).contains_error());
         return out;
@@ -48,16 +45,14 @@ namespace {
 
     std::optional<logical_value_t> round_trip(const logical_value_t& v) { return round_trip(v, v.type()); }
 
-    // `==` on floating point is what the old encoder's six-digit rendering was allowed to fail,
-    // so the comparison is bit-for-bit.
+    // `==` on floating point would let a rounded value slip through, so the comparison is bit-for-bit.
     template<typename T>
     bool same_bits(T a, T b) {
         return std::memcmp(&a, &b, sizeof(T)) == 0;
     }
-} // namespace
+}
 
 TEST_CASE("catalog::default_spec::scalar_round_trip") {
-    // The flat-text form covered only the first eleven of these types.
     CHECK(round_trip(logical_value_t(g_resource, true)).value() == logical_value_t(g_resource, true));
     CHECK(round_trip(logical_value_t(g_resource, std::int8_t{-7})).value() ==
           logical_value_t(g_resource, std::int8_t{-7}));
@@ -83,7 +78,6 @@ TEST_CASE("catalog::default_spec::scalar_round_trip") {
 }
 
 TEST_CASE("catalog::default_spec::temporal_and_decimal_round_trip") {
-    // Loss (2): these encoded to "" under the old format.
     CHECK(round_trip(logical_value_t(g_resource, core::date::date_t{core::date::days{19000}})).value() ==
           logical_value_t(g_resource, core::date::date_t{core::date::days{19000}}));
     CHECK(round_trip(logical_value_t(g_resource, core::date::time_t{core::date::microseconds{86399123456LL}}))
@@ -96,7 +90,6 @@ TEST_CASE("catalog::default_spec::temporal_and_decimal_round_trip") {
             .value() ==
         logical_value_t(g_resource, core::date::timestamptz_t{core::date::microseconds{1700000000000000LL}}));
 
-    // Width and scale come from the column type the decoder is handed, not from the payload.
     const auto dec_type = make_decimal(10, 2);
     const auto dec = logical_value_t::create_decimal(g_resource, dec_type, std::int64_t{1234});
     auto dec_back = round_trip(dec, dec_type);
@@ -117,7 +110,6 @@ TEST_CASE("catalog::default_spec::temporal_and_decimal_round_trip") {
 }
 
 TEST_CASE("catalog::default_spec::floats_keep_every_bit") {
-    // Loss (4): std::to_string's six digits used to round DOUBLE defaults on disk.
     const double third = 1.0 / 3.0;
     auto d_back = round_trip(logical_value_t(g_resource, third));
     REQUIRE(d_back.has_value());
@@ -134,7 +126,6 @@ TEST_CASE("catalog::default_spec::floats_keep_every_bit") {
 }
 
 TEST_CASE("catalog::default_spec::composite_round_trip") {
-    // Loss (1): a DEFAULT on a composite type was not persisted at all.
     const auto elem = complex_logical_type{logical_type::INTEGER};
 
     const auto array_type = complex_logical_type::create_array(elem, 3);
@@ -180,7 +171,6 @@ TEST_CASE("catalog::default_spec::composite_round_trip") {
 }
 
 TEST_CASE("catalog::default_spec::explicit_null_default_is_not_absence") {
-    // Loss (3): the encoding must keep apart no default, an explicit DEFAULT NULL, and a value.
     const complex_logical_type column_type{logical_type::BIGINT};
 
     std::optional<logical_value_t> absent;
@@ -212,7 +202,6 @@ TEST_CASE("catalog::default_spec::explicit_null_default_is_not_absence") {
 }
 
 TEST_CASE("catalog::default_spec::unencodable_default_is_an_error") {
-    // Must fail loudly, not silently encode as "".
     const logical_value_t hugeint(g_resource, static_cast<int128_t>(1) << 100);
     std::string spec;
     auto ec = encode_default_spec(g_resource, hugeint, spec);
@@ -225,15 +214,16 @@ TEST_CASE("catalog::default_spec::unencodable_default_is_an_error") {
 }
 
 TEST_CASE("catalog::default_spec::corrupt_spec_is_reported_not_ignored") {
-    // A non-empty spec that fails to decode is catalog corruption, not "no default".
+    // A non-empty spec that fails to decode is catalog corruption, not "no default": the OLD
+    // format, invalid hex, a truncated payload, and a NULL marker with a trailing byte.
     const complex_logical_type column_type{logical_type::BIGINT};
     std::optional<logical_value_t> out;
 
-    CHECK(decode_default_spec(g_resource, column_type, "int8:5", out).contains_error()); // the OLD format
+    CHECK(decode_default_spec(g_resource, column_type, "int8:5", out).contains_error());
     CHECK_FALSE(out.has_value());
-    CHECK(decode_default_spec(g_resource, column_type, "VZZ", out).contains_error()); // not hex
-    CHECK(decode_default_spec(g_resource, column_type, "V01", out).contains_error()); // truncated payload
-    CHECK(decode_default_spec(g_resource, column_type, "N!", out).contains_error());  // NULL marker with a tail
+    CHECK(decode_default_spec(g_resource, column_type, "VZZ", out).contains_error());
+    CHECK(decode_default_spec(g_resource, column_type, "V01", out).contains_error());
+    CHECK(decode_default_spec(g_resource, column_type, "N!", out).contains_error());
 
     // An INTEGER default read against a BIGINT column is short by four bytes, not silently reinterpreted.
     std::string int_spec;

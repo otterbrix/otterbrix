@@ -14,12 +14,7 @@ namespace services::wal {
 
     class wal_page_writer_t {
     public:
-        /// Construct a page writer.
-        /// @param resource    Backs the diagnostics carried by every error_t below.
-        /// @param path        Path to the segment file (created if it does not exist).
-        /// @param db_name     Database name stored in the file header.
-        /// @param seg_index   Segment index stored in the file header.
-        /// @param max_seg_sz  Maximum segment file size before rotation (default 4 MiB).
+        /// @param resource Backs the diagnostics carried by every error_t below.
         wal_page_writer_t(std::pmr::memory_resource* resource,
                           const std::filesystem::path& path,
                           const std::string& db_name,
@@ -31,24 +26,17 @@ namespace services::wal {
         wal_page_writer_t(const wal_page_writer_t&) = delete;
         wal_page_writer_t& operator=(const wal_page_writer_t&) = delete;
 
-        /// The reason the segment could not be opened / initialised; no_error() when usable.
-        /// A failed open is reported here rather than left as a null file_ that
-        /// write_file_header() would dereference; every entry point below refuses while this
-        /// is set.
+        /// no_error() when usable; every entry point below refuses while an open failure is set.
         [[nodiscard]] const core::error_t& open_error() const noexcept { return open_error_; }
         [[nodiscard]] bool is_open() const noexcept { return file_ != nullptr; }
 
-        /// Append an encoded record. May span multiple pages.
-        /// Refuses with io_error on a write error (e.g. disk full). THE RETURN IS THE ONLY
-        /// EVIDENCE the record reached the segment: dropping it — which a bare bool invites —
-        /// lets wal.cpp return the wal_id of a record that was never written.
+        /// The return is the only evidence it landed — a bare bool would let wal.cpp report an unwritten wal_id.
         [[nodiscard]] core::error_t append(const char* data, size_t size, id_t wal_id);
 
-        /// Flush current page to disk (even if not full).
+        /// Forces the page out even if not full.
         [[nodiscard]] core::error_t flush();
 
-        /// Flush + fsync. Refuses when EITHER half fails — dropping the fsync result here lets
-        /// a FULL-sync commit report durability over a page that never reached the device.
+        /// Refuses if EITHER half fails, so a FULL-sync commit can't report durability falsely.
         [[nodiscard]] core::error_t flush_and_sync();
 
         /// Path to the current segment file.
@@ -57,16 +45,11 @@ namespace services::wal {
         /// Last WAL id written.
         id_t last_wal_id() const { return page_end_lsn_; }
 
-        /// The failure of the destructor's last-resort flush, if any. A destructor has no
-        /// caller to answer, so it latches here; the ENGINE path never depends on it,
-        /// because wal_worker_t flushes explicitly (and reads the answer) before every
-        /// teardown and rotation, which leaves this flush with nothing to write.
+        /// The destructor's last-resort flush error; the engine never depends on it (explicit flush elsewhere).
         [[nodiscard]] const core::error_t& last_error() const noexcept { return last_error_; }
 
-        /// True when a refused mid-record flush left an ORPHAN SPAN on disk (a page flagged
-        /// PARTIAL_CONT that nothing will complete). The owner must rotate to a fresh segment
-        /// before writing anything else (wal_worker_t::ensure_writer does), or the next page
-        /// would be read as that span's continuation bytes.
+        /// True after a refused mid-record flush leaves an ORPHAN (PARTIAL_CONT) span; the owner
+        /// must rotate to a fresh segment or the next page is read as that span's continuation.
         [[nodiscard]] bool torn_tail() const noexcept { return torn_tail_; }
 
     private:

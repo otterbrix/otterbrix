@@ -20,12 +20,8 @@
 #include <thread>
 #include <unistd.h>
 
-// The write path routes an incoming column onto an existing storage column by name (plus the
-// bare logical_type enum on a computed table), so DECIMAL(12,4) data could land in a column
-// whose storage is DECIMAL(10,2). First tripwire: the statistics merge's cross-parameterization
-// comparison SIGABRTs in debug; under NDEBUG the same append went through silently, storing
-// scale-4 raw integers into a scale-2 column, misreading every later scan by ×100. The append
-// must refuse the parameterization drift before WAL and materialization.
+// The write path matches an incoming column by name (plus the bare enum on a computed table), so
+// DECIMAL(12,4) could land in a DECIMAL(10,2) column: a SIGABRT in debug, a silent x100 misread under NDEBUG.
 
 using namespace services::disk;
 namespace catalog = components::catalog;
@@ -82,9 +78,6 @@ namespace {
         }
     };
 
-    // The ONE arena this file builds DECIMALs on. create_decimal allocates only on its refusal
-    // path, and that message belongs to the caller, so the caller has to name an arena it owns
-    // rather than reach for the process-global one.
     std::pmr::memory_resource* decimal_resource() {
         static core::pmr::otterbrix_resource arena;
         return &arena;
@@ -98,7 +91,6 @@ namespace {
         return t;
     }
 
-    // One row, one decimal column named `alias`, raw (unscaled) value `raw`.
     std::pmr::vector<data_chunk_t>
     decimal_batch(std::pmr::memory_resource* r, uint8_t width, uint8_t scale, const char* alias, int64_t raw) {
         std::pmr::vector<complex_logical_type> types(r);
@@ -132,7 +124,6 @@ TEST_CASE("services::disk::document_decimal::second_scale_refuses_instead_of_mer
               no_columns,
               /*is_computed=*/true);
 
-    // First document: x = 1.50 as DECIMAL(10,2). The computed table adopts the column.
     {
         auto appended = fx.invoke(&manager_disk_t::storage_append,
                                   append_ctx(table_oid),
@@ -142,10 +133,6 @@ TEST_CASE("services::disk::document_decimal::second_scale_refuses_instead_of_mer
         REQUIRE(appended.value().second == 1);
     }
 
-    // Second document: x = 2.7182 as DECIMAL(12,4). Without the exact-type check the by-name
-    // (and enum-only) routing moved this vector into the (10,2) column and the
-    // statistics merge died on the cross-parameterization comparison (SIGABRT in this
-    // debug build; silent ×100 misread under NDEBUG). The honest answer is a refusal.
     {
         auto appended = fx.invoke(&manager_disk_t::storage_append,
                                   append_ctx(table_oid),
@@ -154,8 +141,7 @@ TEST_CASE("services::disk::document_decimal::second_scale_refuses_instead_of_mer
         REQUIRE(appended.has_error());
     }
 
-    // The refusal costs one statement, not the table: the original parameterization
-    // still appends, and nothing of the refused chunk landed.
+    // The refusal costs one statement, not the table: the original parameterization still appends after it.
     {
         auto appended = fx.invoke(&manager_disk_t::storage_append,
                                   append_ctx(table_oid),
@@ -193,8 +179,6 @@ TEST_CASE("services::disk::document_decimal::regular_table_refuses_parameterizat
         REQUIRE_FALSE(appended.has_error());
     }
 
-    // The regular-table leg matches by name alone, so the same drift reached the same
-    // storage column. Same refusal required.
     {
         auto appended = fx.invoke(&manager_disk_t::storage_append,
                                   append_ctx(table_oid),

@@ -20,10 +20,8 @@ namespace components::table {
 
     class data_table_t;
 
-    // Cells of an UNMATERIALIZED column (published by pg_attribute, no row group backs it yet):
-    // the catalog DEFAULT, or all-NULL. Both readers — table_storage_adapter.hpp
-    // fill_unmaterialized and row_group_t::evaluate_predicate — must share this one function:
-    // they used to answer it apart and disagreed (SELECT saw the default, WHERE matched nothing).
+    // DEFAULT-or-NULL for an unmaterialized column; shared by table_storage_adapter.hpp and
+    // row_group_t so SELECT and WHERE don't diverge again (one saw the default, the other matched nothing).
     void fill_published_default(vector::vector_t& target, const column_definition_t* published, uint64_t rows);
 
     class row_group_segment_tree_t : public segment_tree_t<row_group_t, true> {
@@ -37,14 +35,9 @@ namespace components::table {
         uint64_t max_row_group_;
     };
 
-    // Ownership: SHARED and outlives the sharer. data_table_t::compact replaces the collection
-    // with a compacted rebuild and frees the outgoing one's blocks; a copy taken before the swap
-    // keeps the replaced collection (and its block_handle_t's) alive until released — load-bearing
-    // for block_manager_t::unregister_block's identity check (see test_root_reclaim,
-    // test_block_manager). Count lives inside the object (intrusive_ref_counter; shared_ptr
-    // is forbidden). `final` is load-bearing too: no virtual destructor needed, allocated
-    // with plain `new`. No weak reference to a collection may exist — intrusive_ref_counter has
-    // no weak analogue.
+    // A copy of this pointer taken before data_table_t::compact swaps in a rebuilt collection must
+    // outlive the swap — block_manager_t::unregister_block's identity check depends on it
+    // (test_root_reclaim, test_block_manager).
     class collection_t final : public boost::intrusive_ref_counter<collection_t> {
     public:
         collection_t(std::pmr::memory_resource* resource,
@@ -53,14 +46,10 @@ namespace components::table {
                      int64_t row_start,
                      uint64_t total_rows = 0,
                      uint64_t row_group_size = vector::DEFAULT_VECTOR_CAPACITY);
-        // Out-of-line: destroying the unique_ptr member needs row_group_t complete, so this
-        // can't be defaulted in every TU that merely includes this header.
         ~collection_t();
 
         uint64_t total_rows() const;
         uint64_t committed_row_count() const;
-        // True when any row group holds a version stamp above `watermark` —
-        // i.e. some version is NOT visible-to-all snapshots at/below it.
         bool has_version_above(uint64_t watermark) const;
 
         bool is_empty() const;
@@ -81,11 +70,9 @@ namespace components::table {
                                                  uint64_t vector_index,
                                                  int64_t max_row);
 
-        // Point fetch by row id. SNAPSHOT gathers only rows visible to `txn`; RAW skips the
-        // check (the CREATE INDEX backfill reads deleted rows on purpose) — no default mode.
-        // result.row_ids is stamped one slot per row actually gathered: an invisible or
-        // unmatched id shortens the answer rather than being masked, so the reply is not
-        // positional with the request.
+        // SNAPSHOT gathers only rows visible to `txn`; RAW skips that check (CREATE INDEX backfill
+        // reads deleted rows on purpose). An invisible or unmatched row id shortens result.row_ids
+        // rather than being masked, so the reply is not positional with the request.
         void fetch(vector::data_chunk_t& result,
                    const std::vector<storage_index_t>& column_ids,
                    const vector::vector_t& row_identifiers,
@@ -95,21 +82,16 @@ namespace components::table {
                    const transaction_data& txn,
                    fetch_visibility_t visibility);
 
-        // Raw delete stamp of one physically present row: NOT_DELETED_ID when no delete was
-        // recorded (or the id names no row group), a commit id for a committed delete, a
-        // transaction id for a pending one. Read-only companion of fetch's RAW visibility:
-        // together they let a writer classify every physical row of a small table.
+        // NOT_DELETED_ID when no delete was recorded (or the id names no row group), else a commit
+        // id (committed) or transaction id (pending) — the read-only companion of fetch's RAW visibility.
         uint64_t delete_stamp(int64_t row_id);
 
-        // The append chain returns out_of_memory when a row group / column segment allocation
-        // fails. initialize_append: true on success. append: on success the bool reports whether
-        // a new row group was started.
+        // append's bool, on success, reports whether a new row group was started (not plain success).
         [[nodiscard]] core::result_wrapper_t<bool> initialize_append(table_append_state& state);
         [[nodiscard]] core::result_wrapper_t<bool> append(vector::data_chunk_t& chunk, table_append_state& state);
         void finalize_append(table_append_state& state, transaction_data txn);
         void commit_append(uint64_t commit_id, int64_t row_start, uint64_t count);
-        // Best-effort across row groups (see row_group_t::revert_append); the first
-        // refusal is reported after every group had its chance to truncate.
+        // Best-effort: every row group gets a chance to truncate before the first refusal is reported.
         core::result_wrapper_t<bool> revert_append(int64_t row_start, uint64_t count);
         void commit_all_deletes(uint64_t txn_id, uint64_t commit_id);
         void revert_all_deletes(uint64_t txn_id);
@@ -118,7 +100,7 @@ namespace components::table {
         void merge_storage(collection_t& data);
 
         uint64_t delete_rows(data_table_t& table, int64_t* ids, uint64_t count, uint64_t transaction_id);
-        // Update path returns write_conflict / out_of_memory; true on success.
+        // write_conflict or out_of_memory on failure.
         [[nodiscard]] core::result_wrapper_t<bool>
         update(int64_t* ids, const std::vector<uint64_t>& column_ids, vector::data_chunk_t& updates);
         [[nodiscard]] core::result_wrapper_t<bool> update_column(vector::vector_t& row_ids,
@@ -127,21 +109,17 @@ namespace components::table {
 
         std::vector<column_segment_info> get_column_segment_info();
 
-        // Append the ids of disk blocks exclusively owned by this collection's columns to `out`,
-        // so data_table_t::compact can free them after swapping the collection out for a compacted one.
+        // Exclusively owned blocks only; data_table_t::compact frees them after swapping this collection out.
         void collect_disk_block_ids(std::pmr::vector<uint64_t>& out);
 
-        // The same walk restricted to ONE top-level column, across every row group. Reported ids
-        // are candidates, not proven-exclusive blocks — see row_group_t::collect_column_disk_block_ids.
+        // Candidates only, not proven-exclusive (see row_group_t::collect_column_disk_block_ids).
         void collect_column_disk_block_ids(uint64_t column_index, std::pmr::vector<uint64_t>& out);
 
         const std::pmr::vector<types::complex_logical_type>& types() const;
         void adopt_types(std::pmr::vector<types::complex_logical_type> types);
 
-        // ALTER successors: build a whole new collection whose row groups SHARE this
-        // collection's column objects and row-version managers (row_group_t::add_column /
-        // remove_column), so the parent stays readable while the successor is installed.
-        // add_column returns out_of_memory on a backfill failure; no successor is built then.
+        // An ALTER successor's row groups share this collection's column objects and row-version
+        // managers (row_group_t::add_column/remove_column), so the parent stays readable while it installs.
         [[nodiscard]] core::result_wrapper_t<boost::intrusive_ptr<collection_t>>
         add_column(column_definition_t& new_column);
         boost::intrusive_ptr<collection_t> remove_column(uint64_t col_idx);
@@ -149,8 +127,7 @@ namespace components::table {
         // std::shared_ptr<collection_t> alter_type(uint64_t changed_idx, const types::complex_logical_type &target_type,
         // std::vector<storage_index_t> bound_columns);
 
-        // The checkpoint chain returns out_of_memory when a column flush pin fails;
-        // the row group pointers on success.
+        // out_of_memory when a column flush pin fails.
         [[nodiscard]] core::result_wrapper_t<std::vector<storage::row_group_pointer_t>>
         checkpoint(storage::partial_block_manager_t& partial_block_manager);
 
@@ -169,16 +146,12 @@ namespace components::table {
 
         void set_total_rows(uint64_t total) { total_rows_ = total; }
 
-        // Columns pg_attribute publishes that no row group here holds. BORROWED and REBOUND on
-        // every read (table_storage_adapter_t::begin_read), not once at construction: compact /
-        // add_column / remove_column all replace the collection, which would silently drop a
-        // construction-time binding. Read by row_group_t::evaluate_predicate, whose pushed-down
-        // filter can bind an ordinal past the last materialized column.
+        // Rebound on every read (table_storage_adapter_t::begin_read), not fixed at construction —
+        // compact/add_column/remove_column replace the collection and would drop a construction-time binding.
         void publish_unmaterialized_columns(const std::vector<column_definition_t>* columns) noexcept {
             unmaterialized_ = columns;
         }
-        // The column `offset` slots past the materialized schema, or nullptr when nothing is
-        // published for it — which fill_published_default reads as all-NULL.
+        // nullptr past the materialized schema; fill_published_default reads that as all-NULL.
         const column_definition_t* published_column(size_t offset) const noexcept {
             return unmaterialized_ != nullptr && offset < unmaterialized_->size() ? &(*unmaterialized_)[offset]
                                                                                  : nullptr;
@@ -193,11 +166,9 @@ namespace components::table {
         std::atomic<uint64_t> total_rows_;
         std::pmr::vector<types::complex_logical_type> types_;
         int64_t row_start_;
-        // EXCLUSIVE ownership (a shared_ptr stood here on a member nothing ever shared —
-        // every consumer takes .get() or operator->).
+        // Exclusive; a shared_ptr stood here though nothing shared it -- every consumer uses .get()/operator->.
         std::unique_ptr<row_group_segment_tree_t> row_groups_;
         uint64_t allocation_size_;
-        // BORROWED, may be null. See publish_unmaterialized_columns.
         const std::vector<column_definition_t>* unmaterialized_ = nullptr;
     };
 

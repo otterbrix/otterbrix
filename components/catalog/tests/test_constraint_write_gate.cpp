@@ -1,6 +1,5 @@
-// build_create_constraint_writes refuses a conkey/confkey column whose attoid is INVALID_OID:
-// unpinned, it would let ALTER TABLE DROP COLUMN drop a parent column out from under a live FK
-// undetected.
+// A conkey/confkey/indkey column with attoid INVALID_OID would let ALTER TABLE DROP COLUMN drop
+// a parent column out from under a live FK, undetected.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/catalog/catalog_codes.hpp>
@@ -58,7 +57,7 @@ namespace {
         }
         return {};
     }
-} // namespace
+}
 
 TEST_CASE("catalog::constraint_writes::an_unstamped_conkey_column_is_refused") {
     auto writes = build_unique({oid_t{20001}, INVALID_OID});
@@ -94,14 +93,12 @@ TEST_CASE("catalog::constraint_writes::every_conkey_column_carries_a_dependency_
 }
 
 TEST_CASE("catalog::constraint_writes::an_empty_list_stays_legal") {
-    // Read-side counterpart: integration/cpp/test/test_declared_key_conkey_loss.cpp.
     auto writes = build_unique({});
     REQUIRE_FALSE(writes.has_error());
     REQUIRE(conkey_of(writes.value()).empty());
     REQUIRE(count_attribute_edges(writes.value()) == 0);
 }
 
-// Same defect class, for CREATE INDEX's indkey.
 TEST_CASE("catalog::index_writes::an_unstamped_indkey_column_is_refused") {
     auto writes = build_create_index_writes(g_resource,
                                             "users_by_name",

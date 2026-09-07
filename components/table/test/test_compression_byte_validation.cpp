@@ -1,16 +1,7 @@
-// The compression byte of a data_pointer_t is DISK-FED and was accepted unvalidated: any
-// uint8_t static_cast into compression_type, and every read dispatch treated "not CONSTANT,
-// not RLE, not DICTIONARY" as raw fixed-size bytes. The trap that arms itself: the first
-// writer to implement BITPACKING gets a green build, green tests, a green reopen — and a
-// scan that silently reads the bitpacked stream as raw values. The block CRC cannot catch
-// it: the byte is exactly what the new writer wrote.
-//
-// Two pins:
-//   * data_pointer_t::deserialize refuses a compression byte no reader understands —
-//     data_corruption on the metadata reader's sticky channel, the same channel the load
-//     boundary (data_table_t::load_from_disk) already surfaces;
-//   * a segment stamped with an unreadable compression refuses scan and fetch on the
-//     state's error channel instead of falling through to the raw fixed-size leg.
+// The compression byte of a data_pointer_t is disk-fed and was accepted unvalidated, with reads treating
+// anything not CONSTANT/RLE/DICTIONARY as raw fixed-size bytes: the first writer to implement BITPACKING
+// would get a green build and silently read the bitpacked stream as raw values, a corruption the block CRC
+// cannot catch since the byte is exactly what was written.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/column_segment.hpp>
@@ -60,9 +51,7 @@ namespace {
         ~cbv_env_t() { std::remove(cbv_db_path().c_str()); }
     };
 
-    // Serialize a pointer whose compression byte is `raw` and deserialize it back,
-    // returning the reader's verdict. Writes the field layout of
-    // data_pointer_t::serialize by hand so an OUT-OF-ENUM byte can be injected too.
+    // Writes the field layout of data_pointer_t::serialize by hand so an out-of-enum byte can be injected too.
     core::error_t roundtrip_compression_byte(cbv_env_t& env, uint8_t raw) {
         tstorage::metadata_manager_t manager(env.block_manager);
         tstorage::meta_block_pointer_t pointer;
@@ -81,7 +70,6 @@ namespace {
         tstorage::metadata_reader_t reader(manager, pointer);
         auto dp = tstorage::data_pointer_t::deserialize(reader);
         if (!reader.has_error()) {
-            // Round-tripped clean: the byte was readable and must have landed unchanged.
             REQUIRE(static_cast<uint8_t>(dp.compression) == raw);
             REQUIRE(dp.row_start == 11);
             REQUIRE(dp.segment_size == 128);
@@ -94,7 +82,6 @@ namespace {
 TEST_CASE("compression_byte: deserialize refuses a byte no reader understands", "[compression]") {
     cbv_env_t env;
 
-    // The four forms the reader implements round-trip clean.
     CHECK_FALSE(roundtrip_compression_byte(env, static_cast<uint8_t>(tcompress::compression_type::UNCOMPRESSED))
                     .contains_error());
     CHECK_FALSE(roundtrip_compression_byte(env, static_cast<uint8_t>(tcompress::compression_type::CONSTANT))
@@ -104,7 +91,6 @@ TEST_CASE("compression_byte: deserialize refuses a byte no reader understands", 
     CHECK_FALSE(roundtrip_compression_byte(env, static_cast<uint8_t>(tcompress::compression_type::DICTIONARY))
                     .contains_error());
 
-    // Enum members with no read implementation: accepting them silently is the armed trap.
     for (auto unreadable : {tcompress::compression_type::INVALID,
                             tcompress::compression_type::BITPACKING,
                             tcompress::compression_type::VALIDITY_UNCOMPRESSED}) {
@@ -114,7 +100,6 @@ TEST_CASE("compression_byte: deserialize refuses a byte no reader understands", 
         CHECK(verdict.type == core::error_code_t::data_corruption);
     }
 
-    // A byte outside the enum entirely (a future format, or plain garbage under a valid CRC).
     auto verdict = roundtrip_compression_byte(env, 0xB7);
     CHECK(verdict.contains_error());
     CHECK(verdict.type == core::error_code_t::data_corruption);
@@ -122,8 +107,6 @@ TEST_CASE("compression_byte: deserialize refuses a byte no reader understands", 
 
 namespace {
 
-    // A standalone BIGINT segment with 100 appended rows, for stamping arbitrary
-    // compression bytes onto.
     struct stamped_segment_t {
         std::unique_ptr<column_segment_t> segment;
 
@@ -159,7 +142,6 @@ TEST_CASE("compression_byte: a segment stamped with an unreadable compression re
     stamped_segment_t stamped(env, ROWS);
     auto& segment = *stamped.segment;
 
-    // Sanity: UNCOMPRESSED scans the appended values back.
     {
         vector_t result(&env.resource, complex_logical_type(logical_type::BIGINT), ROWS);
         column_scan_state state;
@@ -171,8 +153,6 @@ TEST_CASE("compression_byte: a segment stamped with an unreadable compression re
         REQUIRE(result.value(7).value<int64_t>() == 7);
     }
 
-    // BITPACKING is the byte the first new writer will stamp. Today the dispatch falls
-    // through to the raw fixed-size leg and "successfully" scans the stream as values.
     segment.set_compression(tcompress::compression_type::BITPACKING);
 
     {
@@ -203,7 +183,6 @@ TEST_CASE("compression_byte: a segment stamped with an unreadable compression re
         CHECK(state.fetch_error.contains_error());
     }
 
-    // The other two unreadable enum members take the same refusal.
     for (auto unreadable : {tcompress::compression_type::INVALID,
                             tcompress::compression_type::VALIDITY_UNCOMPRESSED}) {
         segment.set_compression(unreadable);

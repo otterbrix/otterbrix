@@ -9,24 +9,19 @@
 #include <sstream>
 #include <string>
 
-// A WAL-replay chunk codec sized nested columns (LIST/ARRAY/STRUCT) by fixed_type_size()
-// (data_chunk_binary.cpp), which answers 0 for them -- type, null mask and row count
-// round-tripped while every element's content was replaced by zero. Invisible to a clean
-// shutdown (~base_otterbrix_t's CHECKPOINT moves rows onto the .otbx path first), so the
-// crash IS the test: fault injection (fail_writes_from=1) makes the destructor's checkpoint
-// commit nothing, leaving post-checkpoint rows WAL-only. Each case reads every element,
-// since a row-count or NOT-NULL check alone would still pass on an all-zero column.
+// WAL replay's chunk codec sizes nested columns (LIST/ARRAY/STRUCT) via fixed_type_size()
+// (data_chunk_binary.cpp), which returns 0 for them: type, null mask and row count round-trip
+// while every element is silently replaced by zero. Each case here reads every element, since a
+// row-count or NOT-NULL check alone would still pass on an all-zero column.
 
 namespace {
 
-    constexpr std::size_t CHECKPOINTED_ROWS = 3072; // 1.5 row groups, made durable in the .otbx
-    constexpr std::size_t JOURNAL_ROWS = 1024;      // written after that checkpoint — WAL-only
+    constexpr std::size_t CHECKPOINTED_ROWS = 3072;
+    constexpr std::size_t JOURNAL_ROWS = 1024;
     constexpr std::size_t TOTAL_ROWS = CHECKPOINTED_ROWS + JOURNAL_ROWS;
     constexpr std::size_t ARRAY_LENGTH = 40;
     constexpr std::size_t INSERT_BATCH = 512;
 
-    // Content-addressed, so a cell that came back as a present zero is a mismatch rather than a
-    // row count that happens to agree.
     int64_t array_element(std::size_t row, std::size_t index) {
         return static_cast<int64_t>(row * 100 + index);
     }
@@ -62,10 +57,8 @@ namespace {
 
 } // namespace
 
-// Rows 0..3071 are checkpointed (`.otbx` path); 3072..4095 are journal-only (chunk codec).
-// On the unfixed build `a` reads right for all 4096 rows while every `payload` element in
-// the last 1024 reads 0 -- the signature of a codec that carried the TYPE and dropped the
-// PAYLOAD.
+// On the unfixed build, `a` reads correctly for all 4096 rows while every `payload` element in
+// the last 1024 (journal-only) reads 0 -- type carried, payload dropped.
 TEST_CASE("integration::cpp::test_wal_nested_payload_replay::array_payload_survives_replay_of_the_journal") {
     auto config = test_create_config(integration_fixture_path("test_wal_nested_payload_replay/array"));
     test_clear_directory(config);
@@ -85,8 +78,7 @@ TEST_CASE("integration::cpp::test_wal_nested_payload_replay::array_payload_survi
 
     INFO("phase 2: more rows, then KILL before any checkpoint — they exist only in the journal");
     {
-        // Declared before the engine so the interposer is installed when block managers open
-        // their files, and stays installed while the engine tears down.
+        // Declared before the engine so the interposer is installed before block managers open files.
         otterbrix_test::fault_plan_t plan;
         otterbrix_test::fault_injection_scope_t fault(plan);
 
@@ -95,8 +87,6 @@ TEST_CASE("integration::cpp::test_wal_nested_payload_replay::array_payload_survi
 
         insert_array_rows(dispatcher, CHECKPOINTED_ROWS, JOURNAL_ROWS);
 
-        // fail_writes_from is compared with >=, so 1 fails every write from here on. The
-        // engine is idle between statements, so this write cannot race an in-flight one.
         plan.fail_writes_from = 1;
     } // ← the destructor's CHECKPOINT runs here and can commit nothing.
 
@@ -111,15 +101,11 @@ TEST_CASE("integration::cpp::test_wal_nested_payload_replay::array_payload_survi
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == TOTAL_ROWS);
 
-        // Scalar column first: a failure here means the record never replayed at all, as
-        // opposed to the nested payload specifically being dropped.
         for (std::size_t i = 0; i < TOTAL_ROWS; ++i) {
             INFO("scalar column, row " << i);
             REQUIRE(cur->value(0, i).value<int64_t>() == static_cast<int64_t>(i));
         }
 
-        // Mismatches are accumulated so the report names the FIRST divergence and how far
-        // it spreads, instead of stopping at the first bad row.
         std::size_t mismatched_cells = 0;
         std::size_t first_bad_row = TOTAL_ROWS;
         std::size_t first_bad_index = 0;
@@ -165,12 +151,9 @@ TEST_CASE("integration::cpp::test_wal_nested_payload_replay::array_payload_survi
     }
 }
 
-// ARRAY, LIST and STRUCT are three different physical layouts (flat-child stride,
-// {offset,length} pair, one row-aligned child per field), so each is gated on its own rather
-// than inferred from the ARRAY case.
-//
-// Interior NULLs are on purpose: a codec that rebuilds element content while flattening
-// null-ness would be a second silent corruption, so the gate is content AND nulls together.
+// ARRAY, LIST and STRUCT are three different physical layouts, so each is gated separately rather
+// than inferred from the ARRAY case. Interior NULLs are gated too: a codec that rebuilds content
+// while flattening null-ness would be a second, silent corruption.
 TEST_CASE("integration::cpp::test_wal_nested_payload_replay::list_and_struct_payload_survive_replay_of_the_journal") {
     auto config = test_create_config(integration_fixture_path("test_wal_nested_payload_replay/list_struct"));
     test_clear_directory(config);
@@ -200,14 +183,10 @@ TEST_CASE("integration::cpp::test_wal_nested_payload_replay::list_and_struct_pay
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
-        // Row 3 carries a longer list than anything checkpointed, so a reader that rebuilt the
-        // child from the row count rather than from the written span comes up short.
         run_sql(dispatcher,
                 "INSERT INTO TestDatabase.n (id, l, p) VALUES "
                 "(3, ARRAY[60, 70, 80, 90, 100], ROW(31, 32));");
-        // Row 4 puts a NULL inside both a list and a struct.
         run_sql(dispatcher, "INSERT INTO TestDatabase.n (id, l, p) VALUES (4, ARRAY[110, NULL, 130], ROW(41, NULL));");
-        // Row 5 makes the whole nested cells NULL, which is the OTHER validity level.
         run_sql(dispatcher, "INSERT INTO TestDatabase.n (id, l, p) VALUES (5, NULL, NULL);");
 
         plan.fail_writes_from = 1;
@@ -266,10 +245,8 @@ TEST_CASE("integration::cpp::test_wal_nested_payload_replay::list_and_struct_pay
             CHECK(cell.children()[1].value<int64_t>() == 32);
         }
 
-        // Read through a field projection, not as a whole struct value: reconstructing a
-        // struct value derives its type from the field VALUES, so a NULL field yields a struct
-        // typed <BIGINT, NA> and trips vector_t::value()'s type-identity assert -- a
-        // pre-existing limitation unrelated to the journal.
+        // Projects fields instead of reading the struct value: a NULL field would type the struct
+        // <BIGINT, NA>, tripping vector_t::value()'s type-identity assert -- unrelated to the journal.
         INFO("STRUCT, journal-only row 4 — a present field beside a NULL one");
         {
             auto fields = dispatcher->execute_sql(session, "SELECT (p).a, (p).b FROM TestDatabase.n WHERE id = 4;");

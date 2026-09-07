@@ -5,24 +5,14 @@ namespace components::sql::parser {
     class parser_extension_registry_t;
 } // namespace components::sql::parser
 
-/* Primary entry point for the raw parsing functions
- *
- * resource is a pointer to arena allocator and used for various objects,
- * lifetime of which exceeds parser scope.
- *
- * The two-argument form parses core SQL only. The three-argument form also
- * consults `extensions` for any syntax the core grammar rejects (see
- * extension.hpp); pass the registry owned by the database instance, or a
- * standalone one when using the parser as a component.
- *
- * An empty returned list is SUCCESS (no statement found), never failure — failure is always a
- * thrown parser_exception_t. The list itself is never null (empty is the shared NIL sentinel),
- * so check list_length(tree), not `if (!tree)`. */
+/* The three-argument form falls back to `extensions` (see extension.hpp) for syntax the
+ * core grammar rejects. An empty result means no statement found, not failure — the list
+ * is never null (NIL sentinel), so check list_length(tree), not `if (!tree)`. */
 extern List* raw_parser(std::pmr::memory_resource* resource, const char* str);
 extern List* raw_parser(std::pmr::memory_resource* resource,
                         const char* str,
                         const components::sql::parser::parser_extension_registry_t& extensions);
 
-/* Utility functions exported by gram.y (perhaps these should be elsewhere) */
+// Utility functions exported by gram.y.
 extern List* SystemFuncName(std::pmr::memory_resource* resource, char* name);
 extern TypeName* SystemTypeName(std::pmr::memory_resource* resource, char* name);

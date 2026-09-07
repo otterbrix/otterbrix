@@ -1,7 +1,4 @@
-// A committed DELETE publishes its erase only once every live snapshot already hides the row (the
-// commit-id horizon reaches the delete's commit_id); a disk index has no in-memory stamp for this,
-// so the wait is a queue in the manager. integration/cpp/test/test_index_delete_horizon.cpp pins
-// the user-visible half; this file asks the manager directly, with the agent pumped by hand.
+// A committed DELETE publishes its erase only once the horizon reaches its commit id (queued, not purged immediately).
 
 // clang-format off
 // <actor-zeta/spawn.hpp> requires std::unique_ptr, but does not include it itself
@@ -44,9 +41,6 @@ using services::index::manager_index_t;
 
 namespace {
 
-    // Kept far from the txn id it derives from: reusing one number for both is the confusion that
-    // let an earlier incarnation's COMMIT marker vouch for a later frame under a recycled txn id
-    // (bitcask_index_disk.cpp).
     constexpr std::uint64_t commit_id_of(std::uint64_t txn_id) { return txn_id + 500000; }
 
     constexpr components::catalog::oid_t kTableOid = 17400;
@@ -72,8 +66,6 @@ namespace {
         return true;
     }
 
-    // A handler that sends nothing is already finished on the first check; one that fans out
-    // needs the agent resumed and its own continuation claimed.
     template<typename T, typename Agent>
     void settle(actor_zeta::unique_future<T>& fut, Agent* agent) {
         for (int attempt = 0; attempt < 8 && !fut.is_ready(); ++attempt) {
@@ -152,8 +144,7 @@ TEST_CASE("services::index::a committed delete reaches the store only once the h
     const uint64_t deleter_txn = TRANSACTION_ID_START + 2;
     const uint64_t onlooker_txn = TRANSACTION_ID_START + 3;
     const uint64_t delete_commit_id = 100;
-    // The meter is process-wide (see index_deferred_deletes), so every check below is a
-    // difference against what this binary was already holding.
+    // index_deferred_deletes() is process-wide, so every check below is a difference against this binary's prior count.
     const auto deferred_before = services::index::index_deferred_deletes();
 
     REQUIRE_FALSE(
@@ -211,9 +202,7 @@ TEST_CASE("services::index::a committed delete reaches the store only once the h
     std::filesystem::remove_all(path);
 }
 
-// A held-back erase belongs to an index that still exists. DROP INDEX takes the agent away and
-// destroys it, so a queue entry that outlived it would be a send to a torn-down routing entry on
-// the next horizon advance.
+// DROP INDEX destroys the agent, so an outlived queue entry would be a send to a torn-down routing entry.
 TEST_CASE("services::index::tearing an index down drops the erases it was still owed") {
     auto resource = core::pmr::otterbrix_resource();
     auto log = initialization_logger("python", "/tmp/docker_logs/");
@@ -264,13 +253,10 @@ TEST_CASE("services::index::tearing an index down drops the erases it was still 
 
     auto drop_future = manager->drop_index(session, kTableOid, kIndexOid);
     settle(drop_future, agent);
-    // agent is dead from here on. Nothing below may touch it.
 
     INFO("the queue must not keep an erase for an index that no longer exists");
     CHECK(services::index::index_deferred_deletes() == deferred_before);
 
-    // The sweep that follows must find nothing to do and must not reach for a torn-down
-    // record. It completes without any agent to pump, which is itself the assertion.
     auto sweep = manager->on_horizon_advanced(/*new_horizon=*/500);
     REQUIRE(sweep.is_ready());
 

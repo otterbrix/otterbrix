@@ -15,11 +15,8 @@
 #include <boost/smart_ptr/intrusive_ptr.hpp>
 #include <memory_resource>
 
-// create_plan's contract for "cannot lower" is a null operator_ptr (the executor maps it to
-// create_physical_plan_error). Consuming a sequence child's operator UNCHECKED breaks that
-// twice: a null FIRST child is silently dropped (truncated statement reports success), and a
-// null LATER child is dereferenced (crash). Pinned here: one unlowerable child must null the
-// whole sequence. A bare drop_t is the probe -- it has no arm in create_plan's dispatch.
+// A sequence child's unlowerable operator must null the WHOLE sequence: an unchecked null FIRST child
+// is silently dropped (truncated statement reports success), a null LATER child is dereferenced (crash).
 
 namespace {
 
@@ -35,8 +32,6 @@ namespace {
     }
 
     lp::node_ptr make_unlowerable_leaf(std::pmr::memory_resource* res) {
-        // node_type::drop_t has no arm in create_plan's dispatch: it reaches the
-        // default and lowers to a null operator.
         return lp::make_node_drop(res, lp::drop_target_kind::collection);
     }
 
@@ -69,7 +64,6 @@ TEST_CASE("physical_plan_generator::sequence::an_unlowerable_later_child_refuses
     seq->append_child(make_lowerable_alter_add(res, "c1"));
     seq->append_child(make_unlowerable_leaf(res));
 
-    // Without the guard this dereferences the null second operator (op->left()).
     auto plan = services::planner::create_plan(context, registry, seq, lp::limit_t::unlimit(), nullptr);
 
     REQUIRE(plan == nullptr);
@@ -87,7 +81,6 @@ TEST_CASE("physical_plan_generator::sequence::all_lowerable_children_still_chain
 
     auto plan = services::planner::create_plan(context, registry, seq, lp::limit_t::unlimit(), nullptr);
 
-    // Two ADD COLUMN clauses chain: one root with one left child, no orphans.
     REQUIRE(plan != nullptr);
     REQUIRE(plan->left() != nullptr);
     REQUIRE(plan->left()->left() == nullptr);
@@ -99,8 +92,6 @@ TEST_CASE("physical_plan_generator::sequence::the_first_written_clause_executes_
     services::context_storage_t context(res, log_t{}, core::date::timezone_offset_t{});
     components::compute::function_registry_t registry(res);
 
-    // ALTER TABLE t ADD COLUMN c1 ..., RENAME COLUMN a TO b — two chainable
-    // clauses of DISTINCT operator types, so the chain's shape is observable.
     auto seq = boost::intrusive_ptr(new lp::node_sequence_t(res));
     seq->append_child(make_lowerable_alter_add(res, "c1"));
     auto rename = lp::make_node_alter_column(res, lp::alter_column_op::rename);
@@ -112,8 +103,7 @@ TEST_CASE("physical_plan_generator::sequence::the_first_written_clause_executes_
     auto plan = services::planner::create_plan(context, registry, seq, lp::limit_t::unlimit(), nullptr);
     REQUIRE(plan != nullptr);
 
-    // Executor drives bottom-up (deepest-left runs first); children[0] (user's first clause) must sit
-    // deepest, or clause order — which decides attnum order — runs back to front.
+    // The executor runs bottom-up (deepest-left first); children[0] must sit deepest, or attnum order runs backwards.
     REQUIRE(plan->type() == components::operators::operator_type::alter_column_rename);
     REQUIRE(plan->left() != nullptr);
     REQUIRE(plan->left()->type() == components::operators::operator_type::alter_column_add);

@@ -23,18 +23,11 @@ namespace core::filesystem {
 
     class local_file_system_t;
 
-    // An int64_t return can't answer a sequential write: a write that short-counts and THEN
-    // refuses has already moved the descriptor over the bytes it did write, and packing count
-    // and error into one integer throws that count away in favour of the failing iteration's own
-    // -1. Both fields are needed and neither derives from the other -- complete can't be
-    // recomputed as `bytes_written == requested` since a zero-byte request makes both full
-    // success and outright refusal `bytes_written == 0`. Not core::result_wrapper_t either: it
-    // holds a value OR an error, so it can't express "this much landed AND it failed".
+    // Neither an int64_t nor result_wrapper_t (value OR error) can express both landed-and-failed.
     struct [[nodiscard]] write_result_t {
         uint64_t bytes_written{0};
         bool complete{false};
 
-        // The state that has no name in an int64_t: a stump on disk after a refusal.
         [[nodiscard]] bool partial() const noexcept { return !complete && bytes_written != 0; }
 
         static write_result_t done(uint64_t written) noexcept { return write_result_t{written, true}; }
@@ -59,21 +52,13 @@ namespace core::filesystem {
         file_handle_t(const file_handle_t&) = delete;
         virtual ~file_handle_t();
 
-        // The I/O entry points are virtual so a test-side wrapper can interpose fault
-        // injection / crash simulation. Production handles inherit the
-        // default bodies, which delegate to the filesystem free functions; those free
-        // functions reinterpret_cast the handle to the PLATFORM handle type, so a wrapper
-        // must always override and delegate to its wrapped inner handle, never pass itself.
+        // Production free functions reinterpret_cast the handle to the PLATFORM type, so any
+        // wrapper must delegate to its wrapped inner handle, never pass itself.
         virtual int64_t read(void* buffer, uint64_t nr_bytes);
         // SEQUENTIAL WRITE. Returns what landed AND whether it finished -- see write_result_t.
         virtual write_result_t write(void* buffer, uint64_t nr_bytes);
         virtual bool read(void* buffer, uint64_t nr_bytes, uint64_t location);
         virtual bool write(void* buffer, uint64_t nr_bytes, uint64_t location);
-        // Seek and its query are virtual for the same reason reads/writes are: the .otbx block
-        // manager and the WAL address files positionally and never move the descriptor, but the
-        // bitcask index APPENDS (seeks to the end, asks the position back per record). A wrapper
-        // that couldn't override them ran the free function against the WRAPPER's garbage fd, so
-        // records went to the wrong offset and the keydir recorded that as fact.
         virtual bool seek(uint64_t location);
         void reset();
         virtual uint64_t seek_position();
@@ -87,26 +72,10 @@ namespace core::filesystem {
         virtual uint64_t file_size();
         file_type_t type();
 
-        // Used to be `virtual void close() = 0;`: ::close(2) can fail, and on a write-back
-        // filesystem that's where a deferred write error (EIO) is finally reported, so a refused
-        // close is a lost write, not a cosmetic detail. The five delegating test wrappers
-        // (core/b_plus_tree/tests/test_b_plus_tree.cpp, components/table/test/
-        // fault_injection_file.hpp, services/wal/tests/test_wal_truncate_header_race.cpp,
-        // integration/cpp/test/test_udf_refusal_registry_state.cpp,
-        // integration/cpp/test/test_catalog_read_refusal.cpp) now read
-        // `core::error_t close() override { return inner_->close(); }`, so a refusal travels out
-        // through them -- a separate parallel `close_status()` would let a wrapper's own slot
-        // answer "no error" while the wrapped handle held the refusal.
-        //
-        // `what` is EMPTY: core::error_t's message is a std::pmr::string needing an arena, this
-        // layer has none, and binding it to the handle's own arena would hand back a string that
-        // dies with the handle. So the refusal is `io_error` with an empty message (built on
-        // std::pmr::null_memory_resource()), and path/errno are printed to stderr instead.
-        //
-        // The destructor is the one caller that can't act on it -- not a rule-6 violation: the
-        // only upward channel a destructor has is a throw into std::terminate, trading one lost
-        // write's report for the loss of every other handle still to be flushed. It prints and
-        // drops instead (see ~unix_file_handle_t in local_file_system.cpp).
+        // ::close(2) can fail, and on a write-back filesystem that is where a deferred write error
+        // (EIO) surfaces, so a refused close is a lost write; delegating wrappers must forward it.
+        // Not a rule-6 violation: a destructor's only upward channel is std::terminate, trading one
+        // lost write's report for every other handle still to flush; prints and drops instead.
         virtual core::error_t close() = 0;
 
         path_t path() const { return path_; }

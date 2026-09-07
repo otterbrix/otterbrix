@@ -11,17 +11,11 @@
 #include <string>
 #include <string_view>
 
-// The rebuild a CHECKPOINT owes must read the ALL-COMMITTED snapshot, not the statement's own.
-//
-// repopulate_table clears every store before the refill, so the refill is the only source of
-// entries afterwards. A row committed by a neighbour session AFTER the checkpointing
-// transaction's snapshot is invisible to a scan under ctx->txn, so a rebuild fed by that scan
-// silently drops the row from the index while the table keeps it: indexed lookups answer a
-// SUBSET, which no downstream filter can repair (same contract as test_index_delete_horizon).
-//
-// Sessions: A opens an explicit txn and pins its snapshot, B commits an INSERT, A runs
-// CHECKPOINT and commits. A fresh session then asks for B's row through the index and through
-// a full-scan control, and the two must agree.
+// The rebuild a CHECKPOINT owes must read the ALL-COMMITTED snapshot, not the checkpointing statement's own:
+// repopulate_table clears every store before refilling it, so a row committed by a neighbour session after
+// that snapshot would be invisible to the refill scan and silently dropped from the index while the table
+// keeps it -- indexed lookups would answer a SUBSET, which no downstream filter can repair (same contract as
+// test_index_delete_horizon).
 
 namespace {
     constexpr int64_t kRows = 2000;
@@ -44,8 +38,7 @@ TEST_CASE("integration::cpp::checkpoint_rebuild_snapshot::a_commit_after_the_sta
     test_clear_directory(config);
     config.wal.on = true;
     config.log.level = log_t::level::off;
-    // Far above anything this case writes: an automatic round reads the all-committed snapshot
-    // and would silently repair the very loss under test.
+    // Far above anything this case writes, so an automatic round can't silently repair the very loss under test.
     config.wal.auto_checkpoint_threshold_bytes = 1024ull * 1024ull * 1024ull;
 
     test_spaces space(config);
@@ -90,17 +83,16 @@ TEST_CASE("integration::cpp::checkpoint_rebuild_snapshot::a_commit_after_the_sta
         REQUIRE(text.find("Index Scan") == std::string::npos);
     }
 
-    // Session A: BEGIN plus one read pins a snapshot BELOW the commit B is about to make.
     auto session_a = otterbrix::session_id_t();
     REQUIRE(d->execute_sql(session_a, "BEGIN;")->is_success());
     {
+        // BEGIN alone pins nothing; this read is what fixes A's snapshot below B's commit.
         auto pin = d->execute_sql(session_a, "SELECT COUNT(id) AS c FROM sdb.t;");
         REQUIRE(pin->is_success());
         REQUIRE(pin->size() == 1);
         REQUIRE(pin->value(0, 0).value<uint64_t>() == static_cast<uint64_t>(kRows));
     }
 
-    // Session B: the neighbour's committed INSERT (auto-commit), after A's snapshot.
     REQUIRE(exec_fresh("INSERT INTO sdb.t (id, k) VALUES (" + std::to_string(kNewId) + ", " +
                        std::to_string(kNewKey) + ");")
                 ->is_success());
@@ -119,7 +111,6 @@ TEST_CASE("integration::cpp::checkpoint_rebuild_snapshot::a_commit_after_the_sta
 
     services::index::reset_index_repopulations();
 
-    // Session A: CHECKPOINT inside the explicit txn whose snapshot predates B's commit.
     REQUIRE(d->execute_sql(session_a, "CHECKPOINT;")->is_success());
     REQUIRE(d->execute_sql(session_a, "COMMIT;")->is_success());
 

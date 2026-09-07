@@ -1,8 +1,4 @@
-// select_on_container_copy_construction() returns a default-constructed allocator, so an
-// implicit or by-value copy of a pmr container silently lands on the process-global default and
-// a later move freezes it there. Making the copy constructor inherit the source's allocator
-// instead would trade this accounting bug for a lifetime one (see the cross-arena cases below);
-// the fix is that a copy which must live on an arena names it explicitly.
+// select_on_container_copy_construction() defaults a pmr copy onto the global resource unless callers name an arena.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -48,8 +44,6 @@ namespace {
         bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override { return this == &other; }
     };
 
-    // Immortal: it is the process default only during one construction, but whatever it hands
-    // out in that window may outlive it.
     counting_resource_t& process_default_probe() {
         static counting_resource_t* probe = new counting_resource_t();
         return *probe;
@@ -64,17 +58,14 @@ namespace {
         ~default_resource_window_t() { std::pmr::set_default_resource(previous); }
     };
 
-    // Longer than any small-string buffer, so copying one allocates -- the probe can see that,
-    // not an in-object memcpy.
+    // Longer than any small-string buffer, so copying allocates -- the probe sees that, not an in-object memcpy.
     constexpr const char* long_column = "orders_customer_reference_identifier_column";
     constexpr const char* long_qualifier = "very_long_table_qualifier_that_never_fits_in_sso";
     constexpr const char* long_value = "a parameter value far too long to live inside the string object itself";
 
 } // namespace
 
-// This constructor alone measures accounting, not lifetime: caller and original share one arena
-// here, so a copy that wrongly inherited the source's allocator would still read the right
-// answer -- the cross-arena cases below catch that blind spot.
+// This shares one arena, a blind spot: a copy that wrongly inherited the source's allocator would still read right.
 TEST_CASE("components::expressions::key_t::a copy placed on an arena takes nothing from the default") {
     core::pmr::otterbrix_resource arena;
 
@@ -122,9 +113,6 @@ TEST_CASE("components::expressions::key_t::a copy placed on an arena takes nothi
     CHECK(frozen.path().get_allocator().resource() == &arena);
 }
 
-// context_t must not take storage_parameters by value: the executor hands it an lvalue once per
-// sub-plan, and a by-value parameter would copy the whole map onto the process default and
-// freeze it there.
 TEST_CASE("components::pipeline::context_t::the parameter map keeps the arena the caller named") {
     namespace lp = components::logical_plan;
 
@@ -147,7 +135,6 @@ TEST_CASE("components::pipeline::context_t::the parameter map keeps the arena th
                     components::pipeline::no_mailbox(),
                     components::pipeline::no_mailbox(),
                     components::pipeline::no_mailbox());
-        // The shape the executor actually builds (executor.cpp, execute_sub_plan_).
         executor_ctx.emplace(components::session::session_id_t{},
                              actor_zeta::address_t::empty_address(),
                              actor_zeta::address_t::empty_address(),
@@ -178,10 +165,6 @@ TEST_CASE("components::pipeline::context_t::the parameter map keeps the arena th
     CHECK(probe.allocations.load() == 0);
 }
 
-// key_t crosses arenas throughout the pipeline: an operator's context.resource in index_scan, a
-// clone target's in clone_expression, a rewritten node's in eager_aggregation -- and the node's
-// arena is the shorter-lived one, which is what these cases exercise.
-
 namespace {
 
     class owned_bytes_upstream_t final : public std::pmr::memory_resource {
@@ -189,8 +172,6 @@ namespace {
         static constexpr size_t capacity = 1u << 20; // 1 MiB: a pool's first chunks plus slack
         static constexpr char poison_byte = 'Z';
 
-        // Only called after the arena above is destroyed; nothing was ever returned to the
-        // system, so these bytes are still ours to paint.
         void poison() noexcept { std::memset(buffer_, poison_byte, capacity); }
 
         size_t handed_out() const noexcept { return used_; }
@@ -216,7 +197,6 @@ namespace {
         size_t used_ = 0;
     };
 
-    // Counted, not boolean, so a failure reports how much of the name was overwritten.
     size_t poison_bytes_in(const std::string& text) noexcept {
         size_t count = 0;
         for (char c : text) {
@@ -229,8 +209,6 @@ namespace {
 
 } // namespace
 
-// If a copy with no arena named bound to the source's allocator, every later read of the name
-// would be a read of released memory.
 TEST_CASE("components::expressions::key_t::a copy with no arena named outlives the source arena") {
     owned_bytes_upstream_t upstream;
 
@@ -248,8 +226,7 @@ TEST_CASE("components::expressions::key_t::a copy with no arena named outlives t
         REQUIRE(original.resource() == &source);
         REQUIRE(original.storage().front().get_allocator().resource() == &source);
 
-        // Deliberately never destroyed: in the broken form, its allocator IS the source arena
-        // destroyed below, so ~key_t() would fault before any CHECK runs.
+        // Deliberately never destroyed: broken form's allocator IS the dead source, so ~key_t() would fault first.
         copy = new (copy_storage) expr::key_t(original);
 
         INFO("copy allocator " << static_cast<const void*>(copy->resource()) << ", source arena "
@@ -316,7 +293,6 @@ TEST_CASE("components::expressions::key_t::a copy placed on the destination aren
     CHECK(copy->path().front() == 3);
     CHECK(copy->side() == expr::side_t::left);
 
-    // Safe to destroy here (unlike above): everything this copy owns is on `destination`, which
-    // is still alive -- that's part of the claim.
+    // Safe to destroy here (unlike above): everything this copy owns is on `destination`, which is still alive.
     copy->~key_t();
 }

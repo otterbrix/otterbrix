@@ -18,18 +18,7 @@
 #include <utility>
 #include <vector>
 
-// operator_register_udf_t used to mirror into function_registry_t::get_default() BEFORE
-// reading pg_namespace (list_namespaces + resolve_namespace); a refused namespace read left
-// the process-global registry answering for a function with no pg_proc row. The disk
-// prologue now runs ahead of the mirror, which is the operator's last step.
-//
-// Fault seam/derivation as in test_catalog_read_refusal.cpp, aimed at pg_namespace: startup
-// already faults the whole catalog in (restore_oid_generator_sync), so the poison must be
-// armed BEFORE start, on the one offset read exactly once (the discovery open below finds it
-// by read count — twice means the load needs it, once means the live statement does).
-//
-// pg_namespace, not pg_proc: pg_proc's own read already runs ahead of the mirror, so only a
-// pg_namespace refusal can expose this ordering defect.
+// Only pg_namespace exposes the ordering bug here: pg_proc's own read already precedes the mirror.
 
 using namespace components;
 
@@ -37,8 +26,6 @@ namespace {
 
     const std::string kFuncName = "namespace_refusal_probe";
 
-    // Process-wide seam: filter by path marker so only the targeted table's handle is wrapped
-    // (same shape as test_catalog_read_refusal.cpp).
     class one_table_fault_scope_t final
         : public components::table::storage::single_file_block_manager_t::file_handle_interposer_t {
     public:
@@ -64,8 +51,6 @@ namespace {
         std::string marker_;
     };
 
-    // Discovery half of the seam: records offsets without injecting anything, to tell the
-    // load's offsets apart from the one it does not need.
     class recording_handle_t final : public core::filesystem::file_handle_t {
     public:
         recording_handle_t(std::unique_ptr<core::filesystem::file_handle_t> inner, std::vector<uint64_t>& reads)
@@ -90,8 +75,6 @@ namespace {
         bool seek(uint64_t location) override { return inner_->seek(location); }
         uint64_t seek_position() override { return inner_->seek_position(); }
         uint64_t file_size() override { return inner_->file_size(); }
-        // Delegating, and it must FORWARD the refusal: a slot of its own answering "no error"
-        // while the wrapped handle refused would be a new liar (core/file/file_handle.hpp).
         core::error_t close() override { return inner_->close(); }
 
     private:
@@ -124,14 +107,12 @@ namespace {
         std::string marker_;
     };
 
-    // The engine, plus the one thing test_spaces does not expose: the disk manager, so pg_proc
-    // CONTENT can be read back directly rather than inferred from a status code.
+    // Exposes the disk manager, unlike test_spaces, so pg_proc content can be read back directly.
     class udf_refusal_spaces_t final : public otterbrix::base_otterbrix_t {
     public:
         explicit udf_refusal_spaces_t(const configuration::config& config)
             : otterbrix::base_otterbrix_t(config) {
-            // Same isolation test_spaces does: a fresh builtins-only default registry, so a user
-            // function from an earlier case cannot decide this one.
+            // Fresh builtins-only registry, so a UDF from an earlier case can't leak into this one.
             components::compute::function_registry_t::reset_default();
         }
 
@@ -164,8 +145,6 @@ namespace {
     // "the read refused" — distinct from every honest row count, including zero.
     constexpr std::size_t kReadRefused = static_cast<std::size_t>(-1);
 
-    // Read pg_proc back through the disk manager's own funnel. The manager pumps its own inbox
-    // on an internal loop thread, so the send only has to be waited on.
     std::size_t pg_proc_rows_named(udf_refusal_spaces_t& space, const std::string& name) {
         table::transaction_data td{0, 0};
         td.snapshot_horizon = std::numeric_limits<uint64_t>::max();
@@ -185,7 +164,6 @@ namespace {
         return matches.value().size();
     }
 
-    // THE STATE UNDER TEST: does the process-global registry answer for this name?
     bool default_registry_has(const std::string& name) {
         auto* reg = compute::function_registry_t::get_default();
         if (reg == nullptr) {
@@ -209,8 +187,6 @@ TEST_CASE("integration::cpp::test_udf_refusal_registry_state::register_udf_leave
     auto config = test_helpers::make_test_config(dir, /*wal_on=*/true);
     config.log.level = log_t::level::off;
 
-    // Phase 1 — a clean engine with one USER namespace for the operator to resolve; nothing
-    // interposed, no function registered yet.
     {
         udf_refusal_spaces_t space(config);
         auto* dispatcher = space.dispatcher();
@@ -220,12 +196,10 @@ TEST_CASE("integration::cpp::test_udf_refusal_registry_state::register_udf_leave
     const auto marker =
         "/" + std::to_string(static_cast<unsigned>(components::catalog::well_known_oid::pg_namespace_table)) + "/";
 
-    // Phase 2 — the DISCOVERY open, on a byte-identical COPY so the real start below meets
-    // exactly the file phase 1 left. Record every offset pg_namespace's file is asked for.
     const std::filesystem::path probe_dir = std::filesystem::path(dir.string() + "_probe");
     auto probe_config = test_helpers::make_test_config(probe_dir, /*wal_on=*/true);
     probe_config.log.level = log_t::level::off;
-    // make_test_config CLEARS the directory it is handed, so the copy has to come after it.
+    // make_test_config clears the directory it is handed, so the copy has to come after it.
     std::filesystem::remove_all(probe_dir);
     std::filesystem::copy(dir, probe_dir, std::filesystem::copy_options::recursive);
 
@@ -237,8 +211,7 @@ TEST_CASE("integration::cpp::test_udf_refusal_registry_state::register_udf_leave
     }
     REQUIRE_FALSE(reads.empty());
 
-    // Load offsets are read twice (probe construction + agent reopen); the data block is read
-    // once. Exactly one such offset must exist, or this case needs re-deriving, not skipping.
+    // Offsets seen twice belong to the load path; the one seen once is pg_namespace's data block.
     std::vector<uint64_t> read_once;
     for (const auto off : reads) {
         if (std::count(reads.begin(), reads.end(), off) == 1) {
@@ -248,7 +221,6 @@ TEST_CASE("integration::cpp::test_udf_refusal_registry_state::register_udf_leave
     REQUIRE(read_once.size() == 1);
     const uint64_t data_block = read_once.front();
 
-    // Phase 3 — the real start, with that ONE offset unreadable.
     otterbrix_test::fault_plan_t plan;
     plan.fail_reads_at_location = data_block;
     one_table_fault_scope_t fault(plan, marker);
@@ -257,33 +229,24 @@ TEST_CASE("integration::cpp::test_udf_refusal_registry_state::register_udf_leave
         udf_refusal_spaces_t space(config);
         auto* dispatcher = space.dispatcher();
         INFO("poisoned pg_namespace block offset " << data_block);
-        REQUIRE(plan.reads_failed > 0); // the poison landed, and the start survived it
+        REQUIRE(plan.reads_failed > 0);
 
-        REQUIRE_FALSE(default_registry_has(kFuncName)); // nothing is registered yet
+        REQUIRE_FALSE(default_registry_has(kFuncName));
 
         auto refused = dispatcher->register_udf(otterbrix::session_id_t(), make_probe_unary(dispatcher->resource()));
         INFO("a registration whose namespace could not be READ must FAIL");
         REQUIRE(refused.contains_error());
 
-        // THE POINT OF THE CASE. The statement refused, so the state it would have changed on
-        // the way to succeeding must be exactly what it was before.
         INFO("the default registry must not answer for a function the catalog never got a row for");
         CHECK_FALSE(default_registry_has(kFuncName)); // fails if the mirror runs before the read
 
-        // The catalog half, asserted on CONTENT rather than on a status code. pg_proc's own
-        // handle is never interposed here, so this read is honest while pg_namespace is poisoned.
         const auto rows = pg_proc_rows_named(space, kFuncName);
         INFO("pg_proc rows named '" << kFuncName << "': " << rows);
         CHECK(rows == 0);
     }
 
-    // The refusal must be recoverable: with the fault gone, the same CREATE FUNCTION succeeds
-    // and leaves exactly one pg_proc row (catches a leaked row hydrated back at this start).
-    //
-    // A RESTART, not a retry on the same engine: manager_dispatcher_t::register_udf's
-    // per-executor fan-out isn't undone on refusal, so an in-process retry is rejected by
-    // executor_t::register_udf as already registered. Same defect shape, one floor up
-    // (services/dispatcher + services/collection) — not fixed here.
+    // A restart, not a retry: register_udf's per-executor fan-out survives the refusal, so a same-engine
+    // retry is rejected as already-registered (a separate defect in services/dispatcher + services/collection).
     plan.fail_reads_at_location = std::numeric_limits<uint64_t>::max();
     {
         udf_refusal_spaces_t restarted(config);
@@ -296,8 +259,7 @@ TEST_CASE("integration::cpp::test_udf_refusal_registry_state::register_udf_leave
     }
 }
 
-// Collapse guard: with nothing injected, registration must still succeed — otherwise a change
-// that made every register_udf fail would pass the case above too.
+// Collapse guard: if register_udf always failed, the refusal case above would pass vacuously too.
 TEST_CASE("integration::cpp::test_udf_refusal_registry_state::a_healthy_registration_reaches_pg_proc") {
     const std::filesystem::path dir = integration_fixture_path("test_udf_refusal_registry_state/healthy");
     std::filesystem::remove_all(dir);

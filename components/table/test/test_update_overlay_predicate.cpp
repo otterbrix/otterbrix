@@ -1,9 +1,8 @@
-// has_update_segment() answers "an update_segment_t object exists", NOT "this column's rows
-// differ from their base": writing back the same value allocates the overlay and the
-// predicate stays true forever after.
+// Misnomer: has_update_segment() answers "an update_segment_t object exists", not "this column's rows differ
+// from their base", so writing back the same value still flips the predicate true forever after.
 //
-// The ALTER TYPE successor constructor of data_table_t stays undeclared on purpose --
-// see the note in data_table.hpp / data_table.cpp where it used to stand.
+// The ALTER TYPE successor constructor of data_table_t stays undeclared on purpose; see the note in
+// data_table.hpp / data_table.cpp where it used to stand.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/column_data.hpp>
@@ -23,8 +22,6 @@ using namespace components::table;
 
 namespace {
 
-    // pid-qualified, like every other fixture in this directory: two concurrent runs must not
-    // share one .otbx.
     std::string overlay_predicate_db_path() {
         static std::string path = "/tmp/test_otterbrix_update_overlay_predicate_" + std::to_string(::getpid()) + ".otbx";
         return path;
@@ -84,7 +81,6 @@ namespace {
         return table.update(*state, row_ids, payload);
     }
 
-    // Same answer as services/disk/table_storage_t::has_pending_update_overlay folds over.
     std::size_t segments_reporting_updates(data_table_t& table) {
         std::size_t reporting = 0;
         for (const auto& info : table.get_column_segment_info()) {
@@ -110,8 +106,6 @@ namespace {
 
 } // anonymous namespace
 
-// The update writes the value the row already holds; nothing about the column's contents
-// changes, yet the predicate flips false -> true and stays there.
 TEST_CASE("components::table::column_data::an_update_that_changes_no_value_still_reports_an_update_segment") {
     overlay_env env;
     auto table = make_one_column_table(env);
@@ -120,7 +114,6 @@ TEST_CASE("components::table::column_data::an_update_that_changes_no_value_still
     REQUIRE(segments_reporting_updates(*table) == 0);
     REQUIRE(scan_first_value(*table, env) == 7);
 
-    // The SAME value back onto the same row.
     auto updated = update_in_place(*table, env, /*row_id=*/0, /*new_value=*/7);
     REQUIRE_FALSE(updated.has_error());
     REQUIRE(updated.value().second == 1);
@@ -129,13 +122,11 @@ TEST_CASE("components::table::column_data::an_update_that_changes_no_value_still
     INFO("value before " << 7 << ", value after " << seen);
     REQUIRE(seen == 7);
 
-    // Contents identical, predicate true: that is the whole of the name.
     INFO("segments reporting an overlay: " << segments_reporting_updates(*table));
     REQUIRE(segments_reporting_updates(*table) > 0);
 }
 
-// Negative half, so the case above cannot pass on a predicate that always answers true: a
-// table only appended to reports NO overlay, and a column never written to answers BY NAME.
+// Negative half, so the case above cannot pass on a predicate that always answers true.
 TEST_CASE("components::table::column_data::an_appended_only_column_reports_no_update_segment") {
     overlay_env env;
     auto table = make_one_column_table(env);
@@ -143,8 +134,6 @@ TEST_CASE("components::table::column_data::an_appended_only_column_reports_no_up
     append_committed_row(*table, env, 2);
     REQUIRE(segments_reporting_updates(*table) == 0);
 
-    // row_group_t::get_column is private, so the predicate is asked of a standalone column --
-    // the same object, reached through the public factory.
     auto fresh = column_data_t::create_column(&env.resource,
                                               env.block_manager,
                                               /*column_index=*/0,
@@ -154,7 +143,6 @@ TEST_CASE("components::table::column_data::an_appended_only_column_reports_no_up
     REQUIRE_FALSE(fresh->has_update_segment());
 }
 
-// The mined ALTER TYPE successor constructor must stay unbuildable. See the file header.
 TEST_CASE("components::table::data_table::the_alter_type_successor_constructor_is_not_declared") {
     constexpr bool alter_type_ctor_exists = std::is_constructible_v<data_table_t,
                                                                     data_table_t&,
@@ -164,8 +152,7 @@ TEST_CASE("components::table::data_table::the_alter_type_successor_constructor_i
     INFO("a declared ALTER TYPE constructor leaves row_groups_ null while demoting its parent");
     REQUIRE_FALSE(alter_type_ctor_exists);
 
-    // The two constructors that DO build a successor are unaffected -- the guard above must not
-    // pass by data_table_t having become unconstructible altogether.
+    // The two constructors that build a successor must stay unaffected, or the guard above passes vacuously.
     REQUIRE(std::is_constructible_v<data_table_t, data_table_t&, column_definition_t&>);
     REQUIRE(std::is_constructible_v<data_table_t, data_table_t&, uint64_t>);
 }

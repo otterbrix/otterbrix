@@ -12,15 +12,8 @@
 
 namespace components::table::storage {
 
-    // Scratch space for buffers the pool has to push out of memory but that have nowhere else to go.
-    // A column segment being appended into is transient — no block in the .otbx yet — so dropping it
-    // would lose the rows, leaving only "keep it resident", which is what made a load fail at 24M
-    // rows holding 9 MiB on disk.
-    //
-    // Deliberately simple: one file, slots addressed by byte offset, a free list bucketed by exact
-    // allocation size, so a reused slot never partially covers a later buffer. The file is unlinked
-    // when the object dies — nothing in it survives the process, and nothing may ever be read from
-    // it after a restart.
+    // Spill target for transient buffers with no block yet; unlinked at destruction, so nothing
+    // in it may ever be read after a restart.
     class temporary_spill_file_t {
     public:
         static constexpr uint64_t INVALID_SLOT = UINT64_MAX;
@@ -30,15 +23,13 @@ namespace components::table::storage {
         temporary_spill_file_t& operator=(const temporary_spill_file_t&) = delete;
         ~temporary_spill_file_t();
 
-        // Writes `size` bytes and returns the slot they landed in. An io_error here means the buffer
-        // was NOT written: the caller must keep it in memory rather than dropping it.
+        // io_error means the buffer was NOT written -- the caller must keep it in memory, not drop it.
         [[nodiscard]] core::result_wrapper_t<uint64_t> write(const std::byte* data, uint64_t size);
 
-        // Reads a slot back. False means the bytes could not be recovered, which for a transient
-        // buffer is data loss — the caller reports it rather than handing back an empty buffer.
+        // False means unrecoverable bytes (data loss); callers report it rather than returning an empty buffer.
         [[nodiscard]] bool read(uint64_t slot, std::byte* data, uint64_t size);
 
-        // Returns the slot to the free list. Safe to call with INVALID_SLOT.
+        // Safe to call with INVALID_SLOT.
         void release(uint64_t slot, uint64_t size);
 
         uint64_t bytes_in_use() const noexcept { return bytes_in_use_; }

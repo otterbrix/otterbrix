@@ -1,6 +1,4 @@
-// Erasing the pending bucket before the journal write succeeds would let a refused commit's
-// retry find an empty bucket and report success over nothing. State must clear only after
-// the journal write succeeds.
+// State must clear only after the journal write succeeds, or a retry reports success over an empty bucket.
 
 // clang-format off
 // <actor-zeta/spawn.hpp> requires std::unique_ptr, but does not include it itself
@@ -44,8 +42,6 @@ using services::index::index_agent_contract;
 
 namespace {
 
-    // Kept far from txn_id: reusing one number for both let a COMMIT marker from an earlier
-    // incarnation vouch for a later frame under a recycled txn id (bitcask_index_disk.cpp).
     constexpr std::uint64_t commit_id_of(std::uint64_t txn_id) { return txn_id + 500000; }
 
     constexpr components::catalog::oid_t kTableOid = 17400;
@@ -59,8 +55,6 @@ namespace {
         return path;
     }
 
-    // bitcask.txn.log is opened lazily by the first journalled commit, which is what makes
-    // the pre-commit sabotage below possible.
     std::filesystem::path store_dir(const std::filesystem::path& root) {
         return root / std::to_string(static_cast<unsigned>(kTableOid)) /
                std::to_string(static_cast<unsigned>(kIndexOid));
@@ -78,8 +72,8 @@ namespace {
         return values;
     }
 
-    // Every handler under test is a straight-line coroutine with no cross-actor await,
-    // so one resume finishes it.
+    // Every handler under test is a straight-line coroutine with no cross-actor await, so one
+    // resume finishes it.
     template<auto Handler, typename Agent, typename... Args>
     auto ask(Agent& agent, Args&&... args) {
         auto [needs_sched, future] =
@@ -95,8 +89,6 @@ namespace {
         return out;
     }
 
-    // Mirrors txn_frame_header_t (bitcask_index_disk.cpp) field for field, like
-    // crashed_txn_frame_header_t in test_bitcask_index_disk.cpp.
     struct txn_frame_view_t {
         uint32_t magic;
         uint32_t crc;
@@ -118,8 +110,6 @@ namespace {
     static_assert(offsetof(txn_frame_view_t, payload_size) == 32,
                   "the view must be the store's txn frame header, byte for byte");
 
-    // The log is [40-byte header][payload], appended and never rewritten, so the walk needs
-    // only the declared payload size.
     std::vector<std::pair<uint64_t, uint8_t>> txn_log_frames(const std::filesystem::path& root) {
         std::vector<std::pair<uint64_t, uint8_t>> frames;
         const auto log_path = txn_log_path(root);
@@ -173,7 +163,6 @@ TEST_CASE("services::index::bitcask_index_agent_t keeps the staged bucket across
         return sorted(std::move(answer.value()));
     };
 
-    // A directory squatting on the txn log's path makes the lazy open refuse.
     auto sabotage = [&] { REQUIRE(std::filesystem::create_directory(txn_log_path(path))); };
     auto heal = [&] { REQUIRE(std::filesystem::remove(txn_log_path(path))); };
 
@@ -196,8 +185,6 @@ TEST_CASE("services::index::bitcask_index_agent_t keeps the staged bucket across
     }
 
     SECTION("a refused commit_deletes keeps the batch, and the retry removes the row") {
-        // Seed over the txn==0 route (publish, no journal), so the txn log's lazy open is
-        // still ahead of the directory squat below.
         REQUIRE_FALSE(
             ask<&index_agent_contract::stage_inserts>(agent, session, uint64_t{0}, entries(&resource, {{42, 7}}))
                 .contains_error());
@@ -224,16 +211,11 @@ TEST_CASE("services::index::bitcask_index_agent_t keeps the staged bucket across
     std::filesystem::remove_all(path);
 }
 
-// The txn==0 leg (rebuild feed, no journal) must not erase its bucket before force_flush()
-// answers, or a retry after a refused flush would report success without re-asking
-// durability. Re-publishing a kept bucket is safe: insert/remove are idempotent on (key, row).
 TEST_CASE("services::index::bitcask_index_agent_t txn==0 publish keeps the bucket until the flush verdict") {
     auto resource = core::pmr::otterbrix_resource();
     auto log = initialization_logger("python", "/tmp/docker_logs/");
     const auto path = fresh_index_root("otterbrix_test_index_agent_publish_retry");
 
-    // segment_record_limit=4: the first non-bulk append after the 5-row seed asks for a
-    // rotation, which the directory squat below makes refuse.
     auto agent_result = bitcask_index_agent_t::create(&resource,
                                                       path,
                                                       kTableOid,
@@ -258,7 +240,6 @@ TEST_CASE("services::index::bitcask_index_agent_t txn==0 publish keeps the bucke
         return sorted(std::move(answer.value()));
     };
 
-    // Bulk mode suppresses rotation, so the active segment ends the seed holding 5 >= 4 records.
     REQUIRE_FALSE(ask<&index_agent_contract::stage_inserts>(
                       agent,
                       session,
@@ -269,7 +250,6 @@ TEST_CASE("services::index::bitcask_index_agent_t txn==0 publish keeps the bucke
         ask<&index_agent_contract::commit_inserts>(agent, session, uint64_t{0}, uint64_t{0}).contains_error());
     REQUIRE(read(0) == std::vector<int64_t>{7});
 
-    // Fresh store: active segment id 2, next 3.
     const auto next_segment = store_dir(path) / "bitcask.000003.data";
     REQUIRE(std::filesystem::create_directory(next_segment));
 
@@ -285,9 +265,7 @@ TEST_CASE("services::index::bitcask_index_agent_t txn==0 publish keeps the bucke
         auto retried = ask<&index_agent_contract::commit_deletes>(agent, session, uint64_t{0}, uint64_t{0});
         REQUIRE(retried.contains_error());
 
-        // Bucket 0 is committed for everyone (readers subtract it) even though not yet
-        // durable, so the reader already sees the delete while the statement keeps hearing
-        // "not durable" until a retry lands.
+        // Bucket 0 is visible to readers immediately, independent of durability, until a retry confirms it.
         CHECK(read(0).empty());
     }
 
@@ -312,11 +290,8 @@ TEST_CASE("services::index::bitcask_index_agent_t txn==0 publish keeps the bucke
     std::filesystem::remove_all(path);
 }
 
-// A committing transaction may only publish what it staged; bucket 0 (the rebuild's stage)
-// is not its bucket. Taking bucket 0 too would journal the rebuild's rows -- committed for
-// everyone, owned by no transaction -- under the foreign transaction's id, and
-// recover_txn_log gates replay on a commit marker belonging to a transaction that never
-// staged them. Asserted on the log bytes, where the misattribution is durable.
+// A committing transaction may only journal what it staged; taking bucket 0 (the rebuild's stage) too would
+// let recover_txn_log gate replay on a commit marker for a transaction that never staged those rows.
 TEST_CASE("services::index::bitcask_index_agent_t a foreign commit does not journal the rebuild's bucket") {
     auto resource = core::pmr::otterbrix_resource();
     auto log = initialization_logger("python", "/tmp/docker_logs/");
@@ -352,8 +327,6 @@ TEST_CASE("services::index::bitcask_index_agent_t a foreign commit does not jour
             ask<&index_agent_contract::stage_inserts>(agent, session, uint64_t{0}, entries(&resource, {{99, 3}}))
                 .contains_error());
 
-        // manager_index_t::commit_inserts fans out to every index record of every touched
-        // table without checking what was staged for any of them.
         REQUIRE_FALSE(
             ask<&index_agent_contract::commit_inserts>(agent, session, writer, commit_id_of(writer)).contains_error());
 

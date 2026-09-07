@@ -1,15 +1,4 @@
-// The index answer is a SUPERSET filter, not a visibility one (manager_index_t::
-// search_with_preferred_type: the table decides what a reader may SEE). storage_fetch did not
-// apply that: the point-fetch path gathered cells without ever calling
-// row_version_manager_t::fetch(txn, row), so the index -> fetch-by-row_id route leaked rows
-// outside the reader's snapshot.
-//
-// WHERE id = ... routes through the index (the broken leg); WHERE val = ... is an unindexed
-// scan control on the same row — the scan leg has always hidden it correctly.
-//
-// The row sits past row_group_size (1024): version slots are addressed per row group while the
-// point fetch names collection-ABSOLUTE ids, so a row in the first row group can't tell a
-// correct rebase from a missing one.
+// The index answers a SUPERSET filter, not a visibility one; the table decides what a reader may see.
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"
@@ -63,21 +52,16 @@ TEST_CASE("integration::cpp::index_fetch_visibility::point_fetch_honours_the_rea
     }
     seed(dispatcher);
 
-    // READER: opens a transaction and takes its snapshot BEFORE the writer commits.
     auto reader = otterbrix::session_id_t();
     REQUIRE(exec(dispatcher, reader, "BEGIN;")->is_success());
 
     INFO("the reader's snapshot is live and the INDEX route works on it");
     {
-        // A seeded row past 1024, read through the same index leg the assertions
-        // below use — proves the route is the index point fetch, not a scan.
         auto cur = exec(dispatcher, reader, "SELECT id, val FROM VisDb.t WHERE id = 1500;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
     }
 
-    // WRITER: a separate session commits ONE new row AFTER the reader's snapshot.
-    // It lands at absolute row 2000 — the second row group.
     {
         auto writer = otterbrix::session_id_t();
         std::stringstream ins;
@@ -102,8 +86,7 @@ TEST_CASE("integration::cpp::index_fetch_visibility::point_fetch_honours_the_rea
         q << "SELECT id, val FROM VisDb.t WHERE id = " << kLateId << ";";
         auto cur = exec(dispatcher, reader, q.str());
         REQUIRE(cur->is_success());
-        // storage_fetch gathers the row without consulting the row version manager, leaking
-        // it past its snapshot while the scan leg above hides it.
+        // storage_fetch gathered cells without calling row_version_manager_t::fetch, leaking rows past the snapshot.
         REQUIRE(cur->size() == 0);
     }
 
@@ -120,9 +103,7 @@ TEST_CASE("integration::cpp::index_fetch_visibility::point_fetch_honours_the_rea
     }
 }
 
-// The other direction: rows committed before the snapshot must stay visible through the point
-// fetch even after another session deletes and commits them — the guard against "fix
-// visibility by hiding everything".
+// Guards against over-fixing: a row committed before the snapshot stays visible even after a later delete.
 TEST_CASE("integration::cpp::index_fetch_visibility::point_fetch_keeps_rows_the_snapshot_owns") {
     auto config = test_create_config(integration_fixture_path("test_index_fetch_visibility/retain"));
     test_clear_directory(config);
@@ -152,7 +133,6 @@ TEST_CASE("integration::cpp::index_fetch_visibility::point_fetch_keeps_rows_the_
         REQUIRE(cur->size() == 1);
     }
 
-    // Another session deletes that row inside an OPEN transaction and never commits.
     auto deleter = otterbrix::session_id_t();
     REQUIRE(exec(dispatcher, deleter, "BEGIN;")->is_success());
     {

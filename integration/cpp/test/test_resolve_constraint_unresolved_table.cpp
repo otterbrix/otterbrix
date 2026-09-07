@@ -13,13 +13,10 @@
 using namespace components;
 
 // table_md present but table_oid == INVALID_OID means the NAME resolved but not the identity --
-// distinct from "table not found" (no table_md, already handled by operator_resolve_table_t).
-// Skipping it used to report success while silently dropping all of the table's constraints.
-// Proven by injection: reinstating that skip turns the REQUIRE below red.
+// distinct from a missing table (handled upstream); skipping it silently drops the table's constraints.
 
 namespace {
 
-    // tables node holds ONE entry: the table the constraint entry targets.
     struct resolve_pair_t {
         logical_plan::node_catalog_resolve_ptr tables;
         logical_plan::node_catalog_resolve_ptr constraints;
@@ -52,8 +49,6 @@ namespace {
         return pair;
     }
 
-    // A disk actor is wired up only so address_t sees a non-empty address; nothing
-    // is ever enqueued on it, since every case below is decided before the first send.
     bool run_resolve(std::pmr::memory_resource* resource, resolve_pair_t& pair, std::string* err_out = nullptr) {
         operators::operator_ptr op(
             new operators::operator_resolve_constraint_t(resource, log_t{}, pair.constraints.get(), pair.tables.get()));
@@ -84,13 +79,10 @@ TEST_CASE("resolve constraint: a table whose oid did not resolve is refused, not
     INFO("a constraint set that was never read must not be handed on as an EMPTY constraint set");
     REQUIRE(run_resolve(&resource, pair, &err));
     INFO("error: " << err);
-    // The message has to say WHICH fact is missing, not merely that something is.
     REQUIRE(err.find("table") != std::string::npos);
 }
 
 TEST_CASE("resolve constraint: a table that was not found is not an error", "[resolve_constraint]") {
-    // The other half of the old condition: absent table_md means operator_resolve_table_t
-    // already refused the statement for "no such relation" -- this layer must not error too.
     auto resource = core::pmr::otterbrix_resource();
     auto pair = make_pair(&resource, /*stamp_table_md=*/false, catalog::INVALID_OID);
 
@@ -100,9 +92,7 @@ TEST_CASE("resolve constraint: a table that was not found is not an error", "[re
     REQUIRE_FALSE(errored);
 }
 
-// entry.target >= entries().size() is a CORRUPT PLAN, not a topology fact: every real entry
-// gets a valid index from register_catalog_resolve_table (sql/transformer/utils.cpp), and
-// entries() only grows. no_target (size_t(-1)) reaching here means something never filled it in.
+// entry.target past entries().size() is a CORRUPT PLAN: register_catalog_resolve_table always fills a valid index.
 
 TEST_CASE("resolve constraint: an entry whose target is not an index is refused", "[resolve_constraint]") {
     auto resource = core::pmr::otterbrix_resource();

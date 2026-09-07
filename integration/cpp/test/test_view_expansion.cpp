@@ -1,11 +1,8 @@
-// [D1] The stored body is re-parsed on every read. Reconstructing it by substring-searching
-//      the raw SQL for " AS " (defaulting to "SELECT *" on a miss) silently stores a query
-//      the user never wrote: a newline after AS, or `AS(SELECT ...)`, both miss.
-// [D2] Expansion SPLICES the body under whatever is built above it. Replacing the whole plan
-//      with the body drops the outer WHERE / projection / aggregate / join and answers
-//      successfully with the wrong rows — hence every case checks CONTENT, not cursor status.
-// [D3] Nothing populates a matview at CREATE time and REFRESH MATERIALIZED VIEW is not
-//      lowered, so the implicit WITH DATA form is refused rather than silently empty.
+// [D1] The view body is re-parsed on every read via a raw-SQL search for " AS ", so a newline after AS or
+//      `AS(SELECT ...)` silently swaps in the wrong query.
+// [D2] Expansion splices the body under whatever is built above it, so every case here checks CONTENT, not
+//      cursor status.
+// [D3] CREATE MATERIALIZED VIEW never populates data and REFRESH is not lowered, so implicit WITH DATA is refused.
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"
@@ -18,9 +15,7 @@ using components::cursor::cursor_t_ptr;
 
 namespace {
 
-    // v -> rows 'b' and 'c'. The threshold 10 lives IN THE BODY on purpose: it is the only
-    // way to catch a parameter-id collision with an outer WHERE, which errors nowhere and
-    // just returns the wrong rows.
+    // Threshold 10 lives in the body on purpose: only there can it catch a parameter-id collision with an outer WHERE.
     void seed(otterbrix::wrapper_dispatcher_t* d) {
         REQUIRE(exec(d, "CREATE DATABASE vx;")->is_success());
         REQUIRE(exec(d, "CREATE TABLE vx.t (col_a STRING, col_b BIGINT);")->is_success());
@@ -115,8 +110,7 @@ TEST_CASE("integration::cpp::test_view_expansion::aggregate_over_view") {
     CHECK(cur->chunks().front().get_value<int64_t>(col_of(cur, "n"), 0) == 2);
 }
 
-// Both plans number bound parameters from zero (parameter_node_t::counter_ is per node), so
-// merging the body's parameter map under the SAME ids let `> 18` overwrite the body's `> 10`.
+// Both plans number parameters from zero, so merging the parameter map under shared ids let `> 18` overwrite `> 10`.
 TEST_CASE("integration::cpp::test_view_expansion::view_constant_not_clobbered_by_outer_constant") {
     auto config = make_test_config(integration_fixture_path("test_view_expansion/params"));
     test_spaces space(config);
@@ -129,7 +123,6 @@ TEST_CASE("integration::cpp::test_view_expansion::view_constant_not_clobbered_by
     REQUIRE(direct->is_success());
     CHECK(through_view->size() == direct->size());
     CHECK(str_set(through_view, "col_a") == str_set(direct, "col_a"));
-    // and it is the answer the view's own threshold implies, not the outer one's
     CHECK(str_set(through_view, "col_a") == std::set<std::string>{"c"});
 }
 
@@ -147,8 +140,7 @@ TEST_CASE("integration::cpp::test_view_expansion::join_with_view_side") {
     CHECK(str_set(cur, "tag") == std::set<std::string>{"B", "C"});
 }
 
-// Each pass splices one level; the level it adds only becomes visible after its own
-// resolve round.
+// Each pass splices one level; the level it adds only becomes visible after its own resolve round.
 TEST_CASE("integration::cpp::test_view_expansion::view_over_view") {
     auto config = make_test_config(integration_fixture_path("test_view_expansion/nested"));
     test_spaces space(config);
@@ -162,8 +154,7 @@ TEST_CASE("integration::cpp::test_view_expansion::view_over_view") {
     CHECK(str_set(cur, "col_a") == std::set<std::string>{"b", "c"});
 }
 
-// The message is part of the pin: it must name the view. A view carries no pg_attribute
-// columns, so without an explicit refusal this fails only by accident, as a column error.
+// A view carries no pg_attribute columns, so without explicit refusal this fails only by accident, as a column error.
 TEST_CASE("integration::cpp::test_view_expansion::dml_through_view_is_refused") {
     auto config = make_test_config(integration_fixture_path("test_view_expansion/dml"));
     test_spaces space(config);
@@ -174,14 +165,12 @@ TEST_CASE("integration::cpp::test_view_expansion::dml_through_view_is_refused") 
     REQUIRE_FALSE(ins->is_success());
     CHECK(std::string(ins->get_error().what.c_str()).find("view") != std::string::npos);
 
-    // and the base table is untouched
     auto after = exec(d, "SELECT col_a FROM vx.t;");
     REQUIRE(after->is_success());
     CHECK(after->size() == 4);
 }
 
-// The D2 bind guard blocks relkind='v' on a query node but deliberately spares the
-// drop_target_kind::view branch of the same function, which is how DROP reaches the oid.
+// The D2 bind guard blocks relkind='v' on a query node but spares drop_target_kind::view (how DROP reaches the oid).
 TEST_CASE("integration::cpp::test_view_expansion::drop_view_still_resolves_the_view") {
     auto config = make_test_config(integration_fixture_path("test_view_expansion/drop"));
     test_spaces space(config);
@@ -200,8 +189,6 @@ TEST_CASE("integration::cpp::test_view_expansion::drop_view_still_resolves_the_v
     CHECK(base->size() == 4);
 }
 
-// [D1] Read back through the view: a "SELECT *" default would answer with every row of t,
-// and a slice running past the body would carry the trailing clause into the stored SQL.
 TEST_CASE("integration::cpp::test_view_expansion::body_is_what_was_written") {
     auto config = make_test_config(integration_fixture_path("test_view_expansion/body"));
     test_spaces space(config);
@@ -223,8 +210,7 @@ TEST_CASE("integration::cpp::test_view_expansion::body_is_what_was_written") {
     CHECK(str_set(par, "col_a") == std::set<std::string>{"c"});
 }
 
-// A column alias list is carried nowhere, so accepting it would promise column names the
-// stored body does not produce. Refused instead of half-supported.
+// A column alias list is carried nowhere, so accepting it would promise column names the stored body does not produce.
 TEST_CASE("integration::cpp::test_view_expansion::view_column_alias_list_is_refused") {
     auto config = make_test_config(integration_fixture_path("test_view_expansion/aliases"));
     test_spaces space(config);
@@ -251,11 +237,8 @@ TEST_CASE("integration::cpp::test_view_expansion::matview_without_no_data_is_ref
     CHECK(cur->size() == 0);
 }
 
-// Each reference needs its OWN parse+transform: spliced nodes carry per-reference state
-// (table_oid, table_metadata, output_types, projected_cols, read_cap) and filter pushdown
-// APPENDS a match child into the body. The driver also snapshots every reference's body SQL
-// before merging resolves — merge_catalog_resolves reallocates the entries vector the
-// collected references point into.
+// Each reference needs its own parse+transform, since spliced nodes carry per-reference state. The driver also
+// snapshots each body's SQL first because merge_catalog_resolves reallocates the vector references point into.
 TEST_CASE("integration::cpp::test_view_expansion::same_view_referenced_twice") {
     auto config = make_test_config(integration_fixture_path("test_view_expansion/twice"));
     test_spaces space(config);
@@ -274,11 +257,7 @@ TEST_CASE("integration::cpp::test_view_expansion::same_view_referenced_twice") {
     CHECK(str_set(through_view, "col_a") == std::set<std::string>{"b", "c"});
 }
 
-// Pins renumbering ACROSS bodies. Constants chosen so EITHER collision outcome is wrong,
-// whichever body writes the shared slot last — and neither fails, just returns wrong rows:
-//   correct                -> {b}
-//   shared slot holds 10   -> v>10={b,c},  w<10={a,d}   -> {}
-//   shared slot holds 18   -> v>18={c},    w<18={a,b,d} -> {}
+// Pins renumbering across bodies: v's 10 and w's 18 are chosen so a collision either way returns a wrong result.
 TEST_CASE("integration::cpp::test_view_expansion::two_views_keep_their_own_constants") {
     auto config = make_test_config(integration_fixture_path("test_view_expansion/two_views"));
     test_spaces space(config);

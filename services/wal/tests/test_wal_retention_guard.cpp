@@ -25,13 +25,6 @@
 #include <core/pmr.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 
-// Guards of the manager's own bookkeeping: (1) startup classification of <wal>/<db> directories
-// must not use std::stoul under catch(...), which half-parses "9zz" as database oid 9 and spawns
-// a worker over the wrong directory; (2) total_wal_bytes() must sum only wal_* segments, not
-// every file under <wal>/<db>/, or a foreign neighbour inflates the auto-checkpoint window.
-// (The CREATE INDEX retention-set cases sat here and are gone with the retention API itself —
-// the backfill catchup was removed, so nothing registers a build any more.)
-
 using namespace services;
 using namespace services::wal;
 namespace catalog = components::catalog;
@@ -101,10 +94,7 @@ namespace {
             manager_.reset();
         }
 
-        // Built on the fixture's own arena (core::pmr::otterbrix_resource, resource_tracer_t under
-        // ASAN), mirroring production (agent_disk_t::storage_append_inner builds off resource()).
-        // resource_ is declared FIRST so it outlives ~wal_env_t's teardown of manager_. Extracted
-        // so a test can assert the ARENA of a REAL payload before it's moved into the message.
+        // resource_ is declared FIRST so it outlives ~wal_env_t's teardown of manager_.
         std::pmr::vector<data_chunk_t> make_insert_batch(size_t rows) {
             return one_chunk(&resource_, rows);
         }
@@ -145,14 +135,12 @@ namespace {
 
 } // namespace
 
-// A directory that is not a database oid is skipped loudly, not half-parsed: std::stoul("9zz")
-// answers 9, spawning a worker for the WRONG directory and splitting the journal in two.
-// BEFORE: <wal>/9 appeared next to <wal>/9zz.
+// A directory that is not a database oid must be skipped loudly, not half-parsed: std::stoul("9zz")
+// answers 9, spawning a worker for the wrong directory. BEFORE: <wal>/9 appeared next to <wal>/9zz.
 TEST_CASE("wal::classification::a_non_oid_directory_does_not_spawn_a_worker") {
     const auto path = base_path() / "foreign_dir";
     std::filesystem::remove_all(path);
-    // config_wal(path) roots the journal at <path>/wal — the foreign directory must sit
-    // where the manager's startup scan actually walks.
+    // config_wal(path) roots the journal at <path>/wal, so the foreign directory must sit there too.
     std::filesystem::create_directories(path / "wal" / "9zz");
 
     wal_env_t env(path, /*max_segment_size=*/0, /*wipe=*/false);
@@ -180,7 +168,6 @@ TEST_CASE("wal::classification::total_wal_bytes_counts_only_wal_segments") {
     const auto before = env.manager_->total_wal_bytes();
     REQUIRE(before > 0);
 
-    // A foreign neighbour lands directly under <wal>/<db>/.
     {
         std::ofstream stray(env.db_dir() / "stray.bin", std::ios::binary);
         std::string filler(4096, 'x');
@@ -192,8 +179,6 @@ TEST_CASE("wal::classification::total_wal_bytes_counts_only_wal_segments") {
     REQUIRE(env.manager_->total_wal_bytes() == before);
 }
 
-// Insert payload built on the fixture's own arena (see make_insert_batch above); the batch is
-// unobservable after send, so the assertion is made on make_insert_batch's own output.
 TEST_CASE("wal::retention::the_insert_payload_is_built_on_the_fixture_arena") {
     const auto path = base_path() / "payload_arena";
     std::filesystem::remove_all(path);

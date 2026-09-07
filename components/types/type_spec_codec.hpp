@@ -11,9 +11,7 @@
 
 namespace components::types {
 
-    // Binary codec for a FULL complex_logical_type spec (persistent column type), round-tripping
-    // DECIMAL width/scale, nested child types, ENUM entries and aliases. Lives here rather than
-    // in catalog so components::table can persist column types without a table->catalog link cycle.
+    // Binary codec for a persisted complex_logical_type; lives here (not catalog) to avoid a table->catalog link cycle.
     //
     // Byte layout (native-endian like the rest of the metadata stream, recursive):
     //   spec := u8  logical_type            // types::logical_type numeric value
@@ -34,18 +32,14 @@ namespace components::types {
     //     VARIANT : (none — the fixed internal struct is rebuilt by create_variant)
     //     scalars : (none)
     //
-    // Decoding is fail-loud: any malformed byte is a data_corruption error, never
-    // a guessed type.
+    // Decoding is fail-loud: any malformed byte is a data_corruption error, never a guessed type.
 
-    // schema_error for types that cannot be persisted (FUNCTION/LAMBDA/TABLE/USER/INVALID, or a
-    // mismatched extension); `out` is left unspecified on error. Mirrors decode_type_spec's
-    // value-range refusals (DECIMAL window, nesting depth) so a bad write fails the statement
-    // instead of writing a checkpoint that can never be read back.
+    // schema_error for unpersistable types (FUNCTION/LAMBDA/TABLE/USER/INVALID, or a mismatched
+    // extension); `out` is left unspecified on error.
     [[nodiscard]] core::result_wrapper_t<bool> encode_type_spec(const complex_logical_type& type,
                                                                 std::pmr::vector<std::byte>& out);
 
-    // Parses exactly one spec from [data, data + size); consuming less than the whole
-    // buffer is a data_corruption error.
+    // Parses exactly one spec from [data, data + size); leftover bytes are a data_corruption error.
     [[nodiscard]] core::result_wrapper_t<complex_logical_type>
     decode_type_spec(std::pmr::memory_resource* resource, const std::byte* data, uint64_t size);
 

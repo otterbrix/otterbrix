@@ -8,21 +8,9 @@
 #include <filesystem>
 #include <string>
 
-// How much storage does a text column actually cost?
-//
-// Column segments used to be given a whole 256 KiB block regardless of how little they held; they
-// are now sized to what a row group can contain (DEFAULT_VECTOR_CAPACITY * type_size). For a text
-// column type_size is sizeof(std::string_view) = 16 bytes, so a segment went from 256 KiB to 16 KiB.
-// The string BYTES do not live in that segment though — short values are inlined into the segment's
-// buffer and long ones are pushed into separate overflow blocks. A much smaller segment could
-// therefore push more values into overflow blocks and end up costing MORE, which would make the
-// change a regression for text-heavy tables even while it is a large win for fixed-width ones.
-//
-// This measures the thing directly: table bytes on disk per byte of payload, for three value
-// sizes. It is a characterization test — it states a bound the storage layer must stay inside, so
-// it fails whichever way the layout regresses.
-//
-// Hidden by default ([.]) because it writes hundreds of megabytes. Run it with [textstorage].
+// Segments now size to the row group (was a flat 256 KiB), which could push more strings into
+// overflow and cost text-heavy tables more; this bounds table-bytes-per-payload-byte three ways
+// so a layout regression fails directly. Hidden by default ([.]); run with [textstorage].
 
 namespace {
     uint64_t directory_bytes(const std::filesystem::path& root) {
@@ -42,15 +30,10 @@ namespace {
         return total;
     }
 
-    // The numerator: the files of the user tables themselves — the <table_oid> directories inside
-    // the <database_oid> directories at or above FIRST_USER_OID under the disk path.
-    //
-    // Summing everything under the fixture root was rejected, decomposed on the short-value load
-    // (payload 2,560,000 B): the whole root held 63,766,648 B = 24.9x, of which the table was
-    // 25,440,256 B (9.9x), pg_catalog btrees 35,037,184 B (13.7x — a fixed bootstrap cost,
-    // byte-identical across all three loads), and WAL segments 3,289,088 B (1.3x — the journal of
-    // the INSERTs being measured, its retention also varies run to run with checkpoint timing).
-    // Neither of those is text-column layout, and together they buried it.
+    // Summing the whole fixture root was rejected: on the short-value load (payload 2,560,000 B)
+    // the root held 63,766,648 B (24.9x), of which the table was 25,440,256 B (9.9x), pg_catalog
+    // btrees 35,037,184 B (13.7x, a fixed bootstrap cost), and WAL 3,289,088 B (1.3x, varies with
+    // checkpoint timing) -- neither is text-column layout, and together they buried it.
     uint64_t user_table_bytes(const std::filesystem::path& disk_path) {
         std::error_code ec;
         uint64_t total = 0;
@@ -138,10 +121,8 @@ namespace {
             out.root_bytes = directory_bytes(root);
         }
 
-        // Reopen from disk and read rows back through the checkpointed layout. The amplification
-        // bound alone would stay green if a tighter layout dropped or garbled bytes, so this
-        // readback is what lets the bound be tightened safely: it covers the first/last rows of
-        // trimmed dictionary segments and (in the mixed shape) values behind big-string markers.
+        // Verifies the tighter layout didn't drop or garble bytes (which would pass the bound for the
+        // wrong reason); covers dictionary-segment edges and, in the mixed shape, big-string markers.
         {
             test_spaces reopened(config);
             auto* d = reopened.dispatcher();
@@ -171,25 +152,18 @@ TEST_CASE("integration::cpp::test_text_column_storage::amplification_stays_bound
         double max_amplification;
     };
 
-    // Three shapes: short values that inline comfortably, values near the point where a 16 KiB
-    // segment can hold only a handful of them, and a mix where occasional huge values force
-    // overflow blocks.
+    // Three shapes: short (inlines), near a 16 KiB segment's capacity (stresses dictionary slack),
+    // and mixed with occasional huge values forcing overflow blocks.
     //
     //   short 64 B      9.73x measured  — a short text value still costs about ten times itself
-    //   inline 4090 B   1.74x measured  — was 2.36x (9,635 B on disk per 4,090 B row) while the
-    //                                     checkpoint persisted every 16 KiB string segment at its
-    //                                     full allocation: three 4,090-byte values left 4,082 B
-    //                                     of dictionary slack per segment (1,365 B/row) plus a
-    //                                     16 KiB partial-block tail per 15 segments (364 B/row).
-    //                                     Segments now persist trimmed (compact_string_dictionary),
-    //                                     which brought the LIVE layout to 1.04x; the rest of the
-    //                                     1.74x is the superseded shadow-paging generation the
-    //                                     file retains as free blocks (a mid-load checkpoint's
-    //                                     copy, 87 of 217 blocks, reusable but never truncated).
-    //                                     The 2.2 bound is therefore not tuned to the metric: it
-    //                                     is two checkpoint generations of a tightly-packed
-    //                                     layout (2 x ~1.05) plus margin, and a layout that
-    //                                     wastes the segment tail again will re-cross it.
+    //   inline 4090 B   1.74x measured  — was 2.36x (9,635 B/row) while checkpoint persisted every
+    //                                     16 KiB segment at full allocation; segments now persist
+    //                                     trimmed (compact_string_dictionary), bringing the live
+    //                                     layout to 1.04x -- the rest of 1.74x is a superseded
+    //                                     shadow-paging generation kept as free blocks (87 of 217,
+    //                                     reusable but never truncated). The 2.2 bound is two
+    //                                     checkpoint generations of ~1.05 each plus margin, not
+    //                                     tuned to the metric.
     //   mixed           3.02x measured
     const case_t cases[] = {
         {"short values (64 B)", 40000, 64, 0, 0, 10.5},

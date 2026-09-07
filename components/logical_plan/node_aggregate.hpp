@@ -22,55 +22,32 @@ namespace components::logical_plan {
         void set_distinct(bool d) { distinct_ = d; }
         bool is_distinct() const { return distinct_; }
 
-        // SELECT DISTINCT ON (...) keys. Empty for plain DISTINCT (whole-row dedup) and for
-        // non-DISTINCT. Name-based after transform; validate_logical_plan resolves each key's
-        // numeric path(). A non-empty list forces the coordinator path (pushdown barrier) and
-        // makes create_plan splice the distinct operator BELOW the projection, so the ON columns
-        // are still present for subset dedup.
+        // A non-empty list splices the distinct operator below the projection so the ON columns
+        // survive for dedup.
         const std::pmr::vector<expressions::key_t>& distinct_on_keys() const { return distinct_on_keys_; }
         // Non-const: validate_logical_plan resolves each key's numeric path() in place via find_types.
         std::pmr::vector<expressions::key_t>& distinct_on_keys() { return distinct_on_keys_; }
         void set_distinct_on_keys(std::pmr::vector<expressions::key_t> keys) { distinct_on_keys_ = std::move(keys); }
 
-        // Role-named accessors. The aggregate node carries the source table
-        // identity through the parser-window for downstream operator dispatch;
-        // routing in resolved-stage code uses table_oid().
+        // Carries table identity through the parser-window; resolved code routes via table_oid() instead.
         const core::dbname_t& dbname() const noexcept { return dbname_; }
         const core::relname_t& relname() const noexcept { return relname_; }
-        // Same declaration a match node makes (see match_source): the base class's
-        // table_oid() cannot distinguish "SELECT without FROM" from "the named table
-        // never resolved" -- both look like INVALID_OID there -- and the two demand
-        // opposite plans (the one-row synthetic source vs a refusal). A child-body
-        // source (CTE / derived table / view splice) clears the relname and lowers
-        // through its child, so it reads as `none` here and never consults this.
+        // Mirrors node_match_t::source(); a spliced view/CTE body clears relname_, so this reads as `none` too.
         match_source source() const noexcept { return relname_.t.empty() ? match_source::none : match_source::table; }
-        // Parser-supplied external identifier from a SQL fully-qualified
-        // `<uid>.<db>.<schema>.<rel>` form. Carries through the parser-window
-        // for client-side externals (e.g. raw-chunk injection in JOIN tests
-        // via swap_externals). Empty when SQL omits the uid prefix.
+        // External identifier from a SQL `<uid>.<db>.<schema>.<rel>` form; empty when omitted (see swap_externals).
         const core::uid_t& uid() const noexcept { return uid_; }
 
-        // Column projection metadata, populated by the post-validate column_pruning pass.
-        // When non-empty, downstream scan operators read only these column indices from
-        // the source table instead of scanning every column. Empty = "no projection"
-        // (scan all columns) — the default.
+        // Populated by the post-validate column_pruning pass; empty means no projection (scan all columns).
         const std::vector<size_t>& projected_cols() const { return projected_cols_; }
         void set_projected_cols(std::vector<size_t> cols) { projected_cols_ = std::move(cols); }
 
-        // Optimizer annotation set by the pushdown_limit rule: a pure COUNT read-cap
-        // (offset always 0) the terminal transfer_scan may cap its base-table read
-        // at, for the plain-scan shape (no WHERE, no sort/group/non-scan source, NOT
-        // is_distinct()) whose scan create_plan_aggregate builds directly. The
-        // authoritative operator_limit above still windows [offset, offset+limit).
-        // unlimit() = no cap. Advisory only; EXCLUDED from hash_impl()/operator== —
-        // see node_match_t::read_cap_ for the rationale.
+        // Set by pushdown_limit: a pure COUNT read-cap (offset always 0), advisory only.
+        // EXCLUDED from hash_impl()/operator== — see node_match_t::read_cap_ for the rationale.
         void set_read_cap(const limit_t& read_cap) noexcept { read_cap_ = read_cap; }
         const limit_t& read_cap() const noexcept { return read_cap_; }
 
-        // must clear identity once the view body is spliced in as child[0]: bind_catalog_data
-        // binds by name and would re-stamp table_oid, letting collect_view_references re-expand
-        // it; a stale table_oid also makes create_plan_match hand back a bare full_scan,
-        // dropping the spliced child
+        // Must run once the view body is spliced in as child[0], or bind_catalog_data re-stamps
+        // table_oid and collect_view_references re-expands it.
         void clear_source_identity() {
             uid_.t.clear();
             dbname_.t.clear();

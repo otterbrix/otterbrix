@@ -7,20 +7,12 @@
 #include <fstream>
 #include <string>
 
-// A configured index threshold (config.disk.bitcask_segment_record_limit) must hold for an
-// index created at runtime, not only one restored at bootstrap -- the two paths used to source
-// the limit differently (config vs. bitcask_index_disk_t::default_segment_record_limit_ = 10000).
-//
-// Observed via bitcask's CURRENT file, which names the active segment (regular ids start at 2,
-// growing once per rotation). Reads must happen while the engine is still up: a shutdown
-// CHECKPOINT bulk-reloads every index and bulk mode suppresses rotation
-// (bitcask_index_disk_t::set_bulk_mode), so a post-shutdown directory always shows exactly one
-// segment regardless of the configured limit.
+// config.disk.bitcask_segment_record_limit must hold for an index created at runtime, not only one restored
+// at bootstrap. Observed via bitcask's CURRENT file (segment ids grow from 2 on rotation), read only while
+// the engine is up: a shutdown CHECKPOINT bulk-reloads every index with rotation suppressed.
 
 namespace {
 
-    // Found by content (a CURRENT marker), not by name -- the on-disk layout is oid-keyed
-    // and carries no index name.
     std::filesystem::path find_bitcask_index_dir(const std::filesystem::path& disk_root) {
         for (const auto& e : std::filesystem::recursive_directory_iterator(disk_root)) {
             if (e.is_directory() && std::filesystem::exists(e.path() / "CURRENT")) {
@@ -40,7 +32,6 @@ namespace {
     constexpr uint64_t kFirstRegularSegmentId = 2;
     constexpr uint64_t kSegmentRecordLimit = 2;
     constexpr unsigned kRows = 12;
-    // -1 to stay clear of where the boundary falls relative to the preceding run.
     constexpr uint64_t kMinRotations = kRows / kSegmentRecordLimit - 1;
 
 } // namespace
@@ -50,7 +41,6 @@ TEST_CASE("integration::cpp::test_index_threshold_config::every_road_honours_the
     test_clear_directory(config);
     config.wal.on = true;
     config.log.level = log_t::level::off;
-    // Small enough that a dozen inserts must rotate several times.
     config.disk.bitcask_segment_record_limit = kSegmentRecordLimit;
 
     std::filesystem::path index_dir;
@@ -65,7 +55,6 @@ TEST_CASE("integration::cpp::test_index_threshold_config::every_road_honours_the
         };
         REQUIRE(exec("CREATE DATABASE b;")->is_success());
         REQUIRE(exec("CREATE TABLE b.t (id bigint, k bigint);")->is_success());
-        // Runtime CREATE INDEX road.
         REQUIRE(exec("CREATE INDEX k_idx ON b.t USING hash (k);")->is_success());
         for (unsigned i = 0; i < kRows; ++i) {
             REQUIRE(exec("INSERT INTO b.t (id, k) VALUES (" + std::to_string(i) + ", " + std::to_string(i) + ");")
@@ -85,8 +74,6 @@ TEST_CASE("integration::cpp::test_index_threshold_config::every_road_honours_the
     }
 
     {
-        // Bootstrap road. The prior shutdown checkpoint bulk-reloaded the store, so count
-        // rotations from whatever segment that left behind, not from kFirstRegularSegmentId.
         test_spaces space(config);
         auto* d = space.dispatcher();
         auto exec = [&](const std::string& sql) {

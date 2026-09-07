@@ -6,13 +6,7 @@
 
 namespace components::operators {
 
-    // ALTER TABLE ... ADD COLUMN — single clause.
-    //
-    // Steps (in await_async_and_resume):
-    //   1. read_chunks_by_key on pg_attribute (attrelid=table_oid) to compute next attnum.
-    //   2. allocate_oids_batch(1) for the new attoid.
-    //   3. build_pg_attribute_row + append_pg_catalog_row.
-    // resolve_table reads columns from pg_attribute on every call.
+    // resolve_table re-reads pg_attribute on every call; no in-memory schema hook here either.
     class operator_alter_column_add_t final : public read_write_operator_t {
     public:
         operator_alter_column_add_t(std::pmr::memory_resource* resource,
@@ -20,10 +14,7 @@ namespace components::operators {
                                     components::catalog::oid_t table_oid,
                                     components::table::column_definition_t column);
 
-        // Sourceless SINK leaf (no data pipeline, no children): the executor
-        // admits it as a streaming sink-root and drives await_async_and_resume via
-        // the bottom-up needs_async_finalize pass. push()/finalize() inherit the
-        // no-op defaults.
+        // Sourceless sink leaf driven via the bottom-up needs_async_finalize pass; push()/finalize() default to no-ops.
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;

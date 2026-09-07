@@ -17,17 +17,7 @@
 #include <string>
 #include <system_error>
 
-// `path` is REQUIRED: it used to default to std::filesystem::current_path(), which meant
-// "delete the working directory" once the common next line, test_clear_directory(config) ->
-// remove_all(main_path), ran -- no call site ever used the default. A reopen fixture
-// (test_declared_key_conkey_loss.cpp builds a second config over the same directory without
-// clearing it) is exactly the minority case where that default would have been hardest to
-// notice.
-//
-// The path is also REFUSED unless qualified (integration_fixture_path_is_qualified): a new
-// test file writing a literal "/tmp/test_new_thing" now stops on its own first run instead of
-// corrupting someone else's data directory on a busy machine -- three such literal roots once
-// arrived in a single merge despite review.
+// `path` has no default (once deleted a test's cwd) and must be pre-qualified against the shared fixture root.
 inline configuration::config test_create_config(const std::filesystem::path& path) {
     if (!integration_fixture_path_is_qualified(path)) {
         FAIL("test_create_config: '" << path.string()
@@ -42,27 +32,19 @@ inline configuration::config test_create_config(const std::filesystem::path& pat
     // config.log.level =log_t::level::trace;
 }
 
-// Make `config.main_path` exist and be empty, and REPORT an I/O failure instead of throwing
-// it: the throwing overloads put a std::filesystem::filesystem_error into whichever case
-// happened to be running, where it reads as an engine defect rather than a fixture that
-// couldn't be built ("Directory not empty", "No such file or directory" were both observed
-// that way). std::error_code, not core::error_t: a header-only helper holds no arena to build
-// core::error_t's pmr::string in (get_default_resource / new_delete_resource are ruled out).
+// Reports I/O failure via std::error_code instead of throwing, so it doesn't read as an engine defect.
 [[nodiscard]] inline std::error_code test_try_clear_directory(const configuration::config& config) {
     std::error_code ec;
     std::filesystem::remove_all(config.main_path, ec);
     if (ec) {
         return ec;
     }
-    // create_directories answers "already there" with false and NO error code, which is not
-    // a failure; only `ec` says anything went wrong.
+    // create_directories answers "already there" with false and no error code — only `ec` says something went wrong.
     std::filesystem::create_directories(config.main_path, ec);
     return ec;
 }
 
-// The fixture as every case wants it: a clean directory, or a case that stops right here.
-// A test cannot go on without its data directory, so the refusal is fatal to the case -- but
-// it now names the path and the reason instead of arriving as an unhandled exception.
+// Fatal to the case on failure; names the path and reason instead of an unhandled exception.
 inline void test_clear_directory(const configuration::config& config) {
     const std::error_code ec = test_try_clear_directory(config);
     if (ec) {
@@ -71,10 +53,7 @@ inline void test_clear_directory(const configuration::config& config) {
     }
 }
 
-// Name a DML node's target the way the SQL transformer does. The executor's
-// register_plan_targets picks the name up and registers the catalog lookup, so a
-// hand-built test plan resolves exactly like a transformed one. Returns the node
-// so it drops straight into an execution_plan_t.
+// Names a DML target as the transformer would, so register_plan_targets resolves it like a transformed plan.
 inline components::logical_plan::node_ptr
 test_dml_target(components::logical_plan::node_ptr node, const std::string& database, const std::string& collection) {
     using namespace components::logical_plan;
@@ -104,11 +83,7 @@ test_dml_target(components::logical_plan::node_ptr node, const std::string& data
     return node;
 }
 
-// Test-side CREATE TABLE: builds the same logical plan the SQL transformer
-// emits and sends it through the single client channel, execute_plan. The
-// namespace lookup is registered on the plan, exactly as the transformer does;
-// the executor's top-up would also cover it, but naming it here keeps the test
-// plan a faithful copy of a transformed one.
+// Registers the namespace lookup here too, redundantly, so this stays a faithful copy of a transformed plan.
 inline components::cursor::cursor_t_ptr
 test_create_collection(otterbrix::wrapper_dispatcher_t* dispatcher,
                        const otterbrix::session_id_t& session,
@@ -131,36 +106,24 @@ test_create_collection(otterbrix::wrapper_dispatcher_t* dispatcher,
 
 class test_spaces final : public otterbrix::base_otterbrix_t {
 public:
-    // create_plan_rule / optimizer_pass: host customization hooks forwarded to the
-    // engine through the constructor chain (physgen lowering of node_extension /
-    // custom nodes; a final optimizer pass). Null Objects for non-federation tests.
+    // Host customization hooks forwarded to the engine ctor chain; Null Objects here for non-federation tests.
     test_spaces(const configuration::config& config,
                 services::planner::create_plan_rule_t create_plan_rule = &services::planner::no_custom_lowering,
                 components::planner::optimizer_pass_t optimizer_pass = &components::planner::no_op_pass)
         : otterbrix::base_otterbrix_t(config, create_plan_rule, optimizer_pass) {
-        // Isolate the process-global UDF registry between test cases: each test
-        // gets a fresh builtins-only default registry so user functions from a
-        // previous test don't leak into this one (which crashed test_batch_join
-        // when run after test_batch_where — a stale aggregate UDF resolved to a
-        // null function at plan-gen).
+        // Resets the UDF registry per test — a stale one once crashed test_batch_join after test_batch_where.
         components::compute::function_registry_t::reset_default();
     }
 };
 
-// Shared integration-test helpers. Kept in a NAMED namespace (not global) so
-// they never collide with the anonymous-namespace `exec`/`seed` helpers that
-// several on-main test files still define locally — a global `exec` overload
-// with the same signature would make every unqualified call in those files
-// ambiguous. New test files opt in with `using namespace test_helpers;`.
+// Named, not global, so it can't collide with anonymous-namespace exec/seed helpers other test files define.
 namespace test_helpers {
 
-    // Run one SQL statement on a fresh session and return the cursor.
     inline components::cursor::cursor_t_ptr exec(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& sql) {
         return dispatcher->execute_sql(otterbrix::session_id_t(), sql);
     }
 
-    // create_config + clear_directory + the WAL flag in one call. There is no disk flag:
-    // every table is disk-backed, so `path` is where the data goes, full stop.
+    // No disk flag: every table is disk-backed, so `path` is where the data goes, full stop.
     inline configuration::config make_test_config(const std::filesystem::path& path, bool wal_on = false) {
         auto config = test_create_config(path);
         test_clear_directory(config);
@@ -168,9 +131,7 @@ namespace test_helpers {
         return config;
     }
 
-    // Emit `INSERT INTO <table> (<cols>) VALUES <row(0)>, <row(1)>, ...;` for `n`
-    // rows, where `row(i)` returns the parenthesized tuple text for row i, and run
-    // it. Callers assert on the returned cursor (success + affected size).
+    // `row(i)` returns row i's already-parenthesized tuple text.
     template<typename RowFn>
     inline components::cursor::cursor_t_ptr seed_rows(otterbrix::wrapper_dispatcher_t* dispatcher,
                                                       const std::string& table,

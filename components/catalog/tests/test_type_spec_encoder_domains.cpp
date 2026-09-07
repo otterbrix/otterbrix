@@ -1,7 +1,6 @@
-// gate_persistable_type (services/dispatcher/validate_logical_plan.cpp) checks a column type
-// with the binary codec, but the row actually written (components/catalog/system_table_schemas.cpp)
-// comes from a different, flat-text codec that returns a plain std::string and can never refuse;
-// this file is the first check that the two codecs' accept/reject domains coincide.
+// gate_persistable_type (services/dispatcher/validate_logical_plan.cpp) checks a column type with the
+// binary codec, but the row actually written (system_table_schemas.cpp) uses a different flat-text codec
+// that can never refuse; this file is the first check that the two codecs' accept/reject domains coincide.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -21,7 +20,6 @@ using namespace components::types;
 namespace {
     auto* g_resource = std::pmr::new_delete_resource();
 
-    // The write gate's question, verbatim.
     bool gate_accepts(const complex_logical_type& t) {
         std::pmr::vector<std::byte> spec(g_resource);
         return !components::types::encode_type_spec(t, spec).has_error();
@@ -55,8 +53,6 @@ namespace {
 } // namespace
 
 TEST_CASE("catalog::encoder_domains::every_plain_scalar_the_gate_blesses_survives_the_flat_writer") {
-    // is_plain_scalar() in components/types/type_spec_codec.cpp, in full; each must come back
-    // as itself.
     const logical_type plain_scalars[] = {
         logical_type::NA,         logical_type::ANY,           logical_type::BOOLEAN,
         logical_type::TINYINT,    logical_type::SMALLINT,      logical_type::INTEGER,
@@ -82,7 +78,6 @@ TEST_CASE("catalog::encoder_domains::every_plain_scalar_the_gate_blesses_survive
 }
 
 TEST_CASE("catalog::encoder_domains::a_bare_UNKNOWN_is_written_without_inventing_a_name") {
-    // has_type_name = 0 must not become a named UNKNOWN reference, nor abort the flat writer.
     const complex_logical_type bare{logical_type::UNKNOWN};
     REQUIRE(gate_accepts(bare));
     REQUIRE(encode_type_spec(bare) == "UNKNOWN()");
@@ -91,8 +86,6 @@ TEST_CASE("catalog::encoder_domains::a_bare_UNKNOWN_is_written_without_inventing
     REQUIRE(ok);
     REQUIRE(back.type() == logical_type::UNKNOWN);
     REQUIRE(back.type_name().empty());
-    // operator== (not just type()+type_name()) is what distinguishes this from an
-    // empty-named extension.
     REQUIRE(back == bare);
 
     const auto named = complex_logical_type::create_unknown("myudt");
@@ -106,8 +99,6 @@ TEST_CASE("catalog::encoder_domains::a_bare_UNKNOWN_is_written_without_inventing
 }
 
 TEST_CASE("catalog::encoder_domains::a_column_alias_must_not_be_written_as_a_type_name") {
-    // set_alias() on UNKNOWN builds a GENERIC extension holding the column name; the flat
-    // writer must not persist that as atttypspec "UNKNOWN(mycol)" (a dangling user-type reference).
     complex_logical_type aliased{logical_type::UNKNOWN};
     aliased.set_alias("mycol");
     REQUIRE(aliased.type_name() == "mycol"); // type_name() is overloaded to also carry the alias
@@ -145,8 +136,6 @@ TEST_CASE("catalog::encoder_domains::every_composite_the_gate_blesses_survives_t
 }
 
 TEST_CASE("catalog::encoder_domains::a_type_the_gate_refuses_is_not_written_as_a_plausible_one") {
-    // If one of these reaches the flat writer anyway, readback must refuse it, not decode
-    // "UNKNOWN(105)" -- the shape of a legitimate named reference.
     for (auto lt : {logical_type::USER,
                     logical_type::TABLE,
                     logical_type::FUNCTION,
@@ -163,8 +152,6 @@ TEST_CASE("catalog::encoder_domains::a_type_the_gate_refuses_is_not_written_as_a
 }
 
 TEST_CASE("catalog::encoder_domains::a_composite_without_its_extension_is_refused_not_dereferenced") {
-    // The flat writer must not static_cast and dereference the extension pointer
-    // unconditionally: null for a bare composite, wrong-kind for a set_alias() one.
     const logical_type composites[] = {logical_type::DECIMAL,
                                        logical_type::LIST,
                                        logical_type::ARRAY,

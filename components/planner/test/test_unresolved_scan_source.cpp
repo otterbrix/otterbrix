@@ -22,20 +22,8 @@
 #include <memory_resource>
 #include <string>
 
-// A named table that never resolved arrives at plan generation carrying INVALID_OID --
-// the exact value a no-FROM SELECT carries. create_plan_match already tells the two
-// apart through the node's own source declaration and refuses the named case with a
-// null plan; these tests pin the CALLERS of that refusal, where the null used to be
-// swallowed instead of propagated:
-//   - create_plan_aggregate folded a missing scan child into the no-table sentinel
-//     transfer_scan, which FABRICATES one synthetic row -- a SELECT over a table that
-//     does not exist would answer a row instead of an error;
-//   - create_plan_delete / create_plan_update pushed the null through set_children;
-//     the streaming executor admits a childless DML sink as a sourceless sink, so the
-//     statement commits nothing and reports SUCCESS;
-//   - create_plan_union pushed a refused arm through set_children the same way.
-// The refusal contract is a null plan ROOT (the executor maps it to
-// create_physical_plan_error); a swallowed null child surfaces as nothing at all.
+// A named table that never resolved carries INVALID_OID, same as a no-FROM SELECT; create_plan_match
+// refuses the named case with a null root, which these tests' CALLERS must propagate, not swallow.
 
 namespace {
 
@@ -46,14 +34,10 @@ namespace {
     constexpr components::catalog::oid_t known_oid{16400};
 
     lp::node_aggregate_ptr make_named_aggregate(std::pmr::memory_resource* res) {
-        // The table is NAMED but no resolved oid ever arrived (table_oid() stays
-        // INVALID_OID): the shape a lost upstream refusal hands to the planner.
         return lp::make_node_aggregate(res, core::dbname_t{std::string{"edb"}}, core::relname_t{std::string{"ghost"}});
     }
 
-    // Count the rows the plan's source answers without any pipeline: the no-table
-    // sentinel branch of transfer_scan::source_next never awaits, so its future is
-    // ready synchronously. Returns SIZE_MAX when the root is not a synchronous source.
+    // The sentinel scan never awaits, so this reads synchronously; SIZE_MAX means the root isn't that scan.
     size_t fabricated_rows(const ops::operator_ptr& plan, components::pipeline::context_t* ctx) {
         if (plan->type() != ops::operator_type::transfer_scan) {
             return SIZE_MAX;
@@ -91,9 +75,7 @@ namespace {
 TEST_CASE("physical_plan_generator::unresolved_source::no_from_select_keeps_the_synthetic_row") {
     harness_t h;
 
-    // No FROM at all: an empty relname declares the synthetic one-row source, which
-    // is the correct plan for `SELECT 1`-style statements. Pinned so the named-table
-    // refusal below cannot over-reach into this shape.
+    // An empty relname is the no-FROM shape (`SELECT 1`); pinned so the refusal tests below can't over-reach here.
     auto agg = lp::make_node_aggregate(&h.arena, core::dbname_t{std::string{}}, core::relname_t{std::string{}});
     auto plan = services::planner::create_plan(h.context, h.registry, agg, lp::limit_t::unlimit(), nullptr);
 
@@ -121,9 +103,6 @@ TEST_CASE("physical_plan_generator::unresolved_source::aggregate_over_an_unresol
     auto plan = services::planner::create_plan(h.context, h.registry, agg, lp::limit_t::unlimit(), nullptr);
 
     if (plan) {
-        // The defective lowering: the named-but-unresolved table fell into the
-        // no-FROM sentinel scan, which answers a fabricated row for a table that
-        // does not exist. Show the row count the caller would receive.
         CHECK(fabricated_rows(plan, &h.pipeline_ctx) == 0);
     }
     INFO("a table that never resolved must refuse with a null root, not scan a synthetic row");
@@ -133,8 +112,7 @@ TEST_CASE("physical_plan_generator::unresolved_source::aggregate_over_an_unresol
 TEST_CASE("physical_plan_generator::unresolved_source::aggregate_with_an_unlowerable_match_child_refuses") {
     harness_t h;
 
-    // The match child NAMES the table and create_plan_match refuses it (null); the
-    // aggregate used to swallow that null and degrade into the sentinel scan.
+    // The match child refuses (named, no predicate); the aggregate must propagate that null, not the sentinel scan.
     auto agg = make_named_aggregate(&h.arena);
     agg->append_child(
         lp::make_node_match(&h.arena, core::dbname_t{std::string{"edb"}}, core::relname_t{std::string{"ghost"}}, nullptr));
@@ -166,8 +144,6 @@ TEST_CASE("physical_plan_generator::unresolved_source::union_arm_refusal_reaches
 TEST_CASE("physical_plan_generator::unresolved_source::delete_over_an_unresolved_table_refuses") {
     harness_t h;
 
-    // The exact shape `DELETE FROM edb.ghost` hands over when the upstream refusal is
-    // lost: a named target with INVALID_OID and an all_true predicate.
     auto match = lp::make_node_match(&h.arena,
                                      core::dbname_t{std::string{"edb"}},
                                      core::relname_t{std::string{"ghost"}},
@@ -188,10 +164,7 @@ TEST_CASE("physical_plan_generator::unresolved_source::delete_over_an_unresolved
 TEST_CASE("physical_plan_generator::unresolved_source::delete_with_an_unlowerable_match_child_refuses") {
     harness_t h;
 
-    // A match child create_plan_match refuses outright (named, no predicate, no
-    // resolved table): the null child used to go straight through set_children,
-    // leaving a childless DML sink -- the streaming executor admits that shape as a
-    // sourceless sink, so the DELETE commits nothing and reports SUCCESS.
+    // A refused match child, swallowed, would leave a childless DML sink that runs as a no-op reporting SUCCESS.
     auto match = lp::make_node_match(&h.arena,
                                      core::dbname_t{std::string{"edb"}},
                                      core::relname_t{std::string{"ghost"}},
@@ -205,7 +178,7 @@ TEST_CASE("physical_plan_generator::unresolved_source::delete_with_an_unlowerabl
     auto plan = services::planner::create_plan(h.context, h.registry, del, lp::limit_t::unlimit(), nullptr);
 
     if (plan) {
-        CHECK(plan->left() != nullptr); // the silent no-op shape: a DML sink with no scan child
+        CHECK(plan->left() != nullptr);
     }
     REQUIRE(plan == nullptr);
 }
@@ -214,9 +187,7 @@ TEST_CASE("physical_plan_generator::unresolved_source::delete_with_an_unlowerabl
     harness_t h;
     h.context.known_oids.insert(known_oid);
 
-    // The target IS resolved; the USING source is the child that fails to lower
-    // (node_type::drop_t has no arm in create_plan's dispatch). The null source used
-    // to go through set_children as the semi-join's missing right side.
+    // node_type::drop_t has no arm in create_plan's dispatch; swallowed, it'd stand as the semi-join's missing side.
     auto match = lp::make_node_match(&h.arena,
                                      core::dbname_t{std::string{"edb"}},
                                      core::relname_t{std::string{"t"}},

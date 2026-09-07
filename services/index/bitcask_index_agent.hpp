@@ -1,10 +1,7 @@
 #pragma once
 
-// The hashed family's agent and index. Holds bitcask_index_disk_t by value (not type-erased) so
-// backend capabilities resolve by type; see btree_index_agent.hpp for the ordered twin and
-// index_agent_contract.hpp for why they are separate classes.
-//
-// Also holds the buffer of this transaction's uncommitted writes, merged into read_rows below.
+// Holds bitcask_index_disk_t by value, not type-erased, so backend capabilities resolve by type
+// -- see index_agent_contract.hpp for why the hashed and ordered families aren't a common base.
 
 #include "bitcask_index_disk.hpp"
 #include "index_agent_contract.hpp"
@@ -51,28 +48,16 @@ namespace services::index {
         // Must name the concrete class: actor_zeta::pmr::deleter_t deallocates sizeof(static type).
         using agent_ptr_t = std::unique_ptr<bitcask_index_agent_t, actor_zeta::pmr::deleter_t>;
 
-        // Published to the planner via manager_index_t::get_indexed_descriptions; the only thing
-        // that distinguishes an ordered index from a hashed one on the same column (a legal
-        // pair) and lets `USING hash` mean anything to the planner.
+        // The only thing distinguishing an ordered index from a hashed one on the same column.
         static constexpr components::logical_plan::index_type index_type_v =
             components::logical_plan::index_type::hashed;
 
-        // false: a hash bucket has no ordering. Read at compile time by manager_index_t so a
-        // range predicate on this family is refused before send, not after a round trip to
-        // read_rows() below.
+        // Read at compile time to refuse a range predicate before send, not after a round trip to read_rows().
         static constexpr bool supports_ordered_probe_v = false;
 
-        // Publishes a spawned agent only if its store opened; on failure the half-built agent is
-        // destroyed here and the index stays UNREGISTERED (costs a full scan; aborting would cost
-        // the whole engine its start -- see integration test test_index_bootstrap_failure).
-        //
-        // Two steps because the store is a non-movable member: spawn builds it in place (no I/O),
-        // then open_store() runs before the agent's address is given out.
-        //
-        // committed_commit_ids: WAL-replay COMMIT ids forwarded to the txn-log recover gate
-        // (empty on fresh bootstrap); the ordered family has no txn log so its factory takes
-        // none. Commit ids, not txn ids -- see the gate in bitcask_index_disk.cpp. index_oid is
-        // pg_index.indexrelid; on-disk path is ${path_db}/${table_oid}/${index_oid}/.
+        // On failure the half-built agent is destroyed and the index stays unregistered (full scan
+        // cost) rather than aborting the engine's start (see test_index_bootstrap_failure). index_oid
+        // is pg_index.indexrelid; on-disk path is ${path_db}/${table_oid}/${index_oid}/.
         [[nodiscard]] static core::result_wrapper_t<agent_ptr_t>
         create(std::pmr::memory_resource* resource,
                const path_t& path_db,
@@ -83,9 +68,8 @@ namespace services::index {
                log_t& log,
                std::pmr::set<std::uint64_t> committed_commit_ids);
 
-        // Store built by value in the member-init list (bitcask_index_disk_t is non-movable);
-        // the ctor does no I/O so it cannot fail -- open_store() below is the fallible
-        // half, called only from create(). Public because actor_zeta::spawn placement-news the actor.
+        // The ctor does no I/O so it cannot fail; open_store() below is the fallible half, called
+        // only from create(). Public because actor_zeta::spawn placement-news the actor.
         bitcask_index_agent_t(std::pmr::memory_resource* resource,
                               const path_t& path_db,
                               components::catalog::oid_t table_oid,
@@ -112,9 +96,8 @@ namespace services::index {
         read_rows(session_id_t session, components::expressions::compare_type compare, value_t key, uint64_t txn_id);
         unique_future<core::error_t> force_flush(session_id_t session);
 
-        // Bound in the contract's order: this is what makes msg_id<bitcask_index_agent_t, &drop>
-        // and msg_id<btree_index_agent_t, &drop> the same number, so manager_index_t can send to
-        // a bare address.
+        // Order must match btree_index_agent_t's dispatch_traits exactly: msg_id positions are what
+        // let manager_index_t send to a bare address across both families.
         using dispatch_traits = actor_zeta::implements<index_agent_contract,
                                                        &bitcask_index_agent_t::drop,
                                                        &bitcask_index_agent_t::clear,
@@ -131,31 +114,22 @@ namespace services::index {
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
 
     private:
-        // Called by create() only, immediately after spawn; the agent is destroyed unpublished
-        // if this fails, so every handler below can assume the store is open.
+        // Called only by create(), right after spawn; failure destroys the agent unpublished.
         [[nodiscard]] core::error_t open_store();
 
-        // Runs the segment compaction the store's rotations left owed, after a successful write,
-        // on this agent's own thread; see the definition in bitcask_index_agent.cpp for why not
-        // a self-sent message. Returns the write's error if any, else the merge's.
+        // Runs post-write compaction the store's rotations left owed, on this agent's own thread.
+        // Returns the write's error if any, else the merge's.
         [[nodiscard]] core::error_t pay_merge_debt(core::error_t write_error);
 
         log_t log_;
         components::catalog::oid_t table_oid_;
-        // By value and always open (create() is the only door). Concrete type, not a pointer:
-        // the long-key loader load_hash_key_at and the durable txn log are reachable only
-        // through it.
+        // Concrete, not a pointer: load_hash_key_at and the durable txn log are reachable only through it.
         bitcask_index_disk_t store_;
         bool is_dropped_{false};
 
-        // Per-transaction buckets of uncommitted writes. Keys are stored ENCODED
-        // (codec::append_logical_value over the normalized key), matching exactly what
-        // bitcask_index_disk_t::key_bytes_for_hash hashes/memcmps on the committed side, and
-        // normalized the same way (narrow ints widened to BIGINT/UBIGINT) so a SMALLINT probe
-        // matches a BIGINT-stored key.
-        //
-        // Bucket 0 = committed-but-not-yet-durable: rebuild stages into it, commit_inserts
-        // publishes it alongside whichever transaction is committing.
+        // Keys are encoded exactly as bitcask_index_disk_t::key_bytes_for_hash hashes/memcmps (narrow
+        // ints widened to BIGINT/UBIGINT, so a SMALLINT probe matches a BIGINT-stored key). Bucket 0
+        // is committed-but-not-yet-durable, published by commit_inserts alongside the committing transaction.
         using pending_row_t = std::pair<std::pmr::string, int64_t>;
         using pending_rows_t = std::pmr::vector<pending_row_t>;
         using pending_txn_map_t = std::pmr::unordered_map<uint64_t, pending_rows_t>;
@@ -165,8 +139,7 @@ namespace services::index {
         // Normalized key bytes only, no row id -- the bucket carries that separately.
         [[nodiscard]] std::pmr::string encode_key(const value_t& key) const;
 
-        // Publishes and erases one bucket pair ({txn_id}, 0); shared between the insert and
-        // delete legs via the `apply` callable, the only thing that differs between them.
+        // Publishes/erases the ({txn_id}, 0) pair; `apply` is the only difference between insert and delete.
         template<typename ApplyFn>
         [[nodiscard]] core::error_t publish_buckets(pending_txn_map_t& buckets, uint64_t txn_id, ApplyFn&& apply);
     };

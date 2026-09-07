@@ -5,16 +5,9 @@
 #include <components/logical_plan/node.hpp>
 #include <string>
 
-// Work done ONLY to feed a log line must not happen when that line is not logged.
-//
-// A counter test rather than a "wrap it in an if" because gating inside log.hpp would NOT have
-// helped: a trace argument is evaluated at the CALL SITE before the logging function is entered,
-// so `trace(log_, "... {}", plan.sub_queries.back()->to_string())` rendered the whole logical-plan
-// tree into a string on every statement, at every log level including off, and threw it away.
-// Only gating the call SITE avoids it.
-//
-// The counter sits in node_t::to_string, so it also catches anyone else who starts rendering
-// plans on the hot path for a message nobody reads.
+// Gating inside log.hpp wouldn't help: trace()'s arguments are evaluated at the call site
+// regardless of log level, so only gating the call site avoids stringifying the plan on every
+// statement. The counter lives in node_t::to_string, catching any other hot-path renderer.
 TEST_CASE("integration::cpp::test_log_laziness::plan_is_not_stringified_when_logging_is_off") {
     auto config = test_create_config(integration_fixture_path("test_log_laziness/off"));
     test_clear_directory(config);

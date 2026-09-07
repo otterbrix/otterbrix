@@ -1,6 +1,6 @@
-// operator_dynamic_cascade_delete_t walks plan.steps and deletes one classid template per
-// step; a plan missing a step for the seed silently drops nothing and reports success.
-// Unit tests over the planner alone: fetch_deps is a plain lambda, no disk/actors/timing.
+// operator_dynamic_cascade_delete_t walks plan.steps and deletes one classid template per step,
+// so a plan missing a step for the seed would silently drop nothing while reporting success;
+// these are unit tests over the planner alone, with fetch_deps a plain lambda (no disk/actors/timing).
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -24,8 +24,6 @@ namespace {
         dependency_t dep;
     };
 
-    // Mirrors the shape of manager_disk_t::collect_dependents: rows matching
-    // (refclassid, refobjid), in insertion order.
     fetch_deps_fn make_fetch(const std::vector<edge_t>& edges) {
         return [&edges](std::pmr::memory_resource* mr, oid_t cls, oid_t oid) {
             std::pmr::vector<dependency_t> out{mr};
@@ -57,29 +55,25 @@ namespace {
         return n;
     }
 
-} // namespace
+}
 
-// The allow-path of RESTRICT must still be a DROP.
 TEST_CASE("catalog::cascade_plan::restrict_with_no_dependencies_still_drops_the_seed") {
     core::pmr::otterbrix_resource resource;
-    const std::vector<edge_t> edges{}; // nothing depends on the seed
+    const std::vector<edge_t> edges{};
 
     auto plan = plan_drop(&resource, kClass, oid_t{16400}, drop_behavior_t::restrict_, make_fetch(edges));
 
-    // RESTRICT has nothing to refuse here, so the statement is allowed...
     REQUIRE(plan.status == ddl_status::ok);
-    // ...and "allowed" has to mean the seed's own catalog rows get deleted.
     INFO("steps planned: " << plan.steps.size());
     REQUIRE(plan.steps.size() == 1);
     CHECK(plan.steps.back().classid == kClass);
     CHECK(plan.steps.back().objid == oid_t{16400});
 }
 
-// The auto/internal children RESTRICT allows must be in the plan too, seed last.
 TEST_CASE("catalog::cascade_plan::restrict_drops_the_auto_children_it_allows") {
     core::pmr::otterbrix_resource resource;
     const std::vector<edge_t> edges{
-        {kClass, oid_t{16400}, {kClass, oid_t{16401}, deptype::auto_dep}}, // an index on the table
+        {kClass, oid_t{16400}, {kClass, oid_t{16401}, deptype::auto_dep}},
     };
 
     auto plan = plan_drop(&resource, kClass, oid_t{16400}, drop_behavior_t::restrict_, make_fetch(edges));
@@ -106,11 +100,9 @@ TEST_CASE("catalog::cascade_plan::restrict_still_refuses_on_a_normal_dependency"
     CHECK(plan.steps.empty());
 }
 
-// An object reachable through two edges is one object, planned once (SET not multiset).
 TEST_CASE("catalog::cascade_plan::a_diamond_dependent_is_planned_once") {
     core::pmr::otterbrix_resource resource;
-    // seed 16400 -> {16401, 16402}; both -> 16403 (diamond: a constraint reachable
-    // from its own table AND from the table it references).
+    // seed 16400 -> {16401, 16402}; both -> 16403 (the diamond: one constraint reachable two ways).
     const std::vector<edge_t> edges{
         {kClass, oid_t{16400}, {kClass, oid_t{16401}, deptype::auto_dep}},
         {kClass, oid_t{16400}, {kClass, oid_t{16402}, deptype::auto_dep}},
@@ -141,8 +133,8 @@ TEST_CASE("catalog::cascade_plan::a_back_edge_is_reported_as_a_cycle") {
     CHECK(plan.steps.empty());
 }
 
-// DROP with neither word written means RESTRICT (matches PostgreSQL, was CASCADE before):
-// drop_behavior_of maps the grammar's shared DROP_RESTRICT token to restrict_ directly.
+// DROP with neither word written means RESTRICT, matching PostgreSQL: drop_behavior_of maps the
+// grammar's shared DROP_RESTRICT token to restrict_ directly.
 TEST_CASE("catalog::cascade_plan::the_unwritten_form_means_restrict") {
     core::pmr::otterbrix_resource resource;
     // A NORMAL dependency: the one thing RESTRICT refuses.
@@ -150,13 +142,11 @@ TEST_CASE("catalog::cascade_plan::the_unwritten_form_means_restrict") {
         {kClass, oid_t{16400}, {kConstraint, oid_t{16402}, deptype::normal}},
     };
 
-    // restrict_ — written or defaulted, they are one value — is refused.
     auto bare = plan_drop(&resource, kClass, oid_t{16400}, drop_behavior_t::restrict_, make_fetch(edges));
     REQUIRE(bare.status == ddl_status::restrict_blocked);
     CHECK(bare.blocking_oid == oid_t{16402});
     CHECK(bare.steps.empty());
 
-    // Only a written CASCADE drops through the 'n' edge, seed last.
     auto cascaded = plan_drop(&resource, kClass, oid_t{16400}, drop_behavior_t::cascade_, make_fetch(edges));
     REQUIRE(cascaded.status == ddl_status::ok);
     CHECK(has_step(cascaded, kConstraint, oid_t{16402}));
@@ -176,7 +166,6 @@ TEST_CASE("catalog::cascade_plan::only_a_written_restrict_refuses") {
 // makes no promise the oid alone is unique, so a future per-catalog counter must not regress this.
 TEST_CASE("catalog::cascade_plan::two_objects_sharing_an_oid_are_two_steps") {
     core::pmr::otterbrix_resource resource;
-    // Same oid 16401 in two different catalogs: two distinct objects.
     const std::vector<edge_t> edges{
         {kClass, oid_t{16400}, {kClass, oid_t{16401}, deptype::auto_dep}},
         {kClass, oid_t{16400}, {kConstraint, oid_t{16401}, deptype::auto_dep}},

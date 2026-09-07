@@ -26,11 +26,9 @@
 #include <thread>
 #include <unistd.h>
 
-// Txn ids are reused across restarts, while wal ids keep growing, so a COMMIT marker from a
-// previous process could vouch for physical records the next one wrote under the recycled id.
-// Fixed rule: a physical record at wal id r belongs to a committed transaction only if a COMMIT
-// marker for the same txn id sits strictly greater than r. Sensitivity is proved by appending
-// the missing COMMIT for the second incarnation, which then replays both inserts.
+// Txn ids are reused across restarts while wal ids keep growing, so a COMMIT marker from a prior
+// process could vouch for records written under a recycled id. Fixed rule: a record at wal id r
+// is committed only if a COMMIT for the same txn id sits strictly greater than r.
 
 using namespace services::wal;
 using namespace components::session;
@@ -42,7 +40,6 @@ namespace {
     constexpr auto kMainDb = catalog_ns::well_known_oid::main_database;
     constexpr catalog_ns::oid_t kTableOid = 16711;
 
-    // pid-qualified: two concurrent runs must not read each other's journal.
     std::filesystem::path base_path() {
         return std::filesystem::path{"/tmp/otterbrix_test_wal_txn_reuse_" + std::to_string(::getpid())};
     }
@@ -63,9 +60,7 @@ namespace {
         return batch;
     }
 
-    // One process lifetime of the journal; constructing a second instance over the same path IS
-    // the restart, since the wal id allocator resumes above the surviving records while the
-    // caller is free to reuse a txn id.
+    // A second instance over the same path IS a restart: the wal id allocator resumes above survivors.
     struct journal_session_t {
         explicit journal_session_t(const std::filesystem::path& path)
             : resource_()
@@ -90,9 +85,7 @@ namespace {
             manager_.reset();
         }
 
-        // Built on the fixture's own arena, mirroring production; resource_ is declared first so
-        // it outlives ~journal_session_t's teardown of manager_, and to_batch carries that arena
-        // into the batch the message holds.
+        // resource_ is declared first so it outlives ~journal_session_t's teardown of manager_.
         std::pmr::vector<data_chunk_t> make_insert_batch(size_t rows) {
             return to_batch(gen_data_chunk(rows, &resource_));
         }
@@ -185,7 +178,6 @@ TEST_CASE("wal::txn_reuse::bootstrap_replay_rejects_the_recycled_uncommitted_txn
         orphan_insert_id = s.insert(kRecycledTxn, 4);
     }
 
-    // Confirms the ids actually moved the way the setup assumes.
     REQUIRE(committed_insert_id < commit_marker_id);
     REQUIRE(commit_marker_id < orphan_insert_id);
 
@@ -225,8 +217,7 @@ TEST_CASE("wal::txn_reuse::bootstrap_replay_rejects_the_recycled_uncommitted_txn
     std::filesystem::remove_all(path);
 }
 
-// wal_worker_t::load (the CREATE INDEX backfill catchup) carries the same filter, so the
-// backfill could index rows of a transaction that never committed.
+// wal_worker_t::load (the backfill catchup) shares this filter, risking an uncommitted transaction's rows.
 TEST_CASE("wal::txn_reuse::catchup_load_rejects_the_recycled_uncommitted_txn") {
     const auto path = base_path() / "load";
     std::filesystem::remove_all(path);
@@ -263,8 +254,7 @@ TEST_CASE("wal::txn_reuse::catchup_load_rejects_the_recycled_uncommitted_txn") {
     std::filesystem::remove_all(path);
 }
 
-// The batch is unobservable after send, so the assertion is made on make_insert_batch's own
-// output instead.
+// The batch is unobservable after send, so this asserts on make_insert_batch's own output instead.
 TEST_CASE("wal::txn_reuse::the_insert_payload_is_built_on_the_fixture_arena") {
     const auto path = base_path() / "payload_arena";
     std::filesystem::remove_all(path);

@@ -1,13 +1,8 @@
-// Guards a literal shared fixture root: two concurrent test binaries pointed at the same
-// path both call remove_all()+create_directories() on it, corrupting each other's fixtures.
-// Measured: 10 runs of two concurrent processes over aggregate_filter::* gave 8 exits of 42
-// and 12 silent-green exits (the dangerous half - a run validated a database it never wrote).
-// Two independent checks, for two escape routes: (1) test_create_config rejects any
-// unqualified path reaching it (see test_config.hpp), regardless of how it was built;
-// (2) the source scan below rejects a literal shared root anywhere in this directory's
-// sources, for paths that never reach test_create_config (raw create_config calls, logger
-// dirs, etc). A CI grep rule was rejected as a third option: it reports at review time, not
-// to whoever is running the binary.
+// Guards a literal shared fixture root: two concurrent test binaries pointed at the same path
+// both call remove_all()+create_directories() on it, corrupting each other's fixtures. Measured:
+// 10 runs of two concurrent processes over aggregate_filter::* gave 8 exits of 42 and 12
+// silent-green exits (the dangerous half - a run validated a database it never wrote). A CI grep
+// rule was rejected: it reports at review time, not to whoever is running the binary.
 
 #include "integration_fixture_path.hpp"
 
@@ -33,8 +28,7 @@ namespace {
         return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
     }
 
-    // Anchored match, not substring search: a floating search would also flag "/tmpfs" or
-    // "/var/tmp/x" as naming this root.
+    // Anchored, not a substring search, or a floating search would also flag "/tmpfs" as this root.
     bool body_names_root(const std::string& body, const std::string& root) {
         if (body.compare(0, root.size(), root) != 0) {
             return false;
@@ -42,9 +36,7 @@ namespace {
         return body.size() == root.size() || body[root.size()] == '/';
     }
 
-    // A small lexer, not a line grep: this file's own comments mention the root text
-    // repeatedly, so a text-based scan would flag itself. Comments, char literals and raw
-    // strings are skipped.
+    // A small lexer, not a line grep: this file's own comments mention the root text repeatedly.
     std::vector<std::size_t> root_naming_literal_lines(const std::string& src, const std::string& root) {
         std::vector<std::size_t> lines;
         const std::size_t n = src.size();
@@ -142,7 +134,7 @@ namespace {
         return buf.str();
     }
 
-} // namespace
+}
 
 // FAIL() inside test_create_config can't be asserted on directly, so the predicate is
 // pulled out as a pure function and tested here.
@@ -154,7 +146,6 @@ TEST_CASE("integration::cpp::fixture_root::qualified_paths_are_told_from_unquali
     CHECK(integration_fixture_path_is_qualified(integration_fixture_path("test_thing/leaf")));
     CHECK(integration_fixture_path_is_qualified(integration_fixture_path("test_thing") / "deeper" / "still"));
 
-    // Outside the shared root: another process's remove_all() can't reach it, so it's fine.
     CHECK(integration_fixture_path_is_qualified(std::filesystem::path{"/var"} / "lib" / "somewhere"));
     CHECK(integration_fixture_path_is_qualified(std::filesystem::path{"relative"} / "build" / "dir"));
 
@@ -162,12 +153,9 @@ TEST_CASE("integration::cpp::fixture_root::qualified_paths_are_told_from_unquali
     CHECK_FALSE(integration_fixture_path_is_qualified(shared / "test_foo"));
     CHECK_FALSE(integration_fixture_path_is_qualified(shared / "otterbrix" / "integration" / "test_foo"));
 
-    // A second pid convention would still split the fixture root in two.
     CHECK_FALSE(integration_fixture_path_is_qualified(
         shared / ("test_foo_" + std::to_string(static_cast<long>(::getpid())))));
 
-    // Component-wise, not string-prefix: starts_with() would misclassify this sibling
-    // directory (root's name is a string-prefix of it) as qualified.
     CHECK_FALSE(integration_fixture_path_is_qualified(shared / (root.filename().string() + "9")));
 
     CHECK(integration_fixture_path_is_qualified(root / "leaf" / "."));
@@ -175,18 +163,18 @@ TEST_CASE("integration::cpp::fixture_root::qualified_paths_are_told_from_unquali
 
 TEST_CASE("integration::cpp::fixture_root::the_source_scan_reads_string_literals_only") {
     const std::string root = integration_fixture_shared_root().string();
-    const std::string src = "// a note about " + root + "/old_fixture\n"          // 1: comment
-                            "/* a block about\n"                                  // 2
-                            "   " + root + "/another */\n"                        // 3: comment
-                            "auto a = f(\"" + root + "/leaf\");\n"                // 4: HIT
-                            "auto b = g(\"" + root + "\");\n"                     // 5: HIT (bare root)
-                            "const char* s = \"harmless\";\n"                     // 6
-                            "char q = '\\\"';\n"                                  // 7: a quote in a char literal
-                            "auto c = h(\"" + root + "fs/not_ours\");\n"          // 8: not a root of ours
-                            "auto d = i(\"/var" + root + "/not_ours\");\n"        // 9: does not start at the root
-                            "auto e = j(R\"_(" + root + "/in_raw)_\");\n"         // 10: HIT (raw string)
-                            "auto n = 1'000'000;\n"                               // 11: digit separators
-                            "auto k = l(\"" + root + "/after_separators\");\n";   // 12: HIT
+    const std::string src = "// a note about " + root + "/old_fixture\n"
+                            "/* a block about\n"
+                            "   " + root + "/another */\n"
+                            "auto a = f(\"" + root + "/leaf\");\n"
+                            "auto b = g(\"" + root + "\");\n"
+                            "const char* s = \"harmless\";\n"
+                            "char q = '\\\"';\n"                                  // a quote in a char literal
+                            "auto c = h(\"" + root + "fs/not_ours\");\n"          // not a root of ours
+                            "auto d = i(\"/var" + root + "/not_ours\");\n"        // does not start at the root
+                            "auto e = j(R\"_(" + root + "/in_raw)_\");\n"
+                            "auto n = 1'000'000;\n"
+                            "auto k = l(\"" + root + "/after_separators\");\n";
 
     const std::vector<std::size_t> hits = root_naming_literal_lines(src, root);
     const std::vector<std::size_t> expected{4, 5, 10, 12};

@@ -1,11 +1,7 @@
-// table_storage_adapter_t::fetch must not swallow column_fetch_state::fetch_error: with
-// result_outlives_pins = true, big strings route through fetch_string_owned, and an
-// unresolved overflow marker writes data_corruption into state.fetch_error that a `void`
-// fetch has nobody to read — the caller (agent_disk_t::storage_fetch_inner) ships an empty
-// payload as success.
-//
-// Fix shape: storage_t::fetch returns core::result_wrapper_t<bool>, same as
-// fetch_next_batch's scan_error.
+// table_storage_adapter_t::fetch must not swallow column_fetch_state::fetch_error: with big strings
+// routed through fetch_string_owned, an unresolved overflow marker writes data_corruption into
+// state.fetch_error that a `void` fetch has nobody to read, so the caller ships an empty payload as
+// success. Fix shape: storage_t::fetch returns core::result_wrapper_t<bool>, same as scan_error.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -40,9 +36,8 @@ namespace {
             , buffer_manager(&resource, fs, buffer_pool) {}
     };
 
-    // Overwrites the block id named by the sole big-string marker of `segment` (same layout
-    // surgery as test_big_strings.cpp: [dict_size][dict_end] header, one 16-byte marker at
-    // dict_end - dict_size). The REQUIREs fail loudly if that layout ever changes.
+    // Overwrites the block id named by the sole big-string marker: [dict_size][dict_end] header,
+    // one 16-byte marker at dict_end - dict_size. The REQUIREs fail loudly if that layout changes.
     void overwrite_only_overflow_marker(adapter_env_t& env, column_segment_t& segment, uint64_t new_block_id) {
         auto pinned = env.buffer_manager.pin(segment.block);
         REQUIRE_FALSE(pinned.has_error());
@@ -55,7 +50,7 @@ namespace {
         auto* marker = base + dict_end - dict_size;
         uint64_t named_block = 0;
         std::memcpy(&named_block, marker, sizeof(uint64_t));
-        REQUIRE(named_block >= tstorage::MAXIMUM_BLOCK); // really a transient overflow id
+        REQUIRE(named_block >= tstorage::MAXIMUM_BLOCK);
         std::memcpy(marker, &new_block_id, sizeof(uint64_t));
     }
 
@@ -64,8 +59,6 @@ namespace {
         column_segment_t* payload_segment{nullptr};
     };
 
-    // One-big-string table: (id BIGINT, payload STRING) with `big` in row 0.
-    // Keeps a pointer to the payload column's segment so a case can corrupt its marker.
     built_table_t build_big_string_table(adapter_env_t& env, tstorage::block_manager_t& bm, const std::string& big) {
         built_table_t out;
         std::vector<column_definition_t> columns;
@@ -91,7 +84,7 @@ namespace {
         return out;
     }
 
-} // namespace
+}
 
 TEST_CASE("storage_adapter: fetch returns owned big-string bytes on the intact path") {
     adapter_env_t env;
@@ -107,7 +100,6 @@ TEST_CASE("storage_adapter: fetch returns owned big-string bytes on the intact p
     vector_t row_ids(&env.resource, logical_type::BIGINT, 1);
     row_ids.data<int64_t>()[0] = 0;
 
-    // fetch_visibility_t has no default, so SNAPSHOT is named explicitly.
     auto fetch_r = storage.fetch(out, row_ids, 1, {}, transaction_data{}, fetch_visibility_t::SNAPSHOT);
     REQUIRE_FALSE(fetch_r.has_error());
     REQUIRE(out.size() == 1);
@@ -121,7 +113,7 @@ TEST_CASE("storage_adapter: a fetch failure reaches the storage caller as an err
     const std::string big(5000, 'r');
     auto built = build_big_string_table(env, bm, big);
 
-    // The exact shape of the original crash report: an unregistered transient-domain id.
+    // The shape of the original crash report: an unregistered transient-domain id.
     overwrite_only_overflow_marker(env, *built.payload_segment, tstorage::MAXIMUM_BLOCK + 424242);
 
     components::storage::table_storage_adapter_t adapter(*built.table, &env.resource);
@@ -132,7 +124,6 @@ TEST_CASE("storage_adapter: a fetch failure reaches the storage caller as an err
     vector_t row_ids(&env.resource, logical_type::BIGINT, 1);
     row_ids.data<int64_t>()[0] = 0;
 
-    // Pre-fix this returned an empty payload as if the read succeeded (observed: 0 == 5000).
     auto fetch_r = storage.fetch(out, row_ids, 1, {}, transaction_data{}, fetch_visibility_t::SNAPSHOT);
     REQUIRE(fetch_r.has_error());
     REQUIRE(fetch_r.error().type == core::error_code_t::data_corruption);

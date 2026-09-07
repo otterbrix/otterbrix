@@ -1,17 +1,5 @@
-// The read-cap on an Index Scan limits ROWS, not candidate ids. The index answer is a SUPERSET
-// (manager_index), and the point fetch drops rows the snapshot may not see, so the LIMIT cap
-// must sit BELOW that filter — cutting the id list to `limit` before the fetch can discard the
-// very ids whose rows survive, answering LIMIT 7 with three rows.
-//
-// The cap moved from the operator's emit loop onto storage_fetch's `limit` itself (the agent
-// stops once it has handed out `limit` VISIBLE rows, matching full_scan's post-visibility cap
-// on storage_fetch_next_batch) — a performance change that must not change the answer, so this
-// file asserts the answer, not the clock.
-//
-// The snapshot is what makes the case bite: a writer commits rows sorting BELOW everything the
-// reader can see, so the reader's first 1024-id fetch window produces ZERO visible rows and the
-// cap must survive into the second window — separating "budget spent on rows produced" from
-// "budget spent on ids requested". A head shorter than a window would let both spellings pass.
+// Capping the id list before the visibility filter can discard survivors: the index answers a
+// SUPERSET, so storage_fetch enforces the cap on VISIBLE rows post-fetch; this file checks the answer, not timing.
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"
@@ -25,14 +13,13 @@ using namespace components::cursor;
 
 namespace {
 
-    // Seeded keys start high so every late key sorts BELOW all of them.
-    constexpr unsigned kSeedRows = 3000; // ids 10000 .. 12999, val == id
+    constexpr unsigned kSeedRows = 3000;
     constexpr int64_t kSeedIdBase = 10000;
     // > DEFAULT_VECTOR_CAPACITY (1024): the invisible head fills a whole fetch window.
-    constexpr unsigned kLateRows = 1200; // ids 1000 .. 2199, committed after the snapshot
+    constexpr unsigned kLateRows = 1200;
     constexpr int64_t kLateIdBase = 1000;
     constexpr int64_t kLateValBase = 1000000;
-    constexpr int64_t kPredicate = 5; // WHERE id > 5 — matches every row of both sets
+    constexpr int64_t kPredicate = 5; // matches every row of both sets
     constexpr size_t kLimit = 7;
 
     cursor_t_ptr
@@ -51,15 +38,10 @@ namespace {
         return 0;
     }
 
-    // Every returned (id, val) pair IN REPLY ORDER. Order matters here: the claim
-    // under test is that one answer is the other's PREFIX, which a set comparison
-    // could not distinguish from "the same rows in a different order".
+    // Order matters here (a PREFIX check); a 0-column drain chunk means an empty source, read as zero rows.
     std::vector<std::pair<int64_t, int64_t>> rows_of(const cursor_t_ptr& cur) {
         std::vector<std::pair<int64_t, int64_t>> out;
         REQUIRE(cur->is_success());
-        // A source that produced nothing answers with the 0-column drain chunk (or with no
-        // chunk at all). Report that as ZERO ROWS so a short answer fails on the row count
-        // the case is about, not on a column lookup inside it.
         if (cur->chunks().empty() || cur->chunks().front().column_count() == 0) {
             return out;
         }
@@ -107,13 +89,9 @@ TEST_CASE("integration::cpp::index_scan_limit_cap::capped_answer_is_the_uncapped
         REQUIRE(cur->size() == kSeedRows);
     }
 
-    // READER: takes its snapshot BEFORE the head-of-range rows exist.
     auto reader = otterbrix::session_id_t();
     REQUIRE(exec(dispatcher, reader, "BEGIN;")->is_success());
 
-    // WRITER: commits a whole window's worth of keys BELOW the reader's range. The
-    // reader's index search still answers with their ids — it answers a superset — and
-    // storage_fetch must drop their rows.
     {
         std::stringstream q;
         q << "INSERT INTO LimDb.t (id, val) VALUES ";
@@ -154,9 +132,7 @@ TEST_CASE("integration::cpp::index_scan_limit_cap::capped_answer_is_the_uncapped
     REQUIRE(exec(dispatcher, reader, "COMMIT;")->is_success());
 }
 
-// A cap LARGER than the matched set must not turn into a short answer either: the
-// budget is an upper bound, and running out of rows before running out of budget is
-// the ordinary case, not a boundary the cap may mishandle.
+// The budget is an upper bound; running out of rows before budget is the ordinary case, not a boundary to mishandle.
 TEST_CASE("integration::cpp::index_scan_limit_cap::a_cap_wider_than_the_match_returns_every_row") {
     auto config = test_create_config(integration_fixture_path("test_index_scan_limit_cap/wide"));
     test_clear_directory(config);

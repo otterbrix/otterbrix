@@ -1,40 +1,25 @@
 #pragma once
 
-#include <components/compute/function.hpp>       // compute::function_uid / invalid_function_uid
-#include <components/expressions/expression.hpp> // expressions::expression_ptr (shipped outputs)
-#include <components/types/types.hpp>            // types::complex_logical_type
+#include <components/compute/function.hpp>
+#include <components/expressions/expression.hpp>
+#include <components/types/types.hpp>
 
 #include <cstdint>
 #include <memory_resource>
 #include <string>
 #include <vector>
 
-// Aggregate-pushdown SPEC. A POD, mailbox-safe description of the reduce the
-// owning agent runs over its OWN slice: plain-column GROUP BY keys + builtin
-// SUM/COUNT/MIN/MAX/AVG. The coordinator lowers the stamped aggregate into a
-// pushed_reduce_scan that CARRIES this spec, and the agent rebuilds the EXISTING
-// operator_hash_group from it.
+// The coordinator ships this inside pushed_reduce_scan; the agent rebuilds operator_hash_group from it.
 //
-// R10/R14: NO node_ptr / expression_ptr / variant / any / tuple / shared_ptr anywhere —
-// only POD scalars + std::pmr containers of them + a resolved column-index path. So it may
-// cross the mailbox by value without a non-atomic intrusive-refcount hazard. Every pmr
-// member is constructed on an explicit resource (NO get_default_resource): the struct is
-// NOT default-constructible on purpose (storage_parameters ships the same way —
-// actor_zeta value-args need no default ctor).
+// R10/R14: no node_ptr/expression_ptr/variant/any/tuple/shared_ptr — only POD + pmr containers,
+// so it crosses the mailbox by value without a non-atomic refcount hazard; not default-constructible on purpose.
 //
-// The WHERE predicate is NOT carried here: it rides the mailbox-safe table_filter_t on
-// storage_reduce's `filter` param (built once via transform_predicate). The scan
-// projection likewise rides that call's projected_cols param (single source of truth —
-// NOT duplicated in the POD).
+// The WHERE predicate and scan projection ride storage_reduce's own filter/projected_cols params, not this POD.
 
 namespace components::operators {
 
-    // One pushed aggregate: a builtin SUM/COUNT/MIN/MAX/AVG over a single resolved column
-    // (arg_col_path), or COUNT(*) when arg_col_path is empty. func_uid resolves against the
-    // agent's OWN register_default_functions registry (the optimizer already refused any UDF
-    // via is_udf_uid, so a builtin uid always resolves there). alias is the group->add_value
-    // output name (== the aggregate expression key's as_pmr_string, byte-identical with the
-    // coordinator-side create_plan_group naming).
+    // func_uid resolves against the agent's OWN registry — the optimizer already refused any UDF
+    // via is_udf_uid. alias must be byte-identical with create_plan_group's coordinator-side naming.
     struct pushed_aggregate_t {
         std::pmr::string function_name;          // "sum"/"count"/"min"/"max"/"avg" (agent classify())
         std::pmr::vector<uint64_t> arg_col_path; // resolved column-index path; EMPTY => COUNT(*)
@@ -49,13 +34,11 @@ namespace components::operators {
             , alias(resource) {}
     };
 
-    // One pushed GROUP BY key: a plain column with its resolved column-index path (group_key_t
-    // ::full_path) + output name (group_key_t::name). Both are needed — operator_hash_group's
-    // build_plan REQUIRES a resolved full_path on every column key, and the name feeds the
-    // per-cell alias so a coordinator-side sort/select can still reference the key by name.
+    // Mirrors group_key_t::full_path/name. Both are required: operator_hash_group's build_plan
+    // needs a resolved full_path, and name lets a coordinator-side sort/select reference the key.
     struct pushed_group_key_t {
-        std::pmr::string name;           // group_key_t::name (output alias)
-        std::pmr::vector<uint64_t> path; // resolved column-index path (group_key_t::full_path)
+        std::pmr::string name;
+        std::pmr::vector<uint64_t> path;
 
         explicit pushed_group_key_t(std::pmr::memory_resource* resource)
             : name(resource)
@@ -75,8 +58,7 @@ namespace components::operators {
             , output_types(resource)
             , input_types(resource) {}
 
-        // "A reduce is armed": an all-empty spec (no keys, no aggregates) describes no
-        // reduce at all — build_pushed_spec rejects it.
+        // All-empty (no keys, no aggregates) means no reduce is armed; build_pushed_spec rejects it.
         [[nodiscard]] bool active() const noexcept { return !aggregates.empty() || !group_keys.empty(); }
     };
 

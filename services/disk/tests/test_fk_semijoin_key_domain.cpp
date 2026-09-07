@@ -1,14 +1,13 @@
-// fk_hash_semijoin normalizes each key cell to the stored column's type before hashing. Rule:
-// a cell is normalized only if it round-trips EXACTLY through that type; otherwise it's a
-// domain miss (empty bucket), never an error and never a probe of a truncated value. A pair of
-// TYPES that cannot be compared at all is the different case: "cannot be evaluated", a refusal
-// (third test below). Runs the free function directly, same as test_fk_scan_by_keys_semijoin.cpp.
+// fk_hash_semijoin normalizes each key cell to the stored column's type before hashing: a cell
+// normalizes only if it round-trips EXACTLY, otherwise it's a domain miss (empty bucket), never an
+// error. A pair of TYPES that cannot be compared at all is different: a refusal (third test below).
+// Runs the free function directly, same as test_fk_scan_by_keys_semijoin.cpp.
 
 #include <catch2/catch_test_macros.hpp>
 #include <core/pmr.hpp>
 
-#include <services/disk/agent_disk.hpp>   // services::disk::fk_hash_semijoin
-#include <services/disk/manager_disk.hpp> // services::disk::table_storage_t
+#include <services/disk/agent_disk.hpp>
+#include <services/disk/manager_disk.hpp>
 
 #include <components/storage/table_storage_adapter.hpp>
 #include <components/table/column_definition.hpp>
@@ -50,7 +49,6 @@ namespace {
 
     std::set<int64_t> as_set(const std::pmr::vector<int64_t>& v) { return std::set<int64_t>(v.begin(), v.end()); }
 
-    // pid-qualified so two concurrent runs never share the file.
     std::filesystem::path fresh_otbx(const char* tag) {
         const auto path = std::filesystem::path("/tmp") / ("test_otterbrix_fk_key_domain_" + std::string(tag) + "_" +
                                                            std::to_string(::getpid()) + ".otbx");
@@ -83,7 +81,6 @@ TEST_CASE("services::disk::fk_hash_semijoin::a_fractional_key_matches_no_integer
 
     table_storage_adapter_t adapter(ts.table(), &resource);
 
-    // Keys: 1.5 (no exact BIGINT), 2.0 (exact), 3.25 (no exact BIGINT).
     std::pmr::vector<complex_logical_type> ktypes{&resource};
     ktypes.emplace_back(logical_type::DOUBLE);
     data_chunk_t keys(&resource, ktypes, 3);
@@ -100,16 +97,13 @@ TEST_CASE("services::disk::fk_hash_semijoin::a_fractional_key_matches_no_integer
 
     INFO("1.5 truncated to 1 and matched the row holding 1 — a false FK match");
     CHECK(res[0].empty());
-    // CONTROL — an exactly representable cross-type key still matches. Without this the
-    // case above would be satisfiable by a normalization that simply gave up.
-    CHECK(as_set(res[1]) == std::set<int64_t>{1}); // 2.0 -> row 1 holds 2
+    CHECK(as_set(res[1]) == std::set<int64_t>{1});
     INFO("3.25 truncated to 3 and matched the row holding 3");
     CHECK(res[2].empty());
 }
 
-// A key the stored column cannot hold is answered "no match", not a failed statement — a
-// conversion_failure here would abort the DELETE/FK check and take the in-domain keys of the
-// same batch down with it.
+// A key the stored column cannot hold is answered "no match", not a failed statement -- a
+// conversion_failure here would abort the whole FK check, taking in-domain keys down with it.
 TEST_CASE("services::disk::fk_hash_semijoin::an_out_of_domain_key_misses_instead_of_failing") {
     core::pmr::otterbrix_resource resource;
 
@@ -131,8 +125,8 @@ TEST_CASE("services::disk::fk_hash_semijoin::an_out_of_domain_key_misses_instead
 
     table_storage_adapter_t adapter(ts.table(), &resource);
 
-    // Keys: 70000 (out of INT16 range — and 70000 truncates to exactly 4464, the row that is
-    // deliberately in the table), 20 (in domain), -70000 (out of range the other way).
+    // 70000 truncates to exactly 4464 (the row deliberately holds that id); 20 is in-domain,
+    // -70000 is out of range the other way.
     std::pmr::vector<complex_logical_type> ktypes{&resource};
     ktypes.emplace_back(logical_type::BIGINT);
     data_chunk_t keys(&resource, ktypes, 3);
@@ -149,17 +143,14 @@ TEST_CASE("services::disk::fk_hash_semijoin::an_out_of_domain_key_misses_instead
     auto& res = res_r.value();
     REQUIRE(res.size() == 3);
 
-    CHECK(res[0].empty()); // 70000 is not 4464
-    // CONTROL — the in-domain key of the SAME batch still matches. A whole-statement refusal
-    // would take this down with it.
-    CHECK(as_set(res[1]) == std::set<int64_t>{1}); // 20 -> row 1
+    CHECK(res[0].empty());
+    CHECK(as_set(res[1]) == std::set<int64_t>{1});
     CHECK(res[2].empty());
 }
 
-// A pair of TYPES that cannot be compared at all must stay a refusal, not an empty bucket:
-// ON DELETE CASCADE/RESTRICT reads an empty bucket as "this parent has no children". Without
-// a per-column probe up front, a STRING key against a BIGINT parent would silently "match
-// nothing" instead of refusing.
+// A pair of TYPES that cannot be compared at all must stay a refusal, not an empty bucket: ON
+// DELETE CASCADE/RESTRICT reads an empty bucket as "this parent has no children". Without a
+// per-column probe, a STRING key against a BIGINT parent would silently match nothing instead.
 TEST_CASE("services::disk::fk_hash_semijoin::an_uncomparable_type_pair_refuses_instead_of_missing") {
     core::pmr::otterbrix_resource resource;
 

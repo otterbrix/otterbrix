@@ -11,20 +11,18 @@
 
 namespace components::catalog {
 
-    // A single step in a computed drop plan: drop the object identified by (classid, objid).
     struct drop_step_t {
         oid_t classid{INVALID_OID}; // catalog table that owns objid
-        oid_t objid{INVALID_OID};   // object to drop
+        oid_t objid{INVALID_OID};
         char deptype{'n'};          // deptype of the pg_depend edge that drove this step
     };
 
-    // Result of planning a DROP operation (CASCADE or RESTRICT).
+    // Result of a DROP plan, whether CASCADE or RESTRICT.
     struct cascade_plan_t {
         explicit cascade_plan_t(std::pmr::memory_resource* resource)
             : steps(resource) {}
 
-        // DROP succeeded: ordered list of objects to drop (children first, seed last).
-        // Never empty when status==ok; empty steps only accompany a non-ok status.
+        // Ordered children-first, seed-last; non-empty iff status==ok.
         std::pmr::vector<drop_step_t> steps;
 
         // Non-INVALID_OID when RESTRICT is blocked: OID of the blocking dependent.
@@ -32,22 +30,10 @@ namespace components::catalog {
         ddl_status status{ddl_status::ok};
     };
 
-    // Plan a DROP starting from (seed_classid, seed_oid) with the given behavior.
-    // fetch_deps: callback returning all pg_depend rows where (refclassid, refobjid)
-    //   matches the given (cls, oid) — i.e., all direct dependents of the seed.
-    //   Implemented by disk as a closure over collect_dependents(); the catalog owns
-    //   only the traversal logic, not the storage scan.
-    // behavior: collapses through catalog::refuses_on_dependency
-    //   (components/catalog/results/ddl_result.hpp), never by comparing against a
-    //   single enumerator:
-    //     restrict_    — RESTRICT, written or defaulted (PostgreSQL parity, #638).
-    //                    GATE ONLY: if any DIRECT 'n' (normal) dependency reaches
-    //                    the seed, the plan comes back restrict_blocked with
-    //                    blocking_oid and NO steps. Past the gate it falls through
-    //                    to the same order computation as CASCADE — refusing is
-    //                    all RESTRICT does differently; it never shrinks an
-    //                    accepted drop.
-    //     cascade_     — a written CASCADE. No gate, full topological drop order.
+    // `behavior` collapses through catalog::refuses_on_dependency, not a raw enum comparison:
+    //   restrict_ (PostgreSQL parity, #638) is a gate only -- any direct 'n' dependency on the
+    //   seed blocks with no steps, else it falls through to cascade_'s order; cascade_ has no
+    //   gate, full topological order.
     cascade_plan_t plan_drop(std::pmr::memory_resource* resource,
                              oid_t seed_classid,
                              oid_t seed_oid,

@@ -6,19 +6,10 @@
 #include <components/vector/indexing_vector.hpp>
 #include <string>
 
-// No segment may be swapped for its disk-backed twin while anybody still pins its block.
-//
-// transition_segment_to_disk ends with replace_segment_at_index: the old column_segment_t dies, and
-// with it the block_handle_t that a still-live buffer_handle_t (an append state's, a scan's) would
-// unpin through. The function releases its OWN pin before the swap; the DEV_MODE counter pair sits
-// at the swap itself and watches for everybody else's — every transition, whether from the append
-// fill path or from the row-group-close write-through, funnels through that one swap.
-//
-// The counter is checked instead of relying on a sanitizer: the DEV_MODE build is what CI runs, and
-// ASAN on macOS is blind inside the pmr pool anyway.
-//
-// Hidden by default ([.]) because it writes enough rows to close many row groups.
-// Run it with [appendpin].
+// No segment may be swapped for its disk-backed twin while anyone still pins it; the DEV_MODE
+// counter sits at replace_segment_at_index's swap (both the append-fill and row-group-close
+// paths funnel through it) and watches for pins other than the swap's own. Checked via counter
+// since ASAN on macOS is blind inside the pmr pool; hidden by default ([.]), run with [appendpin].
 
 TEST_CASE("integration::cpp::test_append_pin_lifetime::no_transition_happens_under_a_live_pin", "[.][appendpin]") {
     auto config = test_create_config(integration_fixture_path("test_append_pin/lifetime"));
@@ -37,7 +28,6 @@ TEST_CASE("integration::cpp::test_append_pin_lifetime::no_transition_happens_und
 
     components::table::reset_transitions_with_live_pin();
 
-    // Enough rows to fill many segments, so the on-fill transition path runs repeatedly.
     constexpr int kRows = 120000;
     constexpr int kBatch = 1000;
     for (int base = 0; base < kRows; base += kBatch) {
@@ -57,15 +47,10 @@ TEST_CASE("integration::cpp::test_append_pin_lifetime::no_transition_happens_und
     const auto offending = components::table::transitions_with_live_pin();
     const auto total = components::table::segment_transitions();
     WARN("transitions to disk: " << total << ", of them under a live pin: " << offending);
-    // Positive control: zero offending transitions out of zero transitions proves nothing. Row
-    // groups default to DEFAULT_VECTOR_CAPACITY rows; all but perhaps the last have closed, and
-    // each close re-points at least the three data-column segments.
     constexpr uint64_t kClosedGroupsFloor = kRows / components::vector::DEFAULT_VECTOR_CAPACITY - 1;
     REQUIRE(total >= kClosedGroupsFloor * 3);
     CHECK(offending == 0);
 
-    // The data must be intact either way — this is a lifetime defect, not a data one, so a green
-    // read here does NOT mean the pin was safe. It is here so a fix that breaks the append is caught.
     {
         auto cur = exec("SELECT SUM(a) FROM p.t;");
         REQUIRE(cur->is_success());

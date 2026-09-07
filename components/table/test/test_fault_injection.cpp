@@ -1,6 +1,4 @@
-// Smoke tests for the fault-injection seam: it can force (1) a write failure after N writes,
-// (2) a torn write, (3) loss of everything after the last fsync (kill -9 semantics), and
-// the killed state can be REOPENED through the normal load path — no hand-laid files.
+// Each case reopens the resulting state via the normal load path (a copy or a plain restart), never a hand-laid file.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/data_table.hpp>
@@ -73,10 +71,7 @@ namespace {
         }
     }
 
-    // Same, for the APPEND path. An append made while the device is failing REPORTS
-    // io_error (column_data_t::transition_to_disk forwards flush_partial_blocks'
-    // failure). The cases below assert what the DURABLE HEADER does, not whether an
-    // append survives a dead disk, so this variant reports failure instead of asserting.
+    // Reports instead of asserting: these cases check the DURABLE HEADER, not whether an append survives a dead disk.
     bool try_append_rows(data_table_t& table, fault_env_t& env, uint64_t start, uint64_t count) {
         auto types = table.copy_types();
         uint64_t offset = 0;
@@ -98,8 +93,7 @@ namespace {
         return true;
     }
 
-    // Production-shaped checkpoint that REPORTS failure instead of asserting: fault tests
-    // exist to observe the failure path.
+    // Reports failure instead of asserting, so a fault test can observe the failure path without crashing.
     bool try_checkpoint(tstorage::single_file_block_manager_t& bm, data_table_t& table) {
         tstorage::metadata_manager_t meta_mgr(bm);
         tstorage::metadata_writer_t writer(meta_mgr);
@@ -110,15 +104,12 @@ namespace {
         bm.set_meta_block(writer.get_block_pointer().block_pointer);
         auto free_ptr = bm.serialize_free_list();
         REQUIRE_FALSE(free_ptr.has_error());
-        // The pre-header barrier can legitimately fail here (that is what these cases
-        // inject); a failed barrier means the checkpoint did not happen.
         if (auto barrier = bm.file_sync(); barrier.has_error()) {
             return false;
         }
         tstorage::database_header_t header;
         header.initialize();
         header.free_list = free_ptr.value().block_pointer;
-        // write_header's result covers both its slot write and its fsync.
         if (bm.write_header(header).has_error()) {
             return false;
         }
@@ -144,15 +135,11 @@ TEST_CASE("fault_injection: write failure after N writes does not advance the du
         auto table = make_table(env, bm);
         append_rows(*table, env, 0, 3000);
 
-        // Let the first checkpoint through, then record its durable iteration.
         REQUIRE(try_checkpoint(bm, *table));
         tstorage::database_header_t before;
         REQUIRE(otterbrix_test::read_active_durable_header(fault_db_path(), before));
 
-        // Fail every write from here on: the next checkpoint must not advance the header.
         plan.fail_after_writes = plan.writes_seen;
-        // Return unobserved: this case only asserts the DURABLE header below, not
-        // the append's honest io_error.
         try_append_rows(*table, env, 3000, 100);
         try_checkpoint(bm, *table);
         tstorage::database_header_t after;
@@ -175,16 +162,12 @@ TEST_CASE("fault_injection: torn header write leaves the previous durable state 
         append_rows(*table, env, 0, 3000);
         REQUIRE(try_checkpoint(bm, *table));
 
-        // Tear the very next write (wherever the second checkpoint round lands first) and
-        // fail the rest: a mid-checkpoint power cut.
+        // Tears the very next write and fails the rest: a mid-checkpoint power cut, wherever the round lands first.
         plan.torn_at_write = plan.writes_seen + 1;
-        // Returns unobserved, same reason as the case above.
         try_append_rows(*table, env, 3000, 100);
         try_checkpoint(bm, *table);
     }
     {
-        // Reopen WITHOUT fault injection: the file must load, and must show the first
-        // checkpoint's state (3000 rows) — the torn round never became durable.
         fault_env_t env2;
         tstorage::single_file_block_manager_t bm(env2.buffer_manager, env2.fs, fault_db_path());
         REQUIRE(!bm.load_existing_database().has_error());
@@ -212,14 +195,11 @@ TEST_CASE("fault_injection: crash_revert loses everything after the last fsync, 
         append_rows(*table, env, 0, 2000);
         REQUIRE(try_checkpoint(bm, *table)); // durable state A: 2000 rows
 
-        // More rows and ANOTHER checkpoint, but kill before its final fsync could matter.
         append_rows(*table, env, 2000, 2000);
         REQUIRE(scope.last() != nullptr);
-        // crash_revert() rolls the file back to the last successful fsync (checkpoint
-        // A's), which is exactly what a kill loses: the write-through of the extra rows.
+        // crash_revert() rolls back to the last successful fsync (checkpoint A's) -- exactly what a kill loses.
         scope.last()->crash_revert();
 
-        // Reopen the killed state via a filesystem copy, not a hand-laid file.
         std::filesystem::copy_file(fault_db_path(), copy_path,
                                    std::filesystem::copy_options::overwrite_existing);
     }

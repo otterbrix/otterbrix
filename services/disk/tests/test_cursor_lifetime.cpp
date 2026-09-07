@@ -22,15 +22,10 @@
 #include <thread>
 #include <unistd.h>
 
-// An abandoned fetch-next cursor must be releasable. storage_fetch_next_batch mints a cursor on
-// the owning agent and erases it only along the drain paths, so a source that stops early (an
-// error mid-pump, a satisfied LIMIT, a dropped sub-plan) leaves its active_scans_ entry alive for
-// the life of the process. That entry gates the whole checkpoint round: checkpoint_inner defers
-// any oid with a live cursor, since it holds an absolute row position into the un-swapped
-// collection -- "compacts once the cursor drains" is never, for an abandoned one.
-//
-// storage_close_cursor is the release leg; these cases pin both halves of its contract: an open
-// cursor keeps the gate up, closing it takes the gate back down.
+// storage_fetch_next_batch mints a cursor in active_scans_ and erases it only along the drain
+// paths, so a source that stops early (error mid-pump, satisfied LIMIT, dropped sub-plan) leaves
+// the entry alive and checkpoint_inner deferring that oid forever. storage_close_cursor is the
+// release leg; these cases pin both halves: an open cursor holds the gate, closing it releases it.
 
 using namespace services::disk;
 using namespace disk_test_helpers;
@@ -88,8 +83,7 @@ namespace {
         }
     };
 
-    // A table with more rows than ONE batch can carry: the cursor is still open after the
-    // first reply, which is the state an abandoned source leaves behind.
+    // More rows than one batch can carry, so the cursor stays open after the first reply.
     catalog::oid_t make_seeded_table(fixture& fx) {
         auto ns_oid = test_create_namespace(fx, "nscursor");
         std::vector<components::table::column_definition_t> columns;
@@ -130,7 +124,6 @@ namespace {
         return table_oid;
     }
 
-    // OPEN a cursor and read exactly ONE batch, leaving it un-drained.
     uint64_t open_undrained_cursor(fixture& fx, catalog::oid_t table_oid) {
         auto reply = fx.invoke(&manager_disk_t::storage_fetch_next_batch,
                                session_id_t{},
@@ -149,7 +142,7 @@ namespace {
         return batch.cursor_id;
     }
 
-} // namespace
+}
 
 TEST_CASE("services::disk::cursor_lifetime::open_cursor_holds_the_compact_gate") {
     fixture fx;
@@ -157,7 +150,6 @@ TEST_CASE("services::disk::cursor_lifetime::open_cursor_holds_the_compact_gate")
     auto cursor_id = open_undrained_cursor(fx, table_oid);
     REQUIRE(cursor_id != 0);
 
-    // The premise the release leg exists for: an un-drained cursor gates compact on its table.
     INFO("an open fetch-next cursor must gate compact on its table");
     CHECK(fx.manager->has_active_scan_for_oid_sync(table_oid));
 }
@@ -169,9 +161,6 @@ TEST_CASE("services::disk::cursor_lifetime::closing_an_abandoned_cursor_lifts_th
 
     REQUIRE(fx.manager->has_active_scan_for_oid_sync(table_oid));
 
-    // Walk away from the cursor without draining it, then release it explicitly. Without the
-    // release leg this state is unreachable: the gate stays up for the life of the process and
-    // the table never compacts again.
     fx.invoke(&manager_disk_t::storage_close_cursor, session_id_t{}, table_oid, cursor_id);
 
     INFO("releasing an abandoned cursor must lift the compact gate");
@@ -182,9 +171,8 @@ TEST_CASE("services::disk::cursor_lifetime::closing_a_cursor_is_idempotent") {
     fixture fx;
     auto table_oid = make_seeded_table(fx);
 
-    // Idempotence is part of the contract: the drain paths erase the entry themselves, so a
-    // source that drains AND then releases must not be an error. A never-minted id is the
-    // same shape.
+    // Idempotence matters because the drain paths erase the entry themselves too, so a source
+    // that drains then releases must not error; a never-minted id (424242) is the same shape.
     fx.invoke(&manager_disk_t::storage_close_cursor, session_id_t{}, table_oid, uint64_t{424242});
     CHECK_FALSE(fx.manager->has_active_scan_for_oid_sync(table_oid));
 

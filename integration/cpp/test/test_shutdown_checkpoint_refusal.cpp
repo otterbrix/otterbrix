@@ -11,16 +11,13 @@
 #include <string>
 #include <unistd.h>
 
-// ~base_otterbrix_t's final CHECKPOINT used to drop its result cursor and swallow errors in a
-// catch (...): a failed shutdown checkpoint left no sign of whether the next start replays a
-// journal or replays nothing. A destructor has no caller, so the refusal must reach the error log.
+// ~base_otterbrix_t's final CHECKPOINT dropped its result cursor and swallowed errors in a
+// catch (...); a destructor has no caller, so the refusal must reach the error log instead.
 
 using namespace test_helpers;
 
 namespace {
 
-    // Same seam shape as test_create_index_catchup_refusal.cpp: segment files refuse to open
-    // while armed. Armed only around the destruction.
     class wal_open_refusal_t final : public services::wal::wal_file_interposer_t {
     public:
         wal_open_refusal_t() { services::wal::dev_set_wal_file_interposer(this); }
@@ -61,7 +58,7 @@ namespace {
         return false;
     }
 
-} // namespace
+}
 
 TEST_CASE("integration::cpp::shutdown_checkpoint::a_refused_final_checkpoint_is_reported") {
     const auto dir = integration_fixture_path("test_shutdown_checkpoint_refusal") /
@@ -71,7 +68,7 @@ TEST_CASE("integration::cpp::shutdown_checkpoint::a_refused_final_checkpoint_is_
     config.wal.on = true;
     config.log.level = log_t::level::err;
     // Small segments so the load rolls the journal over: truncate_before never opens the
-    // writer's CURRENT segment, so a single segment gives the armed refusal nothing to hit.
+    // writer's current segment, so a single segment gives the armed refusal nothing to hit.
     config.wal.max_segment_size = 16 * 1024;
 
     wal_open_refusal_t fault;
@@ -95,15 +92,13 @@ TEST_CASE("integration::cpp::shutdown_checkpoint::a_refused_final_checkpoint_is_
         };
         load_batches(0, 8);
 
-        // A completed round first: the truncation floor is the min of each table's PREVIOUS
+        // A completed round first: the truncation floor is the min of each table's previous
         // checkpoint id, so the very first round answers 0 and skips truncation entirely. The
-        // shutdown checkpoint is then the SECOND round, whose floor actually opens closed segments.
+        // shutdown checkpoint is then the second round, whose floor actually opens closed segments.
         REQUIRE(exec(d, "CHECKPOINT;")->is_success());
 
-        // More traffic to roll the journal over again before the shutdown checkpoint.
         load_batches(8, 16);
 
-        // The journal must have rolled over, otherwise the fault below meets nothing.
         std::size_t wal_segments = 0;
         for (const auto& entry : std::filesystem::recursive_directory_iterator(config.wal.path)) {
             if (entry.is_regular_file() && entry.path().filename().string().compare(0, 4, "wal_") == 0) {
@@ -112,7 +107,6 @@ TEST_CASE("integration::cpp::shutdown_checkpoint::a_refused_final_checkpoint_is_
         }
         REQUIRE(wal_segments >= 2);
 
-        // Arm for the destructor's final CHECKPOINT and tear the engine down.
         fault.armed = true;
     }
     fault.armed = false;

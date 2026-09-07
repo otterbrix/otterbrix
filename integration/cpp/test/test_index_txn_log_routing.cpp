@@ -11,13 +11,9 @@
 #include <string>
 #include <thread>
 
-// index_type::hashed (bitcask) journals every committed statement to a durable txn log
-// (apply_txn_inserts / apply_txn_deletes append bitcask.txn.log and rewrite
-// bitcask.txn.applied); every other index_type takes the bulk path (insert_bulk_unchecked
-// per row, then one force_flush) and journals nothing. Row counts can't tell the routes
-// apart -- both end with the same rows on disk -- so this gates on the log FILE itself: it
-// must grow on the hash index, never exist on the btree one, and both must hold across a
-// restart.
+// index_type::hashed (bitcask) journals every committed statement (bitcask.txn.log/.applied); every other
+// index_type takes the bulk path and journals nothing. Row counts can't tell the routes apart -- both end
+// with the same rows on disk -- so this gates on the log file itself, across a restart too.
 
 namespace {
 
@@ -27,7 +23,6 @@ namespace {
         return ec ? 0u : size;
     }
 
-    // Total bytes across all regular files under dir -- "this backend put bytes on disk".
     std::uintmax_t tree_bytes(const std::filesystem::path& dir) {
         std::uintmax_t total = 0;
         std::error_code ec;
@@ -44,10 +39,6 @@ namespace {
         std::filesystem::path btree;
     };
 
-    // The layout (${disk}/${table_oid}/${index_oid}/) carries no index name, so bitcask is
-    // found by its CURRENT marker (written on open) and btree is taken as its only sibling.
-    // The btree dir is still EMPTY here -- its metadata file appears only on first flush --
-    // so it can't be recognised by content until after the INSERT.
     index_dirs_t find_index_dirs(const std::filesystem::path& disk_root) {
         index_dirs_t dirs;
         std::error_code ec;
@@ -67,10 +58,6 @@ namespace {
         return dirs;
     }
 
-    // A committed DELETE is queued (commit_deletes) and only reaches the store after the
-    // horizon sweep runs, since an older snapshot may still own the row. Waits on the queue
-    // depth (index_deferred_deletes()) reaching zero, not on a timer, so the journal
-    // assertion below observes the sweep's effect rather than racing it.
     void await_deferred_index_deletes() {
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
         while (services::index::index_deferred_deletes() != 0 && std::chrono::steady_clock::now() < deadline) {
@@ -100,8 +87,6 @@ TEST_CASE("integration::cpp::test_index_txn_log_routing::hash_journals_btree_doe
 
         REQUIRE(exec("CREATE DATABASE r;")->is_success());
         REQUIRE(exec("CREATE TABLE r.t (id bigint, k bigint, m bigint);")->is_success());
-        // One table, two backends: USING hash -> bitcask (owns a txn log),
-        // the plain form -> ordered B+tree (owns none).
         REQUIRE(exec("CREATE INDEX t_k ON r.t USING hash (k);")->is_success());
         REQUIRE(exec("CREATE INDEX t_m ON r.t (m);")->is_success());
 
@@ -116,8 +101,6 @@ TEST_CASE("integration::cpp::test_index_txn_log_routing::hash_journals_btree_doe
         const auto txn_log = bitcask_dir / "bitcask.txn.log";
         const auto txn_applied = bitcask_dir / "bitcask.txn.applied";
 
-        // Recorded rather than asserted-zero, so the growth checks below stay honest even
-        // if some future path pre-creates the file.
         const auto log_before_insert = size_or_zero(txn_log);
         const auto btree_before_insert = tree_bytes(btree_dir);
 
@@ -139,7 +122,6 @@ TEST_CASE("integration::cpp::test_index_txn_log_routing::hash_journals_btree_doe
         REQUIRE(std::filesystem::exists(btree_dir / "metadata"));
         REQUIRE(tree_bytes(btree_dir) > btree_before_insert);
 
-        // A bulk-path DELETE would leave the log byte-for-byte unchanged.
         const auto log_before_delete = size_or_zero(txn_log);
         REQUIRE(exec("DELETE FROM r.t WHERE k = 20;")->is_success());
         await_deferred_index_deletes();
@@ -157,9 +139,8 @@ TEST_CASE("integration::cpp::test_index_txn_log_routing::hash_journals_btree_doe
         CHECK(by_btree->size() == 1);
     }
 
-    // The journal itself is NOT expected to survive a restart (bootstrap repopulates the
-    // index and clear() unlinks it), so the check is that a post-restart statement
-    // journals AGAIN, not that the old frames remain.
+    // The journal is not expected to survive a restart (bootstrap repopulates the index and clear() unlinks
+    // it), so the check is that a post-restart statement journals again, not that old frames remain.
     {
         test_spaces space(config);
         auto* d = space.dispatcher();

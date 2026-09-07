@@ -1,8 +1,7 @@
 #pragma once
 
-// Wraps the real file handle to fail I/O per fault_plan_t or simulate a crash (crash_revert);
-// must always delegate to inner_, since filesystem free functions reinterpret_cast the handle
-// argument to the platform type. Ops with no knob (seek, close, truncate, trim) just forward.
+// Wraps the real file handle to inject faults; must always delegate to inner_, since filesystem
+// free functions reinterpret_cast the handle to the platform type.
 
 #include <cstddef>
 #include <cstring>
@@ -16,24 +15,15 @@
 namespace otterbrix_test {
 
     struct fault_plan_t {
-        // Fail the (N+1)th write onward; fail_writes_from fails from the Nth instead, so it
-        // alone can express zero successes. 0 = off for both, and they OR together.
+        // Fails from N+1 vs from N: only fail_writes_from can express zero successes; 0 = off for both.
         uint64_t fail_after_writes{0};
         uint64_t fail_writes_from{0};
-        // Tear the Nth positional write: persist its first half, then fail it and the rest.
-        // 0 = off.
         uint64_t torn_at_write{0};
-        // Fail the Nth sync() onward; models a write that reached the page cache but not the
-        // device. 0 = off.
         uint64_t fail_syncs_from{0};
-        // Fails only header-slot writes (the RECOVERABLE checkpoint failure, not the degraded
-        // state the counted knobs above cause); create_new_database's first header write
-        // shares that offset, so arm this around the round under test, not during creation.
+        // Fails only header-slot writes; arm around the tested round, since creation writes the same offset.
         bool fail_writes_at_header_slots{false};
-        // Fails the one read at this exact offset, modeling a single rotten block. UINT64_MAX
-        // = off, since 0 is the main header's legitimate offset.
+        // Fails the one read at this exact offset (models a rotten block); UINT64_MAX = off, since 0 is legitimate.
         uint64_t fail_reads_at_location{std::numeric_limits<uint64_t>::max()};
-        // Set by crash_revert(): every further I/O fails.
         bool crashed{false};
         uint64_t writes_seen{0};
         uint64_t syncs_seen{0};
@@ -160,8 +150,7 @@ namespace otterbrix_test {
 
         core::error_t close() override { return inner_->close(); }
 
-        // Leaves the file as a real crash would: pre-images undone newest-first, truncated to
-        // the last synced length.
+        // Undoes writes newest-first and truncates to the last synced length, as a real crash would.
         void crash_revert() {
             for (auto it = undo_.rbegin(); it != undo_.rend(); ++it) {
                 if (!it->old_bytes.empty()) {

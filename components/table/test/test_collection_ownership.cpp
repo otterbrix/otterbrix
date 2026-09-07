@@ -1,11 +1,8 @@
-// data_table_t::row_group() hands out counted copies of the ONE collection_t it owns. A deep copy
-// would answer every scan/count/checksum identically to the real thing, so only address + owner
-// count can catch (a) a copy that isn't the same object, or (b) a copy that isn't ref-counted --
-// the latter would pass every assertion here up to the use-after-free when compact() destroys the
-// outgoing collection while a stale, uncounted holder still names it (block_manager_t::
-// unregister_block(block_handle_t&) is identity-checked rather than erase-by-id for the same
-// reason; test_root_reclaim.cpp and test_block_manager.cpp are the behavioural half). No weak
-// reference to a collection exists anywhere (boost::intrusive_ref_counter has no weak analogue).
+// row_group() hands out counted copies of the ONE collection_t data_table_t owns. Only address +
+// owner count can catch a copy that isn't the same object or isn't ref-counted -- a deep copy
+// would pass every other check, up to the use-after-free when compact() destroys the outgoing
+// collection while a stale holder still names it (test_root_reclaim.cpp and test_block_manager.cpp
+// are the behavioural half; no weak reference to a collection exists).
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/collection.hpp>
@@ -27,7 +24,6 @@ namespace {
 
     constexpr uint64_t WATERMARK = std::numeric_limits<uint64_t>::max();
 
-    // Spans several row groups so compact() has real work to do.
     constexpr uint64_t CHUNK_ROWS = 1000;
     constexpr uint64_t CHUNKS = 3;
     constexpr uint64_t TOTAL_ROWS = CHUNK_ROWS * CHUNKS;
@@ -102,21 +98,16 @@ TEST_CASE("collection_ownership: row_group() hands back the collection the table
 
     {
         auto held = table->row_group();
-        // Not "a collection that reads the same" — THE collection.
         REQUIRE(held.get() == owned);
-        // ...and an OWNING reference to it, not a borrowed pointer.
         REQUIRE(table->collection_owner_count() == 2);
 
-        // A second call must not manufacture anything either.
         auto again = table->row_group();
         REQUIRE(again.get() == owned);
         REQUIRE(table->collection_owner_count() == 3);
 
-        // What the caller sees through its copy is the table's own state.
         REQUIRE(held->total_rows() == TOTAL_ROWS);
     }
 
-    // Both copies released; the table is the sole owner again.
     REQUIRE(table->collection_owner_count() == 1);
     REQUIRE(table->collection_identity() == owned);
 }
@@ -135,25 +126,20 @@ TEST_CASE("collection_ownership: a collection held across compact stays the OLD 
 
     REQUIRE(table->compact(WATERMARK));
 
-    // The table moved on...
     const collection_t* new_collection = table->collection_identity();
     REQUIRE(new_collection != nullptr);
     REQUIRE(new_collection != old_collection);
-    // ...and owns the rebuild alone.
     REQUIRE(table->collection_owner_count() == 1);
     REQUIRE(table->row_group().get() == new_collection);
 
-    // compact freed the outgoing collection's BLOCKS, not the collection itself, so its address
-    // could not be recycled while this reference stands.
+    // compact frees the outgoing collection's BLOCKS, not the object itself, so its address survives here.
     REQUIRE(stale.get() == old_collection);
     REQUIRE(stale->use_count() == 1u);
     REQUIRE(stale->total_rows() == TOTAL_ROWS);
     REQUIRE(stale->committed_row_count() == TOTAL_ROWS);
 
-    // Both views are readable at once, and they are different objects with the same rows.
     REQUIRE(table->row_group()->total_rows() == TOTAL_ROWS);
 
-    // The holder lets go last; the table is unaffected.
     stale.reset();
     REQUIRE(table->collection_identity() == new_collection);
     REQUIRE(table->collection_owner_count() == 1);
@@ -172,12 +158,11 @@ TEST_CASE("collection_ownership: an ALTER successor owns its OWN collection") {
         column_definition_t added("c", complex_logical_type(logical_type::BIGINT));
         data_table_t successor(*table, added);
 
-        // A whole new collection (row-group column/version-manager sharing is gated separately by
-        // test_alter_column_sharing / test_alter_version_sharing).
+        // New collection; sharing is gated separately (test_alter_column_sharing, test_alter_version_sharing).
         REQUIRE(successor.collection_identity() != nullptr);
         REQUIRE(successor.collection_identity() != parent_collection);
         REQUIRE(successor.collection_owner_count() == 1);
-        // The parent keeps its own, still solely owned: the successor took no reference to it.
+        // The successor takes no reference to the parent: the parent stays solely owned.
         REQUIRE(table->collection_identity() == parent_collection);
         REQUIRE(table->collection_owner_count() == 1);
         REQUIRE(successor.row_group().get() == successor.collection_identity());

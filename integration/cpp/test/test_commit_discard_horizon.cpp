@@ -14,23 +14,17 @@
 #include <string>
 #include <thread>
 
-// An orphaned commit_id must not pin the horizon for the life of the process: operator_commit_transaction
-// inserts it into transaction_manager_t::in_flight_commits_ on its first hop and removes it only on its
-// last, so a co_return between them leaks it past ROLLBACK -- visible_to_all_locked() floors the horizon
-// on min(in_flight_commits_) - 1, gating compact(), the DROP-GC sweep, and manager_index_t::on_horizon_advanced.
-// in_flight_commits_ is private, so this is asserted indirectly via index_deferred_deletes() and
-// index_repopulations().
-//
-// The compaction half is proved separately in components/table/test/test_mvcc_operations.cpp
-// ("orphaned_commit_blocks_compaction"); not repeated here because CHECKPOINT rebuilds every indexed
-// table regardless of a refused compact, so no counter at this level distinguishes the two.
+// operator_commit_transaction adds commit_id to transaction_manager_t::in_flight_commits_ on its first
+// hop and removes it on its last, so a co_return between them leaks it past ROLLBACK; since the set is
+// private, the leak is asserted indirectly via index_deferred_deletes() and index_repopulations().
+// The compaction half is proved in components/table/test/test_mvcc_operations.cpp
+// ("orphaned_commit_blocks_compaction") and not repeated here, because CHECKPOINT rebuilds every
+// indexed table regardless of a refused compact, so no counter at this level distinguishes the two.
 
 namespace {
 
     using namespace test_helpers;
 
-    // Process-wide seam, narrowed to WAL segment files by path; the plan starts disabled so
-    // setup traffic succeeds before the marked fsync is armed.
     class wal_fault_scope_t final : public services::wal::wal_file_interposer_t {
     public:
         wal_fault_scope_t() { services::wal::dev_set_wal_file_interposer(this); }
@@ -65,7 +59,6 @@ namespace {
         REQUIRE(cur->is_success());
     }
 
-    // Polls the queue's own state against a deadline; it does not wait for wall-clock time.
     bool await_deferred_deletes_at(uint64_t target) {
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
         while (services::index::index_deferred_deletes() > target &&
@@ -75,7 +68,7 @@ namespace {
         return services::index::index_deferred_deletes() <= target;
     }
 
-} // namespace
+}
 
 // try_trigger_cleanup_if_horizon_advanced's `new_lowest > last_broadcast_horizon_` gate must
 // re-fire after the discard, or the deferred-delete queue never drains again.
@@ -85,7 +78,7 @@ TEST_CASE("integration::cpp::commit_discard_horizon::an_orphaned_commit_id_stops
     config.log.level = log_t::level::off;
 
     wal_fault_scope_t fault;
-    fault.faulty_marker = "wal_"; // WAL segment files only; the .otbx files stay untouched
+    fault.faulty_marker = "wal_";
 
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -95,7 +88,6 @@ TEST_CASE("integration::cpp::commit_discard_horizon::an_orphaned_commit_id_stops
     seed(dispatcher, "pin.t");
     REQUIRE(exec(dispatcher, "CREATE INDEX pin_t_id ON pin.t (id);")->is_success());
 
-    // Warm-up DELETE settles the queue so the baseline below isn't CREATE INDEX's leftovers.
     REQUIRE(exec(dispatcher, "DELETE FROM pin.t WHERE id = 1900;")->is_success());
     REQUIRE(await_deferred_deletes_at(0));
 
@@ -106,8 +98,6 @@ TEST_CASE("integration::cpp::commit_discard_horizon::an_orphaned_commit_id_stops
     REQUIRE(dispatcher->execute_sql(doomed, "BEGIN;")->is_success());
     REQUIRE(dispatcher->execute_sql(doomed, "DELETE FROM pin.t WHERE id = 1901;")->is_success());
 
-    // Armed only now: everything above already reached the journal, so any fsync refusal
-    // below is the COMMIT marker's own.
     const auto syncs_before = fault.plan.syncs_seen;
     fault.plan.fail_syncs_from = fault.plan.syncs_seen + 1;
     auto commit_cursor = dispatcher->execute_sql(doomed, "COMMIT;");
@@ -126,12 +116,11 @@ TEST_CASE("integration::cpp::commit_discard_horizon::an_orphaned_commit_id_stops
     CHECK(services::index::index_repopulations() == repopulations_before);
 }
 
-// The WAL marker must be the last step that can fail -- every id-stamping step (the DROP-GC
-// remap, the pg_attribute backfill, commit_deletes' queue entry, both storage_publish_* calls)
-// runs below it, so none of them can have run at this exit. Move storage_publish_* above the
-// marker and the doomed rows would carry the discarded id as added_at_commit_id, and the next
-// published commit would drag published_horizon_ above it -- silently publishing a transaction
-// the engine refused.
+// The WAL marker must be the last step able to fail: the DROP-GC remap, the pg_attribute backfill,
+// commit_deletes' queue entry, and both storage_publish_* calls all run after it, so none have run
+// at this exit. Moving storage_publish_* above the marker would let the doomed rows carry the
+// discarded id as added_at_commit_id, dragging published_horizon_ past it and silently publishing
+// a transaction the engine refused.
 TEST_CASE("integration::cpp::commit_discard_horizon::a_discarded_transactions_rows_never_appear") {
     auto config = make_test_config(integration_fixture_path("test_commit_discard_horizon/visibility"),
                                    /*wal_on=*/true);
@@ -156,8 +145,6 @@ TEST_CASE("integration::cpp::commit_discard_horizon::a_discarded_transactions_ro
     fault.plan.fail_syncs_from = 0;
     REQUIRE(commit_cursor->is_error());
 
-    // Publishing this commit drags published_horizon_ past the discarded id -- the step that
-    // would leak it into visibility.
     REQUIRE(exec(dispatcher, "INSERT INTO ghost.t (id, v) VALUES (3, 3);")->is_success());
 
     INFO("the refused transaction's INSERT must never become visible");

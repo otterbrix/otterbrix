@@ -1,8 +1,5 @@
-// column_segment_t::scan/scan_partial once lacked INT128/UINT128 arms and fell to `default:`,
-// throwing std::logic_error across an actor-zeta coroutine with an empty unhandled_exception()
-// -- aborting the process on data_table_t::compact's pre-checkpoint scan. These cases pin exact
-// int128 boundary payloads (+-(10^width - 1)) that no double literal can spell, through three
-// readers: in-memory scan, compact rebuild, and a checkpoint + reopen.
+// column_segment_t::scan/scan_partial must handle INT128/UINT128, or an uncaught std::logic_error
+// crosses a coroutine's empty unhandled_exception() and aborts the process (pre-checkpoint compact scan).
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/data_table.hpp>
@@ -48,8 +45,6 @@ namespace {
         return result;
     }
 
-    // Rows 0..6 are the boundary set (zero, +-1, +-(10^width - 1)); the high-cardinality tail
-    // defeats CONSTANT/RLE/DICTIONARY, which are size-generic memcpy that already worked.
     components::types::int128_t decimal_payload(uint64_t row, uint8_t width) {
         using components::types::int128_t;
         const int128_t largest = pow10_128(width) - 1;
@@ -75,8 +70,6 @@ namespace {
         }
     }
 
-    // Every 13th row is NULL, so a 128-bit value column must keep its NULLs aligned with the
-    // validity bitmap, which rides a separate child column.
     bool is_null_row(uint64_t row) { return row % 13 == 12; }
 
     constexpr uint64_t ROW_COUNT = 3000;
@@ -127,8 +120,6 @@ namespace {
                 REQUIRE(value.is_null() == is_null_row(row));
                 if (!is_null_row(row)) {
                     REQUIRE(value.type().type() == components::types::logical_type::DECIMAL);
-                    // Compares the raw scaled integer, so a truncated high word or a 64-bit
-                    // read shows up as a wrong value rather than as a wrong scale.
                     REQUIRE(value.value<components::types::int128_t>() == decimal_payload(row, width));
                 }
             }
@@ -163,8 +154,6 @@ namespace {
 
             verify_decimal_rows(*table, width, "after append");
 
-            // compact() grows one chunk across row groups, so it exercises scan_partial with a
-            // non-zero result offset.
             REQUIRE(table->compact(WATERMARK));
             REQUIRE(table->calculate_size() == ROW_COUNT);
             verify_decimal_rows(*table, width, "after compact");
@@ -199,12 +188,10 @@ TEST_CASE("wide_decimal: NUMERIC(38,4) round-trips scan, compact and reopen elem
     run_wide_decimal_round_trip(38, 4);
 }
 
-// One digit narrower and the column would take the INT64 arm that always existed; NUMERIC(19,0)
-// is the exact seam.
+// One digit narrower and the column would take the INT64 arm that always existed; NUMERIC(19,0) is the exact seam.
 TEST_CASE("wide_decimal: NUMERIC(19,0) is the first width past int64 storage") {
     run_wide_decimal_round_trip(19, 0);
 }
 
-// Every digit a fraction digit, so the payload is still a full-width 128-bit integer while the
-// value is < 1.
+// Every digit a fraction digit, so the payload is still a full-width 128-bit integer while the value is < 1.
 TEST_CASE("wide_decimal: NUMERIC(38,38) carries the maximum scale") { run_wide_decimal_round_trip(38, 38); }

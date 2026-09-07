@@ -1,8 +1,5 @@
-// Two teardown paths (unregister_collection at commit/abort, on_horizon_advanced past the drop's
-// commit id) must take the agent's owning pointer, not just erase routing state, or nothing
-// later reaps it. The reap must hold that ownership across the awaited terminal drop (see
-// test_index_agent_lifetime.cpp's use-after-free) before destroying it. live_index_agents(), a
-// DEV_MODE ctor/dtor counter, is the only way to tell "dropped" from "dropped and freed".
+// Both teardown paths must take the agent's owning pointer and hold it across the awaited terminal drop before
+// destroying it; live_index_agents() (a DEV_MODE ctor/dtor counter) is the only way to tell dropped from freed.
 
 // clang-format off
 // <actor-zeta/spawn.hpp> requires std::unique_ptr, but does not include it itself
@@ -38,8 +35,6 @@ namespace {
     constexpr components::catalog::oid_t kTableOid = 17300;
     constexpr components::catalog::oid_t kIndexOid = 17301;
 
-    // Mimics the manager's own loop thread: claims the deepest awaited continuation
-    // atomically and resumes it.
     template<typename T>
     bool resume_awaited(const actor_zeta::unique_future<T>& fut) {
         auto handle = fut.coroutine_handle();
@@ -79,11 +74,9 @@ TEST_CASE("services::index::on_horizon_advanced frees the agents of a reclaimed 
     auto log = initialization_logger("python", "/tmp/docker_logs/");
     const auto path = fresh_index_root("otterbrix_test_index_agent_reaping_horizon");
 
-    // Never started: enqueue() on an unstarted scheduler only parks the job, so the agent
-    // is driven by hand below.
     auto scheduler = std::make_unique<actor_zeta::shared_work>(1, 100);
 
-    // The counter is process-wide, so the test measures a difference, not an absolute.
+    // live_index_agents() is process-wide, so every check below is a difference against this count.
     const auto agents_before = live_index_agents();
 
     auto manager = actor_zeta::spawn<manager_index_t>(&resource,
@@ -117,7 +110,6 @@ TEST_CASE("services::index::on_horizon_advanced frees the agents of a reclaimed 
     agent_raw->resume(1);
     REQUIRE(resume_awaited(horizon_future));
     REQUIRE(horizon_future.is_ready());
-    // agent_raw is dead from here on. Nothing below may touch it.
 
     INFO("the reclaimed table's agent must be destroyed, not merely unrouted");
     REQUIRE(live_index_agents() == agents_before);
@@ -160,8 +152,6 @@ TEST_CASE("services::index::unregister_collection frees the agents of the table 
     const auto session = session_id_t::generate_uid();
     auto unregister_future = manager->unregister_collection(session, kTableOid);
 
-    // operator_commit_transaction / operator_abort_transaction await this before telling the
-    // disk manager to free the table's files, so the store must already be closed by then.
     INFO("the teardown must wait for the terminal drop it sent");
     REQUIRE_FALSE(unregister_future.is_ready());
 

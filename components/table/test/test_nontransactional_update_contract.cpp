@@ -1,14 +1,8 @@
-// The two-argument data_table_t::update is NOT a transactional update: no transaction id in
-// the signature, so there is nothing to compare a conflicting writer against. Its callers
-// (WAL replay before the scheduler; the pg_attribute commit-id stamp below the durable
-// commit marker) can neither roll back nor race a second writer on the same row.
-//
-// test_storage_update_rollback.cpp pins the no-undo and no-snapshot halves with
-// [!shouldfail] sentinels. This pins the remaining clause — NO CONFLICT DETECTION: two
-// writers over the same row both succeed, the conflict is reported to no one, and the last
-// writer silently wins. A third caller without the callers' serialization guarantee gets
-// exactly this behaviour; if conflict detection is ever added to this leg, this case goes
-// RED and the [!shouldfail] convention of the sibling file applies.
+// The two-argument data_table_t::update is NOT transactional: no txn id in the signature, so
+// there's nothing to compare a conflicting writer against. test_storage_update_rollback.cpp pins
+// the no-undo/no-snapshot halves under [!shouldfail]; this pins the remaining clause -- NO
+// CONFLICT DETECTION: two writers over the same row both succeed silently, last one wins. If
+// conflict detection is ever added here, this goes RED and that file's convention applies.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/data_table.hpp>
@@ -99,8 +93,8 @@ TEST_CASE("components::table::update_segment::two_writers_over_one_row_conflict_
     auto table = make_table(env);
     append_row(*table, env, 1);
 
-    // Writer A and writer B, same row, no transaction identity anywhere. On the
-    // delete-stamp + append path a second writer draws write_conflict; here both land.
+    // Same row, no transaction identity: on the delete-stamp + append path a second writer draws
+    // write_conflict; here both land.
     auto first = update_in_place(*table, env, /*row_id=*/0, /*new_value=*/100);
     REQUIRE_FALSE(first.has_error());
     REQUIRE(first.value().second == 1);
@@ -111,7 +105,6 @@ TEST_CASE("components::table::update_segment::two_writers_over_one_row_conflict_
     REQUIRE(second.value().second == 1);
     REQUIRE(second.value().first == 0); // {0, count}: the pair carries no conflict report
 
-    // Last writer wins; writer A's value is gone with no diagnostic anywhere.
     const int64_t seen = scan_first_value(*table, env);
     INFO("row reads " << seen << " — writer A's 100 was overwritten with nothing reported");
     REQUIRE(seen == 200);

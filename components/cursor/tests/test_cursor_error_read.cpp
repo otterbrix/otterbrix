@@ -15,28 +15,22 @@ using components::cursor::make_cursor;
 
 namespace {
 
-    // Mirrors integration/cpp/test/{test_alter_missing_column,test_fk_parent_column_drop}.cpp: two
-    // get_error() calls in one expression. A by-value get_error() would mint two copies on unrelated
-    // buffers, reading back doubled/tripled or underflowing size_t.
+    // Mirrors test_alter_missing_column/test_fk_parent_column_drop.cpp: two get_error() calls in one
+    // expression. A by-value get_error() would mint copies on unrelated buffers, corrupting the read.
     std::string error_text(const cursor_t& cur) {
         return std::string{cur.get_error().what.begin(), cur.get_error().what.end()};
     }
 
-    // Pointer arithmetic only, never dereferences, so it reports the defect without reading unrelated heap.
     std::ptrdiff_t error_span(const cursor_t& cur) {
         return cur.get_error().what.end() - cur.get_error().what.begin();
     }
 
     constexpr std::string_view short_refusal = "ALTER TABLE: column \"nosuchcol\" does not exist on relation \"edb.t\".";
 
-    // Past the 120-byte mark the allocator's stride between blocks is larger, so a by-value read comes
-    // apart by more.
+    // Past the 120-byte mark the allocator's stride between blocks is larger, so a by-value read comes apart by more.
     constexpr std::string_view long_refusal =
         "ALTER TABLE: column \"parent_id\" of relation \"edb.child\" may not be dropped: "
         "FOREIGN KEY constraint \"fk_child_parent\" still depends on it.";
-
-    // producer and owner must be different resources, or "lives on the cursor's arena" and "still lives
-    // on the producer's arena" become indistinguishable.
 
     // The producer's error is a temporary -> cursor_t(resource, core::error_t&&).
     cursor_t_ptr refuse_with_temporary(std::pmr::memory_resource* producer,
@@ -48,8 +42,7 @@ namespace {
     }
 
     // The producer's error is a named variable (lvalue) -> cursor_t(resource, const core::error_t&),
-    // the overload services/collection/executor.cpp's refusal sites take, reached directly rather than
-    // via the &&-constructor's delegation.
+    // the overload services/collection/executor.cpp's refusal sites take directly.
     cursor_t_ptr
     refuse_by_name(std::pmr::memory_resource* producer, std::pmr::memory_resource* owner, std::string_view message) {
         core::error_t err{core::error_code_t::schema_error,
@@ -68,8 +61,7 @@ namespace {
         const std::string expected{message};
         const auto expected_span = static_cast<std::ptrdiff_t>(expected.size());
 
-        // Keep every cursor alive: addresses drift further apart as the arena fills, growing a bogus
-        // length from one refusal to the next.
+        // Keep every cursor alive: addresses drift as the arena fills, growing a bogus length each time.
         std::vector<cursor_t_ptr> cursors;
         cursors.reserve(8);
 
@@ -158,8 +150,7 @@ TEST_CASE("components::cursor::error_string_lives_on_the_cursor_resource") {
             auto cur = make_cursor(&owner, std::move(error));
             REQUIRE(cur->is_error());
 
-            // Moving a pmr string keeps the source allocator, so a plain move would leave the
-            // cursor pointing into an arena it never owned.
+            // Moving a pmr string keeps its source allocator, so a plain move would point into an unowned arena.
             CHECK(cur->get_error().what.get_allocator().resource() == &owner);
             CHECK(std::string_view{cur->get_error().what} == long_refusal);
         }
@@ -184,8 +175,7 @@ TEST_CASE("components::cursor::error_string_lives_on_the_cursor_resource_when_pa
         REQUIRE(produced >= 1);
 
         {
-            // Copying an error_t does not propagate the allocator, so a plain copy here would
-            // put the message on the default resource, invisible to both tracers.
+            // Copying an error_t doesn't propagate the allocator, landing a plain copy on the default resource.
             auto cur = make_cursor(&owner, error);
             REQUIRE(cur->is_error());
 

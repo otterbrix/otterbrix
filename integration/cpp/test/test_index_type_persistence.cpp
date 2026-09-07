@@ -7,11 +7,8 @@
 #include <string>
 #include <vector>
 
-// The index TYPE (btree vs hash) must survive a restart: manager_index_t::spawn_disk_agent
-// picks the backend from pg_index.indtype. If lost, a `USING hash` index would come back as a
-// btree POINTED AT THE BITCASK DIRECTORY — same files, different reader, which "it says hash"
-// can't catch. Witness: the backends leave disjoint artefacts (bitcask: CURRENT/bitcask.*.data;
-// b+tree: metadata), so post-restart writes must grow the bitcask segments with no `metadata`.
+// The index TYPE (btree vs hash) must survive a restart, or a `USING hash` index could come back as a btree
+// pointed at the bitcask directory; post-restart writes must grow the bitcask segments, not create metadata.
 
 namespace {
 
@@ -19,7 +16,6 @@ namespace {
         return std::filesystem::exists(dir / "CURRENT");
     }
 
-    // Grows only when the bitcask backend owns the directory and takes a write.
     std::uintmax_t bitcask_segment_bytes(const std::filesystem::path& dir) {
         std::uintmax_t total = 0;
         for (const auto& e : std::filesystem::directory_iterator(dir)) {
@@ -33,8 +29,6 @@ namespace {
         return total;
     }
 
-    // Found by content (bitcask CURRENT marker), not by name — the on-disk layout is
-    // oid-keyed and carries no index name.
     std::filesystem::path find_index_dir(const std::filesystem::path& disk_root) {
         for (const auto& e : std::filesystem::recursive_directory_iterator(disk_root)) {
             if (e.is_directory() && has_bitcask_artefacts(e.path())) {
@@ -95,11 +89,8 @@ TEST_CASE("integration::cpp::test_index_type_persistence::hash_index_type_surviv
     CHECK_FALSE(std::filesystem::exists(index_dir / "metadata"));
 }
 
-// DATE is physically an INT32 day counter, TIME an INT64 microsecond counter; the catalog
-// carries that logical type across a restart via pg_attribute.atttypid. Losing it doesn't
-// announce itself: an equality probe under the wrong tag just matches nothing, and a RANGE
-// probe returns a well-formed answer of the WRONG rows, because the raw counters still order
-// among themselves. So the witness is exact answers across the restart, not "it succeeded".
+// DATE/TIME are physically INT32/INT64 counters whose logical type crosses a restart via pg_attribute; losing
+// it doesn't announce itself, since raw counters still order among themselves under the wrong tag.
 namespace {
 
     std::string type_persistence_plan_text(const components::cursor::cursor_t_ptr& cur) {
@@ -120,15 +111,11 @@ TEST_CASE("integration::cpp::test_index_type_persistence::temporal_key_type_surv
     config.wal.on = true;
     config.log.level = log_t::level::off;
 
-    // Written BEFORE the restart. The dates and times are deliberately out of order so no
-    // answer below can come from insertion order.
     const char* before[] = {
         "(1, DATE '2024-03-15', TIME '12:30:00')",
         "(2, DATE '2024-01-01', TIME '08:00:00')",
         "(3, DATE '2024-12-31', TIME '23:59:00')",
     };
-    // Written AFTER it, interleaved with the values above rather than appended past them,
-    // so a range answer has to mix rows from both sessions to be right.
     const char* after[] = {
         "(4, DATE '2024-02-01', TIME '09:15:00')",
         "(5, DATE '2024-06-30', TIME '18:45:00')",
@@ -165,8 +152,6 @@ TEST_CASE("integration::cpp::test_index_type_persistence::temporal_key_type_surv
             return d->execute_sql(session, sql);
         };
 
-        // If the key type came back wrong, these keys would be encoded differently from the
-        // pre-restart ones — the mixed-range probes below are what would catch that.
         for (const char* row : after) {
             for (const char* table : {"t.ti", "t.tp"}) {
                 const std::string sql = std::string{"INSERT INTO "} + table + " (id, d, tm) VALUES " + row + ";";
@@ -194,21 +179,15 @@ TEST_CASE("integration::cpp::test_index_type_persistence::temporal_key_type_surv
             CHECK(indexed->size() == expected);
         };
 
-        // Pre-restart row: the pre-restart encoding and this session's probe must be the
-        // same bytes.
         probe("d = DATE '2024-03-15'", 1);
         probe("tm = TIME '12:30:00'", 1);
-        // ... and on one written AFTER it.
         probe("d = DATE '2024-06-30'", 1);
         probe("tm = TIME '18:45:00'", 1);
-        // A key nothing carries, so the index cannot pass by matching everything.
         probe("d = DATE '2020-05-05'", 0);
 
-        // Each range mixes rows from both sessions: 2024-02-01 (after) sorts between
-        // 2024-01-01 and 2024-03-15 (both before) — what a lost key type breaks without failing.
-        probe("d < DATE '2024-03-15'", 2);  // 2024-01-01, 2024-02-01
-        probe("d >= DATE '2024-03-15'", 3); // 2024-03-15, 2024-06-30, 2024-12-31
-        probe("tm > TIME '09:15:00'", 3);   // 12:30, 18:45, 23:59
-        probe("tm <= TIME '09:15:00'", 2);  // 08:00, 09:15
+        probe("d < DATE '2024-03-15'", 2);
+        probe("d >= DATE '2024-03-15'", 3);
+        probe("tm > TIME '09:15:00'", 3);
+        probe("tm <= TIME '09:15:00'", 2);
     }
 }

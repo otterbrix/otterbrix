@@ -15,11 +15,7 @@ namespace components::index::codec {
     using logical_type_t = components::types::logical_type;
     using physical_type_t = components::types::physical_type;
 
-    // CREATE INDEX vets key types before this file sees them (services/dispatcher/validate_logical_plan.cpp),
-    // so the encode-side `default:` arms never fire on user data; the decode side reads untrusted bytes off
-    // disk instead, so nothing in this file aborts on either side — a corrupt payload is reported via `ok`.
-    // Ordered (b+tree) indexes round-trip keys through physical_value, which carries no DECIMAL tag, so
-    // DECIMAL is refused when `ordered` is true; hashed indexes accept it via append_decimal_payload.
+    // CREATE INDEX vets key types before this file sees them; only the decode side reads untrusted disk bytes.
     inline constexpr bool is_representable_index_key_type(logical_type_t type, bool ordered) {
         switch (type) {
             case logical_type_t::BOOLEAN:
@@ -53,9 +49,7 @@ namespace components::index::codec {
         out.append(reinterpret_cast<const char*>(bytes), sizeof(T));
     }
 
-    // Must not throw: an exception here unwinds into an actor coroutine whose unhandled_exception() aborts,
-    // so a corrupt key must be reported through `ok`, not thrown. Bounds check is written to avoid overflow
-    // in `pos + sizeof(T)` for a `pos` already past the end.
+    // Must not throw -- an exception here unwinds into an actor coroutine whose unhandled_exception() aborts.
     template<typename T>
     inline T read_le(const std::pmr::string& in, size_t& pos, bool* ok = nullptr) {
         if (pos > in.size() || in.size() - pos < sizeof(T)) {
@@ -82,8 +76,6 @@ namespace components::index::codec {
         std::memcpy(p, &v, sizeof(T));
     }
 
-    // Reports rather than asserts: both encoders that call this can be handed a DECIMAL decoded
-    // off disk (see encode_disk_hash_key), not only one this process built.
     template<typename AppendFn>
     [[nodiscard]] inline bool append_decimal_payload(AppendFn&& append, const logical_value_t& key) {
         const auto* decimal =
@@ -108,7 +100,6 @@ namespace components::index::codec {
         }
     }
 
-    // width/scale are stored bytes; an unrepresentable pair is data, reported through `ok` as NA.
     template<typename ReadFn>
     inline logical_value_t read_decimal_payload(std::pmr::memory_resource* resource, ReadFn&& read, bool* ok) {
         const auto width = read.template operator()<uint8_t>();
@@ -119,8 +110,6 @@ namespace components::index::codec {
             }
             return logical_value_t(resource, components::types::complex_logical_type{logical_type_t::NA});
         };
-        // A flipped bit in a stored width (e.g. 18 -> 50) must not assert: an ordinary
-        // NUMERIC(18,2) key would kill the process.
         auto decimal_result = components::types::complex_logical_type::create_decimal(resource, width, scale);
         if (decimal_result.has_error()) {
             return refuse();
@@ -144,9 +133,7 @@ namespace components::index::codec {
         }
     }
 
-    // A refusal leaves `out` holding only the tag byte — not a usable key. The `default:` arm must not
-    // abort: bitcask's merge relocation (services/index/bitcask_index_disk.cpp) can hand this a value
-    // decoded off disk.
+    // The `default:` arm must not abort: bitcask's merge relocation can hand this a value decoded off disk.
     inline void append_logical_value(std::pmr::string& out, const logical_value_t& key, bool* ok = nullptr) {
         const auto refuse = [ok]() {
             if (ok != nullptr) {
@@ -205,15 +192,11 @@ namespace components::index::codec {
                 break;
             }
             default:
-                // Unreachable from a vetted column, but reachable with a value decoded off disk
-                // (merge relocation) — an assert can't tell those apart, so this refuses instead.
                 refuse();
                 return;
         }
     }
 
-    // `in` is an untrusted stored key payload (b+tree leaf or bitcask segment, no checksum).
-    // Nothing here aborts; a refusal answers NA and sets `*ok` to false.
     inline logical_value_t read_logical_value(std::pmr::memory_resource* resource,
                                               const std::pmr::string& in,
                                               size_t& pos,
@@ -239,9 +222,6 @@ namespace components::index::codec {
             }
             return decoded;
         }
-        // Most arms below guard a DERIVATION (physical width implies one logical type) and keep a Debug
-        // assert but still refuse rather than abort. INT32 (shared by INTEGER/DATE/ENUM), the STRING
-        // length, and the outer `default:` carry no assert — ordinary stored bytes can reach them.
         const auto physical = components::types::to_physical_type(logical);
 
         auto value_or_refuse = [&]<typename T>(auto&& build) {
@@ -291,8 +271,6 @@ namespace components::index::codec {
                 return value_or_refuse.template operator()<uint16_t>(
                     [&](uint16_t v) { return logical_value_t(resource, v); });
             case physical_type_t::INT32: {
-                // Data, not a derivation: ENUM also maps to INT32, and this codec cannot read it
-                // (no entry list carried in the key).
                 if (logical != logical_type_t::DATE && logical != logical_type_t::INTEGER) {
                     return refuse();
                 }
@@ -327,7 +305,6 @@ namespace components::index::codec {
                     case logical_type_t::TIMESTAMP_TZ:
                         return logical_value_t(resource, core::date::timestamptz_t{core::date::microseconds{v}});
                     default:
-                        // Derivation: INT64 comes only from these four and DECIMAL, which already left above.
                         assert(false && "logical value codec: unsupported INT64 logical key type during decode");
                         return refuse();
                 }
@@ -362,8 +339,6 @@ namespace components::index::codec {
                 if (!read_ok) {
                     return refuse();
                 }
-                // Data: the length is four stored bytes; a flipped high bit could claim gigabytes for a
-                // tiny record, so the comparison below is written to not overflow.
                 if (n > in.size() - pos) {
                     return refuse();
                 }
@@ -372,14 +347,11 @@ namespace components::index::codec {
                 return logical_value_t(resource, std::move(s));
             }
             default:
-                // Data: a tag whose width has no reader, or one the type table maps to nothing.
                 return refuse();
         }
     }
-    // Runs on the path that opens a database: bitcask_index_disk_t::load_from_disk hands this a
-    // value decoded off disk via key_bytes_for_hash()/normalize_hash_key() (services/index/bitcask_index_disk.cpp).
-    // The `default:` arm must not abort — it reports through `ok` instead, and every caller
-    // reachable with disk-decoded bytes passes the flag and refuses the whole operation.
+    // Runs on the path that opens a database: bitcask_index_disk_t::load_from_disk hands this a value
+    // decoded off disk, and every caller reachable with disk-decoded bytes refuses the whole operation.
     inline std::string encode_disk_hash_key(const logical_value_t& key, bool* ok = nullptr) {
         const auto refuse = [ok]() {
             if (ok != nullptr) {
@@ -451,16 +423,13 @@ namespace components::index::codec {
                 break;
             }
             default:
-                // No assert here, unlike the decode-side derivation guards: a stored tag byte can
-                // steer this arm through the rebuild loop above, and assert(false) aborts in Debug.
                 refuse();
                 break;
         }
         return out;
     }
 
-    // Raw-buffer twin of read_le: an assert alone would vanish under NDEBUG and let memcpy read past
-    // the end of the record. `ok` reports a short read; a caller that ignores it gets T{} and an unmoved `pos`.
+    // Raw-buffer twin of read_le: an assert alone would vanish under NDEBUG and let memcpy read past the end.
     template<typename T>
     inline T read_le_raw(const char* data, size_t size, size_t& pos, bool* ok = nullptr) {
         if (pos > size || size - pos < sizeof(T)) {
@@ -474,8 +443,6 @@ namespace components::index::codec {
         pos += sizeof(T);
         return v;
     }
-    // Ordered (b+tree) decoder; same untrusted-input contract as read_logical_value — refuses
-    // via `ok`, never aborts.
     inline components::types::physical_value
     read_logical_value_as_view(const char* data, size_t size, size_t& pos, bool* ok = nullptr) {
         auto refuse = [ok]() {
@@ -489,9 +456,8 @@ namespace components::index::codec {
         if (!read_ok) {
             return refuse();
         }
-        // physical_value carries no width/scale, so honouring DECIMAL here would silently compare
-        // the scaled payload as plain INT64. Ordered indexes refuse DECIMAL at CREATE INDEX, so
-        // seeing one here is corrupt data.
+        // physical_value carries no width/scale, so honouring DECIMAL here would silently misread the
+        // scaled payload as plain INT64; ordered indexes already refuse DECIMAL at CREATE INDEX.
         if (logical == logical_type_t::DECIMAL) {
             return refuse();
         }
@@ -540,8 +506,6 @@ namespace components::index::codec {
                 if (!read_ok) {
                     return refuse();
                 }
-                // physical_value here is a VIEW into `data`; an unchecked length would publish a
-                // view past the end that every later comparison reads through.
                 if (n > size - pos) {
                     return refuse();
                 }
@@ -550,13 +514,9 @@ namespace components::index::codec {
                 return pv;
             }
             default:
-                // DATA: an unmapped tag byte, or a width this decoder has no arm for.
                 return refuse();
         }
     }
-    // Steps `pos` past one value without decoding it (services::index::id_of reaches the row id
-    // after the key). A `pos` left past the end would turn the next read out-of-bounds, so every
-    // step is bounds-checked.
     inline void skip_logical_value(const char* data, size_t size, size_t& pos, bool* ok = nullptr) {
         auto refuse = [ok]() {
             if (ok != nullptr) {
@@ -584,9 +544,8 @@ namespace components::index::codec {
                 refuse();
                 return;
             }
-            // Only the width matters for a skip, so ask the storage table directly instead of
-            // building a type via create_decimal, whose error path a flipped stored byte (18 -> 50)
-            // would otherwise reach.
+            // Only the width matters for a skip, so this asks the storage table directly rather than
+            // building a type via create_decimal, whose error path a corrupt stored byte could reach.
             switch (components::types::decimal_storage_for_width(width)) {
                 case physical_type_t::INT16:
                     advance(sizeof(int16_t));
@@ -642,23 +601,13 @@ namespace components::index::codec {
                 return;
             }
             default:
-                // DATA: an unmapped tag byte, or a width this codec cannot size.
                 refuse();
                 return;
         }
     }
-    // TYPE-DIRECTED VALUE CODEC — persists a column DEFAULT (pg_attribute.attdefspec; see
-    // components/catalog/system_table_schemas.hpp). Unlike the key codec above: a value may be NULL (one
-    // presence byte), and since the reader already knows the type (atttypspec), the payload carries no
-    // width/scale — only a per-value logical tag, written at EVERY nesting level, as a CHECK against the
-    // caller's type. Without it, a same-width type divergence (e.g. a BIGINT default read against a DOUBLE
-    // column) would decode silently instead of leaving trailing bytes.
-    // Second line of defence, not a replacement: the ALTER-time check
-    // (components/catalog/alter_column_validators.cpp, validate_default_value_type) still refuses the
-    // divergence before it reaches disk; this codec only catches one that already did.
-    // Nothing here aborts — a short or type-mismatched payload is data, reported through `ok`/`false`.
+    // Persists a column DEFAULT; unlike the key codec, a value may be NULL and carries a per-value type
+    // tag as a CHECK against the caller's type -- a second line of defence behind the ALTER-time check.
 
-    // Scalars are exactly the hashed-index key set; nested types are encodable when every leaf is.
     inline bool is_encodable_value_type(const components::types::complex_logical_type& type) {
         switch (type.type()) {
             case logical_type_t::ARRAY:
@@ -680,7 +629,6 @@ namespace components::index::codec {
         }
     }
 
-    // DECIMAL storage width taken from the TYPE, never the stream. INVALID if unsupported.
     inline physical_type_t decimal_storage_of(const components::types::complex_logical_type& type) {
         const auto physical = type.to_physical_type();
         switch (physical) {
@@ -787,7 +735,6 @@ namespace components::index::codec {
                 return true;
             }
             default:
-                // No encoding for this type. Reported, never dropped.
                 return false;
         }
     }
@@ -807,13 +754,10 @@ namespace components::index::codec {
             return fail();
         }
         if (present == 0) {
-            // NULL is NA-typed here (is_null() IS type()==NA), so it carries no tag: the
-            // caller already holds the type alongside; "present==0" says only "this is NULL".
+            // NULL is NA-typed here (is_null() means type()==NA), so it carries no separate tag.
             return logical_value_t(resource, components::types::complex_logical_type{logical_type_t::NA});
         }
-        // Checked BEFORE any payload byte is read, so a divergence never half-consumes the
-        // stream. This catches a SAME-WIDTH divergence; `pos != payload.size()` only sees a
-        // WIDTH one.
+        // Checked before any payload byte is read, so a divergence never half-consumes the stream.
         const auto stored_tag = read_le<uint8_t>(in, pos, &read_ok);
         if (!read_ok || stored_tag != static_cast<uint8_t>(type.type())) {
             return fail();
@@ -936,7 +880,6 @@ namespace components::index::codec {
             }
             case logical_type_t::STRING_LITERAL: {
                 const auto n = read_le<uint32_t>(in, pos, &read_ok);
-                // Same non-overflowing shape as read_le/read_le_raw, for the same reason.
                 if (!read_ok || pos > in.size() || in.size() - pos < n) {
                     return fail();
                 }

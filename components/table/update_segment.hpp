@@ -33,7 +33,6 @@ namespace components::table {
         class block_handle_t;
     } // namespace storage
 
-    // Forward decl so header-template impl below can dispatch on set_membership_filter_t.
     class set_membership_filter_t;
 
     inline bool supports_regular_update(const types::complex_logical_type& type) {
@@ -104,29 +103,16 @@ namespace components::table {
         undo_buffer_entry_t* entry = nullptr;
         uint64_t position = 0;
 
-        // Returns out_of_memory / data_corruption / io_error when the block cannot be pinned;
-        // does NOT hand back a reference on that path -- undo_buffer_reference::update_info()
-        // reinterpret_casts ptr(), so an empty handle would form a fabricated address.
         [[nodiscard]] core::result_wrapper_t<undo_buffer_reference> pin() const;
         bool is_set() const { return entry; }
     };
 
-    // Reports a pin refusal reached from a read path with no error channel of its own: loud,
-    // not fatal, not silent. update() already forwards refusals as a value; the rest --
-    // update_info_t::update_for_transaction, fetch_updates, fetch_committed,
-    // fetch_committed_range, fetch_row -- return void/bool, and threading an error channel
-    // through their callers in column_data.cpp (scan_vector, fetch_update_row,
-    // scan_count_with_updates) is a signature change across column_data.{hpp,cpp}.
-    // column_scan_state::scan_error already covers the two scan_vector legs; fetch_update_row
-    // has nothing, so this reports and stops the walk instead of reading through a fabricated
-    // pointer.
     void report_unreachable_update_node(const char* where, const core::error_t& error);
 
     struct undo_buffer_allocator_t {
         explicit undo_buffer_allocator_t(storage::buffer_manager_t& buffer_manager)
             : buffer_manager(buffer_manager) {}
 
-        // Returns out_of_memory when fresh transaction memory cannot be reserved.
         [[nodiscard]] core::result_wrapper_t<undo_buffer_reference> allocate(uint64_t alloc_len);
 
         storage::buffer_manager_t& buffer_manager;
@@ -205,9 +191,6 @@ namespace components::table {
                                    uint64_t count,
                                    vector::vector_t& result,
                                    uint64_t result_offset_base = 0);
-        // Returns out_of_memory / data_corruption / io_error (undo_buffer_pointer_t::pin's
-        // refusals); never write_conflict -- update_info_t carries no transaction/commit
-        // stamp to compare against. See the note inside update_segment_t::update.
         [[nodiscard]] core::result_wrapper_t<bool> update(uint64_t column_index,
                                                           vector::vector_t& update,
                                                           int64_t* ids,
@@ -316,7 +299,6 @@ namespace components::table {
         uint64_t type_size_;
         core::string_buffer_t heap_;
         column_data_t* column_data_;
-        // Single-owner: see the proof on data_table_t (components/table/data_table.hpp).
     };
 
     struct update_select_element_t {
@@ -326,14 +308,6 @@ namespace components::table {
         }
     };
 
-    // The one place an update_info_t's string bytes are made to belong to the segment: every
-    // caller's update vector is a temporary (agent_disk_t::direct_update_sync builds a local
-    // data_chunk_t and returns), so an uncopied view is a read of freed memory.
-    //
-    // Cost: update_segment_t::heap_ is a core::string_buffer_t (monotonic_buffer_resource),
-    // APPEND-ONLY -- reset() is never called in this tree -- so rewriting one row N times
-    // retains ~N * strlen bytes, not strlen. See the note over merge_update_loop_internal's
-    // pick_new for why the merge leg now pays this too.
     template<>
     inline std::string_view update_select_element_t::operation(update_segment_t* segment, std::string_view element) {
         return {static_cast<char*>(segment->heap().insert(element)), element.size()};
@@ -673,11 +647,6 @@ namespace components::table {
         auto tuple_data = update_info.data<T>();
 
         for (uint64_t i = 0; i < update_info.N; i++) {
-            // The update vector holds exactly `count` values, addressed by the indexing vector
-            // ALONE: adding `base_info.vector_index * DEFAULT_VECTOR_CAPACITY` here confuses
-            // row space with vector space and reads out of bounds for any row in vector 1+,
-            // initializing the ROOT node from heap garbage. initialize_update_validity's
-            // sibling leg adds no offset either.
             auto idx = indexing.get_index(i);
             tuple_data[i] = update_select_element_t::operation<T>(update_info.segment, update_data[idx]);
         }
@@ -823,19 +792,6 @@ namespace components::table {
         memcpy(update_tuples, result_ids, result_offset * sizeof(uint32_t));
 
         result_offset = 0;
-        // update_select_element_t::operation, NOT the raw extractor result -- its string_view
-        // specialisation copies bytes into the segment's own heap; every other route into an
-        // update_info_t goes through it. Skip it here and the merged row holds a view into the
-        // CALLER's update vector, a temporary at every caller (agent_disk_t::direct_update_sync),
-        // surfacing later as a garbage attname rather than a crash.
-        //
-        // GROWTH (declared, since this changes the update hot path): for string_view that
-        // operation is heap().insert() into update_segment_t::heap_, a monotonic arena whose
-        // only release (reset()) nothing in this tree calls -- so rewriting the same row N
-        // times retains ~N * strlen bytes (a 64-byte value rewritten a million times is ~64 MB,
-        // not ~64 bytes) until the owning column_data_t dies. initialize_update_data always
-        // paid this; the MERGE leg now pays it too -- a bounded leak instead of a read of freed
-        // memory.
         auto pick_new = [&](uint64_t id, uint64_t aidx) {
             result_values[result_offset] =
                 update_select_element_t::operation<T>(base_info.segment, extractor(update_vector_data, aidx));
@@ -853,7 +809,6 @@ namespace components::table {
             auto a_id = static_cast<uint64_t>(ids[a_index]) - base_id;
             auto b_id = base_info.tuples()[bidx];
             if (a_id == b_id) {
-                // Both sides carry this row: the incoming value is the newer one and wins.
                 pick_new(a_id, a_index);
                 aidx++;
                 bidx++;
@@ -865,12 +820,7 @@ namespace components::table {
                 bidx++;
             }
         }
-        // `count` is the BOUND -- how many row ids came in -- and must not move. Advancing it
-        // in lockstep with aidx never terminates: the loop would walk indexing.get_index past
-        // the indexing vector and push result_values/result_ids off their 2048-entry stack
-        // arrays. Entered on the second update of a vector at a higher row (an incoming id
-        // sorts after every id already in base_info); result_offset is the only cursor either
-        // tail needs.
+        // `count` must not move in lockstep with aidx — it would overflow the 2048-entry stack arrays.
         for (; aidx < count; aidx++) {
             auto a_index = indexing.get_index(aidx);
             pick_new(static_cast<uint64_t>(ids[a_index]) - base_id, a_index);

@@ -1,34 +1,5 @@
-// A constraint naming something that is not there must be refused, not accepted and then
-// quietly unenforced -- same class as `REFERENCES parent` with the column list omitted (see
-// test_fk_omitted_ref_columns.cpp). Four ways to reach it, all through plain SQL:
-//
-//   (1) `REFERENCES nosuchtable` -- the referenced table never resolved, so enrich skipped
-//       the whole FK branch and the planner still wrote a pg_constraint row with an invalid
-//       confrelid and an empty confkey. operator_resolve_constraint needs BOTH name lists, so
-//       it drops that row: orphans go in, ON DELETE RESTRICT lets the parent go.
-//
-//   (2) `FOREIGN KEY (nosuchcol)` / `REFERENCES parent (nosuchcol)` -- the column-name ->
-//       attoid loops in enrich appended nothing for a name that matched nothing, leaving
-//       conkey / confkey shorter than declared. At length 0 the constraint enforces nothing;
-//       shorter than declared it enforces a DIFFERENT constraint, since both lists are read
-//       positionally from there on.
-//
-//   (3) `UNIQUE (nosuchcol)` / `PRIMARY KEY (nosuchcol)` -- same enrich loop, same silence: an
-//       empty conkey is never even decoded by operator_resolve_constraint (it skips empty
-//       groups).
-//
-//   (4) UNIQUE / PRIMARY KEY on a dynamic-schema (relkind='g') table: resolves at DDL time and
-//       dies at DML time. A schemaless table has no pg_attribute rows (its columns live in
-//       pg_computed_column, with attoids from a different sequence), so conkey holds attoids
-//       the resolve step's pg_attribute read can never match -- the group was dropped from
-//       the constraint set in silence, and duplicates went straight in under a declared
-//       UNIQUE. FOREIGN KEY and CHECK are already refused on such tables for exactly this
-//       reason (stable attoids); the key constraints were not.
-//
-// Case (4) is also the one reachable route into the UNIQUE/PK group-drop in
-// operator_resolve_constraint. With it refused at DDL, that drop becomes a last line of
-// defence for a catalog already holding such a row, watched by the success-path sentinel at
-// the bottom of this file.
+// A constraint naming something that isn't there must be refused, not silently accepted and left unenforced --
+// same class as `REFERENCES parent` with the column list omitted (see test_fk_omitted_ref_columns.cpp).
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"
@@ -57,7 +28,6 @@ namespace {
         REQUIRE(column_i64(cur, 0) == ids);
     }
 
-    // parent(id, val) + child(id, pid), both real, both empty of constraints.
     void seed_pair(otterbrix::wrapper_dispatcher_t* d) {
         REQUIRE(exec(d, "CREATE DATABASE cur;")->is_success());
         REQUIRE(exec(d, "CREATE TABLE cur.parent (id bigint, val text);")->is_success());
@@ -68,9 +38,7 @@ namespace {
 
 } // namespace
 
-// (1) REFERENCES a table that does not exist. PostgreSQL answers
-// `relation "nosuchtable" does not exist` and writes nothing. Otterbrix wrote a
-// dead pg_constraint row and reported success.
+// PostgreSQL refuses this outright; Otterbrix wrote a dead pg_constraint row and reported success.
 TEST_CASE("integration::cpp::constraint_unresolvable_target::references_missing_table_is_refused") {
     auto config = make_test_config(integration_fixture_path("test_constraint_unresolvable_target/missing_table"));
     test_spaces space(config);
@@ -101,9 +69,7 @@ TEST_CASE("integration::cpp::constraint_unresolvable_target::references_missing_
     require_ids(d, "cur.child", {10, 12});
 }
 
-// (2a) The REFERENCING column list names a column the child does not have. The
-// list is read positionally from conkey onwards, so dropping the unmatched name
-// silently produces a constraint on a different (here: an empty) column set.
+// conkey is read positionally, so dropping the unmatched name would enforce a different (empty) column set.
 TEST_CASE("integration::cpp::constraint_unresolvable_target::fk_referencing_missing_column_is_refused") {
     auto config = make_test_config(integration_fixture_path("test_constraint_unresolvable_target/fk_child_col"));
     test_spaces space(config);
@@ -120,7 +86,6 @@ TEST_CASE("integration::cpp::constraint_unresolvable_target::fk_referencing_miss
     REQUIRE(what.find("nosuchcol") != std::string::npos);
 }
 
-// (2b) The REFERENCED column list names a column the parent does not have.
 TEST_CASE("integration::cpp::constraint_unresolvable_target::fk_referenced_missing_column_is_refused") {
     auto config = make_test_config(integration_fixture_path("test_constraint_unresolvable_target/fk_parent_col"));
     test_spaces space(config);
@@ -137,8 +102,7 @@ TEST_CASE("integration::cpp::constraint_unresolvable_target::fk_referenced_missi
     REQUIRE(what.find("nosuchcol") != std::string::npos);
 }
 
-// (3) UNIQUE over a column that does not exist. Accepted today, and the key it
-// declares does not exist: two identical rows go in under it.
+// Accepted today; the declared key doesn't exist, so two identical rows go in under it unenforced.
 TEST_CASE("integration::cpp::constraint_unresolvable_target::unique_on_missing_column_is_refused") {
     auto config = make_test_config(integration_fixture_path("test_constraint_unresolvable_target/unique_col"));
     test_spaces space(config);
@@ -163,9 +127,7 @@ TEST_CASE("integration::cpp::constraint_unresolvable_target::unique_on_missing_c
     REQUIRE(exec(d, "INSERT INTO cur.t (id, v) VALUES (2, 20);")->is_success());
 }
 
-// (3b) A partially resolvable list is the sharper half of the same defect: the
-// declared key is (id, nosuchcol), the row that lands in pg_constraint says
-// (id). Silently narrowing a key changes which rows the table will accept.
+// The declared key (id, nosuchcol) narrows to (id) alone in pg_constraint, silently changing what's accepted.
 TEST_CASE("integration::cpp::constraint_unresolvable_target::unique_partially_resolvable_list_is_refused") {
     auto config = make_test_config(integration_fixture_path("test_constraint_unresolvable_target/unique_partial"));
     test_spaces space(config);
@@ -185,21 +147,14 @@ TEST_CASE("integration::cpp::constraint_unresolvable_target::unique_partially_re
     REQUIRE(exec(d, "INSERT INTO cur.t (id, v) VALUES (1, 20);")->is_success());
 }
 
-// (4) UNIQUE on a dynamic-schema (relkind='g') table. Its columns live in
-// pg_computed_column, so the attoids enrich writes into conkey are from a
-// different sequence than the pg_attribute rows the resolve step reads — the
-// group can never be matched, so it must not be dropped in silence.
-//
-// The assertion is deliberately on the PAIR, not on which half gives: what must
-// never happen is "the DDL is accepted AND the duplicate goes in". Refusing the
-// DDL is one legal answer, enforcing the key is the other.
+// relkind='g' columns use a different attoid sequence than pg_attribute, so the group can never match by resolve.
+// The assertion is on the PAIR of outcomes: DDL-accepted AND duplicate-admitted together is the one illegal answer.
 TEST_CASE("integration::cpp::constraint_unresolvable_target::unique_on_dynamic_schema_is_never_a_no_op") {
     auto config = make_test_config(integration_fixture_path("test_constraint_unresolvable_target/unique_dynamic"));
     test_spaces space(config);
     auto* d = space.dispatcher();
 
     REQUIRE(exec(d, "CREATE DATABASE cur;")->is_success());
-    // No column list: relkind='g', schema inferred from the rows.
     REQUIRE(exec(d, "CREATE TABLE cur.docs();")->is_success());
     REQUIRE(exec(d, "INSERT INTO cur.docs (id, v) VALUES (1, 10);")->is_success());
 
@@ -218,24 +173,8 @@ TEST_CASE("integration::cpp::constraint_unresolvable_target::unique_on_dynamic_s
     REQUIRE(other->is_success());
 }
 
-// SENTINEL for the UNIQUE / PRIMARY KEY group resolution in
-// operator_resolve_constraint. Its length guard ("every conkey attoid must
-// resolve to a live column name") sits on the path every keyed INSERT takes, so
-// a defect that makes the resolution fail turns this case red instead of
-// letting the key quietly stop existing.
-//
-// Sensitivity was proven by injection. Mis-keying the attoid comparison in the
-// UNIQUE/PK loop so nothing can match it (`row_attoid == wanted_oid` →
-// `row_attoid == wanted_oid + 1000000`) turns the first INSERT below red with
-// the guard's own words:
-//
-//   primary key constraint "t_pk": key column list cannot be resolved — a
-//   column it is declared on has no live pg_attribute row
-//
-// Before the guard, the same injection left this test GREEN on that line and
-// let the duplicate id through instead. A near-miss injection (`+ 1`) is a
-// different defect — it binds the NEXT column's name, so the lists still agree
-// in length — and this case catches that one too, at the duplicate-id check.
+// Sentinel for the UNIQUE/PK group resolution's length guard in operator_resolve_constraint, on the path every
+// keyed INSERT takes; sensitivity was proven by injecting a mis-keyed attoid comparison, which turned this case red.
 TEST_CASE("integration::cpp::constraint_unresolvable_target::resolvable_key_constraints_stay_enforced") {
     auto config = make_test_config(integration_fixture_path("test_constraint_unresolvable_target/sentinel"));
     test_spaces space(config);

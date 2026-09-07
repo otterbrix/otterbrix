@@ -1,28 +1,5 @@
-// The nested half of the fetch channel: column_fetch_state carries TWO fields a nested column
-// must hand to the child that actually reads the bytes.
-//
-// A STRUCT node owns no segments -- every byte of a struct cell is read by a child column, on a
-// CHILD column_fetch_state. Building those children with a default-constructed state
-// (result_outlives_pins == false, fetch_error nobody above reads) causes two silent failures.
-// LIST/ARRAY have the same shape, for their validity child and an element leg read through a
-// local column_scan_state:
-//
-//   1. BORROWED VIEWS OUTLIVE THEIR PINS. table_storage_adapter_t::fetch and row_group_t's
-//      late-materialisation gather set result_outlives_pins = true so the string leg COPIES bytes
-//      into the result's heap; if the flag stops at the struct, the child reads false and
-//      string_fetch_row instead BORROWS from the pinned block -- whose pin lives in the child's
-//      `handles` and dies with the parent state when the fetch returns. The caller keeps a chunk
-//      pointing into a block the pool is free to evict/reload elsewhere.
-//
-//   2. LOST data_corruption. A big string (>= DEFAULT_STRING_BLOCK_LIMIT bytes) lives in an
-//      overflow block resolved only through the segment's own registry; an unregistered id writes
-//      a LOUD data_corruption into the reading state's fetch_error -- the CHILD's state in a
-//      struct field, so without a channel out the statement answers with a silently EMPTY field.
-//      test_storage_adapter_fetch.cpp covers the FLAT-column case; this file covers nested.
-//
-// ISOLATION: partial-block packing can put a nested child's segment in the same block as a flat
-// column's, letting a flat column answer for it BY ACCIDENT. Every table below has exactly ONE
-// column, a nested one, and gates assert it owns no top-level segment (`current == nullptr`).
+// column_fetch_state fields (result_outlives_pins, fetch_error) live on the CHILD state for a
+// nested column; a default-constructed child silently drops pin ownership and swallows errors.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -59,17 +36,14 @@ namespace {
             , buffer_manager(&resource, fs, buffer_pool) {}
     };
 
-    // The three shapes under test. Each is a SINGLE column so no flat column can answer for the
-    // nested one (see the isolation note at the top).
     enum class shape_t
     {
-        STRUCT_OF_STRING,        // s STRUCT(payload STRING)
-        STRUCT_OF_STRUCT_STRING, // s STRUCT(inner STRUCT(payload STRING))  -- second level
-        STRUCT_OF_LIST_STRING    // s STRUCT(items LIST(STRING))            -- second level, other kind
+        STRUCT_OF_STRING,
+        STRUCT_OF_STRUCT_STRING,
+        STRUCT_OF_LIST_STRING
     };
 
-    // The struct field the big string sits in (or under). Every field carries its own alias:
-    // an unnamed struct field is refused by struct_column_data_t outright.
+    // Every field needs an alias: struct_column_data_t refuses an unnamed struct field.
     complex_logical_type field_type(nested_env_t& env, shape_t shape) {
         switch (shape) {
             case shape_t::STRUCT_OF_STRING:
@@ -119,12 +93,9 @@ namespace {
 
     struct built_table_t {
         std::unique_ptr<data_table_t> table;
-        // The segment that physically holds the big string: always a leaf STRING column BELOW
-        // the struct, never a top-level one.
         column_segment_t* leaf_segment{nullptr};
     };
 
-    // One row, one nested column, one big string at the bottom of it.
     built_table_t build(nested_env_t& env, tstorage::block_manager_t& bm, shape_t shape, const std::string& big) {
         built_table_t out;
         std::vector<column_definition_t> columns;
@@ -143,17 +114,13 @@ namespace {
 
         REQUIRE(state.append_state.states != nullptr);
         auto& struct_append = state.append_state.states[0];
-        // THE ISOLATION GATE. A struct node owns no segments; if this were non-null the case
-        // below could be corrupting (and reading) a top-level segment instead of a child's.
-        REQUIRE(struct_append.current == nullptr);
-        REQUIRE(struct_append.child_appends.size() == 2); // [0] whole-cell validity, [1] the one field
+        REQUIRE(struct_append.current == nullptr); // struct owns no segments; non-null means reading the wrong one
+        REQUIRE(struct_append.child_appends.size() == 2);
         auto* field_append = &struct_append.child_appends[1];
         if (shape != shape_t::STRUCT_OF_STRING) {
-            // Second level: the field is itself nested (struct or list) and owns the leaf only
-            // through ITS children -- child_appends[1] again ([0] is that node's validity).
-            REQUIRE(field_append->child_appends.size() == 2);
+            REQUIRE(field_append->child_appends.size() == 2); // nested field: leaf sits through child_appends[1] again
             if (shape == shape_t::STRUCT_OF_STRUCT_STRING) {
-                REQUIRE(field_append->current == nullptr); // an inner struct owns no segments either
+                REQUIRE(field_append->current == nullptr);
             }
             field_append = &field_append->child_appends[1];
         }
@@ -164,10 +131,8 @@ namespace {
         return out;
     }
 
-    // Same layout surgery as test_big_strings.cpp / test_storage_adapter_fetch.cpp:
-    // [uint32 dict_size][uint32 dict_end] at the segment start, one 16-byte
-    // (uint64 block id, int64 offset) marker packed at dict_end - dict_size. The REQUIREs make a
-    // layout change fail loudly instead of corrupting the wrong bytes.
+    // [uint32 dict_size][uint32 dict_end] at the segment start, one 16-byte (block id, offset) marker
+    // packed at dict_end - dict_size; the REQUIREs turn a layout change into a loud failure, not corruption.
     void overwrite_only_overflow_marker(nested_env_t& env, column_segment_t& segment, uint64_t new_block_id) {
         auto pinned = env.buffer_manager.pin(segment.block);
         REQUIRE_FALSE(pinned.has_error());
@@ -176,24 +141,20 @@ namespace {
         uint32_t dict_end = 0;
         std::memcpy(&dict_size, base, sizeof(uint32_t));
         std::memcpy(&dict_end, base + sizeof(uint32_t), sizeof(uint32_t));
-        REQUIRE(dict_size == 16); // exactly one big string == exactly one 16-byte marker
+        REQUIRE(dict_size == 16);
         auto* marker = base + dict_end - dict_size;
         uint64_t named_block = 0;
         std::memcpy(&named_block, marker, sizeof(uint64_t));
-        REQUIRE(named_block >= tstorage::MAXIMUM_BLOCK); // really a transient overflow id
+        REQUIRE(named_block >= tstorage::MAXIMUM_BLOCK);
         std::memcpy(marker, &new_block_id, sizeof(uint64_t));
     }
 
-    // Stand-in for what the buffer pool is allowed to do to an UNPINNED block: reuse its memory.
-    // A view the fetch OWNS (copied into the result's heap) does not notice; a view it BORROWED
-    // reads the poison. This is the deterministic form of the eviction race -- an eviction-timed
-    // test would be flaky in the direction that matters (passing while the defect is present).
+    // Simulates what the buffer pool may do to an unpinned block: reuse its memory. A copied view
+    // won't notice, a borrowed view reads the poison -- a deterministic stand-in for a flaky eviction race.
     void poison_overflow_blocks(nested_env_t& env, column_segment_t& segment) {
         auto* raw_state = segment.segment_state();
         REQUIRE(raw_state != nullptr);
         auto& string_state = raw_state->cast<uncompressed_string_segment_state>();
-        // Positive control on the fixture: the string really did go to an overflow block, so
-        // poisoning it really does cover the bytes a borrowed view points at.
         REQUIRE_FALSE(string_state.overflow_blocks.empty());
         for (auto& entry : string_state.overflow_blocks) {
             REQUIRE(entry.second != nullptr);
@@ -203,7 +164,6 @@ namespace {
         }
     }
 
-    // The STRING leaf vector inside the fetched chunk, for each shape.
     std::string_view leaf_view(data_chunk_t& out, shape_t shape) {
         auto& struct_vec = out.data[0];
         auto& field = *struct_vec.entries()[0];
@@ -223,16 +183,12 @@ namespace {
         components::storage::storage_t& storage = adapter;
         vector_t row_ids(&env.resource, logical_type::BIGINT, 1);
         row_ids.data<int64_t>()[0] = 0;
-        // The row was appended at txn 0 and never deleted, so any snapshot sees it; the mode is
-        // named explicitly because fetch_visibility_t has no default.
         return storage.fetch(out, row_ids, 1, {}, transaction_data{}, fetch_visibility_t::SNAPSHOT);
     }
 
 } // namespace
 
-// (2b) The same break on the SCAN leg, which a plain SELECT takes. row_group_t judges ONLY the
-// top-level column_scan_state, and a struct's fields scan on child states, so a leaf's
-// scan_error had no reader either — the field simply read back empty.
+// row_group_t judges only the top-level column_scan_state, so a struct child's scan_error had no reader.
 TEST_CASE("nested scan: a data_corruption raised under a struct stops the scan") {
     nested_env_t env;
     tstorage::transient_block_manager_t bm(env.buffer_manager, tstorage::DEFAULT_BLOCK_ALLOC_SIZE);
@@ -247,7 +203,6 @@ TEST_CASE("nested scan: a data_corruption raised under a struct stops the scan")
     components::storage::table_storage_adapter_t adapter(*built.table, &env.resource);
     components::storage::storage_t& storage = adapter;
 
-    // Positive control on the fixture: intact, this very scan reads the string back.
     {
         std::pmr::vector<data_chunk_t> batches(&env.resource);
         auto ok = storage.scan_batched(batches, nullptr, -1, nullptr, transaction_data{});
@@ -265,9 +220,7 @@ TEST_CASE("nested scan: a data_corruption raised under a struct stops the scan")
     REQUIRE(scanned.error().type == core::error_code_t::data_corruption);
 }
 
-// (2) The error channel. Corrupt the ONE overflow marker of the leaf STRING segment and the
-// statement must fail. With no reader for the child's fetch_error the adapter returns success
-// over an empty field (observed: the fetch reported no error at all).
+// The child's fetch_error needs a reader, or the adapter reports success over an empty field.
 TEST_CASE("nested fetch: a data_corruption raised under a struct reaches the statement") {
     nested_env_t env;
     tstorage::transient_block_manager_t bm(env.buffer_manager, tstorage::DEFAULT_BLOCK_ALLOC_SIZE);
@@ -280,7 +233,6 @@ TEST_CASE("nested fetch: a data_corruption raised under a struct reaches the sta
 
     auto built = build(env, bm, shape, big);
 
-    // Positive control on the fixture: intact, this very fetch reads the string back.
     {
         auto types = built.table->copy_types();
         data_chunk_t out(&env.resource, types, 1);
@@ -290,8 +242,6 @@ TEST_CASE("nested fetch: a data_corruption raised under a struct reaches the sta
         REQUIRE(leaf_view(out, shape) == big);
     }
 
-    // A transient-domain id the block manager has never registered -- production's actual
-    // overflow-block corruption shape.
     overwrite_only_overflow_marker(env, *built.leaf_segment, tstorage::MAXIMUM_BLOCK + 424242);
 
     auto types = built.table->copy_types();
@@ -301,13 +251,7 @@ TEST_CASE("nested fetch: a data_corruption raised under a struct reaches the sta
     REQUIRE(fetch_r.error().type == core::error_code_t::data_corruption);
 }
 
-// (1) The pin channel. The adapter sets result_outlives_pins because the chunk it fills is moved
-// across a mailbox while its pins die with the call. Under a struct that promise was dropped, so
-// the field held a view into a block nothing pins any more.
-//
-// Only the two STRUCT-under-STRUCT shapes are judged here: a LIST element is read by scan_count,
-// and the bulk scan leg (string_scan_partial -> fetch_string_owned) has always interned into the
-// result's heap, so a list element is owned whatever the flag says.
+// LIST is skipped: its element always copies via string_scan_partial -> fetch_string_owned, flag or not.
 TEST_CASE("nested fetch: a big string in a struct field outlives the pins that read it") {
     nested_env_t env;
     tstorage::transient_block_manager_t bm(env.buffer_manager, tstorage::DEFAULT_BLOCK_ALLOC_SIZE);
@@ -325,12 +269,10 @@ TEST_CASE("nested fetch: a big string in a struct field outlives the pins that r
     REQUIRE_FALSE(fetch_r.has_error());
     REQUIRE(out.size() == 1);
 
-    // Every pin the fetch took is gone (they lived in the column_fetch_state the adapter
-    // declared inside fetch). Whatever the chunk still points at is fair game for the pool.
+    // Every pin from the fetch is already gone, so whatever the chunk still points at is fair game for the pool.
     poison_overflow_blocks(env, *built.leaf_segment);
 
-    // A borrowed view reads back 5000 bytes of 0x5A out of the struct field. Judged as a bool
-    // so a failure reports "false" instead of dumping 5000 poison bytes into the log.
+    // Checked as a bool so a failure reports "false" instead of dumping poison bytes into the log.
     const auto view = leaf_view(out, shape);
     const bool intact = view == std::string_view(big);
     INFO("field length " << view.size() << ", first byte '" << (view.empty() ? '?' : view.front()) << "'");

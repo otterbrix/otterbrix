@@ -24,15 +24,11 @@ namespace components::operators {
 
     namespace {
 
-        // Encode (classid, objid) into a single uint64 for use as map key /
-        // visited-set element.
         inline std::uint64_t encode_key(catalog::oid_t cls, catalog::oid_t oid) noexcept {
             return (static_cast<std::uint64_t>(cls) << 32) | static_cast<std::uint64_t>(oid);
         }
 
-        // Per-classid catalog-row delete fan-out. For each step in the
-        // cascade plan we re-issue the same set of (table, oid_col_idx, oid)
-        // deletes the planner would emit for explicit drops.
+        // Re-issues, per cascade-plan step, the deletes the planner would emit for explicit drops.
         struct per_step_delete_t {
             catalog::oid_t catalog_table_oid;
             std::int64_t oid_col_idx;
@@ -81,9 +77,6 @@ namespace components::operators {
                                                                          catalog::oid_t seed_classid,
                                                                          catalog::oid_t seed_objid,
                                                                          catalog::drop_behavior_t behavior)
-        // Tagged as dynamic_cascade_delete; the executor's generic-DDL path
-        // treats it as a write-only no-output step (same convention as
-        // operator_drop_index_t / operator_delete's catalog branch).
         : read_write_operator_t(resource, std::move(log), operator_type::dynamic_cascade_delete)
         , seed_classid_(seed_classid)
         , seed_objid_(seed_objid)
@@ -93,7 +86,6 @@ namespace components::operators {
     operator_dynamic_cascade_delete_t::await_async_and_resume(pipeline::context_t* ctx) {
         execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
-        // INVALID_OID seed: resolve never produced a target, nothing to do.
         if (seed_objid_ == catalog::INVALID_OID) {
             mark_executed();
             co_return;
@@ -101,8 +93,7 @@ namespace components::operators {
 
         constexpr catalog::oid_t kPgDepend = catalog::well_known_oid::pg_depend_table;
 
-        // Async BFS over pg_depend(refclassid, refobjid). dep_graph doubles as
-        // the visited set: a present key means "already expanded".
+        // dep_graph doubles as the visited set (present key = already expanded).
         std::pmr::unordered_map<std::uint64_t, std::pmr::vector<catalog::dependency_t>> dep_graph(resource_);
         std::pmr::vector<std::uint64_t> stack(resource_);
         stack.push_back(encode_key(seed_classid_, seed_objid_));
@@ -129,8 +120,6 @@ namespace components::operators {
                                             std::pmr::vector<std::uint64_t>{resource_});
             auto dep_batches_r = co_await std::move(rdf);
             if (dep_batches_r.has_error()) {
-                // A failed pg_depend read is not a miss; treating it as one lets the
-                // operation proceed on data that was never read.
                 set_error(dep_batches_r.error());
                 co_return;
             }
@@ -154,9 +143,7 @@ namespace components::operators {
             dep_graph.insert_or_assign(k, std::move(deps));
         }
 
-        // plan_drop: RESTRICT is a GATE, not a smaller drop — it returns restrict_blocked on the first 'n'
-        // (normal external) dependency, otherwise plans exactly what CASCADE would. A pg_depend cycle
-        // reports cycle_detected (blocking_oid = offending oid) either way.
+        // RESTRICT is a gate, not a smaller drop: refuses on the first 'n' dependency, else plans CASCADE.
         const auto plan = catalog::plan_drop(
             resource_,
             seed_classid_,
@@ -171,14 +158,9 @@ namespace components::operators {
                 }
                 return std::pmr::vector<catalog::dependency_t>{it->second.begin(), it->second.end(), mr};
             });
-        // Free dep_graph as soon as plan is built — it can hold significant memory
-        // for deep cascades and the rest of this coroutine only needs `plan`.
         dep_graph.clear();
 
         if (plan.status == catalog::ddl_status::restrict_blocked) {
-            // Surface the blocked status to the executor. There is no structured
-            // DDL-refusal cursor: the message string is the only channel, so it has to
-            // name the blocking oid itself.
             std::string msg = "DROP RESTRICT: object has dependents (blocking oid ";
             msg += std::to_string(plan.blocking_oid) + ")";
             set_error(core::error_t{core::error_code_t::other_error, std::pmr::string{std::move(msg), resource_}});
@@ -193,15 +175,10 @@ namespace components::operators {
             co_return;
         }
 
-        // topological_drop_order emits an object once (on finish, not per edge), so a diamond dependency
-        // appears in plan.steps exactly once (components/catalog/dependency_walker.{hpp,cpp}). A second dedup
-        // here was removed deliberately: the own-row zero check below relies on that single-emission guarantee,
-        // and a redundant caller-side dedup would let the walker's contract rot silently.
+        // topological_drop_order already emits each object once, so a caller-side dedup is deliberately
+        // omitted here.
         const auto& steps = plan.steps;
 
-        // Record table_oids of storage-backed (relkind 'r'/'g') pg_class objects
-        // BEFORE deleting their pg_class rows: once a row is gone we can no longer
-        // tell storage-backed objects from pure-catalog ones (sequence/view/macro/type).
         struct pending_storage_drop_t {
             catalog::oid_t table_oid{catalog::INVALID_OID};
         };
@@ -209,8 +186,6 @@ namespace components::operators {
 
         constexpr catalog::oid_t kPgClass = catalog::well_known_oid::pg_class_table;
 
-        // pg_class relkind probe: each step's read is keyed by its own step.objid (no read feeds another's), so
-        // `steps` being fixed up front lets every probe oid batch into ONE read_chunks_by_keys, mapped back by index.
         std::pmr::vector<catalog::oid_t> probe_oids(resource_);
         for (const auto& step : steps) {
             if (step.classid != catalog::well_known_oid::pg_class_table)
@@ -218,9 +193,6 @@ namespace components::operators {
             probe_oids.push_back(step.objid);
         }
         if (!probe_oids.empty()) {
-            // Read pg_class rows for these oids to inspect relkind: (oid, relname, relnamespace,
-            // relkind, ...). Storage routing is by table_oid only — relname/nspname are no longer
-            // needed. result[i] = matched chunks for probe_oids[i], in input order.
             std::pmr::vector<std::uint64_t> pc_keys(resource_);
             pc_keys.emplace_back(catalog::pg_class_col::oid);
             auto [_pc, pcf] = actor_zeta::otterbrix::send(ctx->disk_address,
@@ -246,9 +218,6 @@ namespace components::operators {
                                                              : pc_batches[0].get_value<std::string_view>(3, 0);
                 const char relkind = rkv.empty() ? catalog::relkind::regular : rkv[0];
 
-                // Only regular and computing tables back actual storage. Index/
-                // sequence/view/macro/composite-type entries are pure catalog
-                // bookkeeping: deleting the pg_class row is sufficient.
                 if (relkind != catalog::relkind::regular && relkind != catalog::relkind::computed)
                     continue;
 
@@ -256,11 +225,6 @@ namespace components::operators {
             }
         }
 
-        // Execute the catalog-row deletes in the planned order, batched into one call (deletes_for_classid is
-        // pure and `steps` is fixed before this loop, so no spec depends on an intervening read).
-        // Over-deletion is safe (no-matching-row scans are silent no-ops); only the step's OWN row
-        // ({step.classid, col 0, step.objid}) is worth judging afterward — the rest of the per-classid
-        // template (e.g. pg_sequence/pg_rewrite rows a plain table never had) is judgement-free by design.
         struct own_row_spec_t {
             std::size_t spec_idx;
             catalog::oid_t classid;
@@ -285,10 +249,8 @@ namespace components::operators {
                                                         exec_ctx,
                                                         std::move(catalog_specs));
             auto deleted_r = co_await std::move(df);
-            // Only the OWN-row count is meaningful (the rest of catalog_specs is a deliberately over-generated
-            // template, so a zero there says nothing). A zero own-row count means the pg_depend walk named an
-            // object the catalog no longer holds — checked before the storage/index marks below, since those
-            // marks are what COMMIT turns into an irreversible teardown.
+            // Only the own-row count is meaningful; checked before COMMIT turns the marks below into
+            // an irreversible teardown.
             if (deleted_r.has_error()) {
                 set_error(deleted_r.error());
                 co_return;
@@ -320,31 +282,17 @@ namespace components::operators {
             }
         }
 
-        // Mark the storage + index entry dropped per table (tombstone (oid, dropped_at) for the next
-        // horizon-advance GC sweep), but do NOT physically tear them down here: the actual drop_storage +
-        // unregister_collection fire only at COMMIT (operator_commit_transaction, after the publish barrier).
-        // A DROP inside a txn must stay revertible until then — ROLLBACK un-marks the tombstones and the
-        // table survives, and other sessions must keep reading it until publish — so the backing storage and
-        // index engine still have to exist at abort time.
-        //
-        // dropped_at = txn_id, not the not-yet-known commit_id: it is a monotone upper bound the GC predicate
-        // (dropped_at < new_horizon) handles correctly once every older snapshot has closed. txn=0
-        // (auto-commit/bootstrap) records 0, matching catalog-scan rebuild.
+        // Tombstoned for the next GC sweep, not torn down here — physical drop fires only at COMMIT,
+        // so a DROP inside a txn stays revertible until then. dropped_at = txn_id, a safe upper bound
+        // for the GC horizon predicate, since the commit_id isn't known yet.
         const uint64_t dropped_at = ctx->txn.transaction_id;
         bool any_storage_drop = false;
-        // Two-phase fan-out: mark each table's index (mark_table_dropped) without awaiting in the loop, then
-        // issue ONE batched disk mark (mark_storage_dropped_many, same dropped_at for the whole cascade) and
-        // await everything after. No intra-target ordering is needed — the physical drop runs at COMMIT.
         std::pmr::vector<actor_zeta::unique_future<void>> drop_futures(resource_);
         drop_futures.reserve(pending_storage_drops.size() + 1);
         std::pmr::vector<catalog::oid_t> dropped_storage_oids(resource_);
         dropped_storage_oids.reserve(pending_storage_drops.size());
         for (auto& sd : pending_storage_drops) {
             any_storage_drop = true;
-            // DROP back-channel: record the dropped storage oid for the COMMIT
-            // drain's value-space remap (operator_commit_transaction keys the
-            // DROP-GC remap AND the post-publish drop_storage/unregister off the
-            // ACTUAL drops in the drain).
             if (ctx->txn.transaction_id != 0) {
                 ctx->dropped_storage_oids.push_back(sd.table_oid);
             }
@@ -370,10 +318,6 @@ namespace components::operators {
             co_await std::move(f);
         }
 
-        // Flip the dispatcher's selective-broadcast flags so the next horizon
-        // advance fans on_horizon_advanced out to disk + index, draining the
-        // dropped queues we just populated. Fire-and-forget; the sender is the
-        // dispatcher (executor's parent_address_, see executor.cpp).
         if (any_storage_drop && ctx->current_message_sender != actor_zeta::address_t::empty_address()) {
             constexpr uint8_t DISK_KIND = 1;
             constexpr uint8_t INDEX_KIND = 2;
@@ -387,8 +331,6 @@ namespace components::operators {
                                             INDEX_KIND);
         }
 
-        // No output — DROP statements return an affected-rows-style cursor
-        // in the dispatcher; this operator only mutates state.
         output_ = nullptr;
         mark_executed();
     }

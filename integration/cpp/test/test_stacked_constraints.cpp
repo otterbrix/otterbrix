@@ -4,38 +4,13 @@
 #include <catch2/catch_test_macros.hpp>
 #include <string>
 
-// Regression tests for the "silent-skip" bug in STACKED constraint SINK operators.
-//
-// The planner stacks constraint SINK operators above ONE DML op as a left-linear
-// chain: check_constraint OUTERMOST, one fk_check per outgoing FK, one fk_cascade
-// per referencing FK — constraint_N( ... constraint_1( DML( scan ) ) ).
-//
-// Only the DML op snapshots the just-written rows into constraint_input() (via
-// record_flush). Constraint ops do NOT propagate constraint_input() upward, so a
-// NON-adjacent constraint op's immediate left_ is ANOTHER constraint op whose
-// constraint_input() is empty. Each constraint op must therefore walk DOWN the
-// left_ spine to the FIRST populated constraint_input() — the DML's write-set
-// (constraint_util.hpp resolve_constraint_source); an op that reads only its
-// IMMEDIATE left_->constraint_input() silently validates NOTHING.
-//
-// Each case below produces a stack with a non-adjacent constraint op.
-//
-// DDL note: all forms used here appear in existing passing tests
-// (test_sql_features.cpp, test_large_aggregate_dml.cpp): inline NOT NULL, per-FK
-// FOREIGN KEY via ALTER TABLE ADD CONSTRAINT (one per outgoing FK), CHECK via
-// ALTER TABLE ADD CONSTRAINT, and ON DELETE CASCADE. There is no combined
-// multi-column single-statement multi-FK syntax; multiple FKs are added as
-// separate ALTER statements, which is exactly what stacks multiple fk_check ops.
+// Constraint SINK ops stack above one DML as a left-linear chain; only the DML populates constraint_input(),
+// so a non-adjacent op must walk down left_ to find it or it silently validates nothing.
+// No combined multi-FK syntax exists; each FK is added via its own ALTER, stacking fk_check ops.
 
 using namespace test_helpers;
 
-// ---------------------------------------------------------------------------
-// (A) check_constraint( fk_check( insert ) )
-//
-// A table with an outgoing FK AND a CHECK on a DIFFERENT column. The CHECK op is
-// OUTERMOST; its immediate left_ is the fk_check op (empty constraint_input).
-// A row with a VALID FK reference but a VIOLATING CHECK must be rejected.
-// ---------------------------------------------------------------------------
+// Stack: check_constraint( fk_check( insert ) ) -- CHECK is non-adjacent to the DML.
 TEST_CASE("integration::cpp::test_stacked_constraints::fk_plus_check") {
     auto config = make_test_config(integration_fixture_path("test_stacked_constraints/fk_plus_check"));
     test_spaces space(config);
@@ -70,13 +45,6 @@ TEST_CASE("integration::cpp::test_stacked_constraints::fk_plus_check") {
     }
 }
 
-// ---------------------------------------------------------------------------
-// (A') check_constraint( fk_check( insert ) ), NOT NULL variant.
-//
-// Same stack shape but the outermost constraint is a NOT NULL / IS NOT NULL
-// CHECK on a non-FK column. A valid FK reference with a NULL required column
-// must be rejected.
-// ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::test_stacked_constraints::fk_plus_notnull") {
     auto config = make_test_config(integration_fixture_path("test_stacked_constraints/fk_plus_notnull"));
     test_spaces space(config);
@@ -99,7 +67,6 @@ TEST_CASE("integration::cpp::test_stacked_constraints::fk_plus_notnull") {
 
     INFO("valid FK reference but NULL required column: must be rejected");
     {
-        // label omitted (NULL) — CHECK (label IS NOT NULL) must fire despite valid FK.
         auto cur = exec(dispatcher, "INSERT INTO TestDatabase.orders (id, customer_id) VALUES (10, 1);");
         REQUIRE(cur->is_error());
     }
@@ -112,14 +79,7 @@ TEST_CASE("integration::cpp::test_stacked_constraints::fk_plus_notnull") {
     }
 }
 
-// ---------------------------------------------------------------------------
-// (B) fk_check( fk_check( insert ) )
-//
-// A table with TWO outgoing FKs → two stacked fk_check ops. Whichever fk_check
-// is NON-adjacent to the insert sees an empty immediate constraint_input and
-// must still validate THAT FK. Each FK is violated in turn so both stack
-// positions are covered regardless of the planner's stacking order.
-// ---------------------------------------------------------------------------
+// Two outgoing FKs stack as fk_check( fk_check( insert ) ); each is violated in turn to cover both positions.
 TEST_CASE("integration::cpp::test_stacked_constraints::two_outgoing_fks") {
     auto config = make_test_config(integration_fixture_path("test_stacked_constraints/two_outgoing_fks"));
     test_spaces space(config);
@@ -167,14 +127,7 @@ TEST_CASE("integration::cpp::test_stacked_constraints::two_outgoing_fks") {
     }
 }
 
-// ---------------------------------------------------------------------------
-// (C) fk_cascade( fk_cascade( delete ) )
-//
-// A parent referenced by TWO child tables, each with ON DELETE CASCADE → two
-// stacked fk_cascade ops above the parent DELETE. The non-adjacent fk_cascade
-// sees an empty immediate constraint_input; BOTH children must still cascade —
-// a skipped cascade leaves dangling child rows.
-// ---------------------------------------------------------------------------
+// Two ON DELETE CASCADE children stack as fk_cascade( fk_cascade( delete ) ); a skipped cascade leaves dangling rows.
 TEST_CASE("integration::cpp::test_stacked_constraints::two_cascade_children") {
     auto config = make_test_config(integration_fixture_path("test_stacked_constraints/two_cascade_children"));
     test_spaces space(config);
@@ -196,10 +149,8 @@ TEST_CASE("integration::cpp::test_stacked_constraints::two_cascade_children") {
                     ->is_success());
         REQUIRE(
             exec(dispatcher, "INSERT INTO TestDatabase.parent (id, val) VALUES (1, 'p1'), (2, 'p2');")->is_success());
-        // child_a: two rows referencing parent 1, one referencing parent 2 (survives).
         REQUIRE(exec(dispatcher, "INSERT INTO TestDatabase.child_a (id, parent_id) VALUES (10, 1), (11, 1), (12, 2);")
                     ->is_success());
-        // child_b: one row referencing parent 1, one referencing parent 2 (survives).
         REQUIRE(exec(dispatcher, "INSERT INTO TestDatabase.child_b (id, parent_id) VALUES (20, 1), (21, 2);")
                     ->is_success());
     }
@@ -246,13 +197,7 @@ TEST_CASE("integration::cpp::test_stacked_constraints::two_cascade_children") {
     }
 }
 
-// ---------------------------------------------------------------------------
-// CHECK (col IS NOT NULL) vs a DEFAULT-backed column.
-//
-// The check validates the MATERIALISED row: an omitted INSERT column is expanded to its table
-// DEFAULT before the check runs, so it must PASS for a non-NULL DEFAULT and still FAIL for an
-// explicit NULL or an omitted column with no default (which stores NULL).
-// ---------------------------------------------------------------------------
+// CHECK validates the materialised row: an omitted column expands to its DEFAULT before the check runs.
 TEST_CASE("integration::cpp::test_stacked_constraints::check_is_not_null_with_default") {
     auto config = make_test_config(integration_fixture_path("test_stacked_constraints/check_is_not_null_default"));
     test_spaces space(config);

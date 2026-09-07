@@ -29,15 +29,7 @@
 #include <services/wal/wal_page.hpp>
 #include <services/wal/wal_page_reader.hpp>
 
-// wal_reader_t (startup replay) stops at the first CRC break; wal_worker_t::load needs the same
-// check, or it concatenates the STOP-A prefix of segment k with the WHOLE of segment k+1 and
-// hands the CREATE INDEX catchup a range missing everything between them. The catchup's question
-// is a THIRD one, distinct from replay's "what may I APPLY" (prefix, stop at break) and the id
-// allocator's "where do I RESUME" (high-water over files): "is the window (after, high_water]
-// WHOLE?" — binary, because a catchup that applies a subset publishes a silently incomplete index.
-//
-// Tests assert on the SET OF IDS the catchup is handed, never on a status; corruption is a
-// flipped byte inside a data page (a bad sector).
+// load's answer for (after, high_water] must be WHOLE or refused, never a subset with a silent gap in the middle.
 
 using namespace services;
 using namespace services::wal;
@@ -79,7 +71,6 @@ namespace {
         return "wal_" + std::to_string(static_cast<unsigned>(kMainDb)) + "_" + suffix;
     }
 
-    // config_wal appends "wal" to the base path, so the segments live under <path>/wal/<db>.
     std::filesystem::path db_dir_of(const std::filesystem::path& base) {
         return base / "wal" / std::to_string(static_cast<unsigned>(kMainDb));
     }
@@ -91,10 +82,7 @@ namespace {
         return config;
     }
 
-    // NO RESTART ANYWHERE IN THIS FILE. load() calls discover_segments() and opens a fresh
-    // wal_page_reader_t per call, so a byte flipped in a closed segment is visible to the
-    // very same live manager -- which is also the only shape the catchup can ever meet,
-    // since it runs inside a live engine and never after a reopen.
+    // No restart in this file: load() opens a fresh reader each call, so a live manager sees any flipped byte.
     struct wal_env_t {
         explicit wal_env_t(const std::filesystem::path& path, size_t max_segment_size = 0)
             : log_(initialization_logger("python", "/tmp/docker_logs/"))
@@ -118,10 +106,7 @@ namespace {
             manager_.reset();
         }
 
-        // Built on the fixture's own arena (core::pmr::otterbrix_resource, resource_tracer_t under
-        // ASAN), mirroring production (agent_disk_t::storage_append_inner builds off resource()).
-        // resource_ is declared FIRST so it outlives ~wal_env_t's teardown of manager_. Extracted
-        // so a test can assert the ARENA of a REAL payload before it's moved into the message.
+        // resource_ is declared first so it outlives ~wal_env_t's teardown of manager_.
         std::pmr::vector<data_chunk_t> make_insert_batch(size_t rows) {
             return one_chunk(&resource_, rows);
         }
@@ -150,7 +135,6 @@ namespace {
             return std::move(fut);
         }
 
-        // The catchup's own call, verbatim: manager_wal_replicate_t::load(session, after).
         auto send_load(wal::id_t after_wal_id) {
             auto [ns, fut] = actor_zeta::otterbrix::send(manager_->address(),
                                                          &manager_wal_replicate_t::load,
@@ -159,9 +143,6 @@ namespace {
             return std::move(fut);
         }
 
-        // One committed transaction. commit_txn under NORMAL flushes the page, so each call
-        // closes the page it wrote into -- which is what makes "corrupt an INTERIOR page and
-        // leave live pages after it" constructible at all.
         wal::id_t commit_one(uint64_t txn_id, uint64_t row_start) {
             auto ins = send_insert(txn_id, 4, row_start);
             auto ins_result = await_ready(ins);
@@ -194,10 +175,6 @@ namespace {
         return result;
     }
 
-    // What ONE segment physically holds: every data page whose checksum still verifies
-    // vouches for its own page_end_lsn, INCLUDING pages sitting past a corruption point.
-    // Uses only long-standing public accessors, so it is an independent witness rather than
-    // a mirror of the code under test.
     wal::id_t on_disk_max_of(std::pmr::memory_resource* res, const std::filesystem::path& seg) {
         wal::id_t max_id = 0;
         wal_page_reader_t reader(res, seg);
@@ -230,8 +207,6 @@ namespace {
         return std::move(records.value());
     }
 
-    // The answer the STOP-A reader gives for ONE segment: ids reachable without crossing a
-    // break inside it.
     std::vector<wal::id_t> readable_ids_of(std::pmr::memory_resource* res, const std::filesystem::path& seg) {
         std::vector<wal::id_t> ids;
         for (const auto& r : readable_records_of(res, seg)) {
@@ -275,9 +250,7 @@ namespace {
         return m;
     }
 
-    // Flip one byte in the DATA AREA of a data page. Data page N starts at file offset
-    // N * PAGE_SIZE (page 0 is the file header), so this breaks that page's checksum and
-    // leaves every other page -- including the ones after it -- intact and verifiable.
+    // Data page N sits at file offset N * PAGE_SIZE (page 0 is the file header).
     void break_page_crc(const std::filesystem::path& seg, size_t data_page_index) {
         std::fstream file(seg, std::ios::in | std::ios::out | std::ios::binary);
         REQUIRE(file.is_open());
@@ -299,16 +272,10 @@ namespace {
         return reader.page_count();
     }
 
-    // header page + 3 data pages per segment, one committed transaction per page.
     constexpr size_t kSmallSegment = 4 * PAGE_SIZE;
 
 } // namespace
 
-// The catchup must never be handed a range with a hole in it: segment 000000 has an interior
-// page corrupted with live pages behind it, and load must not append the WHOLE of the later,
-// perfect segments on top of its STOP-A prefix.
-// BEFORE: load(0) answered successfully with a range missing every id between the break and the
-// next segment; the catchup applied it, found nothing left, and flipped the index to indisvalid.
 TEST_CASE("wal::load_hole::an_interior_break_must_not_be_answered_with_the_segments_behind_it") {
     const auto path = base_path() / "interior_break";
     std::filesystem::remove_all(path);
@@ -326,20 +293,17 @@ TEST_CASE("wal::load_hole::an_interior_break_must_not_be_answered_with_the_segme
     REQUIRE(std::filesystem::exists(seg0));
     REQUIRE(data_page_count(&witness, seg0) >= 3);
 
-    // Page 2 of 3: a prefix survives IN FRONT of it and live pages survive BEHIND it, which
-    // is the only shape in which a segment can contribute a partial answer at all.
+    // Page 2 of 3 is corrupted, leaving a prefix in front and live pages behind it -- the only partial-answer shape.
     break_page_crc(seg0, 2);
 
-    // THE PRECONDITION, CHECKED RATHER THAN ASSUMED. Without live pages past the break this
-    // is the ordinary torn tail and proves nothing.
     const auto prefix_max = max_of(readable_ids_of(&witness, seg0));
     const auto seg0_on_disk = on_disk_max_of(&witness, seg0);
     const auto on_disk = on_disk_max_wal_id(&witness, db_dir);
     INFO("segment 000000 reaches " << prefix_max << " , physically holds up to " << seg0_on_disk
                                    << " , the journal holds up to " << on_disk);
     REQUIRE(prefix_max > 0);
-    REQUIRE(seg0_on_disk > prefix_max); // live pages sit beyond the break
-    REQUIRE(on_disk > seg0_on_disk);    // and whole segments sit beyond those
+    REQUIRE(seg0_on_disk > prefix_max);
+    REQUIRE(on_disk > seg0_on_disk);
 
     auto fut = env.send_load(0);
     auto answer = await_ready(fut);
@@ -348,17 +312,10 @@ TEST_CASE("wal::load_hole::an_interior_break_must_not_be_answered_with_the_segme
     INFO("load answered " << answered.size() << " records reaching id " << max_of(answered)
                           << " while everything past " << prefix_max << " up to " << seg0_on_disk
                           << " is unreachable");
-    // Either the window is refused, or it stops where the journal stops being whole. There is
-    // no third answer: an id ABOVE the break in the reply proves the ids inside the break
-    // were skipped over rather than cut off.
     REQUIRE((answer.has_error() || max_of(answered) <= prefix_max));
 }
 
-// A break entirely below the watermark hides nothing and must not refuse: copying
-// wal_reader_t's unconditional "chain broken -> stop" into load would fail this case, but
-// `after` here is already the broken segment's own high-water, so no id the break swallowed is
-// inside the window — and after ANY restart the allocator resumes above the whole file, making
-// this the common shape, not the exotic one.
+// The break sits entirely below `after`, so stopping at the first break (like replay) would wrongly refuse this.
 TEST_CASE("wal::load_hole::a_break_below_the_watermark_is_read_straight_through") {
     const auto path = base_path() / "break_below_watermark";
     std::filesystem::remove_all(path);
@@ -376,7 +333,6 @@ TEST_CASE("wal::load_hole::a_break_below_the_watermark_is_read_straight_through"
     REQUIRE(data_page_count(&witness, seg0) >= 2);
     break_page_crc(seg0, 1);
 
-    // The whole damaged segment sits below the window the catchup asks about.
     const auto after = on_disk_max_of(&witness, seg0);
     REQUIRE(after > 0);
 
@@ -407,8 +363,7 @@ TEST_CASE("wal::load_hole::a_break_below_the_watermark_is_read_straight_through"
     }
 }
 
-// A torn tail is not a hole and must not ban CREATE INDEX forever: the break is on the last
-// page of the last segment, so nothing is hidden — an ordinary crash leaves exactly this shape.
+// The break is on the last page of the last segment, so nothing is hidden: an ordinary crash leaves this shape.
 TEST_CASE("wal::load_hole::a_torn_tail_is_not_a_hole_and_is_not_refused") {
     const auto path = base_path() / "torn_tail";
     std::filesystem::remove_all(path);
@@ -425,7 +380,7 @@ TEST_CASE("wal::load_hole::a_torn_tail_is_not_a_hole_and_is_not_refused") {
     const auto last_seg = segments.back();
     const auto last_pages = data_page_count(&witness, last_seg);
     REQUIRE(last_pages >= 1);
-    break_page_crc(last_seg, last_pages); // the tail, with nothing behind it
+    break_page_crc(last_seg, last_pages);
 
     auto fut = env.send_load(0);
     auto answer = await_ready(fut);
@@ -435,10 +390,7 @@ TEST_CASE("wal::load_hole::a_torn_tail_is_not_a_hole_and_is_not_refused") {
     REQUIRE_FALSE(answer.value().empty());
 }
 
-// The hole can open at a segment boundary, invisible from inside the segment: the break is on
-// segment 000000's last page (looks like the torn-tail case alone), but the FOLLOWING segment
-// reads in full, so the reply jumps straight over the broken page's ids. Only carrying the open
-// hole into the next segment catches this.
+// The break is segment 000000's last page, but the following segment reads in full -- the hole must carry across it.
 TEST_CASE("wal::load_hole::a_break_at_a_segment_boundary_is_still_a_hole") {
     const auto path = base_path() / "boundary_break";
     std::filesystem::remove_all(path);
@@ -455,7 +407,7 @@ TEST_CASE("wal::load_hole::a_break_at_a_segment_boundary_is_still_a_hole") {
     const auto seg0 = db_dir / segment_name(0);
     const auto seg0_pages = data_page_count(&witness, seg0);
     REQUIRE(seg0_pages >= 1);
-    break_page_crc(seg0, seg0_pages); // last page of a segment that is NOT the last segment
+    break_page_crc(seg0, seg0_pages);
 
     const auto prefix_max = max_of(readable_ids_of(&witness, seg0));
     const auto seg0_on_disk = on_disk_max_of(&witness, seg0);
@@ -471,8 +423,7 @@ TEST_CASE("wal::load_hole::a_break_at_a_segment_boundary_is_still_a_hole") {
     REQUIRE((answer.has_error() || max_of(answered) <= prefix_max));
 }
 
-// Insert payload built on the fixture's own arena (see make_insert_batch above); the batch is
-// unobservable after send, so the assertion is made on make_insert_batch's own output.
+// The batch is unobservable after send, so the assertion is made on make_insert_batch's own output instead.
 TEST_CASE("wal::load_hole::the_insert_payload_is_built_on_the_fixture_arena") {
     const auto path = base_path() / "payload_arena";
     std::filesystem::remove_all(path);

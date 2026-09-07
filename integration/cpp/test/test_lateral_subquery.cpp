@@ -23,8 +23,7 @@ namespace {
 
     using row3_t = std::array<std::optional<int64_t>, 3>;
 
-    // Collect the result as (col0, col1, col2) tuples mapped by the given column
-    // indices; std::nullopt marks a SQL NULL. Order-insensitive multiset compare.
+    // std::nullopt marks a SQL NULL; comparison is order-insensitive (multiset).
     std::multiset<row3_t> collect(const cursor_t& cur, int c0, int c1, int c2) {
         std::multiset<row3_t> rows;
         for (uint64_t r = 0; r < cur.size(); ++r) {
@@ -60,7 +59,6 @@ TEST_CASE("integration::cpp::lateral_subquery::correlated_where") {
     seed(dispatcher);
 
     auto session = otterbrix::session_id_t();
-    // The subquery filters an inner table by an outer column: inner_t.k = outer_t.id.
     auto cur = dispatcher->execute_sql(
         session,
         "SELECT * FROM s.outer_t, LATERAL (SELECT inner_t.v FROM s.inner_t WHERE inner_t.k = outer_t.id) sub;");
@@ -73,19 +71,12 @@ TEST_CASE("integration::cpp::lateral_subquery::correlated_where") {
     REQUIRE(id_i >= 0);
     REQUIRE(n_i >= 0);
     REQUIRE(v_i >= 0);
-    // outer (1,10) -> inner v in {100,101}; outer (2,20) -> inner v {200}.
     std::multiset<row3_t> expected{{{1, 10, 100}}, {{1, 10, 101}}, {{2, 20, 200}}};
     REQUIRE(collect(*cur, id_i, n_i, v_i) == expected);
 }
 
-// Regression for the batched-join_builder use-after-free / row-mixup under
-// LATERAL. The lazy builder buffered a raw pointer to each outer row's per-iteration
-// inner result (destroyed each iteration) and a SINGLE left_chunk_ pointer overwritten
-// across outer chunks; with > DEFAULT_VECTOR_CAPACITY (1024) outer rows the correlated
-// inner is re-run per row, so the post-loop flush() gathered from freed inner chunks
-// (heap-use-after-free under ASan) and, when a flush window spanned two outer chunks,
-// paired left rows with the wrong outer chunk. The eager LATERAL builder copies each row
-// at emit time, fixing both. This asserts the full, correct 1:1 output at scale.
+// Regression for a batched-join_builder UAF/row-mixup: the lazy builder buffered a raw pointer to each outer
+// row's freed inner result and reused one left_chunk_ pointer across chunks; the eager builder now copies each row.
 TEST_CASE("integration::cpp::lateral_subquery::correlated_where_multichunk") {
     constexpr int64_t N = 1100; // > 1024 so the outer input spans >= 2 chunks
     auto config = test_create_config(integration_fixture_path("test_lateral_subquery_multichunk"));
@@ -98,8 +89,6 @@ TEST_CASE("integration::cpp::lateral_subquery::correlated_where_multichunk") {
     dispatcher->execute_sql(session, "CREATE DATABASE s;");
     dispatcher->execute_sql(session, "CREATE TABLE s.outer_big (id BIGINT);");
     dispatcher->execute_sql(session, "CREATE TABLE s.inr (k BIGINT, v BIGINT);");
-    // Each outer id 0..N-1 matches exactly one inner row (v = id + 100000). Insert in
-    // batches to keep individual INSERT statements small.
     auto insert_batched = [&](const std::string& head, auto tuple_for) {
         std::string sql;
         int in_batch = 0;
@@ -131,8 +120,6 @@ TEST_CASE("integration::cpp::lateral_subquery::correlated_where_multichunk") {
     int v_i = find_column(*cur, "v");
     REQUIRE(id_i >= 0);
     REQUIRE(v_i >= 0);
-    // Every outer id must appear exactly once, paired with its own inner v (id + 100000).
-    // A left/right chunk mixup would break the pairing; a UAF would abort under ASan.
     std::set<int64_t> seen_ids;
     for (uint64_t r = 0; r < cur->size(); ++r) {
         auto id_cell = cur->value(static_cast<uint64_t>(id_i), r);
@@ -157,7 +144,6 @@ TEST_CASE("integration::cpp::lateral_subquery::left_join_empty") {
 
     {
         auto session = otterbrix::session_id_t();
-        // (5,50) has no matching inner_t.k=5 — LEFT JOIN must keep it NULL-padded.
         dispatcher->execute_sql(session, "INSERT INTO s.outer_t (id, n) VALUES (5, 50);");
     }
     auto session = otterbrix::session_id_t();
@@ -187,15 +173,12 @@ TEST_CASE("integration::cpp::lateral_subquery::correlated_in_arithmetic") {
     seed(dispatcher);
 
     auto session = otterbrix::session_id_t();
-    // Correlation nested inside an arithmetic operand (outer_t.id * 150). Predicate
-    // value getters read parameters live per row, so the threshold is recomputed for
-    // each outer row rather than frozen at the first one.
+    // Predicate value getters read correlation parameters live per row, not frozen at the first one.
     auto cur = dispatcher->execute_sql(
         session,
         "SELECT * FROM s.outer_t, LATERAL (SELECT inner_t.v FROM s.inner_t WHERE inner_t.v > outer_t.id * 150) sub;");
     INFO("error: " << (cur->is_error() ? cur->get_error().what.c_str() : "none"));
     REQUIRE(cur->is_success());
-    // id=1 -> v>150 -> {200,300}; id=2 -> v>300 -> {}.
     REQUIRE(cur->size() == 2);
     int id_i = find_column(*cur, "id");
     int n_i = find_column(*cur, "n");
@@ -215,10 +198,8 @@ TEST_CASE("integration::cpp::lateral_subquery::right_full_lateral_rejected") {
     auto* dispatcher = space.dispatcher();
     seed(dispatcher);
 
-    // A LATERAL reference can only sit on the inner side of a join, so RIGHT/FULL JOIN
-    // LATERAL is ill-defined. The lateral join operator only NULL-extends for LEFT, so
-    // without a guard these would fall through to plain inner semantics and return a
-    // silently wrong answer. Validation must reject them cleanly instead.
+    // A LATERAL reference can only sit on the inner side of a join, so RIGHT/FULL JOIN LATERAL is ill-defined; the
+    // lateral join operator only NULL-extends for LEFT, so without a guard these would silently return a wrong answer.
     for (const char* sql :
          {"SELECT * FROM s.outer_t RIGHT JOIN LATERAL (SELECT inner_t.v FROM s.inner_t WHERE inner_t.k = "
           "outer_t.id) sub ON true;",
@@ -240,14 +221,13 @@ TEST_CASE("integration::cpp::lateral_subquery::inner_join_on_predicate") {
     seed(dispatcher);
 
     auto session = otterbrix::session_id_t();
-    // The lateral join's own ON predicate filters inner rows: sub.v > 100 drops v=100.
+    // The lateral join's own ON predicate is a separate filter from the subquery's WHERE.
     auto cur = dispatcher->execute_sql(
         session,
         "SELECT * FROM s.outer_t JOIN LATERAL (SELECT inner_t.v FROM s.inner_t WHERE inner_t.k = outer_t.id) "
         "sub ON sub.v > 100;");
     INFO("error: " << (cur->is_error() ? cur->get_error().what.c_str() : "none"));
     REQUIRE(cur->is_success());
-    // outer (1,10): v in {100,101}, keep v>100 -> {101}; outer (2,20): v {200} -> {200}.
     REQUIRE(cur->size() == 2);
     int id_i = find_column(*cur, "id");
     int n_i = find_column(*cur, "n");
@@ -268,8 +248,6 @@ TEST_CASE("integration::cpp::lateral_subquery::left_join_on_predicate_null_pads"
     seed(dispatcher);
 
     auto session = otterbrix::session_id_t();
-    // ON sub.v > 250 filters out every inner row for both outer rows; LEFT JOIN must
-    // still keep each outer row, NULL-padded.
     auto cur = dispatcher->execute_sql(
         session,
         "SELECT * FROM s.outer_t LEFT JOIN LATERAL (SELECT inner_t.v FROM s.inner_t WHERE inner_t.k = "
@@ -303,8 +281,6 @@ TEST_CASE("integration::cpp::lateral_subquery::correlated_function_argument") {
     }
 
     auto session = otterbrix::session_id_t();
-    // Correlated column as a function argument: length(os.tag) is recomputed per outer
-    // row and drives the inner filter.
     auto cur = dispatcher->execute_sql(
         session,
         "SELECT * FROM s.os, LATERAL (SELECT inner_t.v FROM s.inner_t WHERE inner_t.k = length(os.tag)) sub;");
@@ -315,7 +291,6 @@ TEST_CASE("integration::cpp::lateral_subquery::correlated_function_argument") {
     int v_i = find_column(*cur, "v");
     REQUIRE(id_i >= 0);
     REQUIRE(v_i >= 0);
-    // length('a')=1 -> k=1 -> v{100,101}; length('bb')=2 -> k=2 -> v{200}.
     std::multiset<std::pair<int64_t, int64_t>> got;
     for (uint64_t r = 0; r < cur->size(); ++r) {
         got.emplace(cur->value(static_cast<uint64_t>(id_i), r).value<int64_t>(),
@@ -334,8 +309,6 @@ TEST_CASE("integration::cpp::lateral_subquery::projects_correlated_arithmetic") 
     seed(dispatcher);
 
     auto session = otterbrix::session_id_t();
-    // A correlated column inside a SELECT-list arithmetic expression: ten = id * 10,
-    // recomputed per outer row.
     auto cur =
         dispatcher->execute_sql(session, "SELECT * FROM s.outer_t, LATERAL (SELECT outer_t.id * 10 AS ten) sub;");
     INFO("error: " << (cur->is_error() ? cur->get_error().what.c_str() : "none"));
@@ -360,8 +333,6 @@ TEST_CASE("integration::cpp::lateral_subquery::projects_correlated_outer_column"
     seed(dispatcher);
 
     auto session = otterbrix::session_id_t();
-    // The subquery projects a correlated outer column; operator_select reads the
-    // correlation parameter live per outer row, so x tracks each outer id.
     auto cur = dispatcher->execute_sql(session, "SELECT * FROM s.outer_t, LATERAL (SELECT outer_t.id AS x) sub;");
     INFO("error: " << (cur->is_error() ? cur->get_error().what.c_str() : "none"));
     REQUIRE(cur->is_success());
@@ -376,14 +347,8 @@ TEST_CASE("integration::cpp::lateral_subquery::projects_correlated_outer_column"
     REQUIRE(collect(*cur, id_i, n_i, x_i) == expected);
 }
 
-// -------------------------------------------------------------------------
-// DML ... FROM/USING LATERAL: the FROM/USING clause is a source sub-plan that
-// may itself contain a LATERAL correlation between two source items (never to
-// the DML target, which is not in the source's join scope). The whole source is
-// materialized as the RIGHT side of the DML join; the WHERE predicate joins the
-// target (LEFT) against it.
-// -------------------------------------------------------------------------
-
+// DML ... FROM/USING LATERAL: the FROM/USING clause is a source sub-plan that may itself correlate two source
+// items (never the DML target, outside the source's join scope); the source materializes as the join's RIGHT side.
 TEST_CASE("integration::cpp::dml_lateral::delete_using_lateral_generate_series") {
     auto config = test_create_config(integration_fixture_path("test_dml_lateral_delete"));
     test_clear_directory(config);
@@ -398,9 +363,6 @@ TEST_CASE("integration::cpp::dml_lateral::delete_using_lateral_generate_series")
     dispatcher->execute_sql(session, "CREATE TABLE s.src (lo BIGINT, hi BIGINT);");
     dispatcher->execute_sql(session, "INSERT INTO s.src (lo, hi) VALUES (1, 3), (6, 8);");
 
-    // USING src, LATERAL generate_series(src.lo, src.hi): the table function
-    // correlates to the sibling USING table src (not the target). Its output is the
-    // union of [1..3] and [6..8]; tgt rows whose id lands in that set are deleted.
     auto cur = dispatcher->execute_sql(
         session,
         "DELETE FROM s.tgt USING s.src, LATERAL generate_series(src.lo, src.hi) WHERE tgt.id = generate_series;");
@@ -434,9 +396,6 @@ TEST_CASE("integration::cpp::dml_lateral::update_from_lateral_correlated_subquer
     dispatcher->execute_sql(session, "CREATE TABLE s.innr (ik BIGINT, iv BIGINT);");
     dispatcher->execute_sql(session, "INSERT INTO s.innr (ik, iv) VALUES (1, 111), (2, 222);");
 
-    // FROM a, LATERAL (SELECT innr.iv WHERE innr.ik = a.k): the derived table
-    // correlates to sibling source a. The materialized source is {(k=1,iv=111),
-    // (k=2,iv=222)}; joined to tgt on tgt.id = a.k, SET val = the correlated iv.
     auto cur = dispatcher->execute_sql(
         session,
         "UPDATE s.tgt SET val = iv FROM s.a, LATERAL (SELECT innr.iv FROM s.innr WHERE innr.ik = a.k) sub "
@@ -468,9 +427,7 @@ TEST_CASE("integration::cpp::dml_lateral::delete_using_no_where_respects_source"
     dispatcher->execute_sql(session, "INSERT INTO s.tgt (id) VALUES (1),(2),(3),(4),(5);");
     dispatcher->execute_sql(session, "CREATE TABLE s.src (x BIGINT);");
 
-    // DELETE ... USING with no WHERE is a cross-join filter: an EMPTY source joins
-    // nothing, so no target row may be deleted (the source must not be silently
-    // dropped and the delete degraded to delete-all).
+    // DELETE ... USING with no WHERE is a cross-join filter: an empty source joins nothing, so nothing is deleted.
     auto empty = dispatcher->execute_sql(session, "DELETE FROM s.tgt USING s.src;");
     INFO("error: " << (empty->is_error() ? empty->get_error().what.c_str() : "none"));
     REQUIRE(empty->is_success());
@@ -478,8 +435,6 @@ TEST_CASE("integration::cpp::dml_lateral::delete_using_no_where_respects_source"
     auto survived = dispatcher->execute_sql(session, "SELECT id FROM s.tgt;");
     REQUIRE(survived->size() == 5);
 
-    // With a non-empty source, every target row cross-joins a source row, so the
-    // no-WHERE form deletes them all.
     dispatcher->execute_sql(session, "INSERT INTO s.src (x) VALUES (99);");
     auto all = dispatcher->execute_sql(session, "DELETE FROM s.tgt USING s.src;");
     INFO("error: " << (all->is_error() ? all->get_error().what.c_str() : "none"));
@@ -503,8 +458,6 @@ TEST_CASE("integration::cpp::dml_lateral::delete_using_lateral_empty_join_preser
     dispatcher->execute_sql(session, "CREATE TABLE s.src (lo BIGINT, hi BIGINT);");
     dispatcher->execute_sql(session, "INSERT INTO s.src (lo, hi) VALUES (1, 3), (6, 8);");
 
-    // The source produces rows (series {1,2,3,6,7,8}) but none join the target ids
-    // {100,200,300}: nothing is deleted, every target row survives.
     auto cur = dispatcher->execute_sql(
         session,
         "DELETE FROM s.tgt USING s.src, LATERAL generate_series(src.lo, src.hi) WHERE tgt.id = generate_series;");
@@ -527,12 +480,9 @@ TEST_CASE("integration::cpp::dml_lateral::delete_using_lateral_duplicate_matches
     dispatcher->execute_sql(session, "CREATE TABLE s.tgt (id BIGINT);");
     dispatcher->execute_sql(session, "INSERT INTO s.tgt (id) VALUES (1),(2),(3);");
     dispatcher->execute_sql(session, "CREATE TABLE s.src (lo BIGINT, hi BIGINT);");
-    // Overlapping ranges: series = {1,2,3} + {2,3} — ids 2 and 3 are produced by BOTH
-    // source rows, so each joins two source rows.
     dispatcher->execute_sql(session, "INSERT INTO s.src (lo, hi) VALUES (1, 3), (2, 3);");
 
-    // DELETE ... USING is a semi-join: a target row is deleted exactly once no matter
-    // how many source rows it joins. All three targets are deleted (3, not 5).
+    // DELETE ... USING is a semi-join: a target row is deleted exactly once no matter how many source rows it joins.
     auto cur = dispatcher->execute_sql(
         session,
         "DELETE FROM s.tgt USING s.src, LATERAL generate_series(src.lo, src.hi) WHERE tgt.id = generate_series;");
@@ -559,8 +509,6 @@ TEST_CASE("integration::cpp::dml_lateral::update_from_lateral_empty_join_no_chan
     dispatcher->execute_sql(session, "CREATE TABLE s.innr (ik BIGINT, iv BIGINT);");
     dispatcher->execute_sql(session, "INSERT INTO s.innr (ik, iv) VALUES (7, 111), (8, 222);");
 
-    // The source materializes {(k=7,iv=111),(k=8,iv=222)} but no target id joins k,
-    // so nothing is updated and every val stays 0.
     auto cur = dispatcher->execute_sql(
         session,
         "UPDATE s.tgt SET val = iv FROM s.a, LATERAL (SELECT innr.iv FROM s.innr WHERE innr.ik = a.k) sub "
@@ -589,12 +537,9 @@ TEST_CASE("integration::cpp::dml_lateral::update_from_lateral_duplicate_matches_
     dispatcher->execute_sql(session, "CREATE TABLE s.a (k BIGINT);");
     dispatcher->execute_sql(session, "INSERT INTO s.a (k) VALUES (1), (2);");
     dispatcher->execute_sql(session, "CREATE TABLE s.innr (ik BIGINT, iv BIGINT);");
-    // ik=1 has TWO rows (both iv=111), so the lateral yields two source rows for k=1;
-    // tgt id=1 then joins two source rows.
     dispatcher->execute_sql(session, "INSERT INTO s.innr (ik, iv) VALUES (1, 111), (1, 111), (2, 222);");
 
-    // UPDATE ... FROM is a semi-join: tgt id=1 is updated once (val=111) despite the two
-    // matching source rows; id=2 -> 222; id=3 untouched. Two rows affected, not three.
+    // UPDATE ... FROM is a semi-join: a target row is updated exactly once despite multiple matching source rows.
     auto cur = dispatcher->execute_sql(
         session,
         "UPDATE s.tgt SET val = iv FROM s.a, LATERAL (SELECT innr.iv FROM s.innr WHERE innr.ik = a.k) sub "

@@ -15,25 +15,12 @@
 
 using namespace components;
 
-// Error-contract tests for operator_unique_constraint_t, built around direct
-// operator construction (no dispatcher). A UNIQUE / PRIMARY KEY violation in the
-// written-row snapshot must surface as a clean operator error (set_error /
-// has_error), never a silent dedup and never a throw across the mailbox.
-//
-// The existing-row (scan_by_keys) layer needs a live disk actor and is exercised
-// by the SQL integration suite; these unit tests drive the collision-free
-// within-batch layer, so the pipeline context carries an EMPTY disk address and
-// operator_unique_constraint_t skips the disk round-trip (the coroutine runs to
-// completion eagerly — initial_suspend is suspend_never — so the returned future
-// is ready immediately with no cross-actor await).
+// A UNIQUE/PK violation must surface as set_error/has_error, never a throw. These unit tests
+// give an EMPTY disk address, so the existing-row scan is skipped and the coroutine resolves eagerly.
 
 namespace {
 
-    // Stands in for a production DML op: exposes a fixed write-set as
-    // constraint_input() (which operator_unique_constraint_t reads via the
-    // left_-spine walk in constraint_util). operator_empty_t is `final`, so this
-    // derives read_only_operator_t directly and sets the protected constraint_input_
-    // in its ctor — no public setter on the base operator.
+    // Test double: sets constraint_input_ directly in the ctor; the base operator has no public setter.
     class constraint_source_operator_t final : public operators::read_only_operator_t {
     public:
         constraint_source_operator_t(std::pmr::memory_resource* resource, operators::operator_data_ptr data)
@@ -43,15 +30,12 @@ namespace {
     };
 
     operators::operator_ptr make_child(std::pmr::memory_resource* resource, vector::data_chunk_t&& chunk) {
-        // In production record_flush populates constraint_input_ (the just-written
-        // rows); output() is not a fallback source.
+        // In production record_flush populates constraint_input_; output() is not a fallback source.
         auto data = operators::make_operator_data(resource, std::move(chunk));
         return operators::operator_ptr(new constraint_source_operator_t(resource, std::move(data)));
     }
 
-    // Build the operator over one write-set chunk + the given UNIQUE column groups,
-    // drive its async-finalize entry to completion, and return whether it errored.
-    // table_oid stays INVALID_OID so the existing-row scan layer is dormant.
+    // table_oid stays INVALID_OID, so the existing-row scan layer stays dormant.
     bool run_unique(std::pmr::memory_resource* resource,
                     vector::data_chunk_t&& write_set,
                     std::vector<std::vector<std::string>> groups,
@@ -76,22 +60,16 @@ namespace {
 
 } // namespace
 
-// The single-column within-batch trio (duplicate caught / distinct pass / single
-// valid pass) is covered end-to-end by test_unique_constraint_e2e; the operator's
-// error-CONTRACT (violation => has_error, never a throw) is proven below by the
-// composite-key case. What remains here is the operator-level coverage the e2e
-// does NOT reach: composite (multi-column) keys and SQL NULL-distinct semantics.
+// Covers what test_unique_constraint_e2e does not: composite keys and NULL-distinct semantics.
 
 TEST_CASE("unique constraint operator: composite key duplicate is caught", "[unique_constraint]") {
     auto resource = core::pmr::otterbrix_resource();
-    // Two columns (a,b) form one UNIQUE constraint. Rows 0 and 2 share (1,9).
     std::pmr::vector<types::complex_logical_type> cols(&resource);
     cols.emplace_back(types::logical_type::BIGINT);
     cols.back().set_alias("a");
     cols.emplace_back(types::logical_type::BIGINT);
     cols.back().set_alias("b");
     vector::data_chunk_t chunk(&resource, cols, 3);
-    // (a,b) = (1,9), (1,8), (1,9)
     chunk.set_value(0, 0, types::logical_value_t(&resource, int64_t(1)));
     chunk.set_value(1, 0, types::logical_value_t(&resource, int64_t(9)));
     chunk.set_value(0, 1, types::logical_value_t(&resource, int64_t(1)));
@@ -111,7 +89,6 @@ TEST_CASE("unique constraint operator: composite key with differing second colum
     cols.emplace_back(types::logical_type::BIGINT);
     cols.back().set_alias("b");
     vector::data_chunk_t chunk(&resource, cols, 2);
-    // (1,9) and (1,8) differ in b → no violation.
     chunk.set_value(0, 0, types::logical_value_t(&resource, int64_t(1)));
     chunk.set_value(1, 0, types::logical_value_t(&resource, int64_t(9)));
     chunk.set_value(0, 1, types::logical_value_t(&resource, int64_t(1)));
@@ -123,8 +100,6 @@ TEST_CASE("unique constraint operator: composite key with differing second colum
 
 TEST_CASE("unique constraint operator: NULL keys are treated as distinct", "[unique_constraint]") {
     auto resource = core::pmr::otterbrix_resource();
-    // Two rows both NULL in the unique column: SQL UNIQUE treats NULLs as distinct,
-    // so this is NOT a violation.
     std::pmr::vector<types::complex_logical_type> cols(&resource);
     cols.emplace_back(types::logical_type::BIGINT);
     cols.back().set_alias("id");
@@ -136,16 +111,7 @@ TEST_CASE("unique constraint operator: NULL keys are treated as distinct", "[uni
     REQUIRE_FALSE(run_unique(&resource, std::move(chunk), {{"id"}}));
 }
 
-// ---------------------------------------------------------------------------
-// FLOAT/DOUBLE keys: the within-batch dedup pairs data_chunk_t::hash (bitwise:
-// std::hash over the raw value) with the cells_equal verify. The two MUST agree
-// (the hash/equality contract), including the float edge values:
-//   - NaN vs NaN: identical bit patterns land in ONE bucket, so the verify must
-//     treat them as the SAME key (an epsilon fabs-compare says false for NaN and
-//     silently admits the duplicate).
-//   - 0.0 vs -0.0: compare equal, and std::hash special-cases ±0 into one
-//     bucket, so they are ONE key.
-// ---------------------------------------------------------------------------
+// Hash and cells_equal must agree on float edge cases: NaN hashes equal to NaN, and 0.0/-0.0 hash equal too.
 TEST_CASE("unique constraint operator: NaN duplicate in a double key is caught", "[unique_constraint]") {
     auto resource = core::pmr::otterbrix_resource();
     std::pmr::vector<types::complex_logical_type> cols(&resource);
@@ -173,17 +139,10 @@ TEST_CASE("unique constraint operator: 0.0 and -0.0 collide as one double key", 
     REQUIRE(run_unique(&resource, std::move(chunk), {{"score"}}));
 }
 
-// ---------------------------------------------------------------------------
-// cells_equal must resolve DICTIONARY indirection, exactly like the hash half
-// of the hash+verify pair does (to_unified_format): a filter-sliced scan batch
-// reaches GROUP BY / hash join / the unique dedup as a DICTIONARY vector, and
-// a raw data<T>()[row] read would index the underlying flat buffer with the
-// UNRESOLVED row — comparing the wrong cell.
-// ---------------------------------------------------------------------------
+// cells_equal must resolve DICTIONARY indirection like the hash side, or it compares the wrong cell.
 TEST_CASE("cells_equal resolves dictionary indirection like the hash does", "[unique_constraint]") {
     auto resource = core::pmr::otterbrix_resource();
 
-    // Flat base [10, 20, 30]; dictionary view picks rows {2, 0} -> [30, 10].
     vector::vector_t base(&resource, types::complex_logical_type{types::logical_type::BIGINT}, 3);
     base.set_value(0, types::logical_value_t(&resource, int64_t(10)));
     base.set_value(1, types::logical_value_t(&resource, int64_t(20)));
@@ -194,25 +153,19 @@ TEST_CASE("cells_equal resolves dictionary indirection like the hash does", "[un
     vector::vector_t dict(&resource, types::complex_logical_type{types::logical_type::BIGINT}, 3);
     dict.slice(base, sel, 2);
 
-    // Flat reference vector [30, 10].
     vector::vector_t flat(&resource, types::complex_logical_type{types::logical_type::BIGINT}, 2);
     flat.set_value(0, types::logical_value_t(&resource, int64_t(30)));
     flat.set_value(1, types::logical_value_t(&resource, int64_t(10)));
 
-    // dict[0]==30==flat[0] and dict[1]==10==flat[1]; a raw flat read of the
-    // dictionary buffer would see 10 at position 0 and 20 at position 1.
     REQUIRE(vector::cells_equal(dict, 0, flat, 0));
     REQUIRE(vector::cells_equal(dict, 1, flat, 1));
     REQUIRE_FALSE(vector::cells_equal(dict, 0, flat, 1));
 }
 
-// A key column absent from the write-set used to `continue` — this operator's SUCCESS path,
-// silently enforcing nothing while the DML's already-written rows stayed. Same defect/cure as
-// operator_fk_check_t's "referencing column has no position in the written row".
+// Same defect/cure as operator_fk_check_t's "referencing column has no position in the written row".
 TEST_CASE("unique constraint operator: a key column absent from the write-set is refused, not skipped",
           "[unique_constraint]") {
     auto resource = core::pmr::otterbrix_resource();
-    // Write-set exposes only "a"; the group is declared on (a, b).
     std::pmr::vector<types::complex_logical_type> cols(&resource);
     cols.emplace_back(types::logical_type::BIGINT);
     cols.back().set_alias("a");
@@ -224,14 +177,12 @@ TEST_CASE("unique constraint operator: a key column absent from the write-set is
     std::string err;
     REQUIRE(run_unique(&resource, std::move(chunk), {{"a", "b"}}, &err));
     INFO("error: " << err);
-    // The message has to name the column the user can act on, not the symptom.
     REQUIRE(err.find("\"b\"") != std::string::npos);
 }
 
 TEST_CASE("unique constraint operator: a key column list that is empty is refused, not skipped",
           "[unique_constraint]") {
     auto resource = core::pmr::otterbrix_resource();
-    // An empty column list gives every row the same (zero-column) key, enforcing nothing.
     // Mirrors operator_fk_check_t's `indices.empty()` refusal.
     std::pmr::vector<types::complex_logical_type> cols(&resource);
     cols.emplace_back(types::logical_type::BIGINT);
@@ -246,14 +197,11 @@ TEST_CASE("unique constraint operator: a key column list that is empty is refuse
     INFO("error: " << err);
 }
 
-// Key column positions are resolved ONCE against the front chunk, then reused for every
-// chunk. A reordered chunk would be read at the wrong position and silently admit a
-// duplicate (a narrower one reads past its columns) — so a layout mismatch is refused, not read.
+// Key column positions are resolved ONCE against the front chunk and reused for every later one.
 TEST_CASE("unique constraint operator: a chunk whose layout disagrees with the first chunk is refused",
           "[unique_constraint]") {
     auto resource = core::pmr::otterbrix_resource();
 
-    // Chunk 1: [k, v], key column "k" at position 0, k = 1.
     std::pmr::vector<types::complex_logical_type> cols1(&resource);
     cols1.emplace_back(types::logical_type::BIGINT);
     cols1.back().set_alias("k");
@@ -264,7 +212,6 @@ TEST_CASE("unique constraint operator: a chunk whose layout disagrees with the f
     chunk1.set_value(1, 0, types::logical_value_t(&resource, int64_t(100)));
     chunk1.set_cardinality(1);
 
-    // Chunk 2: [v, k] — same columns, SWAPPED. Its "k" duplicates chunk 1's key.
     std::pmr::vector<types::complex_logical_type> cols2(&resource);
     cols2.emplace_back(types::logical_type::BIGINT);
     cols2.back().set_alias("v");
@@ -300,11 +247,7 @@ TEST_CASE("unique constraint operator: a chunk whose layout disagrees with the f
     REQUIRE(err.find("\"k\"") != std::string::npos);
 }
 
-// `table_oid_ == INVALID_OID` used to also skip the existing-row scan (LAYER 2), silently
-// admitting a duplicate of an already-stored row — unlike an empty disk address, which is
-// topology, not an unresolved name. No live SQL path hits INVALID_OID here
-// (catalog_resolves_t::constraints_for returns nullptr for it); this is a sentinel, verified
-// by adding the condition back and confirming the REQUIRE below goes red.
+// INVALID_OID alone must not disable the existing-row scan; an empty disk address is topology, not a name.
 TEST_CASE("unique constraint operator: an unresolved table oid does not disable the existing-row layer",
           "[unique_constraint]") {
     auto resource = core::pmr::otterbrix_resource();
@@ -312,8 +255,7 @@ TEST_CASE("unique constraint operator: an unresolved table oid does not disable 
     cols.emplace_back(types::logical_type::BIGINT);
     cols.back().set_alias("a");
     vector::data_chunk_t chunk(&resource, cols, 2);
-    // Two DISTINCT keys: LAYER 1 has nothing to say about them, so whatever the
-    // operator answers here is LAYER 2's answer alone.
+    // Two distinct keys: LAYER 1 has nothing to say, so this answers LAYER 2 alone.
     chunk.set_value(0, 0, types::logical_value_t(&resource, int64_t(1)));
     chunk.set_value(0, 1, types::logical_value_t(&resource, int64_t(2)));
     chunk.set_cardinality(2);
@@ -322,8 +264,7 @@ TEST_CASE("unique constraint operator: an unresolved table oid does not disable 
         new operators::operator_unique_constraint_t(&resource, log_t{}, catalog::INVALID_OID, {{"a"}}));
     op->set_children(make_child(&resource, std::move(chunk)));
 
-    // Any non-null pointer reads as "not the empty address" for the topology check; nothing
-    // is enqueued on it since the refusal lands before the first send.
+    // Any non-null address reads as "not empty" for the topology check; the refusal fires before any send.
     int disk_actor_stand_in = 0;
     pipeline::context_t ctx(logical_plan::storage_parameters{&resource},
                             actor_zeta::address_t{&resource, &disk_actor_stand_in},
@@ -338,6 +279,5 @@ TEST_CASE("unique constraint operator: an unresolved table oid does not disable 
     REQUIRE(op->has_error());
     const std::string err{op->get_error().what};
     INFO("error: " << err);
-    // The message has to say WHICH fact is missing, not just that something is.
     REQUIRE(err.find("table") != std::string::npos);
 }

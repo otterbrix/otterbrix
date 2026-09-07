@@ -1,19 +1,5 @@
-// ALTER TABLE ... ADD COLUMN writes a pg_attribute row and stops; the physical column
-// is materialized later, by the first INSERT that carries it (agent_disk stage 1b
-// storage_append_inner, direct_add_column_sync on the replay leg). Deferred on purpose:
-// test_alter_rename_column::rename_and_unmaterialized_add_column_are_distinguishable pins
-// it by requiring the durable file to still hold TWO columns after an ADD COLUMN with no
-// INSERT.
-//
-// So there's a legal window where the catalog names a column storage has never heard of.
-// Before this fix the scan adapter dropped the projected ordinal it couldn't find, turning
-// `SELECT extra FROM t` into a zero-column scan that tripped
-// `assert(!column_ids_.empty())` in components/table/table_state.cpp (abort in Debug,
-// silent wrong answer under NDEBUG).
-//
-// Cases below pin the answer: the column's DEFAULT (or NULL if none) in every existing
-// row -- exactly what the materializing INSERT itself backfills via row_group_t::add_column,
-// so the read does not change across materialization.
+// ALTER TABLE ADD COLUMN writes a pg_attribute row and stops; the physical column materializes only on the
+// first INSERT that carries it, so until then it reads as the column's DEFAULT (or NULL).
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"
@@ -38,9 +24,6 @@ namespace {
         return cur;
     }
 
-    // CREATE DATABASE + a one-column table holding a single row, then ALTER in a
-    // second column and never insert into it. This is the whole reproduction: the
-    // engine is now in the legal catalog-ahead-of-storage state.
     void make_table_with_unmaterialized_column(otterbrix::wrapper_dispatcher_t* dispatcher) {
         run_ok(dispatcher, "CREATE DATABASE TestDatabase;");
         run_ok(dispatcher, "CREATE TABLE TestDatabase.t (a bigint);");
@@ -48,11 +31,8 @@ namespace {
         run_ok(dispatcher, "ALTER TABLE TestDatabase.t ADD COLUMN extra bigint;");
     }
 
-    // `SELECT extra` reads the column via the projection (table_storage_adapter_t::
-    // fill_unmaterialized); `WHERE extra ...` reads it via the pushed-down predicate
-    // (row_group_t::evaluate_predicate), which runs below the projection fill. This asks
-    // the first leg for the column's value, builds a predicate from it, and requires the
-    // second leg to keep every row -- so it passes iff the two legs agree, whatever the value.
+    // SELECT reads the column via the projection fill; WHERE reads it via the pushed-down predicate, a separate
+    // leg run below the fill. Builds a predicate from the projection's answer and requires the predicate leg to agree.
     void require_both_legs_agree(otterbrix::wrapper_dispatcher_t* dispatcher, std::size_t rows) {
         std::string predicate;
         {
@@ -70,7 +50,6 @@ namespace {
 
 } // namespace
 
-// The bare reproduction: naming the column alone is enough.
 TEST_CASE("integration::cpp::alter_add_column_unmaterialized::select_column_reads_null") {
     auto config = test_create_config(integration_fixture_path("test_alter_add_column_unmaterialized/select_column"));
     test_clear_directory(config);
@@ -82,12 +61,9 @@ TEST_CASE("integration::cpp::alter_add_column_unmaterialized::select_column_read
 
     auto cur = run_ok(dispatcher, "SELECT extra FROM TestDatabase.t;");
     REQUIRE(cur->size() == 1);
-    // The content, not merely the survival: the catalog shows the column, so the
-    // row has a cell for it, and that cell is NULL.
     CHECK(cur->value(0, 0).is_null());
 }
 
-// SELECT * has to widen to the catalog's shape, not the storage's.
 TEST_CASE("integration::cpp::alter_add_column_unmaterialized::select_star_reads_null") {
     auto config = test_create_config(integration_fixture_path("test_alter_add_column_unmaterialized/select_star"));
     test_clear_directory(config);
@@ -105,8 +81,7 @@ TEST_CASE("integration::cpp::alter_add_column_unmaterialized::select_star_reads_
     CHECK(cur->value(1, 0).is_null());
 }
 
-// The column read as a PREDICATE, which pushes it down a different leg than the
-// projection: the filter binds it as an input and the scan has to feed the graph.
+// A predicate reference pushes the column down a different leg than the projection: it binds as scan graph input.
 TEST_CASE("integration::cpp::alter_add_column_unmaterialized::predicate_on_column") {
     auto config = test_create_config(integration_fixture_path("test_alter_add_column_unmaterialized/predicate"));
     test_clear_directory(config);
@@ -133,7 +108,6 @@ TEST_CASE("integration::cpp::alter_add_column_unmaterialized::predicate_on_colum
     }
 }
 
-// Aggregates: COUNT(col) ignores NULLs, COUNT(*) does not, SUM over all-NULL is NULL.
 TEST_CASE("integration::cpp::alter_add_column_unmaterialized::aggregates_over_column") {
     auto config = test_create_config(integration_fixture_path("test_alter_add_column_unmaterialized/aggregates"));
     test_clear_directory(config);
@@ -162,7 +136,6 @@ TEST_CASE("integration::cpp::alter_add_column_unmaterialized::aggregates_over_co
     }
 }
 
-// ORDER BY on the column, and a GROUP BY that keys on it.
 TEST_CASE("integration::cpp::alter_add_column_unmaterialized::order_and_group_by_column") {
     auto config = test_create_config(integration_fixture_path("test_alter_add_column_unmaterialized/order_group"));
     test_clear_directory(config);
@@ -190,8 +163,7 @@ TEST_CASE("integration::cpp::alter_add_column_unmaterialized::order_and_group_by
     }
 }
 
-// The first INSERT that carries the column materializes it and backfills rows that
-// predate it: those must keep reading NULL, the new row must read its own value.
+// The first materializing INSERT backfills predating rows with NULL; the new row keeps its own value.
 TEST_CASE("integration::cpp::alter_add_column_unmaterialized::materializing_insert_keeps_old_rows_null") {
     auto config = test_create_config(integration_fixture_path("test_alter_add_column_unmaterialized/materialize"));
     test_clear_directory(config);
@@ -201,8 +173,7 @@ TEST_CASE("integration::cpp::alter_add_column_unmaterialized::materializing_inse
 
     make_table_with_unmaterialized_column(dispatcher);
 
-    // Read it BEFORE the materialization, so a regression that only fixes the
-    // post-materialization side cannot pass this case.
+    // Read it BEFORE the materializing INSERT, so a fix for only the post-materialization side can't pass this case.
     {
         auto cur = run_ok(dispatcher, "SELECT a, extra FROM TestDatabase.t ORDER BY a;");
         REQUIRE(cur->size() == 1);
@@ -227,8 +198,6 @@ TEST_CASE("integration::cpp::alter_add_column_unmaterialized::materializing_inse
     }
 }
 
-// The catalog row is durable and the storage column is not, so a restart re-enters
-// the same state rather than leaving it; the read must answer the same after it.
 TEST_CASE("integration::cpp::alter_add_column_unmaterialized::survives_restart_before_first_insert") {
     auto config = test_create_config(integration_fixture_path("test_alter_add_column_unmaterialized/restart"));
     test_clear_directory(config);
@@ -254,20 +223,8 @@ TEST_CASE("integration::cpp::alter_add_column_unmaterialized::survives_restart_b
     }
 }
 
-// The DEFAULT backfills existing rows on both sides of materialization: before it,
-// table_storage_adapter_t::fill_unmaterialized returns the catalog's constant; at it,
-// stage 1b stamps the same constant into the column_definition_t and
-// row_group_t::add_column writes it into every pre-existing row. Either half alone would
-// flip the answer at the first INSERT.
-//
-// Mirrors PostgreSQL (since PG 11): ADD COLUMN ... DEFAULT doesn't rewrite the table --
-// the constant sits in pg_attribute.attmissingval and older rows read it from there. Our
-// marker (added_column_type_t{type, default_spec}) rides the ALTER's commit to the owning
-// agent the same way; default_spec is the text stored in pg_attribute.attdefspec.
-//
-// The write path is separate and unaffected: an INSERT omitting the column takes the
-// DEFAULT via enrich_logical_plan::build_insert_fill_list. Restart persistence of the
-// parked publication is covered by default_survives_restart_before_first_insert below.
+// The DEFAULT backfills existing rows on both sides of materialization (fill_unmaterialized before it,
+// row_group_t::add_column at it); mirrors PostgreSQL (since PG 11) in not rewriting the table.
 TEST_CASE("integration::cpp::alter_add_column_unmaterialized::default_backfills_old_rows") {
     auto config = test_create_config(integration_fixture_path("test_alter_add_column_unmaterialized/with_default"));
     test_clear_directory(config);
@@ -297,10 +254,6 @@ TEST_CASE("integration::cpp::alter_add_column_unmaterialized::default_backfills_
     }
 }
 
-// `SELECT extra` and `WHERE extra = ...` read the same column two ways and used to
-// disagree: the projection took the DEFAULT from the publication while the pushed-down
-// filter fed the graph an all-invalid vector. The predicate here is built from the
-// projection's own answer, so the case can't pass unless both legs agree.
 TEST_CASE("integration::cpp::alter_add_column_unmaterialized::default_answers_the_predicate_leg") {
     auto config =
         test_create_config(integration_fixture_path("test_alter_add_column_unmaterialized/default_predicate"));
@@ -316,23 +269,17 @@ TEST_CASE("integration::cpp::alter_add_column_unmaterialized::default_answers_th
 
     require_both_legs_agree(dispatcher, 2);
 
-    // The no-default column is the same demand, answered NULL on both legs -- kept so a
-    // "fill the predicate with the default" fix that forgets that half fails too.
     {
         auto cur = run_ok(dispatcher, "SELECT a FROM TestDatabase.t WHERE extra IS NOT NULL;");
         INFO("a published DEFAULT is not NULL, so IS NOT NULL keeps every row");
         CHECK(cur->size() == 2);
     }
 
-    // The materialization must not move the answer either: the first INSERT that carries the
-    // column backfills the same constant, so both legs keep saying what they said.
     run_ok(dispatcher, "INSERT INTO TestDatabase.t (a, extra) VALUES (3, 7);");
     require_both_legs_agree(dispatcher, 3);
 }
 
-// The pg_attribute row is durable but the publication carrying the default is not, so the
-// load path re-derives it -- type only. The column comes back published without its
-// default, reads NULL, and the first INSERT then backfills that NULL permanently.
+// The pg_attribute row survives a restart but the DEFAULT publication does not; the column comes back NULL.
 TEST_CASE("integration::cpp::alter_add_column_unmaterialized::default_survives_restart_before_first_insert") {
     auto config =
         test_create_config(integration_fixture_path("test_alter_add_column_unmaterialized/default_restart"));
@@ -368,8 +315,6 @@ TEST_CASE("integration::cpp::alter_add_column_unmaterialized::default_survives_r
         }
         require_both_legs_agree(dispatcher, 2);
 
-        // The first INSERT materializes the column and backfills pre-existing rows from the
-        // publication -- a lost default writes NULL there permanently, the point of no return.
         run_ok(dispatcher, "INSERT INTO TestDatabase.t (a, extra) VALUES (3, 7);");
         {
             auto cur = run_ok(dispatcher, "SELECT a, extra FROM TestDatabase.t ORDER BY a;");
@@ -383,13 +328,8 @@ TEST_CASE("integration::cpp::alter_add_column_unmaterialized::default_survives_r
     }
 }
 
-// The read-side fix widens scanned chunks to the CATALOG's width, so an UPDATE's payload
-// chunk comes back one column wider than any row group can hold; the write side must narrow
-// it again. An all-NULL trailing column is dropped and the row written (plain
-// filter-only UPDATEs); a real value can only be stored by materializing the column, which
-// only the append path's schema-growth stage can do, so that statement is refused instead of
-// silently dropping the value. Before this fix the drop case aborted in collection_t::append
-// on `chunk.column_count() == types_.size()`.
+// The read-side fix widens scanned chunks to the catalog's width, so an UPDATE payload is one column wider than
+// any row group can hold; the write side narrows it, refusing a statement that would need a real (non-NULL) value there.
 TEST_CASE("integration::cpp::alter_add_column_unmaterialized::dml_over_the_column") {
     auto config = test_create_config(integration_fixture_path("test_alter_add_column_unmaterialized/dml"));
     test_clear_directory(config);

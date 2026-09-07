@@ -19,54 +19,21 @@
 #include <string_view>
 #include <vector>
 
-// A CHECKPOINT round is four durable acts in a fixed relationship:
-//   * agent_disk_t::checkpoint_inner compacts each entry -- data_table_t::compact rebuilds the
-//     table at row id 0, giving every surviving row a NEW physical id -- and commits that via
-//     the .otbx header plus the `.wal_id` sidecar;
-//   * every index of that table now stores OLD physical ids and is silently wrong (an id naming
-//     no row group is dropped by collection_t::fetch; one reassigned to a different survivor is
-//     gathered as if it matched);
-//   * repopulate_indexes_after_compaction renames them to the new ids, and
-//     btree_index_agent_t::publish_buckets force_flush()es the result;
-//   * truncate_before drops the WAL segments the round made redundant.
-//
-// Truncation is the point of no return: nothing puts an index back afterwards (base_spaces
-// rebuilds none at startup, WAL replay maintains none), so a round that trims the journal while
-// its indexes still name pre-compact rows is permanently, silently wrong. Auto-checkpoint
-// (run_auto_checkpoint) already rebuilds before truncating; the CHECKPOINT statement had it
-// AFTER, and this case is written against exactly that difference.
-//
-// The window is entered by making truncate_before's read (wal_page_reader_t) refuse, via the
-// same WAL seam as test_create_index_catchup_refusal (dev_set_wal_file_interposer): in the old
-// order the operator returned on that refusal before the rebuild ran, which is the state a
-// kill -9 right after truncation would leave (post-compact table, pre-compact index). The case
-// crashes for real by copying the live directory and reopening the copy.
-//
-// Two guards against a false green: the sidecar only moves once data_table_t::compact actually
-// returned true (every other outcome -- storage_degraded, an open cursor, the MVCC gate, a
-// failed checkpoint -- skips it), and EXPLAIN on the same query text used for the value
-// assertions must say Index Scan, so a planner that stopped routing to the index can't pass by
-// running a full scan instead.
+// Index rebuild must run before WAL truncation, or a refused rebuild is left with no WAL records to retry from.
 
 using namespace test_helpers;
 
 namespace {
 
-    // > row_group_size (1024) by a wide margin: 3000 rows span three row groups, and deleting
-    // the middle third moves every surviving tail row by a full 1000 ids, so a stale index
-    // cannot accidentally still name the right row.
+    // 3000 rows span three row groups (row_group_size=1024), shifting every surviving tail row by 1000 ids.
     constexpr int64_t kRows = 3000;
-    constexpr int64_t kDeleteFrom = 1001; // inclusive
-    constexpr int64_t kDeleteTo = 2000;   // inclusive
+    constexpr int64_t kDeleteFrom = 1001;
+    constexpr int64_t kDeleteTo = 2000;
 
-    // Small enough that the load below rolls the journal over several times. truncate_before
-    // never touches the segment the writer currently holds, so a single-segment journal would
-    // give the fault below nothing to refuse and the case would test nothing.
+    // Small enough that the load rolls the journal over several segments; truncate_before skips the writer's current one.
     constexpr std::size_t kSegmentBytes = 64 * 1024;
 
-    // Process-wide seam, scoped by this object, narrowed to WAL segment files by path and
-    // armed only for the one statement that must meet it. Returning nullptr models a segment
-    // that WILL NOT OPEN, which is what core::filesystem::open_file itself answers on failure.
+    // Returning nullptr models what core::filesystem::open_file itself answers when a segment will not open.
     class wal_open_refusal_t final : public services::wal::wal_file_interposer_t {
     public:
         wal_open_refusal_t() { services::wal::dev_set_wal_file_interposer(this); }
@@ -112,8 +79,6 @@ namespace {
         }
     }
 
-    // THE FULL SCAN IS THE TRUTH. `SELECT id, k` carries no predicate an index could serve, so
-    // this is the table's own answer about which rows exist and what key each one holds.
     std::map<int64_t, int64_t> full_scan_truth(otterbrix::wrapper_dispatcher_t* d, const std::string& db) {
         auto cur = exec(d, "SELECT id, k FROM " + db + ".t;");
         REQUIRE(cur->is_success());
@@ -126,8 +91,6 @@ namespace {
         return key_to_id;
     }
 
-    // The index must answer EXACTLY what the full scan says, key by key -- the right row for a
-    // key that survived, no row at all for one that did not.
     void index_must_agree_with_the_full_scan(otterbrix::wrapper_dispatcher_t* d, const std::string& db) {
         const auto truth = full_scan_truth(d, db);
         REQUIRE(truth.size() == static_cast<std::size_t>(kRows - (kDeleteTo - kDeleteFrom + 1)));
@@ -140,9 +103,7 @@ namespace {
             REQUIRE(text.find("Index Scan") != std::string::npos);
         }
 
-        // A spread across all three row groups, including the tail rows a compaction moves by a
-        // full 1000 ids and the deleted middle that must stay absent through the index just as
-        // it is absent from the scan.
+        // Spread across all three row groups, including the shifted tail and deleted middle, so no stale index gets lucky.
         std::vector<int64_t> probes;
         for (int64_t id = 1; id <= kRows; id += 97) {
             probes.push_back(10 * id);
@@ -165,8 +126,7 @@ namespace {
         }
     }
 
-    // The durable half of a table's checkpoint id, written by checkpoint_inner as
-    // `${db}/${namespace_oid}/${table_oid}/table.otbx.wal_id` through tmp+rename.
+    // Written by checkpoint_inner as `${db}/${namespace_oid}/${table_oid}/table.otbx.wal_id` via tmp+rename.
     uint64_t read_sidecar_wal_id(const std::filesystem::path& sidecar) {
         std::ifstream in(sidecar, std::ios::binary);
         uint64_t value = 0;
@@ -177,10 +137,7 @@ namespace {
         return in ? value : 0;
     }
 
-    // The ONE user table's sidecar. Every system table sits under the fixed system directory
-    // oid, so excluding that directory leaves exactly `<db>.t` in a database with one table.
-    // WAL segments are regular files in these same directories and are skipped by the
-    // directories-only descent.
+    // Every system table sits under the fixed system directory oid, so excluding it leaves this db's one user table.
     std::filesystem::path user_table_sidecar(const std::filesystem::path& db_root) {
         const auto system_dir =
             std::to_string(static_cast<unsigned>(services::disk::manager_disk_t::system_dir_oid()));
@@ -211,23 +168,13 @@ namespace {
 
 } // namespace
 
-// operator_checkpoint_t ran truncate_before at step 4 and the index rebuild at step 5. The
-// refused truncate below therefore returned the statement one step BEFORE the rebuild, leaving
-// a table whose rows had all been renumbered and indexes that still named the old numbers:
-// `WHERE k = 30000` answered with whichever row moved into the physical id the stale entry
-// holds, and the crash copy answered the same after a restart, forever.
-//
-// With the rebuild moved ahead of the truncation the same refusal still fails the statement --
-// a WAL segment that cannot be read is a real refusal and must be reported -- but it fails it
-// AFTER the indexes have been made durable against the table they now describe.
 TEST_CASE("integration::cpp::checkpoint_rebuild_before_truncate::a_refused_truncate_may_not_cost_the_index_rebuild") {
     auto config = test_create_config(integration_fixture_path("test_checkpoint_rebuild_before_truncate/orig"));
     test_clear_directory(config);
     config.wal.on = true;
     config.log.level = log_t::level::off;
     config.wal.max_segment_size = kSegmentBytes;
-    // Far above anything this case writes: an automatic round DOES compact and DOES rebuild,
-    // and one firing mid-case would repair the very state under test.
+    // Far above anything this case writes, so an automatic round can't fire mid-case and repair the state under test.
     config.wal.auto_checkpoint_threshold_bytes = 1024ull * 1024ull * 1024ull;
 
     const std::filesystem::path crash_dir =
@@ -244,9 +191,7 @@ TEST_CASE("integration::cpp::checkpoint_rebuild_before_truncate::a_refused_trunc
         REQUIRE(exec(d, "CREATE INDEX k_idx ON tdb.t (k);")->is_success());
         load(d, "tdb");
 
-        // ROUND ONE, clean. It is what gives every entry a non-zero prev_checkpoint_wal_id_,
-        // and checkpoint_all reports min(prev) -- so without this round the second one would
-        // report 0 and skip truncate_before entirely, and the fault below would meet nothing.
+        // Without this clean round, round two would report checkpoint 0, skip truncate_before, and meet no fault.
         REQUIRE(exec(d, "CHECKPOINT;")->is_success());
 
         INFO("the middle third goes, so round two has 1000 ids of shift to hand out");
@@ -264,7 +209,6 @@ TEST_CASE("integration::cpp::checkpoint_rebuild_before_truncate::a_refused_trunc
         services::index::reset_index_repopulations();
         services::disk::reset_table_checkpoints();
 
-        // ROUND TWO, with the journal unreadable at the truncate step.
         fault.armed = true;
         auto round_two = exec(d, "CHECKPOINT;");
         fault.armed = false;
@@ -287,10 +231,9 @@ TEST_CASE("integration::cpp::checkpoint_rebuild_before_truncate::a_refused_trunc
         INFO("and the answer is the whole point: the index must say exactly what the full scan says");
         index_must_agree_with_the_full_scan(d, "tdb");
 
-        // kill -9 happens here. Nothing on disk is staged by hand: the fault above lived in
-        // this process only, so the copy is simply what the device holds right now.
+        // This copy is the kill -9: nothing staged by hand, so it's exactly what the device holds right now.
         copy_dir_as_crash(config.main_path, crash_dir);
-    } // the destructor's CHECKPOINT runs against the ORIGINAL directory only
+    } // the destructor's CHECKPOINT runs against the original directory only
 
     auto crash_config = test_create_config(crash_dir);
     crash_config.wal.on = true;

@@ -1,20 +1,6 @@
-// Write-through for STRING segments. A filled fixed-size segment is re-pointed to a real
-// file block during append (write-through) and becomes evictable; a STRING segment was
-// excluded, so the whole string payload of a table stayed pinned in memory for the life of
-// the process AND every same-process checkpoint round re-copied every string segment
-// (measured: 942 of 942 segments non-evictable; probe B of test_checkpoint_in_place).
-//
-// The exclusion was about the OLD transition mechanism (a raw prefix byte-copy, which loses
-// the dictionary that grows down from the end of the allocation and would perpetuate
-// transient big-string marker ids). The checkpoint has since owned a full serializer
-// (compact_string_dictionary + persist_string_overflow), and the transition uses it as is:
-// the transitioned image is byte-identical to what a checkpoint copy of the segment would
-// have produced, so the checkpoint can then NAME it in place.
-//
-// The one trap: the ADOPTED copy's big-string markers name real FILE blocks, which resolve
-// only through the segment state's registered handles. A transition that forgets to carry
-// the overflow-block registration into the adopted segment corrupts EVERY read of a big
-// string, not a rare race — the eviction gate below reads them back byte for byte.
+// Write-through re-points a filled segment to a real file block on append; STRING was excluded,
+// so its payload stayed pinned and every round re-copied it (measured: 942 of 942 non-evictable).
+// Losing the adopted segment's overflow-block registration corrupts every read of a big string, not a rare race.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/data_table.hpp>
@@ -69,8 +55,7 @@ namespace {
         return static_cast<int64_t>(x & 0x7FFFFFFFFFFFFFFFull);
     }
 
-    // ~4074-byte inline strings; every 17th row is a BIG string (>= 4096) so the overflow
-    // path — the very reason STRING was excluded from the write-through — is always on.
+    // Every 17th row is a BIG string (>= 4096), so the overflow path stays on for every table below.
     std::string wt_payload(uint64_t row) {
         const bool big = (row % 17) == 0;
         const size_t target = big ? 8192 : 4074;
@@ -116,7 +101,6 @@ namespace {
         }
     }
 
-    // The exact sequence of table_storage_t::checkpoint (services/disk/manager_disk.cpp).
     void checkpoint_production(tstorage::single_file_block_manager_t& bm, data_table_t& table) {
         tstorage::metadata_manager_t meta_mgr(bm);
         tstorage::metadata_writer_t writer(meta_mgr);
@@ -175,7 +159,7 @@ namespace {
     struct string_segment_census_t {
         uint64_t total{0};
         uint64_t persistent{0};
-        std::vector<uint64_t> overflow_blocks; // of PERSISTENT payload segments only
+        std::vector<uint64_t> overflow_blocks;
     };
 
     // The payload column reports its own segments under column_path "[1]".
@@ -204,11 +188,6 @@ namespace {
 
 } // namespace
 
-// ---------------------------------------------------------------------------------------
-// GATE E — a STRING segment FILLED during append is re-pointed to a real file block, like
-// every fixed-size and validity segment: all payload segments except the open tail are
-// PERSISTENT (evictable + reloadable) before any checkpoint.
-// ---------------------------------------------------------------------------------------
 TEST_CASE("string_write_through: filled string segments become disk-backed during append", "[stringwt]") {
     const auto path = wt_db_path("evictable");
     remove_file(path);
@@ -218,7 +197,7 @@ TEST_CASE("string_write_through: filled string segments become disk-backed durin
     REQUIRE_FALSE(bm.create_new_database().has_error());
     auto table = make_string_table(env, bm);
 
-    constexpr uint64_t ROWS = 600; // ~3 rows per 16 KiB segment -> a couple hundred segments
+    constexpr uint64_t ROWS = 600;
     append_rows(*table, env, 0, ROWS);
 
     auto census = census_payload_segments(*table);
@@ -229,17 +208,11 @@ TEST_CASE("string_write_through: filled string segments become disk-backed durin
     REQUIRE(census.persistent + 1 >= census.total);
     REQUIRE(census.persistent > 0);
 
-    // The payload is readable through the disk-backed segments, big strings included.
     REQUIRE(verify_rows(*table, env) == ROWS);
     remove_file(path);
 }
 
-// ---------------------------------------------------------------------------------------
-// GATE F — a checkpoint round over an UNCHANGED same-process string table NAMES the
-// write-through blocks instead of copying every segment: the third round's root equals the
-// second's, and the round issues no data blocks. (Probe B of test_checkpoint_in_place
-// measured the residual this closes: one full superseded string generation per round.)
-// ---------------------------------------------------------------------------------------
+// probe B of test_checkpoint_in_place measured the residual this closes: one superseded string generation per round.
 TEST_CASE("string_write_through: an unchanged string table is named, not copied, by a round", "[stringwt]") {
     const auto path = wt_db_path("named");
     remove_file(path);
@@ -252,8 +225,6 @@ TEST_CASE("string_write_through: an unchanged string table is named, not copied,
     constexpr uint64_t ROWS = 400;
     append_rows(*table, env, 0, ROWS);
 
-    // Round A writes fresh segments and re-points the tail; round B settles the root onto
-    // the live tree's own blocks.
     checkpoint_production(bm, *table);
     checkpoint_production(bm, *table);
     const auto root_b = bm.dev_durable_root_data_snapshot();
@@ -266,7 +237,7 @@ TEST_CASE("string_write_through: an unchanged string table is named, not copied,
                                      << " issued_by_round_c=" << bm.dev_issued_ids().size());
     REQUIRE(root_b == root_c);
     for (auto issued : bm.dev_issued_ids()) {
-        REQUIRE(root_c.count(issued) == 0); // metadata chains only, never data
+        REQUIRE(root_c.count(issued) == 0);
     }
 
     auto report = otterbrix_test::walk_blocks(bm, path, &env.resource);
@@ -276,7 +247,6 @@ TEST_CASE("string_write_through: an unchanged string table is named, not copied,
 
     REQUIRE(verify_rows(*table, env) == ROWS);
 
-    // A fresh process reads the named (never re-copied) blocks back byte for byte.
     table.reset();
     {
         wt_env_t env2;
@@ -288,12 +258,6 @@ TEST_CASE("string_write_through: an unchanged string table is named, not copied,
     remove_file(path);
 }
 
-// ---------------------------------------------------------------------------------------
-// GATE G — the adoption trap. The transitioned segment's big-string markers name real file
-// blocks; they resolve only through the adopted segment state's registered handles. Evict
-// everything and read it all back: a transition that lost the dictionary end or the
-// overflow registration fails HERE on every big string, not in a rare race.
-// ---------------------------------------------------------------------------------------
 TEST_CASE("string_write_through: transitioned segments survive eviction, big strings included", "[stringwt]") {
     const auto path = wt_db_path("evict");
     remove_file(path);
@@ -308,25 +272,17 @@ TEST_CASE("string_write_through: transitioned segments survive eviction, big str
 
     auto census = census_payload_segments(*table);
     REQUIRE(census.persistent > 0);
-    REQUIRE_FALSE(census.overflow_blocks.empty()); // big strings really were persisted
+    REQUIRE_FALSE(census.overflow_blocks.empty());
 
-    // Shrink the pool so the disk-backed segments are evicted; the scan must reload them.
-    // 4 MiB against ~2.4 MB of payload per 150 packed 16 KiB segments plus overflow blocks:
-    // far below the table, just above the scan's own working set (2 MiB starves the scan
-    // itself with a genuine pin OOM).
-    REQUIRE_FALSE(env.buffer_pool.set_limit(uint64_t(1) << 22).has_error()); // 4 MiB
+    // 4 MiB: below ~2.4 MB of payload across ~150 packed 16 KiB segments (forces eviction) but
+    // above the scan's own working set -- 2 MiB starves the scan itself with a genuine pin OOM.
+    REQUIRE_FALSE(env.buffer_pool.set_limit(uint64_t(1) << 22).has_error());
     REQUIRE(verify_rows(*table, env) == ROWS);
     remove_file(path);
 }
 
-// ---------------------------------------------------------------------------------------
-// GATE H — the rollback interlock (single_file_block_manager::roll_back_uncommitted_round).
-// The write-through's string leg allocates blocks a checkpoint never sees: the packed
-// segment image AND its big-string overflow blocks. The rollback of a FAILED round frees
-// exactly issued_since_root_ minus registry-alive ids, so every block the live tree owns
-// must be registry-alive by the time the transition returns — or the rollback hands a live
-// overflow block to the next allocation and a neighbour's write corrupts the big string.
-// ---------------------------------------------------------------------------------------
+// Rollback frees issued_since_root_ minus registry-alive ids, so every block the write-through's
+// string leg allocates must be registry-alive by the time the transition returns.
 TEST_CASE("string_write_through: a failed round's rollback keeps the live string blocks", "[stringwt]") {
     const auto path = wt_db_path("rollback");
     remove_file(path);
@@ -346,9 +302,6 @@ TEST_CASE("string_write_through: a failed round's rollback keeps the live string
     REQUIRE(census.persistent > 0);
     REQUIRE_FALSE(census.overflow_blocks.empty());
 
-    // A failed header write ends the round; reconcile rolls back what the live tree does
-    // not hold. The write-through allocations all belong to issued_since_root_ here (no
-    // committed header since create), so only their registration protects them.
     {
         tstorage::metadata_manager_t meta_mgr(bm);
         tstorage::metadata_writer_t writer(meta_mgr);
@@ -380,8 +333,6 @@ TEST_CASE("string_write_through: a failed round's rollback keeps the live string
     }
     WARN("[stringwt gate H] overflow blocks kept through the rollback: " << checked);
 
-    // The proof that matters: every payload still reads back byte for byte, and the next
-    // (healthy) round commits over the survivors.
     REQUIRE(verify_rows(*table, env) == ROWS);
     checkpoint_production(bm, *table);
     auto report = otterbrix_test::walk_blocks(bm, path, &env.resource);
@@ -400,10 +351,6 @@ TEST_CASE("string_write_through: a failed round's rollback keeps the live string
     remove_file(path);
 }
 
-// ---------------------------------------------------------------------------------------
-// PROBE (measurement, not a gate) — what the write-through changes for a string table in
-// numbers: evictable segments and same-process checkpoint cost per round.
-// ---------------------------------------------------------------------------------------
 TEST_CASE("string_write_through: PROBE evictability and per-round cost", "[stringwt][probe]") {
     const auto path = wt_db_path("probe");
     remove_file(path);

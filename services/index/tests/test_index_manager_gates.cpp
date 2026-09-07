@@ -1,6 +1,4 @@
-// Manager-level gates. Each case drives manager_index_t's own handlers directly with the one
-// agent pumped by hand, as test_index_delete_horizon.cpp and test_index_catchup_delete_bucket.cpp
-// do; the helpers are duplicated from there rather than shared, per those files' note.
+// Handlers are driven directly, one agent pumped by hand; helpers are duplicated rather than shared.
 
 // clang-format off
 // <actor-zeta/spawn.hpp> requires std::unique_ptr, but does not include it itself
@@ -123,10 +121,7 @@ namespace {
 
 } // namespace
 
-// create_index refuses a duplicate (keys, type) pair -- a second index over the same keys
-// answered by the same backend is a pure cost, maintained twice on every DML. Checking only the
-// index oid would let a catalog carrying two such rows raise two full agents over two stores,
-// with the table paying for both.
+// A duplicate (keys, type) pair is refused: it's a pure cost, maintained twice on every DML for no benefit.
 TEST_CASE("services::index::manager::bootstrap refuses a duplicate keys+type pair") {
     auto resource = core::pmr::otterbrix_resource();
     auto log = initialization_logger("python", "/tmp/docker_logs/");
@@ -144,7 +139,6 @@ TEST_CASE("services::index::manager::bootstrap refuses a duplicate keys+type pai
                                              std::pmr::set<std::uint64_t>(&resource))
                       .contains_error());
 
-    // Same keys, same type, a different indexrelid: exactly what create_index refuses.
     auto duplicate = manager->bootstrap_index_sync(kTableOid,
                                                    kIndexOid + 1,
                                                    components::logical_plan::index_type::single,
@@ -157,10 +151,7 @@ TEST_CASE("services::index::manager::bootstrap refuses a duplicate keys+type pai
     std::filesystem::remove_all(path);
 }
 
-// A multi-column CREATE INDEX accepted end to end would store and probe only the FIRST key's
-// column (resolve_key_column returns that one) while its registered key set claimed several.
-// Until a multi-column backend exists, the honest answer to the statement is a refusal at the
-// gate.
+// resolve_key_column only uses the first key, so a multi-column set is refused, not silently narrowed.
 TEST_CASE("services::index::manager::a multi-column key set is refused, not narrowed") {
     auto resource = core::pmr::otterbrix_resource();
     auto log = initialization_logger("python", "/tmp/docker_logs/");
@@ -195,10 +186,7 @@ TEST_CASE("services::index::manager::a multi-column key set is refused, not narr
     std::filesystem::remove_all(path);
 }
 
-// A CREATE INDEX catchup record for a table the registry does not know must not be traced and
-// DROPPED -- the build would publish an index missing those rows and report success. The
-// handler's contract returns void, so the refusal is recorded against the build's transaction
-// and surfaces where the build publishes: its commit_inserts.
+// The handler's contract returns void, so a record the registry can't place must surface at commit_inserts instead.
 TEST_CASE("services::index::manager::a catchup record the registry cannot place fails the build's commit") {
     auto resource = core::pmr::otterbrix_resource();
     auto log = initialization_logger("python", "/tmp/docker_logs/");
@@ -227,8 +215,6 @@ TEST_CASE("services::index::manager::a catchup record the registry cannot place 
         REQUIRE(fut.is_ready());
     }
 
-    // The build publishes. Without the recorded refusal this returns no_error over a record
-    // silently dropped from the index being built.
     {
         std::pmr::vector<components::catalog::oid_t> oids(&resource);
         oids.emplace_back(kTableOid);
@@ -239,7 +225,6 @@ TEST_CASE("services::index::manager::a catchup record the registry cannot place 
         REQUIRE(commit.contains_error());
     }
 
-    // The abort mirror clears the recorded refusal: a NEW transaction is not haunted.
     {
         auto revert = manager->revert_insert(ctx_for(session, build_txn), kTableOid);
         REQUIRE(revert.is_ready());
@@ -254,17 +239,9 @@ TEST_CASE("services::index::manager::a catchup record the registry cannot place 
     std::filesystem::remove_all(path);
 }
 
-// apply_wal_record_for_index takes an indexrelid, but used to look up only the TABLE and stage
-// into EVERY index registered for it, using index_oid solely in its log lines. Two consequences:
-//
-//   * a build fed the table's other indexes rows they already held -- deduped, not wrong, but a
-//     full extra staging and publication per pre-existing index (measured at the SQL surface by
-//     integration/cpp/test/test_create_index_backfill_addressing.cpp);
-//   * an unregistered indexrelid was indistinguishable from a registered one: its rows went
-//     nowhere while the fan-out staged into the table's other indexes and returned quietly. Now
-//     recorded against the build's transaction and surfaced at its commit_inserts.
-//
-// operator_create_index_backfill_t's main backfill leg depends on this same addressed door too.
+// apply_wal_record_for_index used to key off the table only: an unregistered indexrelid looked just like a real
+// one, and a build re-staged the table's other indexes (measured at the SQL surface by
+// integration/cpp/test/test_create_index_backfill_addressing.cpp).
 TEST_CASE("services::index::manager::a staging record naming an unregistered index fails the build's commit") {
     auto resource = core::pmr::otterbrix_resource();
     auto log = initialization_logger("python", "/tmp/docker_logs/");
@@ -273,9 +250,6 @@ TEST_CASE("services::index::manager::a staging record naming an unregistered ind
     auto scheduler = std::make_unique<actor_zeta::shared_work>(1, 100);
     auto manager = actor_zeta::spawn<manager_index_t>(&resource, scheduler.get(), log, path, 1000, 100, 1000);
 
-    // The table IS registered and DOES carry an index -- so the previous case's gate (no
-    // registry entry for the table) cannot be what answers here. The record below names a
-    // DIFFERENT index.
     manager->bootstrap_engine_sync(kTableOid);
     REQUIRE_FALSE(manager
                       ->bootstrap_index_sync(kTableOid,
@@ -293,7 +267,7 @@ TEST_CASE("services::index::manager::a staging record naming an unregistered ind
         auto fut = manager->apply_wal_record_for_index(
             session,
             kTableOid,
-            kIndexOid + 7, // registered nowhere
+            kIndexOid + 7,
             /*wal_record_id=*/11,
             static_cast<uint8_t>(services::wal::wal_record_type::PHYSICAL_INSERT),
             std::move(row_ids),
@@ -314,8 +288,6 @@ TEST_CASE("services::index::manager::a staging record naming an unregistered ind
         REQUIRE(commit.contains_error());
     }
 
-    // The abort mirror clears it, exactly as it does for the previous case's refusal. This
-    // table DOES carry a live agent, so the revert is a real round trip and has to be pumped.
     {
         auto agents = manager->owned_btree_agents_sync();
         REQUIRE(agents.size() == 1);
@@ -332,10 +304,7 @@ TEST_CASE("services::index::manager::a staging record naming an unregistered ind
     std::filesystem::remove_all(path);
 }
 
-// A catchup staging the agent REFUSES must not be merely logged because the handler's contract
-// return type is void -- the build would publish an index that never took those rows. The
-// refusal is recorded and fails the build's commit, even when the index itself is gone by
-// then.
+// A catchup the agent refuses must be recorded, or the build would publish an index that never took those rows.
 TEST_CASE("services::index::manager::a catchup staging the agent refused fails the build's commit") {
     auto resource = core::pmr::otterbrix_resource();
     auto log = initialization_logger("python", "/tmp/docker_logs/");
@@ -359,15 +328,12 @@ TEST_CASE("services::index::manager::a catchup staging the agent refused fails t
     const auto session = session_id_t::generate_uid();
     const uint64_t build_txn = TRANSACTION_ID_START + 41;
 
-    // The agent is dropped BEHIND the registry -- the shape a DROP INDEX racing the
-    // build's catchup produces: the record still routes, the agent refuses.
     {
         auto [needs_sched, fut] = actor_zeta::otterbrix::send<&index_agent_contract::drop>(agent->address(), session);
         agent->resume(1);
         REQUIRE(fut.is_ready());
     }
 
-    // The catchup leg: the staging is refused by the dropped agent.
     {
         std::pmr::vector<int64_t> row_ids(&resource);
         auto fut = manager->apply_wal_record_for_index(
@@ -384,15 +350,11 @@ TEST_CASE("services::index::manager::a catchup staging the agent refused fails t
         settle(fut, agent);
     }
 
-    // The index leaves the registry the ordinary way; the recorded refusal must survive
-    // it -- it belongs to the TRANSACTION, not to the index.
     {
         auto fut = manager->drop_index(session, kTableOid, kIndexOid);
         settle(fut, agent);
     }
 
-    // The build publishes into a registry with no record left. Without the recorded refusal
-    // that is a silent no_error, and the staged rows the agent refused are simply gone.
     {
         std::pmr::vector<components::catalog::oid_t> oids(&resource);
         oids.emplace_back(kTableOid);
@@ -407,10 +369,7 @@ TEST_CASE("services::index::manager::a catchup staging the agent refused fails t
     std::filesystem::remove_all(path);
 }
 
-// A deferred index erase the agent refuses must not leave the queue anyway: erasing the entry
-// BEFORE the await means the erase is never retried, and the index keeps naming deleted rows
-// until a repopulate happens to rebuild it. State leaves the queue only AFTER the erase
-// succeeded; a refusal re-queues the entry for the next horizon.
+// An entry must leave the deferred-erase queue only after the erase succeeds, or a refused erase is never retried.
 TEST_CASE("services::index::manager::a refused deferred erase is re-queued, not forgotten") {
     auto resource = core::pmr::otterbrix_resource();
     auto log = initialization_logger("python", "/tmp/docker_logs/");
@@ -436,7 +395,6 @@ TEST_CASE("services::index::manager::a refused deferred erase is re-queued, not 
     const uint64_t delete_txn = TRANSACTION_ID_START + 52;
     const uint64_t reader_txn = TRANSACTION_ID_START + 53;
 
-    // Three committed rows, flushed -- this also creates the tree's metadata file.
     {
         auto fut = manager->insert_rows(ctx_for(session, insert_txn),
                                         kTableOid,
@@ -454,7 +412,6 @@ TEST_CASE("services::index::manager::a refused deferred erase is re-queued, not 
         REQUIRE_FALSE(std::move(fut).take_ready().contains_error());
     }
 
-    // One committed delete, held back for the horizon.
     {
         std::pmr::vector<int64_t> row_ids(&resource);
         row_ids.push_back(1);
@@ -486,11 +443,8 @@ TEST_CASE("services::index::manager::a refused deferred erase is re-queued, not 
         settle(sweep, agent);
     }
     INFO("an erase the agent refused must still be OWED: the entry stays queued for the next horizon");
-    // What this catches: the entry leaving the queue before the refusal arrives, so the meter
-    // drops back and nothing ever retries the erase.
     REQUIRE(services::index::index_deferred_deletes() == queued_before + 1);
 
-    // The device heals; the next horizon publishes what is owed.
     std::filesystem::permissions(metadata_path,
                                  std::filesystem::perms::owner_read | std::filesystem::perms::owner_write);
     {
@@ -499,7 +453,6 @@ TEST_CASE("services::index::manager::a refused deferred erase is re-queued, not 
     }
     REQUIRE(services::index::index_deferred_deletes() == queued_before);
 
-    // And the erase LANDED: the index no longer names the deleted row.
     {
         auto answer = ask<&index_agent_contract::read_rows>(agent,
                                                             session,

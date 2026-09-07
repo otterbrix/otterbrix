@@ -2,7 +2,7 @@
 
 #include <components/catalog/ddl_metadata_builder.hpp>
 #include <components/context/context.hpp>
-#include <components/table/column_state.hpp> // complete table_filter_t for the gate cursor open
+#include <components/table/column_state.hpp>
 #include <services/disk/manager_disk.hpp>
 #include <services/index/manager_index.hpp>
 #include <services/wal/record.hpp>
@@ -14,9 +14,6 @@
 
 namespace components::operators {
 
-    // DEV_MODE test counter: batches consumed by the RAW backfill read (proves it streams in bounded
-    // batches instead of loading the table whole). Process-global + relaxed — coarse instrumentation,
-    // not a sync primitive.
 #ifdef DEV_MODE
     namespace {
         std::atomic<uint64_t> g_create_index_backfill_batches{0};
@@ -42,9 +39,6 @@ namespace components::operators {
         , indkey_(std::move(indkey)) {}
 
     actor_zeta::unique_future<void> operator_create_index_backfill_t::await_async_and_resume(pipeline::context_t* ctx) {
-        // Refuses instead of the old mark_executed()+silent-success: an unwired index actor means a mis-wired
-        // engine (every production topology spawns manager_index_t unconditionally), not a legitimate no-op mode.
-        // Pinned by test_wave_exec_dispatcher's create_index_refuses_without_an_index_manager.
         if (ctx->index_address == actor_zeta::address_t::empty_address()) {
             set_error(core::error_t{core::error_code_t::index_create_fail,
                                     std::pmr::string{"CREATE INDEX: no index manager is wired to this executor; "
@@ -53,19 +47,12 @@ namespace components::operators {
             co_return;
         }
 
-        // Ensure the engine knows about the collection, then create the
-        // index entry. register_collection is idempotent.
         auto [_rc, rcf] = actor_zeta::otterbrix::send(ctx->index_address,
                                                       &services::index::manager_index_t::register_collection,
                                                       ctx->session,
                                                       table_oid_);
         co_await std::move(rcf);
 
-        // The table's compact epoch, read STRICTLY BEFORE the RAW backfill read below stamps the
-        // new index (same before-the-scan rule as the checkpoint rebuild driver): a compact
-        // interleaving capture and read can only leave the stamp too LOW — reads refuse until
-        // the next rebuild re-stamps — never fresh over stale ids. 0 when no disk is wired
-        // (then there is no backfill read and no storage_fetch to enforce anything).
         uint64_t built_compact_epoch = 0;
         if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
             auto [_ce, cef] = actor_zeta::otterbrix::send(ctx->disk_address,
@@ -80,10 +67,7 @@ namespace components::operators {
             built_compact_epoch = epoch_r.value();
         }
 
-        // REGISTRATION IS THE MIRROR BOUNDARY. From the moment this message is processed, every
-        // DML statement's post-append reconciliation with manager_index sees the building index
-        // and stages its rows; every append that predates it lies inside the RAW read below
-        // (whose coverage bound is captured strictly after). Between the two there is no window.
+        // Registration is the mirror boundary: appends after it are staged, appends before lie in the RAW read.
         auto [_ix, ixf] = actor_zeta::otterbrix::send(ctx->index_address,
                                                       &services::index::manager_index_t::create_index,
                                                       ctx->session,
@@ -93,28 +77,18 @@ namespace components::operators {
                                                       index_type_,
                                                       ctx->execution_context.timezone_offset,
                                                       built_compact_epoch);
-        // create_index answers with a core::error_t only; the index's identity below the planner is
-        // index_oid_, already known here.
         auto create_error = co_await std::move(ixf);
 
         if (create_error.contains_error()) {
-            // Report the reason the manager gave: flattening every failure to
-            // "index already exists" is right for one cause and wrong for the rest,
-            // including a disk index whose storage failed to open.
             set_error(create_error);
             co_return;
         }
 
-        // CREATE back-channel (table oid + indexrelid): COMMIT publishes it, a same-txn ABORT drops it via
-        // drained created_index. Gated on non-zero txn id — autocommit/bootstrap txn 0 commits inline.
         if (ctx->txn.transaction_id != 0) {
             ctx->created_indexes.push_back(components::table::created_index_t{table_oid_, index_oid_});
         }
 
-        // Every failure from here on must take the engine back out of the registry: the planner consults the
-        // registry (not pg_index.indisvalid), so a half-built engine left registered ANSWERS QUERIES, and the
-        // executor's undo_create_index only covers failures after this operator succeeds. frame_resource must
-        // stay a real parameter — an argless coroutine lambda aborts at runtime with no allocator to extract.
+        // Registry-based; failures here must abandon_build. frame_resource must stay real (argless lambda aborts).
         auto abandon_build = [this, ctx]([[maybe_unused]] std::pmr::memory_resource* frame_resource)
             -> actor_zeta::unique_future<void> {
             auto [_d, df] = actor_zeta::otterbrix::send(ctx->index_address,
@@ -126,18 +100,11 @@ namespace components::operators {
             co_return;
         };
 
-        // backfill — RAW read of EVERY physical row present when the coverage bound is captured:
-        // deleted rows (a reader with an older snapshot still owns them) and other transactions'
-        // uncommitted rows (their commit needs them findable) included. Visibility is the TABLE's
-        // job at read time; the index only has to be a superset of what any snapshot can see.
-        // Rows appended after the bound arrive through the DML mirror/reconciliation, which is in
-        // force from the registration above. Journal replay is gone with it: the journal cannot
-        // name a row this read plus the mirror do not already carry.
+        // RAW read of every physical row at the coverage bound, deleted/uncommitted rows included —
+        // the index only needs a superset. Rows after the bound arrive via the DML mirror; no journal replay.
         if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
-            // Compact gate: a live fetch-next cursor defers the owning agent's compact for this
-            // table (has_active_scan_for_oid), and compact renumbers the physical row ids the
-            // entries below are stamped with. Opened once and HELD (never advanced) across the
-            // whole read, closed on every exit.
+            // Compact gate: a live cursor defers the owning agent's compact for this table (compact
+            // renumbers ids stamped below); held, never advanced, across the whole read.
             uint64_t gate_cursor_id = 0;
             {
                 auto [_g, gf] =
@@ -145,10 +112,10 @@ namespace components::operators {
                                                 &services::disk::manager_disk_t::storage_fetch_next_batch,
                                                 ctx->session,
                                                 table_oid_,
-                                                uint64_t{0}, // OPEN
+                                                uint64_t{0},
                                                 std::unique_ptr<components::table::table_filter_t>(nullptr),
                                                 int64_t{-1},
-                                                std::vector<size_t>{0}, // one column: the open is a pin, not a read
+                                                std::vector<size_t>{0},
                                                 ctx->txn);
                 auto gate_r = co_await std::move(gf);
                 if (gate_r.has_error()) {
@@ -171,9 +138,6 @@ namespace components::operators {
                 co_return;
             };
 
-            // The coverage bound: every physical row id below it is read RAW here; every row id at
-            // or above it is appended by a statement whose reconciliation runs after the
-            // registration above and therefore mirrors.
             uint64_t total_rows = 0;
             {
                 auto [_t, tf] = actor_zeta::otterbrix::send(ctx->disk_address,
@@ -206,12 +170,10 @@ namespace components::operators {
                                                               table_oid_,
                                                               std::move(fetch_ids),
                                                               count,
-                                                              std::vector<size_t>{}, // all columns
+                                                              std::vector<size_t>{},
                                                               components::table::transaction_data{},
                                                               components::table::fetch_visibility_t::RAW,
                                                               /*limit=*/int64_t{-1},
-                                                              // Positions minted in-loop under the held pin
-                                                              // cursor above, not an index answer.
                                                               services::disk::k_fetch_epoch_unchecked);
                 auto fetch_result = co_await std::move(fbf);
                 if (fetch_result.has_error()) {
@@ -223,13 +185,7 @@ namespace components::operators {
                 g_create_index_backfill_batches.fetch_add(1, std::memory_order_relaxed);
 #endif
 
-                // Feed apply_wal_record_for_index one maximal contiguous run at a time, based at the
-                // run's TRUE physical id from the reply's own row_ids (a RAW fetch answers every
-                // requested row, but the pairing stays by id, never by position). Index-addressed on
-                // purpose: insert_rows(table_oid) would fan out to every index of the table and
-                // re-stage rows pre-existing indexes already hold (test_create_index_backfill_
-                // addressing). The await's contract returns void; staging errors surface through
-                // commit_inserts refusing the build's transaction.
+                // Fed one run at a time by TRUE physical id; index-addressed so pre-existing indexes aren't re-staged.
                 for (auto& batch_chunk : fetch_result.value()) {
                     const uint64_t sz = batch_chunk.size();
                     if (sz == 0) {
@@ -251,11 +207,11 @@ namespace components::operators {
                             ctx->session,
                             table_oid_,
                             index_oid_,
-                            services::wal::id_t{0}, // no journal record: this run came from the RAW read
+                            services::wal::id_t{0},
                             static_cast<uint8_t>(services::wal::wal_record_type::PHYSICAL_INSERT),
                             std::pmr::vector<int64_t>(resource_),
                             std::move(idx_chunks),
-                            static_cast<uint64_t>(row_ids[run_start]), // run's TRUE physical base id
+                            static_cast<uint64_t>(row_ids[run_start]),
                             ctx->txn.transaction_id,
                             ctx->execution_context.timezone_offset);
                         co_await std::move(irf);
@@ -267,22 +223,15 @@ namespace components::operators {
             co_await close_gate(resource_);
 
             if (!scan_ok) {
-                // The read failed: the index was never published and no snapshot saw it. Take the
-                // engine back out so the planner stops seeing it.
                 set_error(std::move(scan_error));
                 mark_failed();
                 co_await abandon_build(resource_);
                 co_return;
             }
 
-            // No dml_append_range_t is recorded here: naming the read rows as "appended" would make a failed
-            // CREATE INDEX UN-APPEND those real table rows via storage_revert_appends (observed: a refused
-            // build over a 40-row table left it answering with 0 rows). The index publishes via the commit_id
-            // back-channel instead; failure exits drop the engine via abandon_build.
+            // No dml_append_range_t: failure would UN-APPEND real rows (observed left a 40-row table at 0).
         }
 
-        // Flip pg_index.indisvalid -> true by replacing the indisvalid=false row
-        // the metadata operator wrote, now that the engine is populated.
         if (ctx->disk_address != actor_zeta::address_t::empty_address() &&
             index_oid_ != components::catalog::INVALID_OID) {
             constexpr components::catalog::oid_t pg_idx_oid = components::catalog::well_known_oid::pg_index_table;
@@ -312,8 +261,6 @@ namespace components::operators {
                                                         std::move(valid_row));
             auto rng_r = co_await std::move(wf);
             if (rng_r.has_error()) {
-                // This row flips indisvalid; if refused, the engine stays registered (the planner
-                // reads the registry, not the row) until abandon_build removes it.
                 set_error(rng_r.error());
                 mark_failed();
                 co_await abandon_build(resource_);

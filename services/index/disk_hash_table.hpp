@@ -42,7 +42,7 @@ namespace services::index {
             bool key_truncated{false};
         };
 
-        // Production code MUST use this, not the direct ctor below, which aborts on the same
+        // Production code must use this, not the direct ctor below, which aborts on the same
         // open failures instead of returning them.
         [[nodiscard]] static core::result_wrapper_t<std::unique_ptr<disk_hash_table_t>>
         create(const std::filesystem::path& file_path,
@@ -61,9 +61,8 @@ namespace services::index {
         [[nodiscard]] core::error_t
         put(std::string_view key, int64_t value, uint32_t log_file_id, uint64_t log_offset);
 
-        // A page chain walk that cannot finish refuses instead of returning a partial row set --
-        // a `break` on read_page failure would make "three rows" indistinguishable from "disk
-        // wouldn't let me finish counting".
+        // A page chain walk that cannot finish refuses rather than returning a partial row set —
+        // a silent `break` would make "three rows" indistinguishable from a read failure mid-count.
         template<hash_key_loader loader_t>
         [[nodiscard]] core::result_wrapper_t<std::vector<value_ref_t>>
         get_all(std::string_view key, const loader_t& load_full_key) const {
@@ -148,7 +147,7 @@ namespace services::index {
                         }
                         const auto entry = decode_entry(page, slot);
                         if (!entry.valid) {
-                            continue; // corrupt slot: skip it rather than read past the page
+                            continue;
                         }
                         cb(value_ref_t{entry.value,
                                        entry.log_file_id,
@@ -171,11 +170,10 @@ namespace services::index {
         // A refused fsync must reach bitcask_index_disk_t::sync_if_dirty, whose force_flush
         // result gates the checkpoint that trims the WAL.
         [[nodiscard]] core::error_t sync();
-        // Wipes and re-creates an empty table of the same width and hash seed, keeping object
-        // identity so the owning store can reuse it instead of reopening the file. Called from
-        // the open path (bitcask_index_disk_t::load_from_disk), so failure is reported rather
-        // than aborting -- it costs the index its registration, not the whole engine. Needs `w`
-        // on the directory holding both files, for the unlinks.
+        // Re-creates an empty table with the same width and hash seed (object identity is kept so
+        // the owning store can reuse it instead of reopening the file). Called from the open path
+        // (bitcask_index_disk_t::load_from_disk), so failure is reported rather than aborting --
+        // it costs the index its registration, not the whole engine.
         [[nodiscard]] core::error_t reset_storage();
         void close_storage();
 
@@ -188,9 +186,8 @@ namespace services::index {
         };
 
         struct decoded_entry_t {
-            // False on a corrupt page; callers skip rather than throw -- an exception here would
-            // unwind into an actor coroutine whose unhandled_exception() is empty, hanging instead
-            // of failing.
+            // False on a corrupt page; callers skip rather than throw — throwing here would unwind
+            // into an actor coroutine with an empty unhandled_exception(), hanging instead of failing.
             bool valid{false};
             uint16_t stored_key_len{0};
             uint32_t full_key_len{0};
@@ -236,7 +233,7 @@ namespace services::index {
         [[nodiscard]] core::error_t initialize_new_file();
         [[nodiscard]] core::error_t load_existing_file();
         [[nodiscard]] core::error_t open_overflow_file();
-        // FALSE means at least one of the two backing files did not reach the device.
+        // False means at least one of the two backing files did not reach the device.
         [[nodiscard]] bool sync_files();
 
         static bool is_overflow_page_id(uint64_t page_id);
@@ -307,11 +304,10 @@ namespace services::index {
             return false;
         }
 
-        // Three-way result rather than a `bool& erased` out-param: only two of its four
-        // combinations would be reachable. A refusal only guarantees THIS page's buffer is
-        // untouched -- if erase_all_refs_for_key's loop already committed earlier passes, that
-        // partial removal is left in place and fixed by the next open's keydir rebuild, not
-        // rolled back here.
+        // Three-way result, not a `bool& erased` out-param: only two of its four combinations
+        // would be reachable. A refusal only guarantees this page's buffer is untouched; a partial
+        // removal already committed by erase_all_refs_for_key's earlier passes is fixed by the
+        // next open's keydir rebuild, not rolled back here.
         template<hash_key_loader loader_t>
         [[nodiscard]] core::result_wrapper_t<bool> try_erase_in_page(byte_buffer_t& page,
                                                                      std::string_view key,
@@ -326,7 +322,7 @@ namespace services::index {
                 }
                 const auto entry = decode_entry(page, slot);
                 if (!entry.valid) {
-                    continue; // corrupt slot: skip it rather than read past the page
+                    continue;
                 }
                 VALUE_OR_RETURN(const bool matched, keys_equal(key, entry, load_full_key));
                 if (!matched) {

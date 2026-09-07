@@ -31,7 +31,6 @@ namespace components::planner::optimizer {
         using namespace components::expressions;
         using namespace components::logical_plan;
 
-        // db identity of a node: match_t/aggregate_t carry a table name, everything else is empty.
         std::pair<core::dbname_t, core::relname_t> node_cfn(const node_ptr& n) {
             if (!n) {
                 return {core::dbname_t{}, core::relname_t{}};
@@ -144,7 +143,7 @@ namespace components::planner::optimizer {
             unclassified
         };
 
-        // Primary path handles a bare column name that also exists on the OTHER side (e.g. t1.id vs t2.id).
+        // Primary path handles a bare column name that also exists on the other side (e.g. t1.id vs t2.id).
         conj_side classify_conjunct(const expression_ptr& conj,
                                     size_t left_width,
                                     bool left_width_known,
@@ -189,7 +188,7 @@ namespace components::planner::optimizer {
         }
 
         // Subtracts left_width from the leading path element only (deeper elements are nested struct
-        // fields). Build the new path on k.resource(): set_path move-assigns and keeps the TARGET's allocator.
+        // fields). Build the new path on k.resource(): set_path move-assigns and keeps the target's allocator.
         void relocalize_key_path(key_t& k, size_t left_width) {
             const auto& old_path = k.path();
             if (old_path.empty()) {
@@ -263,7 +262,7 @@ namespace components::planner::optimizer {
             return true;
         }
 
-        // Predicate evaluation reads columns by PATH INDEX against the base scan chunk, so a push is sound
+        // Predicate evaluation reads columns by path index against the base scan chunk, so a push is sound
         // only when a column's body-output ordinal equals its base index (`SELECT a,b FROM t(a,b,c)`).
         bool select_prefix_identity_for(const node_select_t& sel, const std::set<std::string>& cols) {
             const auto& exprs = sel.expressions();
@@ -281,7 +280,7 @@ namespace components::planner::optimizer {
                     }
                     auto probe = probe_identity_output(static_cast<const scalar_expression_t*>(e.get()), col);
                     if (!probe.name_match) {
-                        continue; // output at position p is not this column
+                        continue;
                     }
                     // The first name match decides, and is identity only if its stamped path equals p.
                     if (probe.source != nullptr && probe.source->path().size() == 1 && probe.source->path()[0] == p) {
@@ -332,7 +331,6 @@ namespace components::planner::optimizer {
             return nullptr;
         }
 
-        // nullopt when no data node is in the subtree; otherwise the summed byte width of all columns.
         std::optional<size_t> estimate_row_width(const node_ptr& node) {
             const node_data_t* data = find_data_node(node);
             if (!data) {
@@ -476,7 +474,6 @@ namespace components::planner::optimizer {
             return std::nullopt;
         }
 
-        // Suppresses a duplicate derivation when the partner filter was written explicitly.
         bool conjunct_set_has(const std::pmr::vector<expression_ptr>& conjuncts,
                               size_t merged_idx,
                               compare_type op,
@@ -584,7 +581,7 @@ namespace components::planner::optimizer {
                 }
             }
 
-            // A group_t/sort_t above the join does not block the push: execute_pipeline treats the TOPMOST
+            // A group_t/sort_t above the join does not block the push: execute_pipeline treats the topmost
             // executed operator as the materialized sub-plan boundary (repro: test_batch_execution "join +
             // WHERE with UDF batch predicate", test_column_projection "inner JOIN + GROUP BY with WHERE on
             // non-select column").
@@ -728,7 +725,7 @@ namespace components::planner::optimizer {
                     collect_subtree_columns(join->children()[0], left_cols);
                     collect_subtree_columns(join->children()[1], right_cols);
 
-                    // Must be captured BEFORE the left bucket wraps children()[0] in an unstamped aggregate.
+                    // Must be captured before the left bucket wraps children()[0] in an unstamped aggregate.
                     const bool left_width_known = join->children()[0]->has_output_types();
                     const size_t left_width = left_width_known ? join->children()[0]->output_types().size() : 0;
 
@@ -809,13 +806,12 @@ namespace components::planner::optimizer {
 
             if (source->type() == node_type::union_t) {
                 // Sound for both set-op kinds (UNION ALL duplicates, UNION dedups above the union). Union
-                // columns are POSITIONAL, so a NAME-based match key is pushable only when every branch
+                // columns are positional, so a name-based match key is pushable only when every branch
                 // exposes it at that position; each branch gets its own deep copy (keys relocalize in place).
                 if (source->children().size() >= 2 && !match_child->expressions().empty() &&
                     source->has_output_types()) {
                     const auto& u_types = source->output_types();
 
-                    // nullopt if absent or duplicated (ambiguous).
                     auto union_pos_of = [&](const std::string& name) -> std::optional<size_t> {
                         std::optional<size_t> found;
                         for (size_t i = 0; i < u_types.size(); ++i) {
@@ -927,7 +923,7 @@ namespace components::planner::optimizer {
             return node;
         }
 
-        // Runs BEFORE pushdown_filter_impl: that rule synthesizes join wrappers this pass would otherwise
+        // Runs before pushdown_filter_impl: that rule synthesizes join wrappers this pass would otherwise
         // fuse into their scans, altering the join EXPLAIN shape.
         node_ptr pushdown_cte_filter_impl(std::pmr::memory_resource* resource, node_ptr node) {
             if (!node) {
@@ -991,7 +987,7 @@ namespace components::planner::optimizer {
             }
 
             auto* sel = body_select ? static_cast<node_select_t*>(body_select.get()) : nullptr;
-            // With no projection the body output IS the base scan, so every column is prefix-identity.
+            // With no projection the body output is the base scan, so every column is prefix-identity.
             std::set<std::string> base_cols;
             if (!sel && source->has_output_types()) {
                 for (const auto& t : source->output_types()) {
@@ -1019,7 +1015,7 @@ namespace components::planner::optimizer {
             auto [m_db, m_rel] = node_cfn(source);
             auto pushed_expr = rebuild_conjunction(resource, pushable);
             if (body_match) {
-                // create_plan_aggregate builds ONE match_op, so merge rather than add a second match child.
+                // create_plan_aggregate builds one match_op, so merge rather than add a second match child.
                 auto existing = split_conjuncts(resource, body_match->expressions()[0]);
                 existing.push_back(pushed_expr);
                 body_match->expressions()[0] = rebuild_conjunction(resource, existing);
@@ -1039,7 +1035,6 @@ namespace components::planner::optimizer {
                         break;
                     }
                 }
-                // See aggregate_is_passthrough for what a collapse here would drop.
                 if (node->children().size() == 1 && aggregate_is_passthrough(*agg)) {
                     return source;
                 }

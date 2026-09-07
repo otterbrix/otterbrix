@@ -103,23 +103,15 @@ TEST_CASE("core::file::filesystem") {
         auto fname = testing_directory;
         fname /= "test_file";
 
-        // standard reading/writing test
-
-        // open file for writing
         handle = open_file(fs, fname, file_flags::WRITE | file_flags::FILE_CREATE, file_lock_type::NO_LOCK);
-        // write 10 integers
         handle->write(test_data, sizeof(int64_t) * size, 0);
-        // close the file
         handle.reset();
 
         for (size_t i = 0; i < size; i++) {
             test_data[i] = 0;
         }
-        // now open the file for reading
         handle = open_file(fs, fname, file_flags::READ, file_lock_type::NO_LOCK);
-        // read the 10 integers back
         handle->read(test_data, sizeof(int64_t) * size, 0);
-        // check the values of the integers
         for (int i = 0; i < 10; i++) {
             REQUIRE(test_data[i] == i);
         }
@@ -138,23 +130,17 @@ TEST_CASE("core::file::filesystem") {
         auto fname = testing_directory;
         fname /= "test_file";
 
-        // standard reading/writing test
-
-        // open file for writing
         handle = open_file(fs,
                            fname,
                            file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
                            file_lock_type::NO_LOCK);
-        // write 10 integers
         handle->write(test_data, sizeof(int64_t) * size, 0);
         handle->sync();
 
         for (size_t i = 0; i < size; i++) {
             test_data[i] = 0;
         }
-        // read the 10 integers back
         handle->read(test_data, sizeof(int64_t) * size, 0);
-        // check the values of the integers
         for (int i = 0; i < 10; i++) {
             REQUIRE(test_data[i] == i);
         }
@@ -183,14 +169,13 @@ TEST_CASE("core::file::filesystem") {
         }
     }
 }
-// RLIMIT_FSIZE stages a real short-count-then-refuse write with no mock: the kernel writes up
-// to the limit (EFBIG), the same shape as a full volume but reproducible, unlike ENOSPC.
-// SIGXFSZ must be ignored or the refusal kills the test binary instead of being reported.
-//
-// Both the limit and the signal disposition are PROCESS-WIDE, so the guard restores them
-// before the case returns; safe only because this binary is single-threaded and touches no
-// other file while armed. The zero-ceiling case below uses a read-only fd instead, since an
-// RLIMIT_FSIZE of 0 would ban writes process-wide.
+// RLIMIT_FSIZE stages a real short-count-then-refuse write with no mock: the kernel writes up to the
+// limit (EFBIG), the same shape as a full volume but reproducible, unlike ENOSPC. SIGXFSZ must be
+// ignored or the refusal kills the test binary instead of being reported.
+// The limit and signal disposition are process-wide, so the guard restores them before the case
+// returns; safe only because this binary is single-threaded and touches no other file while armed.
+// The zero-ceiling case below uses a read-only fd instead, since an RLIMIT_FSIZE of 0 would ban
+// writes process-wide.
 namespace {
     struct fsize_limit_guard_t {
         struct rlimit previous {};
@@ -231,7 +216,7 @@ namespace {
 // Guards against a self-recursive forwarder: `return read(fs, ...)` inside
 // `read(file_system<FSC>&, ...)` calls itself (fs is the wrapper, so overload resolution picks
 // it again), compiles clean since templates are only diagnosed on instantiation, and blows the
-// stack on first real use. Exercises open/write/size/seek/read/unlink through the wrapper.
+// stack on first real use.
 TEST_CASE("core::file::filesystem::the_wrapper_forwards_to_its_backend") {
     file_system<local_file_system_t> fs{local_file_system_t()};
     std::error_code ec;
@@ -331,8 +316,8 @@ TEST_CASE("core::file::filesystem::sequential_write_separates_empty_from_refused
     REQUIRE(empty.bytes_written == 0);
     REQUIRE_FALSE(empty.partial());
 
-    // Staged on a read-only handle, not RLIMIT_FSIZE=0: a zero ceiling would be a process-wide
-    // write ban, reaching the suite's own logging; a read-only fd reaches only this descriptor.
+    // A read-only fd reaches only this descriptor; RLIMIT_FSIZE=0 would ban writes process-wide,
+    // including the suite's own logging.
     char payload[8];
     std::fill(std::begin(payload), std::end(payload), 'B');
     auto read_only = open_file(fs, fname, file_flags::READ, file_lock_type::NO_LOCK);
@@ -349,10 +334,7 @@ TEST_CASE("core::file::filesystem::sequential_write_separates_empty_from_refused
     remove_file(fs, fname);
 }
 
-// close() used to be `virtual void`, so a refused ::close(2) (a deferred write-back EIO) was
-// unreportable; it now returns core::error_t.
-//
-// Refusal is staged by finding the handle's fd by IDENTITY (fstat every open fd, match
+// Refusal is staged by finding the handle's fd by identity (fstat every open fd, match
 // st_dev/st_ino -- unique since nothing else has this path open) and closing it out from
 // under the handle, so the handle's own close() answers EBADF.
 static int descriptor_of(const path_t& path) {

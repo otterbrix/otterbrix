@@ -104,15 +104,16 @@ namespace components::compute {
         dispatch_exact(std::pmr::memory_resource* resource,
                        const std::pmr::vector<types::complex_logical_type>& types) const;
 
-        // BY REFERENCE: the by-value parameter this replaced was copy-constructed from the
-        // caller's lvalue, and std::pmr::vector copy does NOT inherit the source's allocator
+        // By reference: the by-value parameter this replaced was copy-constructed from the
+        // caller's lvalue, and std::pmr::vector copy does not inherit the source's allocator
         // (select_on_container_copy_construction returns the default resource) -- a stray
         // allocation on the process-global resource, for an argument the body never reads.
         virtual core::result_wrapper_t<std::unique_ptr<detail::kernel_executor_t>>
         get_best_executor(std::pmr::memory_resource* resource,
                           const std::pmr::vector<types::complex_logical_type>& types) const;
 
-        // When state of kernel has to be accessible. `ctx` is mandatory, as above.
+        // Use this over execute() when kernel state must stay accessible across calls; `ctx` is
+        // mandatory, as above.
         [[nodiscard]] core::result_wrapper_t<std::unique_ptr<function_executor>>
         make_executor(std::pmr::memory_resource* resource,
                       std::pmr::vector<types::complex_logical_type> in_types,
@@ -121,10 +122,9 @@ namespace components::compute {
 
         [[nodiscard]] virtual std::vector<kernel_signature_t> get_signatures() const;
 
-        // Whether partial results of this function can be combined by a fragment-
-        // merge kernel (SUM/COUNT/MIN/MAX/AVG). Resolved as a capability here rather
-        // than by a hardcoded name list; vector/expand functions inherit the false
-        // default, only algebraically-mergeable aggregates override it.
+        // Resolved as a capability (SUM/COUNT/MIN/MAX/AVG can combine partial results via a
+        // fragment-merge kernel) rather than a hardcoded name list; vector/expand functions inherit
+        // the false default, only algebraically-mergeable aggregates override it.
         [[nodiscard]] virtual bool is_mergeable() const { return false; }
 
         [[nodiscard]] virtual std::unique_ptr<function> get_copy(std::pmr::memory_resource* resource) const = 0;
@@ -142,7 +142,6 @@ namespace components::compute {
     using function_uid = size_t;
     constexpr inline size_t invalid_function_uid = std::numeric_limits<size_t>::max();
     namespace detail {
-        // function_impl is responsive for lifetime of function & all of its kernels
         template<typename KernelType>
         class function_impl : public function {
         public:
@@ -267,29 +266,26 @@ namespace components::compute {
         [[nodiscard]] std::unique_ptr<function> get_copy(std::pmr::memory_resource* resource) const override;
     };
 
-    // WARNING: function_registry_t does NOT provide thread-safety guarantees, use mutex
+    // WARNING: function_registry_t does not provide thread-safety guarantees, use mutex
     class function_registry_t {
     public:
         explicit function_registry_t(std::pmr::memory_resource* resource);
 
         static function_registry_t* get_default();
 
-        // Replace the process-global default registry with a fresh one holding
-        // only the builtin functions. Used by tests to isolate the global UDF
-        // registry between independent instances (a UDF registered by one test
-        // otherwise leaks into get_default() and corrupts the next). NOT
-        // thread-safe — call only when no queries are in flight.
+        // Replace the process-global default registry with a fresh one holding only the builtin
+        // functions, so a UDF registered by one test cannot leak into get_default() and corrupt the
+        // next. Not thread-safe -- call only when no queries are in flight.
         static void reset_default();
 
         [[nodiscard]] core::result_wrapper_t<function_uid> add_function(function_ptr function);
-        // Insert with a caller-supplied UID. Used when the canonical UID was
-        // chosen by another registry (e.g. the global default) and per-executor
-        // LOCAL registries must agree so validate/predicate lookups are
-        // cross-registry stable.
+        // Used when the canonical UID was chosen by another registry (e.g. the global default) and
+        // per-executor local registries must agree, so validate/predicate lookups stay cross-registry
+        // stable.
         [[nodiscard]] core::result_wrapper_t<function_uid> add_function_with_uid(function_uid uid,
                                                                                  function_ptr function);
         // Registration order must match the function's DEFAULT_FUNCTIONS row exactly: a
-        // missed/misordered add would otherwise SHIFT the uid table and serve the WRONG
+        // missed/misordered add would otherwise shift the uid table and serve the wrong
         // function silently. Any mismatch poisons the whole registry instead (poison_builtins_).
         void add_builtin(function_ptr function);
         // no_error() when builtin registration succeeded (or has not run).
@@ -340,10 +336,10 @@ namespace components::compute {
         std::pair<std::string, function_uid>{"cbrt", 13},
         std::pair<std::string, function_uid>{"factorial", 14}};
 
-    // Every insert goes through add_builtin, which pins uids to DEFAULT_FUNCTIONS and
-    // poisons the registry on mismatch; check builtin_registration_error() for the outcome.
+    // Goes through add_builtin, which pins uids to DEFAULT_FUNCTIONS and poisons the registry on
+    // mismatch; check builtin_registration_error() for the outcome.
     void register_default_functions(function_registry_t& registry);
-    // ORDERED STAGES of register_default_functions -- never call standalone: on a fresh
+    // Ordered stages of register_default_functions -- never call standalone: on a fresh
     // registry a stage's functions would land below their DEFAULT_FUNCTIONS uids and
     // add_builtin would poison the registry.
     void register_string_functions(function_registry_t& registry);

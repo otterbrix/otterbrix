@@ -30,8 +30,8 @@ TEST_CASE("components::table::column") {
             , array(std::move(array)) {}
     };
 
-    // column_segments are supposed to be maxed at DEFAULT_VECTOR_CAPACITY
-    // higher amount is not guarantied to behave correctly
+    // column_segments are supposed to be maxed at DEFAULT_VECTOR_CAPACITY; a higher amount is not guaranteed
+    // to behave correctly.
     constexpr size_t test_size = DEFAULT_VECTOR_CAPACITY;
     constexpr size_t array_size = 128;
     constexpr size_t max_list_size = 128;
@@ -74,7 +74,6 @@ TEST_CASE("components::table::column") {
         auto block_manager = storage::single_file_block_manager_t(buffer_manager, fs, db_path);
         REQUIRE_FALSE(block_manager.create_new_database().has_error());
         auto column = column_data_t::create_column(&resource, block_manager, 0, 0, logical_type::UBIGINT);
-        // Append
         {
             vector_t v(&resource, logical_type::UBIGINT, test_size);
             for (size_t i = 0; i < test_size; i++) {
@@ -85,7 +84,6 @@ TEST_CASE("components::table::column") {
             REQUIRE_FALSE(column->initialize_append(state).has_error());
             REQUIRE_FALSE(column->append(state, v, test_size).has_error());
         }
-        // Fetch
         {
             vector_t v(&resource, logical_type::UBIGINT, test_size);
             column_fetch_state state;
@@ -98,7 +96,6 @@ TEST_CASE("components::table::column") {
                 REQUIRE(value.value<uint64_t>() == i);
             }
         }
-        // Scan
         {
             vector_t v(&resource, logical_type::UBIGINT, test_size);
             column_scan_state state;
@@ -111,7 +108,6 @@ TEST_CASE("components::table::column") {
                 REQUIRE(value.value<uint64_t>() == i);
             }
         }
-        // Update
         {
             std::vector<int64_t> ids;
             ids.reserve(update_size);
@@ -122,7 +118,6 @@ TEST_CASE("components::table::column") {
             auto update_result = column->update(0, v, ids.data(), update_size);
             REQUIRE_FALSE(update_result.has_error());
         }
-        // Scan after update
         {
             vector_t v(&resource, logical_type::UBIGINT, test_size);
             column_scan_state state;
@@ -151,7 +146,6 @@ TEST_CASE("components::table::column") {
         auto block_manager = storage::single_file_block_manager_t(buffer_manager, fs, db_path);
         REQUIRE_FALSE(block_manager.create_new_database().has_error());
         auto column = column_data_t::create_column(&resource, block_manager, 0, 0, logical_type::STRING_LITERAL);
-        // Append
         {
             vector_t v(&resource, logical_type::STRING_LITERAL, test_size);
             for (size_t i = 0; i < test_size; i++) {
@@ -163,7 +157,6 @@ TEST_CASE("components::table::column") {
             REQUIRE_FALSE(column->initialize_append(state).has_error());
             REQUIRE_FALSE(column->append(state, v, test_size).has_error());
         }
-        // Fetch
         {
             vector_t v(&resource, logical_type::STRING_LITERAL, test_size);
             column_fetch_state state;
@@ -177,7 +170,6 @@ TEST_CASE("components::table::column") {
                 REQUIRE(result == generate_string(i));
             }
         }
-        // Scan
         {
             vector_t v(&resource, logical_type::STRING_LITERAL, test_size);
             column_scan_state state;
@@ -191,7 +183,6 @@ TEST_CASE("components::table::column") {
                 REQUIRE(result == generate_string(i));
             }
         }
-        // Update
         {
             std::vector<int64_t> ids;
             ids.reserve(update_size);
@@ -202,7 +193,6 @@ TEST_CASE("components::table::column") {
             auto update_result = column->update(0, v, ids.data(), update_size);
             REQUIRE_FALSE(update_result.has_error());
         }
-        // Scan after update
         {
             vector_t v(&resource, logical_type::STRING_LITERAL, test_size);
             column_scan_state state;
@@ -238,7 +228,6 @@ TEST_CASE("components::table::column") {
                                          0,
                                          0,
                                          complex_logical_type::create_array(logical_type::UBIGINT, array_size));
-        // Append
         {
             vector_t v(&resource, complex_logical_type::create_array(logical_type::UBIGINT, array_size), test_size);
             for (size_t i = 0; i < test_size; i++) {
@@ -254,7 +243,6 @@ TEST_CASE("components::table::column") {
             REQUIRE_FALSE(column->initialize_append(state).has_error());
             REQUIRE_FALSE(column->append(state, v, test_size).has_error());
         }
-        // Fetch
         {
             vector_t v(&resource, complex_logical_type::create_array(logical_type::UBIGINT, array_size), test_size);
             column_fetch_state state;
@@ -270,7 +258,6 @@ TEST_CASE("components::table::column") {
                 }
             }
         }
-        // Scan
         {
             vector_t v(&resource, complex_logical_type::create_array(logical_type::UBIGINT, array_size), test_size);
             column_scan_state state;
@@ -287,7 +274,6 @@ TEST_CASE("components::table::column") {
                 }
             }
         }
-        // Update
         {
             std::vector<int64_t> ids;
             ids.reserve(update_size);
@@ -298,7 +284,6 @@ TEST_CASE("components::table::column") {
             auto update_result = column->update(0, v, ids.data(), update_size);
             REQUIRE_FALSE(update_result.has_error());
         }
-        // Scan after update
         {
             vector_t v(&resource, complex_logical_type::create_array(logical_type::UBIGINT, array_size), test_size);
             column_scan_state state;
@@ -339,7 +324,6 @@ TEST_CASE("components::table::column") {
                                          0,
                                          0,
                                          complex_logical_type::create_array(logical_type::STRING_LITERAL, array_size));
-        // Append
         {
             vector_t v(&resource,
                        complex_logical_type::create_array(logical_type::STRING_LITERAL, array_size),
@@ -362,7 +346,6 @@ TEST_CASE("components::table::column") {
             REQUIRE_FALSE(column->initialize_append(state).has_error());
             REQUIRE_FALSE(column->append(state, v, test_size).has_error());
         }
-        // Fetch
         {
             vector_t v(&resource,
                        complex_logical_type::create_array(logical_type::STRING_LITERAL, array_size),
@@ -381,7 +364,6 @@ TEST_CASE("components::table::column") {
                 }
             }
         }
-        // Scan
         {
             vector_t v(&resource,
                        complex_logical_type::create_array(logical_type::STRING_LITERAL, array_size),
@@ -401,7 +383,6 @@ TEST_CASE("components::table::column") {
                 }
             }
         }
-        // Update
         {
             std::vector<int64_t> ids;
             ids.reserve(update_size);
@@ -412,7 +393,6 @@ TEST_CASE("components::table::column") {
             auto update_result = column->update(0, v, ids.data(), update_size);
             REQUIRE_FALSE(update_result.has_error());
         }
-        // Scan after update
         {
             vector_t v(&resource,
                        complex_logical_type::create_array(logical_type::STRING_LITERAL, array_size),
@@ -456,11 +436,9 @@ TEST_CASE("components::table::column") {
                                                    0,
                                                    0,
                                                    complex_logical_type::create_list(logical_type::UBIGINT));
-        // Append
         {
             vector_t v(&resource, complex_logical_type::create_list(logical_type::UBIGINT), test_size);
             for (size_t i = 0; i < test_size; i++) {
-                // test that each list entry can be a different length
                 std::vector<uint64_t> list;
                 list.reserve(list_length(i));
                 for (size_t j = 0; j < list_length(i); j++) {
@@ -473,7 +451,6 @@ TEST_CASE("components::table::column") {
             REQUIRE_FALSE(column->initialize_append(state).has_error());
             REQUIRE_FALSE(column->append(state, v, test_size).has_error());
         }
-        // Fetch
         {
             vector_t v(&resource, complex_logical_type::create_list(logical_type::UBIGINT), test_size);
             column_fetch_state state;
@@ -489,7 +466,6 @@ TEST_CASE("components::table::column") {
                 }
             }
         }
-        // Scan
         {
             vector_t v(&resource, complex_logical_type::create_list(logical_type::UBIGINT), test_size);
             column_scan_state state;
@@ -506,7 +482,7 @@ TEST_CASE("components::table::column") {
                 }
             }
         }
-        // Update (in place, length-preserving: each row keeps its stored list length)
+        // In place and length-preserving: each row keeps its stored list length.
         {
             std::vector<int64_t> ids;
             ids.reserve(update_size);
@@ -523,7 +499,6 @@ TEST_CASE("components::table::column") {
             auto update_result = column->update(0, v, ids.data(), update_size);
             REQUIRE_FALSE(update_result.has_error());
         }
-        // Scan after update
         {
             vector_t v(&resource, complex_logical_type::create_list(logical_type::UBIGINT), test_size);
             column_scan_state state;
@@ -563,11 +538,9 @@ TEST_CASE("components::table::column") {
                                                    0,
                                                    0,
                                                    complex_logical_type::create_list(logical_type::STRING_LITERAL));
-        // Append
         {
             vector_t v(&resource, complex_logical_type::create_list(logical_type::STRING_LITERAL), test_size);
             for (size_t i = 0; i < test_size; i++) {
-                // test that each list entry can be a different length
                 std::vector<std::string> storage;
                 storage.reserve(list_length(i));
                 for (size_t j = 0; j < list_length(i); j++) {
@@ -585,7 +558,6 @@ TEST_CASE("components::table::column") {
             REQUIRE_FALSE(column->initialize_append(state).has_error());
             REQUIRE_FALSE(column->append(state, v, test_size).has_error());
         }
-        // Fetch
         {
             vector_t v(&resource, complex_logical_type::create_list(logical_type::STRING_LITERAL), test_size);
             column_fetch_state state;
@@ -602,7 +574,6 @@ TEST_CASE("components::table::column") {
                 }
             }
         }
-        // Scan
         {
             vector_t v(&resource, complex_logical_type::create_list(logical_type::STRING_LITERAL), test_size);
             column_scan_state state;
@@ -620,9 +591,9 @@ TEST_CASE("components::table::column") {
                 }
             }
         }
-        // Update (in place, length-preserving: each row keeps its stored list length).
-        // String elements exercise the variable-width child path: the new strings live
-        // in the child column's update heap, the same buffer that backs a plain string.
+        // In place and length-preserving: each row keeps its stored list length. String elements exercise
+        // the variable-width child path: the new strings live in the child column's update heap, the same
+        // buffer that backs a plain string.
         {
             std::vector<int64_t> ids;
             ids.reserve(update_size);
@@ -644,7 +615,6 @@ TEST_CASE("components::table::column") {
             auto update_result = column->update(0, v, ids.data(), update_size);
             REQUIRE_FALSE(update_result.has_error());
         }
-        // Scan after update
         {
             vector_t v(&resource, complex_logical_type::create_list(logical_type::STRING_LITERAL), test_size);
             column_scan_state state;
@@ -695,7 +665,6 @@ TEST_CASE("components::table::column") {
         REQUIRE_FALSE(block_manager.create_new_database().has_error());
         auto column = column_data_t::create_column(&resource, block_manager, 0, 0, struct_type);
 
-        // Append
         {
             vector_t v(&resource, struct_type, test_size);
 
@@ -718,7 +687,6 @@ TEST_CASE("components::table::column") {
             REQUIRE_FALSE(column->initialize_append(state).has_error());
             REQUIRE_FALSE(column->append(state, v, test_size).has_error());
         }
-        // Fetch
         {
             vector_t v(&resource, struct_type, test_size);
             column_fetch_state state;
@@ -749,7 +717,6 @@ TEST_CASE("components::table::column") {
                 }
             }
         }
-        // Scan
         {
             vector_t v(&resource, struct_type, test_size);
             column_scan_state state;

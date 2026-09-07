@@ -47,7 +47,7 @@ namespace services::disk {
 
     using namespace core::filesystem;
 
-    // DEV_MODE counter: rows shipped across the mailbox by the last pushdown reduce reply, not raw scanned rows.
+    // Counts rows shipped across the mailbox by the last pushdown reduce reply, not raw scanned rows.
 #ifdef DEV_MODE
     namespace {
         std::atomic<uint64_t> g_pushdown_reply_rows{0};
@@ -1207,7 +1207,7 @@ namespace services::disk {
                 return core::error_t{core::error_code_t::schema_error, std::move(msg)};
             };
 
-            // Identity is attoid when both sides carry one (survives RENAME), else (name, type); `gone` = no home.
+            // attoid survives RENAME; falls back to (name, type) when either side lacks one. `gone` = no match.
             const size_t gone = current_columns.size();
             std::vector<size_t> open_to_current(scan.open_columns.size(), gone);
             for (size_t o = 0; o < scan.open_columns.size(); ++o) {
@@ -1571,8 +1571,7 @@ namespace services::disk {
         return result;
     }
 
-    // A failure here must not collapse into an empty result, or a misrouted/corrupt read surfaces as
-    // "Database does not exist".
+    // Must error, not return empty, or a misrouted/corrupt read looks like "Database does not exist".
     static core::error_t resolve_key_col_indices(const collection_storage_entry_t* entry,
                                                  const std::pmr::vector<std::string>& key_col_names,
                                                  std::pmr::vector<std::uint64_t>& out_indices,
@@ -1687,7 +1686,7 @@ namespace services::disk {
                 core::error_code_t::invalid_parameter,
                 std::pmr::string{"keyed read: key chunk arity does not match key columns", resource()}};
         }
-    // The key tuple becomes a pushed-WHERE graph (OR'd across keys), so N keys cost ONE scan.
+    // The key tuple becomes a pushed-WHERE graph (OR'd across keys), so N keys cost one scan.
         namespace expr = components::expressions;
         const std::size_t narity = key_col_indices.size();
 
@@ -1864,8 +1863,7 @@ namespace services::disk {
         co_return entry->storage->total_rows();
     }
 
-        // Staging (write+fsync) runs before write_header commits, since a crash mid-write risks a
-        // zero-length sidecar.
+        // Staged (write+fsync) before write_header commits — a crash mid-write risks a zero-length sidecar.
     namespace {
         std::filesystem::path checkpoint_sidecar_path(const std::filesystem::path& otbx_path) {
             auto p = otbx_path;
@@ -1955,8 +1953,8 @@ namespace services::disk {
             return core::error_t::no_error();
         }
 
-        // Kept separate from publish: a refused rename SPLITS the durable floor, while a refused directory
-        // fsync only risks surfacing the previous id on crash — a much milder failure.
+        // Kept separate from publish: a refused rename splits the durable floor, while a refused directory
+        // fsync only risks surfacing the previous id on crash — a milder failure.
         [[nodiscard]] core::error_t sync_checkpoint_sidecar_directory(std::pmr::memory_resource* resource,
                                                                      const std::filesystem::path& otbx_path) {
             const auto sidecar_path = checkpoint_sidecar_path(otbx_path);
@@ -1976,8 +1974,7 @@ namespace services::disk {
     agent_disk_t::unique_future<checkpoint_result_t>
     agent_disk_t::checkpoint_inner(session_id_t /*session*/, wal::id_t current_wal_id, uint64_t compact_watermark) {
         trace(log_, "agent_disk[{}]::checkpoint_inner: {} entries in local slice", pool_idx_, storages_.size());
-        // Order matters: free refusals exit before the device is touched, then stage, compact, checkpoint's
-        // header commit — only the sidecar rename/fsync run after that point.
+        // Step order is load-bearing: sidecar rename/fsync must run only after the checkpoint's header commit.
 #ifdef DEV_MODE
         g_table_checkpoints.fetch_add(1, std::memory_order_relaxed);
 #endif
@@ -2016,8 +2013,8 @@ namespace services::disk {
                 continue;
             }
 
-            // compact() always fully rebuilds — measured 205.7ms for an empty round over 100 tables
-            // vs 124.4ms rewritten.
+            // compact() always fully rebuilds regardless of change: measured 205.7 ms for an empty round vs
+            // 124.4 ms for one that wrote (100 tables).
             const bool unchanged = !entry->table_storage.needs_checkpoint();
             bool skip_compact_this_round = false;
             if (!unchanged) {
@@ -2163,10 +2160,9 @@ namespace services::disk {
             co_return;
         }
 
-            // An uncommitted compact() only spends space — measured +2.9 MB per VACUUM on an
-            // unchanged 12k-row table. Deferred to checkpoint_inner, not lost — measured 13053
-            // DISK rounds performed 12962 compacts; test_s3_cleanup_scaling keeps 700000 rows with
-            // only 149988 live when compact is disabled.
+            // An uncommitted compact() only spends space: +2.9 MB per VACUUM on an unchanged 12k-row table.
+            // Deferred to checkpoint_inner, not lost: 13053 DISK rounds performed 12962 compacts. Disabling
+            // compact entirely leaves test_s3_cleanup_scaling with 700000 rows and only 149988 live.
         trace(log_,
               "agent_disk[{}]::maybe_cleanup_inner: oid={} — compaction belongs to the checkpoint round that "
               "can commit the release",
@@ -2852,7 +2848,7 @@ namespace services::disk {
     }
 
         // SUBTRACTIVE: drops every column not in live_attnames — a gap in the caller's derivation
-        // drops a SURVIVING column.
+        // drops a surviving column.
     agent_disk_t::unique_future<std::uint64_t>
     agent_disk_t::compact_relkind_g_storage_inner(components::catalog::oid_t table_oid,
                                                   std::set<std::string> live_attnames) {

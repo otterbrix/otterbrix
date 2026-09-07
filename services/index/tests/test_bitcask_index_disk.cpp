@@ -2940,10 +2940,8 @@ TEST_CASE("services::index::bitcask_index_disk::a_source_the_merge_cleanup_canno
     REQUIRE_FALSE(std::filesystem::exists(manifest));
 }
 
-// A length/count read off disk must never be believed straight into an allocator.
-
-// `7 999999999999999999` parses cleanly (18 digits fit a size_t) and would ask vector::reserve
-// for 8 exabytes. The list is bounded by the file instead: it reads ids until the stream runs out.
+// `7 999999999999999999` parses cleanly (18 digits fit a size_t) and would ask vector::reserve for
+// 8 exabytes. The list is bounded by the file instead: it reads ids until the stream runs out.
 TEST_CASE("services::index::bitcask_index_disk::a_merge_manifest_count_is_bounded_by_the_file_not_believed") {
     auto resource = core::pmr::otterbrix_resource();
 
@@ -3004,7 +3002,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_record_whose_declared_payload_
     REQUIRE_FALSE(segment.empty());
     const auto size_before = std::filesystem::file_size(segment);
 
-    // A payload of -(size_before + 24) makes payload_offset + payload_size wrap to exactly 2^64 (= 0).
+    // Wrapping to exactly 0 defeats a naive "payload runs past the segment" bounds check.
     {
         crashed_record_header_t wrapping{};
         wrapping.payload_size =

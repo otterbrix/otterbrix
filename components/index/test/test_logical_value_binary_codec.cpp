@@ -8,7 +8,7 @@
 #include <limits>
 
 namespace {
-    // The ONE arena this file builds DECIMALs on: create_decimal allocates only on its refusal
+    // The one arena this file builds DECIMALs on: create_decimal allocates only on its refusal
     // path, and that message must live on a caller-owned arena, not the process-global one.
     std::pmr::memory_resource* decimal_resource() {
         static core::pmr::otterbrix_resource arena;
@@ -184,10 +184,8 @@ TEST_CASE("logical_value_binary_codec: skip_logical_value") {
     }
 }
 
-// Corrupt stored bytes must not kill the process. Every buffer below is a stored key payload
-// (b+tree leaf or bitcask segment) with no checksum, so a flipped bit reaches these functions
-// verbatim; the contract is that it decodes to NA (or a default physical_value) and reports
-// through `ok`, never aborts.
+// Corrupt bytes must not kill the process: every buffer below is a key payload (b+tree leaf or bitcask
+// segment) with no checksum, so the contract is decode-to-NA and report via `ok`, never abort.
 namespace {
     // A stored key payload, byte for byte, built the way append_logical_value builds it.
     std::pmr::string bytes(std::pmr::memory_resource* resource, std::initializer_list<int> raw) {
@@ -208,9 +206,7 @@ TEST_CASE("logical_value_binary_codec: a corrupt logical tag refuses instead of 
     auto resource = core::pmr::otterbrix_resource();
 
     SECTION("one flipped bit turns a BIGINT key into an unsupported physical width") {
-        // BIGINT is 14; flipping bit 0 gives 15 = HUGEINT, whose physical type is INT128 --
-        // an arm the key codec has no reader for. This is the cheapest possible corruption:
-        // ONE BIT in the tag byte of an ordinary integer key.
+        // HUGEINT is physical INT128, an arm the key codec has no reader for.
         REQUIRE((tag(logical_type::BIGINT) ^ 1) == tag(logical_type::HUGEINT));
         auto buffer = bytes(&resource, {tag(logical_type::HUGEINT), 1, 0, 0, 0, 0, 0, 0, 0});
         size_t pos = 0;
@@ -218,15 +214,12 @@ TEST_CASE("logical_value_binary_codec: a corrupt logical tag refuses instead of 
         const auto decoded = read_logical_value(&resource, buffer, pos, &ok);
         CHECK_FALSE(ok);
         CHECK(decoded.type().type() == logical_type::NA);
-        // The same call WITHOUT a flag is what the read path makes today, and it must still
-        // come back rather than take the process with it.
+        // The unflagged call is what the production read path makes; it too must return, not abort.
         size_t unflagged_pos = 0;
         CHECK(read_logical_value(&resource, buffer, unflagged_pos).type().type() == logical_type::NA);
     }
 
     SECTION("a tag byte no logical type uses at all") {
-        // The tag byte is dense over roughly 30 of its 256 values, so most corruptions land
-        // on a value that maps to physical_type::INVALID.
         auto buffer = bytes(&resource, {200, 0, 0, 0, 0});
         size_t pos = 0;
         bool ok = true;
@@ -262,7 +255,7 @@ TEST_CASE("logical_value_binary_codec: a corrupt logical tag refuses instead of 
     }
 
     SECTION("a DECIMAL width outside the representable window") {
-        // width 18 is 0b010010; flipping bit 5 gives 50, past DECIMAL_MAX_WIDTH.
+        // 50 is past DECIMAL_MAX_WIDTH.
         REQUIRE((18 ^ 32) == 50);
         auto buffer = bytes(&resource, {tag(logical_type::DECIMAL), 50, 2, 0, 0, 0, 0, 0, 0, 0, 0});
         size_t pos = 0;
@@ -318,8 +311,8 @@ TEST_CASE("logical_value_binary_codec: a corrupt logical tag refuses in the view
     }
 
     SECTION("a record truncated inside the payload") {
-        // Two bytes where an INT64 payload should be. With only an assert guarding it the
-        // memcpy runs PAST THE END of the record under NDEBUG.
+        // Two bytes where an INT64 payload should be: with only an assert guarding it, the memcpy runs past
+        // the end of the record under NDEBUG.
         auto buffer = bytes(&resource, {tag(logical_type::BIGINT), 1, 0});
         size_t pos = 0;
         bool ok = true;
@@ -374,8 +367,8 @@ TEST_CASE("logical_value_binary_codec: read_le_raw refuses a short record") {
     auto resource = core::pmr::otterbrix_resource();
     auto buffer = bytes(&resource, {1, 2});
     size_t pos = 0;
-    // Eight bytes asked of a two-byte record. Guarded only by an assert, the build users ship
-    // reads six bytes PAST THE END of the buffer.
+    // Eight bytes asked of a two-byte record: guarded only by an assert, release builds read six bytes past
+    // the end of the buffer.
     bool ok = true;
     const auto v = read_le_raw<uint64_t>(buffer.data(), buffer.size(), pos, &ok);
     CHECK_FALSE(ok);
@@ -421,9 +414,8 @@ TEST_CASE("logical_value_binary_codec: a well-formed record leaves ok alone") {
     CHECK(pos == encoded.size());
 }
 
-// A truncated record must not decode to a plausible ZERO in silence: read_le answers T{}
-// without moving `pos`, so an unflagged short read turns a key clipped by a short write into
-// the value 0 in the index. Same class of corruption as a bad tag, same answer.
+// A truncated record must not decode to a plausible zero in silence: read_le answers T{} without moving
+// `pos`, so an unflagged short read turns a key clipped by a short write into the value 0 in the index.
 TEST_CASE("logical_value_binary_codec: a truncated payload is a refusal, not a zero") {
     using components::index::codec::read_logical_value;
     using components::types::logical_type;
@@ -439,7 +431,7 @@ TEST_CASE("logical_value_binary_codec: a truncated payload is a refusal, not a z
 }
 
 // The bound must be spelled `pos > size || size - pos < sizeof(T)`, not `pos + sizeof(T) > size`:
-// the addition is a size_t and WRAPS. A `pos` already past the end (exactly what a caller holds
+// the addition is a size_t and wraps. A `pos` already past the end (exactly what a caller holds
 // after ignoring one refusal) would then answer "in range" and memcpy from `in.data() + pos`.
 TEST_CASE("logical_value_binary_codec: read_le cannot be walked past the end by an overflowing bound") {
     using components::index::codec::read_le;
@@ -447,9 +439,8 @@ TEST_CASE("logical_value_binary_codec: read_le cannot be walked past the end by 
     auto resource = core::pmr::otterbrix_resource();
     auto buffer = bytes(&resource, {1, 2, 3, 4, 5, 6, 7, 8});
 
-    // SIZE_MAX - 3 + sizeof(uint64_t) wraps to 4, which is inside an 8-byte buffer.
     size_t pos = std::numeric_limits<size_t>::max() - 3;
-    REQUIRE(pos + sizeof(uint64_t) < buffer.size()); // the wrap, spelled out
+    REQUIRE(pos + sizeof(uint64_t) < buffer.size());
     bool ok = true;
     const auto v = read_le<uint64_t>(buffer, pos, &ok);
     CHECK_FALSE(ok);
@@ -463,10 +454,9 @@ TEST_CASE("logical_value_binary_codec: read_le cannot be walked past the end by 
     CHECK(tail == 4);
 }
 
-// encode_disk_hash_key runs on the path that opens a database: bitcask_index_disk_t's rebuild
-// loop hands it a value decoded OFF THE DISK (services/index/bitcask_index_disk.cpp), so an
-// unhashable key type must be reported through `ok`, not aborted -- an abort there would make
-// the database unopenable rather than just refuse one load.
+// encode_disk_hash_key runs on the path that opens a database: bitcask_index_disk_t's rebuild loop hands it
+// a value decoded off disk (services/index/bitcask_index_disk.cpp), so an unhashable key type must be
+// reported through `ok`, not aborted -- an abort here would make the database unopenable.
 TEST_CASE("logical_value_binary_codec: an unhashable key type is reported, not aborted") {
     using components::index::codec::encode_disk_hash_key;
     using components::types::int128_t;
@@ -474,9 +464,7 @@ TEST_CASE("logical_value_binary_codec: an unhashable key type is reported, not a
 
     auto resource = core::pmr::otterbrix_resource();
 
-    // HUGEINT is physical INT128, which this encoder has no arm for. It is also the type ONE
-    // FLIPPED BIT in an ordinary BIGINT tag names (14 -> 15), which is how a stored byte
-    // steers a value into this arm.
+    // HUGEINT is physical INT128, which this encoder has no arm for.
     logical_value_t hugeint(&resource, int128_t{7});
     REQUIRE(hugeint.type().to_physical_type() == components::types::physical_type::INT128);
 
@@ -486,7 +474,6 @@ TEST_CASE("logical_value_binary_codec: an unhashable key type is reported, not a
     // The tag byte and nothing else: not a usable hash key, which is why `ok` has to be read.
     CHECK(encoded.size() == 1);
 
-    // A representable key is unaffected, and `ok` is only ever set to false.
     bool good_ok = true;
     const auto good = encode_disk_hash_key(logical_value_t(&resource, int64_t{7}), &good_ok);
     CHECK(good_ok);
@@ -509,10 +496,8 @@ TEST_CASE("logical_value_binary_codec: append_logical_value reports an unencodab
     CHECK(out.size() == 1);
 }
 
-// Checks, not just asserts, the codec header's claim: the twelve remaining `assert(false)`
-// guards fire only if the logical->physical derivation table gains an entry the switch doesn't,
-// so no tag byte value can steer into one. This walks all 256 tag bytes through all three decode
-// entry points -- if any steers into a guard, the process aborts here rather than failing politely.
+// Checks, not just asserts, the codec header's claim that the twelve remaining `assert(false)` guards can
+// never be reached by any tag byte, across all three decode entry points.
 TEST_CASE("logical_value_binary_codec: no tag byte steers a decode assert") {
     using components::index::codec::read_logical_value;
     using components::index::codec::read_logical_value_as_view;

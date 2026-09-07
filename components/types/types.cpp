@@ -45,7 +45,7 @@ namespace components::types {
             t[uint8_t(logical_type::UNION)] = physical_type::STRUCT;
             t[uint8_t(logical_type::VARIANT)] = physical_type::STRUCT;
             t[uint8_t(logical_type::LIST)] = physical_type::LIST;
-            t[uint8_t(logical_type::MAP)] = physical_type::LIST; // MAP is stored as a list of key/value structs
+            t[uint8_t(logical_type::MAP)] = physical_type::LIST;
             t[uint8_t(logical_type::UNKNOWN)] = physical_type::UNKNOWN;
             return t;
         }
@@ -261,7 +261,7 @@ namespace components::types {
                 return 0; // no own payload
             default:
                 assert(false && "complex_logical_type::object_size: reached unsupported type");
-                return 0; // no own payload
+                return 0;
         }
     }
 
@@ -304,10 +304,10 @@ namespace components::types {
             case physical_type::STRUCT:
             case physical_type::UNION:
             case physical_type::UNKNOWN:
-                return 0; // no own payload
+                return 0;
             default:
                 assert(false && "complex_logical_type::object_size: reached unsupported type");
-                return 0; // no own payload
+                return 0;
         }
     }
 
@@ -336,13 +336,12 @@ namespace components::types {
         return false;
     }
 
-    // THE THREE NAME ACCESSORS ARE TOTAL FUNCTIONS, AND THEY HAVE TO BE.
+    // The three name accessors are total functions, and they have to be.
     //
-    // extension_ can legitimately be null (default ctor, a bare `{logical_type::X}`, a
-    // system-table column before it is named, a reader from decode_type_spec("")) — that is
-    // not a broken object, so these accessors must be total, not assert. assert(extension_)
-    // previously turned `SELECT * FROM pg_class` into a Debug ABORT on a read path (loud is
-    // required, fatal is not) and a null deref under NDEBUG.
+    // extension_ can legitimately be null (default ctor, a bare `{logical_type::X}`, an unnamed
+    // system-table column, a reader from decode_type_spec("")) — not a broken object, so these
+    // accessors must be total, not assert. assert(extension_) previously turned `SELECT * FROM
+    // pg_class` into a Debug abort on a read path and a null deref under NDEBUG.
     const std::string& complex_logical_type::alias() const {
         if (!extension_) {
             return no_name();
@@ -524,9 +523,8 @@ namespace components::types {
 
             return element_convertable(arr_ext->internal_type(), other_list_ext->node());
         }
-        // A variable-length LIST is convertable to a fixed ARRAY column when their element
-        // types are convertable; a length mismatch is reconciled at cast time per row by
-        // truncating an over-long list or padding a short one with element defaults.
+        // A variable-length LIST is convertable to a fixed ARRAY column when their element types
+        // are convertable; a length mismatch is reconciled the same way as above.
         if (type_ == logical_type::LIST && other.type_ == logical_type::ARRAY) {
             const auto* list_ext = static_cast<const list_logical_type_extension*>(extension_.get());
             const auto* other_arr_ext = static_cast<const array_logical_type_extension*>(other.extension_.get());

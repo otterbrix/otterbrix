@@ -55,7 +55,7 @@ static List* base_raw_parser(std::pmr::memory_resource* resource, const char* st
         throw parser_exception_t("the parser aborted before a statement was built", "");
     }
 
-    // May be an EMPTY list: the grammar discards "empty" statements (stmtmulti in gram.y), so
+    // May be an empty list: the grammar discards "empty" statements (stmtmulti in gram.y), so
     // empty input, a lone comment and a bare `;` all parse successfully into no statement at all.
     return yyextra.parsetree;
 }

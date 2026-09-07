@@ -104,7 +104,6 @@ namespace services::index {
 
     const index_record_t* match_index(const index_records_t& records,
                                       const components::index::keys_base_storage_t& keys) {
-        // Ordered-first is a deliberate choice, not registration order (see declaration).
         const index_record_t* unordered_match = nullptr;
         for (const auto& record : records) {
             if (record.keys != keys) {
@@ -509,7 +508,6 @@ namespace services::index {
 
     manager_index_t::unique_future<void>
     manager_index_t::table_dropped_committed(session_id_t /*session*/, uint64_t txn_id, uint64_t commit_id) {
-        // Value was stored in txn-id space (>= 2^62); remap it once commit_id is known.
         trace(log_, "manager_index_t::table_dropped_committed , txn_id : {} , commit_id : {}", txn_id, commit_id);
         for (auto& kv : dropped_table_agents_) {
             if (kv.second == txn_id) {
@@ -716,7 +714,7 @@ namespace services::index {
     manager_index_t::detached_agents_t manager_index_t::detach_index(components::catalog::oid_t table_oid,
                                                                      components::catalog::oid_t index_oid) {
         detached_agents_t dying(resource_);
-        // Trims the per-oid entry rather than erasing it: DROP INDEX must leave sibling indexes registered.
+        // Trims the per-oid entry rather than erasing it, so sibling indexes stay registered.
         auto oid_it = indexes_per_oid_.find(table_oid);
         if (oid_it == indexes_per_oid_.end()) {
             return dying;
@@ -1578,8 +1576,8 @@ namespace services::index {
         if (!core::filesystem::move_files(fs, tmp_path, marker)) {
             return refuse("the rename over the live marker was refused");
         }
-        // Stricter than agent_disk.cpp's sidecar: reverting to the old LONGER list just repeats a rebuild,
-        // but a SHORTER one would silently drop an index that needs one.
+        // Stricter than agent_disk.cpp's sidecar: reverting to the old longer list just repeats a rebuild,
+        // but a shorter one would silently drop an index that needs one.
         auto dir = core::filesystem::open_file(fs, marker.parent_path(), core::filesystem::file_flags::READ);
         if (dir == nullptr || !core::filesystem::file_sync(fs, *dir)) {
             return core::error_t(core::error_code_t::io_error,
@@ -1746,7 +1744,7 @@ namespace services::index {
             }
         }
 
-        // `commit_id <= new_horizon`, not `<`: a snapshot sitting AT commit_id already hides the row.
+        // `commit_id <= new_horizon`, not `<`: a snapshot sitting at commit_id already hides the row.
         std::pmr::vector<unique_future<core::error_t>> delete_futures(resource_);
         std::pmr::vector<deferred_delete_t> swept_entries(resource_);
         [[maybe_unused]] const auto queued_before_sweep = deferred_deletes_.size();
@@ -1864,7 +1862,7 @@ namespace services::index {
             co_return;
         }
 
-        // UPDATE ships only the NEW chunk; its OLD-row half arrives separately as PHYSICAL_DELETE.
+        // UPDATE ships only the new chunk; its old-row half arrives separately as PHYSICAL_DELETE.
         const bool is_delete_leg =
             record_type == static_cast<uint8_t>(services::wal::wal_record_type::PHYSICAL_DELETE);
         const bool is_insert_leg =

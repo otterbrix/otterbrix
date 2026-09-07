@@ -55,7 +55,7 @@ namespace components::vector::vector_ops {
             for (uint64_t i = 0; i < copy_count; i++) {
                 auto source_idx = indexing.get_index(source_offset + i);
                 if (source_idx == std::numeric_limits<uint64_t>::max()) {
-                    // there is a null written here, skip it
+                    // A max() index marks a null entry; skip it.
                     continue;
                 }
                 tdata[target_offset + i] = ldata[source_idx];
@@ -1012,7 +1012,8 @@ namespace components::vector::vector_ops {
                     }
                 }
             } else {
-                // This leg copied NOTHING under NDEBUG before: an ARRAY-string UPDATE silently changed nothing.
+                // Must go through set_value, not a raw element copy, or an ARRAY-string UPDATE silently changes
+                // nothing under NDEBUG.
                 auto sdata = source.data<std::string_view>();
                 auto& smask = source.validity();
                 auto& tmask = target.validity();

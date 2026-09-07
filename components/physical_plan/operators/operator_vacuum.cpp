@@ -46,8 +46,8 @@ namespace components::operators {
         }
 
         // No index rebuild here: nothing on this route moves a physical row id. Teaching VACUUM to
-        // compact must bring the rebuild back TOGETHER with arming manager_index_t::rebuild_marker_path_
-        // (flush_all_indexes arms it for the compacting orchestrations), ABOVE the vacuum_all call --
+        // compact must bring the rebuild back together with arming manager_index_t::rebuild_marker_path_
+        // (flush_all_indexes arms it for the compacting orchestrations), above the vacuum_all call --
         // a rebuild without that marker leaves a crash mid-rebuild undetectable at restart.
 
         // The rest of this operator is the pg_computed_column GC, which needs the DISK actor
@@ -57,11 +57,9 @@ namespace components::operators {
             co_return;
         }
 
-        // Enumerate relations via pg_class to find the COMPUTING tables (relkind 'g'), whose
-        // pg_computed_column rows the two GC passes further down reclaim.
         constexpr catalog::oid_t kPgClass = catalog::well_known_oid::pg_class_table;
 
-        // Draining the cursor to completion is MANDATORY: a live cursor gates compact() on its oid, so an
+        // Draining the cursor to completion is mandatory: a live cursor gates compact() on its oid, so an
         // abandoned one would wedge the very table VACUUM is here to reclaim — hence the explicit release below.
         std::pmr::vector<components::vector::data_chunk_t> pg_class_batches(resource_);
         {
@@ -197,14 +195,11 @@ namespace components::operators {
                 }
 
                 for (const auto attoid : dead_attoids) {
-                    // attoid is column index 1 in pg_computed_column.
                     cc_specs.push_back({kPgComputedColumn, std::int64_t{1}, attoid});
                 }
 
-                // version-GC: for each (relid, attname) group, keep only
-                // max(attversion). Older versions with refcount>0 are
-                // invisible to readers (resolver picks max version) but
-                // accumulate over time; delete them to save space.
+                // Older versions with refcount>0 are invisible to readers (resolver picks max
+                // version) but accumulate over time; delete them to save space.
                 struct version_row_t {
                     catalog::oid_t attoid;
                     std::int64_t attversion;
@@ -229,7 +224,6 @@ namespace components::operators {
                 for (auto& [_key, rows] : grouped) {
                     if (rows.size() <= 1)
                         continue;
-                    // Sort by version descending; keep first (max), delete rest.
                     std::sort(rows.begin(), rows.end(), [](const version_row_t& a, const version_row_t& b) {
                         return a.attversion > b.attversion;
                     });
@@ -245,8 +239,8 @@ namespace components::operators {
                                                     cc_ctx,
                                                     std::move(cc_specs));
                     auto deleted_r = co_await std::move(df);
-                    // A zero-match delete is fine (GC pass, already-gone is the goal state), but an error must be
-                    // read here, before the SUBTRACTIVE and irreversible compaction below runs on an unknown GC outcome.
+                    // A zero-match delete is fine (GC pass, already-gone is the goal state), but an error must be read
+                    // here, before the subtractive and irreversible compaction below runs on an unknown GC outcome.
                     if (deleted_r.has_error()) {
                         set_error(deleted_r.error());
                         co_return;
@@ -256,7 +250,7 @@ namespace components::operators {
                     }
                 }
 
-                // Re-read post-GC rather than reuse cc_rows (taken before the deletes above), then drop every
+                // Re-read post-GC rather than reuse cc_batches (taken before the deletes above), then drop every
                 // storage column not in the live attname set.
                 {
                     std::pmr::vector<std::uint64_t> cc2_keys(resource_);

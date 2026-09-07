@@ -14,33 +14,18 @@
 using namespace components;
 using namespace components::cursor;
 
-// Mirrors integration/rust/otterbrix/tests/params.rs:
-//   - parameterized queries ($N binding) for every supported value type,
-//   - SQL-injection safety (payloads are stored/compared as data, never executed),
-//   - error-code / message contracts (validation + DDL errors).
+// Mirrors integration/rust/otterbrix/tests/params.rs: parameterized queries ($N binding) for every
+// supported value type, SQL-injection safety (payloads are stored/compared as data, never executed), and
+// error-code / message contracts (validation + DDL errors).
 //
-// Parameter binding goes through wrapper_dispatcher_t::execute_sql_with_params,
-// whose signature is
-//   cursor_t_ptr execute_sql_with_params(
-//       const session_id_t&,
-//       const std::string& query,
-//       const std::vector<std::pair<size_t, logical_value_t>>& params);
-// (see integration/cpp/wrapper_dispatcher.hpp / .cpp). Each pair is
-// {one-based placeholder index, value}; the dispatcher calls binder.bind(id, value)
-// then binder.finalize(), surfacing bind/finalize failures as an error cursor.
+// Parameter binding goes through wrapper_dispatcher_t::execute_sql_with_params (see
+// integration/cpp/wrapper_dispatcher.hpp/.cpp): each pair is {one-based placeholder index, value}; the
+// dispatcher calls binder.bind(id, value) then binder.finalize(), surfacing failures as an error cursor.
 //
-// logical_value_t is built with the templated ctor `logical_value_t{resource, T}`
-// where the C++ type of T selects the logical type via to_logical_type<T>()
-// (components/types/logical_value.hpp). The same construction is used in
-// components/sql/test/test_parameter.cpp (e.g. v(&resource, 10l) for BIGINT,
-// v(&resource, 1ul) for UBIGINT, v(&resource, 3.14) for DOUBLE,
-// v(&resource, true) for BOOLEAN, v(&resource, std::string("...")) for string).
-// Type-to-SqlParamValue mapping:
-//   Int64  -> int64_t  (literal suffix l)
-//   UInt64 -> uint64_t (literal suffix ul)
-//   Double -> double
-//   Str    -> std::string
-//   Bool   -> bool
+// logical_value_t{resource, T} selects the logical type from the C++ type of T via to_logical_type<T>()
+// (components/types/logical_value.hpp); components/sql/test/test_parameter.cpp uses the same construction.
+// Type-to-SqlParamValue mapping: Int64 -> int64_t, UInt64 -> uint64_t, Double -> double, Str -> std::string,
+// Bool -> bool.
 namespace {
     using param_t = std::pair<size_t, types::logical_value_t>;
     using params_t = std::vector<param_t>;
@@ -319,7 +304,6 @@ TEST_CASE("integration::cpp::params::where_update_delete") {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "SELECT * FROM ParamDb.Rows;");
             REQUIRE(cur->is_success());
-            // started with 3 rows; one ('a') was updated to count=777, one ('b') had count=20 and is now deleted.
             REQUIRE(cur->size() == 2);
         }
     }
@@ -390,7 +374,7 @@ TEST_CASE("integration::cpp::params::injection_quote_in_string_stored_verbatim")
         REQUIRE(cur->is_success());
     }
     {
-        // Table must still exist with exactly the one inserted row, stored verbatim.
+        // The DROP TABLE inside the payload must not have executed: the table and its one row still exist.
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "SELECT * FROM ParamDb.T;");
         REQUIRE(cur->is_success());
@@ -472,7 +456,6 @@ TEST_CASE("integration::cpp::params::injection_semicolon_does_not_chain") {
         REQUIRE(cur->size() == 3);
     }
     {
-        // The payload was stored as data in T.
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "SELECT * FROM ParamDb.T;");
         REQUIRE(cur->is_success());
@@ -538,7 +521,7 @@ TEST_CASE("integration::cpp::params::injection_comment_marker_stored_literally")
         REQUIRE(cur->size() == 2);
     }
     {
-        // "a'--" is a single literal string; the comment marker must NOT terminate the predicate,
+        // "a'--" is a single literal string; the comment marker must not terminate the predicate,
         // so it matches neither 'a' nor 'b'.
         auto session = otterbrix::session_id_t();
         params_t params{{1, types::logical_value_t{resource, std::string("a'--")}}};

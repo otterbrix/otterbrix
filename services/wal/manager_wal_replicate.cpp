@@ -545,8 +545,7 @@ namespace services::wal {
 #endif
     }
 
-    // Drops ready fire-and-forget auto-checkpoint futures (loop-thread only); mirrors
-    // manager_dispatcher_t::poll_pending().
+    // Loop-thread only; mirrors manager_dispatcher_t::poll_pending().
     void manager_wal_replicate_t::poll_auto_checkpoint_() {
         pending_auto_checkpoint_.erase(std::remove_if(pending_auto_checkpoint_.begin(),
                                                       pending_auto_checkpoint_.end(),

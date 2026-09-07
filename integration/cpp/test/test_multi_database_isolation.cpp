@@ -3,17 +3,14 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-// Regression tests for issue #557: two tables with the same name in different
-// databases must be fully independent. Before the fix, name→OID resolution
-// scanned pg_class by relname alone (the relnamespace filter never fired
-// because the namespace OID was read at plan-generation time, before the
-// sibling resolve_namespace operator stamped it), so `db2.t1` resolved to
-// whichever same-named table was created first — a cross-database data leak.
-//
-// The fix: operator_resolve_table_t translates the user-typed dbname to a
-// namespace oid itself at execution time (mirroring operator_resolve_type_t)
-// and then always scans pg_class by (relname, relnamespace) for qualified
-// names. The relname-only scan survives ONLY for unqualified names.
+// Regression tests for issue #557: two tables with the same name in different databases must be fully
+// independent. Before the fix, name→OID resolution scanned pg_class by relname alone (the
+// relnamespace filter never fired because the namespace OID was read at plan-generation time, before
+// the sibling resolve_namespace operator stamped it), so `db2.t1` resolved to whichever same-named
+// table was created first — a cross-database data leak.
+// The fix: operator_resolve_table_t translates the user-typed dbname to a namespace oid itself at
+// execution time (mirroring operator_resolve_type_t) and always scans pg_class by (relname,
+// relnamespace) for qualified names. The relname-only scan survives only for unqualified names.
 
 TEST_CASE("integration::cpp::multi_database_isolation::same_name_select") {
     auto config = test_create_config(integration_fixture_path("test_multi_db_isolation/same_name_select"));
@@ -50,7 +47,6 @@ TEST_CASE("integration::cpp::multi_database_isolation::same_name_select") {
         REQUIRE(c->is_success());
         REQUIRE(c->size() == 0);
     }
-    // db1.t1 still owns its row.
     {
         auto session = otterbrix::session_id_t();
         auto c = dispatcher->execute_sql(session, "SELECT * FROM db1.t1;");
@@ -77,7 +73,6 @@ TEST_CASE("integration::cpp::multi_database_isolation::same_name_dml_routing") {
         REQUIRE(dispatcher->execute_sql(session, sql)->is_success());
     }
 
-    // Each table sees exactly its own row.
     {
         auto session = otterbrix::session_id_t();
         auto c = dispatcher->execute_sql(session, "SELECT * FROM db1.t1;");
@@ -93,7 +88,6 @@ TEST_CASE("integration::cpp::multi_database_isolation::same_name_dml_routing") {
         REQUIRE(c->value(0, 0).value<int64_t>() == 20);
     }
 
-    // UPDATE routed to db2.t1 must not touch db1.t1.
     {
         auto session = otterbrix::session_id_t();
         REQUIRE(dispatcher->execute_sql(session, "UPDATE db2.t1 SET id = 21;")->is_success());
@@ -113,7 +107,6 @@ TEST_CASE("integration::cpp::multi_database_isolation::same_name_dml_routing") {
         REQUIRE(c->value(0, 0).value<int64_t>() == 21);
     }
 
-    // DELETE routed to db1.t1 must not touch db2.t1.
     {
         auto session = otterbrix::session_id_t();
         REQUIRE(dispatcher->execute_sql(session, "DELETE FROM db1.t1;")->is_success());
@@ -149,7 +142,6 @@ TEST_CASE("integration::cpp::multi_database_isolation::same_name_drop") {
         REQUIRE(dispatcher->execute_sql(session, sql)->is_success());
     }
 
-    // Dropping db2.t1 must not take db1.t1 (or its rows) with it.
     {
         auto session = otterbrix::session_id_t();
         REQUIRE(dispatcher->execute_sql(session, "DROP TABLE db2.t1;")->is_success());
@@ -161,7 +153,7 @@ TEST_CASE("integration::cpp::multi_database_isolation::same_name_drop") {
         REQUIRE(c->size() == 1);
         REQUIRE(c->value(0, 0).value<int64_t>() == 1);
     }
-    // db2.t1 is gone: selecting it must NOT silently read db1.t1.
+    // db2.t1 is gone: selecting it must not silently read db1.t1.
     {
         auto session = otterbrix::session_id_t();
         auto c = dispatcher->execute_sql(session, "SELECT * FROM db2.t1;");
@@ -234,7 +226,6 @@ TEST_CASE("integration::cpp::multi_database_isolation::nonexistent_database_erro
         auto c = dispatcher->execute_sql(session, "INSERT INTO nosuchdb.t1 (id) VALUES (2);");
         REQUIRE(c->is_error());
     }
-    // db1.t1 is untouched.
     {
         auto session = otterbrix::session_id_t();
         auto c = dispatcher->execute_sql(session, "SELECT * FROM db1.t1;");
@@ -292,7 +283,7 @@ TEST_CASE("integration::cpp::multi_database_isolation::unique_constraint_binds_t
         REQUIRE(dispatcher->execute_sql(session, sql)->is_success());
     }
 
-    // db1.t1 has NO unique constraint: duplicate values are fine — and the
+    // db1.t1 has no unique constraint: duplicate values are fine — and the
     // constraint attached to db2.t1 must not bleed over.
     {
         auto session = otterbrix::session_id_t();
@@ -300,7 +291,6 @@ TEST_CASE("integration::cpp::multi_database_isolation::unique_constraint_binds_t
         auto session2 = otterbrix::session_id_t();
         REQUIRE(dispatcher->execute_sql(session2, "INSERT INTO db1.t1 (id) VALUES (1);")->is_success());
     }
-    // db2.t1's own constraint still enforces.
     {
         auto session = otterbrix::session_id_t();
         auto c = dispatcher->execute_sql(session, "INSERT INTO db2.t1 (id) VALUES (1);");
@@ -339,7 +329,6 @@ TEST_CASE("integration::cpp::multi_database_isolation::index_isolation") {
         REQUIRE(dispatcher->execute_sql(session, sql)->is_success());
     }
 
-    // Keyed lookups hit each table's own index and own rows.
     {
         auto session = otterbrix::session_id_t();
         auto c = dispatcher->execute_sql(session, "SELECT * FROM db1.t1 WHERE id = 10;");
@@ -361,7 +350,6 @@ TEST_CASE("integration::cpp::multi_database_isolation::index_isolation") {
         REQUIRE(c->value(0, 0).value<int64_t>() == 20);
     }
 
-    // Dropping db2's same-named index must not break db1's.
     {
         auto session = otterbrix::session_id_t();
         REQUIRE(dispatcher->execute_sql(session, "DROP INDEX db2.t1.idx_id;")->is_success());
@@ -397,7 +385,7 @@ TEST_CASE("integration::cpp::multi_database_isolation::cross_database_join") {
         REQUIRE(dispatcher->execute_sql(session, sql)->is_success());
     }
 
-    // One statement touching BOTH same-named tables: each side must bind to
+    // One statement touching both same-named tables: each side must bind to
     // its own database's store (covers the executor's per-key resolve dedup).
     {
         auto session = otterbrix::session_id_t();
@@ -406,7 +394,6 @@ TEST_CASE("integration::cpp::multi_database_isolation::cross_database_join") {
                                          "ON db1.t1.id >= db2.t1.id AND db1.t1.id <= db2.t1.id;");
         REQUIRE(c->is_success());
         REQUIRE(c->size() == 1);
-        // 4 columns: db1.t1(id, a) + db2.t1(id, b); values 1, 100, 1, 200.
         REQUIRE(c->column_count() == 4);
     }
 }
@@ -431,8 +418,8 @@ TEST_CASE("integration::cpp::multi_database_isolation::alter_column_isolated") {
     // ALTER on db2.t1 must not touch db1.t1 (ALTER rides the AnyName grammar
     // path where the qualifier arrives via the schema position).
     //
-    // NOTE: this case asserts ISOLATION only — that the ALTER binds to db2's
-    // table and db1 stays untouched. It deliberately does NOT assert that the
+    // NOTE: this case asserts isolation only — that the ALTER binds to db2's
+    // table and db1 stays untouched. It deliberately does not assert that the
     // rename itself took effect; that is now gated by
     // integration/cpp/test/test_alter_rename_column.cpp.
     {
@@ -448,7 +435,6 @@ TEST_CASE("integration::cpp::multi_database_isolation::alter_column_isolated") {
         REQUIRE(c->size() == 1);
         REQUIRE(c->value(0, 0).value<int64_t>() == 10);
     }
-    // db2.t1's data is intact and its own.
     {
         auto session = otterbrix::session_id_t();
         auto c = dispatcher->execute_sql(session, "SELECT * FROM db2.t1;");
@@ -467,13 +453,13 @@ TEST_CASE("integration::cpp::multi_database_isolation::unqualified_names_preserv
 
     // Unqualified CREATE TABLE keeps working (the relname-only scan is
     // preserved for empty dbnames). Unqualified DML behavior is a known gap
-    // tracked in issue #574 and deliberately NOT asserted here.
+    // tracked in issue #574 and deliberately not asserted here.
     {
         auto session = otterbrix::session_id_t();
         REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE t1 (id BIGINT);")->is_success());
     }
 
-    // A table created UNQUALIFIED (relnamespace = INVALID) is not reachable
+    // A table created unqualified (relnamespace = INVALID) is not reachable
     // through a database-qualified name.
     {
         auto session = otterbrix::session_id_t();

@@ -1346,7 +1346,6 @@ TEST_CASE("composite_cast: cross-kind LIST/ARRAY towers deeper than two levels")
     }
 }
 
-// registry.resolve() is the single entry point: one uniform cast_t for a leaf or a composite tower.
 TEST_CASE("cast_registry: resolve() is one uniform entry point for leaf and composite casts") {
     auto* resource = std::pmr::get_default_resource();
     cast_registry_t registry{resource};
@@ -1462,7 +1461,6 @@ TEST_CASE("cast_registry: a composite cast can be registered and resolve() retur
     }
 }
 
-// add(complex_cast_entry) declares a cast's coercion level explicitly.
 TEST_CASE("cast_registry: add(complex_cast_entry) stores a struct cast at its declared level") {
     auto* resource = std::pmr::get_default_resource();
     cast_registry_t registry{resource};
@@ -1577,7 +1575,6 @@ TEST_CASE("cast_registry: cost_of reports the element cost for containers, nothi
     }
 }
 
-// level_of: a container passes its element's level through verbatim; a STRUCT's level is declared.
 TEST_CASE("cast_registry: level_of passes containers through and takes structs as declared") {
     auto* resource = std::pmr::get_default_resource();
     cast_registry_t registry{resource};

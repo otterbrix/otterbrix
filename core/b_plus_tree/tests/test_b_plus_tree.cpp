@@ -1922,7 +1922,7 @@ TEST_CASE("core::b_plus_tree::an_allocation_refusal_comes_back_as_a_value") {
     }
 }
 
-// Loud, not fatal: one corrupted leaf must still let the tree open, answer readable leaves, and drop.
+// Loud, not fatal: the corruption is reported, never a hard failure.
 TEST_CASE("core::b_plus_tree::a_corrupt_leaf_still_opens_answers_and_drops") {
     auto resource = core::pmr::otterbrix_resource();
     path_t testing_directory = scratch_dir("btree_corrupt_leaf");

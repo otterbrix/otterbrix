@@ -6,17 +6,12 @@ namespace services::disk {
     namespace catalog = components::catalog;
     using namespace detail;
 
-    // Every catalog read here goes through scan_table → agent-0's
-    // storage_scan_inner (catalog oids route to agent-0). Reading via the
-    // mailbox — not a borrowed storage_entry_sync pointer — serialises against
-    // agent-0's compact path (checkpoint/vacuum/maybe_cleanup_inner) running on the
-    // scheduler_disk_ threads, avoiding a borrowed-pointer race. transaction_data{}
-    // = "see all committed".
+    // Catalog reads route to agent-0 (pool_idx_for_oid); reading via the mailbox instead of a
+    // borrowed storage_entry_sync pointer avoids racing agent-0's compact path (checkpoint/vacuum/
+    // maybe_cleanup_inner). transaction_data{} means "see all committed".
 
-    // The four resolve_* readers below flow through this funnel; each keeps its own row
-    // filtering (differs per table). A read that could not be performed must be an ERROR,
-    // never an empty batch — empty is also what "no matching rows" looks like (same rule as
-    // read_chunks_by_key below).
+    // A read that could not be performed must be an error, never an empty batch: empty is also
+    // what "no matching rows" looks like (same rule as read_chunks_by_key below).
     manager_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
     manager_disk_t::scan_table(components::catalog::oid_t table_oid,
                                std::unique_ptr<components::table::table_filter_t> filter,
@@ -47,9 +42,9 @@ namespace services::disk {
         co_return co_await std::move(fut);
     }
 
-    // ctx.txn, not the default snapshot (same rule below): on transaction_data{} a namespace
-    // created or dropped inside an open transaction reads as its opposite to its own resolve,
-    // lying to name-collision / follow-up-DDL checks in that transaction.
+    // ctx.txn, not the default snapshot (same rule below): under transaction_data{} a namespace
+    // this transaction created or dropped reads as its opposite, corrupting its own
+    // name-collision / follow-up-DDL checks.
     manager_disk_t::unique_future<core::result_wrapper_t<resolve_namespace_result_t>>
     manager_disk_t::resolve_namespace(execution_context_t ctx, std::string name) {
         resolve_namespace_result_t out(resource());
@@ -118,14 +113,13 @@ namespace services::disk {
         co_return out;
     }
 
-    // INVALID_OID stays the in-band "there is no such cast" INSIDE the wrapper: DROP CAST has
-    // to tell "no pg_cast row exists" (do_not_exists) from "the read failed", and collapsing
-    // the former into an error would destroy exactly that distinction.
-    // ctx.txn, for the reason given on resolve_function_by_name above: operator_unregister_cast_t
-    // turns THIS oid into a delete spec and reads a zero count as "the cast is still in the
-    // catalog". The delete sees the caller's transaction, so this read has to as well — both so
-    // a cast created in the open transaction can be found at all, and so one already dropped in
-    // it is reported as absent (do_not_exists) instead of as a scrub that was refused.
+    // INVALID_OID stays the in-band "there is no such cast" inside the wrapper: DROP CAST must
+    // tell "no pg_cast row exists" (do_not_exists) from "the read failed", and collapsing the
+    // former into an error would destroy that distinction.
+    // ctx.txn, for the reason on resolve_function_by_name above: operator_unregister_cast_t turns
+    // this oid into a delete spec reading a zero count as "still in the catalog," and the delete
+    // itself uses the caller's transaction — so a cast created in this transaction is found, and
+    // one dropped in it reads as absent (do_not_exists), not as a refused scrub.
     manager_disk_t::unique_future<core::result_wrapper_t<components::catalog::oid_t>>
     manager_disk_t::find_cast_oid(execution_context_t ctx,
                                   components::catalog::oid_t source_oid,
@@ -152,9 +146,8 @@ namespace services::disk {
         co_return components::catalog::INVALID_OID;
     }
 
-    // ctx.txn, for the reason on resolve_namespace above: the enumeration must show a txn
-    // its own uncommitted namespaces and hide the ones it dropped, or the next verdict
-    // built on this list lies the same way the resolve did.
+    // ctx.txn, for the reason on resolve_namespace above: the list must show this transaction's
+    // own uncommitted namespaces and hide the ones it dropped, or a verdict built on it lies too.
     manager_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<std::string>>>
     manager_disk_t::list_namespaces(execution_context_t ctx) {
         std::pmr::vector<std::string> out(resource());
@@ -175,7 +168,7 @@ namespace services::disk {
         co_return out;
     }
 
-    // --- Direct replay methods (synchronous, no MVCC, for physical WAL replay) ---
+    // Direct replay methods: synchronous, no MVCC, for physical WAL replay.
 
     manager_disk_t::unique_future<std::vector<components::catalog::oid_t>>
     manager_disk_t::allocate_oids_batch(std::size_t count) {
@@ -187,23 +180,19 @@ namespace services::disk {
         co_return batch;
     }
 
-    // Batched keyed scan for one table_oid. Every key routes to the SAME owning
-    // agent (keyed by table_oid), so the per-key loop runs intra-agent: one
-    // scan_by_keys_inner message carries the whole batch and the agent resolves the
-    // shared key column names to indices once. result[i] corresponds to keys[i].
+    // Every key for one table_oid routes to the same owning agent, so scan_by_keys_inner carries
+    // the whole batch in one message and resolves key-column names to indices once.
     manager_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<std::pmr::vector<std::int64_t>>>>
     manager_disk_t::scan_by_keys(execution_context_t ctx,
                                  components::catalog::oid_t table_oid,
                                  std::pmr::vector<std::string> key_col_names,
                                  components::vector::data_chunk_t keys) {
         std::pmr::vector<std::pmr::vector<std::int64_t>> out(resource());
-        // INVARIANT on SUCCESS: result.size() == keys.size() — one (possibly empty) row per
-        // input key, in input order, so result[i] always maps to keys[i]. Consumers
-        // (operator_fk_check / operator_fk_cascade) index result[i] positionally and treat an
-        // empty row as "no parent match", so a short outer vector would silently skip checks —
-        // and a routing failure reported as keys.size() empty rows is a constraint check that
-        // passes because the check could not run. Hence the errors below. Zero keys is not a
-        // failure: an empty request has an empty answer, and keys.size() == 0 keeps the invariant.
+        // INVARIANT on success: result.size() == keys.size(), result[i] for keys[i]. FK consumers
+        // (operator_fk_check/operator_fk_cascade) index positionally and read an empty row as "no
+        // parent match" — a short vector, or a routing failure reported as all-empty, would silently
+        // pass a constraint check that never ran. Zero keys is not a failure: an empty request gets
+        // an empty answer, still keeping size() == 0 == keys.size().
         if (keys.empty()) {
             co_return out;
         }
@@ -240,12 +229,10 @@ namespace services::disk {
                                        std::pmr::vector<std::uint64_t> key_col_indices,
                                        components::vector::data_chunk_t keys,
                                        std::pmr::vector<std::uint64_t> projected_cols) {
-        // Thin router: the caller passes storage column ORDINALS and the eq-AND filtered
-        // scan runs intra-agent in read_chunks_by_key_inner (no row-major flatten, no
-        // column-name resolution hop at all). Callers read cells via chunk.value(col, row).
-        // These must not return an empty vector: the resolve operators read that as "no such
-        // row", so a misrouted or agent-less read surfaces as "Database does not exist". A read
-        // that never ran is an error.
+        // Thin router: the caller passes storage column ordinals straight to read_chunks_by_key_inner
+        // (no row-major flatten, no name-resolution hop); callers read cells via chunk.value(col, row).
+        // It must not return an empty vector on failure: resolve operators read that as "no such row",
+        // so a misrouted or agent-less read would surface as "Database does not exist" instead.
         if (key_col_indices.empty()) {
             co_return core::error_t{core::error_code_t::invalid_parameter,
                                     std::pmr::string{"read_chunks_by_key: no key columns given", resource()}};
@@ -281,14 +268,11 @@ namespace services::disk {
                                         std::pmr::vector<std::uint64_t> key_col_indices,
                                         components::vector::data_chunk_t keys,
                                         std::pmr::vector<std::uint64_t> projected_cols) {
-        // Thin router for the multi-key batch: the caller passes storage column ORDINALS and the
-        // filtered scan runs intra-agent in read_chunks_by_keys_inner (one mailbox hop for the
-        // whole batch). INVARIANT on SUCCESS: result.size() == keys.size() — one (possibly
-        // empty) entry per input key, in input order, so result[i] always maps to keys[i], which
-        // is how consumers index it.
-        // Routing failures are NOT keys.size() empty entries — that shape is indistinguishable
-        // from "every key matched nothing", which is how a failed FK attribute read silently
-        // produced empty fk.child_col_names.
+        // Thin router for the multi-key batch: the caller passes storage column ordinals straight to
+        // read_chunks_by_keys_inner, one mailbox hop for the whole batch. INVARIANT on success:
+        // result.size() == keys.size(), result[i] for keys[i]. A routing failure reported as
+        // keys.size() empty entries is indistinguishable from "every key matched nothing" — which is
+        // how a failed FK attribute read once silently produced empty fk.child_col_names.
         std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>> out(resource());
         if (keys.empty()) {
             co_return out;

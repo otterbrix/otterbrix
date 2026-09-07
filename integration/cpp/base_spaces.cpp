@@ -89,9 +89,7 @@ namespace otterbrix {
 
         trace(log_, "spaces::PHASE 1 complete - {} WAL records", wal_records.size());
 
-        // Spawn order is the wiring order: disk, then index, then WAL (ctor takes disk+index),
-        // then dispatcher (ctor takes all three). The dispatcher's own address — born last — is
-        // wired back into each manager below, post-construction.
+        // The dispatcher's own address — born last — is wired back into each manager below, post-construction.
         trace(log_, "spaces::manager_disk start");
         manager_disk_ = actor_zeta::spawn<services::disk::manager_disk_t>(&resource,
                                                                           scheduler_.get(),
@@ -171,7 +169,7 @@ namespace otterbrix {
 
         disk.set_manager_wal_sync(effective_wal_address);
 
-        // System-table records replay first, sequentially, mutating the catalog restore depends on.
+        // System-table records mutate the catalog user-table restore depends on.
         if (!wal_records.empty()) {
             std::unordered_map<components::catalog::oid_t, std::vector<services::wal::record_t*>> system_by_oid;
             std::unordered_map<components::catalog::oid_t, std::vector<services::wal::record_t*>> user_by_oid;

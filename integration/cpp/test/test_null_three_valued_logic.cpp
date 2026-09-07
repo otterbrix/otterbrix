@@ -2,20 +2,13 @@
 #include "integration_fixture_path.hpp"
 #include <catch2/catch_test_macros.hpp>
 
-// SQL three-valued logic over NULL operands.
+// A NULL operand makes a comparison UNKNOWN, not FALSE; UNKNOWN rows are excluded from WHERE /
+// DELETE / UPDATE, and NOT UNKNOWN stays UNKNOWN (NOT FALSE would wrongly include the row).
 //
-// A NULL operand makes a value comparison UNKNOWN, not FALSE, and UNKNOWN rows are excluded
-// from WHERE / DELETE / UPDATE. The distinction matters under NOT: `NOT UNKNOWN` is UNKNOWN
-// (the row stays excluded), whereas `NOT FALSE` is TRUE (the row would be wrongly included).
-//
-// Before the fix, a pure comparison was pushed down into the storage scan, whose fast path
-// compared the raw data buffer without consulting the validity mask. Validity lives in a
-// separate sibling column, so a NULL row's payload bytes are a meaningless 0 — every NULL row
-// therefore matched `= 0` / `>= 0` / `< 1` ..., and DELETE/UPDATE mutated those rows.
-//
-// Both surfaces are covered here because they are the same bug: a jsonb nav (`t ->> 'x'`) is
-// resolved at transform time into a plain column reference, and an absent key is stored as a
-// NULL. A plain NULL and an absent jsonb key reach the identical scan path.
+// Before the fix, comparisons pushed into the storage scan compared the raw data buffer without
+// consulting the validity mask, so a NULL row's meaningless zero bytes matched `= 0` / `>= 0` /
+// `< 1` and got mutated by DELETE/UPDATE. A jsonb nav over an absent key resolves to the same
+// plain-column NULL and hits the identical scan path, so both surfaces are covered here.
 
 namespace {
 
@@ -34,7 +27,6 @@ namespace {
         return {true, cur->size()};
     }
 
-    // id=1 -> x=5 ; id=2 -> x NULL ; id=3 -> x=0
     template<typename Dispatcher>
     void seed_plain(Dispatcher* d, const std::string& table) {
         REQUIRE(run(d, "CREATE TABLE " + table + " (id INT, x BIGINT);").ok);
@@ -63,24 +55,22 @@ TEST_CASE("integration::cpp::null_3vl::comparisons_exclude_null") {
     REQUIRE(run(d, "CREATE DATABASE n3;").ok);
     seed_plain(d, "n3.t");
 
-    // The NULL row (id=2) must satisfy NO value comparison.
-    CHECK(run(d, "SELECT id FROM n3.t WHERE x = 0;").rows == 1);  // id=3
-    CHECK(run(d, "SELECT id FROM n3.t WHERE x <> 0;").rows == 1); // id=1
-    CHECK(run(d, "SELECT id FROM n3.t WHERE x >= 0;").rows == 2); // id=1,3
-    CHECK(run(d, "SELECT id FROM n3.t WHERE x > -1;").rows == 2); // id=1,3
-    CHECK(run(d, "SELECT id FROM n3.t WHERE x < 1;").rows == 1);  // id=3
-    CHECK(run(d, "SELECT id FROM n3.t WHERE x <= 5;").rows == 2); // id=1,3
-    CHECK(run(d, "SELECT id FROM n3.t WHERE x = 5;").rows == 1);  // id=1
+    CHECK(run(d, "SELECT id FROM n3.t WHERE x = 0;").rows == 1);
+    CHECK(run(d, "SELECT id FROM n3.t WHERE x <> 0;").rows == 1);
+    CHECK(run(d, "SELECT id FROM n3.t WHERE x >= 0;").rows == 2);
+    CHECK(run(d, "SELECT id FROM n3.t WHERE x > -1;").rows == 2);
+    CHECK(run(d, "SELECT id FROM n3.t WHERE x < 1;").rows == 1);
+    CHECK(run(d, "SELECT id FROM n3.t WHERE x <= 5;").rows == 2);
+    CHECK(run(d, "SELECT id FROM n3.t WHERE x = 5;").rows == 1);
 
     // IS NULL / IS NOT NULL keep working — they are TRUE/FALSE, never UNKNOWN.
-    CHECK(run(d, "SELECT id FROM n3.t WHERE x IS NULL;").rows == 1);     // id=2
-    CHECK(run(d, "SELECT id FROM n3.t WHERE x IS NOT NULL;").rows == 2); // id=1,3
+    CHECK(run(d, "SELECT id FROM n3.t WHERE x IS NULL;").rows == 1);
+    CHECK(run(d, "SELECT id FROM n3.t WHERE x IS NOT NULL;").rows == 2);
 }
 
 TEST_CASE("integration::cpp::null_3vl::not_does_not_resurrect_null") {
-    // The guard against a naive fix. Merely excluding NULL from a comparison is not enough:
-    // if the filter tree is two-valued, NOT flips that exclusion into an inclusion.
-    // NOT UNKNOWN must stay UNKNOWN.
+    // Guards a naive fix: if the filter tree is two-valued, excluding NULL from a comparison isn't
+    // enough — NOT would flip that exclusion into an inclusion instead of keeping it UNKNOWN.
     auto config = test_create_config(integration_fixture_path("test_null_3vl/not"));
     test_clear_directory(config);
     config.wal.on = false;
@@ -89,10 +79,10 @@ TEST_CASE("integration::cpp::null_3vl::not_does_not_resurrect_null") {
     REQUIRE(run(d, "CREATE DATABASE n3;").ok);
     seed_plain(d, "n3.t");
 
-    CHECK(run(d, "SELECT id FROM n3.t WHERE NOT (x = 0);").rows == 1);  // id=1 only
-    CHECK(run(d, "SELECT id FROM n3.t WHERE NOT (x >= 0);").rows == 0); // nobody
-    CHECK(run(d, "SELECT id FROM n3.t WHERE NOT (x = 5);").rows == 1);  // id=3 only
-    CHECK(run(d, "SELECT id FROM n3.t WHERE NOT (x <> 0);").rows == 1); // id=3 only
+    CHECK(run(d, "SELECT id FROM n3.t WHERE NOT (x = 0);").rows == 1);
+    CHECK(run(d, "SELECT id FROM n3.t WHERE NOT (x >= 0);").rows == 0);
+    CHECK(run(d, "SELECT id FROM n3.t WHERE NOT (x = 5);").rows == 1);
+    CHECK(run(d, "SELECT id FROM n3.t WHERE NOT (x <> 0);").rows == 1);
 }
 
 TEST_CASE("integration::cpp::null_3vl::and_or_propagate_unknown") {
@@ -105,15 +95,15 @@ TEST_CASE("integration::cpp::null_3vl::and_or_propagate_unknown") {
     seed_plain(d, "n3.t");
 
     // OR: UNKNOWN or TRUE = TRUE; UNKNOWN or FALSE = UNKNOWN (excluded).
-    CHECK(run(d, "SELECT id FROM n3.t WHERE x = 0 OR x = 5;").rows == 2);     // id=1,3
-    CHECK(run(d, "SELECT id FROM n3.t WHERE x = 999 OR x = 5;").rows == 1);   // id=1
-    CHECK(run(d, "SELECT id FROM n3.t WHERE x = 0 OR id = 2;").rows == 2);    // id=2,3 — TRUE rescues it
-    CHECK(run(d, "SELECT id FROM n3.t WHERE x IS NULL OR x = 0;").rows == 2); // id=2,3
+    CHECK(run(d, "SELECT id FROM n3.t WHERE x = 0 OR x = 5;").rows == 2);
+    CHECK(run(d, "SELECT id FROM n3.t WHERE x = 999 OR x = 5;").rows == 1);
+    CHECK(run(d, "SELECT id FROM n3.t WHERE x = 0 OR id = 2;").rows == 2);    // TRUE rescues it
+    CHECK(run(d, "SELECT id FROM n3.t WHERE x IS NULL OR x = 0;").rows == 2);
 
     // AND: UNKNOWN and TRUE = UNKNOWN (excluded); UNKNOWN and FALSE = FALSE.
-    CHECK(run(d, "SELECT id FROM n3.t WHERE x >= 0 AND x <= 9;").rows == 2);    // id=1,3
-    CHECK(run(d, "SELECT id FROM n3.t WHERE x >= 0 AND id = 2;").rows == 0);    // nobody
-    CHECK(run(d, "SELECT id FROM n3.t WHERE x IS NULL AND id = 2;").rows == 1); // id=2
+    CHECK(run(d, "SELECT id FROM n3.t WHERE x >= 0 AND x <= 9;").rows == 2);
+    CHECK(run(d, "SELECT id FROM n3.t WHERE x >= 0 AND id = 2;").rows == 0);
+    CHECK(run(d, "SELECT id FROM n3.t WHERE x IS NULL AND id = 2;").rows == 1);
 }
 
 TEST_CASE("integration::cpp::null_3vl::dml_does_not_touch_null_rows") {
@@ -124,17 +114,15 @@ TEST_CASE("integration::cpp::null_3vl::dml_does_not_touch_null_rows") {
     auto* d = space.dispatcher();
     REQUIRE(run(d, "CREATE DATABASE n3;").ok);
 
-    // DELETE must not remove the NULL row.
     seed_plain(d, "n3.del");
     CHECK(run(d, "DELETE FROM n3.del WHERE x = 0;").ok);
-    CHECK(run(d, "SELECT id FROM n3.del;").rows == 2);                 // id=1,2 survive
-    CHECK(run(d, "SELECT id FROM n3.del WHERE x IS NULL;").rows == 1); // id=2 still there
+    CHECK(run(d, "SELECT id FROM n3.del;").rows == 2);
+    CHECK(run(d, "SELECT id FROM n3.del WHERE x IS NULL;").rows == 1);
 
-    // UPDATE must not clobber the NULL row.
     seed_plain(d, "n3.upd");
     CHECK(run(d, "UPDATE n3.upd SET id = 99 WHERE x > -1;").ok);
-    CHECK(run(d, "SELECT id FROM n3.upd WHERE id = 99;").rows == 2); // only id=1,3 -> 99
-    CHECK(run(d, "SELECT id FROM n3.upd WHERE id = 2;").rows == 1);  // the NULL row is untouched
+    CHECK(run(d, "SELECT id FROM n3.upd WHERE id = 99;").rows == 2);
+    CHECK(run(d, "SELECT id FROM n3.upd WHERE id = 2;").rows == 1);
 }
 
 TEST_CASE("integration::cpp::null_3vl::update_overlay_keeps_null_excluded") {
@@ -151,11 +139,11 @@ TEST_CASE("integration::cpp::null_3vl::update_overlay_keeps_null_excluded") {
 
     CHECK(run(d, "UPDATE n3.t SET x = 7 WHERE id = 1;").ok); // put this vector into the overlay
 
-    CHECK(run(d, "SELECT id FROM n3.t WHERE x = 7;").rows == 1);     // id=1, read from the overlay
-    CHECK(run(d, "SELECT id FROM n3.t WHERE x = 5;").rows == 0);     // old value is gone
-    CHECK(run(d, "SELECT id FROM n3.t WHERE x = 0;").rows == 1);     // id=3 only — NOT the NULL row
-    CHECK(run(d, "SELECT id FROM n3.t WHERE x >= 0;").rows == 2);    // id=1(7),3(0) — NOT the NULL row
-    CHECK(run(d, "SELECT id FROM n3.t WHERE x IS NULL;").rows == 1); // id=2 still NULL
+    CHECK(run(d, "SELECT id FROM n3.t WHERE x = 7;").rows == 1);
+    CHECK(run(d, "SELECT id FROM n3.t WHERE x = 5;").rows == 0);
+    CHECK(run(d, "SELECT id FROM n3.t WHERE x = 0;").rows == 1);
+    CHECK(run(d, "SELECT id FROM n3.t WHERE x >= 0;").rows == 2);
+    CHECK(run(d, "SELECT id FROM n3.t WHERE x IS NULL;").rows == 1);
 }
 
 TEST_CASE("integration::cpp::null_3vl::string_column_null") {
@@ -172,27 +160,22 @@ TEST_CASE("integration::cpp::null_3vl::string_column_null") {
     REQUIRE(run(d, "INSERT INTO n3.s (id, name) VALUES (2, NULL);").ok);
     REQUIRE(run(d, "INSERT INTO n3.s (id, name) VALUES (3, '');").ok);
 
-    CHECK(run(d, "SELECT id FROM n3.s WHERE name = '';").rows == 1);     // id=3, NOT the NULL
-    CHECK(run(d, "SELECT id FROM n3.s WHERE name <> 'ann';").rows == 1); // id=3
-    CHECK(run(d, "SELECT id FROM n3.s WHERE name IS NULL;").rows == 1);  // id=2
+    CHECK(run(d, "SELECT id FROM n3.s WHERE name = '';").rows == 1);
+    CHECK(run(d, "SELECT id FROM n3.s WHERE name <> 'ann';").rows == 1);
+    CHECK(run(d, "SELECT id FROM n3.s WHERE name IS NULL;").rows == 1);
 }
 
-// NOTE — two adjacent gaps are deliberately NOT covered here. They are separate pre-existing
-// bugs that this change neither causes nor fixes (verified: identical results with and without
-// it), and pinning them would misattribute them to this fix:
+// NOTE — two adjacent gaps are deliberately not covered here: separate pre-existing bugs this
+// change neither causes nor fixes (verified: identical results with and without it).
 //
-//   * INDEX SCAN route. `CREATE INDEX idx_x ON t (x)` then `WHERE x = 0` returns 0 rows — it
-//     loses id=3, whose value genuinely IS 0. A pure compare on an indexed column is planned
-//     as an index_scan (create_plan_match.cpp), bypassing the scan filter entirely,
-//     and the index mishandles a column containing NULLs.
-//   * `UPDATE t SET x = NULL` does not mark the row NULL: afterwards, `x IS NULL` still does
-//     not see it.
+//   * INDEX SCAN: `CREATE INDEX idx_x ON t (x)` then `WHERE x = 0` returns 0 rows, losing id=3
+//     (genuinely 0) — a pure compare on an indexed column plans as an index_scan
+//     (create_plan_match.cpp), bypassing the scan filter, and the index mishandles NULLs.
+//   * `UPDATE t SET x = NULL` does not mark the row NULL — `x IS NULL` still misses it.
 //
-// Both are silent-wrong-result bugs and deserve their own fix and tests.
+// Both are silent-wrong-result bugs needing their own fix and tests.
 
-// ---------------------------------------------------------------------------
 // JSONB surface: the same bug, reached through a nav operator over an absent key.
-// ---------------------------------------------------------------------------
 
 TEST_CASE("integration::cpp::null_3vl::jsonb_absent_key_comparisons") {
     auto config = test_create_config(integration_fixture_path("test_null_3vl/jsonb_cmp"));
@@ -213,11 +196,11 @@ TEST_CASE("integration::cpp::null_3vl::jsonb_absent_key_comparisons") {
     }
 
     // ...and it must now be excluded from every value comparison through the nav operand.
-    CHECK(run(d, "SELECT id FROM n3.co WHERE co ->> 'x' = 0;").rows == 1);  // id=3
-    CHECK(run(d, "SELECT id FROM n3.co WHERE co ->> 'x' > -1;").rows == 2); // id=1,3
-    CHECK(run(d, "SELECT id FROM n3.co WHERE co ->> 'x' < 1;").rows == 1);  // id=3
-    CHECK(run(d, "SELECT id FROM n3.co WHERE co ->> 'x' >= 0;").rows == 2); // id=1,3
-    CHECK(run(d, "SELECT id FROM n3.co WHERE co ->> 'x' <> 0;").rows == 1); // id=1
+    CHECK(run(d, "SELECT id FROM n3.co WHERE co ->> 'x' = 0;").rows == 1);
+    CHECK(run(d, "SELECT id FROM n3.co WHERE co ->> 'x' > -1;").rows == 2);
+    CHECK(run(d, "SELECT id FROM n3.co WHERE co ->> 'x' < 1;").rows == 1);
+    CHECK(run(d, "SELECT id FROM n3.co WHERE co ->> 'x' >= 0;").rows == 2);
+    CHECK(run(d, "SELECT id FROM n3.co WHERE co ->> 'x' <> 0;").rows == 1);
 
     // The same rows, addressed as a plain column on the same computing table.
     CHECK(run(d, "SELECT id FROM n3.co WHERE x = 0;").rows == 1);
@@ -233,18 +216,16 @@ TEST_CASE("integration::cpp::null_3vl::jsonb_not_and_dml") {
     REQUIRE(run(d, "CREATE DATABASE n3;").ok);
 
     seed_computed(d, "n3.co");
-    CHECK(run(d, "SELECT id FROM n3.co WHERE NOT (co ->> 'x' = 0);").rows == 1); // id=1 only
+    CHECK(run(d, "SELECT id FROM n3.co WHERE NOT (co ->> 'x' = 0);").rows == 1);
 
-    // DELETE through a nav operand must not remove the keyless row.
     seed_computed(d, "n3.cod");
     CHECK(run(d, "DELETE FROM n3.cod WHERE cod ->> 'x' = 0;").ok);
-    CHECK(run(d, "SELECT id FROM n3.cod;").rows == 2); // id=1,2 survive
+    CHECK(run(d, "SELECT id FROM n3.cod;").rows == 2);
 
-    // UPDATE through a nav operand must not clobber it.
     seed_computed(d, "n3.cou");
     CHECK(run(d, "UPDATE n3.cou SET id = 99 WHERE cou ->> 'x' > -1;").ok);
-    CHECK(run(d, "SELECT id FROM n3.cou WHERE id = 99;").rows == 2); // id=1,3 only
-    CHECK(run(d, "SELECT id FROM n3.cou WHERE id = 2;").rows == 1);  // keyless row untouched
+    CHECK(run(d, "SELECT id FROM n3.cou WHERE id = 99;").rows == 2);
+    CHECK(run(d, "SELECT id FROM n3.cou WHERE id = 2;").rows == 1);
 }
 
 TEST_CASE("integration::cpp::null_3vl::jsonb_nested_absent_key") {
@@ -257,9 +238,9 @@ TEST_CASE("integration::cpp::null_3vl::jsonb_nested_absent_key") {
     REQUIRE(run(d, "CREATE DATABASE n3;").ok);
     REQUIRE(run(d, "CREATE TABLE n3.nd ();").ok);
     REQUIRE(run(d, "INSERT INTO n3.nd (id, a.b) VALUES (1, 5);").ok);
-    REQUIRE(run(d, "INSERT INTO n3.nd (id) VALUES (2);").ok); // no a.b
+    REQUIRE(run(d, "INSERT INTO n3.nd (id) VALUES (2);").ok);
     REQUIRE(run(d, "INSERT INTO n3.nd (id, a.b) VALUES (3, 0);").ok);
 
-    CHECK(run(d, "SELECT id FROM n3.nd WHERE nd #>> '{a,b}' = 0;").rows == 1);  // id=3
-    CHECK(run(d, "SELECT id FROM n3.nd WHERE nd #>> '{a,b}' >= 0;").rows == 2); // id=1,3
+    CHECK(run(d, "SELECT id FROM n3.nd WHERE nd #>> '{a,b}' = 0;").rows == 1);
+    CHECK(run(d, "SELECT id FROM n3.nd WHERE nd #>> '{a,b}' >= 0;").rows == 2);
 }

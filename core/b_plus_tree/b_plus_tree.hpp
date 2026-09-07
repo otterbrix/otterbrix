@@ -10,10 +10,8 @@
 
 namespace core::b_plus_tree {
 
-    // current header size of segment_tree supports 2^14 - 1 blocks which is 2^14 - 1 items in worst case
-    // max leaf node size <= 16383
-    // for a round power of 2:
-    // idealy DEFAULT_NODE_CAPACITY and MAX_NODE_CAPACITY % 4 == 0
+    // segment_tree's header supports 2^14 - 1 blocks, so a leaf node holds at most 16383 items; keep
+    // MAX_NODE_CAPACITY a power of 2, and both capacities divisible by 4.
     static constexpr size_t MAX_NODE_CAPACITY = 8192u;
     static constexpr size_t DEFAULT_NODE_CAPACITY = 128u;
     static constexpr size_t METADATA_SIZE = DEFAULT_BLOCK_SIZE;
@@ -59,7 +57,6 @@ namespace core::b_plus_tree {
             virtual index_t min_index() const = 0;
             virtual index_t max_index() const = 0;
 
-            // will be used everywhere
             base_node_t* left_node_ = nullptr;
             base_node_t* right_node_ = nullptr;
 

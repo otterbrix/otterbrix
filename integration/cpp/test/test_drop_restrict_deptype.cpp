@@ -1,5 +1,5 @@
 // Bare DROP is RESTRICT (PostgreSQL parity, #638; gram.y's opt_drop_behavior /
-// drop_behavior_of). Plans below are built BY HAND with behavior = restrict_ so
+// drop_behavior_of). Plans below are built by hand with behavior = restrict_ so
 // these pins do not depend on the SQL front end; test_drop_default_restrict.cpp
 // pins the SQL route. catalog::deptype::blocks_restrict is exactly `dt == 'n'`
 // (components/catalog/dependency_walker.hpp).
@@ -332,7 +332,7 @@ TEST_CASE("integration::cpp::drop_restrict::table_referenced_by_a_foreign_key_is
 }
 
 // cascade_planner.cpp's RESTRICT allow-path used to return with plan.steps
-// EMPTY (the seed step was never pushed), so an accepted RESTRICT deleted
+// empty (the seed step was never pushed), so an accepted RESTRICT deleted
 // nothing and reported success; it now falls through to the CASCADE leg's
 // seed-last order.
 TEST_CASE("integration::cpp::drop_restrict::allowed_restrict_drop_removes_nothing") {

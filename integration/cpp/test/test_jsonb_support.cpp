@@ -1,9 +1,9 @@
 // otterbrix has no native json/jsonb type; nine postgres-spelled jsonb operators work by
-// name-mangling over FLATTENED columns. Cases are SUPPORTED or BUG (a "correct:" comment gives
+// name-mangling over flattened columns. Cases are SUPPORTED or BUG (a "correct:" comment gives
 // the intended result). Regression c59d95e8 (#622) refuses table-valued operators (-> #> - #-)
 // in the select list. The codec is components/expressions/jsonb_path.hpp.
 //
-// NOT PINNABLE: `SELECT CASE WHEN t #>> 'a.b' = 10 ... FROM t` SEGFAULTs on a NULL leaf row
+// NOT PINNABLE: `SELECT CASE WHEN t #>> 'a.b' = 10 ... FROM t` segfaults on a NULL leaf row
 // (general 3VL bug) -- cannot live in a test binary.
 
 #include "test_config.hpp"
@@ -97,7 +97,6 @@ namespace {
 
 } // namespace
 
-// Dotted INSERT targets become real '/'-separated columns; an omitted target reads back NULL.
 TEST_CASE("integration::cpp::test_jsonb_support::flattened_storage_model") {
     auto config = make_test_config(fixture_dir("storage"));
     test_spaces space(config);
@@ -202,7 +201,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::delete_keys") {
     }
 }
 
-// Exists means the column exists AND the row's value is non-null; a ragged row tests false.
+// Exists means the column exists and the row's value is non-null; a ragged row tests false.
 TEST_CASE("integration::cpp::test_jsonb_support::existence_predicates") {
     auto config = make_test_config(fixture_dir("exists"));
     test_spaces space(config);
@@ -288,7 +287,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::navigation_in_expressions") {
         // SUM(nav) alone fails ("unable to parse value"); + 0 makes it arithmetic the aggregate accepts.
         auto s = exec(d, "SELECT SUM((t #>> 'a.c') + 0) AS s FROM jp.t;");
         REQUIRE(s->is_success());
-        CHECK(i64(s, "s", 0) == 190); // 20 + 40 + 60 + 70
+        CHECK(i64(s, "s", 0) == 190);
 
         auto m = exec(d, "SELECT MIN((t #>> 'a.c') + 0) AS s FROM jp.t;");
         REQUIRE(m->is_success());
@@ -303,7 +302,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::navigation_in_expressions") {
     }
 
     SECTION("DISTINCT and LIMIT over a navigated leaf") {
-        CHECK(exec(d, "SELECT DISTINCT t ->> 'x' AS v FROM jp.t;")->size() == 3); // 'p', 'q', NULL
+        CHECK(exec(d, "SELECT DISTINCT t ->> 'x' AS v FROM jp.t;")->size() == 3);
         CHECK(exec(d, "SELECT t #>> 'a.c' AS v FROM jp.t LIMIT 2;")->size() == 2);
     }
 }
@@ -412,7 +411,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::view_over_navigation") {
     CHECK(std::string(narrowed->get_error().what).find("'ab' was not found") != std::string::npos);
 }
 
-// Routes by POSITION: the i-th projected column lands in the i-th written target; only an ARITY mismatch is refused.
+// Routes by position: the i-th projected column lands in the i-th written target; only an arity mismatch is refused.
 TEST_CASE("integration::cpp::test_jsonb_support::insert_select_maps_projection_to_target_columns") {
     auto config = make_test_config(fixture_dir("insert_select"));
     test_spaces space(config);
@@ -519,7 +518,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::clean_rejections") {
     CHECK(str(after, "x", 0) == "p");
 
     // Upstream #634 folded four duplicated resolvers into one transform_expression. Pinned by
-    // VALUE, not is_success(): this file is excluded from origin/main's build, so these are the only guard.
+    // value, not is_success(): this file is excluded from origin/main's build, so these are the only guard.
     {
         INFO("ORDER BY over a navigated key sorts by the physical column it names");
         auto desc = exec(d, "SELECT id FROM jp.t ORDER BY t #>> 'a.b' DESC;");
@@ -541,7 +540,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::clean_rejections") {
         auto sum = exec(d, "SELECT SUM(t #>> 'a.b') AS s FROM jp.t;");
         REQUIRE(sum->is_success());
         REQUIRE(sum->size() == 1);
-        CHECK(i64(sum, "s", 0) == 90); // 10 + 30 + 50; the row without a/b contributes nothing
+        CHECK(i64(sum, "s", 0) == 90);
     }
     {
         INFO("RETURNING over a navigated key answers for the row it removed, and removes it");
@@ -558,7 +557,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::clean_rejections") {
     CHECK_FALSE(exec(d, "SELECT id FROM jp.t ORDER BY t -> 'a' DESC;")->is_success());
     CHECK_FALSE(exec(d, "SELECT SUM(t -> 'a') FROM jp.t;")->is_success());
     {
-        // Refusal must come BEFORE the delete: an unlowerable RETURNING may not take the row.
+        // Refusal must come before the delete: an unlowerable RETURNING may not take the row.
         INFO("a RETURNING over an unknown path refuses without deleting");
         CHECK_FALSE(exec(d, "DELETE FROM jp.t WHERE id = 4 RETURNING t ->> 'nokey';")->is_success());
         auto still = exec(d, "SELECT id FROM jp.t WHERE id = 4;");
@@ -567,7 +566,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::clean_rejections") {
     }
 }
 
-// Under GROUP BY (or a bare aggregate) the operator used to reach physical execution and SEGFAULT.
+// Must be refused before reaching physical execution — under GROUP BY (or a bare aggregate) it segfaults there.
 TEST_CASE("integration::cpp::test_jsonb_support::table_valued_op_rejected_under_grouping") {
     auto config = make_test_config(fixture_dir("gb_reject"));
     test_spaces space(config);
@@ -628,10 +627,10 @@ TEST_CASE("integration::cpp::test_jsonb_support::sql_json_standard_absent") {
     }
 }
 
-// BUG characterization: each CHECK below pins behavior that is currently WRONG.
+// BUG characterization: each CHECK below pins behavior that is currently wrong.
 
-// A cast on a navigated value used to fall through to the constant-parameter path, folding it
-// into a per-run garbage constant repeated on every row; it now reads the column per row.
+// Guards against a navigated value's cast folding into one per-run constant repeated on every
+// row, instead of reading the column per row.
 TEST_CASE("integration::cpp::test_jsonb_support::cast_nav_in_arithmetic_reads_the_column") {
     auto config = make_test_config(fixture_dir("cast_arith"));
     test_spaces space(config);
@@ -655,8 +654,8 @@ TEST_CASE("integration::cpp::test_jsonb_support::cast_nav_in_arithmetic_reads_th
 
     auto both2 = exec(d, "SELECT id, 100 - (t #>> 'a.b')::bigint AS v FROM jp.t WHERE id < 3 ORDER BY id;");
     REQUIRE(both2->is_success());
-    CHECK(i64(both2, "v", 0) == 90); // 100 - 10
-    CHECK(i64(both2, "v", 1) == 70); // 100 - 30
+    CHECK(i64(both2, "v", 0) == 90);
+    CHECK(i64(both2, "v", 1) == 70);
 
     auto plain = exec(d, "SELECT id, (id)::bigint + 1 AS v FROM jp.t ORDER BY id;");
     REQUIRE(plain->is_success());
@@ -687,7 +686,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::deep_path_insert_keeps_all_segm
     check_value_position_refusal(d, "SELECT d -> 'a' -> 'b' FROM jp.d WHERE id = 1;");
 }
 
-// A subscript like arr[0] flattens like any segment (-> "arr/0"); it used to throw uncaught std::exception.
+// A subscript like arr[0] flattens like any segment, to "arr/0".
 TEST_CASE("integration::cpp::test_jsonb_support::subscript_insert_target") {
     auto config = make_test_config(fixture_dir("subscript"));
     test_spaces space(config);
@@ -705,7 +704,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::subscript_insert_target") {
 }
 
 // A NULL into a not-yet-existing column has no type, so it's dropped instead of segfaulting.
-// OPEN DEFECT: the arity guard (validate_logical_plan.cpp, bind_computed_rename) checks the TYPED
+// OPEN DEFECT: the arity guard (validate_logical_plan.cpp, bind_computed_rename) checks the typed
 // schema instead of the projection's expression count, wrongly refusing an all-NULL write.
 TEST_CASE("integration::cpp::test_jsonb_support::insert_null_into_new_column_is_absent") {
     auto config = make_test_config(fixture_dir("null_insert"));
@@ -760,7 +759,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::delete_key_array_form") {
     check_value_position_refusal(d, "SELECT t - '{a}' FROM jp.t;");
 }
 
-// Expand now errors on a miss like the scalar form; it used to be silently ERASED, changing arity.
+// A miss must error like the scalar form does; silently erasing it would change row arity unnoticed.
 TEST_CASE("integration::cpp::test_jsonb_support::zero_match_expand_is_an_error") {
     auto config = make_test_config(fixture_dir("zero_exp"));
     test_spaces space(config);
@@ -798,7 +797,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::flattened_name_and_nested_path_
 }
 
 // Existence follows postgres 3VL instead of hard-erroring: absent is false, an intermediate key
-// is present iff a child is, and one absent key no longer poisons an any-of.
+// is present iff a child is, and one absent key does not poison an any-of.
 TEST_CASE("integration::cpp::test_jsonb_support::existence_over_missing_key") {
     auto config = make_test_config(fixture_dir("missing"));
     test_spaces space(config);
@@ -835,7 +834,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::navigation_over_missing_key_sti
 }
 
 // The key operand is a literal (string/number, a cast, or NULL): a cast is transparent, a
-// numeric key is stringified, and NULL is a clean error -- get_str_value used to crash on these.
+// numeric key is stringified, and NULL is a clean error (get_str_value).
 TEST_CASE("integration::cpp::test_jsonb_support::key_operand_literals") {
     auto config = make_test_config(fixture_dir("key_operand"));
     test_spaces space(config);
@@ -875,14 +874,14 @@ TEST_CASE("integration::cpp::test_jsonb_support::key_operand_literals") {
     }
 
     SECTION("a non-string cast key resolves to its value and never crashes") {
-        // (1::bool) used to segfault; now it resolves to the text "1" (no such column), erroring cleanly.
+        // (1::bool) resolves to the text "1" (no such column), erroring cleanly rather than crashing.
         CHECK_FALSE(exec(d, "SELECT t ->> (1::bool) AS v FROM jp.t;")->is_success());
         CHECK_FALSE(exec(d, "SELECT t -> (1::bool) FROM jp.t;")->is_success());
     }
 }
 
-// Before #622 a bare cast over a navigated value executed as a no-op (::text left the leaf
-// BIGINT); now refused entirely. correct: the cast converts (::text yields the text "20").
+// Regression #622: a bare cast over a navigated value is refused entirely. correct: it converts
+// (::text yields the text "20").
 TEST_CASE("integration::cpp::test_jsonb_support::bug_cast_over_navigation_is_a_noop") {
     auto config = make_test_config(fixture_dir("cast_noop"));
     test_spaces space(config);
@@ -894,8 +893,6 @@ TEST_CASE("integration::cpp::test_jsonb_support::bug_cast_over_navigation_is_a_n
     CHECK(std::string(cur->get_error().what).find("cast spelled on a column reference") != std::string::npos);
 }
 
-// A jsonb operator's base table disambiguates a subtree name shared by both joined tables;
-// expansion/deletion used to be side-blind.
 TEST_CASE("integration::cpp::test_jsonb_support::expand_inside_join_is_side_aware") {
     auto config = make_test_config(fixture_dir("join_expand"));
     test_spaces space(config);
@@ -916,7 +913,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::expand_inside_join_is_side_awar
     check_value_position_refusal(d, "SELECT m - 'd' FROM jp.l JOIN jp.m ON l.k = m.k;");
 }
 
-// Works when the subtree name belongs to only one joined table -- a resolution bug, not a missing feature.
+// A resolution bug, not a missing feature.
 TEST_CASE("integration::cpp::test_jsonb_support::expand_in_join_with_unique_subtree") {
     auto config = make_test_config(fixture_dir("join_expand_ok"));
     test_spaces space(config);
@@ -930,7 +927,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::expand_in_join_with_unique_subt
     check_value_position_refusal(d, "SELECT m -> 'd' FROM jp.l JOIN jp.m ON l.k = m.k;");
 }
 
-// With 3+ joins, a column shared by several tables silently resolves to the leftmost one (join resolution, not jsonb).
+// Triggered by 3+ joins sharing a column name — a join-resolution bug, not a jsonb one.
 TEST_CASE("integration::cpp::test_jsonb_support::bug_three_table_join_takes_leftmost_value") {
     auto config = make_test_config(fixture_dir("join3"));
     test_spaces space(config);

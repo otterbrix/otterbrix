@@ -560,8 +560,8 @@ namespace services::wal {
             }
         }
 
-        wal::id_t max_wal_id = 0;      // high-water mark over the FILES -- bounds the allocator
-        wal::id_t last_readable_id = 0; // highest id that could actually be DECODED
+        wal::id_t max_wal_id = 0;      // high-water mark over the files -- bounds the allocator
+        wal::id_t last_readable_id = 0; // highest id that could actually be decoded
         crc32_t recovered_crc = 0;
         bool resume_segment_broken = false;
 

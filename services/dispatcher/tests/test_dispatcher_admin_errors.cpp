@@ -24,10 +24,9 @@
 #include <services/disk/manager_disk.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 
-// Pins three things: the pool-admin API answers a TYPED error, not a bare `bool` that would
-// erase which refusal happened; an executor refusing to drop an overload must stop the catalog
-// purge (unregister_udf/unregister_cast); and txn_accumulate_msg on a session with no active
-// transaction is a refusal, not a silent drop.
+// Pins that the pool-admin API answers a typed error, not a bare `bool`; that an executor
+// refusing to drop an overload stops the catalog purge; and that txn_accumulate_msg on a session
+// with no active transaction is a refusal, not a silent drop.
 
 using namespace services;
 using namespace services::dispatcher;
@@ -79,8 +78,7 @@ namespace {
         return core::error_t::no_error();
     }
 
-    // One-arg BIGINT -> BIGINT vector UDF. The name is a parameter so each test owns its own
-    // entry in the process-global default registry.
+    // The name is a parameter so each test owns its own entry in the process-global default registry.
     std::unique_ptr<components::compute::vector_function> make_probe_func(std::pmr::memory_resource* resource,
                                                                           const std::string& name) {
         using namespace components::compute;
@@ -230,7 +228,7 @@ private:
     std::unique_ptr<manager_dispatcher_t, actor_zeta::pmr::deleter_t> manager_dispatcher_;
 };
 
-// ===== every refusal names itself =====
+// Every refusal names itself.
 
 TEST_CASE("services::dispatcher::admin_errors::register_udf_duplicate_keeps_executor_error") {
     components::compute::function_registry_t::reset_default();
@@ -244,9 +242,6 @@ TEST_CASE("services::dispatcher::admin_errors::register_udf_duplicate_keeps_exec
                                           components::compute::function_ptr{make_probe_func(mr.get(), fname)});
         REQUIRE_FALSE(err.contains_error());
     }
-    // Second registration of the same signature: executor_t::register_udf answers a TYPED
-    // function_registry_error. That error is the whole point — it must reach the caller
-    // instead of being flattened into `false`.
     {
         auto err = test.dispatcher_invoke(&manager_dispatcher_t::register_udf,
                                           session_id_t{},
@@ -263,7 +258,6 @@ TEST_CASE("services::dispatcher::admin_errors::cast_refusals_are_distinguishable
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     admin_fixture test(mr.get(), admin_dir("cast_reasons"));
 
-    // (a) unregistering a cast that was never registered.
     {
         auto err =
             test.dispatcher_invoke(&manager_dispatcher_t::unregister_cast, session_id_t{}, kCastSource, kCastTarget);
@@ -271,8 +265,6 @@ TEST_CASE("services::dispatcher::admin_errors::cast_refusals_are_distinguishable
         REQUIRE(err.type == core::error_code_t::schema_error);
         REQUIRE(mentions(err, "cast is not registered"));
     }
-    // (b) a source type that is not registered at all — a DIFFERENT reason, and it has to
-    //     read differently.
     {
         const auto udt = complex_logical_type::create_unknown("admin_probe_udt");
         auto err = test.dispatcher_invoke(&manager_dispatcher_t::register_cast,
@@ -285,7 +277,6 @@ TEST_CASE("services::dispatcher::admin_errors::cast_refusals_are_distinguishable
         REQUIRE(mentions(err, "not registered"));
         REQUIRE_FALSE(mentions(err, "cast is not registered"));
     }
-    // (c) the happy path, then the duplicate — a third distinct reason.
     {
         auto err = test.dispatcher_invoke(&manager_dispatcher_t::register_cast,
                                           session_id_t{},
@@ -312,8 +303,7 @@ TEST_CASE("services::dispatcher::admin_errors::set_explain_renderer_refusals_nam
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     admin_fixture test(mr.get(), admin_dir("renderer"));
 
-    // A slot id past the registry limit and a null renderer are both refused by every
-    // executor; the dispatcher must say which door closed instead of answering `false`.
+    // A slot id past the registry limit and a null renderer are both refused by every executor.
     {
         auto err = test.dispatcher_invoke(&manager_dispatcher_t::set_explain_renderer,
                                           uint32_t{4000000000u},
@@ -329,7 +319,6 @@ TEST_CASE("services::dispatcher::admin_errors::set_explain_renderer_refusals_nam
         REQUIRE(err.contains_error());
         REQUIRE(err.type == core::error_code_t::invalid_parameter);
     }
-    // The success path still reports success.
     {
         auto err = test.dispatcher_invoke(&manager_dispatcher_t::set_explain_renderer,
                                           uint32_t{1},
@@ -339,7 +328,7 @@ TEST_CASE("services::dispatcher::admin_errors::set_explain_renderer_refusals_nam
     components::compute::function_registry_t::reset_default();
 }
 
-// ===== an executor that refused to drop the overload stops the catalog purge =====
+// An executor that refused to drop the overload stops the catalog purge.
 
 TEST_CASE("services::dispatcher::admin_errors::unregister_udf_executor_refusal_keeps_pg_proc") {
     components::compute::function_registry_t::reset_default();
@@ -348,7 +337,7 @@ TEST_CASE("services::dispatcher::admin_errors::unregister_udf_executor_refusal_k
 
     const std::string fname = "admin_probe_orphan";
     // The process-global default registry (what operator_unregister_udf_t probes) knows the
-    // overload and the catalog carries its pg_proc row — but NO executor registry holds it.
+    // overload and the catalog carries its pg_proc row — but no executor registry holds it.
     {
         auto added =
             components::compute::function_registry_t::get_default()->add_function(make_probe_func(mr.get(), fname));
@@ -359,7 +348,7 @@ TEST_CASE("services::dispatcher::admin_errors::unregister_udf_executor_refusal_k
 
     auto err =
         test.dispatcher_invoke(&manager_dispatcher_t::unregister_udf, session_id_t{}, fname, bigint_inputs(mr.get()));
-    // Catalog asserted FIRST — it's the actual damage if an ack is awaited but never checked;
+    // Catalog asserted first — it's the actual damage if an ack is awaited but never checked;
     // the typed refusal is only how the caller learns about it.
     REQUIRE(test.pg_proc_rows(fname) == 1);
     REQUIRE(err.contains_error());
@@ -398,15 +387,13 @@ TEST_CASE("services::dispatcher::admin_errors::unregister_cast_success_removes_p
     components::compute::function_registry_t::reset_default();
 }
 
-// ===== accumulating onto a session with no transaction is a refusal, not silence =====
+// Accumulating onto a session with no transaction is a refusal, not silence.
 
 TEST_CASE("services::dispatcher::admin_errors::txn_accumulate_without_transaction_is_refused") {
     components::compute::function_registry_t::reset_default();
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     admin_fixture test(mr.get(), admin_dir("accumulate"));
 
-    // A session that never began a transaction; without the refusal this whole payload
-    // would go on the floor unsaid.
     const session_id_t orphan_session{};
     txn_accumulate_payload_t payload;
     payload.base_appends.push_back(components::table::dml_append_range_t{4242, 0, 7});
@@ -420,8 +407,7 @@ TEST_CASE("services::dispatcher::admin_errors::txn_accumulate_without_transactio
     REQUIRE(err.contains_error());
     REQUIRE(err.type == core::error_code_t::transaction_inactive);
 
-    // And the refusal is honest about what it did: nothing was parked anywhere, so a
-    // transaction begun afterwards drains empty.
+    // Nothing was parked by the refusal: a transaction begun afterwards drains empty.
     auto ctx = test.dispatcher_invoke(&manager_dispatcher_t::txn_begin_session_msg, orphan_session);
     REQUIRE(ctx.txn.transaction_id != 0);
     auto drained = test.dispatcher_invoke(&manager_dispatcher_t::txn_commit_drain_msg, orphan_session);

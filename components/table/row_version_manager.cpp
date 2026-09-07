@@ -19,17 +19,9 @@ namespace components::table {
     void reset_cleanup_slots_visited() noexcept { g_cleanup_slots_visited.store(0, std::memory_order_relaxed); }
 #endif
 
-    // ProcArray canonical visibility filter:
-    //   1. If id == this txn's own transaction_id → self-write, always visible.
-    //   2. If id >= TRANSACTION_ID_START → another txn's pending write, not visible.
-    //   3. If id > snapshot_horizon → committed after our snapshot, not visible.
-    //   4. If id is in in_flight_snapshot → committed at snapshot time but not yet
-    //      publish()-published, not visible.
-    //   5. Otherwise → committed-and-published before our snapshot, visible.
-    //
-    // use_deleted_version is the inverse: a delete-marker id "survives" (i.e. row
-    // remains alive) when use_inserted_version says it's NOT visible. NOT_DELETED_ID
-    // is huge (>> TRANSACTION_ID_START) so case 2 above implicitly handles it.
+    // in_flight_snapshot holds ids committed but not yet publish()-published, along with
+    // still-running ones — both count as not-yet-visible. NOT_DELETED_ID is huge (>> TRANSACTION_ID_START),
+    // so the id >= TRANSACTION_ID_START check below already treats it as pending for free.
     struct transaction_version_operator {
         static bool use_inserted_version(const transaction_data& txn, uint64_t id) {
             if (txn.transaction_id != 0 && id == txn.transaction_id)
@@ -112,9 +104,8 @@ namespace components::table {
         if (insert_id > lowest_transaction) {
             return false;
         }
-        // ANY delete stamp pins this slot, committed or not: GC may drop version HISTORY but
-        // never the FACT of a deletion. Answering true here would let cleanup_append install a
-        // null chunk_info, which means "all rows visible" — resurrecting every deleted row.
+        // Any delete stamp pins this slot, committed or not: returning true here would let
+        // cleanup_append install a null chunk_info — "all rows visible" — resurrecting every deleted row.
         if (delete_id != NOT_DELETED_ID) {
             return false;
         }
@@ -184,9 +175,8 @@ namespace components::table {
         uint64_t deleted_tuples = 0;
         for (uint64_t i = 0; i < count; i++) {
             if (deleted[rows[i]] != NOT_DELETED_ID) {
-                // Already deleted (by this txn, or a prior committed txn in a
-                // cascade-drop where the scan ignores MVCC visibility). Skip
-                // rather than abort: cascade DDL must be idempotent.
+                // Already deleted — by this txn, or a prior cascade-drop that ignored MVCC visibility.
+                // Skip rather than abort: cascade DDL must be idempotent.
                 continue;
             }
             deleted[rows[i]] = transaction_id;
@@ -224,10 +214,9 @@ namespace components::table {
     }
 
     void chunk_vector_info::revert_all_deletes(uint64_t txn_id) {
-        // Mirror of commit_all_deletes: instead of stamping this txn's pending
-        // delete marks with a commit_id, un-stamp them back to NOT_DELETED_ID so
-        // an aborted DELETE leaves the rows visible again. any_deleted stays as-is
-        // (a conservative hint — indexing/cleanup re-check each slot).
+        // Reverses commit_all_deletes: un-stamps this txn's pending deletes back to NOT_DELETED_ID so an
+        // aborted DELETE leaves rows visible again. any_deleted stays as-is — a conservative hint;
+        // indexing/cleanup re-check each slot.
         if (!any_deleted) {
             return;
         }
@@ -263,7 +252,6 @@ namespace components::table {
     }
 
     bool chunk_vector_info::cleanup(uint64_t lowest_transaction, std::unique_ptr<chunk_info>& result) const {
-        // Check inserts: all must be committed and old enough
         if (!same_inserted_id) {
             for (uint64_t idx = 0; idx < vector::DEFAULT_VECTOR_CAPACITY; idx++) {
                 if (inserted[idx] > lowest_transaction) {
@@ -275,7 +263,6 @@ namespace components::table {
         }
 
         if (any_deleted) {
-            // Check if ALL deletes are committed (< TRANSACTION_ID_START) and old enough
             bool any_delete_stamp = false;
             bool all_deleted = true;
             bool same_delete_id = true;
@@ -286,7 +273,6 @@ namespace components::table {
                     continue;
                 }
                 if (deleted[i] >= TRANSACTION_ID_START || deleted[i] > lowest_transaction) {
-                    // Uncommitted or too recent delete — can't cleanup
                     return false;
                 }
                 if (!any_delete_stamp) {
@@ -296,13 +282,11 @@ namespace components::table {
                 }
                 any_delete_stamp = true;
             }
-            // Every committed delete stamp must SURVIVE this call: cleanup_append replaces the
-            // slot with `result` on true, and a null slot means "all rows visible" — dropping a
-            // stamp would un-delete the rows.
+            // A committed delete stamp must survive: cleanup_append installs `result` here, and a null
+            // slot means all rows visible again (see chunk_constant_info::cleanup).
             if (all_deleted && same_delete_id) {
-                // Collapses to two ids (insert + delete), the delete CARRIED OVER so rows stay
-                // gone. Only safe when every row shares ONE delete id: mixed ids would rewrite
-                // some rows' delete time, hiding or revealing rows a given snapshot must not.
+                // Collapsing to a constant_info only works when every row shares ONE delete id — mixed
+                // ids would rewrite some rows' delete time, hiding or revealing rows a snapshot must not.
                 auto constant = std::make_unique<chunk_constant_info>(start);
                 constant->insert_id = same_inserted_id ? insert_id : inserted[0];
                 constant->delete_id = first_delete_id;
@@ -310,13 +294,12 @@ namespace components::table {
                 return true;
             }
             if (any_delete_stamp) {
-                // Partial or mixed-id deletes: per-row stamps are the ONLY record of which rows
-                // went and when, so nothing here is reclaimable. Physical reclaim is
-                // data_table_t::compact's job, which rebuilds the row group without them.
+                // Partial or mixed-id deletes: per-row stamps are the only record of which rows went
+                // and when, so nothing here is reclaimable — physical reclaim is data_table_t::compact's job.
                 return false;
             }
-            // any_deleted survived revert_all_deletes as a conservative hint with no stamps
-            // left, so the slot is reclaimable on the insert-only terms below.
+            // any_deleted can be a stale hint from revert_all_deletes with no stamps left; the slot is
+            // still reclaimable on the insert-only terms below.
         }
         return true;
     }
@@ -428,7 +411,7 @@ namespace components::table {
     }
 
     bool row_version_manager_t::fetch(const transaction_data& transaction, uint64_t row) {
-        // `row` is collection-ABSOLUTE; vector_info_ slots are GROUP-LOCAL, so rebase by start_
+        // `row` is collection-absolute; vector_info_ slots are group-local, so fetch rebases by start_
         // (which moves with the group via row_group_t::move_to_collection).
         assert(row >= static_cast<uint64_t>(start_));
         const uint64_t local_row = row - static_cast<uint64_t>(start_);

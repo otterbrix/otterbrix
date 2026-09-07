@@ -118,9 +118,8 @@ namespace services::disk {
         /// Rebuilds table_, invalidating old references; kept for tests/WAL-replay, not SQL ALTER TABLE ADD COLUMN.
         void add_column(components::table::column_definition_t& col);
 
-        /// Rebuilds without col (VACUUM, free — columns SHARED); block release waits for checkpoint().
-        /// Outside a checkpoint round the split free pool only spends space (measured +2.9 MB per VACUUM
-        /// at agent_disk_t::maybe_cleanup_inner).
+        /// Rebuilds without col; block release waits for checkpoint(). Outside a checkpoint round the split
+        /// free pool only spends space (measured +2.9 MB per VACUUM at agent_disk_t::maybe_cleanup_inner).
         bool drop_column(const std::string& attname);
 
         /// Storage half of ALTER TABLE RENAME COLUMN: in-memory only until the next checkpoint (a
@@ -137,7 +136,7 @@ namespace services::disk {
         components::table::storage::standard_buffer_manager_t buffer_manager_;
         std::unique_ptr<components::table::storage::block_manager_t> block_manager_;
         std::unique_ptr<components::table::data_table_t> table_;
-        // Blocks drop_column removed but not yet released; NOT durable, so a crash just leaks space.
+        // Blocks drop_column removed but not yet released; not durable, so a crash just leaks space.
         std::pmr::vector<uint64_t> pending_released_blocks_;
         wal::id_t checkpoint_wal_id_{0};
         bool checkpoint_wal_id_known_{true};
@@ -289,7 +288,7 @@ namespace services::disk {
                     }
                 }
                 if (!in_storage) {
-                    // Must decode attdefspec on the MANAGER's resource, not the scan arena, or the default dangles.
+                    // Must decode attdefspec on the manager's resource, not the scan arena, or the default dangles.
                     note_column_identity(def.name(), def.attoid(), def.type(), def.default_value_opt());
                 }
             }
@@ -309,7 +308,7 @@ namespace services::disk {
         std::pmr::vector<std::filesystem::path> sidecar_paths;
     };
 
-    // This build writes exactly one sidecar (`.wal_id`); any other name returns data_corruption.
+    // Exactly one sidecar (`.wal_id`) is valid; any other name is data_corruption.
     [[nodiscard]] core::error_t verify_otbx_sidecars(const std::filesystem::path& otbx_path,
                                                      std::pmr::memory_resource* resource);
 
@@ -361,7 +360,7 @@ namespace services::disk {
                 return false;
             return agents_[idx]->has_active_scan_for_oid(table_oid);
         }
-        // Reads .otbx.wal_id directly; wrapped since 0 already means "never checkpointed" to the replay filter.
+        // Wrapped: a bare 0 would be ambiguous with "never checkpointed".
         core::result_wrapper_t<wal::id_t>
         peek_checkpoint_wal_id_from_disk(components::catalog::oid_t table_oid,
                                          components::catalog::oid_t database_oid) const;
@@ -378,23 +377,22 @@ namespace services::disk {
                                                              bool is_computed);
         void bootstrap_system_tables_sync();
         void load_user_table_storages_sync();
-        // Rebuilds the .otbx for tables load_user_table_storages_sync couldn't load; returns divergences NOT closed.
+        // Rebuilds the .otbx for tables load_user_table_storages_sync couldn't load; returns divergences not closed.
         [[nodiscard]] core::result_wrapper_t<std::size_t> rehydrate_missing_user_storages_sync();
         // Re-derives a column drop whose release a crash discarded; runs after both user-table walks and WAL replay.
         void rearm_dropped_column_blocks_sync();
         std::unordered_set<components::catalog::oid_t> alive_user_oids_sync() const;
-        // Resolves pg_class.relkind. '\0' means "no such row" ONLY — an unreadable pg_class travels
-        // the error wrapper instead, or a DOCUMENT table's dynamic schema would silently vanish.
+        // '\0' means "no such row" only — an unreadable pg_class travels the error wrapper instead, or
+        // a DOCUMENT table's dynamic schema would silently vanish.
         core::result_wrapper_t<char> relkind_for_oid_sync(components::catalog::oid_t table_oid) const;
 
-        // Resolves pg_class.relnamespace, naming a table's `.otbx` directory (not well_known_oid::main_database).
+        // Names a table's `.otbx` directory, not well_known_oid::main_database.
         components::catalog::oid_t relnamespace_for_oid_sync(components::catalog::oid_t table_oid) const;
 
         std::pmr::vector<components::catalog::oid_t> scan_live_table_oids_sync() const;
 
         std::pmr::vector<pg_index_row_t> scan_alive_pg_index_sync() const;
 
-        // Full-storage scan for post-bootstrap index rebuild; NO CALLER TODAY (the rebuild it fed was a no-op).
         std::pmr::vector<components::vector::data_chunk_t>
         scan_storage_for_rebuild_sync(components::catalog::oid_t table_oid, std::pmr::memory_resource* resource) const;
 
@@ -412,7 +410,7 @@ namespace services::disk {
 
         std::uint64_t max_persisted_commit_id_sync() const;
 
-        // Most recent value for `name` in pg_settings, empty ONLY if no such row exists (else throws).
+        // Most recent value for `name` in pg_settings, empty only if no such row exists (else throws).
         std::string read_setting_sync(std::string_view name);
 
         unique_future<core::result_wrapper_t<resolve_namespace_result_t>>
@@ -421,7 +419,7 @@ namespace services::disk {
         unique_future<core::result_wrapper_t<std::pmr::vector<resolve_function_result_t>>>
         resolve_function_by_name(execution_context_t ctx, std::string name);
 
-        // Bookkeeping lookup, NOT query-time cast resolution (that's cast_registry_); admin path only.
+        // Bookkeeping lookup, not query-time cast resolution (that's cast_registry_); admin path only.
         unique_future<core::result_wrapper_t<components::catalog::oid_t>>
         find_cast_oid(execution_context_t ctx,
                       components::catalog::oid_t source_oid,
@@ -444,7 +442,7 @@ namespace services::disk {
         unique_future<core::result_wrapper_t<std::pmr::vector<std::uint64_t>>>
         delete_pg_catalog_rows_many(execution_context_t ctx, std::pmr::vector<pg_catalog_delete_spec_t> specs);
 
-        // Patches backfilled pg_attribute rows after commit_id is known, BEFORE storage_publish_commits
+        // Patches backfilled pg_attribute rows after commit_id is known, before storage_publish_commits
         // flips visibility.
         unique_future<core::error_t>
         update_pg_attribute_commit_id_fields(execution_context_t ctx,
@@ -457,7 +455,7 @@ namespace services::disk {
                      std::pmr::vector<std::string> key_col_names,
                      components::vector::data_chunk_t keys);
 
-        // Columnar row-data scan for ONE key-tuple; `keys` stays columnar to avoid a row-major crossing.
+        // Columnar row-data scan for one key-tuple; `keys` stays columnar to avoid a row-major crossing.
         unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
         read_chunks_by_key(execution_context_t ctx,
                            components::catalog::oid_t table_oid,
@@ -472,17 +470,17 @@ namespace services::disk {
                             components::vector::data_chunk_t keys,
                             std::pmr::vector<std::uint64_t> projected_cols);
 
-        // Drops every relkind='g' column NOT in `live_attnames` — SUBTRACTIVE, unlike drop_storage_column.
+        // Drops every relkind='g' column not in `live_attnames` — subtractive, unlike drop_storage_column.
         unique_future<std::uint64_t> compact_relkind_g_storage(execution_context_t ctx,
                                                                components::catalog::oid_t table_oid,
                                                                std::set<std::string> live_attnames);
 
-        // ALTER TABLE DROP COLUMN's physical half. ORDERING is the safety argument: driven only
-        // AFTER the WAL commit marker and ProcArray publish barrier, so a release can't outlive a reverted tombstone.
+        // ALTER TABLE DROP COLUMN's physical half; must run after the WAL commit marker and ProcArray
+        // publish barrier, or a release could outlive a reverted tombstone.
         unique_future<core::result_wrapper_t<bool>>
         drop_storage_column(session_id_t session, components::catalog::oid_t table_oid, std::string attname);
 
-        // ALTER TABLE RENAME COLUMN's physical half. ORDERING mirrors drop_storage_column: a reverted
+        // ALTER TABLE RENAME COLUMN's physical half; ordering mirrors drop_storage_column — a reverted
         // ALTER can never leave storage renamed against a catalog that took the rename back.
         unique_future<core::result_wrapper_t<bool>> rename_storage_column(session_id_t session,
                                                                           components::catalog::oid_t table_oid,
@@ -493,7 +491,7 @@ namespace services::disk {
 
         core::result_wrapper_t<uint64_t> direct_append_sync(components::catalog::oid_t table_oid,
                                                             components::vector::data_chunk_t& data);
-        // These three REFUSE (not no-op) with no storage: on WAL replay, a dropped mutation never re-derives.
+        // These three refuse (not no-op) with no storage: on WAL replay, a dropped mutation never re-derives.
         [[nodiscard]] core::error_t direct_delete_sync(components::catalog::oid_t table_oid,
                                                        const std::pmr::vector<int64_t>& row_ids,
                                                        uint64_t count);
@@ -558,7 +556,7 @@ namespace services::disk {
                                                 components::catalog::oid_t database_oid,
                                                 std::vector<components::table::column_definition_t> columns,
                                                 bool is_computed);
-        // Batched DROP, partitioned per owning agent. Caller MUST finish index unregisters BEFORE this.
+        // Batched DROP, partitioned per owning agent. Caller must finish index unregisters before this.
         unique_future<void> drop_storage_many(session_id_t session,
                                               std::pmr::vector<components::catalog::oid_t> table_oids);
 
@@ -669,14 +667,14 @@ namespace services::disk {
                                                        &manager_disk_t::mark_storage_dropped_many,
                                                        &manager_disk_t::storage_dropped_committed,
                                                        &manager_disk_t::storage_drop_aborted,
-                                                       // Appended LAST — positional msg ids (see
+                                                       // Appended last — positional msg ids (see
                                                        // disk_contract::dispatch_traits).
                                                        &manager_disk_t::storage_open_scan_hold,
                                                        &manager_disk_t::storage_compact_epoch>;
 
     private:
         // Returns no_error(), or data_corruption/io_error instead of throwing, when the .otbx is
-        // missing, unopenable, or has a stray sidecar; `catalog_columns` may DEFER the load if unresolved yet.
+        // missing, unopenable, or has a stray sidecar; `catalog_columns` may defer the load if unresolved yet.
         [[nodiscard]] core::error_t
         load_storage_disk_sync(components::catalog::oid_t table_oid,
                                components::catalog::oid_t database_oid,
@@ -690,22 +688,22 @@ namespace services::disk {
         std::pmr::memory_resource* resource_;
         actor_zeta::scheduler_raw scheduler_;
         actor_zeta::scheduler_raw scheduler_disk_;
-        // ALL message processing happens on loop_thread_; mutex_/pump_cv_ only gate its idle sleep.
+        // All message processing happens on loop_thread_; mutex_/pump_cv_ only gate its idle sleep.
         std::thread loop_thread_;
         std::atomic<bool> loop_running_{true};
-        // Raw message* (boost::lockfree needs trivially-copyable), re-wrapped by the loop.
+        // Needs to stay trivially-copyable for boost::lockfree; re-wrapped into an owning pointer by the loop.
         boost::lockfree::queue<actor_zeta::mailbox::message*> inbox_{128};
         std::mutex mutex_;
         std::condition_variable pump_cv_;
 
         log_t log_;
         configuration::config_disk config_;
-        // No storages_ map here (pure router): agent 0 is CATALOG, agents_[1..N-1] are USER_POOL.
+        // No storages_ map here (pure router): agent 0 takes system oids, others split the user pool.
         std::pmr::vector<agent_disk_ptr> agents_{resource_};
         components::catalog::oid_generator oid_gen_;
         components::catalog::session_catalog_t stored_catalog_;
 
-        // dropped_storages_ per-agent slices are the SOLE owner of GC state — no manager-side mirror.
+        // dropped_storages_ per-agent slices are the sole owner of GC state — no manager-side mirror.
 
         void create_agent(int count_agents);
 
@@ -736,7 +734,6 @@ namespace services::disk {
         auto [msg, future] =
             actor_zeta::detail::make_message<R>(resource(), std::move(sender), cmd, std::forward<Args>(args)...);
 
-        // Read, not discarded: a refused enqueue destroyed the message, so `future` completes abandoned.
         if (enqueue_impl(std::move(msg)).second != actor_zeta::detail::enqueue_result::success) {
             assert(future.is_ready() && "a refused enqueue must complete the future as abandoned");
         }

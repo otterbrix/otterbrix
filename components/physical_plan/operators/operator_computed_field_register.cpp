@@ -37,10 +37,9 @@ namespace components::operators {
         // GCs stale versions, and storage-side add_column is idempotent. TODO: a per-table_oid lock is the
         // strict-serialization fix, deferred until a benchmark shows the race matters.
 
-        // Propagate the INSERT's output up. The bottom-up async-finalize drive runs
-        // left_ (insert).await FIRST, so left_->output() (the affected-row count chunk)
-        // is populated by now. Without this the executor's cursor-build path sees
-        // cur->size()==0 for a relkind='g' INSERT.
+        // The bottom-up async-finalize drive runs left_ (insert).await first, so left_->output() (the
+        // affected-row count chunk) is populated by now; without this the executor's cursor-build path
+        // sees cur->size()==0 for a relkind='g' INSERT.
         if (left_ && left_->output()) {
             output_ = left_->output();
         }
@@ -52,7 +51,6 @@ namespace components::operators {
         constexpr catalog::oid_t pg_depend = catalog::well_known_oid::pg_depend_table;
 
         for (const auto& col : columns_) {
-            // read existing pg_computed_column rows for (relid, attname).
             // pg_computed_column layout: 0=relid 1=attoid 2=attname
             // 3=atttypid 4=atttypspec 5=attversion 6=attrefcount.
             std::pmr::vector<std::uint64_t> r_keys(resource_);
@@ -98,9 +96,8 @@ namespace components::operators {
                 }
             }
 
-            // Resolve the column's atttypid (mirrors operator_alter_column_add).
-            // Builtin types map directly; composite/UNKNOWN fall back to a
-            // pg_type.typname lookup.
+            // Mirrors operator_alter_column_add: builtin types map directly, composite/UNKNOWN fall
+            // back to a pg_type.typname lookup.
             catalog::oid_t atttypid = (col.atttypid() != catalog::INVALID_OID)
                                           ? col.atttypid()
                                           : catalog::builtin_type_to_oid(col.type().type());
@@ -139,11 +136,10 @@ namespace components::operators {
                 }
             }
 
-            // Complex types encode into atttypspec (builtins leave it empty, reconstructed via atttypid
-            // alone). This path is fed by INSERT, not DDL, so it bypasses gate_persistable_type — probing
-            // the real binary encoder here keeps it in sync with decode_type_spec's depth window in
-            // resolve_table; a type it would refuse must not be registered, or the table unresolves
-            // permanently on the next read.
+            // Complex types encode into atttypspec (builtins leave it empty). Fed by INSERT, not DDL, so
+            // it bypasses gate_persistable_type -- probing the real encoder keeps this in sync with
+            // decode_type_spec's depth window in resolve_table; a type it would refuse must not be
+            // registered, or the table unresolves permanently on the next read.
             std::string atttypspec;
             if (atttypid == catalog::INVALID_OID && col.type().type() != types::logical_type::UNKNOWN) {
                 std::pmr::vector<std::byte> persist_probe(resource_);
@@ -160,21 +156,17 @@ namespace components::operators {
                 atttypspec = catalog::encode_type_spec(col.type());
             }
 
-            // If latest row is a tombstone (refcount<=0), the column was
-            // DROP'd. Treat re-INSERT as is_new so a fresh attoid + bumped
-            // attversion are written and operator_computed_field_register
-            // doesn't short-circuit on stale type info.
+            // A tombstone row (refcount<=0) means the column was DROP'd; treating re-INSERT as is_new
+            // forces a fresh attoid + bumped attversion instead of short-circuiting on stale type info.
             const bool is_new = (max_version < 0) || (latest_refcount <= 0);
             const bool same_type = !is_new && latest_atttypid == atttypid && latest_atttypspec == atttypspec &&
                                    (latest_atttypid != catalog::INVALID_OID || !atttypspec.empty());
             if (same_type) {
-                // No-op: column already registered with the same type. The
-                // simplified binary refcount model does not bump on every
-                // INSERT.
+                // No-op: already registered with the same type. The simplified binary refcount model
+                // does not bump on every INSERT.
                 continue;
             }
 
-            // allocate a fresh attoid for the new (or evolved) column row.
             auto [_oa, oaf] = actor_zeta::otterbrix::send(ctx->disk_address,
                                                           &services::disk::manager_disk_t::allocate_oids_batch,
                                                           std::size_t{1});
@@ -188,13 +180,10 @@ namespace components::operators {
             }
             const catalog::oid_t attoid = oid_batch[0];
 
-            // Always bump above the existing max — version=0 only when no prior
-            // rows exist. Re-register after a tombstone (is_new=true via
-            // latest_refcount<=0 branch) MUST write a version higher than the
-            // tombstone, otherwise readers picking max(attversion) per attname
-            // pick the tombstone (rc<=0) instead of the new live row, and the
-            // column appears dropped even though it was re-inserted.
-            // dynamic_schema_re_add_after_drop pins this.
+            // Always bump above the existing max (0 only when no prior rows exist). A re-register after
+            // a tombstone must write a version higher than the tombstone, or readers picking
+            // max(attversion) per attname pick the tombstone instead of the new live row, making the
+            // column appear dropped. Pinned by dynamic_schema_re_add_after_drop.
             const std::int64_t new_version = (max_version < 0) ? std::int64_t{0} : (max_version + 1);
 
             // The three appends are independent, so fire all now and await after: FIFO on the single
@@ -218,14 +207,14 @@ namespace components::operators {
                 append_futures.push_back(std::move(wf));
             }
 
-            // pg_depend rows mirror the static ALTER ADD COLUMN dependency graph: edge 1 (attoid ->
-            // atttypid, deptype 'n') lets DROP TYPE refuse a type still in use, matching a declared column's
-            // dep row. Edge 2 (attoid -> table_oid) uses 'a', NOT 'n': 'n' is exactly what blocks_restrict
-            // checks (dependency_walker.hpp), so 'n' here would make a computing table's own columns block
-            // its own `DROP TABLE ... RESTRICT`. 'a' matches the index->table edge's convention ("owned by
-            // the parent, torn down with it"); CASCADE is unaffected since cascade_planner doesn't filter on
-            // deptype. Unregister does NOT remove these rows — the parent DROP TABLE or VACUUM sweeps them
-            // later.
+            // pg_depend mirrors the static ALTER ADD COLUMN dependency graph. Edge 1 (attoid -> atttypid,
+            // deptype 'n') lets DROP TYPE refuse a type still in use, matching a declared column's dep row.
+            // Edge 2 (attoid -> table_oid) uses 'a', not 'n': 'n' is what blocks_restrict checks
+            // (dependency_walker.hpp), so 'n' here would make a computing table's own columns block its
+            // own `DROP TABLE ... RESTRICT`. 'a' matches the index->table edge's convention (owned by the
+            // parent, torn down with it); CASCADE is unaffected since cascade_planner doesn't filter on
+            // deptype. Unregister does not remove these rows -- the parent DROP TABLE or VACUUM sweeps
+            // them later.
             if (atttypid != catalog::INVALID_OID) {
                 auto dep_row =
                     catalog::build_pg_depend_row(resource_,
@@ -256,7 +245,7 @@ namespace components::operators {
                                                               std::move(dep_row));
                 append_futures.push_back(std::move(dcf));
             }
-            // Drain all, first error wins: the pg_computed_column row IS the registration.
+            // Drain all, first error wins: the pg_computed_column row is the registration.
             core::error_t append_error = core::error_t::no_error();
             for (auto& af : append_futures) {
                 auto rng_r = co_await std::move(af);

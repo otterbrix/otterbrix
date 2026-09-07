@@ -1,4 +1,4 @@
-// Clean-break startup tests. After bootstrap, otterbrix uses pg_catalog as the SOLE
+// Clean-break startup tests. After bootstrap, otterbrix uses pg_catalog as the sole
 // source of catalog state — these tests verify the on-disk contract by spinning up a
 // disk-only manager_disk_t at a directory, doing DDL, killing it, and asserting a fresh
 // manager at the same directory observes the persisted state.
@@ -36,9 +36,8 @@ using session_id_t = components::session::session_id_t;
 namespace {
     std::string clean_break_dir() { return integration_fixture_path("test_clean_break_startup").string(); }
 
-    // The manager actors self-drive on internal threads; futures become ready
-    // asynchronously. Pump the (thread-safe) child scheduler with a bounded poll
-    // until the future is ready before extracting its value with take_ready().
+    // The manager actors self-drive on internal threads, so futures become ready asynchronously — pump
+    // the (thread-safe) child scheduler with a bounded poll before extracting the value with take_ready().
     template<typename Fut>
     void poll_ready(core::non_thread_scheduler::scheduler_test_t* scheduler, Fut& fut) {
         for (int i = 0; i < 100000 && !fut.is_ready(); ++i) {
@@ -81,8 +80,7 @@ namespace {
     };
 } // namespace
 
-// 1. Fresh install: bootstrap creates a .otbx file for every system table (10 today —
-//    9 PG-canonical + pg_database for full DDL plumbing).
+// 10 system tables today — 9 PG-canonical + pg_database for full DDL plumbing.
 TEST_CASE("integration::clean_break_startup::fresh_install_creates_pg_catalog") {
     auto dir = clean_break_dir() + "/fresh";
     std::filesystem::remove_all(dir);
@@ -91,9 +89,8 @@ TEST_CASE("integration::clean_break_startup::fresh_install_creates_pg_catalog") 
         fresh_disk fd(dir);
         fd.manager->bootstrap_system_tables_sync();
     }
-    // On-disk layout is oid-keyed (<db_oid>/<tbl_oid>/table.otbx) — system
-    // tables live under well_known_oid::main_database. Count .otbx files
-    // under that directory.
+    // On-disk layout is oid-keyed (<db_oid>/<tbl_oid>/table.otbx); system tables live under
+    // well_known_oid::main_database.
     auto sys = std::filesystem::path(dir) / std::to_string(static_cast<unsigned>(well_known_oid::main_database));
     REQUIRE(std::filesystem::exists(sys));
     size_t count = 0;
@@ -107,7 +104,6 @@ TEST_CASE("integration::clean_break_startup::fresh_install_creates_pg_catalog") 
     std::filesystem::remove_all(dir);
 }
 
-// 2. Existing pg_catalog loads on the second start without failure.
 TEST_CASE("integration::clean_break_startup::existing_pg_catalog_loads") {
     auto dir = clean_break_dir() + "/existing";
     std::filesystem::remove_all(dir);
@@ -124,7 +120,6 @@ TEST_CASE("integration::clean_break_startup::existing_pg_catalog_loads") {
     std::filesystem::remove_all(dir);
 }
 
-// 3. oid_generator after restart never collides with persisted OIDs.
 TEST_CASE("integration::clean_break_startup::oid_generator_seeded_max_plus_1") {
     auto dir = clean_break_dir() + "/oid_seed";
     std::filesystem::remove_all(dir);
@@ -137,7 +132,6 @@ TEST_CASE("integration::clean_break_startup::oid_generator_seeded_max_plus_1") {
             auto ns_oid = test_create_namespace(fd, std::string("ns_") + std::to_string(i));
             high_oid = std::max(high_oid, ns_oid);
         }
-        // Checkpoint so on-disk metadata is up to date.
         auto [_, cf] = actor_zeta::otterbrix::send(fd.manager->address(),
                                                    &manager_disk_t::checkpoint_all,
                                                    session_id_t{},
@@ -156,7 +150,6 @@ TEST_CASE("integration::clean_break_startup::oid_generator_seeded_max_plus_1") {
     std::filesystem::remove_all(dir);
 }
 
-// 4. namespace round-trip: created namespace is resolvable post-restart.
 TEST_CASE("integration::clean_break_startup::namespace_round_trip") {
     auto dir = clean_break_dir() + "/ns_rt";
     std::filesystem::remove_all(dir);
@@ -194,8 +187,6 @@ TEST_CASE("integration::clean_break_startup::namespace_round_trip") {
     std::filesystem::remove_all(dir);
 }
 
-// 5. table round-trip: created table with columns is resolvable post-restart with column
-// OIDs preserved.
 TEST_CASE("integration::clean_break_startup::table_round_trip_with_columns") {
     auto dir = clean_break_dir() + "/tab_rt";
     std::filesystem::remove_all(dir);
@@ -241,9 +232,8 @@ TEST_CASE("integration::clean_break_startup::table_round_trip_with_columns") {
     std::filesystem::remove_all(dir);
 }
 
-// 6. index_round_trip — ddl_create_index writes pg_class (relkind='i') + pg_index +
-// pg_depend. After restart, the index entry survives via bootstrap_system_tables_sync and is
-// observable via resolve_table by name (relkind 'i' shares the pg_class namespace with 'r').
+// ddl_create_index writes pg_class (relkind='i') + pg_index + pg_depend; relkind 'i' shares the
+// pg_class namespace with 'r', so resolve_table finds the index by name after restart.
 TEST_CASE("integration::clean_break_startup::index_round_trip") {
     auto dir = clean_break_dir() + "/idx_rt";
     std::filesystem::remove_all(dir);
@@ -274,7 +264,6 @@ TEST_CASE("integration::clean_break_startup::index_round_trip") {
         components::table::transaction_data _td_open(0, 0);
         _td_open.snapshot_horizon = std::numeric_limits<uint64_t>::max();
         components::execution_context_t ctx{session_id_t{}, _td_open, {}};
-        // Index lives in pg_class with relkind='i'; resolve_table finds it by name.
         auto ri = test_probe::probe_table(fd2, ctx, ns_oid, std::string("tbl_idx"));
         REQUIRE(ri.found);
         REQUIRE(ri.oid == idx_oid);
@@ -283,10 +272,6 @@ TEST_CASE("integration::clean_break_startup::index_round_trip") {
     std::filesystem::remove_all(dir);
 }
 
-// 7. resolve_namespace reflects post-restart catalog state (V4 — populate retired).
-// Same shape as the legacy populate_after_restart test; verifies that a namespace created
-// before checkpoint+shutdown is still visible after fresh_disk restart via the per-name
-// resolve API.
 TEST_CASE("integration::clean_break_startup::resolve_after_restart") {
     auto dir = clean_break_dir() + "/populate_rt";
     std::filesystem::remove_all(dir);
@@ -322,7 +307,7 @@ TEST_CASE("integration::clean_break_startup::resolve_after_restart") {
     std::filesystem::remove_all(dir);
 }
 
-// 7. Sequence/view/macro stored in pg_class with relkind 'S'/'v'/'m' survives restart.
+// Sequence/view/macro are stored in pg_class via relkind 'S'/'v'/'m'.
 TEST_CASE("integration::clean_break_startup::sequence_view_macro_via_pg_class") {
     auto dir = clean_break_dir() + "/svm";
     std::filesystem::remove_all(dir);
@@ -350,7 +335,6 @@ TEST_CASE("integration::clean_break_startup::sequence_view_macro_via_pg_class") 
         fresh_disk fd2(dir);
         fd2.manager->bootstrap_system_tables_sync();
         fd2.manager->restore_oid_generator_sync();
-        // A new namespace creation uses an OID strictly above the persisted SVM OIDs.
         auto after_oid = test_create_namespace(fd2, "after");
         REQUIRE(after_oid > seq_oid);
         REQUIRE(after_oid > view_oid);
@@ -359,17 +343,15 @@ TEST_CASE("integration::clean_break_startup::sequence_view_macro_via_pg_class") 
     std::filesystem::remove_all(dir);
 }
 
-// 8. Hard-fail on legacy catalog.otbx file: base_otterbrix_t throws on construction when
-// the legacy catalog.otbx file is present in the disk path. Clean-break behaviour: the
-// operator must migrate / remove the file before booting on the new code.
+// Clean-break: the operator must migrate or remove the legacy catalog.otbx before booting on the new
+// code, so base_otterbrix_t throws on construction rather than working around it.
 TEST_CASE("integration::clean_break_startup::hard_fail_on_legacy_catalog_otbx") {
     auto dir = std::filesystem::path(clean_break_dir() + "/hard_fail");
     std::filesystem::remove_all(dir);
     std::filesystem::create_directories(dir);
     auto disk_subdir = dir / "wal";
     std::filesystem::create_directories(disk_subdir);
-    // Plant a stub legacy catalog.otbx in the disk path. The exact contents don't matter —
-    // base_otterbrix_t checks existence first and throws before opening the file.
+    // The stub content doesn't matter: base_otterbrix_t checks existence first and throws before opening it.
     std::ofstream out((disk_subdir / "catalog.otbx").string(), std::ios::binary);
     out << "legacy_marker";
     out.close();
@@ -386,25 +368,22 @@ TEST_CASE("integration::clean_break_startup::hard_fail_on_legacy_catalog_otbx") 
             threw_with_expected_message = true;
         }
     } catch (...) {
-        // Other exception types are NOT what we want here.
+        // Other exception types are not what we want here.
     }
     REQUIRE(threw_with_expected_message);
     std::filesystem::remove_all(dir);
 }
 
-// 8b. A refused startup must not make the directory unopenable. base_otterbrix_t registers
-// main_path_ in a process-wide set before anything that can throw, and only the destructor
-// erases it -- a constructor that throws never gets one. Without the scope guard that
-// releases the registration on the way out, fixing the real fault (here, removing the
-// legacy catalog.otbx) and retrying in the same process would answer "otterbrix instance
-// has to have unique directory" for a directory that is actually free.
+// base_otterbrix_t registers main_path_ in a process-wide set before anything that can throw, and only
+// the destructor erases it -- a constructor that throws never gets one. Without a scope guard releasing
+// the registration on the way out, retrying in the same process after fixing the real fault would wrongly
+// answer "otterbrix instance has to have unique directory" for a directory that is actually free.
 TEST_CASE("integration::clean_break_startup::a_refused_startup_releases_the_directory") {
     auto dir = std::filesystem::path(clean_break_dir() + "/refused_release");
     std::filesystem::remove_all(dir);
     auto disk_subdir = dir / "wal";
     std::filesystem::create_directories(disk_subdir);
 
-    // Arm the same startup refusal case 8 uses.
     const auto legacy = disk_subdir / "catalog.otbx";
     {
         std::ofstream out(legacy.string(), std::ios::binary);
@@ -421,11 +400,10 @@ TEST_CASE("integration::clean_break_startup::a_refused_startup_releases_the_dire
     }
     REQUIRE(first_refused);
 
-    // The operator does exactly what the refusal asked for.
     std::filesystem::remove(legacy);
     REQUIRE_FALSE(std::filesystem::exists(legacy));
 
-    // The retry must now START, not report the directory taken.
+    // The retry must now start, not report the directory as taken.
     std::string retry_error;
     bool retry_started = false;
     try {
@@ -441,8 +419,6 @@ TEST_CASE("integration::clean_break_startup::a_refused_startup_releases_the_dire
     std::filesystem::remove_all(dir);
 }
 
-// 9. WAL replay split (pg_catalog first, user collections second) — tested implicitly
-// via base_spaces; here we document the expected ordering.
 TEST_CASE("integration::clean_break_startup::wal_replay_split_pg_catalog_first") {
     SUCCEED("base_spaces.cpp PHASE 2 splits WAL records by collection prefix: pg_catalog.* "
             "replay sequentially, user collections in parallel — see test_wal_pool for the "

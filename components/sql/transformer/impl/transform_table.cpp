@@ -48,7 +48,7 @@ namespace components::sql::transform {
         const std::string dbname = qn.dbname;
 
         // Column-level (`code bigint UNIQUE`) and table-level (`UNIQUE (code)`) constraints
-        // land in ONE list, column-level first in declaration order; downstream treats them identically.
+        // land in one list, column-level first in declaration order; downstream treats them identically.
         VALUE_OR_RETURN(auto constraints, extract_column_constraints(resource_, *coldefs, raw_sql_));
         {
             VALUE_OR_RETURN(auto table_level, extract_table_constraints(resource_, *coldefs, raw_sql_));
@@ -164,10 +164,9 @@ namespace components::sql::transform {
     }
 
     core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_drop(DropStmt& node) {
-        // Every arm below reads only `node.objects->lst.front()`; `DROP TABLE a, b, c`
-        // would otherwise silently drop just `a` and report success. One node_drop_t
-        // names one object — there's no channel here for N independent drops — so refuse
-        // and name the objects that would have been skipped.
+        // Every arm below reads only `node.objects->lst.front()`; `DROP TABLE a, b, c` would otherwise
+        // silently drop just `a` and report success. One node_drop_t names one object, so refuse
+        // instead and name the objects that would have been skipped.
         if (!node.objects || node.objects->lst.empty()) {
             return core::error_t(core::error_code_t::sql_parse_error,
                                  std::pmr::string{"DROP names no object", resource_});
@@ -335,7 +334,7 @@ namespace components::sql::transform {
                 n->set_relname(type_name);
                 // The one arm that does not build through wrap_one.
                 n->set_missing_ok(node.missing_ok);
-                // Unlike DROP INDEX, this arm DOES reach the dynamic cascade
+                // Unlike DROP INDEX, this arm does reach the dynamic cascade
                 // (planner's rewrite_drop routes drop_target_kind::type there).
                 n->set_behavior(drop_behavior_of(node.behavior));
                 register_catalog_resolve_namespace(resource_, &catalog_resolves_, "public");

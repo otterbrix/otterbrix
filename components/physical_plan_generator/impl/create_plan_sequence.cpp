@@ -18,9 +18,8 @@
 namespace services::planner::impl {
 
     namespace {
-        // A catalog-write child is a node_insert_t targeting a pg_catalog table; its
-        // single node_data_t child carries the ready-made row. Harvest (table_oid,
-        // row) for folding into the specialized operator's catalog_write_t vector.
+        // Assumes insert_child is a node_insert_t into pg_catalog with a single node_data_t child
+        // holding the row (unchecked here).
         components::vector::data_chunk_t& catalog_write_row(const components::logical_plan::node_ptr& insert_child) {
             using namespace components::logical_plan;
             auto* ins = static_cast<node_insert_t*>(insert_child.get());
@@ -37,8 +36,6 @@ namespace services::planner::impl {
         using namespace components::logical_plan;
 
         // DDL create-table sequence: sequence_t(create_collection_t, catalog-write node_insert_t×N).
-        // Produce a single operator_create_collection_t that does storage creation,
-        // index registration, and all pg_catalog writes in one await_async_and_resume.
         if (!node->children().empty() && node->children().front()->type() == node_type::create_collection_t) {
             auto* cc = static_cast<node_create_collection_t*>(node->children().front().get());
             std::vector<components::operators::operator_create_collection_t::catalog_write_t> writes;
@@ -127,16 +124,16 @@ namespace services::planner::impl {
                     }
                 }
                 if (all_alter) {
-                    // children[0] (first user-written clause) must end up at the DEEPEST nesting level — the
-                    // executor runs left children first, so walk FORWARD, wrapping the chain built so far as
-                    // the new operator's left child. A reverse walk would put children[0] at the ROOT instead,
+                    // children[0] (first user-written clause) must end up at the deepest nesting level — the
+                    // executor runs left children first, so walk forward, wrapping the chain built so far as
+                    // the new operator's left child. A reverse walk would put children[0] at the root instead,
                     // running a multi-clause ALTER's clauses back to front — user-visible, since two ADD
                     // COLUMNs decide their attnum order by who runs first.
                     components::operators::operator_ptr head;
                     for (const auto& child : node->children()) {
                         auto op = create_plan(context, function_registry, child, {}, params);
                         if (!op) {
-                            // A child that fails to lower refuses the WHOLE statement:
+                            // A child that fails to lower refuses the whole statement:
                             // a null root maps to create_physical_plan_error in the
                             // executor. Chaining past it would run a truncated ALTER.
                             return {};
@@ -162,12 +159,12 @@ namespace services::planner::impl {
             for (const auto& child : node->children()) {
                 auto op = create_plan(context, function_registry, child, {}, params);
                 if (!op) {
-                    // Unchecked, the loop would silently drop a null FIRST child (statement runs with a step
-                    // missing) or dereference a null LATER child via op->left() outright.
+                    // Unchecked, the loop would silently drop a null first child (statement runs with a step
+                    // missing) or dereference a null later child via op->left() outright.
                     return {};
                 }
                 if (head) {
-                    // op consumes left_ as its DATA source for catalog-write chains (e.g. operator_insert reads
+                    // op consumes left_ as its data source for catalog-write chains (e.g. operator_insert reads
                     // left_->output()), so clobbering left_ with the chain predecessor would drop the row
                     // chunk — attach the predecessor to the free right_ slot instead (executor still runs
                     // left → right → self). When left_ is already free (a childless leaf), keep the left-chain shape.

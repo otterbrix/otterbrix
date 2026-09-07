@@ -34,9 +34,8 @@ namespace components::operators {
 
     namespace {
 
-        // Column index of `name` in `chunk` by alias (the DML rows carry their
-        // column names as the vector type alias, like operator_check_constraint's
-        // find_col). Returns absent when the column is not present.
+        // Column index of `name` in `chunk` by alias: DML rows carry their column names as the vector
+        // type alias, like operator_check_constraint's find_col.
         constexpr uint64_t kAbsentCol = std::numeric_limits<uint64_t>::max();
         uint64_t find_col_index(const vector::data_chunk_t& chunk, const std::string& name) {
             for (uint64_t c = 0; c < chunk.column_count(); ++c) {
@@ -58,28 +57,24 @@ namespace components::operators {
         , unique_groups_(std::move(unique_groups)) {}
 
     actor_zeta::unique_future<void> operator_unique_constraint_t::await_async_and_resume(pipeline::context_t* ctx) {
-        // Resolve the rows to validate — identical policy to operator_fk_check_t: the
-        // DML's constraint_input() snapshot. Constraint ops STACK above one DML, so the
-        // immediate left_ may be another (empty) constraint op (e.g. a spliced
-        // check/fk_check) — walk DOWN the left_ spine to the DML's snapshot (single
-        // canonical source, R6; see constraint_util.hpp).
+        // Same policy as operator_fk_check_t: constraint ops stack above one DML, so the immediate left_
+        // may be another (empty) constraint op — walk down the left_ spine to the DML's constraint_input()
+        // snapshot (single canonical source, R6; see constraint_util.hpp).
         const auto& source = constraint_detail::resolve_constraint_source(left_);
         if (!source || source->size() == 0 || unique_groups_.empty()) {
             output_ = resolve_cursor_output(left_, source);
             mark_executed();
             co_return;
         }
-        // Non-const so LAYER 1 can call data_chunk_t::hash (a non-const method that
-        // only reads the key columns). The operator_data pointee is mutable even
-        // though `source` is a const reference to the intrusive_ptr.
+        // Non-const so LAYER 1 can call the non-const data_chunk_t::hash; the operator_data pointee is
+        // mutable even though `source` is a const reference to the intrusive_ptr.
         auto& in_chunks = source->chunks();
         execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
-        // One constraint group at a time. Each group is an independent UNIQUE/PK
-        // constraint; a violation in any group fails the whole write.
+        // Each group is an independent UNIQUE/PK constraint; a violation in any one fails the whole write.
         for (const auto& group : unique_groups_) {
-            // Empty key list enforces nothing; skipping (treating it as success) would let a declared
-            // UNIQUE/PK enforce nothing. Same refusal as operator_fk_check_t's indices.empty().
+            // An empty key list must refuse rather than silently succeed, or a declared UNIQUE/PK enforces
+            // nothing — same refusal as operator_fk_check_t's indices.empty().
             if (group.empty()) {
                 set_error(core::error_t{
                     core::error_code_t::invalid_constraint,
@@ -87,9 +82,9 @@ namespace components::operators {
                 co_return;
             }
 
-            // Rows are materialised (an omitted column expands to its DEFAULT/NULL before append), so every
-            // key column has a position; skipping this group would be a silent success while the duplicate is
-            // already written. Write-side half of the resolve-side guard in operator_resolve_constraint.
+            // Rows are materialised (an omitted column expands to DEFAULT/NULL before append), so every key
+            // column has a position; skipping here would silently accept a duplicate. Write-side half of the
+            // resolve-side guard in operator_resolve_constraint.
             std::vector<uint64_t> sources;
             sources.reserve(group.size());
             for (const auto& col_name : group) {
@@ -104,8 +99,8 @@ namespace components::operators {
                 sources.push_back(col);
             }
 
-            // Materialize the group's key columns once per chunk as zero-copy references; col_ids is simply
-            // 0..k-1 over them since every downstream layer reads these key chunks.
+            // Key columns are materialized once per chunk as zero-copy references; col_ids is their own
+            // 0..k-1 positions, not their positions in the source chunk.
             std::pmr::vector<types::complex_logical_type> key_types(resource_);
             key_types.reserve(sources.size());
             for (const auto src : sources) {
@@ -117,9 +112,9 @@ namespace components::operators {
                 const uint64_t n = chunk.size();
                 components::vector::data_chunk_t keys_chunk(resource_, key_types, n == 0 ? 1 : n);
                 for (std::size_t j = 0; j < sources.size(); ++j) {
-                    // Every chunk is read at the front chunk's positions, so every chunk must share its layout
-                    // and type — otherwise operator[] reads past the array's end or the wrong column, in silence.
-                    // Same per-chunk guard as operator_fk_cascade_t's width check.
+                    // Every chunk is read at the front chunk's positions, so a layout/type mismatch would read
+                    // past the array or the wrong column in silence. Same per-chunk guard as
+                    // operator_fk_cascade_t's width check.
                     if (sources[j] >= chunk.column_count() ||
                         chunk.data[sources[j]].type().alias() != group[j] ||
                         chunk.data[sources[j]].type() != key_types[j]) {
@@ -141,10 +136,9 @@ namespace components::operators {
                 col_ids[j] = j;
             }
 
-            // LAYER 1 — within-batch duplicate detection (typed hash + verify).
-            // A row is a KEY-BEARING row only if every key column is non-NULL
-            // (UNIQUE treats NULL as distinct). Per-chunk qualifying selections are
-            // recorded for reuse by LAYER 2.
+            // LAYER 1 — within-batch duplicate detection (typed hash + verify). A row qualifies only if
+            // every key column is non-NULL (UNIQUE treats NULL as distinct); per-chunk qualifying selections
+            // are recorded for reuse by LAYER 2.
             struct row_ref_t {
                 std::size_t chunk_idx;
                 uint64_t row;
@@ -161,7 +155,6 @@ namespace components::operators {
                 components::vector::indexing_vector_t selection(resource_, n == 0 ? 1 : n);
                 uint64_t chunk_count = 0;
 
-                // Batch-hash this chunk's key columns.
                 components::vector::vector_t hash_vec(resource_, types::logical_type::UBIGINT, n == 0 ? 1 : n);
                 if (n > 0) {
                     // hash() takes column_ids by non-const ref; hand it a copy.
@@ -184,7 +177,7 @@ namespace components::operators {
                         }
                     }
                     if (any_null)
-                        continue; // NULLS DISTINCT: not a key-bearing row.
+                        continue;
 
                     const uint64_t h = hashes[row];
                     auto it = seen.find(h);
@@ -217,15 +210,15 @@ namespace components::operators {
                 counts.push_back(chunk_count);
             }
 
-            // LAYER 2 — existing-row detection. After LAYER 1 every qualifying key is unique in the batch, so a
-            // match count > 1 means a pre-existing distinct row. No disk actor is topology (unit tests), not
-            // corruption — skip the layer.
+            // LAYER 2 — existing-row detection: after LAYER 1, every qualifying key is unique in the batch,
+            // so a match count > 1 means a pre-existing row. No disk actor is test topology, not corruption —
+            // skip the layer.
             if (ctx->disk_address == actor_zeta::address_t::empty_address()) {
                 continue;
             }
-            // Unresolved oid is corruption, not topology — refuse rather than silently skip the stored-row
-            // scan. Both splice sites (planner.cpp rewrite_insert / rewrite_update) pass an oid from
-            // catalog_resolves_t::constraints_for, which never returns a non-empty group list for INVALID_OID.
+            // Unlike a missing disk actor, an unresolved oid is corruption, not topology — refuse rather
+            // than skip the stored-row scan. Both splice sites (planner.cpp rewrite_insert / rewrite_update) get
+            // their oid from catalog_resolves_t::constraints_for, which never emits groups for INVALID_OID.
             if (table_oid_ == catalog::INVALID_OID) {
                 set_error(core::error_t{
                     core::error_code_t::invalid_constraint,
@@ -235,10 +228,9 @@ namespace components::operators {
                 co_return;
             }
 
-            // STRADDLE-PACK all qualifying rows of the group into keys chunks of EXACTLY DEFAULT_VECTOR_CAPACITY
-            // rows, then scan each packed chunk once — ceil(total_qualifying / 1024) scans instead of one per
-            // input chunk (which under-fills chunks and multiplies mailbox round-trips). LAYER 1 already made
-            // every qualifying key unique across the batch, so repacking cannot split a key's scan-match count.
+            // Repack qualifying rows into full DEFAULT_VECTOR_CAPACITY chunks and scan each once, instead of
+            // one (under-filled) scan per input chunk — fewer mailbox round-trips. LAYER 1 already made every
+            // qualifying key unique across the batch, so repacking cannot split a key's scan-match count.
             uint64_t total_qualifying = 0;
             for (uint64_t q : counts) {
                 total_qualifying += q;
@@ -246,7 +238,7 @@ namespace components::operators {
             if (total_qualifying == 0)
                 continue;
 
-            // Key column names cross the mailbox per scan; build ONCE, copy per scan.
+            // Key column names cross the mailbox per scan; build once, copy per scan.
             std::pmr::vector<std::string> col_names(resource_);
             col_names.reserve(group.size());
             for (const auto& gname : group) {
@@ -256,8 +248,7 @@ namespace components::operators {
             std::size_t c = 0; // current input chunk
             uint64_t off = 0;  // qualifying rows of chunk c already packed
             while (c < key_chunks.size()) {
-                // FLAT target sized to a full vector; filled by straddling input
-                // chunks until it holds DEFAULT_VECTOR_CAPACITY rows (or input ends).
+                // Filled by straddling input chunks until it holds DEFAULT_VECTOR_CAPACITY rows or input ends.
                 components::vector::data_chunk_t keys(resource_,
                                                       key_types,
                                                       components::vector::DEFAULT_VECTOR_CAPACITY);
@@ -270,10 +261,8 @@ namespace components::operators {
                     }
                     const uint64_t take =
                         std::min<uint64_t>(counts[c] - off, components::vector::DEFAULT_VECTOR_CAPACITY - cur_n);
-                    // 7-arg copy: bounded partial of qualifying[c]. source_count is the
-                    // FULL selection length (counts[c]) so a DICTIONARY source's merged
-                    // indexing covers the slice; source_offset walks the selection and
-                    // target_offset appends into the packed chunk.
+                    // source_count must be the full selection length (counts[c]), not `take`, so a
+                    // DICTIONARY source's merged indexing still covers the slice being copied.
                     for (std::size_t j = 0; j < col_ids.size(); ++j) {
                         components::vector::vector_ops::copy(key_chunks[c].data[j],
                                                              keys.data[j],

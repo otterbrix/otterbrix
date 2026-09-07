@@ -40,8 +40,8 @@ static core::error_t vector_exec(kernel_context& ctx, const data_chunk_t& in, ve
 
 static core::error_t vector_finalize(kernel_context& ctx, data_chunk_t&) {
     auto* c = static_cast<counters*>(ctx.state());
-    REQUIRE(c->exec_called);                    // at least one call
-    REQUIRE(c->multiplier == MAGIC_MULTIPLIER); // init was called with function_options
+    REQUIRE(c->exec_called);
+    REQUIRE(c->multiplier == MAGIC_MULTIPLIER);
     return core::error_t::no_error();
 }
 
@@ -230,7 +230,7 @@ TEST_CASE("components::compute::aggregate::single") {
 
     auto res = run_aggregate(&resource, *fn, chunks, {{0, 0}}, 1);
     REQUIRE_FALSE(res.has_error());
-    REQUIRE(res.value()[0] == 15); // 10 (init) + 2 + 3
+    REQUIRE(res.value()[0] == 15);
 }
 
 TEST_CASE("components::compute::aggregate::batch") {
@@ -244,7 +244,7 @@ TEST_CASE("components::compute::aggregate::batch") {
 
     auto res = run_aggregate(&resource, *fn, chunks, {{0, 0}, {0, 0}}, 1);
     REQUIRE_FALSE(res.has_error());
-    REQUIRE(res.value()[0] == 20); // 10 (init) + 1 + 2 + 3 + 4
+    REQUIRE(res.value()[0] == 20);
 }
 
 TEST_CASE("components::compute::aggregate::per_group") {
@@ -260,8 +260,8 @@ TEST_CASE("components::compute::aggregate::per_group") {
     auto res = run_aggregate(&resource, *fn, chunks, {{0, 1}, {1, 0}}, 2);
     REQUIRE_FALSE(res.has_error());
     REQUIRE(res.value().size() == 2);
-    REQUIRE(res.value()[0] == 15); // 10 (init) + 1 + 4
-    REQUIRE(res.value()[1] == 15); // 10 (init) + 2 + 3
+    REQUIRE(res.value()[0] == 15);
+    REQUIRE(res.value()[1] == 15);
 }
 
 TEST_CASE("components::compute::vector::plain::chunk") {
@@ -368,7 +368,6 @@ TEST_CASE("components::compute::expand::generate_series") {
         total += chunk.size();
     }
     REQUIRE(total == 5);
-    // Values 1..5 in order across the produced chunks.
     int64_t expected = 1;
     for (const auto& chunk : outputs) {
         for (uint64_t i = 0; i < chunk.size(); ++i) {
@@ -456,9 +455,7 @@ TEST_CASE("components::compute::errors") {
     }
 }
 
-// ---------------------------------------------------------------------------
 // SUBSTRING / LENGTH / REGEXP_REPLACE — string kernel execution tests
-// ---------------------------------------------------------------------------
 
 namespace {
     struct string_registry_fixture {
@@ -754,7 +751,6 @@ TEST_CASE("components::compute::string::length_null_row_within_chunk") {
     REQUIRE(res.value().data[0].data<int64_t>()[2] == 4);
 }
 
-// Builds the one-slot INTEGER->INTEGER vector function the cases below drive.
 static std::unique_ptr<vector_function> multiplying_vector_function(std::pmr::memory_resource* resource,
                                                                     const std::string& name) {
     auto fn = std::make_unique<vector_function>(name, arity::unary(), function_doc_with_options(), 1);
@@ -813,10 +809,9 @@ TEST_CASE("components::compute::vector::batch_refuses_chunks_of_unequal_height")
     REQUIRE(res.error().type == core::error_code_t::kernel_error);
 }
 
-// Regression: the vector executor used to stash its per-chunk output in a member it never
-// cleared, so a reused executor (one per function node, driven chunk after chunk) answered the
-// second chunk with the first's moved-from remains. Both results are kept alive here so a
-// regression fails on the wrong VALUE, not on freed bytes.
+// A reused executor (one per function node, driven chunk after chunk) must not carry a produced
+// vector between calls, or the second chunk comes back holding the first's remains. Both results
+// are kept alive here so a regression fails on the wrong value, not on freed bytes.
 TEST_CASE("components::compute::vector::a_reused_executor_answers_the_current_chunk") {
     core::pmr::otterbrix_resource resource;
     exec_context_t ctx(&resource);

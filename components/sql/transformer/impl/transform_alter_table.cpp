@@ -280,7 +280,7 @@ namespace components::sql::transform {
         const std::string rel_for_resolve = qn.relname;
         std::string old_name = node.subname ? node.subname : "";
         std::string new_name = node.newname ? node.newname : "";
-        // operator_alter_column_rename_t carries the SAME empty-name no-op as its
+        // operator_alter_column_rename_t carries the same empty-name no-op as its
         // DROP sibling: an empty old name makes it report success without touching a
         // row. The grammar always fills both names, so this cannot be reached from
         // SQL — which is exactly why it must not be left to chance.
@@ -459,7 +459,6 @@ namespace components::sql::transform {
                         const name_collection_t names;
                         const std::size_t sub_queries_before = plan->sub_queries.size();
                         VALUE_OR_RETURN(auto expr, transform_predicate(constr->raw_expr, names, plan));
-                        // CHECK expr should not contain subqueries, and this is an easy way to enforce that
                         if (plan->sub_queries.size() != sub_queries_before) {
                             return core::error_t(
                                 core::error_code_t::invalid_constraint,
@@ -550,8 +549,6 @@ namespace components::sql::transform {
                     break;
                 }
                 default: {
-                    // Every subcommand this switch doesn't implement lands here; refuse and
-                    // quote back the clause so a multi-clause statement says WHICH one.
                     std::pmr::string msg{"ALTER TABLE ... ", resource_};
                     append_alter_table_form(msg, *cmd);
                     msg += alter_table_refusal_tail;

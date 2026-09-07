@@ -389,8 +389,8 @@ TEST_CASE("integration::cpp::test_persistence::partial_insert_consistent_wal_rec
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
-        // PHYSICAL_INSERT carries the chunk AFTER default-expansion, so status/count defaults are
-        // baked into the WAL record; restart synthesises storage from the WAL chunk's types.
+        // PHYSICAL_INSERT carries the chunk after default-expansion, so defaults are baked into the
+        // WAL record; restart synthesises storage from the WAL chunk's types.
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 5);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'alice';", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'bob';", 1);
@@ -529,7 +529,7 @@ TEST_CASE("integration::cpp::test_persistence::partial_insert_two_columns_wal") 
     }
 }
 
-// PHYSICAL_ADD_COLUMN is written BEFORE the dependent PHYSICAL_INSERT (agent_disk::storage_append_inner)
+// PHYSICAL_ADD_COLUMN is written before the dependent PHYSICAL_INSERT (agent_disk::storage_append_inner)
 // and replayed via direct_add_column_sync, so restart reconstructs the grown schema first.
 TEST_CASE("integration::cpp::test_persistence::computed_schema_growth_wal_recovery") {
     auto config = test_create_config(integration_fixture_path("test_persistence/computed_schema_growth_wal"));
@@ -640,7 +640,7 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_re
             auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 2);
-            REQUIRE(cur->column_count() == 3); // id, a:bigint, a:string
+            REQUIRE(cur->column_count() == 3);
         }
         {
             auto s2 = otterbrix::session_id_t();
@@ -681,7 +681,7 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_re
         auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection ORDER BY id;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->column_count() == 4); // id + three 'a' variants
+        REQUIRE(cur->column_count() == 4);
 
         const auto& chunk = cur->chunks().front();
         int a_bigint = -1, a_string = -1, a_bool = -1;
@@ -750,7 +750,7 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_re
     }
 }
 
-// Computed flag must survive WAL replay SYNTHESIS, not just a clean .otbx reload: a crash can
+// Computed flag must survive WAL replay synthesis, not just a clean .otbx reload: a crash can
 // keep pg_class+WAL while losing the file, so the synthesised entry must stay computed (from pg_class.relkind).
 TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_crash_replay_synthesis") {
     auto config = test_create_config(integration_fixture_path("test_persistence/computed_variants_crash_src"));
@@ -792,7 +792,6 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_cr
         std::filesystem::copy(config.main_path, crash_dir, std::filesystem::copy_options::recursive);
     }
 
-    // Drops every USER table's storage directory (oid >= FIRST_USER_OID); system tables and the WAL survive.
     {
         std::vector<std::filesystem::path> user_table_dirs;
         for (const auto& entry : std::filesystem::recursive_directory_iterator(crash_dir)) {
@@ -819,7 +818,7 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_cr
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 2);
 
-        // Only a synthesised entry that kept is_computed grows a NEW column here instead of gluing by name.
+        // Only a synthesised entry that kept is_computed grows a new column here instead of gluing by name.
         {
             auto session = otterbrix::session_id_t();
             auto cur =
@@ -832,7 +831,7 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_cr
         auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection ORDER BY id;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->column_count() == 4); // id + three 'a' variants
+        REQUIRE(cur->column_count() == 4);
 
         const auto& chunk = cur->chunks().front();
         int a_bigint = -1, a_string = -1, a_bool = -1;
@@ -880,8 +879,8 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_cr
 }
 
 // A table's file lives at ${disk_root}/${relnamespace}/${table_oid}/table.otbx, never under
-// well_known_oid::main_database (4) -- recovery paths used to substitute 4 there. relkind='g' is
-// deliberate: rehydrate_missing_user_storages_sync skips 'g', so only replay synthesis rebuilds it.
+// well_known_oid::main_database. relkind='g' is deliberate: rehydrate_missing_user_storages_sync
+// skips 'g', so only replay synthesis rebuilds it.
 TEST_CASE("integration::cpp::test_persistence::replay_synthesis_places_otbx_under_its_namespace") {
     auto config = test_create_config(integration_fixture_path("test_persistence/replay_ns_src"));
     test_clear_directory(config);
@@ -980,8 +979,8 @@ TEST_CASE("integration::cpp::test_persistence::replay_synthesis_places_otbx_unde
     std::filesystem::remove_all(crash_dir);
 }
 
-// A zero-column REGULAR table (relkind='r') must not come back computed: its empty
-// pg_attribute schema is the same shape the load path once used as its computed heuristic.
+// A zero-column REGULAR table (relkind='r') must not come back computed — its empty pg_attribute
+// schema is the same shape the computed-table heuristic looks for.
 TEST_CASE("integration::cpp::test_persistence::zero_column_regular_table_stays_regular") {
     auto config = test_create_config(integration_fixture_path("test_persistence/zero_col_regular"));
     test_clear_directory(config);
@@ -1361,7 +1360,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_partial_insert") {
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'dave';", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'eve';", 1);
 
-        // Only a NEW partial INSERT proves the DEFAULT survived restart.
+        // Only a new partial INSERT proves the DEFAULT survived restart.
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(
@@ -1444,7 +1443,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_not_null_default") {
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE status = 'active';", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'charlie';", 1);
 
-        // A NEW partial INSERT proves the NOT NULL DEFAULT still fills after restart.
+        // A new partial INSERT proves the NOT NULL DEFAULT still fills after restart.
         {
             auto session = otterbrix::session_id_t();
             auto cur =
@@ -1458,8 +1457,8 @@ TEST_CASE("integration::cpp::test_persistence::disk_not_null_default") {
     }
 }
 
-// CHECK (c IS NOT NULL) compiles against the PLAN's copy of the DEFAULT, but the value actually
-// written comes from the storage-layer column list, which has no defaults after a restart -- so
+// CHECK (c IS NOT NULL) compiles against the plan's copy of the DEFAULT, but the value actually
+// written comes from the storage-layer column list, which has no defaults after a restart — so
 // NULL gets stored despite the CHECK admitting it.
 TEST_CASE("integration::cpp::test_persistence::default_check_constraint_agrees_after_restart") {
     auto config = test_create_config(integration_fixture_path("test_persistence/default_check_agrees"));
@@ -1879,7 +1878,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_drop_table_survives_restart"
     }
 }
 
-// Recursive scan for every storage payload file under the disk root, to diff before/after a GC sweep.
+// Used to diff the file set before/after a GC sweep.
 static std::set<std::filesystem::path> scan_otbx_files(const std::filesystem::path& disk_root) {
     std::set<std::filesystem::path> files;
     std::error_code ec;
@@ -1983,7 +1982,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_drop_gc_removes_storage_file
 }
 
 // A DROP TABLE inside an explicit transaction is revertible until COMMIT: the catalog delete is
-// MVCC-visible to the dropping session (self-write) but the storage drop is DEFERRED to the
+// MVCC-visible to the dropping session (self-write) but the storage drop is deferred to the
 // post-publish commit tail, so ROLLBACK leaves the file untouched and only COMMIT reclaims it.
 TEST_CASE("integration::cpp::test_persistence::drop_rollback") {
     auto config = test_create_config(integration_fixture_path("test_persistence/drop_rollback"));
@@ -2184,7 +2183,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_add_column_survives_restart"
 }
 
 // MVCC commit-clock restore on reopen: without it a fresh reader snapshots published_horizon_=0
-// and every committed DELETE reads as "after my snapshot", so deleted rows REAPPEAR. Restore
+// and every committed DELETE reads as "after my snapshot", so deleted rows reappear. Restore
 // raises published_horizon_ to the durable frontier (max persisted commit-id).
 TEST_CASE("integration::cpp::test_persistence::reopen_keeps_committed_deletes_invisible") {
     auto config = test_create_config(integration_fixture_path("test_persistence/reopen_keeps_committed_deletes"));
@@ -2446,8 +2445,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_index_massive_checkpoint_cyc
     }
 }
 
-// Restart recovery of an on-disk index via bootstrap_indexes_sync over a clean shutdown: it
-// must re-mint the engine and respawn the disk agent from pg_index alone.
+// bootstrap_indexes_sync must re-mint the engine and respawn the disk agent from pg_index alone.
 TEST_CASE("integration::cpp::test_persistence::index_recovery_phase4_catalog_driven_bootstrap") {
     auto config = test_create_config(
         integration_fixture_path("test_persistence/index_recovery_phase4_catalog_driven_bootstrap"));
@@ -2591,7 +2589,7 @@ TEST_CASE("integration::cpp::test_persistence::set_timezone_survives_restart") {
     }
 }
 
-// Commit-path compaction is GATED for indexed tables, so a commit doesn't shift ids, but the
+// Commit-path compaction is gated for indexed tables, so a commit doesn't shift ids, but the
 // live index must already hide deleted rows; CHECKPOINT then repopulates the on-disk index.
 TEST_CASE("integration::cpp::test_persistence::indexed_table_compact_survives_restart") {
     auto config =
@@ -2736,7 +2734,7 @@ TEST_CASE("integration::cpp::test_persistence::reopen_reinsert_visible") {
     }
 }
 
-// Disk is the ONLY storage mode: a plain CREATE TABLE (no opt-in) produces a .otbx with
+// Disk is the only storage mode: a plain CREATE TABLE (no opt-in) produces a .otbx with
 // relstoragemode == 'd', round-tripping create -> insert -> restart -> read back.
 TEST_CASE("integration::cpp::test_persistence::b1a_disk_is_default") {
     auto config = test_create_config(integration_fixture_path("test_persistence/b1a_disk_default"));
@@ -2812,7 +2810,7 @@ TEST_CASE("integration::cpp::test_persistence::b1a_disk_is_default") {
 
 // A checkpoint truncates the WAL at/below the floor checkpoint_all reports; too far deletes
 // un-checkpointed rows, too little replays a folded segment again. Truncation starts on the
-// SECOND checkpoint; max_segment_size is deliberately small so segments actually retire.
+// second checkpoint; max_segment_size is deliberately small so segments actually retire.
 TEST_CASE("integration::cpp::test_persistence::wal_truncate_restart_no_double_replay") {
     auto config = test_create_config(integration_fixture_path("test_persistence/wal_truncate_no_double_replay"));
     test_clear_directory(config);
@@ -2833,9 +2831,9 @@ TEST_CASE("integration::cpp::test_persistence::wal_truncate_restart_no_double_re
     };
 
     constexpr int kBatch = 50;
-    constexpr int kBeforeCheckpoint = 200; // rows 0..199
-    constexpr int kAfterCheckpoint = 200;  // rows 200..399
-    constexpr int kAfterTruncate = 50;     // rows 400..449
+    constexpr int kBeforeCheckpoint = 200;
+    constexpr int kAfterCheckpoint = 200;
+    constexpr int kAfterTruncate = 50;
 
     std::size_t segments_before_truncate = 0;
     std::size_t segments_after_truncate = 0;

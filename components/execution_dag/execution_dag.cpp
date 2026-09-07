@@ -198,7 +198,6 @@ namespace components::execution_dag {
             nested = entries[step].get();
         }
         if (!subscripted) {
-            // Best case, no copy needed
             output(0).reference(*nested);
             return core::error_t::no_error();
         }
@@ -293,7 +292,6 @@ namespace components::execution_dag {
                         break;
                     }
                 }
-                // Nothing settled it and an operand was UNKNOWN: the fold is UNKNOWN.
                 if (!settled && unknown) {
                     result.set_null(row, true);
                     continue;
@@ -344,9 +342,8 @@ namespace components::execution_dag {
     core::error_t case_when_node_t::process(const graph_execution_context&, uint64_t count) {
         const size_t arms = input_indices_.size();
         for (uint64_t row = 0; row < count; row++) {
-            // Walk the conditions in order and let the first definitely-TRUE one claim the row.
-            // An UNKNOWN condition claims nothing but does not stop the search, exactly as a
-            // false one does not: SQL only takes the arm whose WHEN is TRUE.
+            // An UNKNOWN condition claims nothing but does not stop the search, same as a false one:
+            // SQL only takes the arm whose WHEN is TRUE.
             size_t chosen = arms;
             for (size_t arm = 0; arm < arms; arm++) {
                 const vector::vector_t& condition = input(arm);
@@ -548,8 +545,8 @@ namespace components::execution_dag {
                 core::error_code_t::invalid_parameter,
                 std::pmr::string{"execution graph: parameter is not in the bound parameter map", resource()});
         }
-        // parameters stored as logical_value_t, and it can not hold NULL with type associated with it
-        // but output type is already resolved, so we just place null there
+        // logical_value_t cannot carry a NULL with a type of its own; since the output type is already
+        // resolved, a freshly typed null is placed here instead.
         if (value->second.is_null()) {
             output(0).reference(types::logical_value_t(resource(), output(0).type()));
             output(0).set_null(true);
@@ -764,9 +761,8 @@ namespace components::execution_dag {
             }
         }
 
-        // A node is live when an output slot depends on it; the rest lead nowhere and never run.
-        // Before an output is selected there is nothing to reach from, so every node counts and
-        // validating a half-built graph still covers all of it.
+        // A node is live when an output slot depends on it. Before an output is selected there is nothing
+        // to reach from, so every node counts and validating a half-built graph still covers all of it.
         std::pmr::vector<uint8_t> live(nodes_.size(), output_slots_.empty() ? uint8_t{1} : uint8_t{0}, resource_);
         size_t live_count = output_slots_.empty() ? nodes_.size() : 0;
         std::pmr::vector<node_id_t> reached(resource_);
@@ -920,10 +916,9 @@ namespace components::execution_dag {
             }
         }
 
-        // Reading a key does not by itself make a node run per group: a reduction reading one
-        // still folds the group's ROWS (sum(k) over three rows is 3k, not k), and so does
-        // anything feeding a reduction. Both directions are settled by walking back from the key
-        // slots and from the reductions' arguments.
+        // Reading a key does not by itself make a node run per group: a reduction reading one still folds
+        // the group's rows (sum(k) over three rows is 3k, not k), and so does anything feeding one. Both
+        // directions are settled by walking back from the key slots and the reductions' arguments.
         std::pmr::vector<bool> produces_key(nodes_.size(), false, resource_);
         std::pmr::vector<bool> feeds_reduction(nodes_.size(), false, resource_);
         std::pmr::vector<bool> wanted_by_key(slots_.size(), false, resource_);
@@ -983,8 +978,8 @@ namespace components::execution_dag {
             slot_sizes_[slot] = count;
         }
 
-        // A node with NO inputs has nothing to take a size from, so it works at the row count it was
-        // handed
+        // A node with no inputs has nothing to take a size from, so it works at the row count it was
+        // handed.
         const bool constant = count == unconstrained_rows && !node->input_indices().empty();
         const uint64_t execute_over = node->input_indices().empty() ? ambient : (constant ? uint64_t{1} : count);
         auto error = node->process(context, execute_over);
@@ -993,7 +988,7 @@ namespace components::execution_dag {
         }
         if (constant) {
             for (auto slot : node->output_indices()) {
-                // set type resets auxiliary and can not be called, since we need it
+                // set_vector_type resets auxiliary data, so it's skipped unless the type actually changes.
                 if (data_storage_[slot].get_vector_type() != vector::vector_type::CONSTANT) {
                     data_storage_[slot].set_vector_type(vector::vector_type::CONSTANT);
                 }
@@ -1023,7 +1018,6 @@ namespace components::execution_dag {
                     std::pmr::string{"execution graph: input column is missing from the chunk", resource()});
             }
             const auto& column = input.data[slots_[index].input_column];
-            // catches a chunk laid out differently than the schema the slots were bound against
             if (column.type() != slots_[index].type) {
                 return core::error_t(
                     core::error_code_t::schema_error,
@@ -1048,8 +1042,7 @@ namespace components::execution_dag {
 
     core::error_t execution_dag_t::process_keys(const vector::data_chunk_t& input,
                                                 const graph_execution_context& context) {
-        // strings are allocated on extenal heaps (basically an arena)
-        // and that will allocate new memory for each batch if not reset
+        // Strings live on their own heap (an arena); resetting it each batch keeps it from growing forever.
         for (size_t index = 0; index < data_storage_.size(); index++) {
             if (!slots_[index].constant) {
                 data_storage_[index].reset_string_heap();
@@ -1139,7 +1132,7 @@ namespace components::execution_dag {
                 core::error_code_t::invalid_parameter,
                 std::pmr::string{"execution graph: one key vector per declared key slot is required", resource()});
         }
-        // The key values of THESE groups replace what the last chunk left in the key slots, so the
+        // The key values of these groups replace what the last chunk left in the key slots, so the
         // expressions above them evaluate once per group instead of once per row.
         for (size_t index = 0; index < keys.size(); index++) {
             data_storage_[key_slots_[index]].reference(*keys[index]);
@@ -1164,9 +1157,8 @@ namespace components::execution_dag {
         return copy_outputs(emitted_rows(ambient), target, target_row);
     }
 
-    // What the outputs actually hold: every node stamped its output size, so the emitted row count
-    // is the narrowest of them. All-unconstrained means every output is constant, which broadcasts
-    // to whatever the caller asked for.
+    // Every node stamps its output size, so the emitted row count is the narrowest of them.
+    // All-unconstrained means every output is constant, which broadcasts to whatever the caller asked for.
     uint64_t execution_dag_t::emitted_rows(uint64_t ambient) const {
         uint64_t emitted = unconstrained_rows;
         for (auto slot : output_slots_) {

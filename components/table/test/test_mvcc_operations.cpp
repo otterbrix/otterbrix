@@ -294,7 +294,7 @@ TEST_CASE("components::table::mvcc::cleanup_committed_deletes") {
     REQUIRE(scan_count(*table, env) == 0);
 
     auto lowest = mgr.lowest_active_start_time();
-    table->cleanup_versions(lowest); // committed deletes must not block cleanup
+    table->cleanup_versions(lowest);
 
     REQUIRE(scan_count(*table, env) == 0);
 }
@@ -422,7 +422,7 @@ TEST_CASE("components::table::mvcc::delete_not_visible_until_commit") {
 
     auto s2 = components::session::session_id_t::generate_uid();
     auto& txn2 = mgr.begin_transaction(s2);
-    REQUIRE(scan_count_txn(*table, env, txn2.data()) == 10); // uncommitted delete stays invisible
+    REQUIRE(scan_count_txn(*table, env, txn2.data()) == 10);
     mgr.abort(s2);
 
     auto commit_id = mgr.commit(s1);
@@ -445,11 +445,11 @@ TEST_CASE("components::table::mvcc::txn_sees_own_writes") {
     auto& txn1 = mgr.begin_transaction(s1);
     append_rows_txn(*table, env, 0, 5, txn1.data());
 
-    REQUIRE(scan_count_txn(*table, env, txn1.data()) == 5); // sees its own uncommitted writes
+    REQUIRE(scan_count_txn(*table, env, txn1.data()) == 5);
 
     auto s2 = components::session::session_id_t::generate_uid();
     auto& txn2 = mgr.begin_transaction(s2);
-    REQUIRE(scan_count_txn(*table, env, txn2.data()) == 0); // another txn does not
+    REQUIRE(scan_count_txn(*table, env, txn2.data()) == 0);
 
     mgr.abort(s1);
     REQUIRE_FALSE(table->revert_append(0, 5).has_error());
@@ -935,7 +935,6 @@ namespace {
         table.finalize_append(state, transaction_data{0, 0});
     }
 
-    // rows below `new_from` carry base 0 content, rows at or past it base `new_base`
     void verify_list_rows(data_table_t& table, test_env& env, uint64_t total, uint64_t new_from, uint64_t new_base) {
         std::vector<storage_index_t> column_ids;
         column_ids.emplace_back(0);
@@ -1094,7 +1093,7 @@ namespace {
 
 } // anonymous namespace
 
-// Leg 1 — PARTIAL deletes: falling through the partial-delete branch to `true, empty result` would resurrect all 500
+// PARTIAL deletes: falling through the partial-delete branch to `true, empty result` would resurrect all 500
 TEST_CASE("components::table::mvcc::vacuum_keeps_partial_committed_deletes") {
     test_env env;
     auto table = make_int_table(env);
@@ -1121,7 +1120,7 @@ TEST_CASE("components::table::mvcc::vacuum_keeps_partial_committed_deletes") {
     check_survivors();
 }
 
-// Leg 2 — a FULLY deleted vector takes TWO passes: pass 1 collapses it to a constant; only pass 2 reaches
+// A FULLY deleted vector takes TWO passes: pass 1 collapses it to a constant; only pass 2 reaches
 // chunk_constant_info::cleanup, where an empty `result` on a committed delete_id would resurrect all 1024.
 TEST_CASE("components::table::mvcc::vacuum_keeps_fully_deleted_vector_deleted") {
     test_env env;
@@ -1309,7 +1308,7 @@ TEST_CASE("components::table::mvcc::orphaned_commit_blocks_compaction") {
     table->commit_all_deletes(txn_del_id, c_del);
     mgr.publish(c_del);
 
-    REQUIRE_FALSE(mgr.has_active_transactions()); // not vacuous: every reclaim condition is met but the horizon
+    REQUIRE_FALSE(mgr.has_active_transactions());
 
     auto s_before = components::session::session_id_t::generate_uid();
     auto& before = mgr.begin_transaction(s_before);
@@ -1361,7 +1360,7 @@ TEST_CASE("components::table::mvcc::cleanup_must_not_publish_an_in_flight_commit
     mgr.abort(sr);
 }
 
-// Second leg: published AFTER the reader starts, so only the reader's own snapshot still carries it — the gate must
+// Published AFTER the reader starts, so only the reader's own snapshot still carries it — the gate must
 // check that per-txn half too.
 TEST_CASE("components::table::mvcc::cleanup_honours_a_readers_in_flight_snapshot") {
     test_env env;

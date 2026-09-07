@@ -23,9 +23,6 @@ using namespace components::expressions;
 namespace otterbrix {
 
     namespace {
-        // ---------------------------------------------------------------------
-        // Column-schema derivation.
-        //
         // Each chaining op recomputes the output schema eagerly from the source schema + the
         // op's expressions (no Relation tree walked): count -> UBIGINT, avg(x) -> DOUBLE,
         // field lookups against the source schema, "#"/UNKNOWN sentinels.
@@ -113,7 +110,6 @@ namespace otterbrix {
         }
 
         // Schema for an aggregate that carries a SELECT clause (no group).
-        // Mirrors ColumnsVisitor::operator()(Aggregate) with select && !group.
         std::pmr::vector<column_definition_t> select_schema(std::pmr::memory_resource* resource,
                                                             const node_select_ptr& select,
                                                             const std::pmr::vector<column_definition_t>& initial) {
@@ -134,7 +130,6 @@ namespace otterbrix {
         }
 
         // Schema for an aggregate that carries a GROUP clause.
-        // Mirrors ColumnsVisitor::operator()(Aggregate) with group present.
         std::pmr::vector<column_definition_t> group_schema(std::pmr::memory_resource* resource,
                                                            const node_group_ptr& group,
                                                            const std::pmr::vector<column_definition_t>& initial) {
@@ -164,8 +159,7 @@ namespace otterbrix {
         }
 
         // Pass-through schema (copy) for ops that don't change the column set:
-        // filter (match), sort, and limit. Mirrors ColumnsVisitor's !group,
-        // no-select Aggregate branch (and limit -> resource->get_columns()).
+        // filter (match), sort, and limit.
         std::pmr::vector<column_definition_t> passthrough_schema(std::pmr::memory_resource* resource,
                                                                  const std::pmr::vector<column_definition_t>& initial) {
             std::pmr::vector<column_definition_t> result(resource);
@@ -184,19 +178,18 @@ namespace otterbrix {
         : space(other.space) {}
 
     relation_factory_t::~relation_factory_t() {
-        // Scratch tables (tmp.t<pid>_<n>) are persisted with the database and nothing else
-        // removes them, so this destructor is the only cleanup, run once no relation built on
-        // them can still be reading (a relation keeps its connection, hence this, alive via
-        // py_relation_t::env). A drop refusal is logged, not thrown (destructors can't raise);
-        // the surviving name is pid-qualified so the retry loop in make_aggregate_node steps
-        // over it later. `space` survives close() on purpose -- unlike py_connection_t::space
-        // and expression_factory_t::space, which close() nulls -- so the engine is still here
-        // to drop these tables; relation_factory_t::set_null_space() exists but must not be
-        // wired into close(), or this collection silently stops.
+        // Scratch tables (tmp.t<pid>_<n>) persist with the database and nothing else removes
+        // them, so this destructor is the only cleanup, run once no relation reading them can
+        // still be alive (kept alive via py_relation_t::env). A drop refusal is logged, not
+        // thrown (destructors can't raise); the surviving pid-qualified name lets the retry loop
+        // in make_aggregate_node step over it later. `space` survives close() on purpose --
+        // unlike py_connection_t::space and expression_factory_t::space, which close() nulls --
+        // so the engine is still here to drop these tables; set_null_space() must not be wired
+        // into close(), or this collection silently stops.
         //
-        // Not covered: a killed/crashed process skips this destructor entirely, leaving its
-        // scratch tables in `tmp` forever (deciding which pids are dead is unsafe here since a
-        // recycled pid may be live; that sweep belongs at bootstrap, not here).
+        // Not covered: a killed/crashed process skips this destructor, leaving its scratch
+        // tables in `tmp` forever -- deciding which pids are dead is unsafe here (a recycled pid
+        // may be live), so that sweep belongs at bootstrap, not here.
         if (!space) {
             return;
         }
@@ -226,7 +219,7 @@ namespace otterbrix {
                                                      node_select_ptr select,
                                                      node_limit_ptr limit) {
         // The scratch table this aggregate materialises into. The name must be unused in the
-        // DATABASE, not just this process: the counter restarts at zero per process, but
+        // database, not just this process: the counter restarts at zero per process, but
         // tmp.* tables persist with the database, so a second process against the same
         // directory collides. Measured: running
         // integration/python/tests/fast/dataframe/test_dataframe_limit.py twice against the
@@ -428,7 +421,6 @@ namespace otterbrix {
             }
         }
 
-        // join schema: left columns followed by right columns.
         std::pmr::vector<column_definition_t> schema(resource);
         schema.reserve(relation.columns.size() + other.columns.size());
         for (const auto& col : relation.columns) {

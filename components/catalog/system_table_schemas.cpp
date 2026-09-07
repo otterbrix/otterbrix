@@ -377,7 +377,7 @@ namespace components::catalog {
 
     // Two encoders write the same column type: the binary codec's gate (gate_persistable_type,
     // validate_logical_plan.cpp) decides refusal, but atttypspec/typdefspec on disk comes from
-    // THIS flat codec — wherever the gate refuses, this must emit kFlatUnpersistable too, or an
+    // this flat codec — wherever the gate refuses, this must emit kFlatUnpersistable too, or an
     // approved column silently rehydrates as a different type.
     static constexpr std::string_view kFlatUnpersistable = "!unpersistable";
 
@@ -385,8 +385,8 @@ namespace components::catalog {
         return std::string{kFlatUnpersistable} + "(" + std::to_string(static_cast<int>(lt)) + ")";
     }
 
-    // Mirrors type_spec_codec.cpp's checked_extension: absent/GENERIC used to SIGSEGV or write
-    // garbage here — both were live bugs.
+    // Mirrors type_spec_codec.cpp's checked_extension: an absent or GENERIC extension must not be
+    // dereferenced here — that crashes or writes garbage.
     static const types::logical_type_extension* checked_flat_extension(
         const types::complex_logical_type& t,
         types::logical_type_extension::extension_type expected) {
@@ -394,8 +394,8 @@ namespace components::catalog {
         return (ext != nullptr && ext->type() == expected) ? ext : nullptr;
     }
 
-    // Plain scalars with no pg_type name used to fall through to UNKNOWN(<number>) and rehydrate
-    // as a NAMED type; they get whitelisted BUILTIN(<logical_type>) instead
+    // Plain scalars with no pg_type name get whitelisted as BUILTIN(<logical_type>) instead of falling
+    // through to UNKNOWN(<number>) and rehydrating as a named type
     // (encoder_domains::every_plain_scalar_the_gate_blesses_survives_the_flat_writer pins it).
     static bool is_nameless_flat_builtin(types::logical_type lt) {
         using LT = types::logical_type;
@@ -451,7 +451,7 @@ namespace components::catalog {
             return "numeric(" + std::to_string(static_cast<unsigned>(dec->width())) + "," +
                    std::to_string(static_cast<unsigned>(dec->scale())) + ")";
         }
-        if (t.type() == LT::UNKNOWN) { // bare UNKNOWN gets no name; GENERIC's alias() is a COLUMN name, not this
+        if (t.type() == LT::UNKNOWN) { // bare UNKNOWN gets no name; GENERIC's alias() is a column name, not this
             const auto* ext = checked_flat_extension(t, types::logical_type_extension::extension_type::UNKNOWN);
             if (ext == nullptr) {
                 return "UNKNOWN()";
@@ -552,7 +552,7 @@ namespace components::catalog {
                 what += ")";
             }
         }
-        bool expect(char c, const char* inside) { // short-circuits after a previous failure
+        bool expect(char c, const char* inside) {
             if (failed) {
                 return false;
             }
@@ -799,12 +799,12 @@ namespace components::catalog {
 
     std::string encode_type_spec(const types::complex_logical_type& t) {
         using LT = types::logical_type;
-        if (builtin_type_to_oid(t.type()) != INVALID_OID) { // every builtin scalar carries goes specless
+        if (builtin_type_to_oid(t.type()) != INVALID_OID) { // every builtin scalar goes specless
             return "";
         }
         // ENUM flat format: "ENUM:type_name:label0=val0,...", escape_flat_name-escaped.
         if (t.type() == LT::ENUM) {
-            // absent/GENERIC extension is corruption (old code static_cast a GENERIC one as enum)
+            // An absent or GENERIC extension here is corruption, not a value to static_cast as ENUM.
             const auto* ext = checked_flat_extension(t, types::logical_type_extension::extension_type::ENUM);
             if (ext == nullptr) {
                 return flat_unpersistable(t.type());
@@ -838,7 +838,7 @@ namespace components::catalog {
             return core::error_t{core::error_code_t::data_corruption, std::pmr::string{what.c_str(), resource}};
         };
         if (spec.size() >= 5 && spec.compare(0, 5, "ENUM:") == 0) { // live format, not a legacy shim
-            auto rest = spec.substr(5); // a malformed escape refuses loudly rather than decoding wrong
+            auto rest = spec.substr(5);
             auto colon = find_unescaped(rest, ':', 0);
             if (colon == std::string_view::npos) { // the encoder always writes this ':', even for zero entries
                 return corrupt("type spec: ENUM without an entry-list separator");
@@ -856,7 +856,7 @@ namespace components::catalog {
                     const std::string_view token =
                         entries_str.substr(i, (comma == std::string_view::npos ? entries_str.size() : comma) - i);
                     const std::size_t eq = find_unescaped(token, '=', 0);
-                    if (eq == std::string_view::npos) { // covers the empty token too
+                    if (eq == std::string_view::npos) {
                         return corrupt("type spec: ENUM entry without '='");
                     }
                     std::string label;
@@ -1146,7 +1146,7 @@ namespace components::catalog {
                                       std::optional<types::logical_value_t>& out) {
         out.reset();
         if (spec.empty()) {
-            return core::error_t::no_error(); // no default at all
+            return core::error_t::no_error();
         }
         if (spec.size() == 1 && spec.front() == kDefaultSpecNull) { // NA-typed; caller holds column_type separately
             out.emplace(resource, types::complex_logical_type{types::logical_type::NA});

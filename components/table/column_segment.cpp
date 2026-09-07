@@ -20,7 +20,7 @@ namespace components::table {
         // Marker width must match write_string_marker's 16-byte write and the reader's memcpy width.
         static constexpr uint64_t BIG_STRING_MARKER_BASE_SIZE = sizeof(uint64_t) + sizeof(int64_t);
         static constexpr uint64_t INVALID_BLOCK = uint64_t(-1);
-        // Must equal storage::MAXIMUM_BLOCK: a diverging local value made every real overflow id fail is_valid.
+        // A value diverging from storage::MAXIMUM_BLOCK would make every real overflow id fail is_valid.
         static constexpr uint64_t MAXIMUM_BLOCK = storage::MAXIMUM_BLOCK;
 
         struct string_location_t {
@@ -156,7 +156,7 @@ namespace components::table {
             return core::error_t(core::error_code_t::data_corruption, std::move(message));
         }
 
-        // id >= MAXIMUM_BLOCK is transient; else a real FILE block. Unregistered in either domain is corruption.
+        // An unregistered id in either domain (transient or on-disk) is corruption, not a soft miss.
         std::shared_ptr<storage::block_handle_t>
         resolve_overflow_block(column_segment_t& segment, uint64_t block_id, core::error_t& error) {
             auto* raw_state = segment.segment_state();
@@ -216,7 +216,7 @@ namespace components::table {
                 }
                 auto* pinned = state.get_or_insert_handle(overflow);
                 if (!pinned) {
-                    return std::string_view(nullptr, 0); // state.fetch_error already set
+                    return std::string_view(nullptr, 0);
                 }
                 return read_string_with_length(pinned->ptr(), static_cast<int32_t>(location.offset));
             }
@@ -340,7 +340,7 @@ namespace components::table {
                                   uint64_t result_idx) {
             auto* handle_ptr = state.get_or_insert_handle(segment);
             if (!handle_ptr) {
-                return; // state.fetch_error already set by get_or_insert_handle
+                return;
             }
             auto& handle = *handle_ptr;
 
@@ -357,7 +357,7 @@ namespace components::table {
             assert(row_id >= 0 && row_id < static_cast<int64_t>(segment.count.load()));
             auto* handle_ptr = state.get_or_insert_handle(segment);
             if (!handle_ptr) {
-                return; // state.fetch_error already set by get_or_insert_handle
+                return;
             }
             auto& handle = *handle_ptr;
             auto dataptr = handle.ptr() + segment.block_offset();
@@ -376,7 +376,7 @@ namespace components::table {
                               uint64_t result_idx) {
             auto* handle_ptr = state.get_or_insert_handle(segment);
             if (!handle_ptr) {
-                return; // state.fetch_error already set by get_or_insert_handle
+                return;
             }
             auto& handle = *handle_ptr;
 
@@ -647,7 +647,7 @@ namespace components::table {
                                 uint64_t result_idx) {
             auto* handle_ptr = state.get_or_insert_handle(segment);
             if (!handle_ptr) {
-                return; // state.fetch_error already set by get_or_insert_handle
+                return;
             }
             auto& handle = *handle_ptr;
             auto* src = handle.ptr() + segment.block_offset();
@@ -755,7 +755,7 @@ namespace components::table {
                            uint64_t result_idx) {
             auto* handle_ptr = state.get_or_insert_handle(segment);
             if (!handle_ptr) {
-                return; // state.fetch_error already set by get_or_insert_handle
+                return;
             }
             auto& handle = *handle_ptr;
             auto* base = handle.ptr() + segment.block_offset();
@@ -850,7 +850,7 @@ namespace components::table {
                             uint64_t result_idx) {
             auto* handle_ptr = state.get_or_insert_handle(segment);
             if (!handle_ptr) {
-                return; // state.fetch_error already set by get_or_insert_handle
+                return;
             }
             auto& handle = *handle_ptr;
             auto* base = handle.ptr() + segment.block_offset();
@@ -1310,7 +1310,7 @@ namespace components::table {
                 impl::dict_fetch_row(*this, state, static_cast<int64_t>(row_id - start), result, result_idx);
                 return;
             case compression::compression_type::UNCOMPRESSED:
-                break; // raw dispatch by physical type below
+                break;
             case compression::compression_type::INVALID:
             case compression::compression_type::BITPACKING:
             case compression::compression_type::VALIDITY_UNCOMPRESSED:

@@ -3131,8 +3131,8 @@ TEST_CASE("integration::cpp::test_sql_features::fk_set_null_rollback_restores_fk
 }
 
 // A FK whose two sides share a PHYSICAL type but not a LOGICAL one (child.d DATE vs parent.id INTEGER)
-// must be ANSWERED, not aborted — fk_hash_semijoin normalized on physical equality alone, violating
-// vector_ops::copy's logical-equality precondition. Pinned here: the outcome is DEFINITE, not a specific match rule.
+// must be answered, not aborted — fk_hash_semijoin normalized on physical equality alone, violating
+// vector_ops::copy's logical-equality precondition. Pinned here: the outcome is definite, not a specific match rule.
 TEST_CASE("integration::cpp::test_sql_features::fk_cross_logical_same_physical_key_is_answered") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/fk_cross_logical_key"));
     test_clear_directory(config);
@@ -3766,7 +3766,7 @@ TEST_CASE("integration::cpp::test_sql_features::drop_database_cascade_cleanup") 
 
     INFO("post-drop: same table names recreate cleanly with fresh schema");
     {
-        // If BFS missed t1/t2/t3 under the OLD namespace OID, the recreate would collide via stale resolve;
+        // If BFS missed t1/t2/t3 under the old namespace OID, the recreate would collide via stale resolve;
         // success plus zero rows proves storage and pg_attribute were fully dropped and rebuilt.
         {
             auto session = otterbrix::session_id_t();

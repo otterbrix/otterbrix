@@ -26,7 +26,7 @@ namespace {
 
     void cleanup_test_file() { std::remove(test_db_path().c_str()); }
 
-    // A SMALL buffer-pool limit (a few MiB, vs 4 GiB in test_checkpoint_load) so the working set can't fit resident.
+    // A small buffer-pool limit (a few MiB, vs 4 GiB in test_checkpoint_load) so the working set can't fit resident.
     constexpr uint64_t SMALL_POOL_LIMIT = uint64_t(4) << 20; // 4 MiB
 
     struct test_env_t {
@@ -169,7 +169,7 @@ TEST_CASE("disk_backed_scan: filled segments are written through to disk before 
     cleanup_test_file();
 }
 
-// Exercises fetch_next_batch (per-batch re-seek/re-pin), unlike the whole-scan helper used elsewhere.
+// Unlike the whole-scan helper used elsewhere: per-batch re-seek/re-pin through fetch_next_batch.
 TEST_CASE("disk_backed_scan: streaming fetch_next_batch reloads correctly under eviction", "[step2]") {
     using namespace components::table;
     using namespace components::table::storage;
@@ -418,10 +418,8 @@ TEST_CASE("disk_backed_scan: repeated compaction does not bloat the file", "[ste
     cleanup_test_file();
 }
 
-// Compact block allocation (segment packing) for the write-through path.
-
-// Flush-before-evict guard: a LIVE segment re-pointed at a packed block that's NOT yet flushed would fail
-// load() with a checksum mismatch/data_corruption if a concurrent scan/eviction hit it first. GREEN only
+// Flush-before-evict guard: a live segment re-pointed at a packed block that's not yet flushed would fail
+// load() with a checksum mismatch/data_corruption if a concurrent scan/eviction hit it first. Green only
 // when every write-through caller flushes before any eviction of a re-pointed segment can occur.
 TEST_CASE("disk_backed_scan: B2 packed segments reload exactly under forced eviction", "[step2]") {
     using namespace components::table;
@@ -450,7 +448,7 @@ TEST_CASE("disk_backed_scan: B2 packed segments reload exactly under forced evic
     cleanup_test_file();
 }
 
-// A dedicated 256 KiB block per column segment on a WIDE table (SSB lineorder, ~17 columns) measured
+// A dedicated 256 KiB block per column segment on a wide table (SSB lineorder, ~17 columns) measured
 // ~127x over-allocation: 14016 blocks / 3504 MB for 27.5 MB of data. Packing tracks data size instead.
 TEST_CASE("disk_backed_scan: B2 write-through packs segments, no per-segment over-allocation", "[step2]") {
     using namespace components::table;
@@ -459,7 +457,7 @@ TEST_CASE("disk_backed_scan: B2 write-through packs segments, no per-segment ove
     using namespace components::vector;
     cleanup_test_file();
 
-    // Measures ON-DISK block count, not eviction: a generous pool holds one row group's transient segments.
+    // Measures on-disk block count, not eviction: a generous pool holds one row group's transient segments.
     core::pmr::otterbrix_resource resource;
     core::filesystem::local_file_system_t fs;
     buffer_pool_t buffer_pool(&resource, uint64_t(256) << 20, false, uint64_t(1) << 24); // 256 MiB
@@ -501,10 +499,10 @@ TEST_CASE("disk_backed_scan: B2 write-through packs segments, no per-segment ove
     const uint64_t blocks = bm.total_blocks();
     const uint64_t block_size = bm.block_size();
 
-    // pre_b2_floor: what a per-segment allocator would consume, at least one dedicated block per CLOSED segment.
+    // pre_b2_floor: what a per-segment allocator would consume, at least one dedicated block per closed segment.
     const uint64_t pre_b2_floor = (ROW_GROUPS - 1) * (NCOLS * 2);
 
-    // Bound by data volume with generous slack, NOT by segment count.
+    // Bound by data volume with generous slack, not by segment count.
     const uint64_t value_bytes = ROWS * NCOLS * sizeof(int32_t);
     const uint64_t packed_blocks = (value_bytes + block_size - 1) / block_size;
     const uint64_t bound = (ROW_GROUPS * 2) + packed_blocks + 8; // per-row-group block + data + slack
@@ -518,9 +516,9 @@ TEST_CASE("disk_backed_scan: B2 write-through packs segments, no per-segment ove
     cleanup_test_file();
 }
 
-// The FLAT-fast-path string scan writes each cell as a std::string_view that BORROWS directly into the
+// The flat-fast-path string scan writes each cell as a std::string_view that borrows directly into the
 // buffer-pool-pinned block; fetch_next_batch releases that pin per batch, so a held chunk can outlive it.
-// Under eviction the block reloads at a NEW address and a borrowed view dangles -- safe here only because
+// Under eviction the block reloads at a new address and a borrowed view dangles -- safe here only because
 // the payload is interned into the result vector's string_vector_buffer_t (INT64/gap/DICTIONARY copy bytes instead).
 TEST_CASE("disk_backed_scan: streaming STRING batch survives block eviction (no UAF)", "[step2]") {
     using namespace components::table;
@@ -563,7 +561,7 @@ TEST_CASE("disk_backed_scan: streaming STRING batch survives block eviction (no 
     REQUIRE(!loaded_result.has_error());
     auto& loaded = loaded_result.value();
 
-    // Reload at a FRESH address is the trigger that makes a borrowed view dangle.
+    // Reload at a fresh address is the trigger that makes a borrowed view dangle.
     REQUIRE(!env.buffer_pool.set_limit(uint64_t(1) << 20).has_error()); // 1 MiB
 
     std::vector<storage_index_t> column_ids;
@@ -574,7 +572,7 @@ TEST_CASE("disk_backed_scan: streaming STRING batch survives block eviction (no 
     const int64_t max_row = static_cast<int64_t>(LARGE_ROW_COUNT);
     bool drained = false;
 
-    // Fetch the FIRST batch and HOLD it -- the chunk outlives its source pin.
+    // Fetch the first batch and hold it -- the chunk outlives its source pin.
     data_chunk_t held(&env.resource, types, DEFAULT_VECTOR_CAPACITY);
     {
         auto r =

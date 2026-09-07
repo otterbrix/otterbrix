@@ -180,7 +180,7 @@ namespace components::table {
                 }
                 row_group = row_groups_->segment_at(l, static_cast<int64_t>(segment_index));
             }
-            // Asked BEFORE the gather so an invisible row costs no column read. row_id stays
+            // Asked before the gather so an invisible row costs no column read. row_id stays
             // collection-absolute; row_version_manager_t::fetch rebases internally.
             if (visibility == fetch_visibility_t::SNAPSHOT && !row_group->is_visible(txn, row_id)) {
                 continue;
@@ -229,9 +229,9 @@ namespace components::table {
     bool collection_t::is_empty(std::unique_lock<std::mutex>& l) const { return row_groups_->is_empty(l); }
 
     core::result_wrapper_t<bool> collection_t::initialize_append(table_append_state& state) {
-        // Type validated FIRST: create_column's constructors cannot refuse a type they cannot
-        // represent. Before this, an unnamed struct threw inside struct_column_data_t's ctor
-        // and hung the statement across the disk agent's coroutine instead of failing.
+        // Type validated first: create_column's constructors cannot refuse a type they cannot
+        // represent, or an unnamed struct throws inside struct_column_data_t's ctor and hangs the
+        // statement across the disk agent's coroutine instead of failing cleanly.
         for (const auto& type : types_) {
             if (auto err = column_data_t::validate_column_type(type, resource_); err.contains_error()) {
                 return err;
@@ -289,10 +289,9 @@ namespace components::table {
             if (init.has_error()) {
                 return init; // out_of_memory
             }
-            // Write-through: the row group we just closed is now COMPLETE (its column segments are final
-            // and the append state has moved to the new row group). Re-point its managed segments to disk so the
-            // pool can evict+reload them -> bounded memory at any table size. A write/alloc failure
-            // surfaces as io_error/out_of_memory, never a throw.
+            // Write-through: the row group we just closed is now complete (segments final, append state
+            // moved on), so re-pointing it to disk lets the pool evict+reload it -> bounded memory at any
+            // table size. A write/alloc failure surfaces as io_error/out_of_memory, never a throw.
             auto transitioned = current_row_group->transition_to_disk();
             if (transitioned.has_error()) {
                 return transitioned;
@@ -490,8 +489,8 @@ namespace components::table {
                 }
             }
             // Deliberately update_column, not update: row_group_t::update treats its last arg
-            // as TOP-LEVEL column ordinals, so a depth-2 column_path would misindex as a second
-            // column. update_column walks the path INTO the column instead.
+            // as top-level column ordinals, so a depth-2 column_path would misindex as a second
+            // column. update_column walks the path into the column instead.
             auto updated = row_group->update_column(updates, row_ids, column_path, start, pos - start);
             if (updated.has_error()) {
                 return updated;
@@ -524,7 +523,7 @@ namespace components::table {
     collection_t::add_column(column_definition_t& new_column) {
         // Named-resource copy: std::pmr::vector's plain copy ctor asks
         // select_on_container_copy_construction, which for polymorphic_allocator is
-        // DEFAULT-constructed — without this the successor's schema would land on the
+        // default-constructed — without this the successor's schema would land on the
         // process-wide default resource instead of this one.
         std::pmr::vector<types::complex_logical_type> new_types(types_, resource_);
         new_types.push_back(new_column.type());

@@ -42,12 +42,12 @@ namespace services::collection::executor {
     // Fault-injection seam for OID allocation; no file/page/block, so the .otbx/WAL interposers can't reach it.
     struct oid_alloc_interposer_t {
         virtual ~oid_alloc_interposer_t() = default;
-        // An EMPTY `allocated` isn't invented — it's what allocate_oids_inline's failure branches already produce.
+        // An empty `allocated` isn't invented — it's what allocate_oids_inline's failure branches already produce.
         virtual std::vector<components::catalog::oid_t>
         substitute(std::size_t requested, std::vector<components::catalog::oid_t> allocated) = 0;
     };
 
-    void dev_set_oid_alloc_interposer(oid_alloc_interposer_t* interposer); // nullptr = off
+    void dev_set_oid_alloc_interposer(oid_alloc_interposer_t* interposer);
     oid_alloc_interposer_t* dev_oid_alloc_interposer();
 #endif
 
@@ -79,7 +79,8 @@ namespace services::collection::executor {
         uint64_t commit_id{0};
         // Non-empty only after SET TIMEZONE persists a new zone; the dispatcher refreshes default_tz_cat_.
         std::string applied_timezone{};
-        // Move-only; appended LAST so earlier aggregate-init braces that set only a prefix of members still compile.
+        // Move-only, and everything from here down is appended at the END: a brace initializer that sets
+        // only a prefix of the members has to keep compiling.
         std::optional<explain_plan_node> captured_explain_ir{};
         std::optional<std::pair<components::types::complex_logical_type, components::types::complex_logical_type>>
             resolved_cast{};
@@ -92,7 +93,6 @@ namespace services::collection::executor {
         // Non-owning: points into the execute_plan frame's storage, which outlives execute_sub_plan_.
         const components::logical_plan::storage_parameters* parameters;
         services::context_storage_t context_storage_;
-        // Propagates to pipeline_context.analyze so execute_pipeline records per-operator stats.
         bool analyze{false};
 
         explicit plan_t(std::stack<components::operators::operator_ptr>&& sub_plans,
@@ -136,7 +136,7 @@ namespace services::collection::executor {
         ~executor_t() = default;
 
         // INTERNAL: called only from execute_plan_full via co_await, never through the mailbox. captured_subplans
-        // is BY VALUE — a pmr member can't default without re-anchoring to the forbidden get_default_resource().
+        // is by value — a pmr member can't default without re-anchoring to the forbidden get_default_resource().
         unique_future<execute_result_t> execute_plan(components::session::session_id_t session,
                                                      components::logical_plan::execution_plan_t plan,
                                                      services::context_storage_t context_storage,
@@ -144,8 +144,8 @@ namespace services::collection::executor {
                                                      uint64_t lowest_active_start_time,
                                                      std::pmr::vector<explain_plan_node> captured_subplans);
 
-        // THE per-query entry point (the dispatcher's only execute send). All txn-state
-        // access rides txn_*_msg to the dispatcher, the sole transaction_manager_t owner.
+        // The per-query entry point (the dispatcher's only execute send); txn-state access rides
+        // txn_*_msg to the dispatcher, the sole transaction_manager_t owner.
         unique_future<execute_result_t> execute_plan_full(components::session::session_id_t session,
                                                           components::logical_plan::execution_plan_t plan);
 
@@ -156,7 +156,7 @@ namespace services::collection::executor {
                                            std::string name,
                                            std::pmr::vector<components::types::complex_logical_type> inputs);
 
-        // Compensation for a failed register_udf fan-out; appended LAST in dispatch_traits (message ids positional).
+        // Compensation for a failed register_udf fan-out; appended last in dispatch_traits (message ids positional).
         unique_future<bool> unregister_udf_uid(components::session::session_id_t session,
                                                components::compute::function_uid uid);
 
@@ -213,8 +213,8 @@ namespace services::collection::executor {
         unique_future<core::error_t> materialize_build_sides_(components::operators::operator_ptr root,
                                                               components::pipeline::context_t* ctx);
 
-        // Fires a NON-final incremental flush once chain[dml_idx]'s buffered rows >= dml_flush_row_threshold_. A
-        // MEMBER coroutine with EXACTLY ONE co_await (lost-wakeup-safe).
+        // Fires a non-final incremental flush once chain[dml_idx]'s buffered rows >= dml_flush_row_threshold_; a
+        // member coroutine with exactly one co_await (lost-wakeup-safe).
         unique_future<core::error_t> maybe_mid_flush(std::pmr::vector<components::operators::operator_t*>& chain,
                                                      std::size_t dml_idx,
                                                      components::pipeline::context_t* ctx);
@@ -248,7 +248,7 @@ namespace services::collection::executor {
             return id < explain_renderers_.size() && explain_renderers_[id] != nullptr;
         }
 
-        // Unregistered id resolves to slot 0 as the DEFAULT, not a silent fallback: pinned by
+        // Unregistered id resolves to slot 0 as the default, not a silent fallback — pinned by
         // test_explain.cpp's out-of-range cases.
         [[nodiscard]] explain_render_fn resolve_explain_renderer_(uint32_t id) const noexcept {
             if (explain_slot_registered_(id)) {

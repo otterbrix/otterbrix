@@ -17,7 +17,6 @@ using namespace components::vector;
 
 namespace {
 
-    // The substring of `s` starting at the 1-based `start_1based`, clipped to the string.
     // SQL semantics: start <= 0 is clamped to 1 (begin); start > length => empty.
     inline std::string_view substring_from(std::string_view s, int64_t start_1based) {
         const int64_t start_idx = start_1based <= 0 ? 0 : start_1based - 1;
@@ -27,10 +26,7 @@ namespace {
         return s.substr(static_cast<size_t>(start_idx));
     }
 
-    // ------------------------------------------------------------------
-    // SUBSTRING(s, start)       — start is 1-based; out-of-range => empty
-    // SUBSTRING(s, start, len)  — both 1-based; len <= 0 => empty; clip to bounds
-    // ------------------------------------------------------------------
+    // SUBSTRING(s, start[, len]): both 1-based; start out-of-range or len <= 0 => empty; clipped to bounds.
     core::error_t vector_substring_2(kernel_context&, const data_chunk_t& inputs, vector_t& output) {
         const auto& strings = inputs.data[0];
         const auto* source = strings.data<std::string_view>();
@@ -70,9 +66,7 @@ namespace {
         return core::error_t::no_error();
     }
 
-    // ------------------------------------------------------------------
-    // LENGTH(s) — byte length (BIGINT). Not codepoint length.
-    // ------------------------------------------------------------------
+    // LENGTH(s) returns byte length (BIGINT), not codepoint length.
     core::error_t vector_length(kernel_context&, const data_chunk_t& inputs, vector_t& output) {
         const auto& strings = inputs.data.front();
         const auto* source = strings.data<std::string_view>();
@@ -88,10 +82,7 @@ namespace {
         return core::error_t::no_error();
     }
 
-    // ------------------------------------------------------------------
-    // REGEXP_REPLACE(s, pattern, replacement) — std::regex ECMAScript.
-    // Invalid pattern => kernel_error.
-    // ------------------------------------------------------------------
+    // REGEXP_REPLACE(s, pattern, replacement) uses std::regex ECMAScript; an invalid pattern is kernel_error.
 
     // Cached regex, because it is expensive and there is a good chance it would be reused
     // TODO: cache all encountered putterns, because alternating patterns will cause recompile for each row
@@ -122,7 +113,6 @@ namespace {
             }
             const auto pattern = patterns[row];
             try {
-                // Recompiled only when the pattern actually changes
                 if (state->pattern != pattern) {
                     state->compiled.assign(pattern.data(), pattern.size(), std::regex::ECMAScript);
                     state->pattern.assign(pattern.data(), pattern.size());
@@ -151,7 +141,7 @@ namespace {
     }
 
     // regexp_like(subject, pattern [, flags]) -> BOOL. PostgreSQL's spelling, and what SQL LIKE /
-    // ILIKE lower to: a match is a FUNCTION over two strings, not a comparison operator, so it
+    // ILIKE lower to: a match is a function over two strings, not a comparison operator, so it
     // builds a function node the execution graph can run like any other.
     //
     // Uses core::regex_t (RE2) rather than std::regex: it reports a bad pattern as an error instead
@@ -209,9 +199,7 @@ namespace {
         return core::error_t::no_error();
     }
 
-    // ------------------------------------------------------------------
-    // Makers (mirror make_sum_func style from aggregate.cpp).
-    // ------------------------------------------------------------------
+    // Mirrors make_sum_func style from aggregate.cpp.
     std::unique_ptr<vector_function> make_substring_func(std::pmr::memory_resource* resource,
                                                          const std::string& name,
                                                          const std::string& short_doc,
@@ -317,7 +305,7 @@ namespace {
 namespace components::compute {
 
     // WARNING: uids and signatures must mirror DEFAULT_FUNCTIONS entries 5..8 in function.hpp —
-    // a uid is the REGISTRATION ORDER, so inserting here shifts everything registered after it.
+    // a uid is the registration order, so inserting here shifts everything registered after it.
     void register_string_functions(function_registry_t& r) {
         r.add_builtin(make_substring_func(r.resource(),
                                                   "substring",

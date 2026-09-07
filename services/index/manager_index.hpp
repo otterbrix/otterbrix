@@ -53,14 +53,14 @@ namespace services::index {
     uint64_t index_stage_insert_foreign_batches() noexcept;
 #endif
 
-    // Manager holds ROUTING only; rows/search/per-txn state live on the agent.
+    // Manager holds routing only; rows/search/per-txn state live on the agent.
     struct index_record_t {
         components::catalog::oid_t index_oid{components::catalog::INVALID_OID};
         components::index::keys_base_storage_t keys;
         components::logical_plan::index_type type{components::logical_plan::index_type::no_valid};
         bool ordered{false};
         actor_zeta::address_t address{actor_zeta::address_t::empty_address()};
-        // Read BEFORE the builder's table scan, so an interleaving compact leaves the stamp too LOW.
+        // Read before the builder's table scan, so an interleaving compact leaves the stamp too low.
         uint64_t built_compact_epoch{0};
     };
 
@@ -74,7 +74,8 @@ namespace services::index {
                                                     const components::index::keys_base_storage_t& keys,
                                                     components::logical_plan::index_type type);
 
-    // Untyped lookup picks ORDERED FIRST: an unordered index refuses a range predicate an ordered twin could answer.
+    // Untyped lookup picks the ordered index first: an unordered index refuses a range predicate
+    // an ordered twin could answer.
     [[nodiscard]] const index_record_t* match_index(const index_records_t& records,
                                                     const components::index::keys_base_storage_t& keys);
 
@@ -153,7 +154,7 @@ namespace services::index {
             components::catalog::oid_t index_oid{components::catalog::INVALID_OID};
         };
 
-        // An index named here holds PRE-COMPACT row ids and must not be wired.
+        // An index named here holds pre-compact row ids and must not be wired.
         [[nodiscard]] std::pmr::vector<pending_index_rebuild_t> pending_index_rebuilds_sync() const;
 
         unique_future<void> register_collection(session_id_t session, components::catalog::oid_t table_oid);
@@ -183,7 +184,7 @@ namespace services::index {
         unique_future<core::error_t> commit_inserts(execution_context_t ctx,
                                                     std::pmr::vector<components::catalog::oid_t> table_oids,
                                                     uint64_t commit_id);
-        // Does NOT touch a store: records the batch, sent once on_horizon_advanced allows it.
+        // Does not touch a store: records the batch, sent once on_horizon_advanced allows it.
         unique_future<core::error_t> commit_deletes(execution_context_t ctx,
                                                     std::pmr::vector<components::catalog::oid_t> table_oids,
                                                     uint64_t commit_id);
@@ -238,7 +239,7 @@ namespace services::index {
         unique_future<std::pmr::vector<components::catalog::oid_t>>
         tables_without_indexes(session_id_t session, std::pmr::vector<components::catalog::oid_t> table_oids);
 
-        // Drains dropped_table_agents_ THEN deferred_deletes_: reaping a table takes its held-back erases with it.
+        // Drains dropped_table_agents_ then deferred_deletes_: reaping a table takes its held-back erases with it.
         unique_future<void> on_horizon_advanced(uint64_t new_horizon);
 
         unique_future<void> apply_wal_record_for_index(session_id_t session,
@@ -314,7 +315,7 @@ namespace services::index {
         // apply_wal_record_for_index returns void, so a refusal is recorded here and checked at commit_inserts.
         std::pmr::unordered_map<uint64_t, core::error_t> catchup_failures_;
 
-        // THE MIRROR LEDGER: what unmirrored_ranges subtracts a statement's appends against.
+        // The mirror ledger: what unmirrored_ranges subtracts a statement's appends against.
         std::pmr::unordered_map<
             uint64_t,
             std::pmr::unordered_map<components::catalog::oid_t, std::pmr::vector<index_row_range_t>>>
@@ -363,7 +364,7 @@ namespace services::index {
 
         void park_detached(detached_agents_t&& dying);
 
-        // `type`/`ordered` come OUT: a composite index is built by the ordered family but published as `single`.
+        // `type`/`ordered` come out: a composite index is built by the ordered family but published as `single`.
         struct spawned_agent_t {
             actor_zeta::address_t address;
             components::logical_plan::index_type type;
@@ -395,7 +396,7 @@ namespace services::index {
         std::pmr::vector<unique_future<void>> pending_void_;
         void poll_pending();
 
-        // mutex_ guards ONLY the cv idle-wait, so the DML/DDL path stays lock-free.
+        // mutex_ guards only the cv idle-wait, so the DML/DDL path stays lock-free.
         std::mutex mutex_;
         std::condition_variable pump_cv_;
         std::thread loop_thread_;

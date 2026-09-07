@@ -47,9 +47,9 @@ namespace components::types {
         STRING = 15,
         // BINARY = 16,                // Variable-length bytes (no guarantee of UTF8-ness)
         // FIXED_SIZE_BINARY = 17,     // Fixed-size binary. Each value occupies the same number of bytes
-        LIST = 25,   // A list of some logical data type
-        STRUCT = 26, // Struct of logical types
-        UNION = 27,  // Unions of logical types
+        LIST = 25,
+        STRUCT = 26,
+        UNION = 27,
 
         // Dictionary-encoded type, also called "categorical" or "factor"
         // in other programming languages. Holds the dictionary value
@@ -58,24 +58,24 @@ namespace components::types {
         // DICTIONARY = 28,
 
         // EXTENSION = 29,             // Custom data type, implemented by user
-        ARRAY = 30, // Array with fixed length of some logical type (a fixed-size list)
+        ARRAY = 30, // Fixed-size list, unlike LIST
         // DURATION = 31,              // Measure of elapsed time in either seconds, ms, us or ns.
         // LARGE_STRING = 32,          // Like STRING, but with 64-bit offsets
         // LARGE_BINARY = 33,          // Like BINARY, but with 64-bit offsets
         // LARGE_LIST = 34,            // Like LIST, but with 64-bit offsets
 
-        NA = 127,      // NULL value
-        UNKNOWN = 128, // Unknown physical type of user defined types
-        BIT = 192,     // bitmap
+        NA = 127,
+        UNKNOWN = 128,
+        BIT = 192,
         INVALID = 255
     };
 
     // order change may break logical_value comparators
     enum class logical_type : uint8_t
     {
-        NA = 0,   // NULL type, used for constant NULL
-        ANY = 1,  // ANY type, used for functions that accept any type as parameter
-        USER = 2, // A User Defined type (e.g., ENUMs before the binder)
+        NA = 0,
+        ANY = 1,
+        USER = 2, // e.g., ENUMs before the binder
         BOOLEAN = 10,
         TINYINT = 11,
         SMALLINT = 12,
@@ -98,8 +98,8 @@ namespace components::types {
         UBIGINT = 30,
         UHUGEINT = 31,
         BIT = 34,
-        STRING_LITERAL = 35,  // String literals, used for constant strings
-        INTEGER_LITERAL = 36, // Integer literals, used for constant integers
+        STRING_LITERAL = 35,  // Used for constant strings
+        INTEGER_LITERAL = 36, // Used for constant integers
 
         POINTER = 51,
         VALIDITY = 53,
@@ -116,11 +116,10 @@ namespace components::types {
         VARIANT = 108,
         ARRAY = 109,
 
-        UNKNOWN = 127, // Unknown type, used for parameter expressions
+        UNKNOWN = 127, // Used for parameter expressions
         INVALID = 255
     };
 
-    // collection of default types; could be useful for iteration or other stuff
     [[maybe_unused]] static constexpr std::array<physical_type, 16> DEFAULT_PHYSICAL_TYPES{physical_type::BOOL,
                                                                                            physical_type::UINT8,
                                                                                            physical_type::INT8,
@@ -369,7 +368,7 @@ namespace components::types {
 
         // TODO: duration promotion
 
-        // This is dependent on enum encoding values
+        // Relies on every signed/unsigned pair sharing the same enum offset (signage_difference)
         if (is_signed(type1) == is_signed(type2) || is_unsigned(type1) == is_unsigned(type2)) {
             return static_cast<logical_type>(std::max(static_cast<uint8_t>(type1), static_cast<uint8_t>(type2)));
         } else if (is_signed(type1)) {
@@ -383,8 +382,6 @@ namespace components::types {
         }
     }
 
-    // Returns the output logical_type for an arithmetic operation on two operand types.
-    // Handles numeric promotion and temporal arithmetic rules (date/time ± interval, etc.).
     // Returns logical_type::NA for unsupported combinations.
     constexpr logical_type arithmetic_result_type(logical_type lhs, logical_type rhs, vector::arithmetic_op op) {
         if (is_arithmetic_numeric(lhs) && is_arithmetic_numeric(rhs)) {
@@ -471,7 +468,7 @@ namespace components::types {
 
         static bool type_is_constant_size(logical_type type);
 
-        // Out-of-window (width, scale) is an ERROR, not an assert -- an assert
+        // Out-of-window (width, scale) is an error, not an assert -- an assert
         // vanishes under NDEBUG and lets a bad DECIMAL reach the checkpoint unreadably.
         // `resource` backs only the refusal message; a well-formed DECIMAL allocates nothing.
         [[nodiscard]] static core::result_wrapper_t<complex_logical_type>
@@ -495,7 +492,7 @@ namespace components::types {
         logical_type type_ = logical_type::NA;
         std::unique_ptr<logical_type_extension> extension_ = nullptr; // for complex types
 
-        // helper method, so we won't have to copy vector each type, while providing somewhat friendly interface
+        // Avoids copying the child-type vector at each nesting level.
         const complex_logical_type& child_type(const size_t* path_data, size_t remaining) const;
     };
 
@@ -540,7 +537,7 @@ namespace components::types {
             ENUM = 6,
             USER = 7,
             FUNCTION = 8,
-            UNKNOWN = 9 // extension fo an unknown type
+            UNKNOWN = 9
         };
 
         logical_type_extension() = default;
@@ -658,7 +655,6 @@ namespace components::types {
         uint8_t scale_;
     };
 
-    // Special values for decimal
     struct decimal_special {
         static int128_t positive_infinity(physical_type stored_as) noexcept;
         static int128_t negative_infinity(physical_type stored_as) noexcept;

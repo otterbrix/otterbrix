@@ -98,7 +98,6 @@ namespace components::table {
         }
         assert(!updates_);
 
-        // set state.result_offset to 0, so scan won`t go out of bounds
         auto prev_state_result_offset = state.result_offset;
         state.result_offset = 0;
         vector::vector_t offset_vector(result.resource(), types::logical_type::UBIGINT, count);
@@ -277,15 +276,15 @@ namespace components::table {
         if (v.has_error()) {
             return v;
         }
-        // start_row is COLLECTION-ABSOLUTE; stored offsets are cumulative ELEMENT counts within
+        // start_row is collection-absolute; stored offsets are cumulative element counts within
         // this row group, so the child's truncation row is start_ + <last surviving entry's end
         // offset>. The old guard compared the RELATIVE surviving count against ABSOLUTE start_,
-        // so any row group with start_ > 0 left the child untruncated and desynced.
+        // leaving any row group with start_ > 0 untruncated and desynced.
         uint64_t child_offset = 0;
         if (start_row > start_) {
             auto fetched = fetch_list_offset(start_row - 1);
             if (fetched.has_error()) {
-                // Truncating the child to a GUESSED offset is the desync this function
+                // Truncating the child to a guessed offset is the desync this function
                 // exists to prevent; report instead.
                 return fetched.convert_error<bool>();
             }
@@ -336,9 +335,7 @@ namespace components::table {
             if (new_length != stored_length) {
                 // In-place update writes each element over the one the row already owns, so it
                 // cannot move neighbours to make room. A length change is a real statement-level
-                // refusal (this path is WAL REPLAY, so the length comes from a journal on disk),
-                // reported via result_wrapper_t<bool> rather than the throw that used to hang the
-                // statement here.
+                // refusal (this path is WAL replay, so the length comes from a journal on disk).
                 return core::error_t(core::error_code_t::unimplemented_yet,
                                      std::pmr::string("in-place LIST update cannot change a row's list length",
                                                       resource_));
@@ -379,9 +376,9 @@ namespace components::table {
         }
         vector::vector_t child_update(resource_, type_.child_type());
         VALUE_OR_RETURN(auto child_ids, gather_child_update(update_vector, row_ids, update_count, child_update));
-        // One child update per element run inside ONE update window, with the gathered element
-        // vector SLICED to the run: update_segment_t::update addresses its update vector by
-        // position within the call, so passing the WHOLE gathered vector with ids from a later
+        // One child update per element run inside one update window, with the gathered element
+        // vector sliced to the run: update_segment_t::update addresses its update vector by
+        // position within the call, so passing the whole gathered vector with ids from a later
         // window read the wrong slice (see array_column_data_t::update for the shared story).
         const uint64_t total = child_ids.size();
         const int64_t child_start = child_column->start();
@@ -485,7 +482,7 @@ namespace components::table {
                        child_column->max_entry());
             // scan_count (validity-aware) so NULL list elements survive a point fetch too.
             child_column->scan_count(*child_state, child_scan, child_scan_count);
-            // Elements are read on a SCAN state (no pin channel needed), but scan_error must
+            // Elements are read on a scan state (no pin channel needed), but scan_error must
             // still fail this fetch.
             child_state->collect_child_errors();
             if (child_state->has_error()) {

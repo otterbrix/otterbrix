@@ -233,7 +233,7 @@ namespace services::disk {
         unique_future<core::result_wrapper_t<uint64_t>>
         storage_compact_epoch_inner(session_id_t session, components::catalog::oid_t table_oid);
 
-        // Replies ALL final GROUP BY rows in ONE reply; refuses rather than folding empty input
+        // Replies ALL final GROUP BY rows in one reply; refuses rather than folding empty input
         // into a false "COUNT=0".
         unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
         storage_reduce_inner(session_id_t session,

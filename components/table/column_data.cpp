@@ -297,7 +297,7 @@ namespace components::table {
         uint64_t offset = 0;
         this->count_ += append_count;
         // A local partial_block_manager packs filled segments via the checkpoint's own allocator,
-        // flushed at the END so every re-pointed block is durable before the append returns.
+        // flushed at the end so every re-pointed block is durable before the append returns.
         storage::partial_block_manager_t pbm(block_manager_);
         bool any_transitioned = false;
         while (true) {
@@ -312,9 +312,9 @@ namespace components::table {
 
             {
                 auto l = data_.lock();
-                // Capture the filled segment's index BEFORE appending the next one: state.current moves off it below.
+                // Capture the filled segment's index before appending the next one: state.current moves off it below.
                 const uint64_t filled_index = data_.segment_count(l) - 1;
-                // Release the pin BEFORE the swap frees its block_handle_t, or it unpins through
+                // Release the pin before the swap frees its block_handle_t, or it unpins through
                 // freed memory (see the [appendpin] test).
                 state.handle.reset();
                 auto created =
@@ -470,7 +470,7 @@ namespace components::table {
 
     core::error_t column_data_t::validate_column_type(const types::complex_logical_type& type,
                                                       std::pmr::memory_resource* resource) {
-        // Checked before any node exists (a constructor can't refuse); STRUCT must be NAMED, UNION is exempt
+        // Checked before any node exists (a constructor can't refuse); STRUCT must be named, UNION is exempt
         // because create_union deliberately leaves the alias empty.
         const auto physical = type.to_physical_type();
         if (physical == types::physical_type::STRUCT) {
@@ -570,7 +570,7 @@ namespace components::table {
             return true;
         }
 
-        // Snapshot the segment metadata BEFORE touching the pin: the segment is destroyed by the swap below.
+        // Snapshot the segment metadata before touching the pin: the segment is destroyed by the swap below.
         const int64_t seg_start = segment->start;
         const uint64_t seg_count = segment->count.load();
         const uint64_t alloc_segment_size = segment->segment_size();
@@ -580,7 +580,7 @@ namespace components::table {
         base_statistics_t seg_stats =
             has_stats ? segment->segment_statistics() : base_statistics_t(resource_, type_.type());
 
-        // STRING isn't a raw prefix copy: its dictionary grows down from the END of the allocation, so
+        // STRING isn't a raw prefix copy: its dictionary grows down from the end of the allocation, so
         // it re-serializes through the checkpoint's own pipeline instead, byte-identical to a checkpoint copy.
         if (phys == types::physical_type::STRING) {
             std::pmr::vector<std::byte> rewritten(alloc_segment_size, std::byte{0}, resource_);
@@ -607,7 +607,7 @@ namespace components::table {
             const auto string_alloc = pbm.get_block_allocation(tight_size);
             pbm.write_to_block(string_alloc.block_id, string_alloc.offset_in_block, rewritten.data(), tight_size);
             auto string_block_handle = block_manager_.register_block(string_alloc.block_id);
-            // Adopted markers name real FILE blocks, kept alive by the reload constructor's registration
+            // Adopted markers name real file blocks, kept alive by the reload constructor's registration
             // (test_string_write_through gate H).
             std::unique_ptr<column_segment_state> overflow_state;
             if (!overflow_ids.empty()) {
@@ -690,7 +690,7 @@ namespace components::table {
     }
 
     void column_data_t::collect_disk_block_ids(std::pmr::vector<uint64_t>& out) const {
-        // One entry PER RELOADABLE SEGMENT, not per dedicated block -- packing shares blocks; the caller dedupes.
+        // One entry per reloadable segment, not per dedicated block -- packing shares blocks; the caller dedupes.
         for (auto& segment : const_cast<segment_tree_t<column_segment_t>&>(data_).segments()) {
             if (segment.block && segment.block->is_reloadable()) {
                 out.push_back(segment.block->block_id());
@@ -864,7 +864,7 @@ namespace components::table {
         if (children.has_error()) {
             return children.convert_error<persistent_column_data_t>();
         }
-        // A separate, short-lived partial_block_manager re-points the LIVE tail and flushes HERE (flush-before-evict).
+        // A separate, short-lived partial_block_manager re-points the live tail and flushes here (flush-before-evict).
         storage::partial_block_manager_t repoint_pbm(block_manager_);
         auto repointed = transition_to_disk(repoint_pbm);
         if (repointed.has_error()) {
@@ -916,7 +916,7 @@ namespace components::table {
             }
             data_.append_segment(l, std::move(segment));
         }
-        // The persisted count is AUTHORITATIVE: disagreement with the segment sum is data_corruption, not adopted.
+        // The persisted count is authoritative: disagreement with the segment sum is data_corruption, not adopted.
         if (persistent_data.count == 0) {
             uint64_t total = 0;
             for (const auto& dp : persistent_data.data_pointers) {

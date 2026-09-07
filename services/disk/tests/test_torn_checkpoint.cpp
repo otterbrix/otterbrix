@@ -29,28 +29,10 @@
 
 #include "../../../components/table/test/fault_injection_file.hpp"
 
-// Torn-checkpoint recovery without any external backup machinery.
-//
-// The six cases here are real crash tests: every crash is produced through the sanctioned T3
-// fault seam (fault_injection_file.hpp) driving the production checkpoint of table_storage_t --
-// no test lays a database file out by hand, and every recovery assertion reads the data back and
-// compares it to a named root (N or N+1), never just "the open succeeded". Two seam facts the
-// arithmetic depends on: the scope wraps the handle at open time, so it installs before the
-// storage is constructed; and arming is absolute over the plan's life, so every round arms
-// relative to the counters it sees at that moment (a blanket fail_after_writes would also kill
-// the data writes, latch durability_error_, and hide the point under test behind the degraded()
-// gate).
-//
-// What these cases pin:
-//   * a crash at any point of a round reopens to root N or root N+1 through the two-slot
-//     shadow-paged header alone (proven per crash point by the crash matrix in
-//     components/table/test/test_checkpoint_crash_matrix.cpp);
-//   * a file that will not open is refused as an error value (data_corruption, full slot
-//     diagnostics) and left byte-identical -- no rename, no truncation, no quarantine copy, and
-//     a probing open of a missing file creates nothing;
-//   * a stray sidecar in the engine-owned `table.otbx.*` namespace (the whole-file backup /
-//     quarantine files of builds predating shadow paging) is a loud refusal, not something
-//     silently ignored or deleted.
+// Every crash here goes through the real T3 fault seam driving table_storage_t's production
+// checkpoint, and recovery is judged by reading the data back against a named root, never just
+// "the open succeeded": a crash at any point reopens to root N or N+1 via the two-slot
+// shadow-paged header alone; an unopenable file is refused as an error value, left byte-identical.
 
 using namespace services::disk;
 using namespace components::table;
@@ -85,8 +67,6 @@ namespace {
         }
     }
 
-    // The recovery judgement: scan EVERY row back out of the reopened storage. A recovered
-    // root is named by its exact data, not by the open call returning success.
     std::vector<int64_t> read_all_ints(table_storage_t& ts, std::pmr::memory_resource* res) {
         std::vector<int64_t> out;
         std::vector<storage_index_t> column_ids{storage_index_t(0)};
@@ -123,8 +103,6 @@ namespace {
         return std::vector<char>((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
     }
 
-    // Minimal manager fixture (the shape test_persistence.cpp uses) for the cases that must
-    // drive the real load path (load_storage_disk_sync) through bootstrap.
     struct torn_manager_t {
         core::pmr::otterbrix_resource resource;
         log_t log;
@@ -149,11 +127,8 @@ namespace {
     };
 } // namespace
 
-// 1. A checkpoint that reported success is a durability promise: kill -9 IMMEDIATELY after
-// the commit (crash_revert drops everything since the last fsync — which is the header
-// commit itself, so the promise is exactly what must survive) and the reopened file is
-// root N+1 with every row present. The W-TORN wal_id bookkeeping is asserted around the
-// commit and proven in-memory-only across the reopen.
+// crash_revert() drops everything since the last fsync; here that fsync is the header commit
+// itself, so nothing is reverted -- root N+1 with every row is exactly the promise under test.
 TEST_CASE("services::disk::torn::committed_checkpoint_survives_kill_dash_nine") {
     cleanup_torn_dir();
     std::filesystem::create_directories(torn_test_dir());
@@ -164,7 +139,7 @@ TEST_CASE("services::disk::torn::committed_checkpoint_survives_kill_dash_nine") 
 
     otterbrix_test::fault_plan_t plan;
     {
-        otterbrix_test::fault_injection_scope_t scope(plan); // BEFORE the storage: wraps at open
+        otterbrix_test::fault_injection_scope_t scope(plan);
         std::vector<column_definition_t> cols;
         cols.emplace_back("value", logical_type::BIGINT);
         table_storage_t ts(&resource, std::move(cols), otbx);
@@ -176,10 +151,8 @@ TEST_CASE("services::disk::torn::committed_checkpoint_survives_kill_dash_nine") 
         auto committed = ts.checkpoint(services::wal::id_t{777});
         REQUIRE_FALSE(committed.has_error());
         REQUIRE(ts.checkpoint_wal_id() == 777);
-        REQUIRE(ts.prev_checkpoint_wal_id() == 0); // first checkpoint, no prior id
+        REQUIRE(ts.prev_checkpoint_wal_id() == 0);
 
-        // kill -9: the header-commit fsync was the last successful sync, so nothing is
-        // reverted — which IS the durability promise under test.
         REQUIRE(scope.last() != nullptr);
         scope.last()->crash_revert();
     }
@@ -187,8 +160,7 @@ TEST_CASE("services::disk::torn::committed_checkpoint_survives_kill_dash_nine") 
     {
         table_storage_t ts(&resource, otbx, {});
         REQUIRE_FALSE(ts.construction_failed());
-        CHECK(read_all_ints(ts, &resource) == iota_rows(N)); // root N+1, data exact
-        // Per-table wal_id is in-memory only — a fresh load starts at 0.
+        CHECK(read_all_ints(ts, &resource) == iota_rows(N));
         CHECK(ts.checkpoint_wal_id() == 0);
         CHECK(ts.prev_checkpoint_wal_id() == 0);
     }
@@ -196,10 +168,8 @@ TEST_CASE("services::disk::torn::committed_checkpoint_survives_kill_dash_nine") 
     cleanup_torn_dir();
 }
 
-// 2. The round dies at the FIRST barrier (the data/metadata fsync), then kill -9. The
-// header was never attempted, so the durable root is still root N: the reopened data is
-// exactly the previous commit's rows and the failed round's appends are gone (they live in
-// the WAL, whose floor — prev_checkpoint_wal_id — must therefore not have moved either).
+// The checkpoint protocol has two fsync barriers; dying at the first (data/metadata) means the
+// header was never attempted, so root N (the previous commit) is untouched.
 TEST_CASE("services::disk::torn::crash_at_the_data_barrier_recovers_root_n") {
     cleanup_torn_dir();
     std::filesystem::create_directories(torn_test_dir());
@@ -222,15 +192,12 @@ TEST_CASE("services::disk::torn::crash_at_the_data_barrier_recovers_root_n") {
         REQUIRE_FALSE(committed.has_error());
         REQUIRE(ts.checkpoint_wal_id() == 100);
 
-        // Arm relative to the counters this moment shows: the NEXT sync is the crashed
-        // round's 1st barrier.
         append_range(ts.table(), &resource, BASE, EXTRA);
         plan.fail_syncs_from = plan.syncs_seen + 1;
 
         auto failed = ts.checkpoint(services::wal::id_t{200});
         REQUIRE(failed.has_error());
         REQUIRE(failed.error().type == core::error_code_t::io_error);
-        // The W-TORN ids decide what the WAL may forget; a failed round must not move them.
         REQUIRE(ts.checkpoint_wal_id() == 100);
         REQUIRE(ts.prev_checkpoint_wal_id() == 0);
 
@@ -241,17 +208,13 @@ TEST_CASE("services::disk::torn::crash_at_the_data_barrier_recovers_root_n") {
     {
         table_storage_t ts(&resource, otbx, {});
         REQUIRE_FALSE(ts.construction_failed());
-        CHECK(read_all_ints(ts, &resource) == iota_rows(BASE)); // root N: the EXTRA rows are WAL-only
+        CHECK(read_all_ints(ts, &resource) == iota_rows(BASE));
     }
 
     cleanup_torn_dir();
 }
 
-// 3. The round dies at the HEADER COMMIT (2nd fsync: the slot write reached the page cache,
-// the device was never proven), then kill -9. The W-TORN id pair is tracked across the two
-// COMMITTED rounds first — prev follows current exactly — and the failed commit moves
-// neither id; the kill reverts the unproven slot write, so the reopen is root N (the state
-// of the second committed round), read back row for row.
+// The header commit (2nd fsync) proves the write reached the device, not just the page cache.
 TEST_CASE("services::disk::torn::crash_at_the_header_commit_recovers_root_n_and_keeps_the_id_pair") {
     cleanup_torn_dir();
     std::filesystem::create_directories(torn_test_dir());
@@ -280,37 +243,32 @@ TEST_CASE("services::disk::torn::crash_at_the_header_commit_recovers_root_n_and_
         auto committed_250 = ts.checkpoint(services::wal::id_t{250});
         REQUIRE_FALSE(committed_250.has_error());
         REQUIRE(ts.checkpoint_wal_id() == 250);
-        REQUIRE(ts.prev_checkpoint_wal_id() == 100); // shifted with the commit
+        REQUIRE(ts.prev_checkpoint_wal_id() == 100);
 
-        // The crashed round: its 1st barrier succeeds, its 2nd fsync — the commit — fails.
         append_range(ts.table(), &resource, FIRST + SECOND, THIRD);
         plan.fail_syncs_from = plan.syncs_seen + 2;
 
         auto failed = ts.checkpoint(services::wal::id_t{300});
         REQUIRE(failed.has_error());
         REQUIRE(failed.error().type == core::error_code_t::io_error);
-        REQUIRE(ts.checkpoint_wal_id() == 250); // an unproven commit moves nothing
+        REQUIRE(ts.checkpoint_wal_id() == 250);
         REQUIRE(ts.prev_checkpoint_wal_id() == 100);
 
         REQUIRE(scope.last() != nullptr);
-        scope.last()->crash_revert(); // drops the unproven slot write
+        scope.last()->crash_revert();
     }
 
     {
         table_storage_t ts(&resource, otbx, {});
         REQUIRE_FALSE(ts.construction_failed());
-        CHECK(read_all_ints(ts, &resource) == iota_rows(FIRST + SECOND)); // root N of the crashed round
+        CHECK(read_all_ints(ts, &resource) == iota_rows(FIRST + SECOND));
     }
 
     cleanup_torn_dir();
 }
 
-// 4. A TORN write mid-round: the round's first block write persists only its first half
-// (a broken-CRC block train), everything after it fails, and the device keeps what it
-// acknowledged (no revert — the persisted crash shape). The half-written block is a FRESH
-// block (nothing the durable root names may be reissued), so the reopen walks root N
-// clean, and recovery manufactures no artifact files while doing it: the .otbx stays the
-// only file in the directory.
+// A torn write persists only a block's first half (broken-CRC); the device keeps what it
+// acknowledged, no revert. The half-written block is FRESH (unreferenced), so reopen walks root N clean.
 TEST_CASE("services::disk::torn::torn_write_mid_round_recovers_root_n_without_artifacts") {
     cleanup_torn_dir();
     std::filesystem::create_directories(torn_test_dir());
@@ -333,21 +291,20 @@ TEST_CASE("services::disk::torn::torn_write_mid_round_recovers_root_n_without_ar
         REQUIRE_FALSE(committed.has_error());
 
         append_range(ts.table(), &resource, BASE, EXTRA);
-        plan.torn_at_write = plan.writes_seen + 1; // tear the crashed round's FIRST write
+        plan.torn_at_write = plan.writes_seen + 1;
 
         auto failed = ts.checkpoint(services::wal::id_t{200});
         REQUIRE(failed.has_error());
         REQUIRE(ts.checkpoint_wal_id() == 100);
 
-        plan.crashed = true; // persisted crash shape: nothing further may land
+        plan.crashed = true;
     }
 
     {
         table_storage_t ts(&resource, otbx, {});
         REQUIRE_FALSE(ts.construction_failed());
-        CHECK(read_all_ints(ts, &resource) == iota_rows(BASE)); // root N, torn block unreferenced
+        CHECK(read_all_ints(ts, &resource) == iota_rows(BASE));
     }
-    // Recovery is IN-file: it renamed nothing, quarantined nothing, backed up nothing.
     {
         std::vector<std::string> names;
         for (const auto& entry : std::filesystem::directory_iterator(torn_test_dir())) {
@@ -359,17 +316,9 @@ TEST_CASE("services::disk::torn::torn_write_mid_round_recovers_root_n_without_ar
     cleanup_torn_dir();
 }
 
-// 5. A stray sidecar in the engine-owned `table.otbx.*` namespace -- exactly what a build
-// predating shadow paging leaves behind as its whole-file backup / quarantine files -- is a
-// loud refusal on the real load path, and nothing is touched: the .otbx stays byte-identical
-// and the stray is neither deleted nor renamed. Removing the stray makes the same file load
-// again.
-//
-// The refusal is the whole start, not one table: coming up with the victim system table simply
-// absent would mean an empty catalog over live storage, and the next DDL minting fresh oids on
-// top of it. A start that didn't happen is recoverable; a catalog that silently lost a table is
-// not. The refusal writes nothing, deletes nothing, and preserves the operator's evidence; the
-// final block proves recoverability by removing the stray and starting again.
+// A stray sidecar under table.otbx.* -- a pre-shadow-paging build's whole-file-backup or
+// quarantine leftover -- is a loud, untouched refusal covering the whole start, not just this
+// table: the .otbx stays byte-identical, the stray untouched, and removing it loads it again.
 TEST_CASE("services::disk::torn::stray_legacy_sidecar_is_refused_loudly_and_untouched") {
     namespace catalog = components::catalog;
     cleanup_torn_dir();
@@ -381,7 +330,6 @@ TEST_CASE("services::disk::torn::stray_legacy_sidecar_is_refused_loudly_and_unto
     constexpr auto db_oid = static_cast<unsigned>(catalog::well_known_oid::main_database);
     const auto victim_otbx = dir / std::to_string(db_oid) / std::to_string(victim_oid) / "table.otbx";
 
-    // Engine-produced database: bootstrap lays the system tables down.
     {
         torn_manager_t m(dir);
         m.manager->bootstrap_system_tables_sync();
@@ -390,13 +338,8 @@ TEST_CASE("services::disk::torn::stray_legacy_sidecar_is_refused_loudly_and_unto
     REQUIRE(std::filesystem::exists(victim_otbx));
 
     core::pmr::otterbrix_resource resource;
-    // A clean namespace passes the gate.
     REQUIRE_FALSE(verify_otbx_sidecars(victim_otbx, &resource).contains_error());
 
-    // The two exact artifacts a pre-shadow-paging build leaves behind: its whole-file backup
-    // and its quarantine rename. Their suffixes are spelled in adjacent fragments ONLY so a grep
-    // for code still OPERATING that deleted machinery stays clean; refusing these literal
-    // on-disk names is precisely what this case proves.
     const std::vector<std::string> legacy_suffixes{std::string(".pre") + "v", std::string(".bro") + "ken"};
     for (const auto& suffix : legacy_suffixes) {
         auto stray = victim_otbx;
@@ -407,31 +350,25 @@ TEST_CASE("services::disk::torn::stray_legacy_sidecar_is_refused_loudly_and_unto
             f << "stale bytes from an earlier build";
         }
 
-        // The refusal is a value, and it names the stray.
         auto err = verify_otbx_sidecars(victim_otbx, &resource);
         REQUIRE(err.contains_error());
         CHECK(err.type == core::error_code_t::data_corruption);
         const std::string what{err.what.c_str()};
         CHECK(what.find(stray.filename().string()) != std::string::npos);
 
-        // The real load path refuses the victim table, touches nothing, loads the rest.
         const auto otbx_bytes_before = slurp_file(victim_otbx);
         const auto stray_bytes_before = slurp_file(stray);
         {
             torn_manager_t m(dir);
             REQUIRE_THROWS_AS(m.manager->bootstrap_system_tables_sync(), std::runtime_error);
             CHECK_FALSE(m.manager->has_storage(catalog::oid_t{victim_oid}));
-            // A STOP, not a teardown: the tables bootstrapped BEFORE the victim are up and
-            // untouched, the ones after it were never opened. pg_settings is bootstrapped
-            // first of all (it holds the timezone every later seed reads); pg_class follows
-            // pg_namespace in all_system_tables() order, so the refusal reaches it first.
+            // A STOP, not a teardown: tables before the victim stay up, those after were never opened.
             CHECK(m.manager->has_storage(catalog::well_known_oid::pg_settings_table));
             CHECK_FALSE(m.manager->has_storage(catalog::oid_t{other_oid}));
         }
-        CHECK(slurp_file(victim_otbx) == otbx_bytes_before); // byte-identical, not just "no error"
-        REQUIRE(std::filesystem::exists(stray));             // evidence is preserved
+        CHECK(slurp_file(victim_otbx) == otbx_bytes_before);
+        REQUIRE(std::filesystem::exists(stray));
         CHECK(slurp_file(stray) == stray_bytes_before);
-        // Nothing else appeared in the per-table directory: exactly the .otbx and the stray.
         {
             std::vector<std::string> names;
             for (const auto& entry : std::filesystem::directory_iterator(victim_otbx.parent_path())) {
@@ -444,7 +381,6 @@ TEST_CASE("services::disk::torn::stray_legacy_sidecar_is_refused_loudly_and_unto
         std::filesystem::remove(stray);
     }
 
-    // Namespace clean again: the same file loads.
     {
         torn_manager_t m(dir);
         m.manager->bootstrap_system_tables_sync();
@@ -454,14 +390,9 @@ TEST_CASE("services::disk::torn::stray_legacy_sidecar_is_refused_loudly_and_unto
     cleanup_torn_dir();
 }
 
-// 6. Terminal refusal semantics -- the cost of no external backup, pinned exactly. (a) A
-// missing file is refused as its own distinct error, and the probing open creates nothing (a
-// FILE_CREATE probe would leave a 0-byte file behind). (b) An empty file (external truncation,
-// or the droppings of such a probe) is refused with its own distinct words, never accepted as
-// an empty table. (c) Rot under the durable root that kills both header slots is
-// data_corruption carrying full per-slot diagnostics (which slot, claimed iteration, stored vs
-// computed checksum), surfaced as a value (no throw), file left byte-identical for offline
-// inspection: no rename, no truncation, no quarantine copy.
+// Three distinct terminal refusals, each with its own error text: (a) missing file, (b) empty
+// file (external truncation), (c) rot under both header slots -- data_corruption with full
+// per-slot diagnostics, surfaced as a value, file left byte-identical.
 TEST_CASE("services::disk::torn::unopenable_file_is_refused_as_a_value_and_left_byte_identical") {
     cleanup_torn_dir();
     std::filesystem::create_directories(torn_test_dir());
@@ -469,7 +400,6 @@ TEST_CASE("services::disk::torn::unopenable_file_is_refused_as_a_value_and_left_
 
     auto otbx = std::filesystem::path(torn_test_dir()) / "terminal.otbx";
 
-    // (a) Missing: distinct refusal, and the probe manufactures no file.
     {
         REQUIRE_FALSE(std::filesystem::exists(otbx));
         table_storage_t probe(&resource, otbx, {});
@@ -477,11 +407,10 @@ TEST_CASE("services::disk::torn::unopenable_file_is_refused_as_a_value_and_left_
         CHECK(probe.construction_error().type == core::error_code_t::io_error);
         const std::string what{probe.construction_error().what.c_str()};
         CHECK(what.find("does not exist") != std::string::npos);
-        REQUIRE_FALSE(std::filesystem::exists(otbx)); // the probing open created NOTHING
+        REQUIRE_FALSE(std::filesystem::exists(otbx));
     }
 
-    // Engine-produced file with data and BOTH slots committed (create writes iteration 0's
-    // slot; two checkpoints commit iterations 1 and 2 into the two slots).
+    // create() writes iteration 0's slot; two checkpoints commit iterations 1 and 2.
     constexpr int64_t N = 10;
     {
         std::vector<column_definition_t> cols;
@@ -495,8 +424,6 @@ TEST_CASE("services::disk::torn::unopenable_file_is_refused_as_a_value_and_left_
         REQUIRE_FALSE(second.has_error());
     }
 
-    // (b) Empty: external truncation to 0 bytes — refused with its own words, distinct
-    // from (a), and never interpreted as an empty table.
     {
         const auto healthy_bytes = slurp_file(otbx);
         std::filesystem::resize_file(otbx, 0);
@@ -509,17 +436,14 @@ TEST_CASE("services::disk::torn::unopenable_file_is_refused_as_a_value_and_left_
             CHECK(what.find("does not exist") == std::string::npos);
         }
         REQUIRE(std::filesystem::exists(otbx));
-        REQUIRE(std::filesystem::file_size(otbx) == 0); // refused, not "repaired"
-        // Restore the healthy engine-produced bytes for (c).
+        REQUIRE(std::filesystem::file_size(otbx) == 0);
         std::ofstream f(otbx, std::ios::binary | std::ios::trunc);
         REQUIRE(f.is_open());
         f.write(healthy_bytes.data(), static_cast<std::streamsize>(healthy_bytes.size()));
         REQUIRE(f.good());
     }
 
-    // (c) Rot under the durable root: flip one byte INSIDE each header slot's CRC domain.
-    // This is the case an external whole-file backup would cover and shadow paging knowingly
-    // makes terminal — so the refusal must carry everything the operator gets to keep.
+    // The rot an external backup would catch; shadow paging knowingly makes it terminal instead.
     {
         using components::table::storage::SECTOR_SIZE;
         std::fstream f(otbx, std::ios::in | std::ios::out | std::ios::binary);
@@ -541,18 +465,13 @@ TEST_CASE("services::disk::torn::unopenable_file_is_refused_as_a_value_and_left_
         REQUIRE(probe.construction_failed());
         CHECK(probe.construction_error().type == core::error_code_t::data_corruption);
         const std::string what{probe.construction_error().what.c_str()};
-        // Full diagnostics: BOTH slots named, with claimed iteration and stored-vs-computed
-        // checksum — the log line is the operator's only remaining tool.
         CHECK(what.find("slot 1") != std::string::npos);
         CHECK(what.find("slot 2") != std::string::npos);
         CHECK(what.find("iteration") != std::string::npos);
         CHECK(what.find("checksum stored") != std::string::npos);
     }
-    // The ctor itself is the unit under test for "no throw"; build it inside REQUIRE_NOTHROW too.
     REQUIRE_NOTHROW([&] { table_storage_t probe(&resource, otbx, {}); }());
-    // Byte-identical after every refusal: assert the bytes, not just the error.
     CHECK(slurp_file(otbx) == corrupt_bytes);
-    // And no rename/quarantine/backup artifact appeared next to it.
     {
         std::vector<std::string> names;
         for (const auto& entry : std::filesystem::directory_iterator(torn_test_dir())) {
@@ -564,13 +483,9 @@ TEST_CASE("services::disk::torn::unopenable_file_is_refused_as_a_value_and_left_
     cleanup_torn_dir();
 }
 
-// --- the only durable write in the system must REPORT its result -----------------------
-//
-// single_file_block_manager_t::write_header is the single point of durability of a checkpoint
-// (one slot write). A `void` return discarding BOTH the write() and the sync() bool would let
-// table_storage_t::checkpoint() report true even when the header never reached the platter.
-// agent_disk_t::checkpoint_inner believes that answer: it then advances the .wal_id sidecar,
-// which puts the rows between the durable root and the sidecar's WAL position exactly nowhere.
+// write_header is the single durability point of a checkpoint; a discarded write()/sync() result
+// would let checkpoint() report success while checkpoint_inner advances the .wal_id sidecar past
+// a root that never reached the platter, orphaning the rows in between.
 TEST_CASE("services::disk::torn::checkpoint_reports_a_failed_header_write") {
     cleanup_torn_dir();
     std::filesystem::create_directories(torn_test_dir());
@@ -591,15 +506,12 @@ TEST_CASE("services::disk::torn::checkpoint_reports_a_failed_header_write") {
         REQUIRE_FALSE(first.has_error());
         REQUIRE(ts.checkpoint_wal_id() == 100);
 
-        // ENOSPC from here on: every write this checkpoint issues fails, the header
-        // sector included.
         append_one_int(ts.table(), &resource, 2);
         plan.fail_after_writes = plan.writes_seen;
 
         auto second = ts.checkpoint(services::wal::id_t{200});
         REQUIRE(second.has_error());
         REQUIRE(second.error().type == core::error_code_t::io_error);
-        // W-TORN bookkeeping must not have moved: these ids decide what the WAL may forget.
         REQUIRE(ts.checkpoint_wal_id() == 100);
         REQUIRE(ts.prev_checkpoint_wal_id() == 0);
 
@@ -609,9 +521,7 @@ TEST_CASE("services::disk::torn::checkpoint_reports_a_failed_header_write") {
     cleanup_torn_dir();
 }
 
-// The same fact one layer down: a failed fsync of the header sector is a failed checkpoint.
-// A write that reached the page cache and never reached the device is precisely the case
-// the second fsync of the checkpoint protocol exists to catch.
+// A write that reached the page cache but never the device is what the header sector's fsync exists to catch.
 TEST_CASE("services::disk::torn::checkpoint_reports_a_failed_header_sync") {
     cleanup_torn_dir();
     std::filesystem::create_directories(torn_test_dir());

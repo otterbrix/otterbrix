@@ -7,23 +7,12 @@
 namespace components::operators {
 
 #ifdef DEV_MODE
-    // Test-observable count of MATERIALIZED columns the DELETE sink received, summed
-    // over pushed batches. A pruned scan leaves the unneeded columns as placeholders
-    // (index-stable, no buffer), so this drops to what DELETE actually reads: the
-    // index key columns, RETURNING columns and FK-cascade key columns. Row ids travel
-    // in chunk.row_ids, not in a column, so a plain DELETE needs no data column at all.
     uint64_t delete_scanned_columns() noexcept;
 
-    // Deterministic hold right after a DELETE's WAL record becomes durable, the interleaving
-    // seam of test_delete_floor_resurrection. The window a concurrent checkpoint used to
-    // advance this table's durable WAL floor past a delete not yet applied only exists between
-    // the delete's journal write and its storage mark; a timing repro hits it rarely, so this
-    // gate turns the window into a held door. Plain virtual (no std::function), process-wide,
-    // DEV_MODE-only; the operator polls it by ONE no-op cross-actor round-trip per ask, so no
-    // actor thread ever blocks while it holds (same shape as services::disk::scan_advance_gate_t).
+    // Deterministic hold right after a DELETE's WAL record becomes durable — the interleaving seam
+    // of test_delete_floor_resurrection.
     struct delete_wal_apply_gate_t {
         virtual ~delete_wal_apply_gate_t() = default;
-        // true = keep holding this delete; false = let it proceed.
         virtual bool hold(components::catalog::oid_t table_oid) = 0;
     };
     void dev_set_delete_wal_apply_gate(delete_wal_apply_gate_t* gate); // nullptr = off
@@ -37,17 +26,10 @@ namespace components::operators {
                         components::catalog::oid_t table_oid,
                         std::pmr::vector<projected_column_t> returning,
                         expressions::expression_ptr expr = nullptr,
-                        // Affected-row bound for the DELETE ... USING source path
-                        // (DELETE ... LIMIT n). -1 = unbounded. The no-source path
-                        // leaves this -1 — its bound is applied upstream by the scan /
-                        // operator_match count-cap (create_plan_match); the source
-                        // (semi-join) path reads ALL left rows and must stop matching
-                        // here, at exactly n matched rows, across mid-pump flushes.
+                        // DELETE...LIMIT n bound for the USING path; -1 = unbounded (no-source is capped upstream).
                         std::int64_t affected_bound = -1);
 
-        // Catalog-table delete (DDL pg_catalog row scrub): deletes every row in
-        // `catalog_table_oid` where column[oid_col_idx] == target_oid via the
-        // WAL-first delete_pg_catalog_rows path. No predicate scan, no children.
+        // Catalog-table DDL scrub: deletes rows via the WAL-first delete_pg_catalog_rows path.
         operator_delete(std::pmr::memory_resource* resource,
                         log_t log,
                         components::catalog::oid_t catalog_table_oid,
@@ -56,62 +38,26 @@ namespace components::operators {
 
         components::catalog::oid_t table_oid() const noexcept { return table_oid_; }
 
-        // Whether the target table has any index (stamped by enrich onto the plan node).
-
-        // False skips the index mirror entirely. Defaults to true: an unstamped plan must
-
-        // behave as before, because guessing "no index" leaves a stale index behind.
-
+        // Defaults to true: an unstamped plan must not guess "no index" and skip a real one.
         void set_table_has_indexes(bool value) noexcept { table_has_indexes_ = value; }
 
-        // STREAMING DML (STEP 3b). Both DELETE shapes that have a scan source are
-        // SINKs on the LEFT (target) scan input:
-        //   - SIMPLE predicate-scan DELETE (no USING): push() folds each scan batch
-        //     via consume_batch_ — matched absolute row-ids into modified_, matched
-        //     RETURNING rows, and the matched OLD scan rows (index mirror).
-        //   - DELETE ... USING (right_ = the materialized USING scan): push() probes
-        //     each LEFT batch against right_->output() via consume_join_batch_ —
-        //     same semi-join match, modified_, index-old staging and per-batch joined
-        //     RETURNING.
-        // The catalog form (oid_col_idx_>=0) is a SOURCELESS sink: it has no children
-        // and no scan input — its entire effect is the WAL-first delete_pg_catalog_rows
-        // commit in await_async_and_resume, which the executor drives via the bottom-up
-        // needs_async_finalize pass (the sourceless-sink-root shape; push()/finalize()
-        // are never reached because there is no source to pump). The scan-sourced forms
-        // are sinks on the LEFT scan input. The RIGHT (USING) build side is fully
-        // materialized before the first push (the executor materializes join build
-        // sides — traverse_plan_ split / materialize_build_sides_). needs_async_finalize
-        // drives the async commit after the pump (or, for the catalog form, directly).
+        // The catalog form is a SOURCELESS sink (no children, no scan input): its entire effect is
+        // the WAL-first commit in await_async_and_resume, driven directly by needs_async_finalize.
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
         [[nodiscard]] core::error_t
         push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& out) override;
 
-        // Self-contained DML side-effects. Performs storage_delete_rows +
-        // WAL physical_delete + index::delete_rows, populates ctx->dml_*
-        // swap-info, then mark_executed.
+        // storage_delete_rows + WAL physical_delete + index::delete_rows, then mark_executed.
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
-        // Bounded-sink hook: the pending row count buffered in modified_.
-        // The executor mid-flushes await_async_and_resume once this crosses the
-        // configured dml_flush_row_threshold. The catalog form buffers nothing
-        // (buffered_rows()==0), so it is never mid-flushed.
+        // The catalog form buffers nothing, so it is never mid-flushed.
         [[nodiscard]] uint64_t buffered_rows() const noexcept override { return modified_ ? modified_->size() : 0; }
 
     private:
-        // Shared SIMPLE-path core. Matches expression_ (all-true when null — the
-        // scan already filtered) over ONE scan chunk; appends matched ABSOLUTE
-        // row-ids to modified_ (dictionary-index branch + chunk.row_ids), stages
-        // matched RETURNING rows, and stages the matched OLD scan rows + their
-        // absolute row-ids for the index mirror. push() calls it per batch.
+        // Matches expression_ over one scan chunk, staging matched rows/ids for RETURNING and the index mirror.
         core::error_t consume_batch_(pipeline::context_t* ctx, const vector::data_chunk_t& chunk);
-        // Shared DELETE...USING core. Probes ONE LEFT (target) scan chunk against
-        // the fully-materialized RIGHT (USING) build chunk as a semi-join, and
-        // stages the SAME bounded state consume_batch_ does — matched ABSOLUTE
-        // row-ids (DICTIONARY fallback) into modified_, the matched OLD left rows +
-        // their ids for the index mirror, and the per-batch joined RETURNING
-        // projection (matched left+right pair gathered in lockstep). push() calls
-        // it per LEFT batch. await_async_and_resume drains it.
+        // Same staging as consume_batch_, but as a semi-join probe against the materialized RIGHT (USING) side.
         core::error_t consume_join_batch_(pipeline::context_t* ctx,
                                           const vector::data_chunk_t& chunk_left,
                                           const chunks_vector_t& right_chunks);
@@ -124,33 +70,19 @@ namespace components::operators {
         std::unique_ptr<execution_dag::execution_dag_t> graph_;
         std::pmr::vector<projected_column_t> returning_;
         bool table_has_indexes_{true};
-        // separate from evaluation graph
         std::unique_ptr<execution_dag::execution_dag_t> returning_graph_;
-        // SIMPLE-path staging (filled by consume_batch_, drained in
-        // await_async_and_resume). returning_staged_ holds the projected RETURNING
-        // chunks; index_old_chunks_ + index_old_row_ids_ hold the matched OLD scan
-        // rows (aligned: index_old_chunks_ merged row i pairs with
-        // index_old_row_ids_[i]) so the index mirror does not need left_->output().
+        // index_old_chunks_ merged row i pairs with index_old_row_ids_[i] for the index mirror.
         chunks_vector_t returning_staged_{resource_};
         chunks_vector_t index_old_chunks_{resource_};
         std::pmr::vector<int64_t> index_old_row_ids_{resource_};
         bool simple_init_done_{false};
-        // Bounded-sink accumulators. affected_rows_ sums the rows deleted
-        // across every flush (the final affected-count result is built from it, not
-        // from the just-flushed slice). delete_marker_recorded_ guards the ONE
-        // ctx->dml_deletes marker so repeated mid-flushes push it only once (the
-        // COMMIT-side revert keys on the txn id, not per-flush ranges).
+        // delete_marker_recorded_ guards ctx->dml_deletes so repeated mid-flushes push it only once.
         uint64_t affected_rows_{0};
         bool delete_marker_recorded_{false};
-        // DELETE ... USING affected-row bound (DELETE ... LIMIT n); -1 = unbounded.
-        // matched_total_ counts MATCHED left rows at MATCH time (in consume_join_batch_),
-        // and persists across mid-pump flushes — modified_ is cleared each flush, so a
-        // flush-derived count would miss already-flushed matches. The semi-join stops
-        // once matched_total_ reaches affected_bound_.
+        // matched_total_ persists across mid-pump flushes, since modified_ clears on every flush.
         std::int64_t affected_bound_{-1};
         uint64_t matched_total_{0};
-        // Catalog-delete spec (set only by the catalog constructor). oid_col_idx_
-        // < 0 marks "not a catalog delete" → the predicate-scan path runs.
+        // < 0 marks "not a catalog delete" — the predicate-scan path runs instead.
         std::int64_t oid_col_idx_{-1};
         components::catalog::oid_t target_oid_{components::catalog::INVALID_OID};
     };

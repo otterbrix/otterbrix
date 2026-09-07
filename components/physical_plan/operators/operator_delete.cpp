@@ -71,7 +71,6 @@ namespace components::operators {
         }
         std::optional<vector::data_chunk_t> produced;
         if (condition_ == expressions::condition_kind::computed) {
-            // lazy ininialized graph (if consume() is never called, there is no point in building it)
             if (!graph_) {
                 auto built = expressions::build_condition_graph(resource_,
                                                                 pipeline_context->parameters.parameters,
@@ -93,10 +92,7 @@ namespace components::operators {
         }
         const vector::vector_t* decisions = produced.has_value() ? &produced->data.front() : nullptr;
 
-        // Matched ABSOLUTE row-ids of THIS batch (kept separate so the index mirror
-        // pairs each staged old-row with its own id, regardless of batch order).
         vector::vector_t batch_ids(resource_, types::logical_type::BIGINT, chunk.size());
-        // Indexing of matched rows into `chunk`, for the gathered old-row / RETURNING copies.
         vector::indexing_vector_t matched_indexing(resource_);
         matched_indexing.reset(chunk.size());
 
@@ -123,9 +119,7 @@ namespace components::operators {
             modified_->append(static_cast<size_t>(batch_ids.data<int64_t>()[i]));
         }
 
-        // Stage the matched OLD scan rows + their absolute ids for the index mirror
-        // (bounded: only matched rows). The merged staged chunk row k pairs with
-        // index_old_row_ids_[k], so manager_index_t::delete_rows reads them aligned.
+        // Staged chunk row k pairs with index_old_row_ids_[k]; manager_index_t::delete_rows relies on that alignment.
         {
             data_chunk_t old_matched(resource_, types, index);
             chunk.copy(old_matched, matched_indexing, index);
@@ -136,8 +130,6 @@ namespace components::operators {
             }
         }
 
-        // Stage matched RETURNING rows: gather the matched subset, then project the
-        // requested columns straight into capacity-bounded chunks.
         if (collect_returning) {
             data_chunk_t affected(resource_, types, index);
             chunk.copy(affected, matched_indexing, index);
@@ -161,10 +153,7 @@ namespace components::operators {
     core::error_t operator_delete::consume_join_batch_(pipeline::context_t* pipeline_context,
                                                        const vector::data_chunk_t& chunk_left,
                                                        const chunks_vector_t& right_chunks) {
-        // DELETE ... USING shared core (R6): probes ONE LEFT scan batch against the fully-materialized RIGHT
-        // (USING) chunks as a semi-join, staging the same bounded state (row-ids, old rows, RETURNING pairs)
-        // as the simple path. RIGHT stays per-chunk (chunks_vector_t) — a build table larger than
-        // DEFAULT_VECTOR_CAPACITY would overflow a single merged chunk.
+        // RIGHT stays per-chunk: merging it could overflow a single chunk past DEFAULT_VECTOR_CAPACITY.
         using components::vector::data_chunk_t;
         ensure_simple_init_();
         if (chunk_left.size() == 0) {
@@ -172,8 +161,6 @@ namespace components::operators {
         }
         const bool collect_returning = !returning_.empty();
         auto types_left = chunk_left.types();
-        // Right column types come from the first non-empty right chunk (every chunk
-        // shares the build-side schema); an all-empty build side yields no matches.
         std::pmr::vector<types::complex_logical_type> types_right(resource_);
         for (const auto& rc : right_chunks) {
             if (rc.size() > 0) {
@@ -208,23 +195,15 @@ namespace components::operators {
             }
         }
 
-        // Matched ABSOLUTE row-ids of THIS batch (kept separate so the index mirror
-        // pairs each staged old-row with its own id, regardless of batch order).
         vector::vector_t batch_ids(resource_, types::logical_type::BIGINT, chunk_left.size());
-        // Index into chunk_left of each matched target row (loop-relative) — for the
-        // matched OLD-row / RETURNING left gathers, in lockstep with batch_ids.
         vector::indexing_vector_t matched_indexing(resource_);
         matched_indexing.reset(chunk_left.size());
-        // Matched RIGHT (USING) rows gathered PER-ROW in lockstep with target rows, not via an indexing gather:
-        // a target batch can match more rows than the right chunk holds, so source_count would exceed the
-        // chunk's size. Bounded by chunk_left.size() — the semi-join takes at most one right row per left row.
+        // Gathered per-row, not via an indexing gather — a batch can match more right rows than the chunk holds.
         data_chunk_t affected_right(resource_, types_right, chunk_left.size());
 
         size_t index = 0;
         for (size_t i = 0; i < chunk_left.size(); i++) {
-            // Affected-row bound (DELETE ... USING ... LIMIT n): stop matching once the
-            // running matched total (already-flushed matches in matched_total_ + this
-            // batch's index) reaches the bound. -1 = unbounded.
+            // Stops once matched_total_ + this batch's index reaches affected_bound_; -1 = unbounded.
             if (affected_bound_ >= 0 && matched_total_ + index >= static_cast<uint64_t>(affected_bound_)) {
                 break;
             }
@@ -251,10 +230,7 @@ namespace components::operators {
                     if (decisions != nullptr && (decisions->is_null(j) || !decisions->get_value<bool>(j))) {
                         continue;
                     }
-                    // Storage / index delete keys on the ABSOLUTE table row id of the
-                    // matched left row, NOT the left-chunk loop index — the two diverge
-                    // once the table has gaps, multiple row groups, or a non-zero
-                    // row-group start. Mirror the simple branch's DICTIONARY fallback.
+                    // Keys on the absolute row id, not the loop index — they diverge with gaps or row groups.
                     int64_t abs_id;
                     if (chunk_left.data.front().get_vector_type() == vector::vector_type::DICTIONARY) {
                         abs_id = static_cast<int64_t>(chunk_left.data.front().indexing().get_index(i));
@@ -270,7 +246,6 @@ namespace components::operators {
                     }
                     index++;
                     vector::validate_chunk_capacity(affected_right, index);
-                    // Semi-join: stop after the first matching USING row.
                     row_matched = true;
                     break;
                 }
@@ -279,8 +254,6 @@ namespace components::operators {
                 }
             }
         }
-        // Count matched left rows at MATCH time (covers this batch, flushed or not) so the
-        // bound survives mid-pump flushes that clear modified_.
         matched_total_ += index;
         if (index == 0) {
             return core::error_t::no_error();
@@ -291,10 +264,6 @@ namespace components::operators {
             modified_->append(static_cast<size_t>(batch_ids.data<int64_t>()[i]));
         }
 
-        // Stage the matched OLD left rows + their absolute ids for the index mirror,
-        // exactly as the simple (consume_batch_) path does — the merged staged chunk
-        // row k pairs with index_old_row_ids_[k], so manager_index_t::delete_rows
-        // reads them aligned, even when streaming leaves left_->output() empty.
         {
             data_chunk_t old_matched(resource_, types_left, index);
             chunk_left.copy(old_matched, matched_indexing, index);
@@ -305,11 +274,6 @@ namespace components::operators {
             }
         }
 
-        // Stage matched RETURNING rows: gather the matched LEFT subset (valid: index
-        // <= chunk_left.size()), pair it with the per-row-built matched RIGHT chunk,
-        // then project the matched rows with the joined right chunk. Appended to
-        // returning_staged_, which await_async_and_resume drains exactly like the
-        // simple path.
         if (collect_returning) {
             data_chunk_t affected_left(resource_, types_left, index);
             chunk_left.copy(affected_left, matched_indexing, index);
@@ -334,15 +298,8 @@ namespace components::operators {
 
     core::error_t
     operator_delete::push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& /*out*/) {
-        // STREAMING DML SINK: fold one scan batch into the matched-id / index-old /
-        // RETURNING staging. Emits nothing (out stays empty); await_async_and_resume
-        // drains the staged state into the single WAL->storage->index commit.
-        // USING-join shape: probe the LEFT batch against the materialized RIGHT
-        // (USING) build chunk; otherwise the simple predicate-scan fold.
 #ifdef DEV_MODE
         for (const auto& column : input.data) {
-            // A placeholder for an unprojected column carries no buffer at all; a real
-            // (even all-NULL) column does. Counting buffers counts what the scan read.
             if (column.data() != nullptr || column.auxiliary() != nullptr) {
                 g_delete_scanned_columns.fetch_add(1, std::memory_order_relaxed);
             }
@@ -358,19 +315,12 @@ namespace components::operators {
         using components::vector::data_chunk_t;
         using components::vector::vector_t;
 
-        // The executor drives this INCREMENTALLY — once per "buffer full" during
-        // the pump (dml_flush_is_final==false) and once at finalize (==true). Each call
-        // flushes the currently-buffered matched-id slice; only the final call emits the
-        // RETURNING / affected-count output and mark_executed. threshold==0 collapses to
-        // exactly one final call.
+        // Called once per buffer-full during the pump and once at finalize (dml_flush_is_final); only the
+        // final call emits output and mark_executed. threshold==0 collapses to a single final call.
         const bool is_final = ctx->dml_flush_is_final;
 
-        // Catalog-delete mode: delete pg_catalog rows by (oid_col_idx, target_oid)
-        // via the WAL-first delete_pg_catalog_rows, then record the catalog table
-        // on ctx->pg_catalog_delete_tables so operator_commit_transaction reverts/
-        // publishes the MVCC tombstone for it. Bypasses the predicate-scan +
-        // storage_delete_rows + WAL physical_delete + index path entirely. It buffers
-        // nothing (buffered_rows()==0), so it is a single-shot sink — never mid-flushed.
+        // Bypasses the predicate-scan/storage/index path; pg_catalog_delete_tables lets
+        // operator_commit_transaction revert/publish the MVCC tombstone. Buffers nothing, so never mid-flushed.
         if (oid_col_idx_ >= 0) {
             components::execution_context_t exec_ctx{ctx->session,
                                                      ctx->txn,
@@ -390,13 +340,8 @@ namespace components::operators {
             co_return;
         }
 
-        // Flush the buffered matched-id slice, if any. The DELETE storage op (storage_delete_rows,
-        // then WAL physical_delete, then index mirror) lives in coroutine `op`; record_flush()
-        // does the common post-storage bookkeeping. DELETE writes its own WAL (unlike INSERT, where the disk
-        // agent owns it) and appends nothing.
+        // DELETE writes its own WAL, unlike INSERT where the disk agent owns it.
         if (modified_ && modified_->size() > 0) {
-            // See operator_insert: "an index manager exists" holds for every table, so the real
-            // question is whether the TABLE has an index.
             const bool mirror_index = table_has_indexes_ &&
                                       ctx->index_address != actor_zeta::address_t::empty_address() &&
                                       !index_old_chunks_.empty();
@@ -410,15 +355,9 @@ namespace components::operators {
                 auto& ids = modified_->ids();
                 const size_t modified_size = modified_->size();
 
-                // 1. STORAGE FIRST, then WAL — the apply-then-journal order operator_update uses, and
-                //    the order the checkpoint floor depends on: a mutation's WAL id is allocated only
-                //    AFTER the mutation is applied. WAL-first here left a window where the record's id
-                //    counted into the checkpoint boundary while the table still looked UNCHANGED, so a
-                //    checkpoint racing the window advanced this table's durable WAL floor past a delete
-                //    that was never folded into the .otbx, and a restart then skipped it
-                //    (test_delete_floor_resurrection). Storage-first closes it: no WAL id exists while the
-                //    delete is unapplied, and once one exists the table carries the pending stamp, so the
-                //    checkpoint DEFERS instead of advancing.
+                // Storage first, then WAL (same order operator_update uses): a mutation's WAL id must never
+                // be allocated before the mutation is applied, or a checkpoint can advance the durable floor
+                // past a delete never folded into the .otbx (test_delete_floor_resurrection).
                 vector_t row_ids(res, types::logical_type::BIGINT, modified_size);
                 for (size_t i = 0; i < modified_size; i++) {
                     row_ids.data<int64_t>()[i] = static_cast<int64_t>(ids[i]);
@@ -429,17 +368,13 @@ namespace components::operators {
                                                             table_oid_,
                                                             std::move(row_ids),
                                                             static_cast<uint64_t>(modified_size));
-                // Count isn't checked — it's legitimately below modified_size when a row already carries
-                // a delete stamp from this same transaction.
                 auto deleted_r = co_await std::move(df);
                 if (deleted_r.has_error()) {
                     co_return dml_detail::flush_outcome_t{deleted_r.error(), false, 0, 0};
                 }
 
-                // 2. WAL physical_delete, AFTER the storage mark. A refused record leaves the rows stamped
-                //    in memory with nothing journalled — fail the flush; the delete marker the caller
-                //    records before its own error check makes the abort tail un-stamp them, so no committed
-                //    delete ever lacks its journal record.
+                // The delete marker recorded before this error check lets the abort tail un-stamp the rows
+                // on a refused WAL record, so no committed delete lacks its journal record.
                 if (ctx->wal_address != actor_zeta::address_t::empty_address()) {
                     std::pmr::vector<int64_t> wal_row_ids(res);
                     wal_row_ids.reserve(modified_size);
@@ -461,15 +396,9 @@ namespace components::operators {
                     if (wal_result.has_error()) {
                         co_return dml_detail::flush_outcome_t{wal_result.error(), false, 0, 0};
                     }
-                    // manager_disk_t::flush here was a no-op (traced and returned without flushing); table
-                    // durability is checkpoint_all's, driven by the WAL manager's checkpoint round.
                 }
 
 #ifdef DEV_MODE
-                // Test seam (test_delete_floor_resurrection): hold immediately after the delete's WAL
-                // record is durable. Non-blocking — one no-op cross-actor round-trip per poll parks this
-                // coroutine without pinning an actor thread. Storage-first above means the table is already
-                // stamped here, so a checkpoint racing this hold defers it rather than advancing its floor.
                 while (auto* gate = dev_delete_wal_apply_gate()) {
                     if (!gate->hold(table_oid_)) {
                         break;
@@ -485,15 +414,9 @@ namespace components::operators {
                 }
 #endif
 
-                // 3. Mirror to index (old data). BOTH paths stage the MATCHED old rows +
-                //    their absolute ids into index_old_chunks_/index_old_row_ids_: the
-                //    SIMPLE path via consume_batch_ (push()), the USING-join path in its
-                //    match loop. So the index delete_rows always receives the matched
-                //    rows paired with their own ids — never the first-N scan rows — even
-                //    when streaming leaves left_->output() empty.
+                // Both paths stage the matched old rows into index_old_chunks_/index_old_row_ids_, so
+                // delete_rows always gets the matched rows paired with their own ids, never the first-N scan rows.
                 if (mirror_index) {
-                    // Deep copy: record_flush() (below) also deep-copies index_old_chunks_ into
-                    // constraint_input_, so the staged chunks must stay executor-owned rather than moved.
                     chunks_vector_t index_old_copy(res);
                     index_old_copy.reserve(index_old_chunks_.size());
                     for (const auto& c : index_old_chunks_) {
@@ -511,23 +434,17 @@ namespace components::operators {
                                                                   std::move(index_old_row_ids_));
                     auto index_error = co_await std::move(ixf);
                     if (index_error.contains_error()) {
-                        // Rows removed from the table but still present in the index: the next
-                        // index scan would return them. Fail the statement instead.
                         co_return dml_detail::flush_outcome_t{std::move(index_error), false, 0, 0};
                     }
                 }
 
                 affected_rows_ += static_cast<uint64_t>(modified_size);
-                // DELETE appends nothing: no append range on the outcome.
                 co_return dml_detail::flush_outcome_t{core::error_t::no_error(), false, 0, 0};
             };
 
             auto outcome = co_await op(resource_);
-            // The rows a parent fk_cascade must observe are the OLD (about-to-delete)
-            // rows it reads to find referencing children — index_old_chunks_. Pass them
-            // as constraint_rows; record_flush accumulates them into constraint_input_
-            // ONLY when dml_has_parent_constraint (bounded memory otherwise). The deep
-            // copy for the index send above left index_old_chunks_ intact for this read.
+            // fk_cascade needs the OLD rows (index_old_chunks_) to find referencing children; record_flush
+            // accumulates them into constraint_input_ only when dml_has_parent_constraint, to bound memory.
             auto err = dml_detail::record_flush(ctx,
                                                 resource_,
                                                 table_oid_,
@@ -535,10 +452,8 @@ namespace components::operators {
                                                 ctx->dml_has_parent_constraint,
                                                 constraint_input_,
                                                 index_old_chunks_);
-            // Record the delete marker ONCE across all flushes: COMMIT/ABORT key the
-            // MVCC swap/revert on the txn id, not on per-flush ranges. Recorded BEFORE
-            // the flush-error check so a late flush failure still leaves the marker for
-            // the failed-statement abort tail to un-stamp the already-stamped marks.
+            // Recorded once per txn, before the flush-error check, so a late failure still leaves the marker
+            // for the abort tail to un-stamp; COMMIT/ABORT key the MVCC swap/revert on the txn id, not the flush.
             if (!delete_marker_recorded_) {
                 ctx->dml_deletes.push_back(components::table::dml_delete_range_t{table_oid_, ctx->txn.transaction_id});
                 delete_marker_recorded_ = true;
@@ -550,22 +465,16 @@ namespace components::operators {
                 co_return;
             }
 
-            // Clear the flushed slice (bounded memory). Keep returning_staged_ — it is
-            // the RETURNING accumulator, drained only on the final call.
             modified_ = operators::make_operator_write_data(resource_);
             index_old_chunks_.clear();
             index_old_row_ids_.clear();
         }
 
-        // Mid-pump flush: emit nothing, keep accumulating for the next call.
         if (!is_final) {
             co_return;
         }
 
-        // FINAL: with RETURNING, drain the staged RETURNING accumulator. Without
-        // RETURNING, emit a typed chunk batch whose cardinalities sum to the total
-        // affected-row count accumulated across every flush. Nothing deleted and no
-        // RETURNING => leave output_ null (a 0-affected DELETE emits no result rows).
+        // A 0-affected DELETE without RETURNING leaves output_ null, emitting no result rows.
         if (!returning_.empty()) {
             if (!returning_staged_.empty()) {
                 set_output(make_operator_data(resource_, std::move(returning_staged_)));
@@ -577,15 +486,11 @@ namespace components::operators {
                                                         table_oid_);
             auto types_r = co_await std::move(tf);
             if (types_r.has_error()) {
-                // Rows WERE deleted (affected_rows_ > 0); an empty type list would ship the count as
-                // 0-column chunks instead of shaped by the table's schema.
                 set_error(types_r.error());
                 mark_failed();
                 co_return;
             }
             auto types = std::move(types_r.value());
-            // The result carries only the affected-row count as cardinality (no row data),
-            // emitted as ≤DEFAULT_VECTOR_CAPACITY-row chunks shaped by the table's types.
             set_output(make_operator_data(resource_,
                                           dml_detail::make_affected_count_chunks(resource_, affected_rows_, types)));
         }

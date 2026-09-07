@@ -1,28 +1,8 @@
-// ============================================================================
-// Streaming DML — STEP 3b verification.
-//
-// STEP 3b makes DML participate in the push-based streaming executor so DML
-// over a large scan runs BOUNDED: instead of materializing the WHOLE scan input
-// up front, the DML sink folds one batch at a time via push() and drives its
-// async WAL->storage->index commit once, after the pump, from the executor's
-// coroutine (which owns the cross-actor await — lost-wakeup-safe). Atomicity is
-// held by the MVCC TRANSACTION, not the operator, so streaming is correctness-
-// safe.
-//
-// The streaming sink is a SECOND entry point sharing the SAME core as the legacy
-// on_execute path (R6: single implementation, two entry points), so results are
-// identical regardless of which path runs.
-//
-// WHAT THESE TESTS ASSERT:
-//   (a) CORRECTNESS — every row that the materialize path produced still lands
-//       (and RETURNING / index consistency for DELETE/UPDATE).
-//   (b) PATH — the statement actually routed through the push-based streaming
-//       pipeline (execute_pipeline), proven by streaming_pipeline_runs(): the
-//       INSERT...SELECT / predicate DELETE / predicate UPDATE over a MULTI-BATCH
-//       scan (>> DEFAULT_VECTOR_CAPACITY rows) bumps the counter, whereas the
-//       legacy raw_data/VALUES path does not. (Stubbing role() back to none makes
-//       the PATH assertion RED.)
-// ============================================================================
+// DML folds one batch at a time via push() into the streaming executor instead of
+// materializing the whole scan first; atomicity is held by the MVCC transaction, not
+// the operator. The streaming sink shares the legacy on_execute path's append core
+// (R6), so tests check both that results land and that streaming_pipeline_runs()
+// bumps (stubbing role() back to none makes that assertion RED).
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"
@@ -33,9 +13,7 @@ using namespace components;
 using namespace components::cursor;
 
 namespace {
-    // >> DEFAULT_VECTOR_CAPACITY (1024): forces the scan source to emit MANY
-    // batches so the DML sink must fold across batch boundaries — the bounded
-    // streaming property under test.
+    // >> DEFAULT_VECTOR_CAPACITY (1024) so the scan spans multiple batches.
     constexpr unsigned kRowCount = 5000;
 
     cursor_t_ptr exec(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& sql) {
@@ -55,7 +33,6 @@ TEST_CASE("integration::cpp::streaming_dml::insert_select_streams_and_lands") {
     REQUIRE(exec(dispatcher, "CREATE TABLE StreamDb.src (id bigint, grp int, val bigint);")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE StreamDb.dst (id bigint, grp int, val bigint);")->is_success());
 
-    // Seed the source table with a multi-batch row set.
     {
         std::stringstream q;
         q << "INSERT INTO StreamDb.src (id, grp, val) VALUES ";
@@ -67,8 +44,6 @@ TEST_CASE("integration::cpp::streaming_dml::insert_select_streams_and_lands") {
         REQUIRE(cur->size() == kRowCount);
     }
 
-    // INSERT...SELECT over a multi-batch scan source: this is the streaming DML
-    // shape. Record the streaming-run counter across just this statement.
     const auto runs_before = services::collection::executor::streaming_pipeline_runs();
     {
         auto cur = exec(dispatcher, "INSERT INTO StreamDb.dst (id, grp, val) SELECT id, grp, val FROM StreamDb.src;");
@@ -78,12 +53,8 @@ TEST_CASE("integration::cpp::streaming_dml::insert_select_streams_and_lands") {
     }
     const auto runs_after = services::collection::executor::streaming_pipeline_runs();
 
-    // PATH: the INSERT...SELECT routed through the push-based streaming pipeline.
-    // With role()==sink the whole insert->...->scan chain is a sourced streaming
-    // pipeline; the counter bumps. Stub role() back to none and this is RED.
     REQUIRE(runs_after > runs_before);
 
-    // CORRECTNESS: every source row landed in dst, with values intact.
     {
         auto cur = exec(dispatcher, "SELECT COUNT(id) AS c FROM StreamDb.dst;");
         REQUIRE(cur->is_success());
@@ -91,7 +62,6 @@ TEST_CASE("integration::cpp::streaming_dml::insert_select_streams_and_lands") {
         REQUIRE(cur->value(0, 0).value<uint64_t>() == static_cast<uint64_t>(kRowCount));
     }
     {
-        // Analytic spot-check of the streamed payload: SUM(val) == 2 * sum(0..N-1).
         int64_t expected_sum = 0;
         for (unsigned i = 0; i < kRowCount; ++i) {
             expected_sum += static_cast<int64_t>(i) * 2;
@@ -104,12 +74,6 @@ TEST_CASE("integration::cpp::streaming_dml::insert_select_streams_and_lands") {
 }
 
 TEST_CASE("integration::cpp::streaming_dml::insert_values_streams") {
-    // operator_raw_data_t is now a streaming SOURCE (role()==source), so the VALUES
-    // form is a sourced INSERT...VALUES pipeline: is_streaming_pipeline routes it
-    // through execute_pipeline, where the INSERT sink folds the VALUES batches via
-    // push() one chunk at a time. The streaming counter MUST bump, and the rows MUST
-    // still land identically (R6: the streaming sink and the legacy on_execute path
-    // share the same append core).
     auto config = test_create_config(integration_fixture_path("test_streaming_dml_values"));
     test_clear_directory(config);
     config.wal.on = false;
@@ -126,10 +90,8 @@ TEST_CASE("integration::cpp::streaming_dml::insert_values_streams") {
         REQUIRE(cur->size() == 3);
     }
     const auto runs_after = services::collection::executor::streaming_pipeline_runs();
-    // PATH: routed through the push-based streaming pipeline (VALUES source).
     REQUIRE(runs_after > runs_before);
 
-    // CORRECTNESS: every VALUES row landed with values intact.
     {
         auto cur = exec(dispatcher, "SELECT COUNT(id) AS c FROM StreamDb.t;");
         REQUIRE(cur->is_success());
@@ -144,10 +106,7 @@ TEST_CASE("integration::cpp::streaming_dml::insert_values_streams") {
 }
 
 TEST_CASE("integration::cpp::streaming_dml::insert_values_returning_streams") {
-    // INSERT...VALUES...RETURNING over the raw_data SOURCE: the streaming sink folds
-    // the VALUES batches via push(), commits in await_async_and_resume, then reads the
-    // appended segment back for the RETURNING projection. Proves the source -> sink ->
-    // readback path lands the right RETURNING rows when VALUES is a streaming source.
+    // RETURNING re-reads the appended segment after push()+await_async_and_resume commits it.
     auto config = test_create_config(integration_fixture_path("test_streaming_dml_values_returning"));
     test_clear_directory(config);
     config.wal.on = false;
@@ -166,9 +125,9 @@ TEST_CASE("integration::cpp::streaming_dml::insert_values_returning_streams") {
         REQUIRE(cur->size() == 2);
     }
     const auto runs_after = services::collection::executor::streaming_pipeline_runs();
-    REQUIRE(runs_after > runs_before); // PATH: streamed through the VALUES source.
+    REQUIRE(runs_after > runs_before);
 
-    // The two rows landed (RETURNING readback is not order-guaranteed, spot-check via SELECT).
+    // RETURNING rows aren't order-guaranteed; spot-check via SELECT.
     {
         auto cur = exec(dispatcher, "SELECT val FROM StreamDb.t WHERE id = 1;");
         REQUIRE(cur->is_success());
@@ -186,9 +145,7 @@ TEST_CASE("integration::cpp::streaming_dml::delete_predicate_streams_and_lands")
 
     REQUIRE(exec(dispatcher, "CREATE DATABASE StreamDb;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE StreamDb.t (id bigint, val bigint);")->is_success());
-    // Index on id so the post-delete point lookup goes through the index — an
-    // index-consistency check that the DELETE's index mirror ran for the streamed
-    // batches (a deleted key must no longer be found via the index).
+    // Proves the DELETE's index mirror ran: a deleted key must no longer be found via the index.
     REQUIRE(exec(dispatcher, "CREATE INDEX idx_id ON StreamDb.t (id);")->is_success());
 
     {
@@ -202,31 +159,23 @@ TEST_CASE("integration::cpp::streaming_dml::delete_predicate_streams_and_lands")
         REQUIRE(cur->size() == kRowCount);
     }
 
-    // Selective predicate DELETE over a multi-batch scan. `val < threshold` is a
-    // pure compare on a non-indexed column, so the planner pushes it into the
-    // full_scan (role()==source); with the DELETE operator a SINK the whole
-    // delete->full_scan chain is a sourced streaming pipeline.
-    constexpr unsigned kThreshold = 3000; // deletes rows val in [0, 3000) -> 3000 rows
+    constexpr unsigned kThreshold = 3000;
     const auto runs_before = services::collection::executor::streaming_pipeline_runs();
     {
         auto cur = exec(dispatcher,
                         "DELETE FROM StreamDb.t WHERE val < " + std::to_string(kThreshold) + " RETURNING id, val;");
         INFO("DELETE error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
-        // RETURNING: one row per deleted row.
         REQUIRE(cur->size() == kThreshold);
     }
     const auto runs_after = services::collection::executor::streaming_pipeline_runs();
-    REQUIRE(runs_after > runs_before); // PATH: routed through the streaming pipeline
+    REQUIRE(runs_after > runs_before);
 
-    // CORRECTNESS: only rows with val >= threshold remain.
     {
         auto cur = exec(dispatcher, "SELECT COUNT(id) AS c FROM StreamDb.t;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->value(0, 0).value<uint64_t>() == static_cast<uint64_t>(kRowCount - kThreshold));
     }
-    // INDEX CONSISTENCY: a deleted key (id == 5, val 5 < threshold) is gone via the
-    // index point lookup; a surviving key (id == 4000) is still found.
     {
         auto cur = exec(dispatcher, "SELECT id FROM StreamDb.t WHERE id = 5;");
         REQUIRE(cur->is_success());
@@ -249,9 +198,7 @@ TEST_CASE("integration::cpp::streaming_dml::update_predicate_streams_and_lands")
 
     REQUIRE(exec(dispatcher, "CREATE DATABASE StreamDb;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE StreamDb.t (id bigint, val bigint);")->is_success());
-    // Index on val so the post-update point lookup goes through the index — an
-    // index-consistency check that the UPDATE's index mirror (old delete + new
-    // insert) ran for the streamed batches.
+    // Proves the UPDATE's index mirror (old delete + new insert) ran for the streamed batches.
     REQUIRE(exec(dispatcher, "CREATE INDEX idx_val ON StreamDb.t (val);")->is_success());
 
     {
@@ -265,13 +212,8 @@ TEST_CASE("integration::cpp::streaming_dml::update_predicate_streams_and_lands")
         REQUIRE(cur->size() == kRowCount);
     }
 
-    // Selective predicate UPDATE over a multi-batch scan. `id < threshold` is a
-    // pure compare on a non-indexed column, so the planner pushes it into the
-    // full_scan (role()==source); with the UPDATE operator a SINK the whole
-    // update->full_scan chain is a sourced streaming pipeline. SET val = val + K
-    // shifts the indexed column so the index-consistency check is meaningful.
-    constexpr unsigned kThreshold = 2500; // updates id in [0, 2500) -> 2500 rows
-    constexpr int64_t kBump = 1000000;    // pushes updated val out of the [0, kRowCount) range
+    constexpr unsigned kThreshold = 2500;
+    constexpr int64_t kBump = 1000000; // pushes updated val out of the [0, kRowCount) range
     const auto runs_before = services::collection::executor::streaming_pipeline_runs();
     {
         auto cur = exec(dispatcher,
@@ -280,29 +222,22 @@ TEST_CASE("integration::cpp::streaming_dml::update_predicate_streams_and_lands")
         INFO("UPDATE error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == kThreshold);
-        // RETURNING reflects the NEW value: row with id==5 now has val 5 + kBump.
-        // (RETURNING rows are not order-guaranteed; spot-check via a later SELECT.)
     }
     const auto runs_after = services::collection::executor::streaming_pipeline_runs();
-    REQUIRE(runs_after > runs_before); // PATH: routed through the streaming pipeline
+    REQUIRE(runs_after > runs_before);
 
-    // CORRECTNESS: an updated row carries the bumped value.
     {
         auto cur = exec(dispatcher, "SELECT val FROM StreamDb.t WHERE id = 5;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         REQUIRE(cur->value(0, 0).value<int64_t>() == 5 + kBump);
     }
-    // A non-updated row keeps its original value.
     {
         auto cur = exec(dispatcher, "SELECT val FROM StreamDb.t WHERE id = 3000;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         REQUIRE(cur->value(0, 0).value<int64_t>() == 3000);
     }
-    // INDEX CONSISTENCY: the OLD val (5) is gone from the index; the NEW val
-    // (5 + kBump) is found. This proves the index mirror's delete-old + insert-new
-    // ran for the streamed batches.
     {
         auto cur = exec(dispatcher, "SELECT id FROM StreamDb.t WHERE val = 5;");
         REQUIRE(cur->is_success());
@@ -316,22 +251,11 @@ TEST_CASE("integration::cpp::streaming_dml::update_predicate_streams_and_lands")
     }
 }
 
-// ============================================================================
-// Constrained DML streams end-to-end (constraint-operator migration).
-//
-// fk_check / fk_cascade / check_constraint are role()==sink + needs_async_finalize:
-// each is the PARENT of a DML sink in the plan chain. Marking them sinks lets the
-// WHOLE chain (constraint -> DML -> scan/raw_data) route through execute_pipeline
-// instead of falling back to the legacy materialize path at the first role()==none.
-// The executor pumps the source into the DML's push(), then drives
-// await_async_and_resume BOTTOM-UP: the DML commits first (snapshotting the written
-// rows into constraint_input_), then the constraint validates / cascades them.
-//
-// These tests assert BOTH (a) the constrained statement still enforces / cascades
-// identically, and (b) it routes through the streaming pipeline (the run counter
-// bumps). An INSERT...SELECT over a MULTI-BATCH scan is used so the constraint reads
-// the DML's snapshot, not the scan SOURCE's output_ (empty when streaming).
-// ============================================================================
+// fk_check / fk_cascade / check_constraint are role()==sink + needs_async_finalize,
+// parented over the DML sink, so the whole constraint->DML->scan chain streams. The
+// executor commits the DML first, snapshotting written rows into constraint_input_,
+// before the constraint validates/cascades — hence a multi-batch INSERT...SELECT, so
+// the constraint reads that snapshot rather than the streaming scan's empty output_.
 
 TEST_CASE("integration::cpp::streaming_dml::fk_check_streams_insert_select") {
     auto config = test_create_config(integration_fixture_path("test_streaming_dml_fk_check"));
@@ -350,8 +274,6 @@ TEST_CASE("integration::cpp::streaming_dml::fk_check_streams_insert_select") {
                  "FOREIGN KEY (parent_id) REFERENCES StreamDb.parent (id);")
                 ->is_success());
 
-    // One parent row (id == 1). A multi-batch source that all references id == 1 is
-    // valid; a source referencing a missing parent (id == 99) must be rejected.
     REQUIRE(exec(dispatcher, "INSERT INTO StreamDb.parent (id, name) VALUES (1, 'p1');")->is_success());
     {
         std::stringstream q;
@@ -363,7 +285,6 @@ TEST_CASE("integration::cpp::streaming_dml::fk_check_streams_insert_select") {
     }
     REQUIRE(exec(dispatcher, "INSERT INTO StreamDb.src_bad (id, parent_id) VALUES (1, 99);")->is_success());
 
-    // Valid constrained INSERT...SELECT over a multi-batch scan: streams and lands.
     const auto runs_before = services::collection::executor::streaming_pipeline_runs();
     {
         auto cur =
@@ -372,7 +293,6 @@ TEST_CASE("integration::cpp::streaming_dml::fk_check_streams_insert_select") {
         REQUIRE(cur->is_success());
     }
     const auto runs_after = services::collection::executor::streaming_pipeline_runs();
-    // PATH: the fk_check -> insert -> scan chain routed through execute_pipeline.
     REQUIRE(runs_after > runs_before);
 
     {
@@ -381,9 +301,6 @@ TEST_CASE("integration::cpp::streaming_dml::fk_check_streams_insert_select") {
         REQUIRE(cur->value(0, 0).value<uint64_t>() == static_cast<uint64_t>(kRowCount));
     }
 
-    // FK VIOLATION through the streaming path: referencing a missing parent surfaces
-    // as an error cursor (never thrown). This is the constraint enforcement
-    // the migration must preserve through the streaming chain.
     {
         auto cur =
             exec(dispatcher, "INSERT INTO StreamDb.child (id, parent_id) SELECT id, parent_id FROM StreamDb.src_bad;");
@@ -399,9 +316,8 @@ TEST_CASE("integration::cpp::streaming_dml::check_constraint_streams_insert_sele
     auto* dispatcher = space.dispatcher();
 
     REQUIRE(exec(dispatcher, "CREATE DATABASE StreamDb;")->is_success());
-    // age is bigint so the CHECK constant (parsed as bigint) compares same-type
-    // (mirrors test_sql_features::check_constraint; an int32 column would hit an
-    // unrelated logical_value_t type-coercion gap in the predicate, not the path).
+    // age is bigint so the CHECK constant compares same-type (an int32 column would
+    // hit an unrelated logical_value_t coercion gap, not the path under test here).
     REQUIRE(exec(dispatcher, "CREATE TABLE StreamDb.items (id bigint, age bigint);")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE StreamDb.src_ok (id bigint, age bigint);")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE StreamDb.src_bad (id bigint, age bigint);")->is_success());
@@ -417,7 +333,6 @@ TEST_CASE("integration::cpp::streaming_dml::check_constraint_streams_insert_sele
     }
     REQUIRE(exec(dispatcher, "INSERT INTO StreamDb.src_bad (id, age) VALUES (1, -5);")->is_success());
 
-    // Valid CHECK over a multi-batch INSERT...SELECT: streams and lands.
     const auto runs_before = services::collection::executor::streaming_pipeline_runs();
     {
         auto cur = exec(dispatcher, "INSERT INTO StreamDb.items (id, age) SELECT id, age FROM StreamDb.src_ok;");
@@ -425,7 +340,6 @@ TEST_CASE("integration::cpp::streaming_dml::check_constraint_streams_insert_sele
         REQUIRE(cur->is_success());
     }
     const auto runs_after = services::collection::executor::streaming_pipeline_runs();
-    // PATH: the check_constraint -> insert -> scan chain routed through execute_pipeline.
     REQUIRE(runs_after > runs_before);
     {
         auto cur = exec(dispatcher, "SELECT COUNT(id) AS c FROM StreamDb.items;");
@@ -433,8 +347,6 @@ TEST_CASE("integration::cpp::streaming_dml::check_constraint_streams_insert_sele
         REQUIRE(cur->value(0, 0).value<uint64_t>() == static_cast<uint64_t>(kRowCount));
     }
 
-    // CHECK VIOLATION through the streaming path: age <= 0 surfaces as an error
-    // cursor (never thrown). Enforcement preserved through the chain.
     {
         auto cur = exec(dispatcher, "INSERT INTO StreamDb.items (id, age) SELECT id, age FROM StreamDb.src_bad;");
         REQUIRE(cur->is_error());
@@ -456,7 +368,6 @@ TEST_CASE("integration::cpp::streaming_dml::fk_cascade_streams_delete") {
                  "FOREIGN KEY (parent_id) REFERENCES StreamDb.parent (id) ON DELETE CASCADE;")
                 ->is_success());
 
-    // Two parents; many children reference parent 1 (multi-batch child set).
     REQUIRE(exec(dispatcher, "INSERT INTO StreamDb.parent (id, val) VALUES (1, 'p1'), (2, 'p2');")->is_success());
     {
         std::stringstream q;
@@ -467,9 +378,6 @@ TEST_CASE("integration::cpp::streaming_dml::fk_cascade_streams_delete") {
         REQUIRE(exec(dispatcher, q.str())->is_success());
     }
 
-    // DELETE parent 1: the cascade removes every child referencing it. The
-    // fk_cascade -> delete -> scan chain streams (the delete sink snapshots the
-    // matched parent row, the cascade reads it to find referencing children).
     const auto runs_before = services::collection::executor::streaming_pipeline_runs();
     {
         auto cur = exec(dispatcher, "DELETE FROM StreamDb.parent WHERE id = 1;");
@@ -477,9 +385,8 @@ TEST_CASE("integration::cpp::streaming_dml::fk_cascade_streams_delete") {
         REQUIRE(cur->is_success());
     }
     const auto runs_after = services::collection::executor::streaming_pipeline_runs();
-    REQUIRE(runs_after > runs_before); // PATH: routed through the streaming pipeline.
+    REQUIRE(runs_after > runs_before);
 
-    // CORRECTNESS: children of parent 1 are gone; children of parent 2 remain.
     {
         auto cur = exec(dispatcher, "SELECT COUNT(id) AS c FROM StreamDb.child WHERE parent_id = 1;");
         REQUIRE(cur->is_success());
@@ -493,10 +400,8 @@ TEST_CASE("integration::cpp::streaming_dml::fk_cascade_streams_delete") {
 }
 
 TEST_CASE("integration::cpp::streaming_dml::dml_limit_bounds_affected_rows") {
-    // DELETE/UPDATE ... LIMIT n bounds affected/matched rows (MySQL/SQLite semantics):
-    // the count-cap sits on the disk scan (pushable WHERE), on operator_match (a
-    // non-pushable WHERE / bare DELETE), and on a persistent matched-row bound in the
-    // DML operator for the USING/FROM semi-join. DML has NO OFFSET (a clean parse error).
+    // LIMIT n bounds affected/matched rows (MySQL/SQLite semantics): the cap sits on the
+    // disk scan if pushable, on operator_match otherwise, or on the semi-join's own bound.
     auto config = test_create_config(integration_fixture_path("test_streaming_dml_limit"));
     test_clear_directory(config);
     config.wal.on = false;
@@ -505,8 +410,6 @@ TEST_CASE("integration::cpp::streaming_dml::dml_limit_bounds_affected_rows") {
 
     REQUIRE(exec(dispatcher, "CREATE DATABASE LimDb;")->is_success());
 
-    // Each sub-case uses its own table (DELETE is destructive): a=id%5 (each of {0..4}
-    // twice), b=100, so `a < b` matches all 10 and `a = 2` matches exactly rows 2 and 7.
     auto seed = [&](const std::string& tbl) {
         REQUIRE(exec(dispatcher, "CREATE TABLE LimDb." + tbl + " (id bigint, a bigint, b bigint);")->is_success());
         std::stringstream q;
@@ -523,7 +426,7 @@ TEST_CASE("integration::cpp::streaming_dml::dml_limit_bounds_affected_rows") {
         return static_cast<int64_t>(cur->value(0, 0).value<uint64_t>());
     };
 
-    // Non-pushable column-vs-column predicate (a < b) -> operator_match; LIMIT 2 -> 2.
+    // Column-vs-column predicate (a < b) is non-pushable, so this exercises operator_match.
     seed("t_np");
     {
         auto cur = exec(dispatcher, "DELETE FROM LimDb.t_np WHERE a < b LIMIT 2 RETURNING id;");
@@ -533,7 +436,7 @@ TEST_CASE("integration::cpp::streaming_dml::dml_limit_bounds_affected_rows") {
         REQUIRE(count("t_np") == 8);
     }
 
-    // Pushable predicate (a = 2 -> rows 2 and 7) -> disk post-filter cap; LIMIT 1 -> 1.
+    // Pushable predicate (a = 2) exercises the disk scan's post-filter cap.
     seed("t_p");
     {
         auto cur = exec(dispatcher, "DELETE FROM LimDb.t_p WHERE a = 2 LIMIT 1 RETURNING id;");
@@ -543,7 +446,6 @@ TEST_CASE("integration::cpp::streaming_dml::dml_limit_bounds_affected_rows") {
         REQUIRE(count("t_p") == 9);
     }
 
-    // Bare DELETE ... LIMIT (all-true match via operator_match) bounds to n.
     seed("t_bare");
     {
         auto cur = exec(dispatcher, "DELETE FROM LimDb.t_bare LIMIT 3 RETURNING id;");
@@ -552,7 +454,6 @@ TEST_CASE("integration::cpp::streaming_dml::dml_limit_bounds_affected_rows") {
         REQUIRE(count("t_bare") == 7);
     }
 
-    // UPDATE ... LIMIT bounds MATCHED rows (all 10 match a < b; LIMIT 2 -> exactly 2).
     seed("t_upd");
     {
         auto cur = exec(dispatcher, "UPDATE LimDb.t_upd SET b = b + 1 WHERE a < b LIMIT 2 RETURNING id;");
@@ -564,8 +465,7 @@ TEST_CASE("integration::cpp::streaming_dml::dml_limit_bounds_affected_rows") {
         REQUIRE(cur2->value(0, 0).value<uint64_t>() == 2u);
     }
 
-    // Source path: DELETE ... USING ... LIMIT n. Every t.a (0..4) joins some s.k, so all
-    // 10 are eligible; the semi-join stops after exactly 2 matched (deleted) rows.
+    // DELETE ... USING ... LIMIT n bounds the semi-join's matched-row count directly.
     seed("t_src");
     {
         REQUIRE(exec(dispatcher, "CREATE TABLE LimDb.s (k bigint);")->is_success());
@@ -578,7 +478,6 @@ TEST_CASE("integration::cpp::streaming_dml::dml_limit_bounds_affected_rows") {
         REQUIRE(count("t_src") == 8);
     }
 
-    // DML has NO OFFSET -> a clean parse error (never a crash/hang).
     seed("t_off");
     {
         auto cur = exec(dispatcher, "DELETE FROM LimDb.t_off LIMIT 2 OFFSET 1;");

@@ -6,8 +6,6 @@
 #include <services/collection/executor.hpp>
 #include <string>
 
-// Tests for the RETURNING clause on INSERT / UPDATE / DELETE.
-
 namespace {
     void setup(otterbrix::wrapper_dispatcher_t* dispatcher) {
         {
@@ -16,8 +14,7 @@ namespace {
         }
         {
             auto session = otterbrix::session_id_t();
-            // qty carries a DEFAULT so RETURNING * / RETURNING qty exercises the
-            // default-fill (read-back) path on INSERT.
+            // qty carries a DEFAULT so RETURNING */qty exercises the default-fill read-back path.
             dispatcher->execute_sql(
                 session,
                 "CREATE TABLE TestDatabase.TestCollection (id bigint, name string, qty bigint DEFAULT 7);");
@@ -44,7 +41,6 @@ TEST_CASE("integration::cpp::test_returning::insert") {
         REQUIRE(cur->column_count() == 3);
         REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
         REQUIRE(cur->value(1, 0).value<std::string_view>() == "Alice");
-        // qty was not supplied; RETURNING * must reflect the DEFAULT (7).
         REQUIRE(cur->value(2, 0).value<int64_t>() == 7);
     }
 
@@ -169,7 +165,7 @@ TEST_CASE("integration::cpp::test_returning::delete") {
         auto cur =
             dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE id >= 1 RETURNING *;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 2); // ids 1 and 3 remain
+        REQUIRE(cur->size() == 2);
         REQUIRE(cur->column_count() == 3);
     }
 
@@ -184,8 +180,6 @@ TEST_CASE("integration::cpp::test_returning::delete") {
 }
 
 TEST_CASE("integration::cpp::test_returning::delete_using") {
-    // DELETE ... USING ... RETURNING that references columns of BOTH the target
-    // (destination) table and the joined (USING) table.
     auto config = test_create_config(integration_fixture_path("test_returning/delete_using"));
     test_clear_directory(config);
     config.wal.on = false;
@@ -213,8 +207,7 @@ TEST_CASE("integration::cpp::test_returning::delete_using") {
                                     "INSERT INTO TestDatabase.Customers (id, name) VALUES (1, 'Alice'), (2, 'Bob');");
         }
         {
-            // Order 12 references a non-existent customer (3), so it must NOT be
-            // deleted by the join and must NOT appear in RETURNING.
+            // Order 12 references a non-existent customer (3), so it must not be deleted or returned.
             auto session = otterbrix::session_id_t();
             dispatcher->execute_sql(session,
                                     "INSERT INTO TestDatabase.Orders (id, customer_id, total) VALUES "
@@ -229,7 +222,6 @@ TEST_CASE("integration::cpp::test_returning::delete_using") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 2);
             REQUIRE(cur->column_count() == 3);
-            // Row 0: order 10 joined to Alice; Row 1: order 11 joined to Bob.
             REQUIRE(cur->value(0, 0).value<int64_t>() == 10);
             REQUIRE(cur->value(1, 0).value<int64_t>() == 100);
             REQUIRE(cur->value(2, 0).value<std::string_view>() == "Alice");
@@ -238,7 +230,6 @@ TEST_CASE("integration::cpp::test_returning::delete_using") {
             REQUIRE(cur->value(2, 1).value<std::string_view>() == "Bob");
         }
         {
-            // Only the unmatched order (12) survives.
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "SELECT id FROM TestDatabase.Orders;");
             REQUIRE(cur->is_success());
@@ -249,8 +240,6 @@ TEST_CASE("integration::cpp::test_returning::delete_using") {
 
     INFO("a target row matching multiple USING rows is deleted and returned once");
     {
-        // Two customers share id 7, so order 70 joins both. DELETE ... USING is a
-        // semi-join: the order must be deleted once and RETURNING must emit one row.
         {
             auto session = otterbrix::session_id_t();
             dispatcher->execute_sql(session,
@@ -288,7 +277,7 @@ TEST_CASE("integration::cpp::test_returning::delete_using") {
                                                "RETURNING Orders.id, Customers.*;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->column_count() == 3); // Orders.id + Customers(id, name)
+            REQUIRE(cur->column_count() == 3);
             REQUIRE(cur->value(0, 0).value<int64_t>() == 13);
             REQUIRE(cur->value(1, 0).value<int64_t>() == 1);
             REQUIRE(cur->value(2, 0).value<std::string_view>() == "Alice");
@@ -297,16 +286,9 @@ TEST_CASE("integration::cpp::test_returning::delete_using") {
 }
 
 TEST_CASE("integration::cpp::test_returning::delete_using_absolute_row_ids") {
-    // REGRESSION: the USING-join DELETE branch must collect the ABSOLUTE table
-    // row id of each matched target row, NOT the left-chunk-relative loop index.
-    // A prior delete leaves a gap so a matched row's absolute table position no
-    // longer equals its scan-loop index — the only configuration that tells the
-    // two apart. With the bug, the loop index addresses the WRONG absolute row,
-    // so the wrong row is deleted (and the index mirror is misaligned too).
-    //
-    // Harness mirrors ::delete_using (Orders/Customers) so the join scan settles
-    // identically; the gap is created by a FIRST USING-delete (as in that test's
-    // section 2), then a SECOND USING-delete is verified against the table state.
+    // REGRESSION: the USING-join DELETE branch must key on the matched row's absolute table id,
+    // not the left-chunk-relative loop index; a prior delete opens a gap between the two, and a
+    // first USING-delete makes that gap for a second USING-delete to be checked against.
     auto config = test_create_config(integration_fixture_path("test_returning/delete_using_absolute_row_ids"));
     test_clear_directory(config);
     config.wal.on = false;
@@ -324,26 +306,18 @@ TEST_CASE("integration::cpp::test_returning::delete_using_absolute_row_ids") {
         auto session = otterbrix::session_id_t();
         dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.Customers (id bigint, name string);");
     }
-    // Index on the join column so the post-delete point lookup goes through the
-    // index — an index-consistency check that the DELETE's index mirror deleted
-    // the MATCHED row, not the first-N scan rows.
+    // Proves the DELETE's index mirror deleted the matched row, not the first-N scan rows.
     {
         auto session = otterbrix::session_id_t();
         REQUIRE(dispatcher->execute_sql(session, "CREATE INDEX idx_cust ON TestDatabase.Orders (customer_id);")
                     ->is_success());
     }
     {
-        // Customer 7 matches order 13; customer 1 is used only for the gap-maker.
         auto session = otterbrix::session_id_t();
         dispatcher->execute_sql(session,
                                 "INSERT INTO TestDatabase.Customers (id, name) VALUES (1, 'Alice'), (7, 'Grace');");
     }
     {
-        // Orders 10..13. customer_id 99 is unmatched (no such customer).
-        //   10 -> cust 1   (matched by the gap-making delete)
-        //   11 -> cust 99  (never matched, survives)
-        //   12 -> cust 99  (never matched, survives)
-        //   13 -> cust 7   (matched by the SECOND delete; absolute row 3)
         auto session = otterbrix::session_id_t();
         dispatcher->execute_sql(session,
                                 "INSERT INTO TestDatabase.Orders (id, customer_id) VALUES "
@@ -352,9 +326,6 @@ TEST_CASE("integration::cpp::test_returning::delete_using_absolute_row_ids") {
 
     INFO("a prior USING-delete creates a gap, then a second USING-delete removes the right absolute row");
     {
-        // FIRST USING-delete: scope to order 10 only (customer 1). This removes the
-        // HEAD row (absolute row 0), leaving a gap. Survivors {11,12,13} now sit at
-        // absolute {1,2,3} while the surviving scan presents them at loop {0,1,2}.
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
@@ -363,16 +334,12 @@ TEST_CASE("integration::cpp::test_returning::delete_using_absolute_row_ids") {
             REQUIRE(cur->is_success());
         }
         {
-            // Sanity: orders {11,12,13} survive after the gap-making delete.
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "SELECT id FROM TestDatabase.Orders ORDER BY id;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 3);
         }
-        // SECOND USING-delete: order 13 joins customer 7. Order 13 is at ABSOLUTE
-        // row 3 but at scan-loop index 2 (the gap shifted them) — exactly the
-        // divergence the bug mishandles: it deletes loop-index 2 == absolute row 2
-        // (order 12) and leaves order 13.
+        // Order 13 now sits at absolute row 3 but scan-loop index 2 — the divergence the bug mishandles.
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
@@ -388,8 +355,6 @@ TEST_CASE("integration::cpp::test_returning::delete_using_absolute_row_ids") {
             REQUIRE(cur->value(0, 0).value<int64_t>() == 11);
             REQUIRE(cur->value(0, 1).value<int64_t>() == 12);
         }
-        // INDEX CONSISTENCY via the point lookup on the indexed join column: order
-        // 13 (customer_id 7) is gone; orders 11/12 (customer_id 99) are still found.
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "SELECT id FROM TestDatabase.Orders WHERE customer_id = 7;");
@@ -406,8 +371,6 @@ TEST_CASE("integration::cpp::test_returning::delete_using_absolute_row_ids") {
 }
 
 TEST_CASE("integration::cpp::test_returning::update_from") {
-    // UPDATE ... FROM ... RETURNING that references columns of BOTH the target
-    // table and the joined (FROM) table.
     auto config = test_create_config(integration_fixture_path("test_returning/update_from"));
     test_clear_directory(config);
     config.wal.on = false;
@@ -432,7 +395,6 @@ TEST_CASE("integration::cpp::test_returning::update_from") {
                                 "INSERT INTO TestDatabase.Customers (id, name) VALUES (1, 'Alice'), (2, 'Bob');");
     }
     {
-        // Order 12 references a non-existent customer (3): unmatched, not updated.
         auto session = otterbrix::session_id_t();
         dispatcher->execute_sql(session,
                                 "INSERT INTO TestDatabase.Orders (id, customer_id, total) VALUES "
@@ -450,7 +412,6 @@ TEST_CASE("integration::cpp::test_returning::update_from") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
         REQUIRE(cur->column_count() == 3);
-        // Order 10 -> Alice (total now 101); order 11 -> Bob (total now 201).
         REQUIRE(cur->value(0, 0).value<int64_t>() == 10);
         REQUIRE(cur->value(1, 0).value<int64_t>() == 101);
         REQUIRE(cur->value(2, 0).value<std::string_view>() == "Alice");
@@ -461,8 +422,6 @@ TEST_CASE("integration::cpp::test_returning::update_from") {
 
     INFO("a target row matching multiple FROM rows is updated and returned once");
     {
-        // Two customers share id 5, so order 50 joins both. UPDATE ... FROM is a
-        // semi-join: the row is updated once (total +1, not +2) and returned once.
         {
             auto session = otterbrix::session_id_t();
             dispatcher->execute_sql(session,
@@ -497,7 +456,7 @@ TEST_CASE("integration::cpp::test_returning::update_from") {
                                            "RETURNING Orders.id, Customers.*;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->column_count() == 3); // Orders.id + Customers(id, name)
+        REQUIRE(cur->column_count() == 3);
         REQUIRE(cur->value(0, 0).value<int64_t>() == 11);
         REQUIRE(cur->value(1, 0).value<int64_t>() == 2);
         REQUIRE(cur->value(2, 0).value<std::string_view>() == "Bob");
@@ -505,7 +464,6 @@ TEST_CASE("integration::cpp::test_returning::update_from") {
 }
 
 TEST_CASE("integration::cpp::test_returning::roundtrip") {
-    // Consume the RETURNING output of one statement to drive the next.
     auto config = test_create_config(integration_fixture_path("test_returning/roundtrip"));
     test_clear_directory(config);
     config.wal.on = false;
@@ -532,8 +490,6 @@ TEST_CASE("integration::cpp::test_returning::roundtrip") {
 
     INFO("archive rows moved out of a DELETE ... RETURNING");
     {
-        // DELETE the rows and capture them via RETURNING, then re-insert the
-        // captured values into the Archive table (an "insert from deleted").
         std::string ins = "INSERT INTO TestDatabase.Archive (id, name, qty) VALUES ";
         {
             auto session = otterbrix::session_id_t();
@@ -557,7 +513,6 @@ TEST_CASE("integration::cpp::test_returning::roundtrip") {
             REQUIRE(cur->size() == 2);
         }
         {
-            // Archive now holds the two moved rows; Source keeps only id=3.
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "SELECT id FROM TestDatabase.Archive;");
             REQUIRE(cur->is_success());
@@ -622,8 +577,7 @@ TEST_CASE("integration::cpp::test_returning::roundtrip") {
 }
 
 TEST_CASE("integration::cpp::test_returning::batching") {
-    // More rows than DEFAULT_VECTOR_CAPACITY (1024) so RETURNING crosses chunk
-    // boundaries on all three operators (windowed read-back / split paths).
+    // >> DEFAULT_VECTOR_CAPACITY (1024) so RETURNING crosses chunk boundaries on all three operators.
     constexpr int kRows = 2500;
     auto config = test_create_config(integration_fixture_path("test_returning/batching"));
     test_clear_directory(config);
@@ -666,13 +620,8 @@ TEST_CASE("integration::cpp::test_returning::batching") {
 }
 
 TEST_CASE("integration::cpp::test_returning::update_from_absolute_row_ids") {
-    // REGRESSION (streaming UPDATE ... FROM): the FROM-join UPDATE branch must key
-    // the storage/index update on the ABSOLUTE table row id of each matched target
-    // row, NOT the left-chunk-relative loop index. A prior delete leaves a gap so a
-    // matched row's absolute table position no longer equals its scan-loop index —
-    // the configuration that tells the two apart. Mirrors delete_using_absolute_row_ids
-    // but for UPDATE ... FROM, and verifies both the updated value and index
-    // consistency after the streaming per-batch join apply.
+    // REGRESSION: mirrors delete_using_absolute_row_ids's absolute-row-id-vs-loop-index bug, but
+    // for the streaming UPDATE ... FROM branch; also verifies index consistency after the update.
     auto config = test_create_config(integration_fixture_path("test_returning/update_from_absolute_row_ids"));
     test_clear_directory(config);
     config.wal.on = false;
@@ -691,9 +640,7 @@ TEST_CASE("integration::cpp::test_returning::update_from_absolute_row_ids") {
         auto session = otterbrix::session_id_t();
         dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.Customers (id bigint, name string);");
     }
-    // Index on the join column so the post-update point lookup goes through the
-    // index — an index-consistency check that the UPDATE's index mirror updated the
-    // MATCHED row, not the first-N scan rows.
+    // Proves the UPDATE's index mirror updated the matched row, not the first-N scan rows.
     {
         auto session = otterbrix::session_id_t();
         REQUIRE(dispatcher->execute_sql(session, "CREATE INDEX idx_cust ON TestDatabase.Orders (customer_id);")
@@ -705,9 +652,6 @@ TEST_CASE("integration::cpp::test_returning::update_from_absolute_row_ids") {
                                 "INSERT INTO TestDatabase.Customers (id, name) VALUES (1, 'Alice'), (7, 'Grace');");
     }
     {
-        // Orders 10..13.  10 -> cust 1 (the gap-maker); 11,12 -> cust 99 (unmatched);
-        // 13 -> cust 7 (matched by the FROM update; absolute row 3, loop index 2
-        // after the gap).
         auto session = otterbrix::session_id_t();
         dispatcher->execute_sql(session,
                                 "INSERT INTO TestDatabase.Orders (id, customer_id, total) VALUES "
@@ -716,15 +660,12 @@ TEST_CASE("integration::cpp::test_returning::update_from_absolute_row_ids") {
 
     INFO("a prior delete creates a gap, then an UPDATE ... FROM updates the right absolute row");
     {
-        // Gap-maker: delete order 10 (absolute row 0). Survivors {11,12,13} now sit
-        // at absolute {1,2,3} while the scan presents them at loop {0,1,2}.
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.Orders WHERE id = 10;");
             REQUIRE(cur->is_success());
         }
-        // UPDATE ... FROM: order 13 joins customer 7. Order 13 is at ABSOLUTE row 3
-        // but at scan-loop index 2 — the divergence the loop-index bug mishandles.
+        // Order 13 now sits at absolute row 3 but scan-loop index 2 — the divergence the bug mishandles.
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
@@ -734,11 +675,9 @@ TEST_CASE("integration::cpp::test_returning::update_from_absolute_row_ids") {
                                                "RETURNING Orders.id, Orders.total;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            // Order 13 (the matched absolute row) got +1000; nothing else changed.
             REQUIRE(cur->value(0, 0).value<int64_t>() == 13);
             REQUIRE(cur->value(1, 0).value<int64_t>() == 1130);
         }
-        // Only order 13's total moved; orders 11/12 are untouched.
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "SELECT id, total FROM TestDatabase.Orders ORDER BY id;");
@@ -751,8 +690,6 @@ TEST_CASE("integration::cpp::test_returning::update_from_absolute_row_ids") {
             REQUIRE(cur->value(0, 2).value<int64_t>() == 13);
             REQUIRE(cur->value(1, 2).value<int64_t>() == 1130);
         }
-        // INDEX CONSISTENCY via the point lookup on the indexed join column: the
-        // matched row (customer_id 7) is still found exactly once after the update.
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "SELECT total FROM TestDatabase.Orders WHERE customer_id = 7;");
@@ -770,11 +707,8 @@ TEST_CASE("integration::cpp::test_returning::update_from_absolute_row_ids") {
 }
 
 TEST_CASE("integration::cpp::test_returning::join_dml_streaming_multibatch") {
-    // STREAMING the LEFT (target) scan across MANY batches: with more target rows
-    // than DEFAULT_VECTOR_CAPACITY (1024), the LEFT scan feeds the join sink in
-    // multiple push() batches while the RIGHT (USING/FROM) build side stays fully
-    // materialized. Exercises the per-batch match / modified_ / index-old / RETURNING
-    // accumulation for both DELETE ... USING and UPDATE ... FROM.
+    // >> DEFAULT_VECTOR_CAPACITY (1024) target rows so the LEFT scan feeds the join sink in
+    // multiple push() batches while the RIGHT (USING/FROM) build side stays fully materialized.
     constexpr int kRows = 2500;
     auto config = test_create_config(integration_fixture_path("test_returning/join_dml_streaming_multibatch"));
     test_clear_directory(config);
@@ -794,8 +728,7 @@ TEST_CASE("integration::cpp::test_returning::join_dml_streaming_multibatch") {
         auto session = otterbrix::session_id_t();
         dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.Customers (id bigint, name string);");
     }
-    // Two customers: id 1 (matches even orders) and id 2 (matches odd orders), so
-    // every order joins exactly one customer — all kRows rows match across batches.
+    // Two customers, matching even/odd orders respectively, so every order joins exactly one.
     {
         auto session = otterbrix::session_id_t();
         dispatcher->execute_sql(session,
@@ -804,7 +737,6 @@ TEST_CASE("integration::cpp::test_returning::join_dml_streaming_multibatch") {
     {
         std::string sql = "INSERT INTO TestDatabase.Orders (id, customer_id, total) VALUES ";
         for (int i = 0; i < kRows; ++i) {
-            // customer_id alternates 1/2 so each order matches exactly one customer.
             sql += "(" + std::to_string(i) + ", " + std::to_string((i % 2) + 1) + ", " + std::to_string(i) + ")";
             sql += (i + 1 < kRows) ? "," : ";";
         }
@@ -824,7 +756,6 @@ TEST_CASE("integration::cpp::test_returning::join_dml_streaming_multibatch") {
         REQUIRE(cur->size() == kRows);
     }
     {
-        // Every total advanced by exactly 1 (semi-join: once, not per customer).
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "SELECT total FROM TestDatabase.Orders WHERE id = 1000;");
         REQUIRE(cur->is_success());
@@ -852,18 +783,9 @@ TEST_CASE("integration::cpp::test_returning::join_dml_streaming_multibatch") {
     }
 }
 
-// ---------------------------------------------------------------------------
-// RETURNING projection errors — failed-statement atomicity.
-//
-// The projection can fail AT RUNTIME (e.g. division by zero) after the DML's
-// storage work is staged or done. The statement must then fail CLEANLY:
-//   - INSERT: the rows were already WAL-first appended when the read-back
-//     projection runs, so the append range MUST be recorded for the abort tail
-//     to revert (observed via executor::dml_appends_reverted()).
-//   - UPDATE: the projection is a pure local compute over the updated chunks,
-//     so it must run BEFORE the storage mutation — a failing RETURNING leaves
-//     ZERO storage writes (observed via update_storage_update_sends()).
-// ---------------------------------------------------------------------------
+// A RETURNING projection can fail at runtime (e.g. division by zero) after DML storage work is
+// staged: INSERT has already WAL-appended the rows, so the abort tail must revert that range;
+// UPDATE's projection runs before the storage mutation, so a failing RETURNING leaves zero writes.
 TEST_CASE("integration::cpp::test_returning::insert_returning_error_reverts_append") {
     auto config = test_create_config(integration_fixture_path("test_returning/insert_error_revert"));
     test_clear_directory(config);
@@ -881,8 +803,6 @@ TEST_CASE("integration::cpp::test_returning::insert_returning_error_reverts_appe
         REQUIRE(cur->is_error());
     }
     const auto reverts_after = services::collection::executor::dml_appends_reverted();
-    // The already-appended range was lifted and reverted — no permanent
-    // uncommitted rows linger in storage.
     REQUIRE(reverts_after == reverts_before + 1);
 
     {
@@ -929,9 +849,6 @@ TEST_CASE("integration::cpp::test_returning::update_returning_error_leaves_no_wr
         REQUIRE(cur->is_error());
     }
     const auto sends_after = components::operators::update_storage_update_sends();
-    // The failing projection ran BEFORE any mutation: no storage_update was ever
-    // sent, so there is no MVCC delete-old/append-new, no WAL update record and
-    // nothing for the abort tail to revert.
     REQUIRE(sends_after == sends_before);
 
     {

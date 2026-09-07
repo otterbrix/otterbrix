@@ -1,29 +1,6 @@
-// Shadow paging: a block the DURABLE root still points at must not be handed out again.
-//
-// The two-slot header makes the previous root real: a crash mid-checkpoint recovers the
-// PREVIOUS root. That is worth nothing while the blocks that root reads can be reallocated
-// underneath it -- and with a single free list they are, by the shortest path in the engine:
-//
-//   agent_disk_t::checkpoint_inner  ->  data_table_t::compact(watermark)
-//        compact swaps the collection and mark_as_free's every block of the OUTGOING one --
-//        exactly the blocks the CURRENT durable root still references. mark_as_free has no
-//        other production caller, so the free list is empty at every other moment;
-//   ...then, immediately, table_storage_t::checkpoint
-//        whose first act is metadata_manager_t::allocate_handle -> free_block_id, which draws
-//        from that free list.
-//
-// Crash before the header write and the file recovers the OLD root, whose data pointers now
-// address a block holding the NEW checkpoint's metadata -- rewritten with a valid CRC, so
-// read() succeeds and the rows are silently wrong.
-//
-// So the free list is SPLIT: reusable_ (free under the current DURABLE root) and pending_free_
-// (released by the in-flight checkpoint). free_block_id draws only from reusable_; pending_free_
-// merges in only after write_header's slot write AND its fsync have both succeeded. The gates
-// below are the four halves of that: not reissued before the header, the OLD root still
-// readable after a crash, genuinely reusable after a success, and NOT promoted after a failure.
-//
-// Crash states come only from the fault-injection seam (fault_injection_file.hpp); no test here
-// lays out file bytes by hand.
+// Shadow paging invariant: a block the DURABLE root still points at must not be handed out again.
+// The free list splits into reusable_ (free under the durable root) and pending_free_ (released
+// in-flight), merging only once the header write and its fsync both succeed.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/data_table.hpp>
@@ -74,12 +51,7 @@ namespace {
             , buffer_manager(&resource, fs, buffer_pool) {}
     };
 
-    // Deliberately INCOMPRESSIBLE values (splitmix64 of the row index). A sequential column
-    // checkpoints into a compressed segment, and the point of the crash case below is to read a
-    // block back that HEAD has overwritten with metadata: decoding foreign bytes through a
-    // compressed reader is a guess about how far it will run, while a full-width uncompressed
-    // int64 column just yields wrong numbers. The gate should report a wrong ROW, not depend on
-    // how a codec reacts to garbage.
+    // Deliberately incompressible (splitmix64) so a rewritten block decodes as a wrong value.
     int64_t row_value(uint64_t row) {
         uint64_t x = row + 0x9E3779B97F4A7C15ull;
         x ^= x >> 30;
@@ -115,10 +87,6 @@ namespace {
         }
     }
 
-    // Everything table_storage_t::checkpoint (services/disk/manager_disk.cpp) does UP TO but not
-    // including the header write: table metadata -> set_meta_block -> free list -> barrier
-    // fsync. Split out because every gate here is a statement about the window between the
-    // release and the header, so the tests have to stand inside it.
     tstorage::database_header_t prepare_checkpoint(tstorage::single_file_block_manager_t& bm, data_table_t& table) {
         tstorage::metadata_manager_t meta_mgr(bm);
         tstorage::metadata_writer_t writer(meta_mgr);
@@ -139,8 +107,6 @@ namespace {
         REQUIRE_FALSE(bm.write_header(header).has_error());
     }
 
-    // Delete rows [0, count), commit, publish and land the deletes, so compact() has something
-    // to reclaim. The hazard opens ONLY when compact actually frees blocks.
     void delete_leading_rows(data_table_t& table,
                              free_list_env_t& env,
                              transaction_manager_t& mgr,
@@ -171,15 +137,11 @@ namespace {
         bm.dev_reset_tracking();
         REQUIRE(table.compact(std::numeric_limits<uint64_t>::max()));
         std::set<uint64_t> released(bm.dev_freed_ids().begin(), bm.dev_freed_ids().end());
-        // Guard rail, not decoration: with nothing reclaimed the free list stays empty and every
-        // gate below would pass vacuously.
+        // Guards against a vacuous pass: with nothing reclaimed, every gate below passes trivially.
         REQUIRE_FALSE(released.empty());
         return released;
     }
 
-    // Load the table the way the engine does on open: through the durable root the manager
-    // selected. A LOADED table is the realistic subject of compact() — its segments reference
-    // only what the durable root references.
     std::unique_ptr<data_table_t> load_table(free_list_env_t& env, tstorage::single_file_block_manager_t& bm) {
         tstorage::metadata_manager_t meta_mgr(bm);
         tstorage::meta_block_pointer_t ptr;
@@ -190,10 +152,8 @@ namespace {
         return std::move(loaded.value());
     }
 
-    // Attribution, as in test_block_reachability: a block the walker cannot place is only a
-    // hole if no EARLIER round's durable state already owned it. Blocks a previous checkpoint
-    // superseded are known garbage (they leak until the superseded-root reclaim takes them)
-    // and must not be read as a promotion failure.
+    // A block the walker can't place is only a real hole if no earlier round already owned it
+    // (same attribution as test_block_reachability).
     void absorb_known(std::set<uint64_t>& known, const otterbrix_test::walk_report_t& r) {
         known.insert(r.chain_blocks.begin(), r.chain_blocks.end());
         known.insert(r.durable_data.begin(), r.durable_data.end());
@@ -213,9 +173,6 @@ namespace {
         return result;
     }
 
-    // Session 1 of every gate: build the table, give it a durable root, close the file. Returns
-    // that root's meta_block. Split out because all four gates need the SAME starting point — a
-    // file whose durable root is real and whose next open loads from it.
     uint64_t seed_durable_root(free_list_env_t& env, const std::string& path) {
         tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
         REQUIRE_FALSE(bm.create_new_database().has_error());
@@ -238,11 +195,6 @@ namespace {
 
 } // namespace
 
-// --- Gate 1: the release window ------------------------------------------------------
-//
-// The DIRECT statement, asserted rather than inferred: between compact()'s mark_as_free and
-// the header write, not one of the released ids comes back out of free_block_id. The probe is
-// the checkpoint's own allocations, which is the very caller that consumed them on HEAD.
 TEST_CASE("shadow_free_list: a block released by the in-flight checkpoint is not reissued before the header") {
     const std::string path = free_list_db_path("window");
     remove_file(path);
@@ -250,8 +202,6 @@ TEST_CASE("shadow_free_list: a block released by the in-flight checkpoint is not
 
     seed_durable_root(env, path);
 
-    // REOPEN: a freshly loaded table's segments reference only the durable root's blocks, so
-    // every id compact releases below is one a crash would recover through.
     tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
     REQUIRE_FALSE(bm.load_existing_database().has_error());
     auto table = load_table(env, bm);
@@ -260,7 +210,6 @@ TEST_CASE("shadow_free_list: a block released by the in-flight checkpoint is not
     delete_leading_rows(*table, env, mgr, DELETED_ROWS);
     const auto released = released_by_compact(bm, *table);
 
-    // Immediately after the release: quarantined, not allocatable.
     {
         const auto reusable = bm.dev_reusable_snapshot();
         const auto pending = bm.dev_pending_free_snapshot();
@@ -281,8 +230,6 @@ TEST_CASE("shadow_free_list: a block released by the in-flight checkpoint is not
         CHECK(not_quarantined.empty());
     }
 
-    // Now run the checkpoint up to (not including) the header write and watch every id it
-    // draws. On HEAD the first of them IS a released block.
     const size_t issued_before = bm.dev_issued_ids().size();
     auto header = prepare_checkpoint(bm, *table);
 
@@ -296,18 +243,12 @@ TEST_CASE("shadow_free_list: a block released by the in-flight checkpoint is not
     INFO("checkpoint allocations that reused a released block: " << id_set(reissued));
     CHECK(reissued.empty());
 
-    // And the header write is still the thing that ends the window.
     REQUIRE_FALSE(bm.write_header(header).has_error());
 
     remove_file(path);
 }
 
-// --- Gate 2: the plan's own gate -----------------------------------------------------
-//
-// kill -9 after the release and after the barrier fsync, before the header. The recovered root
-// is the OLD one; its ROWS must still be there, and the walker — which reads the durable header
-// straight from the file, i.e. judges what a crash actually recovers — must find no block it
-// cannot account for.
+// The walker judges what a crash actually recovers, reading the durable header straight off disk.
 TEST_CASE("shadow_free_list: a crash between the release and the header write leaves the OLD root's rows intact") {
     const std::string path = free_list_db_path("crash");
     const std::string copy_path = path + ".crashcopy";
@@ -318,9 +259,6 @@ TEST_CASE("shadow_free_list: a crash between the release and the header write le
     uint64_t root_a = tstorage::INVALID_INDEX;
     std::set<uint64_t> known_prior;
 
-    // Session 1: a durable root, and the walker's picture of it. Absorbing that picture is how
-    // the later walk tells THIS round's accounting holes from garbage the previous round already
-    // owned (the same attribution test_block_reachability uses).
     {
         tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
         REQUIRE_FALSE(bm.create_new_database().has_error());
@@ -335,11 +273,8 @@ TEST_CASE("shadow_free_list: a crash between the release and the header write le
         absorb_known(known_prior, r0);
     }
 
-    // Session 2: REOPEN before touching anything. This is not decoration — it is what makes the
-    // reclaim the real one. A table that never left memory still holds the write-through blocks
-    // its checkpoint superseded, so compact() releases those too and the allocator eats the
-    // harmless ones first. A freshly LOADED table's segments reference only what the durable root
-    // references, so every id compact releases here is an id a crash would recover through.
+    // REOPEN is not decoration: an in-memory table still holds blocks its own checkpoint
+    // superseded, so compact() would mask the hazard by releasing those too.
     {
         otterbrix_test::fault_plan_t plan;
         otterbrix_test::fault_injection_scope_t scope(plan);
@@ -354,15 +289,8 @@ TEST_CASE("shadow_free_list: a crash between the release and the header write le
         const auto released = released_by_compact(bm, *table);
         WARN("[A7.2] compact released " << released.size() << " blocks of the durable root: " << id_set(released));
 
-        // Metadata, free list and the pre-header barrier all land. The barrier is a real fsync,
-        // so everything written in this window is on the device and the crash below takes
-        // NOTHING away — which is precisely why reissuing a released block here is durable
-        // damage rather than a lost write.
         auto header = prepare_checkpoint(bm, *table);
-        // Same defect seen from the header side: if the checkpoint ate the released blocks for
-        // its own metadata there is nothing left to publish, so the new root would claim an
-        // EMPTY free list while the space it reclaimed is gone. A CHECK, not a REQUIRE — the
-        // data gate below is the one this case exists for and must still run.
+        // CHECK, not REQUIRE: the data gate below is what this case exists for and must still run.
         CHECK(header.free_list != tstorage::INVALID_INDEX);
 
         REQUIRE(scope.last() != nullptr);
@@ -371,20 +299,16 @@ TEST_CASE("shadow_free_list: a crash between the release and the header write le
         std::filesystem::copy_file(path, copy_path, std::filesystem::copy_options::overwrite_existing);
     }
 
-    // Session 3: what the crash actually left.
     {
         free_list_env_t recovery_env;
         tstorage::single_file_block_manager_t bm(recovery_env.buffer_manager, recovery_env.fs, copy_path);
         REQUIRE_FALSE(bm.load_existing_database().has_error());
 
-        // The recovered root is A — the checkpoint never committed.
         CHECK(bm.meta_block() == root_a);
 
         auto recovered = load_table(recovery_env, bm);
 
-        // READ THE DATA, not just the open: every pre-delete row, by value. A block that was
-        // handed out and rewritten during the aborted checkpoint reads back with a valid CRC,
-        // so only the VALUES can tell the difference.
+        // A rewritten block still reads back with a valid CRC, so only the VALUES can tell.
         uint64_t scanned = 0;
         uint64_t wrong = 0;
         uint64_t null_seen = 0;
@@ -406,8 +330,6 @@ TEST_CASE("shadow_free_list: a crash between the release and the header write le
         CHECK(null_seen == 0);
         CHECK(wrong == 0);
 
-        // The walker's verdict on the same file. It reads the durable header straight off the
-        // disk, so it judges what a crash recovers rather than what this process believes.
         auto report = otterbrix_test::walk_blocks(bm, copy_path, &recovery_env.resource);
         REQUIRE(report.ok);
         WARN("[A7.2] walker: block_count=" << report.block_count << " chain=" << id_set(report.chain_blocks)
@@ -415,9 +337,6 @@ TEST_CASE("shadow_free_list: a crash between the release and the header write le
                                            << " registry=" << id_set(report.registry_live)
                                            << " freelist=" << id_set(report.free_list_content)
                                            << " unexplained=" << id_set(report.unexplained));
-        // Zero UNATTRIBUTABLE blocks: every id the walker cannot place must already have been
-        // accounted for by the previous round's durable state. An id that appears out of nowhere
-        // is an accounting hole opened by this round.
         const auto holes = unattributable(report, known_prior);
         INFO("unattributable=" << id_set(holes));
         CHECK(holes.empty());
@@ -429,10 +348,7 @@ TEST_CASE("shadow_free_list: a crash between the release and the header write le
     remove_file(copy_path);
 }
 
-// --- Gate 3: the opposite failure ----------------------------------------------------
-//
-// Quarantining forever is not a fix, it is a leak. Once the header IS durable the released
-// blocks must be back in the allocator — that is the promotion point doing its job.
+// Quarantining forever would just be a leak.
 TEST_CASE("shadow_free_list: a durable header makes the released blocks reusable") {
     const std::string path = free_list_db_path("promote");
     remove_file(path);
@@ -462,14 +378,8 @@ TEST_CASE("shadow_free_list: a durable header makes the released blocks reusable
     CHECK(still_withheld.empty());
     CHECK(bm.dev_pending_free_snapshot().empty());
 
-    // Not just bookkeeping — the allocator really hands them back.
-    //
-    // NOT `released.count(bm.free_block_id()) == 1`: the durable header ALSO promotes the
-    // superseded root's own blocks, and free_block_id hands out the SMALLEST id in the pool,
-    // which can legitimately be one of those instead (the reclaim working, not the promotion
-    // failing). So instead: drain the pool and require every released id to come out of it --
-    // stronger than "the first one did" -- and require the file not to grow while doing it,
-    // which proves they came from the pool, not the end of the file.
+    // free_block_id's first result can legitimately be a superseded-root block instead, so drain
+    // the pool and require every released id to surface.
     const uint64_t before_blocks = bm.total_blocks();
     std::set<uint64_t> drawn;
     for (size_t i = 0, n = reusable.size(); i < n; ++i) {
@@ -486,7 +396,6 @@ TEST_CASE("shadow_free_list: a durable header makes the released blocks reusable
     INFO("released but never handed back: " << id_set(never_returned));
     CHECK(never_returned.empty());
 
-    // And the durable free list published the same set, so a reopen agrees.
     tstorage::database_header_t durable;
     REQUIRE(otterbrix_test::read_active_durable_header(path, durable));
     CHECK(durable.free_list != tstorage::INVALID_INDEX);
@@ -494,11 +403,7 @@ TEST_CASE("shadow_free_list: a durable header makes the released blocks reusable
     remove_file(path);
 }
 
-// --- Gate 4: the failure decision ----------------------------------------------------
-//
-// A checkpoint whose header does not land leaves the OLD root current, so its blocks are still
-// live and promotion would be exactly wrong. The decision recorded at promote_durable_root():
-// keep them quarantined — neither promoted nor discarded — until some later header commits.
+// The OLD root stays current, so promote_durable_root() must keep its blocks quarantined.
 TEST_CASE("shadow_free_list: a FAILED header write does not promote the released blocks") {
     const std::string path = free_list_db_path("failed");
     remove_file(path);
@@ -519,8 +424,7 @@ TEST_CASE("shadow_free_list: a FAILED header write does not promote the released
 
     auto header = prepare_checkpoint(bm, *table);
 
-    // Everything from here on fails. The very next write IS the header slot write, so the
-    // checkpoint dies at its single point of durability with the old root untouched.
+    // The very next write is the header slot write -- the checkpoint's single point of durability.
     plan.fail_after_writes = plan.writes_seen;
     auto committed = bm.write_header(header);
     REQUIRE(committed.has_error());
@@ -547,17 +451,8 @@ TEST_CASE("shadow_free_list: a FAILED header write does not promote the released
     remove_file(path);
 }
 
-// --- Gate 5: a large free list must not publish a block of its OWN chain -----------------
-//
-// serialize_free_list snapshots the pool AFTER the chain's FIRST block is taken
-// (metadata_writer_t's constructor), keeping that one out of the list. Every FURTHER chain
-// block is allocated mid-write (ensure_space -> allocate_handle -> free_block_id), drawn from
-// reusable_ -- already inside the snapshot. A 256 KiB block holds ~32,608 ids, so a free list
-// past that size names a block of its own chain.
-//
-// Consequence: a restart's deserialize_free_list puts that id into reusable_, the next
-// allocation hands out a block the durable root's own free-list chain occupies, and the round
-// after reads the chain back through a block since overwritten with a valid CRC.
+// serialize_free_list snapshots the pool once, but further chain blocks are allocated mid-write
+// from that same snapshot -- so a spanning free list can name a block of its own chain.
 TEST_CASE("shadow_free_list: a chain-spanning free list never lists its own chain blocks") {
     const std::string path = free_list_db_path("selfchain");
     remove_file(path);
@@ -566,14 +461,10 @@ TEST_CASE("shadow_free_list: a chain-spanning free list never lists its own chai
     tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
     REQUIRE_FALSE(bm.create_new_database().has_error());
 
-    // Comfortably past one chain block's worth of ids (~32.6k at the default 256 KiB block),
-    // so the chain needs a second and a third -- the ones allocated MID-WRITE.
+    // Comfortably past one chain block's worth of ids (~32.6k at the default 256 KiB block).
     constexpr uint64_t FREE_IDS = 70000;
-    // The pool is built by ALLOCATING the ids and then releasing them -- the only shape
-    // mark_as_free accepts (its guard checks against the FILE's max_block_, so a conjured id
-    // the file never contained is refused and latched, not quarantined). Block 0 stays
-    // allocated so the pool is exactly 1..FREE_IDS. No block is written: this gate is about the
-    // CHAIN's ids, which only ever exist as numbers.
+    // Built by allocating then releasing the ids -- mark_as_free refuses any id the file never
+    // contained. Block 0 stays allocated, so the pool is exactly 1..FREE_IDS.
     for (uint64_t id = 0; id <= FREE_IDS; ++id) {
         const uint64_t allocated = bm.free_block_id();
         if (allocated != id) {
@@ -586,8 +477,7 @@ TEST_CASE("shadow_free_list: a chain-spanning free list never lists its own chai
     }
     REQUIRE_FALSE(bm.degraded());
     {
-        // A durable header is what moves them from pending_free_ into the pool free_block_id
-        // actually draws from; without it the hazard cannot even arise.
+        // Without a durable header the hazard cannot even arise.
         tstorage::database_header_t header;
         header.initialize();
         REQUIRE_FALSE(bm.write_header(header).has_error());
@@ -598,8 +488,6 @@ TEST_CASE("shadow_free_list: a chain-spanning free list never lists its own chai
     REQUIRE_FALSE(free_ptr.has_error());
     REQUIRE(free_ptr.value().is_valid());
 
-    // The blocks the chain physically occupies, and the ids the chain CONTAINS. Both are read
-    // back through the production readers, not recomputed by this test.
     tstorage::metadata_manager_t chain_mgr(bm);
     std::pmr::vector<uint64_t> chain(&env.resource);
     REQUIRE_FALSE(chain_mgr.chain_blocks(free_ptr.value(), chain).has_error());
@@ -625,8 +513,6 @@ TEST_CASE("shadow_free_list: a chain-spanning free list never lists its own chai
     INFO("chain blocks the published list calls free: " << id_set(self_listed));
     CHECK(self_listed.empty());
 
-    // And the restart consequence, through the real deserializer: no chain block may come back
-    // as reusable.
     tstorage::database_header_t header;
     header.initialize();
     header.free_list = free_ptr.value().block_pointer;

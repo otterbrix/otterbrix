@@ -42,10 +42,7 @@ static const collection_name_t collection_name = "testcollection";
 
 constexpr int kDocuments = 100;
 
-// The on-disk index layout is oid-keyed (<disk>/<table_oid>/<indexrelid>/) and carries
-// no index name, so a test binds name -> directory by observing which directory a
-// CREATE INDEX brought into being (see CREATE_INDEX). CHECK_EXISTS_INDEX then asserts
-// on the recorded directory's existence.
+// oid-keyed on disk with no index name, so a test binds name -> directory via CREATE_INDEX.
 static std::map<std::string, std::filesystem::path> g_created_index_dirs;
 
 static std::set<std::filesystem::path> list_index_dirs(const std::filesystem::path& disk_path) {
@@ -57,7 +54,6 @@ static std::set<std::filesystem::path> list_index_dirs(const std::filesystem::pa
         if (!tbl.is_directory()) {
             continue;
         }
-        // user-table dirs are oid-named (>= FIRST_USER_OID)
         const auto fn = tbl.path().filename().string();
         uint64_t table_oid = 0;
         const auto [ptr, ec] = std::from_chars(fn.data(), fn.data() + fn.size(), table_oid);
@@ -117,7 +113,7 @@ static std::set<std::filesystem::path> list_index_dirs(const std::filesystem::pa
         const auto dirs_before = list_index_dirs(config.disk.path);                                                    \
         dispatcher->execute_plan(session,                                                                              \
                                  components::logical_plan::execution_plan_t{dispatcher->resource(), plan, nullptr});   \
-        /* bind name -> the directory this CREATE brought into being (oid-keyed layout carries no name) */             \
+        /* bound at CREATE, see g_created_index_dirs */                                                                \
         for (const auto& d : list_index_dirs(config.disk.path)) {                                                      \
             if (dirs_before.count(d) == 0) {                                                                           \
                 g_created_index_dirs[INDEX_NAME] = d;                                                                  \
@@ -138,10 +134,10 @@ static std::set<std::filesystem::path> list_index_dirs(const std::filesystem::pa
             session,                                                                                                   \
             components::logical_plan::execution_plan_t{dispatcher->resource(), plan, nullptr});                        \
         REQUIRE(res->is_error() == true);                                                                              \
-        /* DML operators self-contain their I/O; the executor wraps any */                                             \
-        /* operator-level set_error into create_physical_plan_error with the */                                        \
-        /* original message. operator_create_index_backfill::set_error("index already exists") */                      \
-        /* surfaces here as that wrapped code. */                                                                      \
+        /* DML operators wrap any operator-level set_error into create_physical_plan_error, so */ \
+        /* "index already exists" can surface either as its own index_create_fail or as that   */ \
+        /* wrapped code, depending on where the caller observes it.                            */ \
+                                                                                                     \
         REQUIRE((res->get_error().type == core::error_code_t::index_create_fail ||                                     \
                  res->get_error().type == core::error_code_t::create_physical_plan_error));                            \
     } while (false)
@@ -149,7 +145,7 @@ static std::set<std::filesystem::path> list_index_dirs(const std::filesystem::pa
 #define DROP_INDEX(INDEX_NAME)                                                                                         \
     do {                                                                                                               \
         auto session = otterbrix::session_id_t();                                                                      \
-        /* DROP INDEX names two pg_class rows: the parent table and the index itself. */                               \
+        /* names two pg_class rows: the parent table and the index itself */                                          \
         auto node = components::logical_plan::make_node_drop(dispatcher->resource(),                                   \
                                                              components::logical_plan::drop_target_kind::index);       \
         node->set_dbname(database_name);                                                                               \
@@ -197,9 +193,6 @@ static std::set<std::filesystem::path> list_index_dirs(const std::filesystem::pa
 
 #define CHECK_FIND_COUNT(COMPARE, SIDE, VALUE, COUNT) CHECK_FIND("count", COMPARE, SIDE, VALUE, COUNT)
 
-// SQL-driven assertion helper: run QUERY in a fresh per-statement session and
-// require it succeeds and returns COUNT rows. Used by the disk-index coherence
-// cases below that need CHECKPOINT / VACUUM statements (SQL-only verbs).
 #define CHECK_FIND_SQL(QUERY, COUNT)                                                                                   \
     do {                                                                                                               \
         auto session = otterbrix::session_id_t();                                                                      \
@@ -208,9 +201,6 @@ static std::set<std::filesystem::path> list_index_dirs(const std::filesystem::pa
         REQUIRE(cur->size() == static_cast<std::size_t>(COUNT));                                                       \
     } while (false)
 
-/* The on-disk index layout is oid-keyed (<disk>/<table_oid>/<indexrelid>/) and carries no
- * name, so this looks up the directory g_created_index_dirs recorded for NAME at CREATE
- * time. A dropped index removes that directory, so "not found" means exactly that. */
 #define CHECK_EXISTS_INDEX(NAME, EXISTS)                                                                               \
     do {                                                                                                               \
         bool found = false;                                                                                            \
@@ -411,7 +401,6 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
 
     INFO("verify initial state via index");
     {
-        // count > 50 should match rows 51..100 → 50 rows
         CHECK_FIND_COUNT(compare_type::gt, side_t::left, logical_value_t(dispatcher->resource(), 50), 50);
     }
 
@@ -448,7 +437,6 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
 
     INFO("verify index after delete");
     {
-        // count > 50 should now match rows 51..90 → 40 rows
         CHECK_FIND_COUNT(compare_type::gt, side_t::left, logical_value_t(dispatcher->resource(), 50), 40);
     }
 
@@ -464,7 +452,6 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
                                                                  compare_type::eq,
                                                                  key{dispatcher->resource(), "count", side_t::left},
                                                                  id_par{1}));
-            // SET count = $2 — the value expression's own key names the target column.
             auto update_expr = components::expressions::make_scalar_expression(
                 dispatcher->resource(),
                 components::expressions::scalar_type::constant,
@@ -494,20 +481,12 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
 
     INFO("verify index after update");
     {
-        // count == 50 should now return 0 rows (was updated to 999)
         CHECK_FIND_COUNT(compare_type::eq, side_t::left, logical_value_t(dispatcher->resource(), 50), 0);
-        // count == 999 should return 1 row
         CHECK_FIND_COUNT(compare_type::eq, side_t::left, logical_value_t(dispatcher->resource(), 999), 1);
     }
 }
 
-// The CHECKPOINT compact path shifts storage_row ids of an indexed disk table
-// within a SINGLE running session (no restart). Without a
-// repopulate-on-compact, the on-disk index still holds the pre-compact ids
-// (btree duplicate-growth / disk_hash wrong-row), so a same-session index
-// lookup after the checkpoint returns stale or wrong rows. The clear-then-
-// repopulate (txn_id=0) handler must rebuild the index against the compacted
-// ids so equality lookups stay exact with no restart in between.
+// Without repopulate-on-compact, a same-session CHECKPOINT leaves the index holding pre-compact ids.
 TEST_CASE("integration::cpp::test_index::checkpoint_then_index_scan_same_session") {
     auto config = test_create_config(integration_fixture_path("test_index/checkpoint_then_index_scan_same_session"));
     test_clear_directory(config);
@@ -531,7 +510,6 @@ TEST_CASE("integration::cpp::test_index::checkpoint_then_index_scan_same_session
         REQUIRE(cur->is_success());
     }
 
-    // INSERT 50 rows, count = 0..49.
     {
         auto session = otterbrix::session_id_t();
         std::stringstream q;
@@ -544,8 +522,6 @@ TEST_CASE("integration::cpp::test_index::checkpoint_then_index_scan_same_session
         REQUIRE(cur->size() == 50);
     }
 
-    // DELETE the lower half (count < 25): 25 rows go, so compact actually has to
-    // shift the surviving ids down (storage_row reuse is what corrupts the index).
     {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE count < 25;");
@@ -553,19 +529,15 @@ TEST_CASE("integration::cpp::test_index::checkpoint_then_index_scan_same_session
         REQUIRE(cur->size() == 25);
     }
 
-    // CHECKPOINT compacts the heap (ids shift) and must repopulate the index.
     {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "CHECKPOINT;");
         REQUIRE(cur->is_success());
     }
 
-    // SAME SESSION-scope (no restart): index-path lookups must be exact.
     CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 25);
-    // A surviving value resolves to exactly its one row (not a wrong/stale row).
     CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 25;", 1);
     CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 49;", 1);
-    // A deleted value must resolve to zero rows (no stale pre-compact id hit).
     CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 0;", 0);
     CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 24;", 0);
 }
@@ -574,9 +546,6 @@ namespace {
 
     constexpr uint64_t kMinBitcaskBytesAfterCheckpoint = 10'000;
 
-    // The on-disk layout is oid-keyed (<disk>/<table_oid>/<indexrelid>/) and carries no
-    // index name, so the single hash index of these tests is found by content: only the
-    // bitcask backend leaves a CURRENT marker in its directory.
     std::filesystem::path find_hash_index_dir(const std::filesystem::path& disk_path) {
         if (!std::filesystem::exists(disk_path)) {
             return {};
@@ -608,11 +577,7 @@ namespace {
 
 } // namespace
 
-// CHECKPOINT repopulate_table clears the bitcask backing and rebuilds the hash
-// index in memory. The handler must also mirror txn_id=0 pending rows back to
-// disk agents; otherwise bitcask.*.data segments stay empty while hash_index.bin
-// only holds bucket pages — index-path lookups work only until the next restart
-// re-attaches the store from disk.
+// repopulate_table must also mirror txn_id=0 pending rows to disk, or bitcask.*.data stays empty.
 TEST_CASE("integration::cpp::test_index::checkpoint_repopulate_persists_bitcask_keylog") {
     constexpr int kRows = 500;
     static const std::string kHashIndexName = "idx_count_hash";
@@ -688,12 +653,7 @@ TEST_CASE("integration::cpp::test_index::checkpoint_repopulate_persists_bitcask_
     }
 }
 
-// VACUUM rebuilds the index. Entries inserted under a real txn id stay
-// PENDING-invisible unless that txn index-commits, and VACUUM never
-// index-commits, so a rebuild under ctx->txn would be invisible to every reader
-// (index-path SELECTs returning 0). VACUUM's rebuild must go through the
-// repopulate path (txn_id=0, committed-for-everyone) so post-VACUUM lookups
-// return the correct surviving rows.
+// A rebuild under ctx->txn stays PENDING-invisible since VACUUM never index-commits.
 TEST_CASE("integration::cpp::test_index::vacuum_rebuild_visible") {
     auto config = test_create_config(integration_fixture_path("test_index/vacuum_rebuild_visible"));
     test_clear_directory(config);
@@ -717,7 +677,6 @@ TEST_CASE("integration::cpp::test_index::vacuum_rebuild_visible") {
         REQUIRE(cur->is_success());
     }
 
-    // INSERT 50 rows, count = 0..49.
     {
         auto session = otterbrix::session_id_t();
         std::stringstream q;
@@ -730,8 +689,6 @@ TEST_CASE("integration::cpp::test_index::vacuum_rebuild_visible") {
         REQUIRE(cur->size() == 50);
     }
 
-    // DELETE > 30% (every count divisible by 3 in 0..49 → 17 rows) so VACUUM has
-    // real dead tuples to compact and the index must be rebuilt.
     {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE count % 3 = 0;");
@@ -745,38 +702,16 @@ TEST_CASE("integration::cpp::test_index::vacuum_rebuild_visible") {
         REQUIRE(cur->is_success());
     }
 
-    // After VACUUM the rebuilt index must be VISIBLE: surviving values return
-    // their rows.
     CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 33);
     CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 1;", 1);
     CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 49;", 1);
     CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count > 40;", 6);
-    // Deleted multiples of 3 stay gone via the rebuilt index.
     CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 0;", 0);
     CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 48;", 0);
 }
 
-// VACUUM must not resurrect committed deletes, and the seq-scan path and the index path must
-// not disagree about which rows exist.
-//
-// The version-info GC (row_version_manager_t::cleanup_append -> chunk_info::cleanup) only
-// ever looks at a FULL vector (vcount == DEFAULT_VECTOR_CAPACITY, which is also the default
-// row_group_size), so only full row groups reach it. vacuum_rebuild_visible above runs on 50
-// rows and never gets there; this case fills a whole row group so it does.
-//
-// Plain SQL, no crash and no restart: insert 1024 rows, commit a DELETE of the first 500,
-// then VACUUM with no other transaction active. Both the unqualified scan and the indexed
-// predicates must still report the 524 survivors. Two VACUUMs, since the two legs of the
-// defect ripen at different depths: a partially deleted vector loses its stamps on the first
-// pass, a fully deleted one only after the second.
-//
-// Measured, about the index leg specifically: the two paths did not disagree while the GC was
-// dropping the stamps -- they lied together, since operator_vacuum_t runs vacuum_all (the
-// heap-side GC) BEFORE it rebuilds each table's index through manager_index_t::repopulate_table,
-// and that rebuild feeds off a fresh scan of the already-vacuumed heap.
-// manager_index_t::cleanup_all_versions is a documented no-op (no in-memory index left to
-// clean). The index predicates stay anyway, pinning the agreement so a future change that
-// reclaims index entries without the heap agreeing shows up here.
+// chunk_info::cleanup only processes FULL vectors, so this fills a whole row group; two VACUUMs
+// because a partially deleted vector loses its stamps a pass later than a fully deleted one.
 TEST_CASE("integration::cpp::test_index::vacuum_keeps_committed_deletes_full_row_group") {
     constexpr int kRows = 1024;  // exactly one full row group / one full vector
     constexpr int kDeleted = 500;
@@ -802,7 +737,6 @@ TEST_CASE("integration::cpp::test_index::vacuum_keeps_committed_deletes_full_row
         REQUIRE(cur->is_success());
     }
 
-    // count = 0..1023, loaded in batches so each INSERT stays within one data_chunk.
     {
         constexpr int kBatch = 512;
         static_assert(kBatch <= kRows);
@@ -831,8 +765,6 @@ TEST_CASE("integration::cpp::test_index::vacuum_keeps_committed_deletes_full_row
     }
     CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", kRows - kDeleted);
 
-    // Both paths must agree, before and after every VACUUM: the seq scan on the left,
-    // the index predicates on the right.
     auto check_both_paths = [&] {
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", kRows - kDeleted);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count < 500;", 0);
@@ -860,11 +792,7 @@ TEST_CASE("integration::cpp::test_index::vacuum_keeps_committed_deletes_full_row
     check_both_paths();
 }
 
-// CREATE INDEX backfill scans the table via the streaming fetch-next leg, which emits
-// chunks of at most DEFAULT_VECTOR_CAPACITY (1024) rows. A regression that
-// overwrites the scan buffer on each chunk leaves only the last chunk indexed
-// in the index, so equality lookups in the first (rows - 1024) keys
-// return 0 rows even though the heap row exists.
+// A regression overwriting the scan buffer on each chunk left only the last chunk indexed.
 TEST_CASE("integration::cpp::test_index::create_index_backfill_over_vector_capacity") {
     constexpr int kRows = 2000;
     constexpr int kVectorCapacity = 1024;
@@ -888,9 +816,6 @@ TEST_CASE("integration::cpp::test_index::create_index_backfill_over_vector_capac
         REQUIRE(cur->is_success());
     }
 
-    // Load more rows than a single scan chunk so backfill must stitch batches.
-    // Each INSERT ... VALUES list materializes one data_chunk, which must stay within
-    // the ≤DEFAULT_VECTOR_CAPACITY bound, so the rows are loaded in capped batches.
     {
         constexpr int kBatch = 500;
         static_assert(kBatch <= kVectorCapacity);
@@ -916,7 +841,6 @@ TEST_CASE("integration::cpp::test_index::create_index_backfill_over_vector_capac
         REQUIRE(cur->is_success());
     }
 
-    // The index backfill must cover all chunks, not only the trailing one.
     CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", kRows);
     CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 504;", 1);
     CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 976;", 1);
@@ -931,35 +855,14 @@ TEST_CASE("integration::cpp::test_index::create_index_backfill_over_vector_capac
         REQUIRE(cur->is_success());
     }
 
-    // hash index gets the same backfill scan; spot-check after both indexes exist.
     CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 504;", 1);
     CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 2000;", 1);
 }
 
-// ----------------------------------------------------------------------------
-// DROP INDEX catalog-delete folding (physical-plan-generator unit test).
-//
-// rewrite_drop_index emits sequence_t(catalog-delete node_delete_t × N, drop_index_t)
-// — N=4: pg_index ×1, pg_depend ×2, pg_class ×1. create_plan_sequence's
-// drop_index_t branch must FOLD all N catalog-delete leaves into the single
-// operator_drop_index_t's catalog_deletes_ vector, so the operator can issue ONE
-// batched delete_pg_catalog_rows_many at runtime instead of N singular
-// delete_pg_catalog_rows sends.
-//
-// Observable invariant of a correct fold (no production accessor needed):
-//   - the lowered plan is a SINGLE leaf operator (no children) tagged
-//     operator_type::create_collection — the tag operator_drop_index_t reuses;
-//   - NO operator_type::remove operator survives anywhere in the tree.
-// A regression that drops the fold makes the N leaves fall through to the generic
-// left-child chain, where each catalog-delete node_delete_t lowers to a standalone
-// operator_delete (type remove) in its catalog branch. The control sub-case below
-// builds the SAME leaves WITHOUT the trailing drop_index_t and asserts they DO
-// produce N standalone operator_delete operators, so the fold is exactly what
-// collapses them.
-// ----------------------------------------------------------------------------
+// The drop_index_t branch must fold all N catalog-delete leaves into one batched send, leaving no
+// operator_type::remove; the control sub-case omits the marker and expects them to stay standalone.
 namespace {
 
-    // Counts operators of a given type across the whole left_/right_ tree.
     std::size_t count_ops_of_type(const components::operators::operator_ptr& op,
                                   components::operators::operator_type type) {
         if (!op) {
@@ -983,15 +886,13 @@ TEST_CASE("integration::cpp::test_index::drop_index_folds_catalog_deletes") {
     namespace lp = components::logical_plan;
     namespace ops = components::operators;
     using components::catalog::oid_t;
-    constexpr oid_t index_oid = 9001; // any non-INVALID oid
+    constexpr oid_t index_oid = 9001;
 
     constexpr oid_t pg_index = components::catalog::well_known_oid::pg_index_table;
     constexpr oid_t pg_depend = components::catalog::well_known_oid::pg_depend_table;
     constexpr oid_t pg_class = components::catalog::well_known_oid::pg_class_table;
 
-    // The exact N=4 primitive_delete spec set rewrite_drop_index emits:
-    // pg_index(objid col 0), pg_depend(objid col 1), pg_depend(refobjid col 3),
-    // pg_class(oid col 0). Same order so the test fails loudly if that contract drifts.
+    // Same order rewrite_drop_index emits, so the test fails loudly if that contract drifts.
     const std::array<std::pair<oid_t, std::int64_t>, 4> delete_specs = {{
         {pg_index, std::int64_t{0}},
         {pg_depend, std::int64_t{1}},
@@ -1011,29 +912,20 @@ TEST_CASE("integration::cpp::test_index::drop_index_folds_catalog_deletes") {
         append_delete_leaves(seq);
         auto di = lp::make_node_drop(res, lp::drop_target_kind::index);
         di->set_index_oid(index_oid);
-        seq->append_child(di); // trailing drop_index_t marker
+        seq->append_child(di);
 
         auto plan = services::planner::create_plan(context, registry, seq, lp::limit_t::unlimit(), nullptr);
         REQUIRE(plan);
 
-        // Folded → a single leaf operator, NOT a chain. operator_drop_index_t
-        // reuses operator_type::create_collection as its tag and absorbs the
-        // delete leaves into catalog_deletes_ (one batched send at runtime).
         CHECK(plan->type() == ops::operator_type::create_collection);
         CHECK(plan->left() == nullptr);
         CHECK(plan->right() == nullptr);
 
-        // None of the N delete leaves leaked out as a standalone operator —
-        // they were folded into the single drop_index operator's vector.
         CHECK(count_ops_of_type(plan, ops::operator_type::remove) == 0u);
     }
 
     INFO("control: same delete leaves with NO trailing drop_index_t stay N standalone operators");
     {
-        // Without the drop_index_t marker the leaves fall through to the generic
-        // left-child chain and each catalog-delete node_delete_t lowers to its own
-        // operator_delete (catalog branch). This is the un-folded baseline the
-        // drop_index branch collapses.
         auto seq = boost::intrusive_ptr(new lp::node_sequence_t(res));
         append_delete_leaves(seq);
 
@@ -1043,10 +935,7 @@ TEST_CASE("integration::cpp::test_index::drop_index_folds_catalog_deletes") {
     }
 }
 
-// Expression index elements — CREATE INDEX ... ((expr)) — parse with a null
-// IndexElem.name; the transformer read it unconditionally and threw an
-// uncaught std::logic_error out of execute_sql. They must be rejected with a
-// proper error cursor; plain column indexes keep working.
+// CREATE INDEX ((expr)) parses with a null IndexElem.name; the transformer used to throw uncaught.
 TEST_CASE("integration::cpp::test_index::expression_elements_rejected") {
     auto config = test_create_config(integration_fixture_path("test_index/expression_elements_rejected"));
     test_clear_directory(config);

@@ -40,13 +40,8 @@ namespace services::disk {
 
 namespace services::dispatcher {
 
-    // While work is in flight a future completed on another thread notifies nobody, so readiness is
-    // discovered by the wait TIMING OUT: that timeout is the per-hop latency, and a statement crosses
-    // ~20 hops. The floor is therefore hops * in_flight_wait. The two waits are only correct
-    // together — a shorter tick alone does not revive an executor parked busy && ready.
+    // A future completed on another thread notifies nobody, so readiness is found only by polling.
 #ifdef DEV_MODE
-    // Hops a statement makes: one timed-out in-flight wait per hop. Machine-independent, unlike the
-    // latency it multiplies out to.
     uint64_t pump_hops() noexcept;
     void reset_pump_hops() noexcept;
     void note_pump_hop() noexcept;
@@ -64,44 +59,23 @@ namespace services::dispatcher {
     static_assert(pump_tuning_t::in_flight_wait < pump_tuning_t::idle_wait,
                   "the in-flight tick is the per-hop latency and must be shorter than the idle tick");
 
-    // Thin router + txn-state mailbox service + executor-pool admin.
-    //
-    // Per-query work (optimize, resolve, validate, enrich, planner rewrites,
-    // the operator pipeline, and the DML/DDL commit tails) lives ENTIRELY in
-    // executor_t. The dispatcher owns exactly the state that must stay global:
-    //   - txn_manager_   (sole owner; commit_id allocation, the ProcArray
-    //                     publish horizon, and every transaction_t body) —
-    //                     reachable ONLY through the txn_*_msg handlers below;
-    //   - default_tz_cat_ (session timezone catalog);
-    //   - the executor pool and the DROP-GC subscriber flags.
+    // Thin router + txn-state mailbox service + executor-pool admin: per-query work lives entirely
+    // in executor_t; the dispatcher owns only state that must stay global — txn_manager_ (reachable
+    // solely through the txn_*_msg handlers below), default_tz_cat_, the executor pool, DROP-GC flags.
     class manager_dispatcher_t final : public actor_zeta::actor::actor_mixin<manager_dispatcher_t> {
     public:
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;
 
-        // One in-flight message in the event loop. behavior is created lazily;
-        // pending_msg holds the message until the loop calls behavior(msg.get()).
-        // stale_ticks counts consecutive passes the slot stayed busy-but-not-
-        // ready (watchdog input).
         struct in_flight_entry_t {
             actor_zeta::mailbox::message_ptr pending_msg{};
             actor_zeta::behavior_t behavior{};
             uint32_t stale_ticks{0};
-            // Consecutive watchdog poke rounds this slot stayed stale (reset when
-            // its await completes). Routine staleness is normal for any executor
-            // operation past ~2ms; a slot surviving hundreds of poke rounds is a
-            // genuine stall and escalates the (otherwise trace-level) watchdog
-            // log to a warning.
+            // Crossing the threshold escalates the routine watchdog trace to a warning.
             uint32_t poke_rounds{0};
         };
 
-        // Fully wired at birth — there is no later sync step to forget. The three mailboxes are
-        // required arguments (address_t is not default-constructible, so an unnamed one does not
-        // compile); wal is components::pipeline::no_mailbox() exactly when the WAL is off.
-        // dml_flush_row_threshold is the config-gated DML flush bound (0 = disabled). The two
-        // host-customization hooks are plain fn-ptrs defaulting to their Null Objects, never
-        // null. The executor pool is spawned in the constructor body, before the event loop
-        // starts, with all of the above forwarded to each executor.
+        // The two host-customization hooks default to Null Objects, never null.
         manager_dispatcher_t(std::pmr::memory_resource*,
                              actor_zeta::scheduler_raw,
                              log_t& log,
@@ -120,39 +94,22 @@ namespace services::dispatcher {
         [[nodiscard]] std::pair<bool, actor_zeta::detail::enqueue_result>
         enqueue_impl(actor_zeta::mailbox::message_ptr msg);
 
-        // Bootstrap hook: restore the MVCC commit clock from the combined durable
-        // frontier (max of the persisted pg_attribute commit-ids and the max WAL
-        // COMMIT-marker commit_id). Raises BOTH halves together via
-        // transaction_manager_t::restore_commit_clock: current_timestamp_ to
-        // frontier+1 (so a reopened instance issues start_times/commit-ids strictly
-        // above every persisted id — no reuse of the already-published band) AND
-        // published_horizon_ to frontier (so post-recovery snapshots see persisted
-        // commits as published). Direct sync call — safe only because the scheduler
-        // is not started yet. Idempotent (never lowers either half).
+        // Direct sync call, safe only because the scheduler has not started yet; idempotent.
         void seed_commit_clock_sync(uint64_t high_water);
 
-        // Like the on_drop_resource_marked() mailbox handler but usable before
-        // scheduler.start: base_spaces calls these after rebuilding the dropped-
-        // resource queues so the first post-start horizon advance broadcasts
-        // on_horizon_advanced and finishes the GC the pre-crash DROP missed.
-        // Idempotent.
+        // Sync twin of on_drop_resource_marked(), for use before scheduler.start. Idempotent.
         void set_disk_has_dropped_sync(bool value) noexcept { disk_has_dropped_ = value; }
         void set_index_has_dropped_sync(bool value) noexcept { index_has_dropped_ = value; }
 
         unique_future<components::cursor::cursor_t_ptr> execute_plan(components::session::session_id_t session,
                                                                      components::logical_plan::execution_plan_t plan);
 
-        // ===== pool-admin API =====
-        // Every entry point answers core::error_t, never a bare bool: the refusal reasons
-        // (existing name, unheld overload, unknown cast type, ...) are not interchangeable,
-        // and `false` would erase them all.
         unique_future<core::error_t> register_udf(components::session::session_id_t session,
                                                   components::compute::function_ptr function);
         unique_future<core::error_t> unregister_udf(components::session::session_id_t session,
                                                     std::string function_name,
                                                     std::pmr::vector<components::types::complex_logical_type> inputs);
-        // The pg_cast row is written/deleted only after every executor confirmed the
-        // registry change — otherwise an executor could keep applying a cast pg_cast says is gone.
+        // pg_cast is written/deleted only after every executor confirms, so none applies a stale cast.
         unique_future<core::error_t> register_cast(components::session::session_id_t session,
                                                    components::types::complex_logical_type source,
                                                    components::types::complex_logical_type target,
@@ -160,74 +117,32 @@ namespace services::dispatcher {
         unique_future<core::error_t> unregister_cast(components::session::session_id_t session,
                                                      components::types::complex_logical_type source,
                                                      components::types::complex_logical_type target);
-        // Fan a host-supplied EXPLAIN renderer out to every executor, registering it at registry
-        // slot `id` (each keeps its own POD fn-pointer copy — no shared state). Pool-admin
-        // op, like register_udf. Per-query selection then rides execution_plan_t::explain_render_id.
+        // Fans a renderer to every executor at slot `id`; selection rides
+        // execution_plan_t::explain_render_id.
         unique_future<core::error_t> set_explain_renderer(uint32_t id, services::collection::explain_render_fn fn);
 
-        // ===== txn-state mailbox service =====
-        // The ONLY way any other actor (executors, the txn operators running
-        // inside them) reads or mutates transaction state. Every handler body
-        // is a pure co_return over intra-actor txn_manager_ calls — none of
-        // them awaits an executor (anti-deadlock invariant).
+        // txn-state mailbox service: the only way any other actor reads or mutates transaction state.
 
-        // Session-context bundle fetched by the executor at plan start.
-        // Unconditionally (and idempotently) begins the session's txn, so an
-        // active txn exists before any operator runs — including the BEGIN
-        // statement's own plan.
+        // Idempotently begins the session's txn, so one exists before any operator runs, BEGIN's
+        // own plan included.
         unique_future<txn_session_context_t> txn_begin_session_msg(components::session::session_id_t session);
-        // begin (idempotent) THEN mark_explicit — never a no-op on a missing
-        // txn. Sent by operator_begin_transaction_t.
+        // begin (idempotent) then mark_explicit — never a no-op on a missing txn.
         unique_future<void> txn_mark_explicit_msg(components::session::session_id_t session);
-        // Snapshot + drain every range parked on transaction_t + commit()
-        // (allocates the commit_id, leaving it in in_flight_commits_).
-        // INVARIANT: NO publish() here — the ProcArray barrier runs ONLY via
-        // txn_publish_msg, sent by the caller AFTER storage_publish_* / WAL.
+        // Drains every parked range, then commit() allocates the commit_id into in_flight_commits_.
         unique_future<txn_commit_drain_t> txn_commit_drain_msg(components::session::session_id_t session);
-        // Drain the pg_catalog appends needing revert + abort().
         unique_future<txn_abort_drain_t> txn_abort_drain_msg(components::session::session_id_t session);
-        // Park executor-produced ranges on the session's transaction_t
-        // (explicit-DML statements and the DDL swap-info merge — one message
-        // for both; implicit DML never sends it).
-        //
-        // Answers core::error_t: behind a `void` the no-active-transaction refusal would go unsaid.
+        // Answers core::error_t, not void, so a no-active-transaction refusal isn't silently dropped.
         unique_future<core::error_t> txn_accumulate_msg(components::session::session_id_t session,
                                                         txn_accumulate_payload_t payload);
-        // Abort: executor error-path (after its local revert cascade) and the
-        // read-only release tail.
         unique_future<void> txn_abort_msg(components::session::session_id_t session);
-        // ProcArray publish barrier — sent by operator_commit_transaction_t
-        // AFTER storage_publish_* / index commits / WAL. Returns the
-        // COMPACT-WATERMARK (txn_manager_.compact_watermark(), commit-id value
-        // space): the visible-to-all horizon the maybe_cleanup fan-out hands to
-        // data_table_t::compact(). Any version stamp above it (another txn's
-        // snapshot, an in-flight commit) makes the compact a no-op.
+        // Returns the compact watermark data_table_t::compact() treats as its visible-to-all horizon.
         unique_future<uint64_t> txn_publish_msg(uint64_t commit_id);
-        // THE OTHER END OF txn_publish_msg, for commits that never reach it: sent by
-        // operator_commit_transaction_t from an early exit that already holds an allocated
-        // commit_id. discard() removes the id from in_flight_commits_ WITHOUT advancing
-        // published_horizon_, or the horizon stays floored below it forever. The trailing
-        // cleanup-check is not optional either — the DROP-GC broadcast only fires on
-        // `new_lowest > last_broadcast_horizon_`, so skipping it here would leave the horizon
-        // advanced with nobody told.
-        //
-        // The operator must be the sender: executor.cpp only lifts committed_id into the result
-        // after both of its error breaks, so a failed commit reaches the dispatcher with
-        // commit_id 0 and no other path can see the real id.
+        // The other end of txn_publish_msg, for commits that never reach it. The operator must be
+        // the sender — a failed commit reaches the dispatcher with commit_id 0, unrecoverable elsewhere.
         unique_future<void> txn_discard_msg(uint64_t commit_id);
-        // Read-only fetch of txn_manager_.compact_watermark() for the
-        // checkpoint/vacuum paths (operator_checkpoint, operator_vacuum and the
-        // WAL auto-checkpoint), whose compact runs outside the commit pipeline.
-        // Stale-safe: the watermark is monotone, an earlier value never
-        // green-lights a compact a later value would refuse.
         unique_future<uint64_t> txn_compact_watermark_msg();
 
-        // Selective broadcast: DROP TABLE / DROP INDEX marks the owning
-        // subscriber as having dropped resources pending GC; on_subscriber_empty
-        // clears the flag once that subscriber's dropped_storages_ queue drains,
-        // stopping further on_horizon_advanced broadcasts to it. Return
-        // unique_future<void> (not void) because actor_zeta::dispatch requires
-        // every actor method to return unique_future<T> or generator<T>.
+        // DROP TABLE/INDEX marks the subscriber pending GC; on_subscriber_empty clears it when drained.
         unique_future<void> on_drop_resource_marked(uint8_t subscriber_kind);
         unique_future<void> on_subscriber_empty(uint8_t subscriber_kind);
 
@@ -250,29 +165,17 @@ namespace services::dispatcher {
                                                             &manager_dispatcher_t::on_subscriber_empty>;
 
     private:
-        // register_udf failure unwind: drop the just-registered overload from every executor
-        // that ACKed the fan-out (by the exact uid each answered), so a CREATE FUNCTION refused
-        // after the fan-out leaves no per-executor residue. A MEMBER coroutine (not a lambda) so
-        // `this` supplies the frame memory_resource. Two-phase: send-all, then drain-all. Direct
-        // co_await from register_udf only — not a mailbox handler, not in dispatch_traits.
+        // Member coroutine, not a lambda, so `this` supplies the frame memory_resource.
         unique_future<void> unwind_udf_fanout_(
             components::session::session_id_t session,
             std::pmr::vector<std::pair<std::size_t, components::compute::function_uid>> registered);
 
-        // Reads txn_manager_.lowest_active_snapshot_horizon() (commit-id value
-        // space — matches the subscribers' dropped_at_commit_id sweep after
-        // the dropped-committed remap); if it advanced past
-        // last_broadcast_horizon_, sends on_horizon_advanced(new) to each
-        // subscriber whose drop-resource flag is set. Skips the send in the
-        // common case (no drops outstanding), avoiding a message burst per commit.
-        // Called from every txn-completing handler (publish/abort).
         void try_trigger_cleanup_if_horizon_advanced() noexcept;
 
         std::pmr::memory_resource* resource_;
         actor_zeta::scheduler_raw scheduler_;
         log_t log_;
 
-        // Host-injected customization, ctor-provided, forwarded to each executor.
         planner::create_plan_rule_t create_plan_rule_{&planner::no_custom_lowering};
         components::planner::optimizer_pass_t optimizer_pass_{&components::planner::no_op_pass};
 
@@ -286,28 +189,15 @@ namespace services::dispatcher {
         actor_zeta::address_t disk_address_;
         actor_zeta::address_t index_address_;
 
-        // Selective broadcast flags. Set when DROP TABLE / DROP INDEX marks
-        // a resource dropped (via on_drop_resource_marked); cleared by the
-        // subscriber's on_subscriber_empty ack. Single-actor private state —
-        // no atomic / no shared.
         bool disk_has_dropped_{false};
         bool index_has_dropped_{false};
-        // Cached last-broadcast horizon to skip redundant on_horizon_advanced
-        // sends — every commit advances lowest_active by at most one txn, but
-        // many commits do not advance it at all (long-running concurrent txn
-        // pins it). Only re-broadcast when the value actually moves forward.
+        // A long-running concurrent txn can pin lowest_active, so this skips redundant re-broadcasts.
         uint64_t last_broadcast_horizon_{0};
 
-        // Event-loop model: enqueue_impl (any sender thread) only delivers into
-        // inbox_ and notifies pump_cv_; ALL message processing — behavior
-        // creation, continuation resume, cleanup — happens on loop_thread_.
-        // mutex_/pump_cv_ guard only the loop's idle sleep at the end of each
-        // pass (woken early by enqueue).
+        // mutex_/pump_cv_ guard only the loop's idle sleep, woken early by enqueue.
         std::thread loop_thread_;
         std::atomic<bool> loop_running_{true};
-        // Stores raw message* (boost::lockfree requires trivially-copyable):
-        // release() on push, re-wrapped into message_ptr by the loop. Node
-        // allocations are non-PMR (infra queue).
+        // Raw message* since boost::lockfree requires trivially-copyable; re-wrapped by the loop.
         boost::lockfree::queue<actor_zeta::mailbox::message*> inbox_{128};
         std::mutex mutex_;
         std::condition_variable pump_cv_;
@@ -320,9 +210,7 @@ namespace services::dispatcher {
             return default_tz_cat_.timezone_offset;
         }
 
-        // Fire-and-forget unique_future<void> GC list. Loop-thread-private —
-        // only the event loop appends (broadcast/register sends) and drains it
-        // via poll_pending().
+        // Fire-and-forget GC list for broadcast/register sends, drained via poll_pending().
         std::pmr::vector<actor_zeta::unique_future<void>> pending_void_;
 
         void poll_pending();

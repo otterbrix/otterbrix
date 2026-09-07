@@ -24,16 +24,15 @@ namespace components::operators {
     namespace catalog = components::catalog;
 
     namespace {
-        // The projection for the FK pg_attribute reads below. Each entry says why it is needed: a
-        // column left out comes back as an ordinal-stable placeholder and reads as empty, with no
-        // error anywhere.
+        // A column left out of this projection comes back as an ordinal-stable placeholder that reads as
+        // empty, not an error.
         std::pmr::vector<std::uint64_t> pg_attribute_fk_child_cols(std::pmr::memory_resource* resource) {
             std::pmr::vector<std::uint64_t> cols(resource);
             cols.emplace_back(catalog::pg_attribute_col::attoid);       // matched against the FK attoid list
             cols.emplace_back(catalog::pg_attribute_col::attname);      // the name carried into fk_info
             cols.emplace_back(catalog::pg_attribute_col::attnum);       // referencing direction only
-            cols.emplace_back(catalog::pg_attribute_col::attisdropped); // referencing direction only
-            cols.emplace_back(catalog::pg_attribute_col::attdefspec);   // referencing direction only
+            cols.emplace_back(catalog::pg_attribute_col::attisdropped);
+            cols.emplace_back(catalog::pg_attribute_col::attdefspec);
             return cols;
         }
 
@@ -81,9 +80,7 @@ namespace components::operators {
             if (ctx->disk_address == actor_zeta::address_t::empty_address() || tables_node_ == nullptr) {
                 continue;
             }
-            // entry.target out of range is a corrupt plan, not topology: every entry is minted with a valid
-            // target in register_catalog_resolve_table (components/sql/transformer/utils.cpp). Refuse rather than
-            // silently drop every constraint on the table.
+            // Refuse rather than silently drop constraints: every entry is minted with a valid target.
             if (entry.target >= tables_node_->entries().size()) {
                 std::string msg = "constraint resolution: entry names table #";
                 msg += entry.target == components::logical_plan::resolve_entry_t::no_target
@@ -96,15 +93,10 @@ namespace components::operators {
                                         std::pmr::string{std::move(msg), resource_}});
                 co_return;
             }
-            // The entry's table comes from the tables node; the fixed resolve order
-            // (tables before constraints) guarantees its table_md is stamped.
             const auto& target_md = tables_node_->entries()[entry.target].table_md;
-            // No table_md means operator_resolve_table_t found no such table — already reported there.
             if (!target_md.has_value()) {
                 continue;
             }
-            // A resolved name with INVALID_OID is catalog corruption, not "no table" — refuse instead of
-            // silently dropping every constraint (same predicate operator_unique_constraint refuses on).
             if (target_md->table_oid == catalog::INVALID_OID) {
                 std::string msg = "constraint resolution: table \"";
                 msg += target_md->name;
@@ -116,17 +108,13 @@ namespace components::operators {
             const catalog::oid_t table_oid = target_md->table_oid;
             const auto direction = entry.direction;
 
-            // Which side of pg_constraint this resolve keys on, as a storage ordinal: outgoing
-            // constraints are keyed by the child (conrelid), incoming ones by the parent (confrelid).
             const std::uint64_t key_col = (direction == direction_t::outgoing) ? catalog::pg_constraint_col::conrelid
                                                                                : catalog::pg_constraint_col::confrelid;
 
             std::vector<catalog::fk_info_t> fks;
             std::vector<std::pair<std::string, std::string>> check_exprs;
-            // (conname, oid) of every outgoing row; DROP CONSTRAINT resolves names through this.
             std::vector<std::pair<std::string, catalog::oid_t>> constraint_oids;
 
-            // scan pg_constraint by (conrelid|confrelid).
             std::pmr::vector<std::uint64_t> con_keys(resource_);
             con_keys.emplace_back(key_col);
             auto [_c, fut_con] =
@@ -139,37 +127,26 @@ namespace components::operators {
                                             std::pmr::vector<std::uint64_t>{resource_});
             auto con_batches_r = co_await std::move(fut_con);
             if (con_batches_r.has_error()) {
-                // A failed pg_constraint read is not a miss; reporting it as one is how an
-                // unreadable catalog became a wrong answer instead of an error.
                 set_error(con_batches_r.error());
                 co_return;
             }
             auto& con_batches = con_batches_r.value();
 
-            // PASS 1: decode every pg_constraint row. FK rows build a partial fk_info_t + child/parent attoid
-            // CSVs; CHECK rows emit check_exprs directly. Per-FK pg_attribute name resolution is deferred to
-            // PASS 2, batched into two read_chunks_by_keys calls instead of one per FK.
+            // PASS 1: decode every row; per-FK pg_attribute name resolution is deferred to PASS 2's batched reads.
             struct pending_fk_t {
                 catalog::fk_info_t fk;
-                // parse_oid_csv returns std::vector (not pmr), so these mirror that type.
                 std::vector<catalog::oid_t> child_attoids;
                 std::vector<catalog::oid_t> parent_attoids;
-                // False when conkey/confkey wasn't a well-formed OID CSV. A dropped token shortens the list
-                // silently — the length guards below compare against that same shortened list and pass — so
-                // this flag is the only record of the loss.
+                // A dropped CSV token silently shortens the list; keys_readable is the only record that it happened.
                 bool keys_readable{true};
-                // Only used for the error message below; fk_info_t doesn't keep it.
                 std::string constraint_name;
             };
             std::pmr::vector<pending_fk_t> pending_fks(resource_);
             std::pmr::vector<catalog::oid_t> child_oids(resource_);
             std::pmr::vector<catalog::oid_t> parent_oids(resource_);
 
-            // UNIQUE ('u') / PRIMARY KEY ('p') constraints, outgoing only. is_pk (contype 'p') also stamps
-            // pk_columns flat, for enrich to merge NOT NULL from.
             struct pending_unique_t {
                 std::vector<catalog::oid_t> attoids;
-                // Same rationale as pending_fk_t::keys_readable above.
                 bool conkey_readable{true};
                 bool is_pk{false};
                 std::string constraint_name;
@@ -177,19 +154,14 @@ namespace components::operators {
             };
             std::pmr::vector<pending_unique_t> pending_uniques(resource_);
 
-            // PG disallows a second PRIMARY KEY; this engine's declaration paths (enrich's inline form, ALTER's
-            // ADD CONSTRAINT rewrite) don't enforce that, so pg_constraint can hold two 'p' rows — refuse rather
-            // than silently flatten both into one bogus multi-column key. DROP CONSTRAINT (names_only) and
-            // DROP COLUMN/DROP TABLE still pass through undoubled, so the state is repairable.
-            // Gate: integration/cpp/test/test_multiple_primary_keys.cpp.
+            // pg_constraint can hold two 'p' rows (declaration paths here don't block it) — refuse rather than
+            // silently flatten both into one key. Gate: integration/cpp/test/test_multiple_primary_keys.cpp.
             bool pk_seen = false;
             std::string first_pk_label;
 
             for (auto& con_chunk : con_batches) {
-                // A chunk narrower than pg_constraint's schema means a stale/misrouted catalog, not "no
-                // constraints" — refuse instead of silently reading it as empty. Threshold is conexpr (10), the
-                // widest ordinal read below: is_null/get_value don't bounds-check, so anything narrower would
-                // read past the column array's end instead of failing here.
+                // A chunk narrower than pg_constraint's schema means a stale/misrouted catalog — refuse rather than
+                // read it as empty; is_null/get_value don't bounds-check, so a narrower chunk reads past the end.
                 if (con_chunk.column_count() <= catalog::pg_constraint_col::conexpr) {
                     std::string msg = "constraint resolution: pg_constraint answered with ";
                     msg += std::to_string(con_chunk.column_count());
@@ -203,8 +175,6 @@ namespace components::operators {
                     co_return;
                 }
                 for (uint64_t ci = 0; ci < con_chunk.size(); ++ci) {
-                    // contype is NOT NULL and always written by build_create_constraint_writes; an unreadable
-                    // one is impossible from this engine, so refuse rather than silently drop the row.
                     const std::string_view contype_cell =
                         con_chunk.is_null(catalog::pg_constraint_col::contype, ci)
                             ? std::string_view{}
@@ -234,17 +204,12 @@ namespace components::operators {
                         }
                     }
                     if (entry.names_only) {
-                        // Names-only gather: skip the enforcement decode (and its refusals) entirely, so a
-                        // doubled PRIMARY KEY doesn't block the DROP CONSTRAINT that would fix it.
                         continue;
                     }
 
                     if (contype == 'f') {
                         pending_fk_t pending;
                         catalog::fk_info_t& fk = pending.fk;
-                        // get_value on a NULL cell returns buffer garbage (often 0), which would mint an FK with
-                        // an unusable constraint_oid or a dangling far-table oid. Both are NOT NULL and always
-                        // written, so unreadable here is impossible — same refusal as contype above.
                         if (con_chunk.is_null(catalog::pg_constraint_col::oid, ci)) {
                             std::string msg = "foreign key constraint row in pg_constraint on table \"";
                             msg += target_md->name;
@@ -285,9 +250,6 @@ namespace components::operators {
                                 static_cast<catalog::oid_t>(con_chunk.get_value<std::uint32_t>(far_col, ci));
                             fk.parent_table_oid = table_oid;
                         }
-                        // cell[0] on a non-null EMPTY cell reads past the string_view's end. Unlike contype,
-                        // these three have documented defaults ('s'/'a', system_table_schemas.cpp) for absent
-                        // values, so fall back instead of refusing.
                         auto code_or = [&](std::uint64_t col, char fallback) {
                             if (con_chunk.is_null(col, ci)) {
                                 return fallback;
@@ -315,9 +277,7 @@ namespace components::operators {
                             confkey_ok);
                         pending.keys_readable = conkey_ok && confkey_ok;
 
-                        // One key row per FK, positionally aligned to pending_fks —
-                        // child by child_table_oid, parent by parent_table_oid (both
-                        // keyed "attrelid").
+                        // One key row per FK, positionally aligned to pending_fks by slot index.
                         child_oids.push_back(fk.child_table_oid);
                         parent_oids.push_back(fk.parent_table_oid);
 
@@ -332,10 +292,6 @@ namespace components::operators {
                             name = std::string(
                                 con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::conname, ci));
                         }
-                        // conexpr NULL or empty is refused, not skipped — skipping would silently drop the
-                        // CHECK while the statement reports success. Both SQL routes (transform_table, ALTER's
-                        // executor_t) already refuse an expressionless CHECK at declaration, so reaching here
-                        // means a catalog written before those gates existed.
                         if (conexpr_sv.empty()) {
                             std::string msg = "CHECK constraint \"";
                             if (!name.empty()) {
@@ -357,9 +313,6 @@ namespace components::operators {
                         }
                         check_exprs.emplace_back(std::move(name), std::string(conexpr_sv));
                     } else if ((contype == 'u' || contype == 'p') && direction == direction_t::outgoing) {
-                        // UNIQUE / PRIMARY KEY: conkey encodes columns same as an FK's. Every row becomes a
-                        // pending group unconditionally — an empty/unreadable conkey is refused in the
-                        // pending_uniques loop below, where it can be named; dropping it here would be silent.
                         bool conkey_ok = true;
                         auto attoids = catalog::parse_oid_csv(
                             std::string(
@@ -371,7 +324,6 @@ namespace components::operators {
                         pending.attoids = std::move(attoids);
                         pending.conkey_readable = conkey_ok;
                         pending.is_pk = (contype == 'p');
-                        // NULL oid stays INVALID_OID rather than being read as buffer garbage.
                         pending.constraint_oid =
                             con_chunk.is_null(catalog::pg_constraint_col::oid, ci)
                                 ? catalog::INVALID_OID
@@ -386,7 +338,6 @@ namespace components::operators {
                                                     ? "oid " + std::to_string(pending.constraint_oid)
                                                     : pending.constraint_name;
                             if (pk_seen) {
-                                // See pk_seen above: two 'p' rows must be refused, not flattened or picked.
                                 std::string msg = "multiple primary keys for table \"";
                                 msg += target_md->name;
                                 msg += "\" are not allowed — pg_constraint holds \"";
@@ -407,9 +358,7 @@ namespace components::operators {
             }
 
             if (!pending_fks.empty()) {
-                // Batched child + parent pg_attribute reads, one key per FK: the two batches are independent
-                // (disjoint keys/fields), so both are issued before either is awaited. child_results[k] /
-                // parent_results[k] correspond to pending_fks[k].
+                // Independent batches, issued before either is awaited; results index-pair with pending_fks.
                 std::pmr::vector<std::uint64_t> attr_c_keys(resource_);
                 attr_c_keys.emplace_back(catalog::pg_attribute_col::attrelid);
                 auto [_a, fut_attr_c] =
@@ -445,15 +394,12 @@ namespace components::operators {
                 }
                 auto& parent_results = parent_results_r.value();
 
-                // PASS 2: per-FK column-name resolution + (for referencing) the chained
-                // pg_class / pg_namespace reads, driven off the batched results indexed
-                // by FK slot k.
+                // PASS 2: per-FK name resolution + chained pg_class/pg_namespace reads, indexed by FK slot k.
                 for (std::size_t k = 0; k < pending_fks.size(); ++k) {
                     catalog::fk_info_t fk = std::move(pending_fks[k].fk);
                     const auto& child_attoids = pending_fks[k].child_attoids;
                     const auto& parent_attoids = pending_fks[k].parent_attoids;
                     const auto& con_name = pending_fks[k].constraint_name;
-                    // Falls back to "oid N" — a constraint may have no name.
                     auto describe_constraint = [&]() {
                         std::string out;
                         if (con_name.empty()) {
@@ -464,8 +410,6 @@ namespace components::operators {
                         }
                         return out;
                     };
-                    // A shortened CSV would pass the length guards below silently (they compare against the
-                    // already-shortened list) — this is the only point where the loss is still visible.
                     if (!pending_fks[k].keys_readable) {
                         std::string msg = "foreign key constraint \"";
                         msg += describe_constraint();
@@ -474,8 +418,6 @@ namespace components::operators {
                                                 std::pmr::string{std::move(msg), resource_}});
                         co_return;
                     }
-                    // An empty column list on either side passes the length guards below trivially (0 == 0),
-                    // so it must be caught here instead — same as the empty conkey on the UNIQUE/PK leg.
                     if (child_attoids.empty() || parent_attoids.empty()) {
                         std::string msg = "foreign key constraint \"";
                         msg += describe_constraint();
@@ -497,8 +439,6 @@ namespace components::operators {
                         names.reserve(child_attoids.size());
                         for (const auto& wanted_oid : child_attoids) {
                             for (auto& attr_chunk : child_attr) {
-                                // Threshold is attisdropped (7), not attname: narrower and the tombstone filter
-                                // below can't see it, silently binding to a dropped column.
                                 if (attr_chunk.column_count() <= catalog::pg_attribute_col::attisdropped) {
                                     continue;
                                 }
@@ -522,8 +462,6 @@ namespace components::operators {
                                 }
                             }
                         }
-                        // names is read positionally (paired with parent_col_names[i]), so a shortened list
-                        // re-points the constraint at the wrong columns — must fail, not shrink.
                         if (names.size() != child_attoids.size()) {
                             std::string msg = "foreign key constraint \"";
                             msg += describe_constraint();
@@ -536,11 +474,7 @@ namespace components::operators {
                         fk.child_col_names = std::move(names);
                     }
 
-                    // Also resolve child schema positions + defspec for each FK column
-                    // (used by operator_fk_cascade_t SET NULL / SET DEFAULT).
                     if (direction == direction_t::referencing) {
-                        // Build (attname → attnum-1, attdefspec) over the child's
-                        // pg_attribute rows sorted by attnum.
                         struct row_meta_t {
                             std::int32_t attnum{0};
                             std::string attname;
@@ -548,8 +482,7 @@ namespace components::operators {
                         };
                         std::vector<row_meta_t> ordered;
                         for (auto& attr_chunk : child_attr) {
-                            // Threshold is attdefspec (9), not attisdropped (7): a narrower chunk reads as "no
-                            // default", so operator_fk_cascade_t would apply SET NULL where SET DEFAULT was meant.
+                            // Narrower reads attdefspec as "no default": SET NULL applies where SET DEFAULT was meant.
                             if (attr_chunk.column_count() <= catalog::pg_attribute_col::attdefspec) {
                                 continue;
                             }
@@ -567,7 +500,6 @@ namespace components::operators {
                                     attr_chunk.is_null(catalog::pg_attribute_col::attnum, ai)
                                         ? 0
                                         : attr_chunk.get_value<std::int32_t>(catalog::pg_attribute_col::attnum, ai);
-                                // Width already guaranteed by the guard above; only the NULL case remains.
                                 if (!attr_chunk.is_null(catalog::pg_attribute_col::attdefspec, ai)) {
                                     row.attdefspec.assign(
                                         attr_chunk.get_value<std::string_view>(catalog::pg_attribute_col::attdefspec,
@@ -589,9 +521,8 @@ namespace components::operators {
                                     break;
                                 }
                             }
-                            // Unresolved position means the two passes disagreed about chunk width. Pushing
-                            // max() instead would make operator_fk_cascade_t skip the column: the parent row
-                            // goes, the child keeps pointing at a row that no longer exists.
+                            // Pushing max() instead would make operator_fk_cascade_t skip the column: the parent
+                            // row goes, the child keeps pointing at a row that no longer exists.
                             if (pos == std::numeric_limits<std::size_t>::max()) {
                                 std::string msg = "foreign key constraint \"";
                                 msg += describe_constraint();
@@ -613,8 +544,6 @@ namespace components::operators {
                         names.reserve(parent_attoids.size());
                         for (const auto& wanted_oid : parent_attoids) {
                             for (auto& attr_chunk : parent_attr) {
-                                // Threshold is attisdropped (7), not attname: narrower and the tombstone filter
-                                // below can't see it, silently binding to a dropped column.
                                 if (attr_chunk.column_count() <= catalog::pg_attribute_col::attisdropped) {
                                     continue;
                                 }
@@ -638,8 +567,6 @@ namespace components::operators {
                                 }
                             }
                         }
-                        // Same guard, referenced side — also catches a catalog written before confkey had
-                        // per-column pg_depend edges, where a dropped parent column can already exist.
                         if (names.size() != parent_attoids.size()) {
                             std::string msg = "foreign key constraint \"";
                             msg += describe_constraint();
@@ -653,11 +580,7 @@ namespace components::operators {
                     }
 
                     if (direction == direction_t::referencing) {
-                        // For DELETE FK cascade we also need the child's table name +
-                        // schema (so operator_fk_cascade_t can locate the descendant
-                        // collection without a back-resolve). The pg_namespace read keys
-                        // on an oid DERIVED from the pg_class read result, so this stays
-                        // a 2-hop chained read per FK (NOT batchable).
+                        // pg_namespace keys off an oid from the pg_class read — a 2-hop chained read, not batchable.
                         std::pmr::vector<std::uint64_t> cls_keys(resource_);
                         cls_keys.emplace_back(catalog::pg_class_col::oid);
                         auto [_cls, fut_cls] = actor_zeta::otterbrix::send(
@@ -674,10 +597,6 @@ namespace components::operators {
                             co_return;
                         }
                         auto& cls_batches = cls_batches_r.value();
-                        // Without this refusal, child_collection_name/child_schema stay empty and the FK is
-                        // pushed anyway — the DELETE would cascade against a relation the catalog can't
-                        // describe. Threshold is relnamespace (2), not relname (1): get_value doesn't
-                        // bounds-check, so a width-2 chunk would read relnamespace past the array's end.
                         if (cls_batches.empty() || cls_batches[0].size() == 0 ||
                             cls_batches[0].column_count() <= catalog::pg_class_col::relnamespace) {
                             std::string msg = "foreign key constraint \"";
@@ -710,8 +629,6 @@ namespace components::operators {
                             co_return;
                         }
                         auto& ns_batches = ns_batches_r.value();
-                        // Same refusal, one hop down: this namespace oid came from the pg_class row just
-                        // read, so a miss here is a broken catalog edge, not a dropped relation.
                         if (ns_batches.empty() || ns_batches[0].size() == 0 ||
                             ns_batches[0].column_count() <= catalog::pg_namespace_col::nspname) {
                             std::string msg = "foreign key constraint \"";
@@ -729,16 +646,11 @@ namespace components::operators {
                             ns_batches[0].get_value<std::string_view>(catalog::pg_namespace_col::nspname, 0));
                     }
 
-                    // Unconditional push, deliberately: the guards above already refuse an unresolvable or
-                    // empty column list, so both name lists are provably non-empty here.
+                    // Unconditional push: the guards above already prove both name lists are non-empty here.
                     fks.push_back(std::move(fk));
                 }
             }
 
-            // Resolve UNIQUE / PRIMARY KEY column attoids → names via a single batched
-            // pg_attribute read keyed on the target table_oid, then stamp the groups.
-            // Mirrors the FK child-column resolution above but for one table (all
-            // groups reference the same conrelid == table_oid).
             std::vector<std::vector<std::string>> unique_groups;
             std::vector<std::string> pk_columns;
             if (!pending_uniques.empty()) {
@@ -761,7 +673,6 @@ namespace components::operators {
 
                 for (auto& pending : pending_uniques) {
                     const auto& attoids = pending.attoids;
-                    // Falls back to "oid N" — a constraint may have no name.
                     auto describe_key = [&]() {
                         std::string out = pending.is_pk ? "primary key constraint \"" : "unique constraint \"";
                         if (pending.constraint_name.empty()) {
@@ -773,8 +684,6 @@ namespace components::operators {
                         out += '"';
                         return out;
                     };
-                    // Empty or partially-unreadable conkey: either way the constraint the user declared isn't
-                    // the one that would be enforced, so refuse rather than enforce something else.
                     if (!pending.conkey_readable || attoids.empty()) {
                         std::string msg = describe_key();
                         msg += pending.conkey_readable
@@ -788,13 +697,11 @@ namespace components::operators {
                     names.reserve(attoids.size());
                     for (const auto& wanted_oid : attoids) {
                         for (auto& attr_chunk : attr_batches) {
-                            // Same threshold as the FK name loops above, same reason: attisdropped (7).
                             if (attr_chunk.column_count() <= catalog::pg_attribute_col::attisdropped) {
                                 continue;
                             }
                             bool found = false;
                             for (uint64_t ai = 0; ai < attr_chunk.size(); ++ai) {
-                                // Same tombstone filter as the FK loops above.
                                 if (attribute_row_is_dropped(attr_chunk, ai)) {
                                     continue;
                                 }
@@ -813,9 +720,7 @@ namespace components::operators {
                             }
                         }
                     }
-                    // Same guard as the FK loops above: dropping an unresolvable group would let the key stop
-                    // existing while duplicates go in under it. Plain SQL already refuses this at DDL
-                    // (executor_t::execute_plan_full), so what reaches here predates that gate.
+                    // Dropping an unresolvable group would let the key stop existing while duplicates go in under it.
                     if (names.size() != attoids.size()) {
                         std::string msg = describe_key();
                         msg += ": key column list cannot be resolved — a column it is declared on has no "

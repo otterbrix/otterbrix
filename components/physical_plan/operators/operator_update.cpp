@@ -43,9 +43,7 @@ namespace components::operators {
         , affected_bound_(affected_bound) {}
 
     namespace {
-        // Writes ONE computed SET value into its target column. The value arrives already
-        // in the target's type — validation spliced the cast into the value expression —
-        // and already flat, so this only has to address the right slot and copy.
+        // The value already arrives in the target's type and flat: validation spliced the cast into it.
         [[nodiscard]] core::error_t write_target(const expressions::key_t& target,
                                                  const vector::vector_t& new_values,
                                                  vector::data_chunk_t& out_chunk,
@@ -53,7 +51,6 @@ namespace components::operators {
             assert(target.path().front() != size_t(-1));
             auto* col_vec = out_chunk.at(target.path());
 
-            // A nested path addresses one element inside the column's flat child vector.
             if (target.path().size() > 1) {
                 const vector::vector_t* parent = &out_chunk.data[target.path().front()];
                 for (size_t depth = 1; depth + 1 < target.path().size(); ++depth) {
@@ -151,9 +148,7 @@ namespace components::operators {
                                                   vector::data_chunk_t& out_chunk,
                                                   const vector::data_chunk_t* from_chunk,
                                                   uint64_t match_count) {
-        // Graph input: the matched rows, with the FROM side appended for UPDATE ... FROM so
-        // a right-side key resolves at right_offset. Both sides are already aligned
-        // row-for-row, so the merge only references them — no copy.
+        // Both sides are already aligned row-for-row, so the FROM-side merge only references them — no copy.
         const size_t right_offset = out_chunk.column_count();
         std::optional<vector::data_chunk_t> merged;
         if (from_chunk != nullptr) {
@@ -199,10 +194,6 @@ namespace components::operators {
         }
         auto& result = computed.value();
 
-        // The update graph still emits a trailing is_modified column; nothing consumes it.
-        // UPDATE's bounded-sink hook counts MATCHED rows (output_), which is the write-set
-        // actually staged for storage — operator_delete counts modified_ because that is
-        // where ITS write-set (matched row-ids) lives.
         for (size_t i = 0; i < updates_.size(); i++) {
             result.data[i].flatten(match_count);
             if (auto error = write_target(updates_[i]->key(), result.data[i], out_chunk, match_count);
@@ -217,8 +208,6 @@ namespace components::operators {
         if (simple_init_done_) {
             return;
         }
-        // Accumulator for the NEW updated rows; consume_batch_ appends one out_chunk
-        // per matched batch. await_async_and_resume iterates output_->chunks().
         output_ = operators::make_operator_data(resource_, chunks_vector_t{resource_});
         simple_init_done_ = true;
     }
@@ -260,11 +249,8 @@ namespace components::operators {
         const vector::vector_t* decisions = produced.has_value() ? &produced->data.front() : nullptr;
 
         data_chunk_t out_chunk(resource, types, chunk.size());
-        // Buffer the matched SOURCE row positions, then gather each column with ONE indexed
-        // copy once the match loop has settled the final row count. A cell-at-a-time copy goes
-        // through the 5-arg vector_ops::copy overload, which builds an indexing_vector_t sized
-        // to the row offset — a pmr allocation and an offset-long fill to move a single value.
-        // join_utils documents the same trap on the join side.
+        // Gathered with ONE indexed copy after the loop settles the row count: the cell-at-a-time overload
+        // builds a fresh indexing_vector_t per call — a pmr allocation to move one value. Same trap in join_utils.
         vector::indexing_vector_t matched_indexing(resource, chunk.size());
         size_t index = 0;
         for (size_t i = 0; i < chunk.size(); ++i) {
@@ -293,18 +279,11 @@ namespace components::operators {
             return core::error_t::no_error();
         }
 
-        // Capture the matched OLD rows BEFORE apply_updates mutates out_chunk in
-        // place — these are the pre-update rows for the index mirror, aligned
-        // row-for-row (and by row_id) with the NEW rows appended to output_.
-        // out_chunk.copy() copies both the columns and row_ids for out_chunk.size()
-        // (== index) rows and sets old_chunk's cardinality.
+        // Captured BEFORE apply_updates mutates out_chunk in place — the pre-update rows for the index mirror.
         data_chunk_t old_chunk(resource, types, index);
         out_chunk.copy(old_chunk, 0);
         index_old_chunks_.emplace_back(std::move(old_chunk));
 
-        // apply_updates reports unsupported operations (e.g. bitwise/shift on a
-        // non-integer column) through the pipeline error channel so the statement
-        // fails cleanly and the row data stays untouched.
         if (auto err = apply_updates_(pipeline_context, out_chunk, nullptr, index); err.contains_error()) {
             return err;
         }
@@ -315,9 +294,6 @@ namespace components::operators {
     core::error_t operator_update::consume_join_batch_(pipeline::context_t* pipeline_context,
                                                        const vector::data_chunk_t& chunk_left,
                                                        const chunks_vector_t& right_chunks) {
-        // UPDATE ... FROM shared core: one implementation, two entry points. Semi-join: a target row
-        // is updated once regardless of how many FROM rows match. push() calls this per LEFT batch;
-        // await_async_and_resume drains the accumulated state.
         using components::vector::data_chunk_t;
         ensure_simple_init_();
         if (chunk_left.size() == 0) {
@@ -361,16 +337,12 @@ namespace components::operators {
 
         data_chunk_t out_chunk(resource, types_left, chunk_left.size());
         data_chunk_t right_chunk(resource, types_right, chunk_left.size());
-        // LEFT-side gather buffer: every matched row comes from this one chunk_left, so the
-        // target columns are gathered with ONE indexed copy each after the loop (see
-        // consume_batch_). The RIGHT side cannot be collapsed the same way — matched FROM rows
-        // may come from DIFFERENT right chunks — so it stays cell-at-a-time here.
+        // RIGHT can't gather with one indexed copy like LEFT (see consume_batch_): matched FROM rows
+        // may come from different right chunks.
         vector::indexing_vector_t left_indexing(resource, chunk_left.size());
         size_t index = 0;
         for (size_t i = 0; i < chunk_left.size(); ++i) {
-            // Matched-row bound (UPDATE ... FROM ... LIMIT n): stop once the running matched
-            // total (already-flushed matched_total_ + this batch's index) reaches the bound.
-            // -1 = unbounded.
+            // Stops once matched_total_ + this batch's index reaches affected_bound_; -1 = unbounded.
             if (affected_bound_ >= 0 && matched_total_ + index >= static_cast<uint64_t>(affected_bound_)) {
                 break;
             }
@@ -397,8 +369,7 @@ namespace components::operators {
                     if (decisions != nullptr && (decisions->is_null(j) || !decisions->get_value<bool>(j))) {
                         continue;
                     }
-                    // Storage / index update keys on the ABSOLUTE table row id of the
-                    // matched left row; mirror the simple path's DICTIONARY fallback.
+                    // Keys on the absolute row id of the matched left row, mirroring the simple path's fallback.
                     if (chunk_left.data.front().get_vector_type() == vector::vector_type::DICTIONARY) {
                         out_chunk.row_ids.data<int64_t>()[index] =
                             static_cast<int64_t>(chunk_left.data.front().indexing().get_index(i));
@@ -415,9 +386,7 @@ namespace components::operators {
                     ++index;
                     vector::validate_chunk_capacity(out_chunk, index);
                     vector::validate_chunk_capacity(right_chunk, index);
-                    // UPDATE ... FROM is a semi-join: a target row is updated once
-                    // regardless of how many FROM rows it matches. Stop after the
-                    // first matching FROM row.
+                    // Semi-join: a target row updates once, so stop after the first matching FROM row.
                     row_matched = true;
                     break;
                 }
@@ -434,7 +403,6 @@ namespace components::operators {
                 vector::vector_ops::copy(chunk_left.data[k], out_chunk.data[k], left_indexing, index, 0, 0);
             }
         }
-        // Count matched left rows at MATCH time so the bound survives mid-pump flushes.
         matched_total_ += index;
         out_chunk.set_cardinality(index);
         right_chunk.set_cardinality(index);
@@ -442,9 +410,6 @@ namespace components::operators {
             return core::error_t::no_error();
         }
 
-        // Capture the matched OLD rows BEFORE apply_updates mutates out_chunk in
-        // place — pre-update rows for the index mirror, aligned row-for-row (and by
-        // row_id) with the NEW rows accumulated in output_.
         data_chunk_t old_chunk(resource, types_left, index);
         out_chunk.copy(old_chunk, 0);
         index_old_chunks_.emplace_back(std::move(old_chunk));
@@ -453,8 +418,7 @@ namespace components::operators {
             return err;
         }
         output_->append_chunk(std::move(out_chunk));
-        // Keep the matched FROM rows aligned with the updated rows so RETURNING can
-        // project joined (right-side) columns.
+        // Kept aligned with the updated rows so RETURNING can project joined (right-side) columns.
         if (!returning_.empty()) {
             returning_from_chunks_.emplace_back(std::move(right_chunk));
         }
@@ -463,11 +427,6 @@ namespace components::operators {
 
     core::error_t
     operator_update::push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& /*out*/) {
-        // STREAMING DML SINK: fold one scan batch into the updated-rows accumulator
-        // (output_) and the index-old staging. Emits nothing; await_async_and_resume
-        // drains the staged state into the single WAL->storage->index commit.
-        // FROM-join shape: probe the LEFT batch against the materialized RIGHT (FROM)
-        // build chunks; otherwise the simple fold.
         if (right_ && right_->output()) {
             return consume_join_batch_(ctx, input, right_->output()->chunks());
         }
@@ -478,9 +437,8 @@ namespace components::operators {
         using components::vector::data_chunk_t;
         using components::vector::vector_t;
 
-        // upsert_ is accepted into the plan (node_update_t prints $upsert: 1) but not implemented: running it
-        // as a plain UPDATE would report SUCCESS with 0 rows instead of the insert the plan declared. No SQL
-        // reaches this flag; only the logical-plan API does. Refuse it loudly before the first flush.
+        // Accepted into the plan but not implemented: a plain UPDATE would report SUCCESS with 0 rows instead of
+        // the insert the plan declared. No SQL reaches this flag, only the logical-plan API — refuse it now.
         if (upsert_) {
             set_error(core::error_t{
                 core::error_code_t::unimplemented_yet,
@@ -491,8 +449,7 @@ namespace components::operators {
             co_return;
         }
 
-        // The executor drives this INCREMENTALLY: once per mid-pump "buffer full" and once at the final
-        // post-pump drive. Only the final drive emits RETURNING/affected-count + mark_executed.
+        // Driven once per mid-pump buffer-full and once at the final drive; only the final call emits output.
         const bool is_final = ctx->dml_flush_is_final;
 
         if (output_ && output_->size() > 0) {
@@ -500,26 +457,14 @@ namespace components::operators {
                                                      ctx->txn,
                                                      ctx->execution_context.timezone_offset,
                                                      table_oid_};
-            // See operator_insert comment on db_oid temporary hardcode.
             constexpr auto db_oid = components::catalog::well_known_oid::main_database;
-            // See operator_insert: gate on the TABLE having an index, not on the index manager
-            // existing (which it always does).
             const bool mirror_index =
                 table_has_indexes_ && ctx->index_address != actor_zeta::address_t::empty_address();
 
-            // STREAMING invariant: consume_batch_/consume_join_batch_ stage exactly one
-            // OLD-row chunk per accumulated updated chunk, so index_old_chunks_ is in
-            // lockstep with output_->chunks() (index_old_chunks_[k] is the old version
-            // of output_->chunks()[k]). Assert the staging held rather than silently
-            // walking left_->output() (which is empty when streaming) mid-flush.
+            // index_old_chunks_ stays in lockstep with output_->chunks() — index_old_chunks_[k] is chunk k's
+            // old version. Asserted rather than silently walking left_->output(), which is empty while streaming.
             assert(index_old_chunks_.size() == output_->chunks().size());
 
-            // ONE flush of the currently-buffered rows via a NAMED coroutine lambda.
-            // UPDATE = MVCC delete-old + append-new: the operator OWNS its WAL
-            // (write_physical_update) and records BOTH an append range (via
-            // record_flush, below) and a delete marker. The new-row segments append
-            // sequentially within the txn, so they coalesce into one range; gather the
-            // whole batch up front, then one send per service.
             auto op = [&]([[maybe_unused]] std::pmr::memory_resource* res)
                 -> actor_zeta::unique_future<dml_detail::flush_outcome_t> {
                 auto copy_of = [this](const data_chunk_t& src) {
@@ -528,13 +473,13 @@ namespace components::operators {
                     return dst;
                 };
 
-                chunks_vector_t update_data(resource_);               // storage_update payload (mutated)
-                std::pmr::vector<vector_t> update_row_ids(resource_); // storage_update row_ids, one per chunk
-                chunks_vector_t wal_chunks(resource_);                // WAL payload (submitted new rows)
-                std::pmr::vector<int64_t> wal_row_ids(resource_);     // WAL row_ids, flat
-                chunks_vector_t idx_old(resource_);                   // index: old row versions, one per chunk
-                chunks_vector_t idx_new(resource_);                   // index: new rows, one per chunk
-                std::pmr::vector<int64_t> idx_row_ids(resource_);     // index row_ids, flat
+                chunks_vector_t update_data(resource_);
+                std::pmr::vector<vector_t> update_row_ids(resource_);
+                chunks_vector_t wal_chunks(resource_);
+                std::pmr::vector<int64_t> wal_row_ids(resource_);
+                chunks_vector_t idx_old(resource_);
+                chunks_vector_t idx_new(resource_);
+                std::pmr::vector<int64_t> idx_row_ids(resource_);
 
                 size_t out_chunk_idx = 0;
                 for (auto& out_chunk : output_->chunks()) {
@@ -543,7 +488,6 @@ namespace components::operators {
                     }
                     const uint64_t n = out_chunk.size();
 
-                    // storage_update needs a row_ids vector_t + payload copy per chunk.
                     vector_t row_ids(resource_, types::logical_type::BIGINT, n);
                     for (uint64_t i = 0; i < n; i++) {
                         row_ids.data<int64_t>()[i] = out_chunk.row_ids.data<int64_t>()[i];
@@ -551,15 +495,11 @@ namespace components::operators {
                     update_row_ids.emplace_back(std::move(row_ids));
                     update_data.emplace_back(copy_of(out_chunk));
 
-                    // WAL needs the submitted new rows + their flat row_ids.
                     wal_chunks.emplace_back(copy_of(out_chunk));
                     for (uint64_t i = 0; i < n; i++) {
                         wal_row_ids.push_back(out_chunk.row_ids.data<int64_t>()[i]);
                     }
 
-                    // Index needs the n old row versions + the new rows and their ids.
-                    // index_old_chunks_[out_chunk_idx] is this updated chunk's OLD
-                    // version, staged in lockstep by push() (asserted above).
                     if (mirror_index) {
                         idx_old.emplace_back(std::move(index_old_chunks_[out_chunk_idx]));
                         idx_new.emplace_back(copy_of(out_chunk));
@@ -570,11 +510,6 @@ namespace components::operators {
                     ++out_chunk_idx;
                 }
 
-                // 1. RETURNING is a pure LOCAL projection over the already-built updated
-                //    chunks (paired with their lockstep FROM chunks) — run it BEFORE any
-                //    storage mutation, so a projection error fails the statement CLEANLY:
-                //    zero storage writes, no WAL update record, nothing to revert. The
-                //    projected chunks accumulate across flushes; the FINAL drive emits them.
                 if (!returning_.empty()) {
                     for (size_t i = 0; i < output_->chunks().size(); ++i) {
                         auto& out_chunk = output_->chunks()[i];
@@ -597,10 +532,6 @@ namespace components::operators {
                     }
                 }
 
-                // 2. storage_update (MVCC: delete old + insert new) — one batched send.
-                //    The reply carries any write_conflict / out_of_memory from the
-                //    table-layer MVCC update as a value; surface it as a clean error so
-                //    the txn aborts gracefully.
 #ifdef DEV_MODE
                 g_update_storage_update_sends.fetch_add(1, std::memory_order_relaxed);
 #endif
@@ -616,8 +547,8 @@ namespace components::operators {
                 }
                 auto [range_start, total_count] = update_result.value();
 
-                // 3. WAL physical_update: one record for THIS flushed range. UPDATE
-                //    owns its WAL write (unlike INSERT's WAL-first storage_append).
+                // UPDATE applies to storage first, then writes its own WAL record — unlike INSERT's
+                // WAL-first storage_append.
                 if (ctx->wal_address != actor_zeta::address_t::empty_address()) {
                     const uint64_t wal_count = wal_row_ids.size();
                     auto [_w, wf] =
@@ -632,18 +563,11 @@ namespace components::operators {
                                                     db_oid);
                     auto wal_result = co_await std::move(wf);
                     if (wal_result.has_error()) {
-                        // storage_update already landed, so table and journal now disagree — fail the
-                        // statement so the abort cascade unwinds it rather than reporting success.
+                        // storage_update already landed, so a WAL failure leaves table and journal disagreeing.
                         co_return dml_detail::flush_outcome_t{wal_result.error()};
                     }
-                    // wal_id used to be handed to manager_disk_t::flush and parked in ctx's pending futures;
-                    // that method flushed nothing (traced and returned), so both are gone. Table durability
-                    // is checkpoint_all's, driven by the WAL manager's checkpoint round.
                 }
 
-                // 4. Mirror to index (old + new data) — one batched send. idx_old came
-                //    from the streaming staging (index_old_chunks_), aligned row-for-row
-                //    + by row_id with the new rows.
                 if (mirror_index) {
                     auto [_ix, ixf] = actor_zeta::otterbrix::send(ctx->index_address,
                                                                   &services::index::manager_index_t::update_rows,
@@ -655,14 +579,10 @@ namespace components::operators {
                                                                   range_start);
                     auto index_error = co_await std::move(ixf);
                     if (index_error.contains_error()) {
-                        // The index still points at the pre-update key. Fail rather than let the
-                        // table and the index disagree silently.
                         co_return dml_detail::flush_outcome_t{std::move(index_error), false, 0, 0};
                     }
                 }
 
-                // 5. Without RETURNING the affected count accumulates across flushes
-                //    (the RETURNING projection already ran in step 1, pre-mutation).
                 if (returning_.empty()) {
                     affected_rows_ += total_count;
                 }
@@ -671,11 +591,7 @@ namespace components::operators {
             };
 
             auto outcome = co_await op(resource_);
-            // COMMON post-storage bookkeeping (dml_util): record the append range into
-            // the unified append channel and — only under a parent constraint — accumulate
-            // a persistent copy of the just-written NEW rows into constraint_input_ (so
-            // the constraint validates the full set at finalize). constraint_rows =
-            // output_->chunks(): op only COPIED from output_, so the NEW rows are intact.
+            // output_->chunks() is safe as constraint_rows here: op only copied from it, never moved.
             auto err = dml_detail::record_flush(ctx,
                                                 resource_,
                                                 table_oid_,
@@ -683,9 +599,8 @@ namespace components::operators {
                                                 ctx->dml_has_parent_constraint,
                                                 constraint_input_,
                                                 output_->chunks());
-            // The MVCC delete tombstone is recorded ONCE per txn/table (append ranges are per-flush, via
-            // record_flush) and BEFORE the flush-error check: the storage op stamps deletes before append can
-            // fail, and only a recorded marker lets the abort tail (storage_revert_deletes) un-stamp them.
+            // Recorded once per txn, before the flush-error check: the storage op stamps deletes before append
+            // can fail, and only a recorded marker lets storage_revert_deletes un-stamp them on abort.
             if (!delete_marker_recorded_) {
                 ctx->dml_deletes.push_back(components::table::dml_delete_range_t{table_oid_, ctx->txn.transaction_id});
                 delete_marker_recorded_ = true;
@@ -697,27 +612,18 @@ namespace components::operators {
                 co_return;
             }
 
-            // Release the flushed batch: the accumulated updated rows and the lockstep
-            // staging that fed THIS flush. output_/index_old_chunks_/returning_from_
-            // chunks_ stay in lockstep so the next flush starts clean and bounded.
             output_->chunks().clear();
             index_old_chunks_.clear();
             returning_from_chunks_.clear();
         }
 
-        // MID-PUMP flush: more batches may still arrive — do NOT emit the result or
-        // mark executed. Only the final drive finalizes.
         if (!is_final) {
             co_return;
         }
 
-        // FINAL. output_ was cleared per flush, so it cannot double as the
-        // affected-count carrier: emit an explicit result — affected-count chunks
-        // without RETURNING, the accumulated projection with it.
+        // output_ was cleared per flush, so it can't double as the affected-count carrier; emit an explicit result.
         if (returning_.empty()) {
             if (affected_rows_ > 0) {
-                // Column-less chunks whose cardinalities sum to the affected-row count
-                // (the cursor totals chunk sizes).
                 set_output(make_operator_data(resource_,
                                               dml_detail::make_affected_count_chunks(resource_, affected_rows_, {})));
             } else {

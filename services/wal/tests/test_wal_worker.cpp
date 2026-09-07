@@ -33,10 +33,7 @@ using namespace components::vector;
 using namespace components::types;
 
 #if defined(OTTERBRIX_TSAN_ENABLED)
-// TSAN can't see through synchronized_pool_resource's internal mutex and
-// false-positives on cross-thread memory reuse (manager loop vs scheduler
-// workers). Delegate to new_delete_resource, whose edges TSAN models natively
-// (same workaround as base_spaces.hpp tsan_resource_t).
+// TSAN false-positives on synchronized_pool_resource's cross-thread reuse; delegate to new_delete_resource.
 struct test_pool_resource_t final : std::pmr::memory_resource {
 protected:
     void* do_allocate(size_t bytes, size_t align) override {
@@ -55,28 +52,20 @@ namespace catalog_ns = components::catalog;
 constexpr auto kMainDb = catalog_ns::well_known_oid::main_database;
 constexpr catalog_ns::oid_t kTestTableOid = 16500;
 
-// write_physical_insert/update now take the whole chunk batch; wrap a single chunk.
 inline std::pmr::vector<data_chunk_t> to_batch(std::unique_ptr<data_chunk_t> chunk) {
     std::pmr::vector<data_chunk_t> batch(chunk->resource());
     batch.emplace_back(std::move(*chunk));
     return batch;
 }
 
-// PID-QUALIFIED, like every other fixture root in this directory: a literal shared root would
-// let a second concurrent run of this binary delete segments the first run is still writing —
-// not theoretical, since this tree builds in several directories at once and `ctest -j` runs
-// from more than one of them. test_wal_manager.cpp carries the same root for the same reason.
+// PID-QUALIFIED, or a second concurrent run (e.g. `ctest -j`) could delete segments this one is writing.
 static const std::filesystem::path base_wal_worker_path =
     "/tmp/otterbrix_test_wal_worker_" + std::to_string(static_cast<long>(::getpid()));
 
-// The manager self-drives on an internal loop thread and runs its workers on
-// the real shared_work scheduler, so futures from a send() to it become ready
-// asynchronously. Poll until ready before take_ready (which asserts readiness).
+// The manager self-drives, so a future becomes ready asynchronously; poll before take_ready (which asserts it).
 template<typename F>
 static decltype(auto) await_ready(F& fut) {
-    // Wall-clock deadline, not iteration-bounded: under TSAN or parallel-ctest
-    // CPU oversubscription the manager-loop -> worker round-trip can outlast any
-    // fixed yield budget.
+    // Wall-clock deadline: under TSAN or parallel-ctest oversubscription no fixed yield budget is safe.
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
         std::this_thread::yield();
@@ -85,9 +74,7 @@ static decltype(auto) await_ready(F& fut) {
     return std::move(fut).take_ready();
 }
 
-// Twin of await_ready for the handlers that answer a core::result_wrapper_t. Every use below
-// expects the journal to have ACCEPTED the work, so a refusal is a test failure here; the tests
-// that want to see a refusal read the wrapper themselves.
+// Twin of await_ready for a core::result_wrapper_t; a refusal is a test failure here.
 template<typename F>
 static auto await_value(F& fut) {
     auto result = await_ready(fut);
@@ -95,11 +82,6 @@ static auto await_value(F& fut) {
     return std::move(result.value());
 }
 
-// ---------------------------------------------------------------------------
-// Fixture: sets up a scheduler, a manager, and a single wal_worker_t for
-// the main_database.  The manager spawns workers on demand.
-// Workers are keyed by database_oid (single worker for main_database).
-// ---------------------------------------------------------------------------
 struct test_wal_worker {
     test_wal_worker(const std::filesystem::path& path)
         : path_(path)
@@ -123,8 +105,7 @@ struct test_wal_worker {
     }
 
     ~test_wal_worker() {
-        // Stop the scheduler first (joins workers, children stop), then destroy
-        // the manager; any post-stop enqueues land harmlessly in the dead scheduler.
+        // Stop first (joins workers); a post-stop enqueue then lands harmlessly in the dead scheduler.
         scheduler_->stop();
         manager_.reset();
         std::filesystem::remove_all(path_);
@@ -135,10 +116,7 @@ struct test_wal_worker {
                 size_t row_count,
                 uint64_t row_start = 0,
                 catalog_ns::oid_t table_oid = kTestTableOid) {
-        // Built on the fixture's own arena, never the process-global new_delete_resource
-        // singleton (which under ASAN is resource_tracer_t, the only thing that would report a
-        // chunk still alive after the manager is gone): resource_ is declared BEFORE the manager
-        // so it outlives it through teardown.
+        // Built on the fixture's own arena, not the process-global singleton ASAN would flag as leaked.
         auto* arena = &resource_;
         auto chunk = gen_data_chunk(row_count, arena);
         auto chunk_ptr = to_batch(std::make_unique<data_chunk_t>(std::move(chunk)));
@@ -159,7 +137,7 @@ struct test_wal_worker {
     send_delete(uint64_t txn_id,
                 const std::pmr::vector<int64_t>& row_ids,
                 catalog_ns::oid_t table_oid = kTestTableOid) {
-        auto ids_copy = row_ids; // copy for move
+        auto ids_copy = row_ids;
         auto [needs_sched, future] = actor_zeta::otterbrix::send(manager_->address(),
                                                                  &manager_wal_replicate_t::write_physical_delete,
                                                                  session_id_t::generate_uid(),
@@ -176,8 +154,6 @@ struct test_wal_worker {
                 const std::pmr::vector<int64_t>& row_ids,
                 size_t row_count,
                 catalog_ns::oid_t table_oid = kTestTableOid) {
-        // Built on the fixture's own arena (never the process-global singleton — see the note
-        // on the first occurrence in this file).
         auto* arena = &resource_;
         auto chunk = gen_data_chunk(row_count, arena);
         auto chunk_ptr = to_batch(std::make_unique<data_chunk_t>(std::move(chunk)));
@@ -197,8 +173,7 @@ struct test_wal_worker {
 
     actor_zeta::unique_future<core::result_wrapper_t<services::wal::id_t>>
     send_commit(uint64_t txn_id, wal_sync_mode sync_mode = wal_sync_mode::NORMAL, uint64_t commit_id = 0) {
-        // commit_id is the MVCC version timestamp in the COMMIT record; tests
-        // pass 0 unless they exercise snapshot-aware replay.
+        // commit_id is the MVCC version timestamp; tests pass 0 unless exercising snapshot-aware replay.
         auto [needs_sched, future] = actor_zeta::otterbrix::send(manager_->address(),
                                                                  &manager_wal_replicate_t::commit_txn,
                                                                  session_id_t::generate_uid(),
@@ -233,9 +208,6 @@ struct test_wal_worker {
     std::unique_ptr<manager_wal_replicate_t, actor_zeta::pmr::deleter_t> manager_;
 };
 
-// ===========================================================================
-//  1. worker_insert_write_read
-// ===========================================================================
 TEST_CASE("wal_worker::insert_write_read") {
     test_wal_worker env(base_wal_worker_path / "insert_wr");
 
@@ -244,7 +216,6 @@ TEST_CASE("wal_worker::insert_write_read") {
     auto wal_id = await_value(fut_id);
     REQUIRE(wal_id > 0);
 
-    // Commit so the record is visible on load.
     auto fut_commit = env.send_commit(100);
     REQUIRE(fut_commit.valid());
 
@@ -252,7 +223,6 @@ TEST_CASE("wal_worker::insert_write_read") {
     REQUIRE(fut_records.valid());
     auto records = await_value(fut_records);
 
-    // Should have at least the INSERT + COMMIT.
     REQUIRE(records.size() >= 2);
 
     bool found_insert = false;
@@ -269,9 +239,6 @@ TEST_CASE("wal_worker::insert_write_read") {
     REQUIRE(found_insert);
 }
 
-// ===========================================================================
-//  2. worker_delete_write_read
-// ===========================================================================
 TEST_CASE("wal_worker::delete_write_read") {
     test_wal_worker env(base_wal_worker_path / "delete_wr");
 
@@ -299,9 +266,6 @@ TEST_CASE("wal_worker::delete_write_read") {
     REQUIRE(found_delete);
 }
 
-// ===========================================================================
-//  3. worker_update_write_read
-// ===========================================================================
 TEST_CASE("wal_worker::update_write_read") {
     test_wal_worker env(base_wal_worker_path / "update_wr");
 
@@ -331,9 +295,6 @@ TEST_CASE("wal_worker::update_write_read") {
     REQUIRE(found_update);
 }
 
-// ===========================================================================
-//  4. worker_commit_marker
-// ===========================================================================
 TEST_CASE("wal_worker::commit_marker") {
     test_wal_worker env(base_wal_worker_path / "commit_marker");
 
@@ -353,11 +314,7 @@ TEST_CASE("wal_worker::commit_marker") {
     REQUIRE(found_commit);
 }
 
-// ===========================================================================
-//  5. worker_corruption_stop
-//     Write multiple records + commit, corrupt the file, then load.
-//     Load should return only records before the corruption point.
-// ===========================================================================
+// Corrupt the file after writing, then load: only records before the corruption point should return.
 TEST_CASE("wal_worker::corruption_stop") {
     auto test_path = base_wal_worker_path / "corruption_stop";
 
@@ -380,10 +337,7 @@ TEST_CASE("wal_worker::corruption_stop") {
                                                                   components::pipeline::no_mailbox());
         scheduler->start();
 
-        // Write several records in one transaction.
         for (int i = 0; i < 5; ++i) {
-            // Built on the fixture's own arena (never the process-global singleton — see the note
-            // on the first occurrence in this file).
             auto* arena = &resource;
             auto chunk = gen_data_chunk(4, arena);
             auto [ns, fut] = actor_zeta::otterbrix::send(manager->address(),
@@ -404,23 +358,17 @@ TEST_CASE("wal_worker::corruption_stop") {
                                                          wal_sync_mode::NORMAL,
                                                          kMainDb,
                                                          uint64_t{0});
-            // The commit is ordered after the inserts on the same worker; await
-            // it so all records are flushed before the scheduler stops.
+            // Ordered after the inserts on the same worker; await it so all records flush before stop.
             await_value(fut);
         }
 
-        // Stop the scheduler first (joins workers, children stop), then destroy
-        // the manager; any post-stop enqueues land harmlessly in the dead scheduler.
         scheduler->stop();
         manager.reset();
     }
-    // Setup done -- files on disk remain.
 
-    // Corrupt one of the WAL segment files: flip some bytes in the middle.
     bool corrupted = false;
     for (auto& entry : std::filesystem::recursive_directory_iterator(test_path)) {
         if (entry.is_regular_file() && entry.file_size() > 64) {
-            // Open, flip bytes, close.
             auto p = entry.path();
             std::fstream f(p, std::ios::in | std::ios::out | std::ios::binary);
             if (f.is_open()) {
@@ -439,7 +387,6 @@ TEST_CASE("wal_worker::corruption_stop") {
     }
     REQUIRE(corrupted);
 
-    // Re-create the environment on the same path (without clearing).
     test_pool_resource_t resource;
     auto log = initialization_logger("python", "/tmp/docker_logs/");
     auto scheduler = std::make_unique<actor_zeta::shared_work>(3, 1000);
@@ -462,33 +409,22 @@ TEST_CASE("wal_worker::corruption_stop") {
     REQUIRE(fut_records.valid());
     auto records = await_value(fut_records);
 
-    // We should get fewer than the 5 inserts + 1 commit we wrote because the
-    // corruption truncates the read.  At minimum we get zero (if corruption is
-    // early) or some subset.
     REQUIRE(records.size() < 6);
 
-    // Every returned record must be valid (not corrupt).
     for (const auto& r : records) {
         REQUIRE_FALSE(r.is_corrupt);
     }
 
-    // Stop the scheduler first (joins workers, children stop), then destroy
-    // the manager; any post-stop enqueues land harmlessly in the dead scheduler.
     scheduler->stop();
     manager.reset();
     std::filesystem::remove_all(test_path);
 }
 
-// ===========================================================================
-//  6. worker_crc_chain_startup
-//     Write records, destroy worker, create a new one on the same path.
-//     Init should verify the CRC chain and recover cleanly.
-// ===========================================================================
+// Destroy the worker and re-create it on the same path: init must verify the CRC chain and recover.
 TEST_CASE("wal_worker::crc_chain_startup") {
     auto test_path = base_wal_worker_path / "crc_chain";
     services::wal::id_t last_wal_id = 0;
 
-    // Write some records using standalone manager (no fixture, so files survive).
     {
         std::filesystem::remove_all(test_path);
         std::filesystem::create_directories(test_path);
@@ -508,8 +444,6 @@ TEST_CASE("wal_worker::crc_chain_startup") {
         scheduler->start();
 
         {
-            // Built on the fixture's own arena (never the process-global singleton — see the note
-            // on the first occurrence in this file).
             auto* arena = &resource;
             auto chunk = gen_data_chunk(8, arena);
             auto [ns, fut] = actor_zeta::otterbrix::send(manager->address(),
@@ -540,13 +474,10 @@ TEST_CASE("wal_worker::crc_chain_startup") {
             REQUIRE(last_wal_id > 0);
         }
 
-        // Stop the scheduler first (joins workers, children stop), then destroy
-        // the manager; any post-stop enqueues land harmlessly in the dead scheduler.
         scheduler->stop();
         manager.reset();
     }
 
-    // Re-open on the same directory (no cleanup).
     {
         test_pool_resource_t resource;
         auto log = initialization_logger("python", "/tmp/docker_logs/");
@@ -562,15 +493,13 @@ TEST_CASE("wal_worker::crc_chain_startup") {
                                                                   components::pipeline::no_mailbox());
         scheduler->start();
 
-        // Load and verify records from the previous lifetime.
         auto [ns1, fut_records] = actor_zeta::otterbrix::send(manager->address(),
                                                               &manager_wal_replicate_t::load,
                                                               session_id_t::generate_uid(),
                                                               services::wal::id_t{0});
         auto records = await_value(fut_records);
-        REQUIRE(records.size() >= 2); // at least INSERT + COMMIT
+        REQUIRE(records.size() >= 2);
 
-        // Write a new record -- should continue the CRC chain.
         auto [ns2, fut_id] = actor_zeta::otterbrix::send(
             manager->address(),
             &manager_wal_replicate_t::write_physical_insert,
@@ -584,8 +513,6 @@ TEST_CASE("wal_worker::crc_chain_startup") {
         auto new_wal_id = await_value(fut_id);
         REQUIRE(new_wal_id > last_wal_id);
 
-        // Stop the scheduler first (joins workers, children stop), then destroy
-        // the manager; any post-stop enqueues land harmlessly in the dead scheduler.
         scheduler->stop();
         manager.reset();
     }
@@ -593,11 +520,7 @@ TEST_CASE("wal_worker::crc_chain_startup") {
     std::filesystem::remove_all(test_path);
 }
 
-// ===========================================================================
-//  7. worker_segment_rotation
-//     Set a small max_segment_size and write enough data to trigger rotation.
-//     Verify that multiple segment files exist on disk.
-// ===========================================================================
+// A small max_segment_size and enough data must trigger rotation into multiple segment files.
 TEST_CASE("wal_worker::segment_rotation") {
     auto test_path = base_wal_worker_path / "seg_rotation";
     std::filesystem::remove_all(test_path);
@@ -608,7 +531,7 @@ TEST_CASE("wal_worker::segment_rotation") {
     auto scheduler = std::make_unique<actor_zeta::shared_work>(3, 1000);
     configuration::config_wal config(test_path);
     config.on = true;
-    config.max_segment_size = 8192; // very small -- force rotation quickly
+    config.max_segment_size = 8192;
 
     auto manager = actor_zeta::spawn<manager_wal_replicate_t>(&resource,
                                                               scheduler.get(),
@@ -618,11 +541,8 @@ TEST_CASE("wal_worker::segment_rotation") {
                                                               components::pipeline::no_mailbox());
     scheduler->start();
 
-    // Write many records with enough data to exceed the small segment size.
     actor_zeta::unique_future<core::result_wrapper_t<services::wal::id_t>> last_fut;
     for (uint64_t i = 0; i < 50; ++i) {
-        // Built on the fixture's own arena (never the process-global singleton — see the note
-        // on the first occurrence in this file).
         auto* arena = &resource;
         auto chunk = gen_data_chunk(20, arena);
         auto [ns, fut] = actor_zeta::otterbrix::send(manager->address(),
@@ -636,40 +556,26 @@ TEST_CASE("wal_worker::segment_rotation") {
                                                      kMainDb);
         last_fut = std::move(fut);
     }
-    // The final write is ordered after all earlier ones on the same worker;
-    // await it so every record is flushed before inspecting the segment files.
     await_value(last_fut);
 
-    // Count WAL-related files under the test path.
     size_t segment_count = 0;
     for (auto& entry : std::filesystem::recursive_directory_iterator(test_path)) {
         if (entry.is_regular_file() && entry.file_size() > 0) {
             ++segment_count;
         }
     }
-    // With 50 records of 20 rows each at 8 KB segment size we expect at least 2
-    // segments (likely many more).
     REQUIRE(segment_count >= 2);
 
-    // Stop the scheduler first (joins workers, children stop), then destroy
-    // the manager; any post-stop enqueues land harmlessly in the dead scheduler.
     scheduler->stop();
     manager.reset();
     std::filesystem::remove_all(test_path);
 }
 
-// ===========================================================================
-//  8. worker_spanning_record
-//     Write a single INSERT with a large data_chunk (500+ rows). Verify it
-//     can be loaded back correctly even if it spans pages/segments.
-// ===========================================================================
+// A large INSERT (500+ rows) must load back correctly even if it spans pages/segments.
 TEST_CASE("wal_worker::spanning_record") {
     test_wal_worker env(base_wal_worker_path / "spanning");
 
-    // Write a single large insert.
     {
-        // Built on the fixture's own arena (never the process-global singleton — see the note
-        // on the first occurrence in this file).
         auto* arena = &env.resource_;
         std::pmr::vector<components::types::complex_logical_type> types(arena);
         types.emplace_back(components::types::logical_type::BIGINT, "id");
@@ -708,12 +614,7 @@ TEST_CASE("wal_worker::spanning_record") {
     REQUIRE(found);
 }
 
-// ===========================================================================
-//  9. worker_fsync_full_mode
-//     With wal_sync_mode::FULL, write and commit. Verify no crash and data is
-//     readable.  (We cannot truly verify fsync was called, only that the code
-//     path does not explode.)
-// ===========================================================================
+// wal_sync_mode::FULL: cannot verify fsync was actually called, only that the path doesn't explode.
 TEST_CASE("wal_worker::fsync_full_mode") {
     auto test_path = base_wal_worker_path / "fsync_full";
     std::filesystem::remove_all(test_path);
@@ -733,10 +634,7 @@ TEST_CASE("wal_worker::fsync_full_mode") {
                                                               components::pipeline::no_mailbox());
     scheduler->start();
 
-    // Write + commit.
     {
-        // Built on the fixture's own arena (never the process-global singleton — see the note
-        // on the first occurrence in this file).
         auto* arena = &resource;
         auto chunk = gen_data_chunk(10, arena);
         auto [ns, fut] = actor_zeta::otterbrix::send(manager->address(),
@@ -759,11 +657,9 @@ TEST_CASE("wal_worker::fsync_full_mode") {
                                                      wal_sync_mode::FULL,
                                                      kMainDb,
                                                      uint64_t{0});
-        // commit should succeed
         REQUIRE(fut.valid());
     }
 
-    // Load and verify data survived.
     {
         auto [ns, fut] = actor_zeta::otterbrix::send(manager->address(),
                                                      &manager_wal_replicate_t::load,
@@ -773,18 +669,12 @@ TEST_CASE("wal_worker::fsync_full_mode") {
         REQUIRE(records.size() >= 2);
     }
 
-    // Stop the scheduler first (joins workers, children stop), then destroy
-    // the manager; any post-stop enqueues land harmlessly in the dead scheduler.
     scheduler->stop();
     manager.reset();
     std::filesystem::remove_all(test_path);
 }
 
-// ===========================================================================
-//  10. worker_fsync_off_mode
-//      With wal_sync_mode::OFF, writes should succeed but data may not be
-//      persisted.  Verify the code path works without crash.
-// ===========================================================================
+// wal_sync_mode::OFF: writes should succeed even though data may not be persisted.
 TEST_CASE("wal_worker::fsync_off_mode") {
     auto test_path = base_wal_worker_path / "fsync_off";
     std::filesystem::remove_all(test_path);
@@ -795,7 +685,6 @@ TEST_CASE("wal_worker::fsync_off_mode") {
     auto scheduler = std::make_unique<actor_zeta::shared_work>(3, 1000);
     configuration::config_wal config(test_path);
     config.on = true;
-    // sync_mode::OFF is passed per-commit, not via config
 
     auto manager = actor_zeta::spawn<manager_wal_replicate_t>(&resource,
                                                               scheduler.get(),
@@ -806,8 +695,6 @@ TEST_CASE("wal_worker::fsync_off_mode") {
     scheduler->start();
 
     {
-        // Built on the fixture's own arena (never the process-global singleton — see the note
-        // on the first occurrence in this file).
         auto* arena = &resource;
         auto chunk = gen_data_chunk(10, arena);
         auto [ns, fut] = actor_zeta::otterbrix::send(manager->address(),
@@ -819,7 +706,6 @@ TEST_CASE("wal_worker::fsync_off_mode") {
                                                      uint64_t{10},
                                                      uint64_t{1000},
                                                      kMainDb);
-        // Write should still return a valid WAL id.
         REQUIRE(await_value(fut) > 0);
     }
 
@@ -834,24 +720,18 @@ TEST_CASE("wal_worker::fsync_off_mode") {
         REQUIRE(fut.valid());
     }
 
-    // In OFF mode the WAL may or may not have data on disk, but the in-memory
-    // load should still work within the same lifetime.
+    // In OFF mode data may or may not be on disk, but the in-memory load must still work.
     {
         auto [ns, fut] = actor_zeta::otterbrix::send(manager->address(),
                                                      &manager_wal_replicate_t::load,
                                                      session_id_t::generate_uid(),
                                                      services::wal::id_t{0});
         auto records = await_value(fut);
-        // Records might be empty if the in-memory-only path discards them,
-        // or present if they are buffered. Either outcome is acceptable.
-        // The key assertion is that we did not crash.
         for (const auto& record : records) {
             REQUIRE_FALSE(record.is_corrupt);
         }
     }
 
-    // Stop the scheduler first (joins workers, children stop), then destroy
-    // the manager; any post-stop enqueues land harmlessly in the dead scheduler.
     scheduler->stop();
     manager.reset();
     std::filesystem::remove_all(test_path);

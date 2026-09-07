@@ -34,33 +34,11 @@
 #include <unistd.h>
 #include <vector>
 
-// The committed-update overlay and the checkpoint that can't see it.
-//
-// column_data_checkpointer_t::checkpoint walks column_data_.data_.segments() and nothing else:
-// the committed-update overlay (column_data_t::updates_, filled by data_table_t::update via the
-// WAL-replay PHYSICAL_UPDATE path through agent_disk_t::direct_update_sync) is not a segment and
-// is not read there, so a checkpoint serialises the pre-update bytes.
-//
-// Invisible in a normal round, since agent_disk_t::checkpoint_inner compacts every entry first
-// and the rebuild folds the overlay into fresh segments. The hole is the failed-round retry,
-// which deliberately checkpoints without compacting (skip_compact_this_round =
-// last_checkpoint_failed()): there the overlay is dropped while the `.otbx.wal_id` sidecar
-// advances past the journal record that carried it -- the value is silently rolled back and the
-// record that could restore it is sealed away.
-//
-// Cases 1-2 drive that, one at each layer: (1) table_storage_t::checkpoint straight, the retry's
-// shape minus the round; (2) the production round through manager_disk_t::checkpoint_all, with
-// the retry reached as it is in the field -- a header-slot write failure, the one checkpoint
-// failure the block manager treats as recoverable (write_header's case 2: both slots read back
-// as the already-believed iteration, so nothing latches) and so leads to a retry rather than
-// deferral.
-//
-// Cases 3-7 (`checkpoint_round` tag) are the round's other durability bookkeeping, not the
-// overlay, hidden by the same kind of silence: (3) a WAL-first append answers with the start_row
-// it journalled; (4) DROP takes the whole `table.otbx.*` namespace, staging file included; (5) a
-// sidecar that can't be written doesn't split the floor; (6) the retry round still asks the MVCC
-// question the compact it skips used to ask; (7) the transactional DROP's GC sweep leaves the
-// same tree behind as the immediate DROP.
+// column_data_checkpointer_t::checkpoint walks segments only; the committed-update overlay
+// (filled via the WAL-replay PHYSICAL_UPDATE path) is not a segment, so a checkpoint serialises
+// pre-update bytes. Invisible in a normal round (compaction folds the overlay into fresh
+// segments); the hole is the failed-round retry, which skips compaction and drops the overlay
+// while the `.otbx.wal_id` sidecar advances past the WAL record that could restore it.
 
 using namespace services::disk;
 using namespace components::table;
@@ -86,10 +64,7 @@ namespace {
         table.finalize_append(state, transaction_data{0, 0});
     }
 
-    // The overlay-producing write, in exactly the shape agent_disk_t::direct_update_sync
-    // hands to table_storage_adapter_t::update(row_ids, data): one id vector, one chunk at
-    // the table's own width, straight into data_table_t::update. NOT the statement path
-    // (delete-old + append-new), which never builds an overlay.
+    // The shape agent_disk_t::direct_update_sync uses -- NOT the statement path, which never builds an overlay.
     void overlay_update_one(data_table_t& table, std::pmr::memory_resource* res, int64_t row_id, int64_t new_value) {
         auto types = table.copy_types();
         data_chunk_t chunk(res, types, 1);
@@ -103,8 +78,6 @@ namespace {
         REQUIRE(updated.value().second == 1);
     }
 
-    // Every row of column 0, read back out of a storage. The judgement is the DATA, never
-    // "the open succeeded".
     std::vector<int64_t> read_all_ints(table_storage_t& ts, std::pmr::memory_resource* res) {
         std::vector<int64_t> out;
         std::vector<storage_index_t> column_ids{storage_index_t(0)};
@@ -127,13 +100,7 @@ namespace {
         return out;
     }
 
-    // The interposer seam is process-wide and wraps at open time, so it must install before the
-    // manager opens anything; the plan arms later, around the one round that must fail.
-    //
-    // What keeps sidecars and the WAL out of it is the seam, not the `.otbx` filter: the
-    // interposer applies only to single_file_block_manager_t's own handle, and neither the
-    // sidecar writer nor the WAL goes through a block manager. The filter just names which file
-    // this scope means -- `table.otbx.wal_id` would pass it too.
+    // Sidecars and the WAL stay out of this by never going through a block manager, not by the `.otbx` filter.
     class otbx_fault_scope_t final
         : public components::table::storage::single_file_block_manager_t::file_handle_interposer_t {
     public:
@@ -194,16 +161,12 @@ namespace {
             return checkpoint_round(wal_id, std::numeric_limits<uint64_t>::max());
         }
 
-        // The watermark the dispatcher would supply: every stamp at or below it is visible to
-        // all. UINT64_MAX above means "nothing is in flight", which is what most of this file
-        // wants; a round that has to see an uncommitted write passes a real one.
+        // UINT64_MAX means "nothing is in flight".
         services::wal::id_t checkpoint_round(services::wal::id_t wal_id, uint64_t compact_watermark) {
             return invoke(&manager_disk_t::checkpoint_all, session_id_t{}, wal_id, compact_watermark);
         }
     };
 
-    // Appends `count` rows and hands back the whole answer, so a caller can judge the
-    // start_row the handler reports and not only whether it refused.
     std::pair<uint64_t, uint64_t>
     append_rows_reporting(overlay_disk& fd, catalog::oid_t table_oid, uint64_t first, uint64_t count) {
         std::pmr::vector<complex_logical_type> types(&fd.resource);
@@ -223,10 +186,7 @@ namespace {
         return r.value();
     }
 
-    // Materialized but not committed: rows land in the segments now, stamped with a pending
-    // transaction id no commit here ever publishes -- the ordinary state between a statement and
-    // its COMMIT. A checkpoint must not serialize it: a .otbx keeps no version metadata, so every
-    // row it holds reads back as committed.
+    // A .otbx keeps no version metadata: every row it holds reads back as committed.
     void append_rows_uncommitted(overlay_disk& fd,
                                  catalog::oid_t table_oid,
                                  uint64_t first,
@@ -265,8 +225,7 @@ namespace {
         REQUIRE_FALSE(r.has_error());
     }
 
-    // The DURABLE half of checkpoint_wal_id_, read off the device rather than out of the
-    // agent's memory.
+    // The DURABLE half of checkpoint_wal_id_, read off the device, not the agent's memory.
     std::uint64_t sidecar_value(const std::filesystem::path& sidecar) {
         std::ifstream in(sidecar, std::ios::binary);
         REQUIRE(in.is_open());
@@ -276,8 +235,7 @@ namespace {
         return v;
     }
 
-    // FNV-1a over a whole file: shadow paging allocates FRESH blocks and commits the OTHER
-    // header slot, so a round that touched the table cannot leave the bytes equal.
+    // Shadow paging allocates FRESH blocks, so a round that touched the table cannot leave the bytes equal.
     std::uint64_t file_digest(const std::filesystem::path& p) {
         std::ifstream in(p, std::ios::binary);
         REQUIRE(in.is_open());
@@ -301,10 +259,7 @@ namespace {
 
 } // namespace
 
-// The retry's shape, one layer down: a committed-update overlay is outstanding and the
-// checkpoint is taken without the rebuild that folds it, exactly what the failed-round gate
-// does. It must not report a success it can't back -- the bytes it writes are pre-update, and
-// advancing checkpoint_wal_id_ over them would seal the only remaining copy of the value.
+// Advancing checkpoint_wal_id_ over pre-update bytes would seal the only remaining copy of the value.
 TEST_CASE("services::disk::update_overlay::a_checkpoint_that_cannot_fold_the_overlay_refuses") {
     auto dir = overlay_dir() + "/refuses";
     std::filesystem::remove_all(dir);
@@ -326,23 +281,16 @@ TEST_CASE("services::disk::update_overlay::a_checkpoint_that_cannot_fold_the_ove
         REQUIRE_FALSE(ts.checkpoint(services::wal::id_t{100}).has_error());
         REQUIRE(ts.checkpoint_wal_id() == 100);
 
-        // The replayed PHYSICAL_UPDATE: row 2 becomes 999, in the overlay.
         overlay_update_one(ts.table(), &resource, /*row_id=*/2, /*new_value=*/999);
-        // In memory the update is there — the overlay is what the read path layers on.
         CHECK(read_all_ints(ts, &resource) == std::vector<int64_t>{0, 1, 999, 3, 4});
 
-        // The retry: checkpoint with no compact() in between.
         auto retried = ts.checkpoint(services::wal::id_t{200});
         INFO("a checkpoint that serialises only segments cannot report success over an overlay it drops");
         REQUIRE(retried.has_error());
-        // The durable floor must not move over a value that did not reach the file: the WAL
-        // record carrying the 999 is the only remaining copy of it.
         CHECK(ts.checkpoint_wal_id() == 100);
         CHECK(ts.prev_checkpoint_wal_id() == 0);
     }
 
-    // And the file itself is the previous root, whole: the refusal costs the round, not the
-    // table.
     {
         table_storage_t ts(&resource, otbx, {});
         REQUIRE_FALSE(ts.construction_failed());
@@ -352,10 +300,7 @@ TEST_CASE("services::disk::update_overlay::a_checkpoint_that_cannot_fold_the_ove
     std::filesystem::remove_all(dir);
 }
 
-// The production round: a header-slot write failure puts the entry into the failed-round state,
-// and a replayed update then lands in the overlay. The next round must still get that value onto
-// the device -- the space argument behind the un-compacted retry doesn't reach as far as
-// dropping a committed value.
+// The space argument behind the un-compacted retry doesn't reach as far as dropping a committed value.
 TEST_CASE("services::disk::update_overlay::the_retry_round_still_lands_a_replayed_update") {
     auto dir = overlay_dir() + "/retry_round";
     std::filesystem::remove_all(dir);
@@ -385,17 +330,12 @@ TEST_CASE("services::disk::update_overlay::the_retry_round_still_lands_a_replaye
 
         fd.checkpoint_round(services::wal::id_t{100});
 
-        // A round every entry FAILS. Only the two header slots are refused, so no data write
-        // latches durability_error_ and no block manager goes degraded — which is what keeps
-        // the entries on the RETRY path instead of the deferral path.
         append_rows(fd, table_oid, 5, 1);
         plan.fail_writes_at_header_slots = true;
         fd.checkpoint_round(services::wal::id_t{200});
         REQUIRE(plan.header_writes_failed > 0);
         plan.fail_writes_at_header_slots = false;
 
-        // The replayed PHYSICAL_UPDATE, straight at the agent's replay router: row 2 becomes
-        // 999, in the overlay.
         {
             std::pmr::vector<complex_logical_type> types(&fd.resource);
             complex_logical_type t{logical_type::BIGINT};
@@ -409,7 +349,6 @@ TEST_CASE("services::disk::update_overlay::the_retry_round_still_lands_a_replaye
             REQUIRE_FALSE(fd.manager->direct_update_sync(table_oid, ids, chunk).contains_error());
         }
 
-        // The retry round. It must get the 999 onto the device.
         fd.checkpoint_round(services::wal::id_t{300});
     }
 
@@ -426,17 +365,11 @@ TEST_CASE("services::disk::update_overlay::the_retry_round_still_lands_a_replaye
     std::filesystem::remove_all(dir);
 }
 
-// The start_row the journal names must be the start_row the rows land at. storage_append_inner
-// reserves start_row from total_rows(), writes it into the PHYSICAL_INSERT record, and only
-// then materializes -- CREATE INDEX's backfill-from-WAL uses the journalled value as the
-// replayed chunk's row-id base. This used to be an assert, which NDEBUG deletes.
-//
-// The divergence can't be staged from out here (reservation and append share one
-// mailbox-atomic handler with no seam), so this is a sentinel on the success path, not a
-// reproduction. Sensitivity proven by injection: with
-// `const uint64_t start_row = s->total_rows() + 1;` in agent_disk_t::storage_append_inner
-// (step 5), this case failed at the first append with io_error "journalled start_row 1 but the
-// rows materialized at 0"; the injection was reverted.
+// A sentinel, not a reproduction: reservation and append share one mailbox-atomic handler with
+// no seam to stage the divergence from out here. Sensitivity proven by injection: with
+// `const uint64_t start_row = s->total_rows() + 1;` in agent_disk_t::storage_append_inner, this
+// case failed at the first append with io_error "journalled start_row 1 but the rows
+// materialized at 0"; the injection was reverted.
 TEST_CASE("services::disk::checkpoint_round::an_append_answers_with_the_start_row_it_journalled") {
     auto dir = overlay_dir() + "/start_row";
     std::filesystem::remove_all(dir);
@@ -472,16 +405,8 @@ TEST_CASE("services::disk::checkpoint_round::an_append_answers_with_the_start_ro
     std::filesystem::remove_all(dir);
 }
 
-// DROP takes the whole `table.otbx.*` namespace with it, staging file included. The sidecar
-// publishes through `<table>.otbx.wal_id.tmp` + rename, and a crash between the staging fsync
-// and that rename legitimately leaves the .tmp behind (verify_otbx_sidecars names it as one of
-// the two files this build owns, which is why no open path deletes it). A DROP removing only
-// the published sidecar left the staging file behind, and with the directory non-empty the
-// per-oid directory removal failed too -- an oid's directory outliving its table.
-//
-// The .tmp is written here by hand: in-process it can never survive a failure
-// (stage_checkpoint_sidecar's refuse() removes it on every leg, as does the round's own discard
-// on a deferral), so only a crash produces it.
+// A DROP removing only the published sidecar left the staging file behind, and with the
+// directory non-empty the per-oid directory removal failed too.
 TEST_CASE("services::disk::checkpoint_round::drop_removes_the_sidecar_staging_file_and_the_oid_directory") {
     auto dir = overlay_dir() + "/drop_staging";
     std::filesystem::remove_all(dir);
@@ -532,17 +457,9 @@ TEST_CASE("services::disk::checkpoint_round::drop_removes_the_sidecar_staging_fi
     std::filesystem::remove_all(dir);
 }
 
-// The round's two halves commit in one order, and the order must not be able to split them.
-// write_header is the atomic point of a checkpoint (its fsync IS the commit); the durable half
-// of checkpoint_wal_id_ (the `.otbx.wal_id` sidecar) used to be written after it, so a sidecar
-// that couldn't publish left the .otbx at root N+1 while the durable floor still said N -- a
-// restart would then re-apply every WAL record this round already absorbed. Not a crash
-// scenario: a full device or a refused create is enough.
-//
-// Staged without a crash: the staging name is occupied by a non-empty directory, so
-// stage_checkpoint_sidecar's stale-tmp remove and its FILE_CREATE_NEW open both fail exactly as
-// they would on ENOSPC. What must hold is that the two halves agree afterwards, whichever way
-// the round went.
+// write_header is the atomic point of a checkpoint; a sidecar that couldn't publish would leave
+// the .otbx at root N+1 while the durable floor still said N, so a restart re-applies every WAL
+// record this round already absorbed.
 TEST_CASE("services::disk::checkpoint_round::a_sidecar_that_cannot_be_written_does_not_split_the_floor") {
     auto dir = overlay_dir() + "/sidecar_split";
     std::filesystem::remove_all(dir);
@@ -572,7 +489,6 @@ TEST_CASE("services::disk::checkpoint_round::a_sidecar_that_cannot_be_written_do
     REQUIRE(sidecar_value(sidecar) == 100);
     const auto otbx_before = file_digest(otbx);
 
-    // Occupy the staging name with something neither remove() nor create-new can get past.
     std::filesystem::create_directories(staging);
     {
         std::ofstream blocker(staging / "blocker", std::ios::binary | std::ios::trunc);
@@ -583,9 +499,6 @@ TEST_CASE("services::disk::checkpoint_round::a_sidecar_that_cannot_be_written_do
     append_rows(fd, table_oid, 4, 2);
     fd.checkpoint_round(services::wal::id_t{200});
 
-    // The durable floor is whatever the file says, and the engine must not believe anything
-    // else about this table: a floor that moved only in memory is a floor a restart cannot
-    // read, and every record between the two ids gets replayed into a root that already has it.
     const auto durable = sidecar_value(sidecar);
     auto engine = fd.manager->peek_checkpoint_wal_id_from_disk(table_oid, catalog::well_known_oid::main_database);
     REQUIRE_FALSE(engine.has_error());
@@ -593,27 +506,13 @@ TEST_CASE("services::disk::checkpoint_round::a_sidecar_that_cannot_be_written_do
                                  << static_cast<std::uint64_t>(engine.value()));
     CHECK(static_cast<std::uint64_t>(engine.value()) == static_cast<std::uint64_t>(durable));
 
-    // And the half that could not be published must not have been committed either: with the
-    // sidecar unwritable the entry is deferred, so its .otbx is still root N, byte for byte.
     CHECK(file_digest(otbx) == otbx_before);
 
     std::filesystem::remove_all(dir);
 }
 
-// The retry round still asks the MVCC question. A .otbx stores no version metadata, so a
-// checkpoint may only serialize a table whose every stamp is already visible to all -- that's
-// what data_table_t::compact gates on, and while every round compacted, calling compact() was
-// asking the gate.
-//
-// The failed-round retry does not compact, and the gate lived inside the call it skips:
-// `!skip_compact_this_round && !compact(watermark)` never evaluates its right half on retry. An
-// uncommitted append landing between a failed round and its retry was written into the .otbx as
-// committed data and resurrected at the next start -- a row no transaction ever published,
-// visible forever.
-//
-// Staged exactly that way: a header-slot write failure puts the entry on the retry path, an
-// append stamped with a pending transaction id follows, and the retry round runs with a
-// watermark below that stamp.
+// The failed-round retry skips compact(), and the MVCC-watermark gate lived inside that call:
+// `!skip_compact_this_round && !compact(watermark)` never evaluates its right half on retry.
 TEST_CASE("services::disk::checkpoint_round::a_retry_round_does_not_checkpoint_uncommitted_rows") {
     auto dir = overlay_dir() + "/uncommitted_retry";
     std::filesystem::remove_all(dir);
@@ -621,8 +520,6 @@ TEST_CASE("services::disk::checkpoint_round::a_retry_round_does_not_checkpoint_u
     core::pmr::otterbrix_resource probe_resource;
     catalog::oid_t table_oid = 0;
 
-    // Below every pending txn id (those start at TRANSACTION_ID_START) and above every committed
-    // stamp this test makes — the shape of a real dispatcher watermark.
     constexpr uint64_t watermark = TRANSACTION_ID_START - 1;
     constexpr uint64_t pending_txn = TRANSACTION_ID_START + 7;
 
@@ -647,21 +544,14 @@ TEST_CASE("services::disk::checkpoint_round::a_retry_round_does_not_checkpoint_u
         append_rows(fd, table_oid, 0, 5);
         fd.checkpoint_round(services::wal::id_t{100}, watermark);
 
-        // A round the entry FAILS, which is what arms the un-compacted retry. Only the two
-        // header slots are refused, so nothing latches durability_error_ and the entry stays on
-        // the RETRY path instead of the degraded-entry deferral.
         append_rows(fd, table_oid, 5, 1);
         plan.fail_writes_at_header_slots = true;
         fd.checkpoint_round(services::wal::id_t{200}, watermark);
         REQUIRE(plan.header_writes_failed > 0);
         plan.fail_writes_at_header_slots = false;
 
-        // The uncommitted write. It is in the segments from this moment on; only its version
-        // stamp says it must not be seen.
         append_rows_uncommitted(fd, table_oid, 777, 1, pending_txn);
 
-        // The retry round. It must NOT put row 777 on the device: nothing has committed it, and
-        // the file it would be written into cannot record that.
         fd.checkpoint_round(services::wal::id_t{300}, watermark);
     }
 
@@ -679,12 +569,7 @@ TEST_CASE("services::disk::checkpoint_round::a_retry_round_does_not_checkpoint_u
     std::filesystem::remove_all(dir);
 }
 
-// The transactional DROP takes the per-oid directory too. Two DROP paths used to disagree about
-// the same tree: the immediate one (drop_storage_many -> drop_storage_one_local) removes the
-// .otbx, both sidecar names, and the per-oid directory; the transactional one (a GC entry via
-// mark_storage_dropped_many, reclaimed when the horizon passes on_horizon_advanced_inner) used
-// to remove the files but leave the directory -- one empty directory per transactional DROP,
-// forever.
+// The GC sweep removed the files but left the per-oid directory behind, forever.
 TEST_CASE("services::disk::checkpoint_round::the_gc_sweep_takes_the_oid_directory_with_the_file") {
     auto dir = overlay_dir() + "/gc_dir";
     std::filesystem::remove_all(dir);

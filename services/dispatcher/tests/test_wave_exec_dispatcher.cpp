@@ -37,8 +37,7 @@
 #include <services/index/manager_index.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 
-// Dispatcher/executor guards. The fixture path carries ::getpid() so parallel ctest
-// shards never share a disk directory.
+// wave_dir() carries ::getpid() so parallel ctest shards never share a disk directory.
 
 using namespace services;
 using namespace services::wal;
@@ -51,8 +50,6 @@ using components::types::logical_type;
 
 namespace {
 
-    // A host optimizer pass that counts its invocations. A plain fn-ptr per the
-    // optimizer_pass_t contract; the counter is a test-local global.
     std::atomic<uint64_t> g_host_pass_calls{0};
 
     components::logical_plan::node_ptr counting_host_pass(std::pmr::memory_resource*,
@@ -75,7 +72,6 @@ namespace {
         return std::string{err.what.c_str()}.find(needle) != std::string::npos;
     }
 
-    // One-arg BIGINT -> BIGINT vector UDF.
     core::error_t probe_exec(components::compute::kernel_context&,
                              const components::vector::data_chunk_t& in,
                              components::vector::vector_t& out) {
@@ -103,13 +99,7 @@ namespace {
 
 } // namespace
 
-// Dispatcher + disk + WAL over the non-threading test scheduler; mirrors the fixture in
-// test_dispatcher_catalog.cpp, plus a raw execute_plan entry (hand-built plans) and the
-// pool-admin helpers from test_dispatcher_admin_errors.cpp.
 struct wave_fixture : actor_zeta::actor::actor_mixin<wave_fixture> {
-    // wire_index=false publishes empty_address() as the executor's index address while the
-    // manager itself still exists — the mis-wired-engine seam, kept so one case can pin the
-    // refusal operator_create_index_backfill now raises there. Every other case wires it.
     wave_fixture(std::pmr::memory_resource* resource,
                  const std::string& disk_path,
                  components::planner::optimizer_pass_t optimizer_pass = &components::planner::no_op_pass,
@@ -121,9 +111,6 @@ struct wave_fixture : actor_zeta::actor::actor_mixin<wave_fixture> {
         , scheduler_(new core::non_thread_scheduler::scheduler_test_t(1, 1))
         , disk_config_(disk_path)
         , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource, scheduler_, scheduler_, disk_config_, log_))
-        // A REAL index manager, not empty_address() (see test_variant_e3_differential.cpp):
-        // with none wired, operator_create_index_backfill used to report success without
-        // creating anything. Production always spawns it (integration/cpp/base_spaces.cpp).
         , manager_index_(actor_zeta::spawn<services::index::manager_index_t>(resource,
                                                                             scheduler_,
                                                                             log_,
@@ -136,7 +123,6 @@ struct wave_fixture : actor_zeta::actor::actor_mixin<wave_fixture> {
             c.on = false;
             return c;
         }())
-        // wire_index=false names the deliberately missing index mailbox here too.
         , manager_wal_(actor_zeta::spawn<manager_wal_replicate_t>(
               resource,
               scheduler_,
@@ -144,7 +130,6 @@ struct wave_fixture : actor_zeta::actor::actor_mixin<wave_fixture> {
               log_,
               manager_disk_->address(),
               wire_index ? manager_index_->address() : components::pipeline::no_mailbox()))
-        // wire_index=false names the deliberately missing index mailbox (the mis-wired seam).
         , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(
               resource,
               scheduler_,
@@ -162,8 +147,7 @@ struct wave_fixture : actor_zeta::actor::actor_mixin<wave_fixture> {
     }
 
     ~wave_fixture() {
-        // Index BEFORE disk: it holds manager_disk_'s address and addresses it during
-        // teardown.
+        // Index resets before disk: it holds manager_disk_'s address and messages it during teardown.
         manager_dispatcher_.reset();
         manager_wal_.reset();
         manager_index_.reset();
@@ -227,9 +211,6 @@ struct wave_fixture : actor_zeta::actor::actor_mixin<wave_fixture> {
         return components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}};
     }
 
-    // Write a pg_proc (+ pg_depend) row straight into the catalog, bypassing register_udf.
-    // The operator's cross-namespace conflict read then refuses a later CREATE FUNCTION of
-    // the same name — AFTER the per-executor fan-out already registered it.
     void seed_pg_proc_row(const std::string& fname) {
         auto ctx = read_ctx();
         components::catalog::oid_batch_t batch;
@@ -261,15 +242,10 @@ private:
     std::unique_ptr<services::index::manager_index_t, actor_zeta::pmr::deleter_t> manager_index_;
     configuration::config_wal wal_config_;
     std::unique_ptr<manager_wal_replicate_t, actor_zeta::pmr::deleter_t> manager_wal_;
-    // Declared after the managers: the dispatcher is spawned with their addresses.
     std::unique_ptr<manager_dispatcher_t, actor_zeta::pmr::deleter_t> manager_dispatcher_;
     std::unique_ptr<std::pmr::monotonic_buffer_resource> parser_arena_;
 };
 
-// INSERT ... SELECT into a computed (relkind='g') table must register its columns in
-// pg_computed_column exactly like the VALUES form does. The observable half of the
-// divergence: storage HAS the column (SELECT projects it) while the catalog does not
-// (DROP COLUMN refuses).
 TEST_CASE("services::dispatcher::wave3::insert_select_registers_computed_columns") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     wave_fixture test(mr.get(), wave_dir("insert_select_computed"));
@@ -283,15 +259,12 @@ TEST_CASE("services::dispatcher::wave3::insert_select_registers_computed_columns
         auto cur = test.execute_sql("INSERT INTO cdc.docs (id, price) SELECT id, price FROM cdc.src;");
         REQUIRE(cur->is_success());
     }
-    // Storage side: the column is there.
     {
         auto cur = test.execute_sql("SELECT * FROM cdc.docs;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
     }
-    // Catalog side: DROP COLUMN must find the column. Collecting the registered columns
-    // from VALUES chunks alone leaves pg_computed_column empty here, and this refuses
-    // with "does not exist".
+    // Collecting registered columns from VALUES chunks alone leaves pg_computed_column empty here.
     {
         auto cur = test.execute_sql("ALTER TABLE cdc.docs DROP COLUMN price;");
         if (cur->is_error()) {
@@ -301,9 +274,7 @@ TEST_CASE("services::dispatcher::wave3::insert_select_registers_computed_columns
     }
 }
 
-// ALTER TABLE on a table the enrich pass could not resolve must be refused loudly, not
-// answered with an empty SUCCESS cursor. The planner's rewrite_alter_table only bails
-// ("let execute_ddl error out"), so the refusal has to come from the executor guard.
+// rewrite_alter_table only bails ("let execute_ddl error out"); the executor guard must refuse.
 TEST_CASE("services::dispatcher::wave3::alter_unresolved_table_is_refused") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     wave_fixture test(mr.get(), wave_dir("alter_unresolved"));
@@ -311,16 +282,11 @@ TEST_CASE("services::dispatcher::wave3::alter_unresolved_table_is_refused") {
     REQUIRE(test.execute_sql("CREATE DATABASE db;")->is_success());
 
     auto cur = test.execute_sql("ALTER TABLE db.no_such_table ADD COLUMN extra bigint;");
-    // Without the executor guard: an empty success cursor — the client is told the ALTER
-    // applied.
     REQUIRE(cur->is_error());
     REQUIRE(mentions(cur->get_error(), "no_such_table"));
 }
 
-// A boolean-context scalar sub-query whose plan the validator left schema-unstamped
-// (an empty resolved schema — reachable through a computed table with no registered
-// columns) must be refused with an error cursor: an assert compiles away under NDEBUG and
-// output_types().front() then reads an empty vector.
+// The assert here compiles away under NDEBUG, and output_types().front() reads an empty vector.
 TEST_CASE("services::dispatcher::wave3::boolean_subquery_unstamped_schema_is_refused") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     wave_fixture test(mr.get(), wave_dir("bool_subq_unstamped"));
@@ -331,13 +297,9 @@ TEST_CASE("services::dispatcher::wave3::boolean_subquery_unstamped_schema_is_ref
     REQUIRE(test.execute_sql("CREATE TABLE db.docs ();")->is_success());
 
     auto cur = test.execute_sql("SELECT * FROM db.t WHERE (SELECT * FROM db.docs);");
-    // An assert here ("boolean-required sub-query must be schema-stamped") would abort the
-    // whole binary in Debug and read past an empty vector under NDEBUG.
     REQUIRE(cur->is_error());
 }
 
-// Same mechanism through the `col = ARRAY(SELECT ...)` form: a 0-row result over an
-// unstamped sub-plan reaches output_types().front() on an empty vector.
 TEST_CASE("services::dispatcher::wave3::array_equality_subquery_unstamped_schema_is_refused") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     wave_fixture test(mr.get(), wave_dir("array_subq_unstamped"));
@@ -351,9 +313,7 @@ TEST_CASE("services::dispatcher::wave3::array_equality_subquery_unstamped_schema
     REQUIRE(cur->is_error());
 }
 
-// The host-injected optimizer pass (ctor chain: dispatcher -> executor) must actually be
-// forwarded into components::planner::optimize: an executor that stores optimizer_pass_
-// and never passes it silently ignores the host customization.
+// Storing optimizer_pass_ without forwarding it into optimize() would silently ignore it.
 TEST_CASE("services::dispatcher::wave3::host_optimizer_pass_reaches_optimize") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     g_host_pass_calls.store(0, std::memory_order_relaxed);
@@ -367,9 +327,7 @@ TEST_CASE("services::dispatcher::wave3::host_optimizer_pass_reaches_optimize") {
     REQUIRE(g_host_pass_calls.load(std::memory_order_relaxed) > 0);
 }
 
-// A cross-database foreign key: the transformer registers the referenced table's resolve
-// under its OWN database, so bind_catalog_data must look it up there — under the CHILD's
-// database `REFERENCES otherdb.parent` can never bind.
+// The transformer registers the referenced table's resolve under its OWN database, not the child's.
 TEST_CASE("services::dispatcher::wave3::cross_db_foreign_key_binds") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     wave_fixture test(mr.get(), wave_dir("cross_db_fk"));
@@ -386,12 +344,8 @@ TEST_CASE("services::dispatcher::wave3::cross_db_foreign_key_binds") {
         if (cur->is_error()) {
             WARN("ADD CONSTRAINT error: " << cur->get_error().what);
         }
-        // Bound under the child's database instead, this answers
-        // "referenced relation \"db1.parent\" does not exist".
         REQUIRE(cur->is_success());
     }
-    // The FK it bound must actually be the cross-database one: an orphan is refused,
-    // a matching child row goes in.
     {
         auto orphan = test.execute_sql("INSERT INTO db2.child (pid) VALUES (99);");
         REQUIRE(orphan->is_error());
@@ -402,11 +356,7 @@ TEST_CASE("services::dispatcher::wave3::cross_db_foreign_key_binds") {
     }
 }
 
-// register_udf fans the function out to every per-executor registry BEFORE the operator's
-// catalog work. When the operator then refuses (here: a pre-existing pg_proc row trips its
-// cross-namespace conflict read), the fan-out must be unwound — otherwise a RETRY of the
-// same CREATE FUNCTION hits the leaked per-executor entry ("already registered with this
-// signature") instead of the operator's own catalog refusal.
+// register_udf fans out to every per-executor registry BEFORE the operator's catalog work.
 TEST_CASE("services::dispatcher::wave3::register_udf_operator_refusal_unwinds_executors") {
     components::compute::function_registry_t::reset_default();
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
@@ -415,7 +365,6 @@ TEST_CASE("services::dispatcher::wave3::register_udf_operator_refusal_unwinds_ex
     const std::string fname = "wave3_udf_unwind_probe";
     test.seed_pg_proc_row(fname);
 
-    // First attempt: the operator refuses on the seeded catalog row.
     {
         auto err = test.dispatcher_invoke(&manager_dispatcher_t::register_udf,
                                           session_id_t{},
@@ -423,9 +372,6 @@ TEST_CASE("services::dispatcher::wave3::register_udf_operator_refusal_unwinds_ex
         REQUIRE(err.contains_error());
         REQUIRE(mentions(err, "already exists in the catalog"));
     }
-    // Retry: MUST hit the operator's catalog refusal again. A leaked per-executor
-    // registration answers "already registered with this signature"
-    // (function_registry_error) instead.
     {
         auto err = test.dispatcher_invoke(&manager_dispatcher_t::register_udf,
                                           session_id_t{},
@@ -437,10 +383,7 @@ TEST_CASE("services::dispatcher::wave3::register_udf_operator_refusal_unwinds_ex
     components::compute::function_registry_t::reset_default();
 }
 
-// ALTER TABLE ADD COLUMN carries a column type into the durable catalog exactly like
-// CREATE TABLE does, so it must pass the same gate_persistable_type. The SQL surface
-// cannot spell a too-deep type today (CREATE TYPE gates its own depth), so the probe
-// hands the dispatcher a hand-built plan — the gate is the last line of defence.
+// SQL can't spell a too-deep type (CREATE TYPE gates its own depth), so this hands a hand-built plan.
 TEST_CASE("services::dispatcher::wave3::alter_add_column_gates_persistable_type") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     wave_fixture test(mr.get(), wave_dir("alter_add_gate"));
@@ -463,38 +406,27 @@ TEST_CASE("services::dispatcher::wave3::alter_add_column_gates_persistable_type"
                                                     components::logical_plan::make_parameter_node(mr.get())};
 
     auto cur = test.execute_plan(std::move(plan));
-    // Without the validation gate the statement proceeds into the DDL pipeline with a
-    // type the durable form refuses.
     REQUIRE(cur->is_error());
     REQUIRE(mentions(cur->get_error(), "cannot be persisted"));
 }
 
-// core/executor.hpp's otterbrix::send must refuse an empty target LOUDLY: answering a
-// ready future with a default value ("answered, with nothing") builds it on the empty
-// address's null resource. The contract is that an empty target dies with a message and
-// never answers. The child process exercises it so the abort cannot take the test runner
-// down.
+// A ready future answered with a default value would build it on the empty address's null resource.
 TEST_CASE("services::dispatcher::wave3::empty_target_send_dies_loudly") {
     const pid_t child = fork();
     REQUIRE(child >= 0);
     if (child == 0) {
-        // CHILD: an empty-target send must never return. Catch2's SIGABRT handler is
-        // reset so the abort reaches waitpid as a signal death, not a report.
+        // Catch2 installs a SIGABRT handler; reset it so the abort reaches waitpid as a signal death.
         ::signal(SIGABRT, SIG_DFL);
         auto res = actor_zeta::otterbrix::send(actor_zeta::address_t::empty_address(),
                                                &services::collection::executor::executor_t::poke_msg);
-        // Reached only if the send answered instead of dying — report survival.
         _exit(res.second.is_ready() ? 42 : 43);
     }
     int status = 0;
     REQUIRE(::waitpid(child, &status, 0) == child);
-    // The contract: death by signal (abort), not a clean exit with an answer.
     REQUIRE(WIFSIGNALED(status));
 }
 
-// Skipping set_column_bindings for a computed (relkind='g') table's INSERT ... SELECT would
-// leave the operator nothing to rename by, so `INSERT INTO g (x, y) SELECT a, b` would land and
-// register a and b — the written (x, y) vanishing silently.
+// Skipping set_column_bindings would register a and b instead of the written x and y.
 TEST_CASE("services::dispatcher::wave4::insert_select_column_list_renames_into_computed_table") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     wave_fixture test(mr.get(), wave_dir("insert_select_rename_computed"));
@@ -509,7 +441,6 @@ TEST_CASE("services::dispatcher::wave4::insert_select_column_list_renames_into_c
         INFO("INSERT error: " << (cur->is_error() ? std::string{cur->get_error().what.c_str()} : std::string{"none"}));
         REQUIRE(cur->is_success());
     }
-    // The written names route the values: x carries a's values, y carries b's.
     {
         auto cur = test.execute_sql("SELECT * FROM cdd.docs WHERE x = 10;");
         REQUIRE(cur->is_success());
@@ -520,7 +451,6 @@ TEST_CASE("services::dispatcher::wave4::insert_select_column_list_renames_into_c
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
     }
-    // The catalog registered the written names too (DROP COLUMN resolves x).
     {
         auto cur = test.execute_sql("ALTER TABLE cdd.docs DROP COLUMN x;");
         if (cur->is_error()) {
@@ -528,19 +458,13 @@ TEST_CASE("services::dispatcher::wave4::insert_select_column_list_renames_into_c
         }
         REQUIRE(cur->is_success());
     }
-    // Arity mismatch between the list and the projection is a loud refusal.
     {
         auto cur = test.execute_sql("INSERT INTO cdd.docs (z) SELECT a, b FROM cdd.src;");
         REQUIRE(cur->is_error());
     }
 }
 
-// The relname of a new index needs its own check: duplicate detection is by
-// (keys, type) only, so CREATE INDEX under a name pg_class already holds — another
-// index, or even a table — mints a SECOND pg_class row with the same relname, and
-// DROP INDEX resolves by name and then answers about WHICHEVER row it found. The name
-// check rides the same resolve channel DROP INDEX uses: the transformer registers a
-// {db, indexname} demand, enrich stamps the conflicting oid, and the planner refuses.
+// Duplicate detection is by (keys,type) only, so a taken name would mint a second pg_class row.
 TEST_CASE("services::dispatcher::wave4::create_index_refuses_a_taken_name") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     wave_fixture test(mr.get(), wave_dir("create_index_name_unique"));
@@ -549,29 +473,18 @@ TEST_CASE("services::dispatcher::wave4::create_index_refuses_a_taken_name") {
     REQUIRE(test.execute_sql("CREATE TABLE cdi.t (a bigint, b bigint);")->is_success());
     REQUIRE(test.execute_sql("CREATE INDEX idx ON cdi.t (a);")->is_success());
 
-    // The SAME name over a DIFFERENT key set: the (keys,type) duplicate check
-    // cannot see it, only the name check can.
     {
         auto cur = test.execute_sql("CREATE INDEX idx ON cdi.t (b);");
         REQUIRE(cur->is_error());
     }
-    // A name a TABLE already answers to is just as taken — indexes and tables
-    // share pg_class.
     {
         auto cur = test.execute_sql("CREATE INDEX t ON cdi.t (a);");
         REQUIRE(cur->is_error());
     }
-    // A fresh name still works.
     REQUIRE(test.execute_sql("CREATE INDEX idx2 ON cdi.t (b);")->is_success());
 }
 
-// A column written NULL in every row of a VALUES source has no type, so it's dropped from the
-// source chunk before anything downstream sees it — which used to die as a bare arity mismatch
-// ("INSERT names 2 columns but the source provides 1") naming neither the column nor the reason.
-// The drop site is the last place that still knows which written name it belonged to.
-//
-// Both halves are asserted: the arity sentence stays, and it now also names the column and says
-// why.
+// A column written NULL in every row has no type, so it's dropped before anything downstream sees it.
 TEST_CASE("services::dispatcher::wave4::insert_names_the_all_null_column_it_drops") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     wave_fixture test(mr.get(), wave_dir("insert_all_null_column_named"));
@@ -583,13 +496,10 @@ TEST_CASE("services::dispatcher::wave4::insert_names_the_all_null_column_it_drop
     INFO("INSERT result: " << (cur->is_error() ? cur->get_error().what : "accepted"));
     REQUIRE(cur->is_error());
     const std::string what{cur->get_error().what};
-    // the arity sentence, unchanged
     CHECK(what.find("INSERT names 2 columns but the source provides 1") != std::string::npos);
-    // and the half that was missing: WHICH column, and WHY
     CHECK(what.find("\"a\"") != std::string::npos);
     CHECK(what.find("NULL in every row") != std::string::npos);
 
-    // Two typeless columns are both named, and the sentence stays grammatical.
     auto two = test.execute_sql("INSERT INTO anc.t (a, b) VALUES (NULL, NULL);");
     REQUIRE(two->is_error());
     const std::string what_two{two->get_error().what};
@@ -597,15 +507,11 @@ TEST_CASE("services::dispatcher::wave4::insert_names_the_all_null_column_it_drop
     CHECK(what_two.find("INSERT names 2 columns but the source provides 0") != std::string::npos);
     CHECK(what_two.find("\"a\", \"b\"") != std::string::npos);
 
-    // A column that some row types is NOT dropped: the mixed case still lands, so the
-    // refusal above is about typelessness and not about NULLs as such.
+    // A column some row types is not dropped: refusal above is about typelessness, not NULLs.
     REQUIRE(test.execute_sql("INSERT INTO anc.t (id, v) VALUES (1, NULL), (2, 7);")->is_success());
 }
 
-// A CREATE INDEX reaching an executor with NO index manager wired must be refused, not
-// answered with success: operator_create_index_backfill used to report SUCCESS on that branch
-// without registering, creating, backfilling, or flipping pg_index.indisvalid. This case keeps
-// the empty-address seam alive on purpose so the refusal itself stays pinned.
+// Without this, operator_create_index_backfill silently answers SUCCESS without doing anything.
 TEST_CASE("services::dispatcher::wave4::create_index_refuses_without_an_index_manager") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     wave_fixture test(mr.get(),
@@ -622,30 +528,13 @@ TEST_CASE("services::dispatcher::wave4::create_index_refuses_without_an_index_ma
     CHECK(std::string(cur->get_error().what).find("index manager") != std::string::npos);
 }
 
-// CREATE TABLE and ALTER TABLE ADD COLUMN must coerce a DEFAULT identically: both route through
-// the same convert_column_defaults / cast_registry_ (services/collection/executor.cpp, "ALTER
-// TABLE: DEFAULT coercion"), mirroring PostgreSQL's single cookDefault() shared by DefineRelation
-// and ATExecAddColumn (COERCION_ASSIGNMENT, erroring only when no assignment cast exists).
-//
-// What still refuses: a DEFAULT with no assignment cast to the column's type.
-// catalog::alter_column_validators::validate_default_value_type stays load-bearing as a SECOND
-// line — the coercion only runs on the ALTER STATEMENT path, so a host-built plan handing
-// node_alter_column_t straight to the operator skips it entirely, leaving the validator the only
-// check left. Do not read this test as license to remove it.
-//
-// attdefspec is TYPE-DIRECTED: read_typed_value (components/index/logical_value_binary_codec.hpp)
-// checks a logical tag byte per value, so it also catches a SAME-WIDTH divergence (BIGINT read as
-// TIMESTAMP), not just the WIDTH divergence it always caught. That's a deeper backstop, not a
-// replacement: the validator refuses at ALTER time before any catalog write; the codec only
-// guarantees a divergence that somehow reached disk can't be read back as the wrong type
-// (data_corruption). Dropping the validator would turn a rejected statement into an unreadable row.
+// A hand-built plan bypasses the ALTER-statement coercion path, so validate_default_value_type stays load-bearing.
 TEST_CASE("services::dispatcher::wave4::alter_add_column_default_is_coerced_like_create_table") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     wave_fixture test(mr.get(), wave_dir("alter_add_default_type"));
 
     REQUIRE(test.execute_sql("CREATE DATABASE db;")->is_success());
 
-    // --- CREATE TABLE leg: the cast happens, and the stored default is the COLUMN's type.
     REQUIRE(test.execute_sql("CREATE TABLE db.created (a bigint, c integer DEFAULT 7);")->is_success());
     REQUIRE(test.execute_sql("INSERT INTO db.created (a) VALUES (1);")->is_success());
     {
@@ -659,8 +548,7 @@ TEST_CASE("services::dispatcher::wave4::alter_add_column_default_is_coerced_like
         CHECK(v.value<int32_t>() == 7);
     }
 
-    // --- ALTER leg, TYPES AGREE: this is the control. ADD COLUMN with a DEFAULT is not
-    // refused as such — the write path expands it for a row inserted without the column.
+    // The write path expands a DEFAULT for a row inserted without the column.
     REQUIRE(test.execute_sql("CREATE TABLE db.agree (a bigint);")->is_success());
     REQUIRE(test.execute_sql("ALTER TABLE db.agree ADD COLUMN c bigint DEFAULT 7;")->is_success());
     REQUIRE(test.execute_sql("INSERT INTO db.agree (a) VALUES (1);")->is_success());
@@ -674,11 +562,6 @@ TEST_CASE("services::dispatcher::wave4::alter_add_column_default_is_coerced_like
         CHECK(v.value<int64_t>() == 7);
     }
 
-    // --- ALTER leg, TYPES DIVERGE: the ONLY difference from the control above is the
-    // declared column type. ACCEPTED, and the stored default is the COLUMN's type — the same
-    // answer the CREATE TABLE leg above gives for the same spelling. That identity IS the
-    // subject: assert it against db.created, not against a literal, so the two legs cannot
-    // drift apart without this failing.
     REQUIRE(test.execute_sql("CREATE TABLE db.diverge (a bigint);")->is_success());
     REQUIRE(test.execute_sql("ALTER TABLE db.diverge ADD COLUMN c integer DEFAULT 7;")->is_success());
     REQUIRE(test.execute_sql("INSERT INTO db.diverge (a) VALUES (1);")->is_success());
@@ -688,18 +571,11 @@ TEST_CASE("services::dispatcher::wave4::alter_add_column_default_is_coerced_like
         REQUIRE(cur->size() == 1);
         const auto v = cur->value(0, 0);
         REQUIRE_FALSE(v.is_null());
-        // INTEGER, not the BIGINT the literal started as — convert_column_defaults ran on the
-        // ALTER path exactly as it does on the CREATE path.
         CHECK(v.type().type() == logical_type::INTEGER);
         CHECK(v.value<int32_t>() == 7);
     }
 
-    // --- WHAT STILL REFUSES, ON BOTH LEGS. A DEFAULT the registry has no ASSIGNMENT cast to the
-    // column's type for. STRING -> number is registered explicit_only (components/casts/
-    // default_casts.cpp, add_string_to_number), so `integer DEFAULT '7'` has a cast that exists
-    // and is nevertheless not usable here — exactly PostgreSQL's rule, where cookDefault coerces
-    // with COERCION_ASSIGNMENT and errors otherwise. Asserted on BOTH spellings, because parity
-    // that only holds for the accepting direction is not parity.
+    // STRING -> number is registered explicit_only, so it exists but isn't usable under COERCION_ASSIGNMENT.
     {
         auto cur = test.execute_sql("CREATE TABLE db.nocast_create (a bigint, c integer DEFAULT '7');");
         INFO("CREATE TABLE with a default that has no assignment cast");
@@ -717,17 +593,13 @@ TEST_CASE("services::dispatcher::wave4::alter_add_column_default_is_coerced_like
         CHECK(cur->is_error());
     }
 
-    // --- What the codec itself refuses, and why that does not retire the validator.
-    // attdefspec reads the payload AGAINST the column type, and checks a stored logical
-    // tag byte against it before reading anything else.
+    // attdefspec checks a stored logical tag byte against the column type before reading anything else.
     {
         const components::types::logical_value_t bigint_seven{mr.get(), static_cast<int64_t>(7)};
         std::string spec;
         REQUIRE_FALSE(components::catalog::encode_default_spec(mr.get(), bigint_seven, spec).contains_error());
 
-        // Widths differ (8 vs 4). Caught even before the tag byte existed — the four
-        // leftover bytes gave it away through `pos != payload.size()` — and still
-        // caught. This arm is the standing proof the codec always held THIS class.
+        // Widths differ (8 vs 4): already caught pre-tag by the leftover-bytes check.
         std::optional<components::types::logical_value_t> as_integer;
         auto ec_int = components::catalog::decode_default_spec(mr.get(),
                                                                complex_logical_type{logical_type::INTEGER},
@@ -735,12 +607,7 @@ TEST_CASE("services::dispatcher::wave4::alter_add_column_default_is_coerced_like
                                                                as_integer);
         CHECK(ec_int.contains_error());
 
-        // Widths AGREE (int64 both), so the leftover-bytes check above sees nothing: this
-        // is the arm the tag byte carries. Without it the payload decodes into a perfectly
-        // valid TIMESTAMP — with no assert to lose under NDEBUG — leaving
-        // validate_default_value_type the ONLY thing between this and a persisted
-        // `timestamp DEFAULT 7`. The stored tag says BIGINT, the column says TIMESTAMP,
-        // and the read is refused before the payload is touched.
+        // Widths agree (int64 both): the arm the tag byte, not the leftover-bytes check, actually carries.
         std::optional<components::types::logical_value_t> as_timestamp;
         auto ec_ts = components::catalog::decode_default_spec(mr.get(),
                                                               complex_logical_type{logical_type::TIMESTAMP},
@@ -752,13 +619,10 @@ TEST_CASE("services::dispatcher::wave4::alter_add_column_default_is_coerced_like
 }
 
 
-// The type tag over the WHOLE pair space: 16 scalars give 240 ordered wrong-type pairs, all
-// must refuse, and the 16 self-pairs must still round-trip. Before the tag byte, 50 of the 240
-// were accepted SILENTLY as a valid value of the wrong type (e.g. BIGINT read as
-// TIMESTAMP/DOUBLE — a bit-pattern reinterpretation, not just a relabelling); the other 190 were
-// only caught because their widths happened to disagree. Drives the catalog encode/decode
-// boundary directly (components/catalog/system_table_schemas.cpp over
-// components/index/logical_value_binary_codec.hpp), no dispatcher fixture needed.
+// 16 scalars give 240 ordered wrong-type pairs, all must refuse, and the 16 self-pairs must
+// still round-trip. Before the tag byte, 50 of the 240 were accepted silently as a valid
+// value of the wrong type (bit-pattern reinterpretation, not relabelling); the other 190 were
+// only caught because their widths happened to disagree.
 TEST_CASE("services::dispatcher::wave4::attdefspec_type_tag_refuses_every_wrong_type_pair") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     auto* resource = mr.get();
@@ -770,9 +634,7 @@ TEST_CASE("services::dispatcher::wave4::attdefspec_type_tag_refuses_every_wrong_
         logical_value_t value;
     };
 
-    // One value per scalar, all of them SMALL and non-negative on purpose: those are
-    // exactly the payloads that reinterpret cleanly into another type of the same width,
-    // so a pair that survives here survives on the type check and not on a lucky bit.
+    // Values are SMALL and non-negative: they reinterpret cleanly into another type of the same width.
     const std::vector<scalar_case> cases{
         {"BOOLEAN", complex_logical_type{logical_type::BOOLEAN}, logical_value_t{resource, true}},
         {"TINYINT", complex_logical_type{logical_type::TINYINT}, logical_value_t{resource, std::int8_t{1}}},
@@ -801,9 +663,9 @@ TEST_CASE("services::dispatcher::wave4::attdefspec_type_tag_refuses_every_wrong_
          complex_logical_type{logical_type::TIMESTAMP_TZ},
          logical_value_t{resource, core::date::timestamptz_t{core::date::microseconds{7}}}},
     };
-    REQUIRE(cases.size() == 16); // 16 * 15 = 240 ordered wrong-type pairs
+    REQUIRE(cases.size() == 16);
 
-    std::string accepted; // every wrong-type pair that still decodes, named
+    std::string accepted;
     int accepted_count = 0;
     int refused_count = 0;
     int self_round_trips = 0;
@@ -819,8 +681,7 @@ TEST_CASE("services::dispatcher::wave4::attdefspec_type_tag_refuses_every_wrong_
             const auto ec = components::catalog::decode_default_spec(resource, dst.type, spec, out);
 
             if (&src == &dst) {
-                // The value keeps its own type: the tag is a CHECK, never a source. A
-                // codec that refused its own output would be worse than the hole.
+                // The tag is a CHECK, never a source: refusing its own output would be worse than the hole.
                 INFO("self round trip: " << src.name);
                 REQUIRE_FALSE(ec.contains_error());
                 REQUIRE(out.has_value());
@@ -845,11 +706,7 @@ TEST_CASE("services::dispatcher::wave4::attdefspec_type_tag_refuses_every_wrong_
     CHECK(self_round_trips == 16);
 }
 
-// Two invariants a per-value tag could plausibly break: NULL carries NO tag (presence 0 ends
-// the value, and NULL is NA-typed here, so there's no type to agree with); and nested values
-// carry the tag at EVERY level, not just the outermost — a STRUCT<BIGINT,STRING> read against
-// STRUCT<TIMESTAMP,STRING> is the same same-width swap one level down, which an outer-only tag
-// would miss.
+// NULL carries no tag (presence 0 ends the value), and nested values carry the tag at EVERY level.
 TEST_CASE("services::dispatcher::wave4::attdefspec_type_tag_spares_null_and_reaches_every_leaf") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     auto* resource = mr.get();
@@ -932,7 +789,6 @@ TEST_CASE("services::dispatcher::wave4::attdefspec_type_tag_spares_null_and_reac
         CHECK(out->children()[0].value<std::int64_t>() == 42);
         CHECK(out->children()[1].value<std::string_view>() == "x");
 
-        // The outer STRUCT agrees; field 0 does not, and its width does not give it away.
         std::optional<logical_value_t> wrong;
         CHECK(components::catalog::decode_default_spec(resource, bad, spec, wrong).contains_error());
         CHECK_FALSE(wrong.has_value());

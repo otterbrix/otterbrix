@@ -17,12 +17,10 @@ namespace components::table {
     namespace impl {
 
         static constexpr uint64_t DEFAULT_STRING_BLOCK_LIMIT = 4096;
-        // Marker width (uint64 block id + int64 offset) must match the dictionary reservation
-        // (write_string_marker writes 16 bytes) and the reader's memcpy width.
+        // Marker width must match write_string_marker's 16-byte write and the reader's memcpy width.
         static constexpr uint64_t BIG_STRING_MARKER_BASE_SIZE = sizeof(uint64_t) + sizeof(int64_t);
         static constexpr uint64_t INVALID_BLOCK = uint64_t(-1);
-        // Must be storage::MAXIMUM_BLOCK: a second, different local MAXIMUM_BLOCK made every
-        // real overflow id fail is_valid.
+        // Must equal storage::MAXIMUM_BLOCK: a diverging local value made every real overflow id fail is_valid.
         static constexpr uint64_t MAXIMUM_BLOCK = storage::MAXIMUM_BLOCK;
 
         struct string_location_t {
@@ -30,8 +28,7 @@ namespace components::table {
                 : block_id(block_id)
                 , offset(offset) {}
             string_location_t() = default;
-            // block_id: INVALID_BLOCK = inline (offset indexes the dictionary); >= MAXIMUM_BLOCK
-            // = transient overflow block; < MAXIMUM_BLOCK = a real FILE block from the checkpoint.
+            // block_id: INVALID_BLOCK = inline; >= MAXIMUM_BLOCK = transient overflow; else a real FILE block.
             bool is_overflow() const { return block_id != INVALID_BLOCK; }
             uint64_t block_id;
             int64_t offset;
@@ -47,12 +44,8 @@ namespace components::table {
 
         static constexpr uint16_t DICTIONARY_HEADER_SIZE = sizeof(dictionary_compression_header_t);
 
-        // Width of ONE element in a segment's RAW payload -- not always
-        // complex_logical_type::size(): a LIST segment stores a uint64 child-offset per row,
-        // while sizeof(list_entry_t) == 16. Every raw-byte consumer (checkpoint compression,
-        // compressed scan/fetch) must use this width; using 16 for LIST made the compressed
-        // scan write 16 bytes/row into an 8-byte/row result vector -- an 8 KiB heap overrun per
-        // 1024-row vector on a plain SELECT.
+        // LIST stores a uint64 child-offset per row despite sizeof(list_entry_t)==16; using 16 here
+        // overran the compressed scan's result vector.
         uint64_t stored_element_size(const types::complex_logical_type& type) {
             if (type.to_physical_type() == types::physical_type::LIST) {
                 return sizeof(uint64_t);
@@ -99,9 +92,6 @@ namespace components::table {
             memcpy(&offset, target, sizeof(int64_t));
         }
 
-        // No throw: this runs on the scan/fetch hot path and across actor boundaries.
-        // A dictionary offset outside the block is corruption; the caller turns `false` into a
-        // data_corruption error on its own state channel.
         bool fetch_string_location(string_dictionary_container_t dict,
                                    std::byte* base_ptr,
                                    int32_t dict_offset,
@@ -147,10 +137,6 @@ namespace components::table {
             return core::error_t(core::error_code_t::data_corruption, std::move(message));
         }
 
-        // The `default:` leg of every physical-type dispatch below: STRUCT/ARRAY/UNION/NA/etc.
-        // own no segment of their own, so none can be served here. Reports core::error_t rather
-        // than throwing: a throw inside an actor-zeta coroutine aborts the whole process, not
-        // just the statement.
         core::error_t unsupported_segment_type_error(column_segment_t& segment, const char* what) {
             std::pmr::string message(segment.block->block_manager.buffer_manager.resource());
             message.append(what);
@@ -159,9 +145,8 @@ namespace components::table {
             return core::error_t(core::error_code_t::unimplemented_yet, std::move(message));
         }
 
-        // A segment stamped with a compression this reader does not implement: reading its
-        // bytes as raw values would be silent corruption (the BITPACKING trap). Reported as
-        // data_corruption on the caller's channel, never an abort — reachable from a SELECT.
+        // Reading a segment stamped with a compression this reader does not implement as raw bytes
+        // would be silent corruption -- the BITPACKING trap. Refused on the caller's channel.
         core::error_t unreadable_compression_error(column_segment_t& segment, const char* what) {
             std::pmr::string message(segment.block->block_manager.buffer_manager.resource());
             message.append(what);
@@ -171,11 +156,7 @@ namespace components::table {
             return core::error_t(core::error_code_t::data_corruption, std::move(message));
         }
 
-        // Resolve the block a big-string marker points at. id >= MAXIMUM_BLOCK is a TRANSIENT
-        // block (state.overflow_blocks); id < MAXIMUM_BLOCK is a real FILE block, registered on
-        // reload from the persisted list. An unregistered id in either domain is corruption, not
-        // "look it up anyway" — reported through the caller's error channel, not
-        // assert+abort: this is reachable from a plain SELECT.
+        // id >= MAXIMUM_BLOCK is transient; else a real FILE block. Unregistered in either domain is corruption.
         std::shared_ptr<storage::block_handle_t>
         resolve_overflow_block(column_segment_t& segment, uint64_t block_id, core::error_t& error) {
             auto* raw_state = segment.segment_state();
@@ -209,16 +190,11 @@ namespace components::table {
                                       std::byte* base_ptr,
                                       string_location_t location,
                                       uint32_t string_length) {
-            // NULL/empty shortcut applies to INLINE entries only: for an overflow entry an
-            // offset of 0 is the legitimate position of the FIRST string in its block.
             if (location.offset == 0) {
                 return std::string_view(nullptr, 0);
             }
             return std::string_view(reinterpret_cast<char*>(base_ptr + dict.end - location.offset), string_length);
         }
-        // Borrowing variant, used only by callers whose result dies with the fetch state's pins
-        // (column_fetch_state::result_outlives_pins == false). Failures go to state.fetch_error
-        // and the returned view is empty -- nothing here aborts.
         std::string_view fetch_string_from_dict(column_segment_t& segment,
                                                 column_fetch_state& state,
                                                 string_dictionary_container_t dict,
@@ -233,10 +209,7 @@ namespace components::table {
                 return std::string_view(nullptr, 0);
             }
             if (location.is_overflow()) {
-                // Big string: bytes live in a separate overflow block. The returned view
-                // borrows them, so the pin must outlive it -- park the handle in the fetch
-                // state's `handles` map rather than pinning locally and releasing on return (a
-                // disk overflow block is evictable+reloadable).
+                // The view borrows overflow block bytes, so the pin is parked in `handles`, not released on return.
                 auto overflow = resolve_overflow_block(segment, location.block_id, state.fetch_error);
                 if (!overflow) {
                     return std::string_view(nullptr, 0);
@@ -250,13 +223,7 @@ namespace components::table {
             return fetch_string(dict, base_ptr, location, string_length);
         }
 
-        // Intern the scanned string's BYTES into `aux` (the result vector's owned
-        // string heap) and return a view over the COPY. The raw bytes live in the
-        // buffer-pool-pinned block (base_ptr for inline strings, an overflow block
-        // for big strings); that pin is released per streaming batch and the block
-        // may later be evicted + reloaded at a new address. A borrowed view would
-        // then dangle (use-after-free). Copying into the result-owned heap -- the
-        // same mechanism vector_ops::copy uses -- makes the payload outlive the pin.
+        // Interns bytes into `aux`: the source pin is released per batch, so a borrowed view would dangle.
         std::string_view fetch_string_owned(column_segment_t& segment,
                                             string_dictionary_container_t dict,
                                             std::byte* base_ptr,
@@ -275,31 +242,23 @@ namespace components::table {
             }
             std::string_view borrowed;
             if (!location.is_overflow()) {
-                // NULL / empty string: no payload to own. INLINE-only rule — an overflow
-                // entry's offset 0 is the first string of its block.
                 if (location.offset == 0) {
                     return std::string_view(nullptr, 0);
                 }
-                // Inline string: bytes live in the dictionary of the pinned block.
                 borrowed =
                     std::string_view(reinterpret_cast<char*>(base_ptr + dict.end - location.offset), string_length);
             } else {
-                // Big-string overflow: resolve, pin, then intern. The pin is local and
-                // released when `pinned` destructs -- safe since the bytes are copied below.
                 auto overflow = resolve_overflow_block(segment, location.block_id, error);
                 if (!overflow) {
                     return std::string_view(nullptr, 0);
                 }
                 auto pinned = segment.block->block_manager.buffer_manager.pin(overflow);
                 if (pinned.has_error()) {
-                    // OOM, or a checksum mismatch when a disk overflow block is re-read.
-                    // Report it rather than yielding a silently empty string.
                     error = pinned.error();
                     return std::string_view(nullptr, 0);
                 }
                 borrowed = read_string_with_length(pinned.value().ptr(), static_cast<int32_t>(location.offset));
             }
-            // Copy the bytes into the result-owned heap and return a view over the copy.
             return std::string_view(reinterpret_cast<char*>(aux.insert(borrowed)), borrowed.size());
         }
 
@@ -313,9 +272,7 @@ namespace components::table {
 
             auto& buffer_manager = segment.block->block_manager.buffer_manager;
             auto block_size = segment.block_manager().block_size();
-            // One string's [uint32 length][bytes] record must fit ONE block (the checkpoint
-            // persists it as one contiguous run). Refuse at write time rather than writing a
-            // payload with no representable on-disk form.
+            // A [length][bytes] record must fit one block; refuse rather than write an unrepresentable payload.
             if (static_cast<uint64_t>(total_length) > block_size) {
                 std::pmr::string message(buffer_manager.resource());
                 message.append("string value of ");
@@ -381,9 +338,6 @@ namespace components::table {
                                   int64_t row_id,
                                   vector::vector_t& result,
                                   uint64_t result_idx) {
-            // The pin comes from the fetch state's cache, not from a fresh pin per row. The state
-            // is hoisted by every caller that fetches more than one row, so a block is pinned once
-            // per segment instead of once per row — string_fetch_row has always done it this way.
             auto* handle_ptr = state.get_or_insert_handle(segment);
             if (!handle_ptr) {
                 return; // state.fetch_error already set by get_or_insert_handle
@@ -438,10 +392,6 @@ namespace components::table {
                 string_length = static_cast<uint32_t>(std::abs(dict_offset) - std::abs(base_data[row_id - 1]));
             }
             if (state.result_outlives_pins) {
-                // The caller keeps this chunk after our pins are gone, so the bytes have to be the
-                // result's own. Same mechanism the bulk scan path uses.
-                // Guard the heap like string_scan_partial: this leg is now also reached for a
-                // STRUCT FIELD's vector, which may lack (or mistype) the auxiliary buffer.
                 auto aux_buffer = result.auxiliary();
                 if (!aux_buffer || aux_buffer->type() != vector::vector_buffer_type::STRING) {
                     aux_buffer = std::make_shared<vector::string_vector_buffer_t>(result.resource());
@@ -477,10 +427,6 @@ namespace components::table {
                         }
                     }
                 } else if (uvf.referenced_indexing == nullptr || !uvf.referenced_indexing->is_set()) {
-                    // FLAT vector, no nulls, identity indexing: get_index(i) == i, so source and
-                    // target runs are both contiguous and the whole append is one memcpy instead
-                    // of `count` individually indexed assignments. T is a fixed-size arithmetic
-                    // type on this path, so a byte copy is exactly the element copy above.
                     std::memcpy(tdata + target_offset, sdata + offset, static_cast<std::size_t>(count) * sizeof(T));
                 } else {
                     for (uint64_t i = 0; i < count; i++) {
@@ -668,8 +614,6 @@ namespace components::table {
             result.set_data(source_data);
         }
 
-        // --- CONSTANT compression scan helpers (generic, size-based) ---
-
         void constant_scan_entire(column_segment_t& segment,
                                   column_scan_state& state,
                                   uint64_t scan_count,
@@ -711,7 +655,6 @@ namespace components::table {
             std::memcpy(result.data() + result_idx * ts, src, ts);
         }
 
-        // --- RLE compression scan helpers ---
         // RLE format: [uint32_t num_runs][value(ts) + run_length(4)]...
 
         void rle_scan_entire(column_segment_t& segment,
@@ -730,7 +673,6 @@ namespace components::table {
             result.set_vector_type(vector::vector_type::FLAT);
             auto* dest = result.data();
 
-            // Skip to the run containing row_offset
             uint64_t rows_skipped = 0;
             uint32_t run_idx = 0;
             while (run_idx < num_runs) {
@@ -743,7 +685,6 @@ namespace components::table {
                 run_idx++;
             }
 
-            // Emit scan_count values
             uint64_t emitted = 0;
             uint64_t pos_in_run = row_offset - rows_skipped;
             while (emitted < scan_count && run_idx < num_runs) {
@@ -837,9 +778,7 @@ namespace components::table {
             }
         }
 
-        // --- DICTIONARY compression scan helpers ---
         // Format: [uint16_t num_unique][values(num_unique * ts)][indices(count * idx_size)]
-        // idx_size = 1 if num_unique <= 256, else 2
 
         void dict_scan_entire(column_segment_t& segment,
                               column_scan_state& state,
@@ -1047,10 +986,6 @@ namespace components::table {
             auto base_data = reinterpret_cast<int32_t*>(baseptr + DICTIONARY_HEADER_SIZE);
             auto result_data = result.data<std::string_view>();
 
-            // Ensure the result vector owns a string heap to intern scanned bytes into.
-            // A freshly-built STRING vector already carries one (see vector_t::initialize),
-            // but guard against a missing/typed-wrong auxiliary so the interned views are
-            // always backed by result-owned memory rather than the transient pinned block.
             auto aux_buffer = result.auxiliary();
             if (!aux_buffer || aux_buffer->type() != vector::vector_buffer_type::STRING) {
                 aux_buffer = std::make_shared<vector::string_vector_buffer_t>(result.resource());
@@ -1071,29 +1006,20 @@ namespace components::table {
                                                                     *aux,
                                                                     state.scan_error);
                 previous_offset = base_data[static_cast<uint64_t>(start) + i];
-                // Stop the vector immediately on error rather than leaving a tail of silently
-                // empty strings; column_data_t::scan_vector propagates scan_error upward.
                 if (state.scan_error.contains_error()) {
                     return;
                 }
             }
         }
 
-        // A function, not an inline dereference in the initializer list, so the null-check can
-        // stand AHEAD of segment_statistics_'s own initialization from this resource (a
-        // constructor body would run too late). Every construction site is checked to never
-        // deliver null; under NDEBUG the assert is gone and a null handle just dereferences,
-        // same as before this check existed.
         static std::pmr::memory_resource* segment_arena(const std::shared_ptr<storage::block_handle_t>& block) {
             assert(block && "a column segment takes its arena from its block; the handle cannot be null");
             return block->block_manager.buffer_manager.resource();
         }
     } // namespace impl
 
-    // Parameter deliberately named `block_p`, not `block`: it used to shadow the member, so
-    // `assert(!block || ...)` in the body read the (moved-from, always-empty) PARAMETER and the
-    // size guard behind it never ran. The move constructors' copy of that assert reads the
-    // member and is live, which is what kept the dead one looking right.
+    // Parameter deliberately named `block_p`, not `block`: a same-named parameter shadowed the member, so
+    // `assert(!block || ...)` in the body silently read the always-empty parameter instead of the member.
     column_segment_t::column_segment_t(std::shared_ptr<storage::block_handle_t> block_p,
                                        const types::complex_logical_type& type,
                                        int64_t start,
@@ -1109,19 +1035,12 @@ namespace components::table {
         , block_id_(block_id)
         , offset_(offset)
         , segment_size_(segment_size)
-        // Reads `this->block` (already initialized, declared ahead of the statistics),
-        // screened by impl::segment_arena so the null check stands ahead of the dereference.
         , segment_statistics_(impl::segment_arena(this->block)) {
-        // A segment that does not fit its block overruns it on the first scan. The disk path
-        // screens the same number ahead of the constructor (data_corruption); this is the
-        // in-process invariant.
         assert(segment_size_ <= block_manager().block_size());
 
         if (type.type() == types::logical_type::VALIDITY) {
             auto& buffer_manager = this->block->block_manager.buffer_manager;
             if (block_id_ == storage::INVALID_BLOCK) {
-                // The block was just registered (memory reserved), so pinning it cannot OOM. A ctor
-                // cannot return an error, so we assert and skip on the impossible failure.
                 auto pinned = buffer_manager.pin(this->block);
                 assert(!pinned.has_error() && "pin of freshly-registered managed block must not OOM");
                 if (!pinned.has_error()) {
@@ -1142,12 +1061,7 @@ namespace components::table {
             }
             auto state = std::make_unique<uncompressed_string_segment_state>();
             if (segment_state) {
-                // A reloaded STRING segment's dictionary holds big-string markers naming real FILE
-                // blocks; register them now so the first read resolves. register_block() takes
-                // nothing from the free list (reopening allocates zero blocks) and answers false
-                // only if the list already named that block — persist_string_overflow dedupes on
-                // write, so a duplicate means a corrupt pointer stream. Can't throw out of a
-                // constructor, so it latches and initialize_column reports it.
+                // A duplicate block id means corrupt data; can't throw from a constructor, so it latches here.
                 for (uint64_t overflow_block_id : segment_state->blocks) {
                     if (!state->register_block(this->block->block_manager, overflow_block_id)) {
                         if (!construction_error_.contains_error()) {
@@ -1201,12 +1115,9 @@ namespace components::table {
             return false;
         }
         if (segment_size < impl::DICTIONARY_HEADER_SIZE + tuple_count * sizeof(int32_t)) {
-            // Offset array doesn't fit the segment. Answer YES so persist_string_overflow runs
-            // and reports the corruption, instead of silently copying it verbatim.
             return true;
         }
-        // A negative dictionary offset IS the "this row is a big-string marker" encoding
-        // (string_append writes -dictionary_size for the overflow branch).
+        // A negative dictionary offset is the "big-string marker" encoding (string_append writes -dictionary_size).
         const auto* offsets = reinterpret_cast<const int32_t*>(segment_data + impl::DICTIONARY_HEADER_SIZE);
         for (uint64_t i = 0; i < tuple_count; i++) {
             if (offsets[i] < 0) {
@@ -1242,8 +1153,7 @@ namespace components::table {
         }
         auto* offsets = reinterpret_cast<int32_t*>(segment_copy + impl::DICTIONARY_HEADER_SIZE);
 
-        // A NULL row copies the PREVIOUS row's dictionary offset verbatim, so a NULL following a
-        // big string names the same marker; handle each marker position exactly once.
+        // A NULL row copies the previous offset verbatim, so the set below handles each marker position once.
         std::pmr::unordered_set<uint64_t> rewritten(resource);
 
         for (uint64_t i = 0; i < tuple_count; i++) {
@@ -1251,8 +1161,6 @@ namespace components::table {
             if (dict_offset >= 0) {
                 continue;
             }
-            // dict_offset is negative here, so |dict_offset| may exceed dict_end on a corrupt
-            // segment; check the subtraction BEFORE relying on the result.
             const uint64_t marker_distance = static_cast<uint64_t>(-static_cast<int64_t>(dict_offset));
             if (marker_distance > static_cast<uint64_t>(dict_end)) {
                 return corrupt("big-string marker lies outside the segment");
@@ -1289,12 +1197,9 @@ namespace components::table {
                 return corrupt("big-string payload runs past the end of its overflow block");
             }
 
-            // One [uint32 length][bytes] record per string, placed by the SAME shared
-            // partial_block_manager that packs data and validity segments.
             const auto allocation = pbm.get_block_allocation(record_size);
             pbm.write_to_block(allocation.block_id, allocation.offset_in_block, payload, record_size);
             impl::write_string_marker(marker, allocation.block_id, static_cast<int64_t>(allocation.offset_in_block));
-            // Packing means the same block id can come back repeatedly; record it once.
             if (std::find(out_blocks.begin(), out_blocks.end(), allocation.block_id) == out_blocks.end()) {
                 out_blocks.push_back(allocation.block_id);
             }
@@ -1319,8 +1224,7 @@ namespace components::table {
         }
         const auto dict_size = impl::load<uint32_t>(segment_copy);
         const auto dict_end = impl::load<uint32_t>(segment_copy + sizeof(uint32_t));
-        // Both writers of this image (string_append and this function) keep the dictionary end
-        // equal to the segment size; anything else arrived from outside and cannot be trusted.
+        // Both writers of this image keep the dictionary end equal to the segment size.
         if (static_cast<uint64_t>(dict_end) != segment_size) {
             return corrupt("dictionary end does not match the segment size");
         }
@@ -1334,9 +1238,7 @@ namespace components::table {
         if (used == segment_size) {
             return segment_size; // already tight (a full or reloaded-trimmed segment)
         }
-        // Slide the dictionary down against the offset array. Rows address their bytes as
-        // (dictionary end - stored offset), so distances survive the move verbatim — including
-        // big-string markers, which are just 16-byte dictionary entries.
+        // Rows address bytes as (dictionary end - stored offset), so distances survive this move verbatim.
         std::memmove(segment_copy + used - dict_size, segment_copy + dict_end - dict_size, dict_size);
         impl::store<uint32_t>(static_cast<uint32_t>(used), segment_copy + sizeof(uint32_t));
         return used;
@@ -1362,8 +1264,6 @@ namespace components::table {
     }
 
     void column_segment_t::initialize_scan(column_scan_state& state) {
-        // All physical types pin the same backing block; a pin OOM is recorded in state.scan_error
-        // and column_data_t::scan_vector bails before touching the (null) scan_state.
         auto& buffer_manager = block->block_manager.buffer_manager;
         auto pinned = buffer_manager.pin(block);
         if (pinned.has_error()) {
@@ -1379,9 +1279,6 @@ namespace components::table {
                                 uint64_t result_offset,
                                 scan_vector_type scan_type) {
         if (scan_type == scan_vector_type::SCAN_ENTIRE_VECTOR) {
-            // The entire-vector leg REPLACES the result wholesale, so a non-zero result_offset
-            // would silently overwrite rows already written at [0, result_offset). Unreachable
-            // today, kept as a live guard (an assert here would vanish under NDEBUG).
             if (result_offset != 0) {
                 state.scan_error =
                     core::error_t(core::error_code_t::invalid_parameter,
@@ -1401,9 +1298,7 @@ namespace components::table {
                                      int64_t row_id,
                                      vector::vector_t& result,
                                      uint64_t result_idx) {
-        // No default: on purpose — a new compression_type does not compile (-Wswitch) until
-        // this dispatch decides how to read it; an unreadable stamp refuses loudly instead of
-        // falling through to the raw legs below.
+        // No default: on purpose, so a new compression_type fails to compile (-Wswitch) until this dispatch handles it.
         switch (compression_) {
             case compression::compression_type::CONSTANT:
                 impl::constant_fetch_row(*this, state, result, result_idx);
@@ -1527,7 +1422,6 @@ namespace components::table {
         if (old_handle.has_error()) {
             return old_handle.convert_error<bool>();
         }
-        // Genuine fresh allocation — this is the OOM-able site.
         auto new_handle = buffer_manager.allocate(storage::memory_tag::TRANSIENT_TABLE, new_size);
         if (new_handle.has_error()) {
             return new_handle.convert_error<bool>();
@@ -1659,20 +1553,12 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> column_segment_t::revert_append(uint64_t start_row) {
-        // A BIT (validity) segment stores appended rows as validity bits, so reverting must reset the
-        // bits in [start_row, end) back to valid before the tail is reused on re-append. A STRING
-        // segment stores per-row offsets as the CUMULATIVE dictionary size (scan derives each length
-        // as offset[row] - offset[row-1]), so the dictionary size must be rolled back to the last
-        // kept row's offset — otherwise a re-appended string lands after the reverted payload and its
-        // offset spans both, concatenating the dead bytes onto the new value. Fixed-size segments
-        // only had raw values written into their buffer; a re-append overwrites them, so reverting
-        // just needs to drop the count.
+        // STRING's cumulative dictionary size must roll back to the last kept row's offset, or a re-appended
+        // string's offset spans the reverted payload too. BIT's tail bits must reset to valid before reuse.
+        // Fixed-size segments just had raw values overwritten, so reverting only drops the count.
         if (type.to_physical_type() == types::physical_type::STRING) {
             uint64_t new_count = start_row - static_cast<uint64_t>(start);
             auto& buffer_manager = block->block_manager.buffer_manager;
-            // A resident managed block normally cannot fail to pin, but "normally" is not a
-            // channel: skipping the dictionary rollback splices the reverted payload onto the
-            // next appended string. The refusal now rides the revert_append chain.
             auto pinned = buffer_manager.pin(block);
             if (pinned.has_error()) {
                 return pinned.convert_error<bool>();
@@ -1681,8 +1567,6 @@ namespace components::table {
                 auto& handle = pinned.value();
                 auto dict = impl::dictionary(*this, handle);
                 auto offsets = reinterpret_cast<int32_t*>(handle.ptr() + block_offset() + impl::DICTIONARY_HEADER_SIZE);
-                // Offsets are cumulative; big-string markers store the negated size, NULL rows copy
-                // the previous offset — |offset[new_count - 1]| is the dictionary usage to keep.
                 int32_t last = new_count == 0 ? 0 : offsets[new_count - 1];
                 dict.size = static_cast<uint32_t>(last < 0 ? -last : last);
                 impl::set_dictionary(*this, handle, dict);
@@ -1692,23 +1576,17 @@ namespace components::table {
             uint64_t start_bit = start_row - static_cast<uint64_t>(start);
 
             auto& buffer_manager = block->block_manager.buffer_manager;
-            // Same contract as the STRING leg above: a skipped bitmap reset resurrects the
-            // reverted rows' NULL bits on re-append, so the pin refusal is returned, not assumed away.
             auto pinned = buffer_manager.pin(block);
             if (pinned.has_error()) {
                 return pinned.convert_error<bool>();
             }
             {
                 auto& handle = pinned.value();
-                // The bitmap starts at the SEGMENT's offset inside the block, not the block base:
-                // a packed validity segment shares its block with other segments, and addressing
-                // handle.ptr() directly smeared the 0xFF reset over a packed neighbour. Byte-wise
-                // on purpose, since the reset starts at an arbitrary bit boundary.
+                // Bitmap starts at the segment's offset: a packed segment shares its block, so handle.ptr()
+                // alone would smear the reset over a neighbour.
                 auto* bitmap = handle.ptr() + block_offset();
                 uint64_t revert_start;
                 if (start_bit % 8 != 0) {
-                    // Reverted rows share their first byte with kept rows: set only the
-                    // tail bits [start_bit % 8, 8) of that byte back to valid.
                     bitmap[start_bit / 8] |= static_cast<std::byte>(0xFFu << (start_bit % 8));
                     revert_start = start_bit / 8 + 1;
                 } else {
@@ -1722,7 +1600,6 @@ namespace components::table {
     }
 
     void column_segment_t::scan(column_scan_state& state, uint64_t scan_count, vector::vector_t& result) {
-        // Same structural closure as fetch_row: no default:, unreadable stamps refuse.
         switch (compression_) {
             case compression::compression_type::CONSTANT:
                 impl::constant_scan_entire(*this, state, scan_count, result);
@@ -1798,7 +1675,6 @@ namespace components::table {
                                         uint64_t scan_count,
                                         vector::vector_t& result,
                                         uint64_t result_offset) {
-        // Same structural closure as fetch_row: no default:, unreadable stamps refuse.
         switch (compression_) {
             case compression::compression_type::CONSTANT:
                 impl::constant_scan_partial(*this, state, scan_count, result, result_offset);
@@ -1829,8 +1705,7 @@ namespace components::table {
                 impl::fixed_size_scan_partial<int32_t>(*this, state, scan_count, result, result_offset);
                 break;
             case types::physical_type::INT64:
-                // int64_t, NOT POSIX ino64_t: the inode type rode in on a transitive
-                // <sys/types.h> include and only matched by accident of both being 8 bytes.
+                // int64_t, not POSIX ino64_t (a transitive <sys/types.h> include): they only match by accident of size.
                 impl::fixed_size_scan_partial<int64_t>(*this, state, scan_count, result, result_offset);
                 break;
             case types::physical_type::UINT8:

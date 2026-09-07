@@ -18,29 +18,9 @@
 #include <string>
 #include <vector>
 
-// ALTER TABLE DROP COLUMN must reach the storage primitive.
-//
-// table_storage_t::drop_column is whole (rebuild, blocks named into pending_released_blocks_,
-// released by the checkpoint that commits the release) and gated by
-// services::disk::table_storage::drop_column_disk_frees_blocks, which calls it DIRECTLY.
-// Nothing called it from the ALTER path: the operator wrote only the pg_attribute tombstone,
-// so on a regular disk table the physical column survived every DROP forever. This test judges
-// the SQL statement instead.
-//
-// Shape, every part load-bearing:
-//   * column "b" is bigint[40] (640 KiB of child payload per row group) to push past
-//     partial_block_manager_t's FULL_THRESHOLD into DEDICATED blocks -- otherwise packing
-//     could put a's and b's segments in one block and a dropped column sharing blocks with a
-//     survivor would look reclaimed when nothing happened;
-//   * rows are added in two rounds around a checkpoint, so some of b's blocks are named by no
-//     durable root -- reclaim_superseded_root walks only the root's own data blocks and is
-//     blind to those;
-//   * every measurement runs with the engine down against a freshly loaded .otbx, since a leak
-//     or bad free usually only shows on reopen;
-//   * the file is walked again after two further empty checkpoints, since an un-released block
-//     keeps costing round over round.
-//
-// The gate is deliberately not "SELECT no longer shows b" -- the tombstone alone passes that.
+// ALTER TABLE DROP COLUMN wrote only the pg_attribute tombstone; nothing on the ALTER path called
+// table_storage_t::drop_column, so the physical column survived DROP forever. Column b is bigint[40]
+// to force DEDICATED blocks, and every measurement runs offline against a reloaded .otbx.
 
 using components::catalog::FIRST_USER_OID;
 
@@ -52,9 +32,7 @@ namespace {
     constexpr std::size_t ARRAY_LENGTH = 40;
     constexpr std::size_t INSERT_BATCH = 512;
 
-    // The only user table in this test: `<main_path>/.../<oid>/table.otbx` with oid past
-    // FIRST_USER_OID. Every system catalog sits under an oid below it, so the filter picks the
-    // user table without the test having to learn its oid.
+    // Every system catalog sits under an oid below FIRST_USER_OID, so filtering on that picks the user table.
     std::filesystem::path find_user_table_otbx(const std::filesystem::path& root) {
         std::filesystem::path found;
         if (!std::filesystem::exists(root)) {
@@ -81,9 +59,6 @@ namespace {
         std::uintmax_t file_size{0};
     };
 
-    // Judge the DURABLE file with the engine shut down. A fresh table_storage_t load is the
-    // walker's supported entry point (the registry only reflects the live data blocks once the
-    // table is open) and is itself the reopen the whole gate turns on.
     offline_walk_t walk_offline(const std::filesystem::path& otbx, std::pmr::memory_resource* resource) {
         offline_walk_t out;
         std::error_code ec;
@@ -98,8 +73,7 @@ namespace {
         }
         components::table::storage::single_file_block_manager_t* bm = nullptr;
         {
-            // Counted collection copy scoped to reading the manager reference out of it: a
-            // holder kept alive across a reclaim keeps block handles alive too.
+            // Scoped to reading the manager reference out: a holder kept alive across a reclaim keeps block handles alive too.
             auto collection = ts.table().row_group();
             bm = static_cast<components::table::storage::single_file_block_manager_t*>(&collection->block_manager());
         }
@@ -117,9 +91,7 @@ namespace {
         return s.str();
     }
 
-    // One INSERT statement per batch: `(i, ARRAY[i*100, i*100+1, ...])`, content-addressed so a
-    // block freed while something still read it shows up as wrong data rather than a row count
-    // that happens to match.
+    // Content-addressed rows: a block freed while something still reads it shows up as wrong data, not a matching count.
     void insert_rows(otterbrix::wrapper_dispatcher_t* dispatcher, std::size_t first, std::size_t count) {
         std::size_t done = 0;
         while (done < count) {
@@ -148,7 +120,7 @@ namespace {
         REQUIRE(cur->is_success());
     }
 
-} // namespace
+}
 
 TEST_CASE("integration::cpp::test_alter_drop_column_reclaim::disk_drop_column_returns_blocks") {
     auto config = test_create_config(integration_fixture_path("test_alter_drop_column_reclaim/disk_drop"));
@@ -178,8 +150,6 @@ TEST_CASE("integration::cpp::test_alter_drop_column_reclaim::disk_drop_column_re
     INFO("user .otbx: " << otbx.string());
     REQUIRE_FALSE(otbx.empty());
 
-    // The premise, asserted rather than assumed: the durable root really does name both
-    // columns' blocks before the drop, so the "left the root" set below cannot be vacuous.
     auto before = walk_offline(otbx, &resource);
     REQUIRE(before.report.ok);
     REQUIRE(before.columns.size() == 2);
@@ -201,21 +171,16 @@ TEST_CASE("integration::cpp::test_alter_drop_column_reclaim::disk_drop_column_re
         auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.wide;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == TOTAL_ROWS);
-        // CHECK, not REQUIRE: the storage-schema and block assertions below are the real
-        // gate, and aborting here would hide them behind a visibility symptom.
         CHECK(cur->column_count() == 1);
     }
 
     auto after = walk_offline(otbx, &resource);
     REQUIRE(after.report.ok);
 
-    // The wiring itself: the reopened file's own schema no longer carries the column. An ALTER
-    // that writes only the tombstone goes red here.
     INFO("columns after the drop: " << after.columns.size());
     CHECK(after.columns.size() == 1);
     CHECK(after.columns.front() == "a");
 
-    // Every block the durable root named before the drop but not after must be accounted for.
     std::set<uint64_t> gone;
     for (auto id : before.report.root_data) {
         if (after.report.root_data.count(id) == 0) {
@@ -227,10 +192,7 @@ TEST_CASE("integration::cpp::test_alter_drop_column_reclaim::disk_drop_column_re
                         << " unexplained=" << dump_ids(after.report.unexplained));
     REQUIRE_FALSE(gone.empty());
     for (auto id : gone) {
-        // "Came back" has exactly three honest shapes: published in the free list, still held
-        // by a surviving column sharing the block (packing), or re-issued into this round's
-        // metadata chain. Anything else is a block named by no owner -- what a tombstone-only
-        // DROP produces.
+        // "Came back" has three honest shapes: free list, a surviving column sharing the block, or reissued -- else orphaned.
         INFO("block " << id << " left the durable root when column b was dropped");
         CHECK((after.report.free_list_content.count(id) != 0 || after.report.registry_live.count(id) != 0 ||
                after.report.chain_blocks.count(id) != 0));
@@ -253,7 +215,6 @@ TEST_CASE("integration::cpp::test_alter_drop_column_reclaim::disk_drop_column_re
                 REQUIRE(cur->value(0, i).value<int64_t>() == static_cast<int64_t>(i));
             }
         }
-        // Round over round the file must not grow: anything left un-released keeps costing.
         run_sql(dispatcher, "CHECKPOINT;");
         run_sql(dispatcher, "CHECKPOINT;");
     }
@@ -268,24 +229,9 @@ TEST_CASE("integration::cpp::test_alter_drop_column_reclaim::disk_drop_column_re
     CHECK(settled.file_size <= after.file_size);
 }
 
-// A crash between the ALTER's commit and the table's next checkpoint must not leak the
-// dropped column's space forever.
-//
-// The live path names the outgoing column's blocks into table_storage_t::pending_released_blocks_
-// (in memory) and releases them at the next checkpoint. Kill the process in between and that set
-// is gone, while the disk keeps two facts that disagree: the pg_attribute tombstone (attisdropped
-// = true, durable through the WAL commit marker) and the column itself, still physically present
-// because the durable root was never rewritten. The table reloads with the column back in its
-// collection, the catalog hides it, every query looks right -- and nothing can ever re-derive the
-// drop, compact() least of all, since after the reload the column is genuinely live.
-//
-// `test_spaces`' destructor issues a CHECKPOINT, so arming fail_writes_from right after the ALTER
-// (making every later .otbx write fail) is what keeps the destructor's own checkpoint from
-// performing the release this test needs missing. The WAL doesn't go through the block manager's
-// interposer, so the ALTER's commit marker still survives the "crash" -- the tombstone must be
-// durable while the physical drop is not.
-//
-// Same shape as the sibling test and for the same reasons (see above).
+// A crash between the ALTER's commit and the next checkpoint must not leak the dropped column's
+// space: pending_released_blocks_ is in-memory and lost on kill, so the durable root still names
+// the blocks after reload even though the tombstone (WAL commit marker) is durable.
 TEST_CASE("integration::cpp::test_alter_drop_column_reclaim::crash_before_checkpoint_rearms_the_release") {
     auto config = test_create_config(integration_fixture_path("test_alter_drop_column_reclaim/crash_rearm"));
     test_clear_directory(config);
@@ -318,8 +264,8 @@ TEST_CASE("integration::cpp::test_alter_drop_column_reclaim::crash_before_checkp
 
     INFO("phase 2: more rows, ALTER TABLE DROP COLUMN, then KILL before any checkpoint commits");
     {
-        // Declared before the engine so the interposer is installed when the block managers
-        // open their files (wrap() runs once per open) and stays installed through teardown.
+        // Declared before the engine: wrap() runs once per open, so the interposer must already
+        // be installed when the block managers open their files.
         otterbrix_test::fault_plan_t plan;
         otterbrix_test::fault_injection_scope_t fault(plan);
 
@@ -329,13 +275,9 @@ TEST_CASE("integration::cpp::test_alter_drop_column_reclaim::crash_before_checkp
         insert_rows(dispatcher, FIRST_ROWS, SECOND_ROWS);
         run_sql(dispatcher, "ALTER TABLE TestDatabase.wide DROP COLUMN b;");
 
-        // fail_writes_from is compared with >=, so 1 fails every write from here on.
         plan.fail_writes_from = 1;
-    } // ← the destructor's CHECKPOINT runs here and can commit nothing.
+    }
 
-    // Asserted rather than assumed: the durable root is untouched, so the dropped column is
-    // back. If the kill silently failed to land, the phase-3 claims below would pass for the
-    // wrong reason.
     auto crashed = walk_offline(otbx, &resource);
     REQUIRE(crashed.report.ok);
     REQUIRE(crashed.columns.size() == 2);
@@ -348,8 +290,7 @@ TEST_CASE("integration::cpp::test_alter_drop_column_reclaim::crash_before_checkp
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
-        // The catalog kept the tombstone across the crash (WAL commit marker + replay), so the
-        // column is invisible to SQL even on the unfixed build -- this cannot be the gate.
+        // The catalog kept the tombstone across the crash, so the column is invisible to SQL even unfixed -- not the real gate.
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.wide;");
         REQUIRE(cur->is_success());
@@ -362,21 +303,17 @@ TEST_CASE("integration::cpp::test_alter_drop_column_reclaim::crash_before_checkp
     auto after = walk_offline(otbx, &resource);
     REQUIRE(after.report.ok);
 
-    // GATE 1 — the reopened file's OWN schema. On the unfixed build the restart puts b back in
-    // the collection and the checkpoint writes it out again, so this is 2.
+    // On the unfixed build the restart puts b back and the checkpoint rewrites it, so this schema would show 2 columns.
     INFO("columns after the restart+checkpoint: " << after.columns.size());
     CHECK(after.columns.size() == 1);
     CHECK(after.columns.front() == "a");
 
-    // GATE 2 — the space actually came back. The table now holds MORE rows than `before` did,
-    // yet its durable root must name FEWER data blocks, because b (40 * 8 B per row against
-    // a's 8 B) is no longer part of it. On the unfixed build the root grows instead.
+    // The table now holds more rows than `before` did, yet its durable root must name fewer data
+    // blocks (b is 40 * 8 B per row against a's 8 B); on the unfixed build the root grows instead.
     INFO("root data blocks before=" << before.report.root_data.size() << " after="
                                     << after.report.root_data.size());
     CHECK(after.report.root_data.size() < before.report.root_data.size());
 
-    // GATE 3 -- nothing was orphaned: every block the crashed root named that the new root
-    // does not must be accounted for (free list, packing, or reissued into this round's chain).
     std::set<uint64_t> gone;
     for (auto id : crashed.report.root_data) {
         if (after.report.root_data.count(id) == 0) {

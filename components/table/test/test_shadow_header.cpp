@@ -1,8 +1,5 @@
-// Shadow paging must (1) keep a PREVIOUS root in the other slot, (2) validate the header via
-// checksum, and (3) pick the winner by checksum validity + iteration, not a naked int compare.
-// Crashes are produced only via the fault-injection seam (fault_injection_file.hpp); corruption
-// is produced by mutating the file's bytes directly, matching the existing checksum/bad-magic
-// tests — never a hand-laid crash state.
+// Crashes are produced only via the fault-injection seam (fault_injection_file.hpp); corruption is
+// produced by mutating the file's bytes directly, matching the existing checksum/bad-magic tests.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/data_table.hpp>
@@ -75,8 +72,6 @@ namespace {
         }
     }
 
-    // Mirrors table_storage_t::checkpoint() (services/disk/manager_disk.cpp): table metadata ->
-    // set_meta_block -> free list -> fsync -> header -> fsync.
     void checkpoint_production(tstorage::single_file_block_manager_t& bm, data_table_t& table) {
         tstorage::metadata_manager_t meta_mgr(bm);
         tstorage::metadata_writer_t writer(meta_mgr);
@@ -99,9 +94,6 @@ namespace {
         return scanned;
     }
 
-    // Load a table from an ARBITRARY durable root, not just the one the manager selected.
-    // "Openable" is proved by the real loader, the only definition of the on-disk format
-    // that cannot drift.
     uint64_t rows_at_root(shadow_env_t& env,
                           tstorage::single_file_block_manager_t& bm,
                           uint64_t meta_block,
@@ -115,7 +107,6 @@ namespace {
         return scan_rows(*loaded.value(), upper_bound);
     }
 
-    // --- raw slot access -------------------------------------------------------------
     // slot 0 lives at SECTOR_SIZE, slot 1 at 2 * SECTOR_SIZE (main header occupies [0, SECTOR_SIZE)).
 
     uint64_t slot_offset(int slot) {
@@ -142,8 +133,6 @@ namespace {
         REQUIRE(f.good());
     }
 
-    // A whole sector of random bytes with an arbitrary iteration. The checksum is nudged if
-    // the random draw happens to already be self-consistent, so a trial always tests garbage.
     tstorage::database_header_t garbage_slot(std::mt19937_64& rng, uint64_t iteration) {
         tstorage::database_header_t h;
         auto* bytes = reinterpret_cast<uint8_t*>(&h);
@@ -163,13 +152,11 @@ namespace {
         return std::vector<char>((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
     }
 
-    // Plain bool, not REQUIRE(a == b) directly: Catch2 would stringify multi-megabyte byte
-    // vectors on a failing compare and abort the run before reporting the failure.
+    // Plain bool, not REQUIRE(a == b): Catch2 would stringify multi-megabyte vectors and abort before reporting.
     bool same_bytes(const std::vector<char>& a, const std::vector<char>& b) {
         return a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size()) == 0;
     }
 
-    // Slot classification independent of the production rule under test.
     int valid_slot_count(const std::string& path) {
         int valid = 0;
         for (int slot = 0; slot < 2; slot++) {
@@ -183,9 +170,6 @@ namespace {
 
 } // namespace
 
-// Defect (1) this guards against: writing the same header to both slots destroyed the
-// previous root. Two checkpoints must leave the file holding BOTH roots — new in the slot
-// this iteration owns, previous in the other.
 TEST_CASE("shadow_header: a checkpoint writes ONE slot and leaves the previous root in the other") {
     const std::string path = shadow_db_path("prev_root");
     remove_file(path);
@@ -208,14 +192,13 @@ TEST_CASE("shadow_header: a checkpoint writes ONE slot and leaves the previous r
     }
     REQUIRE(root_a != tstorage::INVALID_INDEX);
     REQUIRE(root_b != tstorage::INVALID_INDEX);
-    REQUIRE(root_a != root_b); // the second checkpoint really did move the root
+    REQUIRE(root_a != root_b);
 
     tstorage::database_header_t s0;
     tstorage::database_header_t s1;
     REQUIRE(read_slot(path, 0, s0));
     REQUIRE(read_slot(path, 1, s1));
 
-    // Exactly one slot holds the newest root; the OTHER holds the one before it.
     const bool newest_in_s0 = s0.iteration > s1.iteration;
     const auto& newest = newest_in_s0 ? s0 : s1;
     const auto& previous = newest_in_s0 ? s1 : s0;
@@ -229,8 +212,6 @@ TEST_CASE("shadow_header: a checkpoint writes ONE slot and leaves the previous r
     remove_file(path);
 }
 
-// The same fact, taken from a file that a kill -9 left behind: whatever the crash froze
-// must still contain the previous root, and that root must LOAD.
 TEST_CASE("shadow_header: a crash after a checkpoint leaves the PREVIOUS root openable") {
     const std::string path = shadow_db_path("crash_prev");
     const std::string copy_path = path + ".crashcopy";
@@ -247,14 +228,12 @@ TEST_CASE("shadow_header: a crash after a checkpoint leaves the PREVIOUS root op
         auto table = make_table(env, bm);
 
         append_rows(*table, env, 0, 2000);
-        checkpoint_production(bm, *table); // durable root A: 2000 rows
+        checkpoint_production(bm, *table);
         append_rows(*table, env, 2000, 2000);
-        checkpoint_production(bm, *table); // durable root B: 4000 rows
+        checkpoint_production(bm, *table);
 
         const auto post_b = read_whole_file(path);
 
-        // A THIRD checkpoint, caught in flight before its fsync/header write: the only crash
-        // point with something to lose, since after B's fsync nothing is in flight.
         append_rows(*table, env, 4000, 2000);
         {
             tstorage::metadata_manager_t meta_mgr(bm);
@@ -262,16 +241,11 @@ TEST_CASE("shadow_header: a crash after a checkpoint leaves the PREVIOUS root op
             REQUIRE_FALSE(table->checkpoint(writer).has_error());
             REQUIRE_FALSE(writer.flush().has_error());
             bm.set_meta_block(writer.get_block_pointer().block_pointer);
-            // Bind the result, don't discard it: a real failure here must not hide behind a
-            // dropped [[nodiscard]].
             REQUIRE_FALSE(bm.serialize_free_list().has_error());
         }
 
-        // kill -9 right here: the frozen file is exactly the post-B state (last successful fsync).
         REQUIRE(scope.last() != nullptr);
 
-        // Prove the seam has something to take away before taking it, and that crash_revert()
-        // restores exactly the post-B (last-fsync) bytes afterwards.
         const auto pre_crash = read_whole_file(path);
         REQUIRE_FALSE(same_bytes(pre_crash, post_b));
 
@@ -290,7 +264,6 @@ TEST_CASE("shadow_header: a crash after a checkpoint leaves the PREVIOUS root op
 
         CHECK(rows_at_root(env, bm, bm.meta_block(), 5000) == 4000);
 
-        // And the previous root is still there, still valid, still openable.
         tstorage::database_header_t s0;
         tstorage::database_header_t s1;
         REQUIRE(read_slot(copy_path, 0, s0));
@@ -305,7 +278,6 @@ TEST_CASE("shadow_header: a crash after a checkpoint leaves the PREVIOUS root op
     remove_file(copy_path);
 }
 
-// --- Defect (2): checksum is a dead field --------------------------------------------
 TEST_CASE("shadow_header: the durable header carries a verifiable checksum") {
     const std::string path = shadow_db_path("checksum");
     remove_file(path);
@@ -325,29 +297,23 @@ TEST_CASE("shadow_header: the durable header carries a verifiable checksum") {
     REQUIRE(read_slot(path, 1, s1));
     const auto& newest = (s0.iteration >= s1.iteration) ? s0 : s1;
 
-    CHECK(newest.checksum != 0);       // the field is written, not left dead
-    CHECK(newest.checksum_ok());       // and it validates the bytes actually on disk
+    CHECK(newest.checksum != 0);
+    CHECK(newest.checksum_ok());
 
-    // The checksum must actually depend on the meaningful bytes: move the root by one
-    // block and validation must fail.
     tstorage::database_header_t tampered = newest;
     tampered.meta_block += 1;
     CHECK_FALSE(tampered.checksum_ok());
 
-    // ...and on the padding too: the CRC domain is the whole sector, no carve-out (this is not
-    // about torn writes — see below).
     tstorage::database_header_t stray = newest;
     stray.padding[sizeof(stray.padding) - 1] ^= 0xFF;
     CHECK_FALSE(stray.checksum_ok());
 
-    // Confirms database_header_t::checksum_ok's documented gap: fields+checksum fit in the
-    // first 48 bytes of the first 512-byte hardware sector, and bytes 48.. are zero in every
-    // generation, so splicing two real generations at that boundary reassembles into a
-    // byte-exact single generation — passes, because it IS that generation.
+    // Confirms checksum_ok's documented gap: fields+checksum fit in the first 48 bytes of the sector and
+    // bytes 48.. are zero in every generation, so splicing two generations at that boundary passes -- it IS one.
     static constexpr size_t HARDWARE_SECTOR = 512;
     REQUIRE(s0.checksum_ok());
     REQUIRE(s1.checksum_ok());
-    REQUIRE(s0.iteration != s1.iteration); // two genuinely different generations
+    REQUIRE(s0.iteration != s1.iteration);
     tstorage::database_header_t spliced;
     std::memcpy(&spliced, &s0, sizeof(spliced));
     std::memcpy(reinterpret_cast<char*>(&spliced) + HARDWARE_SECTOR,
@@ -359,8 +325,6 @@ TEST_CASE("shadow_header: the durable header carries a verifiable checksum") {
     remove_file(path);
 }
 
-// Defect (3): winner selection must not be a naked integer compare — garbage with ANY
-// iteration must never beat a valid slot.
 TEST_CASE("shadow_header: garbage with a huge iteration never beats a valid slot") {
     const std::string path = shadow_db_path("fuzz");
     const std::string pristine = path + ".pristine";
@@ -375,16 +339,14 @@ TEST_CASE("shadow_header: garbage with a huge iteration never beats a valid slot
         REQUIRE_FALSE(bm.create_new_database().has_error());
         auto table = make_table(env, bm);
         append_rows(*table, env, 0, 2000);
-        checkpoint_production(bm, *table); // root A: 2000 rows
+        checkpoint_production(bm, *table);
         root_a = bm.meta_block();
         append_rows(*table, env, 2000, 2000);
-        checkpoint_production(bm, *table); // root B: 4000 rows
+        checkpoint_production(bm, *table);
         root_b = bm.meta_block();
     }
     std::filesystem::copy_file(path, pristine, std::filesystem::copy_options::overwrite_existing);
 
-    // REQUIRE, not CHECK: a precondition, not a finding. If the two checkpoints above did not
-    // leave two valid slots, the 64 trials below smash and re-check against a false premise.
     REQUIRE(valid_slot_count(pristine) == 2);
 
     tstorage::database_header_t s0;
@@ -396,14 +358,12 @@ TEST_CASE("shadow_header: garbage with a huge iteration never beats a valid slot
     constexpr int TRIALS = 32;
 
     for (int smashed = 0; smashed < 2; smashed++) {
-        // The root that survives the smash, and the row count it must produce.
         const auto& survivor = (smashed == 0) ? s1 : s0;
         const uint64_t expect_root = (survivor.meta_block == root_a) ? root_a : root_b;
         const uint64_t expect_rows = (expect_root == root_a) ? 2000 : 4000;
 
         for (int trial = 0; trial < TRIALS; trial++) {
             std::filesystem::copy_file(pristine, path, std::filesystem::copy_options::overwrite_existing);
-            // Iterations that dwarf anything real, including the sign-bit and all-ones corners.
             const uint64_t huge = (trial == 0)   ? UINT64_MAX
                                   : (trial == 1) ? (uint64_t(1) << 63)
                                                  : (rng() | (uint64_t(1) << 62));
@@ -422,7 +382,6 @@ TEST_CASE("shadow_header: garbage with a huge iteration never beats a valid slot
     remove_file(pristine);
 }
 
-// Both slots invalid: loud through the result channel, process alive, file untouched.
 TEST_CASE("shadow_header: two invalid slots report data_corruption and leave the file untouched") {
     const std::string path = shadow_db_path("both_corrupt");
     remove_file(path);
@@ -451,7 +410,6 @@ TEST_CASE("shadow_header: two invalid slots report data_corruption and leave the
         REQUIRE(result.error().type == core::error_code_t::data_corruption);
     }
 
-    // Still here (no abort), and the refusal did not rewrite a single byte.
     const auto after = read_whole_file(path);
     CHECK(before.size() == after.size());
     CHECK(before == after);
@@ -459,9 +417,8 @@ TEST_CASE("shadow_header: two invalid slots report data_corruption and leave the
     remove_file(path);
 }
 
-// A brand-new file has exactly ONE valid slot (iteration 0's); the never-written other slot
-// reads back as zeros — an iteration-0 TIE pointing at meta_block 0, a REAL block id — and
-// must be rejected on its checksum, not win the tie.
+// A fresh file's never-written slot reads back as zeros -- an iteration-0 TIE pointing at meta_block 0, a
+// REAL block id -- so it must be rejected on checksum, not win the tie against the real iteration-0 slot.
 TEST_CASE("shadow_header: a freshly created database opens cleanly with one valid slot") {
     const std::string path = shadow_db_path("fresh");
     remove_file(path);
@@ -494,7 +451,6 @@ TEST_CASE("shadow_header: a freshly created database opens cleanly with one vali
     }
     CHECK(rejected == 1);
 
-    // And a fresh file still takes a first checkpoint, which must land in the OTHER slot.
     {
         tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
         REQUIRE_FALSE(bm.load_existing_database().has_error());
@@ -514,9 +470,8 @@ TEST_CASE("shadow_header: a freshly created database opens cleanly with one vali
     remove_file(path);
 }
 
-// Slot = f(iteration_ parity). Incrementing iteration_ before the write means a FAILED header
-// write still advances the counter, aiming a retry at the slot holding the last durable root —
-// overwriting the very state a retry exists to preserve.
+// Slot = f(iteration_ parity); incrementing iteration_ before the write means a FAILED write would still
+// advance it, aiming a retry at the slot holding the last durable root and overwriting what it must preserve.
 TEST_CASE("shadow_header: a retry after a failed header write reuses the SAME slot") {
     const std::string path = shadow_db_path("retry_slot");
     remove_file(path);
@@ -534,7 +489,7 @@ TEST_CASE("shadow_header: a retry after a failed header write reuses the SAME sl
         auto table = make_table(env, bm);
 
         append_rows(*table, env, 0, 2000);
-        checkpoint_production(bm, *table); // durable root A: 2000 rows
+        checkpoint_production(bm, *table);
         root_a = bm.meta_block();
 
         tstorage::database_header_t slot_a;
@@ -543,7 +498,6 @@ TEST_CASE("shadow_header: a retry after a failed header write reuses the SAME sl
         REQUIRE(read_slot(path, 1, slot_b));
         iteration_a = std::max(slot_a.iteration, slot_b.iteration);
 
-        // The data half of the next checkpoint lands normally; only the header write fails.
         append_rows(*table, env, 2000, 2000);
         {
             tstorage::metadata_manager_t meta_mgr(bm);
@@ -555,7 +509,7 @@ TEST_CASE("shadow_header: a retry after a failed header write reuses the SAME sl
             REQUIRE_FALSE(free_ptr.has_error());
             REQUIRE_FALSE(bm.file_sync().has_error());
 
-            plan.fail_after_writes = plan.writes_seen; // exactly the header write fails
+            plan.fail_after_writes = plan.writes_seen;
             tstorage::database_header_t header;
             header.initialize();
             header.free_list = free_ptr.value().block_pointer;
@@ -564,7 +518,6 @@ TEST_CASE("shadow_header: a retry after a failed header write reuses the SAME sl
             plan.fail_after_writes = 0;
         }
 
-        // Retry the whole checkpoint.
         checkpoint_production(bm, *table);
         root_c = bm.meta_block();
     }
@@ -583,9 +536,7 @@ TEST_CASE("shadow_header: a retry after a failed header write reuses the SAME sl
     const auto& previous = newest_in_s0 ? s1 : s0;
 
     CHECK(newest.meta_block == root_c);
-    // The failed attempt consumed no iteration: the retry is A's successor, not A+2.
     CHECK(newest.iteration == iteration_a + 1);
-    // ...and the slot it did NOT take still holds root A, intact and loadable.
     REQUIRE(previous.meta_block == root_a);
     CHECK(previous.iteration == iteration_a);
     {
@@ -600,23 +551,21 @@ TEST_CASE("shadow_header: a retry after a failed header write reuses the SAME sl
     remove_file(path);
 }
 
-// The writes and fsync inside create_new_database must report failure too, not just the open
-// call: discarding them lets a bad write produce a rootless file while the caller is told
-// creation succeeded, surfacing only as data_corruption on the next open.
+// The writes and fsync inside create_new_database must report failure too, not just the open call:
+// discarding them lets a bad write claim success, surfacing only as data_corruption on the next open.
 TEST_CASE("shadow_header: create_new_database reports a write that did not land") {
     SECTION("the header slot write fails") {
         const std::string path = shadow_db_path("create_slot_fail");
         remove_file(path);
         shadow_env_t env;
         otterbrix_test::fault_plan_t plan;
-        plan.fail_after_writes = 1; // main header lands, the initial header slot does not
+        plan.fail_after_writes = 1;
         otterbrix_test::fault_injection_scope_t scope(plan);
 
         tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
         auto created = bm.create_new_database();
         REQUIRE(created.has_error());
         CHECK(created.error().type == core::error_code_t::io_error);
-        // What the silent version left behind: a file with no root at all.
         CHECK(valid_slot_count(path) == 0);
 
         remove_file(path);
@@ -627,7 +576,7 @@ TEST_CASE("shadow_header: create_new_database reports a write that did not land"
         remove_file(path);
         shadow_env_t env;
         otterbrix_test::fault_plan_t plan;
-        plan.torn_at_write = 1; // the very first write tears and fails
+        plan.torn_at_write = 1;
         otterbrix_test::fault_injection_scope_t scope(plan);
 
         tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
@@ -643,7 +592,7 @@ TEST_CASE("shadow_header: create_new_database reports a write that did not land"
         remove_file(path);
         shadow_env_t env;
         otterbrix_test::fault_plan_t plan;
-        plan.fail_syncs_from = 1; // both writes land, nothing reaches the device
+        plan.fail_syncs_from = 1;
         otterbrix_test::fault_injection_scope_t scope(plan);
 
         tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
@@ -655,10 +604,8 @@ TEST_CASE("shadow_header: create_new_database reports a write that did not land"
     }
 }
 
-// A fresh file legitimately has meta_block == INVALID_INDEX, but a CHECKPOINTED file whose
-// newest slot got corrupted falls back to that SAME iteration-0/INVALID header — silently
-// looking empty. The witness that can't be faked: file size == BLOCK_START only for a file
-// that never allocated a block; anything larger with an INVALID root is refused.
+// A fresh file legitimately has meta_block == INVALID_INDEX, but a CHECKPOINTED file whose newest slot got
+// corrupted falls back to the same header, silently looking empty; the tell is file size == BLOCK_START.
 TEST_CASE("shadow_header: a never-checkpointed file opens as legitimately empty") {
     const std::string path = shadow_db_path("young_open");
     remove_file(path);
@@ -683,8 +630,6 @@ TEST_CASE("shadow_header: a checkpointed file falling back to the initial empty 
     remove_file(path);
     shadow_env_t env;
 
-    // ONE committed checkpoint: iteration 1 lands in slot 0 (SECTOR_SIZE); the initial
-    // iteration-0 header (meta_block INVALID) still stands in slot 1 (2 * SECTOR_SIZE).
     {
         tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
         REQUIRE_FALSE(bm.create_new_database().has_error());
@@ -704,8 +649,6 @@ TEST_CASE("shadow_header: a checkpointed file falling back to the initial empty 
         REQUIRE(s1.meta_block == tstorage::INVALID_INDEX);
     }
 
-    // Corruption knocks out the checkpointed root, leaving the initial slot valid: the header
-    // now LOOKS never-checkpointed, but its 2000 rows occupy blocks past BLOCK_START.
     std::mt19937_64 rng(0xA76A76A7ULL);
     write_slot(path, 0, garbage_slot(rng, 1));
     REQUIRE(std::filesystem::file_size(path) > tstorage::BLOCK_START);
@@ -719,7 +662,6 @@ TEST_CASE("shadow_header: a checkpointed file falling back to the initial empty 
         REQUIRE(opened.has_error());
         CHECK(opened.error().type == core::error_code_t::data_corruption);
     }
-    // The refusal touched nothing: the evidence stays byte-identical for the operator.
     CHECK(same_bytes(before, read_whole_file(path)));
 
     remove_file(path);
@@ -727,8 +669,6 @@ TEST_CASE("shadow_header: a checkpointed file falling back to the initial empty 
 
 TEST_CASE("shadow_header: an initial root whose header contradicts the file is refused") {
     SECTION("the file grew past the header sectors") {
-        // Same witness as above, produced without the loader: pad a genuinely young file so
-        // its size claims blocks that its root does not name.
         const std::string path = shadow_db_path("young_grown");
         remove_file(path);
         shadow_env_t env;
@@ -752,9 +692,6 @@ TEST_CASE("shadow_header: an initial root whose header contradicts the file is r
     }
 
     SECTION("the initial slot itself claims blocks") {
-        // Valid CRC over inconsistent fields: no engine path writes meta_block == INVALID with
-        // block_count > 0 (initialize() zeroes block_count; the first write_header carries a
-        // real meta_block). Internal contradiction, refused even at BLOCK_START size.
         const std::string path = shadow_db_path("young_contradiction");
         remove_file(path);
         shadow_env_t env;

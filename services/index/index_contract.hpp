@@ -24,17 +24,12 @@ namespace services::index {
     using execution_context_t = components::execution_context_t;
 
     // One contiguous run of physical row ids: [row_start, row_start + row_count).
-    // The unit unmirrored_ranges speaks in, both directions.
     struct index_row_range_t {
         uint64_t row_start{0};
         uint64_t row_count{0};
     };
 
-    // The whole answer of search / search_with_preferred_type. The ids ride TOGETHER with the
-    // compact epoch the answering index was built against (index_record_t::built_compact_epoch,
-    // captured before the read_rows send — never re-asked after, so a rebuild interleaving the
-    // await can only make the stamp too LOW, a refusal and not a lie). storage_fetch compares
-    // the stamp against the table's current epoch at apply time and refuses stale ids loudly.
+    // built_compact_epoch is captured before the send, so a rebuild can only make it too LOW -- a refusal, not a lie.
     struct index_search_result_t {
         std::pmr::vector<int64_t> row_ids;
         uint64_t built_compact_epoch{0};
@@ -44,13 +39,10 @@ namespace services::index {
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;
 
-        // Collection lifecycle (oid-keyed)
         unique_future<void> register_collection(session_id_t session, components::catalog::oid_t table_oid);
         unique_future<void> unregister_collection(session_id_t session, components::catalog::oid_t table_oid);
 
-        // DML: txn-aware bulk index operations. insert_rows/update_rows take the whole
-        // chunk batch; rows are indexed in vector order with contiguous row-ids based at
-        // start_row_id / new_start_row_id.
+        // Rows are indexed in vector order with contiguous row-ids based at start_row_id/new_start_row_id.
         unique_future<core::error_t> insert_rows(execution_context_t ctx,
                                                  components::catalog::oid_t table_oid,
                                                  std::pmr::vector<components::vector::data_chunk_t> data,
@@ -67,27 +59,13 @@ namespace services::index {
                                                  std::pmr::vector<int64_t> row_ids,
                                                  int64_t new_start_row_id);
 
-        // Post-append reconciliation for a DML statement's appended row ranges. The manager
-        // is the one place that knows the LIVE index set (a building index registers here
-        // before its RAW read captures a coverage bound), so this is where "must these rows
-        // be staged?" is decided — the plan-time table_has_indexes stamp can be stale.
-        //
-        // Answers the sub-ranges of `ranges` that (a) belong to a table with at least one
-        // index and (b) no insert_rows/update_rows mirror send of transaction ctx.txn has
-        // recorded. EMPTY means nothing to do: either the table has no index — then any
-        // later build's RAW read covers these rows, because registration precedes the
-        // coverage bound and the ask runs after the append — or the mirror already staged
-        // them. The caller fetches the answered rows RAW and stages them via insert_rows;
-        // a double-staged (key, row id) pair is deduplicated by the stores.
+        // The manager decides "must these rows be staged?" since the plan-time stamp can be stale.
         unique_future<std::pmr::vector<index_row_range_t>>
         unmirrored_ranges(execution_context_t ctx,
                           components::catalog::oid_t table_oid,
                           std::pmr::vector<index_row_range_t> ranges);
 
-        // Not mirrors: commit_inserts publishes now (fan-out, first error wins). commit_deletes
-        // defers to on_horizon_advanced -- erasing before the snapshot floor passes would hide a
-        // row from a reader who still owns it, so this always returns no_error() and a publish-time
-        // failure leans toward a superset instead (see manager_index.hpp deferred_deletes_).
+        // Not mirrors: commit_deletes defers to on_horizon_advanced to avoid hiding a row a reader still owns.
         unique_future<core::error_t> commit_inserts(execution_context_t ctx,
                                                     std::pmr::vector<components::catalog::oid_t> table_oids,
                                                     uint64_t commit_id);
@@ -97,17 +75,10 @@ namespace services::index {
         unique_future<void> revert_insert(execution_context_t ctx, components::catalog::oid_t table_oid);
         unique_future<void> revert_delete(execution_context_t ctx, components::catalog::oid_t table_oid);
         unique_future<void> cleanup_all_versions(session_id_t session, uint64_t lowest_active);
-        // Oids whose engine holds >= 1 index, excluding oids mid-GC (dropped_table_agents_); the
-        // vacuum operator repopulate_table's each from the just-compacted storage.
+        // Excludes oids mid-GC (dropped_table_agents_); the vacuum operator repopulate_table's each.
         unique_future<std::pmr::vector<components::catalog::oid_t>> all_indexed_oids(session_id_t session);
 
-        // Clears each index's on-disk backing (covers btree duplicate-growth and disk_hash
-        // wrong-row) and re-inserts every row keyed by its physical id from chunk.row_ids, not
-        // position -- compaction shifts positions but not ids. Errors before clearing if a
-        // non-empty chunk carries no row_ids (producer defect).
-        // `built_compact_epoch`: the table's compact epoch the caller read BEFORE the scan that
-        // produced `chunks` (index_rebuild_driver). Stamped on every rebuilt record on success;
-        // search replies carry it and storage_fetch enforces it.
+        // Re-inserts rows keyed by physical id from chunk.row_ids, not position (compaction shifts positions).
         unique_future<core::error_t> repopulate_table(session_id_t session,
                                                       components::catalog::oid_t table_oid,
                                                       std::pmr::vector<components::vector::data_chunk_t> chunks,
@@ -115,10 +86,7 @@ namespace services::index {
                                                       core::date::timezone_offset_t session_tz,
                                                       uint64_t built_compact_epoch);
 
-        // DDL: index management. index_oid = pg_index.indexrelid, the index's only identity
-        // below the planner boundary; no separate "index id" is returned.
-        // `built_compact_epoch`: read by the backfill operator BEFORE its RAW read of the table
-        // (same before-the-scan rule as repopulate_table), 0 when no disk is wired.
+        // index_oid = pg_index.indexrelid, the index's only identity below the planner boundary.
         unique_future<core::error_t> create_index(session_id_t session,
                                              components::catalog::oid_t table_oid,
                                              components::catalog::oid_t index_oid,
@@ -129,12 +97,7 @@ namespace services::index {
         unique_future<void>
         drop_index(session_id_t session, components::catalog::oid_t table_oid, components::catalog::oid_t index_oid);
 
-        // Query (txn-aware). Result is wrapped because a bare empty vector conflated three cases:
-        // no engine for the oid, no matching index, and a real empty match. Now only a real match
-        // (possibly empty) returns as data; the other cases, plus a failed disk read, are errors.
-        // Not covered: index_scan's own empty-address early return, which never sends this message.
-        // The reply pairs the ids with the answering index's built compact epoch — see
-        // index_search_result_t.
+        // Result is wrapped since a bare empty vector conflated "no engine", "no index", and a real empty match.
         unique_future<core::result_wrapper_t<index_search_result_t>>
         search(session_id_t session,
                components::catalog::oid_t table_oid,
@@ -144,7 +107,6 @@ namespace services::index {
                uint64_t start_time,
                uint64_t txn_id,
                core::date::timezone_offset_t session_tz);
-        // Query (txn-aware)
         unique_future<core::result_wrapper_t<index_search_result_t>>
         search_with_preferred_type(session_id_t session,
                                    components::catalog::oid_t table_oid,
@@ -156,13 +118,10 @@ namespace services::index {
                                    uint64_t txn_id,
                                    core::date::timezone_offset_t session_tz);
 
-        // Fans force_flush to every owned agent and reports the first refusal: an index whose
-        // entries never reached the device must not read as flushed to a checkpoint that truncates the WAL.
+        // Reports the first refusal, or an unflushed index could read as flushed to a truncating checkpoint.
         unique_future<core::error_t> flush_all_indexes(session_id_t session);
 
-        // Compact gate: oids safe to compact -- no index engine, or an engine with zero indexes
-        // (engines are created empty, so presence alone doesn't mean indexed). compact() shifts
-        // row positions, which would silently invalidate positional refs any in-memory index holds.
+        // compact() shifts row positions, invalidating positional refs an in-memory index holds.
         unique_future<std::pmr::vector<components::catalog::oid_t>>
         tables_without_indexes(session_id_t session, std::pmr::vector<components::catalog::oid_t> table_oids);
 
@@ -171,47 +130,20 @@ namespace services::index {
         unique_future<std::pmr::vector<components::index::index_description_t>>
         get_indexed_descriptions(session_id_t session, components::catalog::oid_t table_oid);
 
-        // Drains dropped_table_agents_ first (it destroys agents), then deferred_deletes_
-        // (commit_deletes erases held back until commit_id <= new_horizon). Acks
-        // on_subscriber_empty only once both queues are empty.
+        // Drains dropped_table_agents_ first, then deferred_deletes_; acks only once both are empty.
         unique_future<void> on_horizon_advanced(uint64_t new_horizon);
 
-        // Runtime DROP TABLE path: operator_dynamic_cascade_delete records the
-        // (oid, dropped_at_commit_id) pair into dropped_table_agents_ for the
-        // next on_horizon_advanced GC sweep. Pairs with
-        // manager_dispatcher_t::on_drop_resource_marked(INDEX_KIND).
+        // Pairs with manager_dispatcher_t::on_drop_resource_marked(INDEX_KIND) for the next GC sweep.
         unique_future<void>
         mark_table_dropped(session_id_t session, components::catalog::oid_t table_oid, uint64_t dropped_at_commit_id);
 
-        // DROP-GC value-space remap. mark_table_dropped recorded dropped_at_commit_id
-        // in TXN-ID space (>= 2^62) because the cascade-delete operator only knew the
-        // in-flight txn_id. on_horizon_advanced compares against a commit-id horizon,
-        // so the TXN-ID placeholder would never be reclaimed. Once the transaction
-        // commits and a real commit_id is allocated, operator_commit_transaction sends
-        // this so the manager rewrites every dropped_table_agents_ entry whose value
-        // equals txn_id to commit_id, moving it into commit-id space.
+        // mark_table_dropped recorded the value in TXN-ID space; this remaps it once commit_id is known.
         unique_future<void> table_dropped_committed(session_id_t session, uint64_t txn_id, uint64_t commit_id);
 
-        // DROP-rollback un-mark — the abort mirror of table_dropped_committed.
-        // mark_table_dropped recorded dropped_table_agents_[oid] in TXN-ID space
-        // (>= 2^62). If the transaction ABORTS instead of committing, the table must
-        // remain indexed, so operator_abort_transaction sends this; the manager ERASES
-        // every dropped_table_agents_ entry whose value == txn_id, un-marking the DROP
-        // so on_horizon_advanced never reaps the engine.
+        // Abort mirror of table_dropped_committed: erases, not remaps, since the table must stay indexed.
         unique_future<void> table_drop_aborted(session_id_t session, uint64_t txn_id);
 
-        // CREATE INDEX catchup: operator_create_index_backfill calls this per matching WAL record,
-        // staging it into each index agent's bucket via the same stage_inserts path DML uses.
-        //
-        // Only the insert leg is applied. A PHYSICAL_DELETE (including UPDATE's old half) is
-        // dropped: its transaction hasn't committed yet at journal-read time, and applying an
-        // undecided delete could withhold an id from a still-live row -- unlike a stale extra id,
-        // which a point fetch just filters. See manager_index.cpp.
-        //
-        //   physical_data:      NEW rows for INSERT/UPDATE, unused for DELETE.
-        //   physical_row_start: WAL row-id base, used when row_ids is empty.
-        //   txn_id:             the CREATE INDEX txn, so entries land in the PENDING bucket and are
-        //                       committed by the post-pipeline commit_insert.
+        // Only the insert leg is applied; an undecided delete could withhold an id from a still-live row.
         unique_future<void> apply_wal_record_for_index(session_id_t session,
                                                        components::catalog::oid_t table_oid,
                                                        components::catalog::oid_t index_oid,

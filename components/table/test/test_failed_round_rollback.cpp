@@ -1,18 +1,5 @@
-// Shadow paging covers a round that SUCCEEDS; this covers a round that FAILS. A checkpoint round
-// allocates a packed column-segment copy, a table-metadata chain, and a free-list chain -- none
-// registered in the block registry -- so a failed header write strands them in issued_since_root_
-// forever: measured ~655 KB/round on a 7.8 MB table, while degraded() stays false
-// (reconcile_failed_header_write case 2 deliberately doesn't latch, so a transient ENOSPC can still
-// recover).
-//
-// Naive fix (free everything in issued_since_root_) is corruption: the same round can also
-// register_block() ids the live tree now depends on -- compact's rebuilt collection and re-pointed
-// tail segments, both via column_data_t::transition_segment_to_disk. Discriminator: registry_alive(id).
-//
-//   releasable = issued_since_root_ - {ids live in the block registry}
-//
-// Destination is reusable_, NOT pending_free_ -- see roll_back_uncommitted_round()'s comment block
-// in single_file_block_manager.cpp.
+// A failed header write strands the round's allocations in issued_since_root_ -- measured ~655 KB/round on
+// a 7.8 MB table. Freeing all of them is corruption, so the rollback discriminates via registry_alive(id).
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/data_table.hpp>
@@ -92,11 +79,7 @@ namespace {
         }
     }
 
-    // Mirrors table_storage_t::checkpoint (services/disk/manager_disk.cpp). `header_write_fails`
-    // arms the fault interposer for the header write only and disarms it right after -- the only
-    // shape that reaches reconcile_failed_header_write case 2 without latching (failing the whole
-    // tail would fail DATA writes too, which latch durability_error_ and hide the defect behind
-    // the existing degraded() gate).
+    // Mirrors table_storage_t::checkpoint; only the header write fails so DATA writes don't also latch degraded().
     struct round_result_t {
         bool committed{false};
         core::error_t error{core::error_t::no_error()};
@@ -132,11 +115,11 @@ namespace {
         header.free_list = free_ptr.value().block_pointer;
         if (header_write_fails) {
             REQUIRE(plan != nullptr);
-            plan->fail_after_writes = plan->writes_seen; // the NEXT write (the header) fails
+            plan->fail_after_writes = plan->writes_seen;
         }
         auto committed = bm.write_header(header);
         if (header_write_fails) {
-            plan->fail_after_writes = 0; // one bad write only: the device is otherwise healthy
+            plan->fail_after_writes = 0;
         }
         if (committed.has_error()) {
             out.error = committed.error();
@@ -211,10 +194,7 @@ namespace {
 
 } // namespace
 
-// ---------------------------------------------------------------------------------------
-// PROBE (measurement, not a gate): what a persistent header-write failure costs per round,
-// and what the reachability walker can and cannot see about it.
-// ---------------------------------------------------------------------------------------
+// PROBE (measurement, not a gate): per-round cost of a persistent header-write failure, and what the walker sees.
 TEST_CASE("failed_round: PROBE the residual of a persistent header-write failure", "[a7.7][probe]") {
     const auto path = rollback_db_path("probe");
     remove_file(path);
@@ -228,15 +208,13 @@ TEST_CASE("failed_round: PROBE the residual of a persistent header-write failure
     auto steady = reach_steady_state(env, bm, path, &plan);
     WARN("[probe] steady state: block_count=" << steady.blocks << " file_size=" << steady.size);
 
-    // Mirrors agent_disk_t::checkpoint_inner after a failure: compact GATED OFF
-    // (table_storage_t::last_checkpoint_failed_), checkpoint still attempted.
     for (int round = 1; round <= 5; ++round) {
         const uint64_t before_blocks = bm.total_blocks();
         const uint64_t before_size = file_size_of(path);
         bm.dev_reset_tracking();
         auto r = checkpoint_round(bm, *steady.table, &plan, true);
         CHECK_FALSE(r.committed);
-        CHECK_FALSE(bm.degraded()); // case 2 does not latch: that is the whole point
+        CHECK_FALSE(bm.degraded());
 
         std::set<uint64_t> issued(bm.dev_issued_ids().begin(), bm.dev_issued_ids().end());
         std::set<uint64_t> still_orphaned;
@@ -263,13 +241,6 @@ TEST_CASE("failed_round: PROBE the residual of a persistent header-write failure
     remove_file(path);
 }
 
-// ---------------------------------------------------------------------------------------
-// GATE 1 — N injected header-write failures in a row do not grow the file.
-//
-// Without the rollback: once the free pool a committed round left behind runs dry, each failed
-// round's spent copy + chains are never released, so the file grows a full round's worth EVERY
-// round, forever, with degraded() false the whole time.
-// ---------------------------------------------------------------------------------------
 TEST_CASE("failed_round: repeated header-write failures do not grow the file", "[a7.7]") {
     const auto path = rollback_db_path("nogrowth");
     remove_file(path);
@@ -285,7 +256,6 @@ TEST_CASE("failed_round: repeated header-write failures do not grow the file", "
     for (int round = 1; round <= 6; ++round) {
         auto r = checkpoint_round(bm, *steady.table, &plan, true);
         REQUIRE_FALSE(r.committed);
-        // UNLATCHED failure: reconcile case 2 doesn't degrade the manager on its own.
         REQUIRE_FALSE(bm.degraded());
         INFO("failed round " << round << ": block_count " << steady.blocks << " -> " << bm.total_blocks()
                              << ", file_size " << steady.size << " -> " << file_size_of(path));
@@ -293,16 +263,11 @@ TEST_CASE("failed_round: repeated header-write failures do not grow the file", "
         CHECK(file_size_of(path) == steady.size);
     }
 
-    // Loud is not fatal: the table the round failed on still serves its DATA.
     REQUIRE(scan_and_count(*steady.table, env) == ROLLBACK_ROWS);
     remove_file(path);
 }
 
-// ---------------------------------------------------------------------------------------
-// GATE 2 — every id a failed round issued lands on exactly one side, per the block registry:
-// registry-alive -> KEPT; not alive -> RELEASED into reusable_, never pending_free_ (which only
-// drains on a COMMITTED header -- and no header commits here).
-// ---------------------------------------------------------------------------------------
+// Every issued id lands on one side: registry-alive ids are KEPT; the rest go to reusable_, never pending_free_.
 TEST_CASE("failed_round: the rollback gives back only what the live tree does not hold", "[a7.7]") {
     const auto path = rollback_db_path("discriminate");
     remove_file(path);
@@ -315,10 +280,8 @@ TEST_CASE("failed_round: the rollback gives back only what the live tree does no
     REQUIRE(!bm.create_new_database().has_error());
     auto steady = reach_steady_state(env, bm, path, &plan);
 
-    // Also COMPACTS, so the failed round really does allocate live table state (see file header).
     const uint64_t blocks_before_round = bm.total_blocks();
-    // Reset BEFORE compact, not after: issued_since_root_ starts at the last COMMITTED header, so
-    // resetting after compact would measure only the checkpoint's own allocations, not compact's too.
+    // Reset BEFORE compact, so the tracking also captures compact's own allocations, not just the checkpoint's.
     bm.dev_reset_tracking();
     REQUIRE(steady.table->compact(WATERMARK));
     auto r = checkpoint_round(bm, *steady.table, &plan, true);
@@ -337,19 +300,15 @@ TEST_CASE("failed_round: the rollback gives back only what the live tree does no
     for (auto id : issued) {
         INFO("issued block " << id);
         if (bm.registry_alive(id)) {
-            // Live: must not be in either pool, and must still be inside the file.
             CHECK(reusable.count(id) == 0);
             CHECK(pending.count(id) == 0);
             CHECK(id < high_water);
             kept++;
         } else if (id >= high_water) {
-            // Released past the walked-down high-water mark: must not stay in the pool, or
-            // issuing it would put a block beyond the block_count the next header records.
             CHECK(reusable.count(id) == 0);
             CHECK(pending.count(id) == 0);
             past_mark++;
         } else {
-            // Named by no root, reachable from nothing: back in reusable_, not quarantined.
             CHECK(reusable.count(id) != 0);
             CHECK(pending.count(id) == 0);
             reissuable++;
@@ -358,22 +317,16 @@ TEST_CASE("failed_round: the rollback gives back only what the live tree does no
     WARN("[a7.7 gate 2] issued=" << issued.size() << " kept(live)=" << kept << " back_in_reusable=" << reissuable
                                  << " dropped_past_high_water=" << past_mark << " block_count " << blocks_before_round
                                  << " -> " << high_water);
-    CHECK(kept > 0);                                // the compact really did allocate live state
-    CHECK(reissuable + past_mark > 0);              // ...and the round's own metadata came back
-    CHECK(bm.total_blocks() <= blocks_before_round); // a failed round never leaves the mark higher
+    CHECK(kept > 0);
+    CHECK(reissuable + past_mark > 0);
+    CHECK(bm.total_blocks() <= blocks_before_round);
 
-    // The rollback did not take anything the in-memory tree depends on: read the DATA.
     REQUIRE(scan_and_count(*steady.table, env) == ROLLBACK_ROWS);
     remove_file(path);
 }
 
-// ---------------------------------------------------------------------------------------
-// GATE 2b — proves pending_free_.erase in the rollback is load-bearing TODAY, not future-proofing:
-// "allocated for the root under construction" and "already released" DO intersect. Two failed
-// compacting rounds is the smallest shape that produces it -- a later round's compaction can
-// release a collection an EARLIER failed round built, since issued_since_root_ spans every round
-// since the last COMMITTED header, not just one.
-// ---------------------------------------------------------------------------------------
+// pending_free_.erase in the rollback is load-bearing: a later round's compaction can release ids an
+// earlier failed round still holds in issued_since_root_ -- two failed compacting rounds is the smallest repro.
 TEST_CASE("failed_round: a later round's compaction releases ids the round journal still holds", "[a7.7]") {
     const auto path = rollback_db_path("premise");
     remove_file(path);
@@ -388,14 +341,10 @@ TEST_CASE("failed_round: a later round's compaction releases ids the round journ
 
     bm.dev_reset_tracking();
 
-    // Round 1: compact, then fail the header. Its rebuilt collection is registry-alive, so the
-    // rollback KEEPS those ids -- they stay in issued_since_root_.
     REQUIRE(steady.table->compact(WATERMARK));
     REQUIRE_FALSE(checkpoint_round(bm, *steady.table, &plan, true).committed);
     REQUIRE_FALSE(bm.degraded());
 
-    // Round 2's compaction swaps that collection out and mark_as_free's its blocks into
-    // pending_free_ -- while they're still ids this un-promoted window issued.
     REQUIRE(steady.table->compact(WATERMARK));
     const std::set<uint64_t> issued_since_commit(bm.dev_issued_ids().begin(), bm.dev_issued_ids().end());
     const auto pending_after_compact = bm.dev_pending_free_snapshot();
@@ -410,8 +359,6 @@ TEST_CASE("failed_round: a later round's compaction releases ids the round journ
                                                << " intersection=" << overlap.size());
     CHECK_FALSE(overlap.empty());
 
-    // Round 2's rollback puts each on exactly one side: released ids move pending_free_ ->
-    // reusable_ (root N can't name them, so quarantining would strand the space), kept ids stay.
     REQUIRE_FALSE(checkpoint_round(bm, *steady.table, &plan, true).committed);
     const auto reusable_after = bm.dev_reusable_snapshot();
     const auto pending_after = bm.dev_pending_free_snapshot();
@@ -431,11 +378,7 @@ TEST_CASE("failed_round: a later round's compaction releases ids the round journ
     remove_file(path);
 }
 
-// ---------------------------------------------------------------------------------------
-// GATE 3 — the reachability walker reports ZERO unexplained after a failed round. Without the
-// rollback, a failed round's allocations push the high-water mark past the durable root's
-// block_count and land in none of the walker's four bins.
-// ---------------------------------------------------------------------------------------
+// Without the rollback, failed-round allocations would push the high-water mark past the durable root's block_count.
 TEST_CASE("failed_round: the walker reports zero unexplained after a failed round", "[a7.7]") {
     const auto path = rollback_db_path("walker");
     remove_file(path);
@@ -478,11 +421,6 @@ TEST_CASE("failed_round: the walker reports zero unexplained after a failed roun
     remove_file(path);
 }
 
-// ---------------------------------------------------------------------------------------
-// GATE 4 — a TRANSIENT failure still recovers. The rollback must not have taken anything
-// the next round needs, and the round after the failure must commit and reload correctly from
-// a FRESH manager (i.e. from the file, not from this process's memory).
-// ---------------------------------------------------------------------------------------
 TEST_CASE("failed_round: a transient header-write failure still recovers", "[a7.7]") {
     const auto path = rollback_db_path("transient");
     remove_file(path);
@@ -500,14 +438,12 @@ TEST_CASE("failed_round: a transient header-write failure still recovers", "[a7.
         tstorage::database_header_t before{};
         REQUIRE(otterbrix_test::read_active_durable_header(path, before));
 
-        // One failed round...
         REQUIRE_FALSE(checkpoint_round(bm, *steady.table, &plan, true).committed);
         REQUIRE_FALSE(bm.degraded());
         tstorage::database_header_t during{};
         REQUIRE(otterbrix_test::read_active_durable_header(path, during));
-        CHECK(during.iteration == before.iteration); // the previous root stands, unchanged
+        CHECK(during.iteration == before.iteration);
 
-        // ...then the device recovers and the next round commits.
         REQUIRE(steady.table->compact(WATERMARK));
         REQUIRE(checkpoint_round(bm, *steady.table, &plan, false).committed);
         CHECK(file_size_of(path) == steady.size);
@@ -518,7 +454,6 @@ TEST_CASE("failed_round: a transient header-write failure still recovers", "[a7.
         iteration_after_failure = after.iteration;
     }
 
-    // Reload from the file with a fresh manager: the recovered root must carry the whole table.
     {
         tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
         REQUIRE(!bm.load_existing_database().has_error());
@@ -531,13 +466,8 @@ TEST_CASE("failed_round: a transient header-write failure still recovers", "[a7.
     remove_file(path);
 }
 
-// ---------------------------------------------------------------------------------------
-// GATE 5 — when the header write leaves the durable root INDETERMINATE, the rollback must refuse
-// outright: a torn write can leave a CRC-valid new-generation header on the device (differing
-// bytes live in the first hardware sector) while write() still reports failure. If the fsync also
-// failed, the new root MAY be what a crash recovers -- releasing the blocks it names would be the
-// corruption shadow paging exists to prevent.
-// ---------------------------------------------------------------------------------------
+// When the header write leaves the durable root INDETERMINATE, rollback must refuse outright: a torn write
+// can look CRC-valid on the device even though write() reports failure, and a crash could recover that root.
 TEST_CASE("failed_round: an INDETERMINATE header write releases nothing", "[a7.7]") {
     const auto path = rollback_db_path("indeterminate");
     remove_file(path);
@@ -566,7 +496,6 @@ TEST_CASE("failed_round: an INDETERMINATE header write releases nothing", "[a7.7
         tstorage::database_header_t header;
         header.initialize();
         header.free_list = free_ptr.value().block_pointer;
-        // Tear the header write and also fail the following fsync: reconcile case 3.
         plan.torn_at_write = plan.writes_seen + 1;
         plan.fail_syncs_from = plan.syncs_seen + 1;
         auto committed = bm.write_header(header);
@@ -586,12 +515,10 @@ TEST_CASE("failed_round: an INDETERMINATE header write releases nothing", "[a7.7
         }
         CHECK(bm.total_blocks() >= blocks_before_round);
 
-        // A later checkpoint attempt (the orchestrator retries) must still release nothing.
         const uint64_t rolled_back = bm.roll_back_uncommitted_round();
         CHECK(rolled_back == 0);
     }
 
-    // The torn slot really is the durable root now: reopen and read the DATA out of it.
     {
         tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
         REQUIRE(!bm.load_existing_database().has_error());

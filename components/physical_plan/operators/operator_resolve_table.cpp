@@ -27,9 +27,6 @@ namespace components::operators {
     namespace catalog = components::catalog;
 
     namespace {
-        // Per-column metadata accumulated per table, then folded into the entry's
-        // resolved_table_metadata_t. A flat struct (instead of parallel vectors)
-        // keeps the sort+filter logic simple.
         struct out_row_t {
             catalog::oid_t attoid{catalog::INVALID_OID};
             std::string attname;
@@ -42,10 +39,7 @@ namespace components::operators {
             std::string attdefspec;
         };
 
-        // Small projection helpers, one per read below. A projection that is too narrow does not
-        // fail — the column comes back as an ordinal-stable placeholder and the consumer silently
-        // reads nothing — so each of these names exactly the columns its read consumes. An empty
-        // projection means "every column".
+        // A too-narrow projection doesn't fail; the column silently reads back as an empty placeholder.
         std::pmr::vector<std::uint64_t> pg_class_oid_and_namespace(std::pmr::memory_resource* resource) {
             std::pmr::vector<std::uint64_t> cols(resource);
             cols.emplace_back(catalog::pg_class_col::oid);
@@ -92,17 +86,11 @@ namespace components::operators {
 
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
-        // Column visible to this snapshot iff added_at_commit_id <= start_time
-        // AND (dropped_at_commit_id == 0 OR dropped_at_commit_id > start_time).
-        // attisdropped is a structural backup, set in lockstep with dropped_at > 0.
+        // Visible iff added_at <= start_time and (dropped_at == 0 or dropped_at > start_time).
         const auto snapshot_start_time = ctx->txn.start_time;
 
-        // dbname -> namespace_oid for this run. Entries dedupe on (dbname, relname),
-        // so N tables in one database still cost a single pg_namespace read.
         std::unordered_map<std::string, catalog::oid_t> namespace_cache;
 
-        // Nothing resolves without a disk actor (test harnesses): every entry stays
-        // at INVALID_OID, which is how "did not resolve" is reported.
         for (auto& entry : node_->entries()) {
             if (ctx->disk_address == actor_zeta::address_t::empty_address() || entry.relname.empty()) {
                 continue;
@@ -126,9 +114,7 @@ namespace components::operators {
                         std::pmr::vector<std::uint64_t>{resource_});
                     auto ns_batches_r = co_await std::move(nsf);
                     if (ns_batches_r.has_error()) {
-                        // A catalog read that failed is not "row not found": reporting it as a miss
-                        // is how an unreadable catalog surfaced as a missing database or table.
-                        // Every catalog read in this operator propagates its error the same way.
+                        // A failed catalog read is not "row not found"; it must not be reported as a miss.
                         set_error(ns_batches_r.error());
                         co_return;
                     }
@@ -140,15 +126,11 @@ namespace components::operators {
                     namespace_cache.emplace(entry.dbname, input_namespace_oid);
                 }
                 if (input_namespace_oid == catalog::INVALID_OID) {
-                    // Database does not exist. Never fall through to a
-                    // relname-only scan — validate reports database_not_exists.
+                    // Never fall through to a relname-only scan — validate reports database_not_exists.
                     continue;
                 }
             }
 
-            // Two-key (relname, relnamespace) scan whenever a namespace is known —
-            // i.e. always for qualified names. The relname-only scan remains ONLY
-            // for unqualified names.
             std::pmr::vector<std::uint64_t> key_cols(resource_);
             key_cols.emplace_back(catalog::pg_class_col::relname);
             auto keys_chunk = [&] {
@@ -175,9 +157,7 @@ namespace components::operators {
             }
             auto& lookup_batches = lookup_batches_r.value();
 
-            // EVERY relation the scan answered, not just the first row: the two-key scan
-            // yields at most one, but the relname-only scan for an unqualified name hits the
-            // same relname in every namespace that carries it.
+            // Every relation the scan answered, not just the first row (unqualified names may match several).
             struct candidate_t {
                 catalog::oid_t oid;
                 catalog::oid_t ns;
@@ -209,12 +189,8 @@ namespace components::operators {
             }
             auto table_oid = candidates.front().oid;
             if (unqualified && candidates.size() > 1) {
-                // PostgreSQL 18 (ddl-schemas) searches pg_catalog BEFORE the search_path, so a
-                // built-in relation always beats a user table shadowing its name. The rest of
-                // the path ("$user", public) is session configuration this engine does not
-                // have — no search_path, no session database to anchor one — so among user
-                // namespaces there is no order to follow: several matches refuse loudly
-                // instead of answering from whichever pg_class row storage returned first.
+                // PostgreSQL 18 searches pg_catalog before the search_path; lacking a search_path here,
+                // several user-namespace matches refuse loudly instead of guessing.
                 const auto in_pg_catalog =
                     std::find_if(candidates.begin(), candidates.end(), [](const candidate_t& cand) {
                         return cand.ns == catalog::well_known_oid::pg_catalog_namespace;
@@ -222,7 +198,6 @@ namespace components::operators {
                 if (in_pg_catalog != candidates.end()) {
                     table_oid = in_pg_catalog->oid;
                 } else {
-                    // Name the databases so the refusal says how to qualify.
                     std::vector<std::string> holder_dbnames;
                     for (const auto& cand : candidates) {
                         if (cand.ns == catalog::INVALID_OID) {
@@ -275,9 +250,6 @@ namespace components::operators {
                 }
             }
 
-            // Read pg_class by oid for relkind and relnamespace. pg_class layout:
-            // [0=oid, 1=relname, 2=relnamespace, 3=relkind, 4=relstoragemode]. Keying
-            // by "oid" yields at most a single row.
             bool found = false;
             auto namespace_oid = catalog::INVALID_OID;
             char relkind = 0;
@@ -291,8 +263,6 @@ namespace components::operators {
                                                 kPgClass,
                                                 std::move(pc_keys),
                                                 components::operators::make_key_chunk(resource_, table_oid),
-                                                // Non-projected columns stay ordinal-stable placeholders, which
-                                                // is why the reads below still address 2 and 3.
                                                 pg_class_namespace_and_kind(resource_));
                 auto pc_batches_r = co_await std::move(pcf);
                 if (pc_batches_r.has_error()) {
@@ -314,17 +284,11 @@ namespace components::operators {
                 }
             }
 
-            // Stamped even when !found so callers detect "did not resolve" via an
-            // absent table_md.
             entry.namespace_oid = namespace_oid;
             if (!found) {
                 continue;
             }
 
-            // relkind 'v' (regular view) / 'm' (matview): read pg_rewrite.ev_action so
-            // the view-rewrite step can re-parse the body (also used by REFRESH
-            // MATERIALIZED VIEW). pg_rewrite layout: [0=oid, 1=rulename, 2=ev_class,
-            // 3=ev_type, 4=ev_action].
             std::string view_sql;
             if (relkind == catalog::relkind::view || relkind == catalog::relkind::materialized_view) {
                 std::pmr::vector<std::uint64_t> pr_keys(resource_);
@@ -336,7 +300,6 @@ namespace components::operators {
                                                 kPgRewrite,
                                                 std::move(pr_keys),
                                                 components::operators::make_key_chunk(resource_, table_oid),
-                                                // Only ev_action is read below.
                                                 pg_rewrite_action_only(resource_));
                 auto pr_batches_r = co_await std::move(prf);
                 if (pr_batches_r.has_error()) {
@@ -353,8 +316,6 @@ namespace components::operators {
             std::vector<out_row_t> rows;
 
             if (relkind == catalog::relkind::computed) {
-                // relkind='g' — scan pg_computed_column. Layout: [0=relid, 1=attoid,
-                // 2=attname, 3=atttypid, 4=atttypspec, 5=attversion, 6=attrefcount].
                 std::pmr::vector<std::uint64_t> cc_keys(resource_);
                 cc_keys.emplace_back(catalog::pg_computed_column_col::relid);
                 auto [_cc, ccf] =
@@ -380,15 +341,10 @@ namespace components::operators {
                     std::int64_t attversion;
                     std::int64_t attrefcount;
                 };
-                // Key by (attname, atttypid, atttypspec) — NOT attname alone — so a
-                // computing table exposes SEVERAL columns sharing a name but with
-                // different types (multi-type fields). Per variant keep the
-                // max(attversion) row; tombstones (refcount<=0) are dropped below.
+                // Keyed by (attname, atttypid, atttypspec): a computing table may share a name across types.
                 std::unordered_map<std::string, cc_candidate_t> latest_any;
 
                 for (auto& chunk : cc_batches) {
-                    // A chunk narrower than pg_computed_column's schema is a stale/corrupt catalog, not a miss —
-                    // skipping it would silently drop every variant it carries from the resolved schema.
                     if (chunk.column_count() <= catalog::pg_computed_column_col::attrefcount) {
                         std::string msg = "table resolution: pg_computed_column answered with ";
                         msg += std::to_string(chunk.column_count());
@@ -428,7 +384,6 @@ namespace components::operators {
                         }
                     }
                 }
-                // Only variants whose chosen (max-version) row is live.
                 for (auto& [key, cand] : latest_any) {
                     if (cand.attrefcount <= 0) {
                         continue;
@@ -444,27 +399,19 @@ namespace components::operators {
                     return lhs.attoid < rhs.attoid;
                 });
 
-                // Resolve the storage chunk position for each live column. Storage
-                // keeps tombstoned columns until VACUUM, so the chunk index in
-                // scan_batched output may differ from attoid ordering. Probe storage
-                // for its current types() list (aliases set at append time) and look
-                // up each row's attname linearly — N is small (column count).
+                // Storage keeps tombstoned columns until VACUUM, so chunk index can differ from attoid order.
                 auto [_st, stf] = actor_zeta::otterbrix::send(ctx->disk_address,
                                                               &services::disk::manager_disk_t::storage_types,
                                                               ctx->session,
                                                               table_oid);
                 auto storage_types_r = co_await std::move(stf);
                 if (storage_types_r.has_error()) {
-                    // A refused read arriving as an empty list would bind nothing, leaving every
-                    // chunk_position at -1 — a resolved schema describing no storage, published anyway.
                     set_error(storage_types_r.error());
                     co_return;
                 }
                 auto& storage_types = storage_types_r.value();
-                // Binds each variant by (name, type), not name alone -- multi-type fields share a name
-                // across storage columns, and an enum-only match could silently bind variant A to variant
-                // B's bytes differing only in extension (DECIMAL width/scale, STRUCT shape). Ambiguity
-                // refuses rather than guessing by storage order; `claimed` prevents double-binding.
+                // Binds by (name, type): an enum-only match could bind variant A to variant B's bytes
+                // differing only in extension (DECIMAL width/scale); ambiguity refuses rather than guesses.
                 std::vector<bool> claimed(storage_types.size(), false);
                 for (auto& row : rows) {
                     types::complex_logical_type row_type{types::logical_type::UNKNOWN};
@@ -473,8 +420,6 @@ namespace components::operators {
                     } else {
                         auto row_type_r = catalog::decode_type_spec(resource_, row.atttypspec);
                         if (row_type_r.has_error()) {
-                            // An unreadable atttypspec is catalog corruption; binding the
-                            // column by guesswork would reinterpret stored bytes silently.
                             set_error(row_type_r.error());
                             co_return;
                         }
@@ -542,8 +487,6 @@ namespace components::operators {
                     }
                 }
             } else if (relkind != catalog::relkind::view) {
-                // relkind='r', 'm' (matview), and other static-schema kinds: scan pg_attribute. A view has no
-                // pg_attribute (schema derived from body SQL on expansion), so `rows` stays empty there.
                 std::pmr::vector<std::uint64_t> pa_keys(resource_);
                 pa_keys.emplace_back(catalog::pg_attribute_col::attrelid);
                 auto [_pa, paf] =
@@ -562,9 +505,6 @@ namespace components::operators {
                 auto& pa_batches = pa_batches_r.value();
 
                 for (auto& chunk : pa_batches) {
-                    // A chunk narrower than pg_attribute's schema is a stale/corrupt catalog, not a miss —
-                    // tolerating it would skip the MVCC visibility gates below, resolving added/dropped columns
-                    // as visible in silence.
                     if (chunk.column_count() <= catalog::pg_attribute_col::dropped_at_commit_id) {
                         std::string msg = "table resolution: pg_attribute answered with ";
                         msg += std::to_string(chunk.column_count());
@@ -608,8 +548,7 @@ namespace components::operators {
                                            ? catalog::INVALID_OID
                                            : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(3, i));
                         row.attnum = chunk.is_null(4, i) ? 0 : chunk.get_value<std::int32_t>(4, i);
-                        // For relkind='r' storage column order matches pg_attribute
-                        // attnum (1-based), so chunk_position is simply attnum-1.
+                        // Storage column order matches pg_attribute's 1-based attnum, so chunk_position = attnum-1.
                         row.chunk_position = row.attnum > 0 ? row.attnum - 1 : -1;
                         row.attnotnull = chunk.is_null(5, i) ? false : chunk.get_value<bool>(5, i);
                         row.atthasdefault = chunk.is_null(6, i) ? false : chunk.get_value<bool>(6, i);
@@ -622,15 +561,11 @@ namespace components::operators {
                         rows.push_back(std::move(row));
                     }
                 }
-                // Sort by attnum (1-based ordinal).
                 std::sort(rows.begin(), rows.end(), [](const out_row_t& lhs, const out_row_t& rhs) {
                     return lhs.attnum < rhs.attnum;
                 });
             }
 
-            // Stamp the full resolved_table_metadata_t so enrich / validate read the
-            // columns + not-null / default flags off the entry. The decoded type comes
-            // from atttypspec, or from atttypid via the catalog helpers.
             components::logical_plan::resolved_table_metadata_t md;
             md.table_oid = table_oid;
             md.namespace_oid = namespace_oid;

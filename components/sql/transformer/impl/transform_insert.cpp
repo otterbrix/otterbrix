@@ -16,8 +16,7 @@ using namespace components::expressions;
 
 namespace {
 
-    // Replaces assert(false)+return-val: under NDEBUG the assert vanishes and a
-    // wrongly-typed value would silently enter the promoted column vector.
+    // Returns an error, not assert(false): NDEBUG drops the assert and lets a wrongly-typed value through.
     core::error_t no_numeric_conversion(std::pmr::memory_resource* resource,
                                         components::types::logical_type source,
                                         components::types::logical_type target) {
@@ -28,8 +27,6 @@ namespace {
         return core::error_t(core::error_code_t::invalid_parameter, std::move(msg));
     }
 
-    // Converts a numeric logical_value_t to a different numeric type without cast_as (no timezone needed).
-    // Both val.type().type() and target must satisfy is_numeric().
     core::result_wrapper_t<components::types::logical_value_t>
     numeric_widen(std::pmr::memory_resource* resource,
                   const components::types::logical_value_t& val,
@@ -128,9 +125,6 @@ namespace {
                     return no_numeric_conversion(resource, val.type().type(), target);
             }
         } else if (target == LT::HUGEINT) {
-            // Needed because an integer literal past int64 reaches VALUES as HUGEINT
-            // (numeric_literal_value in utils.cpp); without this arm the switch would
-            // fall to default and trip set_value's type assert.
             using components::types::int128_t;
             switch (val.type().type()) {
                 case LT::BOOLEAN:
@@ -159,9 +153,7 @@ namespace {
                     return no_numeric_conversion(resource, val.type().type(), target);
             }
         } else {
-            // Signed integer target. HUGEINT source deliberately absent: promote_type never
-            // picks a target narrower than the source, so reaching here with 128 bits would
-            // mean the oracle lied.
+            // HUGEINT source deliberately absent: promote_type never narrows below the source width.
             int64_t ival;
             switch (val.type().type()) {
                 case LT::BOOLEAN:
@@ -217,9 +209,6 @@ namespace {
         }
     }
 
-    // True when two array-like (ARRAY/LIST) column types differ in shape — different
-    // element type or, for fixed arrays, different declared size — so a single fixed-ARRAY
-    // column vector cannot hold both. Such a column is promoted to a variable-length LIST.
     bool array_shapes_differ(const components::types::complex_logical_type& a,
                              const components::types::complex_logical_type& b) {
         using LT = components::types::logical_type;
@@ -228,7 +217,6 @@ namespace {
         return a_arrayish && b_arrayish && a != b;
     }
 
-    // Converts an ARRAY/LIST logical value into a LIST value with the given element type.
     components::types::logical_value_t to_list_value(std::pmr::memory_resource* resource,
                                                      const components::types::logical_value_t& val,
                                                      const components::types::complex_logical_type& elem_type) {
@@ -240,8 +228,6 @@ namespace {
         return components::types::logical_value_t::create_list(resource, elem_type, val.children());
     }
 
-    // Rebuilds a fixed-ARRAY column vector as a variable-length LIST(elem_type), converting
-    // the rows filled so far. Used when a later VALUES row carries a different array shape.
     core::result_wrapper_t<components::vector::vector_t>
     promote_array_to_list(std::pmr::memory_resource* resource,
                           const components::vector::vector_t& col,
@@ -255,16 +241,10 @@ namespace {
         const auto stride =
             static_cast<const components::types::array_logical_type_extension*>(col.type().extension())->size();
 
-        // The fixed-ARRAY child holds row r's elements contiguously at [r*stride, r*stride+stride).
-        // Cast that whole support vector to the LIST's element type once (a no-op when the physical
-        // types already match), then append each row's slice and point its (offset,length) list entry
-        // at it — no per-element logical_value_t round-trip.
         const components::vector::vector_t& src_child = col.entry();
         std::optional<components::vector::vector_t> casted;
         const components::vector::vector_t* elems = &src_child;
         if (src_child.type().to_physical_type() != elem_type.to_physical_type()) {
-            // cast_vector range-checks every element; a stored value that does not fit
-            // the promoted element type refuses the INSERT instead of truncating silently.
             auto casted_result =
                 components::vector::vector_ops::cast_vector(resource, src_child, elem_type, num_rows * stride);
             if (casted_result.has_error()) {
@@ -291,8 +271,6 @@ namespace {
         return new_col;
     }
 
-    // Promotes an existing column vector to a wider numeric type, converting all stored values.
-    // Caller must ensure col.type().type() and promoted are both is_numeric(), and promoted != col.type().type().
     core::result_wrapper_t<components::vector::vector_t> promote_column(std::pmr::memory_resource* resource,
                                                                         const components::vector::vector_t& col,
                                                                         size_t num_rows,
@@ -316,12 +294,7 @@ namespace {
         return new_col;
     }
 
-    // Aligns every parameterized-INSERT chunk to one shared column layout (`schema`, the
-    // single source of truth). Each chunk is born from the running schema and fill_row only
-    // appends columns / widens numeric types in place, so a chunk is always a prefix of the
-    // final schema: extend it with null columns for any trailing columns it lacks, and widen
-    // any column that a later chunk promoted. Columns that are params in every row of a chunk
-    // stay null here and are filled in transform_result::bind.
+    // A chunk is always a prefix of the final schema (fill_row only appends/widens in place).
     core::error_t conform_param_chunks(std::pmr::memory_resource* resource,
                                        std::pmr::vector<components::vector::data_chunk_t>& chunks,
                                        const std::pmr::vector<components::types::complex_logical_type>& schema) {
@@ -370,14 +343,7 @@ namespace components::sql::transform {
             if (target->indirection->lst.empty()) {
                 key_translation.emplace_back(resource_, target->name);
             } else {
-                // Dotted / subscripted target such as `a.b.c` or `arr[0]`: flatten
-                // the WHOLE path — the base name plus EVERY indirection element —
-                // into one computing-table column name, through the shared codec so
-                // the write side agrees byte-for-byte with the read side. Keeping
-                // every interior segment fixes the old two-element build that stored
-                // `a.b.c` as "a/c" (dropping the middle); rendering a subscript with
-                // indices_to_str fixes the crash where an A_Indices node was
-                // dereferenced as a string (`arr[0]` -> "arr/0", not a null deref).
+                // Flatten the whole path (base name + every indirection element) so writes and reads agree.
                 std::pmr::vector<std::pmr::string> segments(resource_);
                 segments.emplace_back(std::pmr::string{target->name, resource_});
                 for (const auto& part : target->indirection->lst) {
@@ -392,8 +358,6 @@ namespace components::sql::transform {
                 key_translation.emplace_back(resource_, jsonb_path::flatten(segments, resource_));
             }
         }
-        // RETURNING projection (references the target table's columns). Parsed
-        // once and attached to whichever insert node this statement lowers to.
         std::pmr::vector<expressions::expression_ptr> returning(resource_);
         if (node.returningList) {
             name_collection_t rnames;
@@ -409,10 +373,7 @@ namespace components::sql::transform {
         if (pg_ptr_cast<SelectStmt>(node.selectStmt)->valuesLists) {
             auto vals = pg_ptr_cast<List>(pg_ptr_cast<SelectStmt>(node.selectStmt)->valuesLists)->lst;
 
-            // A parameterised INSERT binds rows by absolute index in transform_result,
-            // which materialises them into a single working chunk — so keep one chunk for
-            // that path. A literal INSERT splits into ≤DEFAULT_VECTOR_CAPACITY chunks so no
-            // oversized data_chunk_t is ever built. Detect the case up front.
+            // Parameterised INSERT binds by absolute index in transform_result, so it stays one chunk.
             bool has_params = false;
             for (auto row : vals) {
                 for (auto value : pg_ptr_cast<List>(row.data)->lst) {
@@ -426,25 +387,14 @@ namespace components::sql::transform {
                 }
             }
 
-            // Target column names, materialized ONCE per statement. key_t::as_string() builds a
-            // fresh std::string every call, and the column-matching predicate below runs it per
-            // candidate column per CELL. The names are fixed for the whole statement; only the
-            // values vary.
             std::pmr::vector<std::string> field_names(resource_);
             field_names.reserve(key_translation.size());
             for (const auto& field : key_translation) {
                 field_names.emplace_back(field.as_string());
             }
 
-            // Digits of every bare fractional literal, addressed by the cell it lands in. The
-            // chunk can only hold the double they parsed to; enrich re-reads these once the
-            // target column's DECIMAL scale is known.
             logical_plan::insert_literal_digits_list_t literal_digits(resource_);
 
-            // Fills one row of `chunk` at chunk-local index `chunk_row` from the value list
-            // of global row `global_row`. Discovers/promotes columns in `chunk` as it goes
-            // and records ParamRef slots (keyed by global row) in parameter_insert_map_.
-            // Answers with a refusal on a malformed row.
             auto fill_row = [&](vector::data_chunk_t& chunk,
                                 size_t chunk_row,
                                 size_t global_row,
@@ -471,10 +421,7 @@ namespace components::sql::transform {
                             par.emplace_back(std::move(loc));
                             parameter_insert_map_.emplace(ref->number, std::move(par));
                         }
-                        // The column must exist NOW, at its written position: everything downstream
-                        // pairs chunk columns with the written list positionally, so a column first
-                        // materialized at bind time would land after every literal column and put
-                        // its values under another column's name. bind() retypes it from NA in place.
+                        // Must exist now, at its written position: downstream pairs columns positionally.
                         auto it_column =
                             std::find_if(chunk.data.begin(), chunk.data.end(), [&](const vector::vector_t& column) {
                                 return column.type().alias() == field_name;
@@ -488,7 +435,6 @@ namespace components::sql::transform {
                             chunk.data.emplace_back(std::move(placeholder));
                         }
                     } else if (nodeTag(it_value->data) == T_A_Expr) {
-                        // Evaluate constant arithmetic at parse time
                         // TODO: move column matching to validation/optimizer phase for complex path resolution
                         VALUE_OR_RETURN(auto value,
                                         evaluate_const_a_expr(resource_, pg_ptr_cast<A_Expr>(it_value->data)));
@@ -504,9 +450,7 @@ namespace components::sql::transform {
                         } else {
                             auto col_type = it->type().type();
                             auto val_type = value.type().type();
-                            // BOOLEAN is is_numeric but has no numeric widening: asking the promotion
-                            // oracle for a (numeric, BOOLEAN) common type poisons the column vector.
-                            // An unpromotable mix takes the plain per-value store below.
+                            // BOOLEAN is numeric but not widenable; an unpromotable mix falls to the plain store below.
                             if (types::is_arithmetic_numeric(col_type) && types::is_arithmetic_numeric(val_type) &&
                                 col_type != val_type) {
                                 auto promoted = types::promote_type(col_type, val_type);
@@ -536,9 +480,7 @@ namespace components::sql::transform {
                         } else {
                             auto col_type = it->type().type();
                             auto val_type = value.type().type();
-                            // DECIMAL is outside the widening ladder (is_arithmetic_numeric excludes
-                            // it); a mismatched pair has no promotion path — refuse rather than store
-                            // a wrongly-typed cell.
+                            // DECIMAL has no promotion path; refuse rather than store a wrongly-typed cell.
                             if (!value.is_null() &&
                                 (col_type == types::logical_type::DECIMAL ||
                                  val_type == types::logical_type::DECIMAL) &&
@@ -549,9 +491,6 @@ namespace components::sql::transform {
                                                      "different type in one column of a VALUES list",
                                                      resource_});
                             }
-                            // BOOLEAN is is_numeric but has no numeric widening: asking the promotion
-                            // oracle for a (numeric, BOOLEAN) common type poisons the column vector.
-                            // An unpromotable mix takes the plain per-value store below.
                             if (types::is_arithmetic_numeric(col_type) && types::is_arithmetic_numeric(val_type) &&
                                 col_type != val_type) {
                                 auto promoted = types::promote_type(col_type, val_type);
@@ -564,11 +503,7 @@ namespace components::sql::transform {
                                 VALUE_OR_RETURN(auto widened, numeric_widen(resource_, value, promoted));
                                 chunk.set_value(column_index, chunk_row, std::move(widened));
                             } else if (array_shapes_differ(it->type(), value.type())) {
-                                // VALUES rows carry array literals of different shapes (e.g. ARRAY[1]
-                                // then ARRAY[2,3]): a single fixed-ARRAY vector can't hold both, so
-                                // promote the column to a variable-length LIST and store every row as
-                                // a list. The target column's reconciliation handles LIST -> fixed
-                                // ARRAY later if needed.
+                                // Rows carry differently shaped arrays; a fixed-ARRAY vector can't hold both.
                                 auto elem_type = value.type().child_type();
                                 if (col_type == types::logical_type::ARRAY) {
                                     VALUE_OR_RETURN(auto list_col,
@@ -581,10 +516,7 @@ namespace components::sql::transform {
                                 }
                                 chunk.set_value(column_index, chunk_row, to_list_value(resource_, value, elem_type));
                             } else if (col_type == types::logical_type::NA && !value.is_null()) {
-                                // The column was created from a LEADING NULL literal (typed NA);
-                                // a later row now carries a concrete type. Every prior row is NULL,
-                                // so promote the NA column to the concrete type (nulls preserved)
-                                // before storing — otherwise set_value asserts on the type mismatch.
+                                // Column came from a leading NULL literal; promote it now or set_value asserts.
                                 VALUE_OR_RETURN(
                                     auto na_promoted,
                                     promote_column(resource_, *it, chunk_row, val_type, chunk.capacity()));
@@ -607,9 +539,7 @@ namespace components::sql::transform {
             };
 
             auto qn = rangevar_to_qualified_name(node.relation);
-            // Identity travels via the catalog-resolve wrap; the insert node
-            // itself carries only payload + table_oid() (stamped at enrich
-            // time from the sibling resolve_table).
+            // Identity travels via the catalog-resolve wrap; the insert node carries only payload + table_oid().
             logical_plan::node_ptr ins;
             if (has_params) {
                 const uint64_t cap = vector::DEFAULT_VECTOR_CAPACITY;
@@ -632,7 +562,6 @@ namespace components::sql::transform {
                                                      vector::data_chunk_t(resource_, {}, 0),
                                                      std::move(key_translation));
             } else {
-                // Split the literal rows into uniform ≤CAP chunks (only the last is smaller).
                 const uint64_t cap = vector::DEFAULT_VECTOR_CAPACITY;
                 const uint64_t total = vals.size();
                 std::pmr::vector<vector::data_chunk_t> chunks(resource_);

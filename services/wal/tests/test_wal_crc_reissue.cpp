@@ -29,14 +29,8 @@
 #include <services/wal/wal_page_reader.hpp>
 #include <services/wal/wal_reader.hpp>
 
-// A CRC break must not make the allocator forget what is on disk: recover_from_disk() used to
-// take "where the id allocator resumes" from the same replay scan that answers "what replay may
-// apply" (stopping at the first break, STOP-A), putting the allocator BELOW ids still on disk
-// and reissuing them. The tests below assert on the ids the engine actually hands out and the
-// ids the segment files actually contain, never on a status.
-//
-// Corruption here is a flipped byte inside a data page (a bad sector); dev_set_wal_file_interposer
-// covers OPEN/WRITE failures, neither of which is the input under test.
+// A CRC break must not make the allocator forget what is on disk: recover_from_disk() took the id
+// allocator's resume point from the same replay scan, so it resumed below ids still on disk and reissued them.
 
 using namespace services;
 using namespace services::wal;
@@ -78,14 +72,10 @@ namespace {
         return "wal_" + std::to_string(static_cast<unsigned>(kMainDb)) + "_" + suffix;
     }
 
-    // config_wal appends "wal" to the base path, so the segments live under <path>/wal/<db>.
     std::filesystem::path db_dir_of(const std::filesystem::path& base) {
         return base / "wal" / std::to_string(static_cast<unsigned>(kMainDb));
     }
 
-    // A RESTART, not a fresh database: unlike the write-refusal harness this one never wipes the
-    // directory, because every test here is about what a SECOND open makes of what the first
-    // one left behind.
     configuration::config_wal reopen_config(const std::filesystem::path& path) {
         std::filesystem::create_directories(path);
         configuration::config_wal config(path);
@@ -116,11 +106,6 @@ namespace {
             manager_.reset();
         }
 
-        // Built on the fixture's own arena (core::pmr::otterbrix_resource, resource_tracer_t
-        // under ASAN), mirroring production (agent_disk_t::storage_append_inner builds off
-        // resource()). resource_ is declared FIRST so it outlives ~wal_env_t's teardown of
-        // manager_. Extracted so a test can assert the ARENA of a REAL payload before it's moved
-        // into the message and becomes unobservable.
         std::pmr::vector<data_chunk_t> make_insert_batch(size_t rows) {
             return one_chunk(&resource_, rows);
         }
@@ -164,9 +149,6 @@ namespace {
             return std::move(fut);
         }
 
-        // One committed transaction. commit_txn under NORMAL flushes the page, so each call
-        // closes the page it wrote into — which is what makes "corrupt an INTERIOR page and
-        // leave live pages after it" constructible at all.
         wal::id_t commit_one(uint64_t txn_id, uint64_t row_start) {
             auto ins = send_insert(txn_id, 4, row_start);
             auto ins_result = await_ready(ins);
@@ -199,11 +181,6 @@ namespace {
         return result;
     }
 
-    // THE ANSWER THE FILES GIVE. Every data page whose checksum still verifies vouches for
-    // its own page_end_lsn, and that includes pages sitting AFTER a corruption point — the
-    // region read_all_records (STOP-A) stops short of. This helper deliberately uses only
-    // wal_page_reader_t's long-standing public accessors, so it is an independent witness
-    // rather than a mirror of the code under test.
     wal::id_t on_disk_max_wal_id(std::pmr::memory_resource* res, const std::filesystem::path& db_dir) {
         wal::id_t max_id = 0;
         for (const auto& seg : segment_files(db_dir)) {
@@ -222,8 +199,6 @@ namespace {
         return max_id;
     }
 
-    // The answer the STOP-A reader gives for ONE segment: ids reachable without crossing a
-    // break inside it.
     std::vector<wal::id_t> readable_ids_of(std::pmr::memory_resource* res, const std::filesystem::path& seg) {
         std::vector<wal::id_t> ids;
         wal_page_reader_t reader(res, seg);
@@ -262,9 +237,6 @@ namespace {
         return m;
     }
 
-    // Flip one byte in the DATA AREA of a data page. Data page N starts at file offset
-    // N * PAGE_SIZE (page 0 is the file header), so this breaks that page's checksum and
-    // leaves every other page — including the ones after it — intact and verifiable.
     void break_page_crc(const std::filesystem::path& seg, size_t data_page_index) {
         std::fstream file(seg, std::ios::in | std::ios::out | std::ios::binary);
         REQUIRE(file.is_open());
@@ -280,9 +252,6 @@ namespace {
         REQUIRE(file.good());
     }
 
-    // Overwrite the page_end_lsn field (offset 8) of a data page header with `value`. This is
-    // the same class of damage as break_page_crc — the page's checksum stops verifying — but
-    // it is aimed at the ONE field truncate_before must not act on without checking it.
     void forge_page_end_lsn(const std::filesystem::path& seg, size_t data_page_index, uint64_t value) {
         std::fstream file(seg, std::ios::in | std::ios::out | std::ios::binary);
         REQUIRE(file.is_open());
@@ -299,20 +268,15 @@ namespace {
         return reader.page_count();
     }
 
-} // namespace
+}
 
-// ===========================================================================
-// The first id after a restart must not be one the journal already holds: the startup scan used
-// to derive global_id_ from read_all_records(), which stops at the break. BEFORE: on_disk_max
-// was 24 and the next write was issued id 9, already carried by four still-verifiable pages;
-// restarting again issued 9 a SECOND time, to a third record.
+// The first id after a restart must not repeat one already in the journal.
 TEST_CASE("wal::reissue::the_first_id_after_a_crc_break_is_not_one_the_journal_already_holds") {
     const auto path = base_path() / "reissue_interior_page";
     std::filesystem::remove_all(path);
     const auto db_dir = db_dir_of(path);
     core::pmr::otterbrix_resource witness;
 
-    // --- 1. A journal of one-transaction-per-page, so an interior page can be picked. ---
     {
         wal_env_t env(path);
         for (uint64_t t = 1; t <= 12; ++t) {
@@ -329,18 +293,14 @@ TEST_CASE("wal::reissue::the_first_id_after_a_crc_break_is_not_one_the_journal_a
     const auto intact_max = on_disk_max_wal_id(&witness, db_dir);
     REQUIRE(intact_max > 0);
 
-    // --- 2. A bad sector in the middle of the segment. ---
     break_page_crc(segment, pages / 2);
 
-    // THE PRECONDITION, checked rather than assumed: the break must leave live pages behind
-    // it, otherwise this is the ordinary torn-tail case and proves nothing.
     const auto after_break_on_disk = on_disk_max_wal_id(&witness, db_dir);
     const auto after_break_readable = max_of(readable_ids(&witness, db_dir));
     INFO("on disk: " << after_break_on_disk << " , reachable past the break: " << after_break_readable);
-    REQUIRE(after_break_readable > 0);            // a prefix survives
-    REQUIRE(after_break_on_disk > after_break_readable); // and live pages sit beyond the break
+    REQUIRE(after_break_readable > 0);
+    REQUIRE(after_break_on_disk > after_break_readable);
 
-    // --- 3. Restart and write. ---
     wal::id_t first_id_after_restart = 0;
     {
         wal_env_t env(path);
@@ -351,7 +311,6 @@ TEST_CASE("wal::reissue::the_first_id_after_a_crc_break_is_not_one_the_journal_a
                                      << after_break_on_disk);
     REQUIRE(first_id_after_restart > after_break_on_disk);
 
-    // --- 4. And it must not keep resuming from the same place on every later restart. ---
     wal::id_t first_id_after_second_restart = 0;
     {
         wal_env_t env(path);
@@ -362,11 +321,8 @@ TEST_CASE("wal::reissue::the_first_id_after_a_crc_break_is_not_one_the_journal_a
     REQUIRE(first_id_after_second_restart > first_id_after_restart);
 }
 
-// ===========================================================================
-// A record the journal accepted must be readable from it: the same `break` left
-// current_segment_index_ at the CORRUPTED segment, so ensure_writer() appended behind the
-// corruption point, where no reader reaches. BEFORE: the id returned by the write was in no
-// segment read_all_records could reach.
+// A record the journal accepted must be readable from it: the same break left current_segment_index_
+// at the corrupted segment, so ensure_writer() appended behind the corruption point, unreachable.
 TEST_CASE("wal::reissue::a_record_written_after_a_crc_break_is_reachable_in_the_journal") {
     const auto path = base_path() / "write_behind_break";
     std::filesystem::remove_all(path);
@@ -398,18 +354,12 @@ TEST_CASE("wal::reissue::a_record_written_after_a_crc_break_is_reachable_in_the_
     REQUIRE(contains(reachable, written));
 }
 
-// ===========================================================================
-// current_wal_id must not understate the journal because of an early break: a break in segment
-// 000000 meant discover_segments's ascending loop never looked at 000001+. current_wal_id feeds
-// operator_checkpoint's boundary and operator_create_index_backfill's start point.
-// BEFORE: three segments on disk carrying ids up to 24, and current_wal_id answered 4.
 TEST_CASE("wal::reissue::current_wal_id_counts_the_segments_after_a_broken_one") {
     const auto path = base_path() / "later_segments_ignored";
     std::filesystem::remove_all(path);
     const auto db_dir = db_dir_of(path);
     core::pmr::otterbrix_resource witness;
 
-    // header page + 3 data pages per segment, one transaction per page.
     {
         wal_env_t env(path, /*max_segment_size=*/4 * PAGE_SIZE);
         for (uint64_t t = 1; t <= 9; ++t) {
@@ -424,12 +374,8 @@ TEST_CASE("wal::reissue::current_wal_id_counts_the_segments_after_a_broken_one")
     const auto first_pages = data_page_count(&witness, first_segment);
     REQUIRE(first_pages >= 2);
 
-    // Break an interior page of the EARLIEST segment; the later ones stay perfect.
     break_page_crc(first_segment, 1);
 
-    // THE PRECONDITION: recover_from_disk walks the segments in ascending order and stopped
-    // at the first break, so everything it could ever see is segment 000000's prefix. The
-    // later segments hold strictly more.
     const auto on_disk = on_disk_max_wal_id(&witness, db_dir);
     const auto reachable_in_first = max_of(readable_ids_of(&witness, first_segment));
     INFO("segment 000000 stops at " << reachable_in_first << " , the files still hold up to " << on_disk);
@@ -446,16 +392,8 @@ TEST_CASE("wal::reissue::current_wal_id_counts_the_segments_after_a_broken_one")
     REQUIRE(reported >= on_disk);
 }
 
-// ===========================================================================
-// Truncation must not delete a segment on the strength of a header field the checksum never
-// vouched for: reading page_end_lsn straight from the last data page's header and unlinking on
-// <= checkpoint trusts a field the CRC covers — forge it low and the branch deletes a segment
-// full of records ABOVE the checkpoint.
-//
-// Setup damages TWO segments deliberately: truncate_before never touches the writer's own
-// segment, so breaking 000000 too is what moves the writer off 000001, the segment under test.
-// BEFORE: segment 000001 was unlinked and the records between the checkpoint and its real
-// page_end_lsn went with it.
+// Truncation must not delete a segment on a header field the checksum never vouched for: forging
+// page_end_lsn low makes unlinking on <= checkpoint delete a segment full of records above it.
 TEST_CASE("wal::reissue::truncation_keeps_a_segment_whose_last_header_is_corrupt") {
     const auto path = base_path() / "truncate_forged_header";
     std::filesystem::remove_all(path);
@@ -473,11 +411,10 @@ TEST_CASE("wal::reissue::truncation_keeps_a_segment_whose_last_header_is_corrupt
     const auto second_segment = db_dir / segment_name(1);
     REQUIRE(std::filesystem::exists(first_segment));
     REQUIRE(std::filesystem::exists(second_segment));
-    REQUIRE(std::filesystem::exists(db_dir / segment_name(2))); // 000001 is closed, not current
+    REQUIRE(std::filesystem::exists(db_dir / segment_name(2)));
     const auto second_pages = data_page_count(&witness, second_segment);
     REQUIRE(second_pages >= 1);
 
-    // The real highest id in segment 000001, before anything is forged.
     wal::id_t real_high = 0;
     {
         wal_page_reader_t reader(&witness, second_segment);
@@ -485,7 +422,6 @@ TEST_CASE("wal::reissue::truncation_keeps_a_segment_whose_last_header_is_corrupt
         real_high = reader.read_page_header(second_pages).page_end_lsn;
     }
 
-    // Checkpoint strictly below what the segment holds: keeping it is the only correct answer.
     const wal::id_t checkpoint_id = 1;
     REQUIRE(real_high > checkpoint_id);
 
@@ -503,9 +439,6 @@ TEST_CASE("wal::reissue::truncation_keeps_a_segment_whose_last_header_is_corrupt
     REQUIRE(std::filesystem::exists(second_segment));
 }
 
-// ===========================================================================
-// Insert payload built on the fixture's own arena (see make_insert_batch above). The batch is
-// unobservable after send, so the assertion is made on make_insert_batch's own output.
 TEST_CASE("wal::reissue::the_insert_payload_is_built_on_the_fixture_arena") {
     const auto path = base_path() / "payload_arena";
     std::filesystem::remove_all(path);

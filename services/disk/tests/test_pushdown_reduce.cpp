@@ -1,19 +1,5 @@
-// Agent-side aggregate-pushdown REDUCE — execution + routing contract.
-//
-// A pushed aggregate rides a POD pushed_aggregate_spec_t on the DEDICATED storage_reduce
-// leg: the owning agent rebuilds the operator_group from the POD, REDUCES its OWN
-// slice (send-free) and replies ALL final aggregated rows in ONE reply (no cursor). The
-// manager is a transparent router (pool_idx_for_oid -> owning agent's storage_reduce_inner),
-// forwarding the reduced reply unchanged. This file drives that path directly against the
-// manager (fixture in pushdown_reduce_fixture.hpp) and asserts:
-//   (a) READ-YOUR-OWN-WRITES — rows appended UNDER an uncommitted txn are summed only when the
-//       fetch carries that SAME txn (the zero-txn guard: the reduce builds its pipeline
-//       context with the caller's txn, not txn{0,0}).
-//   (b) EMPTY-SLICE — SUM over a table with no visible rows still emits ONE scalar row
-//       (typed via the spec's output_types), value NULL.
-//   (c) GROUPED — GROUP BY key + SUM returns the full grouped result.
-//   (d) ROUTING CONTRACT — a spec-carrying storage_reduce round-trips to a well-formed
-//       (error-free, non-null) reply.
+// A pushed aggregate rides a POD spec on the dedicated storage_reduce leg: the owning agent reduces its own
+// slice and replies once; the manager is a transparent router, forwarding the reply unchanged.
 
 #include "pushdown_reduce_fixture.hpp"
 #include <components/compute/tests/pushdown_sum_uid.hpp>
@@ -55,12 +41,8 @@ namespace {
         return td;
     }
 
-    // One-chunk append batch of BIGINT tuples. `rows[i]` is one row across `ncols` columns.
+    // Append routes columns by name (via type aliases) only, with no positional fallback.
     std::pmr::vector<components::vector::data_chunk_t>
-    // `names` are the TARGET COLUMN NAMES, carried as the column type aliases. The append
-    // routes by name and by name only — there is no positional fallback behind it — so a
-    // hand-built batch has to say where each column lands, exactly as the insert operator
-    // does when it renames the streamed columns to their targets.
     batch_rows(std::pmr::memory_resource* r,
                const std::vector<std::string>& names,
                const std::vector<std::vector<int64_t>>& rows) {
@@ -83,8 +65,7 @@ namespace {
         return b;
     }
 
-    // A POD reduce spec: optional GROUP BY key column + SUM(val_col). group_col < 0 => scalar
-    // aggregate (no GROUP BY). output_types stamped BIGINT so the scalar/empty result stays typed.
+    // group_col < 0 means a scalar aggregate (no GROUP BY); output_types keeps the empty/scalar result typed.
     ops::pushed_aggregate_spec_t build_sum_spec(std::pmr::memory_resource* r, int group_col, size_t val_col) {
         ops::pushed_aggregate_spec_t spec{r};
         if (group_col >= 0) {
@@ -92,8 +73,6 @@ namespace {
             gk.name.assign("grp", 3);
             gk.path.push_back(static_cast<uint64_t>(group_col));
             spec.group_keys.push_back(std::move(gk));
-            // This stands in for `SELECT grp, sum(val) ... GROUP BY grp`, whose target list names
-            // the key — so the output is the reference that reads it, as the coordinator ships.
             components::expressions::key_t key{r, std::string("grp")};
             std::pmr::vector<size_t> key_path{r};
             key_path.push_back(static_cast<size_t>(group_col));
@@ -111,7 +90,6 @@ namespace {
         pa.alias.assign("sum_val", 7);
         pa.result_type = types::complex_logical_type{types::logical_type::BIGINT};
         pa.arg_col_path.push_back(static_cast<uint64_t>(val_col));
-        // The reduction itself: the agent's group builds an aggregate node from this expression.
         components::expressions::key_t alias{r, std::string("sum_val")};
         auto reduction = components::expressions::make_aggregate_expression(r, "sum", alias);
         reduction->add_function_uid(pa.func_uid);
@@ -124,9 +102,7 @@ namespace {
         spec.outputs.push_back(reduction);
         spec.aggregates.push_back(std::move(pa));
         spec.output_types.emplace_back(types::logical_type::BIGINT); // sum column
-        // The schema the reduce runs OVER. Every table here is all-BIGINT, so it is wide enough to
-        // cover the ordinals this spec references. An empty slice pushes no batch, so this is the
-        // only description of the input the agent's group ever gets.
+        // input_types is the only schema description the agent's group gets when an empty slice pushes no batch.
         size_t width = val_col + 1;
         if (group_col >= 0 && static_cast<size_t>(group_col) + 1 > width) {
             width = static_cast<size_t>(group_col) + 1;
@@ -152,7 +128,6 @@ TEST_CASE("pushdown_reduce: read-your-own-writes SUM over an uncommitted txn (D4
               cols,
               /*is_computed=*/false);
 
-    // Append 10 + 20 + 30 = 60 UNDER txn 88 (uncommitted; never published).
     const auto txn = open_txn(88);
     components::execution_context_t append_ctx{session_id_t{}, txn, {}};
     append_ctx.table_oid = table_oid;
@@ -164,8 +139,6 @@ TEST_CASE("pushdown_reduce: read-your-own-writes SUM over an uncommitted txn (D4
 
     auto partials = fx.drive_reduce(table_oid, build_sum_spec(&fx.resource, /*group_col=*/-1, /*val_col=*/0), txn);
 
-    // Scalar SUM => exactly one row, one column, value 60 (the uncommitted rows ARE summed
-    // because the reduce built its pipeline context with the caller's txn, not txn{0,0}).
     int64_t total = 0;
     uint64_t rows = 0;
     for (const auto& chunk : partials) {
@@ -201,7 +174,6 @@ TEST_CASE("pushdown_reduce: empty slice SUM emits one NULL scalar row") {
     for (const auto& chunk : partials) {
         rows += chunk.size();
     }
-    // A scalar aggregate over zero rows still emits its single row (SUM = NULL).
     REQUIRE(rows == 1);
 }
 
@@ -219,8 +191,7 @@ TEST_CASE("pushdown_reduce: GROUP BY key + SUM returns the full grouped result")
               cols,
               /*is_computed=*/false);
 
-    // (grp,val): (1,10),(1,20),(2,30),(2,5) => grp1=30, grp2=35 (distinct sums so key/sum
-    // columns are identifiable regardless of output order).
+    // Distinct group sums let the key/sum columns be identified regardless of output order.
     const auto txn = open_txn(88);
     components::execution_context_t append_ctx{session_id_t{}, txn, {}};
     append_ctx.table_oid = table_oid;
@@ -232,8 +203,6 @@ TEST_CASE("pushdown_reduce: GROUP BY key + SUM returns the full grouped result")
 
     auto partials = fx.drive_reduce(table_oid, build_sum_spec(&fx.resource, /*group_col=*/0, /*val_col=*/1), txn);
 
-    // Two grouped rows; each row carries {key ∈ {1,2}} and {sum ∈ {30,35}} across its two
-    // columns. Identify the key cell (value 1 or 2) and map it to the other (the sum).
     std::map<int64_t, int64_t> grouped;
     for (const auto& chunk : partials) {
         REQUIRE(chunk.column_count() == 2);
@@ -251,10 +220,6 @@ TEST_CASE("pushdown_reduce: GROUP BY key + SUM returns the full grouped result")
     REQUIRE(grouped[2] == 35);
 }
 
-// (d) ROUTING CONTRACT: a storage_reduce for a known owned table round-trips through the
-// manager (pool_idx_for_oid -> owning agent) to a well-formed reply. A scalar SUM over an
-// EMPTY table still yields ONE row (SUM = NULL); the routing + message contract are what is
-// under test here, not the aggregate values (those are the cases above).
 TEST_CASE("pushdown_reduce: manager routes a storage_reduce and replies a well-formed result") {
     fixture fx;
 
@@ -284,20 +249,10 @@ TEST_CASE("pushdown_reduce: manager routes a storage_reduce and replies a well-f
     REQUIRE(rows == 1);
 }
 
-// (e) Missing/record-only slice -- the root of the family case 17 in test_error_handling names.
-// This leg must not reduce over empty input and emit the scalar aggregate's mandatory single
-// row (SUM = NULL) for an oid no agent has storage for: that row is a fact about a table
-// ("your SUM is NULL"), synthesized from a read that never reached any storage, bit-identical
-// to what a real, really-empty table produces. Nothing above can tell them apart, so "how many
-// rows" would be a routing failure wearing the table's clothes.
-//
-// Both halves of the pairing live here: a real table with no visible rows still emits its one
-// scalar row (case (b) above, unchanged), while an oid naming no storage is a refusal. "Empty
-// table" and "no table here" stop sharing a reply.
+// A missing oid must refuse, not synthesize the same NULL-SUM row a real empty table emits (case (b)).
 TEST_CASE("pushdown_reduce: a reduce over a missing slice is a refusal, not an empty fold") {
     fixture fx;
 
-    // NEVER create a storage for this oid.
     const catalog::oid_t missing_oid{catalog::FIRST_USER_OID + 7};
     auto r = fx.invoke(&manager_disk_t::storage_reduce,
                        session_id_t{},
@@ -309,11 +264,7 @@ TEST_CASE("pushdown_reduce: a reduce over a missing slice is a refusal, not an e
     REQUIRE(r.has_error());
 }
 
-// (f) RE-DRIVEN PUSHED SCAN — operator_recursive_cte re-drives its subtree once per
-// fixpoint iteration via reset_for_reuse() + reset_pipeline_state(). A pushed_reduce_scan
-// must ship an ACTIVE spec on EVERY storage_reduce send (open_spec() is the exact
-// instance the send carries): if a drive consumed the armed spec for good, the re-driven
-// pass would reduce with an inactive husk and return garbage.
+// A pushed_reduce_scan must ship an ACTIVE spec on every send, or a re-drive reduces with a consumed husk.
 TEST_CASE("pushdown_reduce: a re-driven pushed_reduce_scan ships an ACTIVE spec on every drive") {
     core::pmr::otterbrix_resource resource;
 
@@ -324,22 +275,17 @@ TEST_CASE("pushdown_reduce: a re-driven pushed_reduce_scan ships an ACTIVE spec 
                                                    std::vector<size_t>{},
                                                    build_sum_spec(&resource, /*group_col=*/-1, /*val_col=*/0)};
 
-    // First drive ships the armed spec.
     auto first = scan.open_spec();
     REQUIRE(first.active());
 
-    // Fixpoint-style re-drive: the recursive_cte reset walk, then the next drive.
     scan.reset_for_reuse();
     scan.reset_pipeline_state();
     auto second = scan.open_spec();
     REQUIRE(second.active());
 }
 
-// (g) GROUP-MERGE EMPTY-INPUT INVARIANT — the coordinator-side terminal above the pushed
-// scan owns the scalar empty-input row: a scalar aggregate whose input produced NO rows
-// still emits its mandatory single row (COUNT -> 0, SUM -> NULL), typed via output_types;
-// a GROUPED aggregate over no rows emits nothing; any arriving row passes through
-// untouched and disarms the synthesis. Pure push/finalize — no actors needed.
+// A scalar aggregate over no rows still emits its mandatory row (typed via output_types); a grouped one
+// emits nothing, and an arriving row passes through and disarms the synthesis.
 TEST_CASE("pushdown_reduce: group_merge synthesizes the scalar empty-input row") {
     core::pmr::otterbrix_resource resource;
     namespace vec = components::vector;
@@ -350,7 +296,6 @@ TEST_CASE("pushdown_reduce: group_merge synthesizes the scalar empty-input row")
         return out;
     };
 
-    // Scalar COUNT over nothing -> one row, value 0.
     {
         components::operators::operator_group_merge_t merge{&resource,
                                                             log_t{},
@@ -364,7 +309,6 @@ TEST_CASE("pushdown_reduce: group_merge synthesizes the scalar empty-input row")
         REQUIRE(out.front().value(0, 0).value<int64_t>() == 0);
     }
 
-    // Scalar SUM over nothing -> one row, value NULL.
     {
         components::operators::operator_group_merge_t merge{&resource,
                                                             log_t{},
@@ -378,7 +322,6 @@ TEST_CASE("pushdown_reduce: group_merge synthesizes the scalar empty-input row")
         REQUIRE(out.front().value(0, 0).is_null());
     }
 
-    // GROUPED aggregate over nothing -> no synthesized row.
     {
         components::operators::operator_group_merge_t merge{&resource,
                                                             log_t{},
@@ -390,7 +333,6 @@ TEST_CASE("pushdown_reduce: group_merge synthesizes the scalar empty-input row")
         REQUIRE(out.empty());
     }
 
-    // A row that DID arrive passes through and disarms the synthesis.
     {
         components::operators::operator_group_merge_t merge{&resource,
                                                             log_t{},
@@ -410,12 +352,8 @@ TEST_CASE("pushdown_reduce: group_merge synthesizes the scalar empty-input row")
     }
 }
 
-// (g) The router's own refusal. Case (e) removes the storage; this removes the agent. A
-// manager with no disk agents must not answer a reduce with an empty chunk vector, which the
-// coordinator reads as "this GROUP BY produced no groups" -- the routing twin of case (e)'s
-// empty fold. Not reachable behind a statement today (an agentless manager owns no storage, so
-// no plan can resolve a table on it); pinned so the refusal exists and is reachable through the
-// contract, as its six siblings are in test_error_handling.cpp.
+// The routing twin of case (e): an agentless manager must refuse, not answer with an empty chunk vector
+// (which reads as "no groups produced"). Not reachable today, but pinned through the contract.
 TEST_CASE("pushdown_reduce: a manager with no agents refuses instead of folding to nothing") {
     core::pmr::otterbrix_resource resource;
     auto log = initialization_logger("python", "/tmp/docker_logs/");

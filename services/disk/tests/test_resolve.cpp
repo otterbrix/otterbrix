@@ -33,8 +33,6 @@ using namespace components::catalog;
 using session_id_t = components::session::session_id_t;
 
 namespace {
-    // storage_append takes the whole chunk batch; wrap a single chunk for the
-    // one-shot test call site.
     std::pmr::vector<components::vector::data_chunk_t>
     to_batch(std::pmr::memory_resource* resource, std::unique_ptr<components::vector::data_chunk_t> chunk) {
         std::pmr::vector<components::vector::data_chunk_t> batch(resource);
@@ -71,9 +69,7 @@ namespace {
             manager->bootstrap_system_tables_sync();
         }
         ~fixture() {
-            // Destroy the manager first: its dtor joins the internal loop thread,
-            // which may still enqueue children onto the scheduler. Only then is it
-            // safe to stop/delete the scheduler.
+            // Destroy the manager first: its dtor joins the loop thread, which may still enqueue onto the scheduler.
             manager.reset();
             scheduler->stop();
             delete scheduler;
@@ -91,7 +87,6 @@ namespace {
             return std::move(future).take_ready();
         }
 
-        // Alias used by disk_test_helpers templates.
         template<typename Fn, typename... Args>
         auto invoke(Fn fn, Args&&... args) {
             return invoke_async(fn, std::forward<Args>(args)...);
@@ -103,7 +98,6 @@ namespace {
     };
 } // namespace
 
-// 1. After bootstrap, resolve_namespace finds the well-known "public" namespace.
 TEST_CASE("services::disk::resolve::namespace_finds_bootstrap") {
     fixture fx;
     auto rr = fx.invoke_async(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("public"));
@@ -113,7 +107,6 @@ TEST_CASE("services::disk::resolve::namespace_finds_bootstrap") {
     REQUIRE(r.oid == well_known_oid::public_namespace);
 }
 
-// 2. resolve_namespace misses on unknown name.
 TEST_CASE("services::disk::resolve::namespace_misses_unknown") {
     fixture fx;
     auto rr =
@@ -122,7 +115,6 @@ TEST_CASE("services::disk::resolve::namespace_misses_unknown") {
     REQUIRE_FALSE(rr.value().found);
 }
 
-// 3. After CREATE TABLE, resolve_table finds the new relation + lists its column attoids.
 TEST_CASE("services::disk::resolve::table_finds_after_create") {
     fixture fx;
     std::vector<components::table::column_definition_t> cols;
@@ -144,7 +136,6 @@ TEST_CASE("services::disk::resolve::table_finds_after_create") {
     REQUIRE(r.columns.size() == 2);
 }
 
-// 4. resolve_table misses when the namespace doesn't match.
 TEST_CASE("services::disk::resolve::table_misses_in_wrong_namespace") {
     fixture fx;
     disk_test_helpers::test_create_table(fx,
@@ -157,8 +148,7 @@ TEST_CASE("services::disk::resolve::table_misses_in_wrong_namespace") {
     REQUIRE_FALSE(r.found);
 }
 
-// 5. resolve_type finds the bootstrap "int8" type in pg_catalog. Type names count bytes,
-// so the 8-byte integer is "int8" — int64_type is its OID constant, which counts bits.
+// Type names count bytes ('int8' = 8-byte integer); int64_type is its OID constant, which counts bits.
 TEST_CASE("services::disk::resolve::type_finds_bootstrap") {
     fixture fx;
     auto r = test_probe::probe_type(fx, fx.ctx(), well_known_oid::pg_catalog_namespace, std::string("int8"));
@@ -166,7 +156,6 @@ TEST_CASE("services::disk::resolve::type_finds_bootstrap") {
     REQUIRE(r.oid == well_known_oid::int64_type);
 }
 
-// 6. resolve_function finds the bootstrap "count" aggregate.
 TEST_CASE("services::disk::resolve::function_finds_bootstrap_count") {
     fixture fx;
     auto r = test_probe::probe_function(fx, fx.ctx(), well_known_oid::pg_catalog_namespace, std::string("count"));
@@ -174,12 +163,7 @@ TEST_CASE("services::disk::resolve::function_finds_bootstrap_count") {
     REQUIRE(r.oid == well_known_oid::fn_count);
 }
 
-// 7. read_chunks_by_keys (batched, N-row columnar keys) == N independent
-// read_chunks_by_key calls (parity). A single batched call carries an N-row
-// keys data_chunk (column j = key_col_names[j], row i = i-th key-tuple) and
-// returns vector<vector<data_chunk_t>> with result[k] == the singular
-// read_chunks_by_key result for key k. Covers a no-match key (empty entry)
-// and a multi-row-match key.
+// read_chunks_by_keys batches N read_chunks_by_key calls: result[k] must equal the singular call for key k.
 TEST_CASE("services::disk::resolve::read_chunks_by_keys_multi_key_parity") {
     using components::types::complex_logical_type;
     using components::types::logical_type;
@@ -195,12 +179,6 @@ TEST_CASE("services::disk::resolve::read_chunks_by_keys_multi_key_parity") {
                                                           catalog::relkind::regular);
     REQUIRE(table_oid >= FIRST_USER_OID);
 
-    // Regular storage with an explicit {k, payload} schema. The rows
-    // appended below give:
-    //   k=10 -> one row (payload 100)
-    //   k=20 -> two rows (payload 200, 201)  [multi-row match]
-    //   k=30 -> one row (payload 300)
-    //   k=99 -> no row                        [no-match]
     {
         std::vector<components::table::column_definition_t> scols;
         scols.emplace_back("k", complex_logical_type{logical_type::BIGINT});
@@ -240,7 +218,6 @@ TEST_CASE("services::disk::resolve::read_chunks_by_keys_multi_key_parity") {
         (void) start;
     }
 
-    // The N distinct key values we probe (one no-match: 99).
     const std::vector<std::int64_t> probe_keys = {10, 20, 30, 99};
     const std::size_t N = probe_keys.size();
 
@@ -250,7 +227,6 @@ TEST_CASE("services::disk::resolve::read_chunks_by_keys_multi_key_parity") {
         return t;
     };
 
-    // --- batched: ONE read_chunks_by_keys with an N-row keys chunk ---
     std::vector<std::vector<data_chunk_t>> batched;
     {
         std::pmr::vector<complex_logical_type> ktypes(&fx.resource);
@@ -261,7 +237,6 @@ TEST_CASE("services::disk::resolve::read_chunks_by_keys_multi_key_parity") {
             keys.set_value(0, i, probe_keys[i]);
         }
         keys.set_cardinality(N);
-        // Key column as a storage ORDINAL: "k" is column 0 of this test's {k, payload} schema.
         std::pmr::vector<std::uint64_t> key_cols{&fx.resource};
         key_cols.emplace_back(0);
         auto res = disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::read_chunks_by_keys,
@@ -271,8 +246,6 @@ TEST_CASE("services::disk::resolve::read_chunks_by_keys_multi_key_parity") {
                                                         std::move(keys),
                                                         std::pmr::vector<std::uint64_t>{&fx.resource}));
         REQUIRE(res.size() == N);
-        // Copy into a std::vector for re-use in the parity loop (chunk-by-chunk
-        // size/value comparison below).
         for (auto& entry : res) {
             std::vector<data_chunk_t> e;
             for (auto& c : entry) e.push_back(std::move(c));
@@ -280,13 +253,11 @@ TEST_CASE("services::disk::resolve::read_chunks_by_keys_multi_key_parity") {
         }
     }
 
-    // Batched cardinalities: 10->1, 20->2 (multi-row), 30->1, 99->0 (no-match).
     REQUIRE(total_rows(batched[0]) == 1);
     REQUIRE(total_rows(batched[1]) == 2);
     REQUIRE(total_rows(batched[2]) == 1);
     REQUIRE(total_rows(batched[3]) == 0);
 
-    // --- parity: result[k] of the batched call == singular read_chunks_by_key(k) ---
     for (std::size_t i = 0; i < N; ++i) {
         std::pmr::vector<std::uint64_t> single_key_cols{&fx.resource};
         single_key_cols.emplace_back(0);
@@ -300,13 +271,11 @@ TEST_CASE("services::disk::resolve::read_chunks_by_keys_multi_key_parity") {
                                                  test_probe::build_key_chunk(&fx.resource, std::move(single_vals)),
                                                  std::pmr::vector<std::uint64_t>{&fx.resource}));
 
-        // Same total row count per key (the no-match key yields 0 on both paths).
         std::uint64_t single_total = total_rows(single);
         std::uint64_t batched_total = 0;
         for (auto& c : batched[i]) batched_total += c.size();
         REQUIRE(batched_total == single_total);
 
-        // Same set of (k, payload) pairs per key on both paths.
         auto collect_pairs = [](auto& chunks) {
             std::vector<std::pair<std::int64_t, std::int64_t>> pairs;
             for (auto& c : chunks) {
@@ -322,21 +291,13 @@ TEST_CASE("services::disk::resolve::read_chunks_by_keys_multi_key_parity") {
         auto single_pairs = collect_pairs(single);
         REQUIRE(batched_pairs == single_pairs);
 
-        // Every returned row actually carries the probed key value.
         for (auto& pr : single_pairs) {
             REQUIRE(pr.first == probe_keys[i]);
         }
     }
 }
 
-// 8. A keyed read that CANNOT BE PERFORMED must not be reported as "no rows".
-// A bare vector with no error slot used to collapse an unknown key column, a key-arity
-// mismatch, or a real scan_local io_error into the same "one empty entry per key" a
-// legitimate miss produces (operator_resolve_table read that as "Database does not exist").
-// Test 7 above pins the other half: key 99 genuinely matches nothing and empty means
-// not-found.
-// Injected failure here is an unknown key column (resolve_key_col_indices cannot map it, so
-// no scan runs); no failpoint exists at this layer to force a real io_error.
+// A keyed read that cannot be performed must error, not return the same empty shape a genuine miss produces.
 TEST_CASE("services::disk::resolve::unperformable_keyed_read_is_an_error") {
     using components::types::complex_logical_type;
     using components::types::logical_type;
@@ -361,7 +322,6 @@ TEST_CASE("services::disk::resolve::unperformable_keyed_read_is_an_error") {
                   /*is_computed=*/false);
     }
 
-    // A column ordinal this table does not have: the read is impossible, not empty.
     std::pmr::vector<std::uint64_t> bad_cols{&fx.resource};
     bad_cols.emplace_back(99);
     std::pmr::vector<logical_value_t> vals{&fx.resource};
@@ -376,7 +336,6 @@ TEST_CASE("services::disk::resolve::unperformable_keyed_read_is_an_error") {
     INFO("an unperformable keyed read must carry an error, not an empty result");
     REQUIRE(res.has_error());
 
-    // And the batched entry point must behave identically — same failure, same channel.
     std::pmr::vector<std::uint64_t> bad_cols_b{&fx.resource};
     bad_cols_b.emplace_back(99);
     std::pmr::vector<logical_value_t> vals_b{&fx.resource};
@@ -390,11 +349,7 @@ TEST_CASE("services::disk::resolve::unperformable_keyed_read_is_an_error") {
     REQUIRE(res_b.has_error());
 }
 
-// 9. A projected keyed read returns the same values in the columns it asked for.
-// Projection is supplied by the CALLER, and the columns it leaves out come back as
-// ordinal-stable placeholders rather than being removed — that is what lets a consumer keep
-// addressing column 3 as column 3. The failure mode is therefore silent: project too narrowly
-// and the consumer reads an empty placeholder where a value used to be, with no error anywhere.
+// Unrequested columns come back as placeholders, not removed — too narrow a projection reads empty silently.
 TEST_CASE("services::disk::resolve::projected_read_matches_full_read") {
     using components::types::complex_logical_type;
     using components::types::logical_type;
@@ -463,23 +418,15 @@ TEST_CASE("services::disk::resolve::projected_read_matches_full_read") {
     REQUIRE(projected.size() == 1);
     REQUIRE(full[0].size() == 1);
     REQUIRE(projected[0].size() == 1);
-    // Same ordinals on both paths, and the projected column carries the same value.
     REQUIRE(projected[0].column_count() == full[0].column_count());
     REQUIRE(projected[0].value(2, 0).value<std::int64_t>() == full[0].value(2, 0).value<std::int64_t>());
     // The key column survives projection: the filter needs it, so the agent keeps it.
     REQUIRE(projected[0].value(0, 0).value<std::int64_t>() == std::int64_t{7});
 }
 
-// --- THE CATALOG-READ FUNNEL ------------------------------------------------------------
-// manager_disk_t::scan_table (manager_disk_resolve.cpp) is the single door every catalog read
-// goes through. Its no-agents / no-owning-agent / scan-error legs must answer with an error,
-// never an empty batch list — empty is also what "no matching rows" looks like. The two cases
-// below pin that against content provably on disk.
+// scan_table is the single door for catalog reads; its error legs must answer with an error, never an empty batch.
 namespace {
 
-    // The T3 interposer seam is process-wide; filter by path so only the marked table's handle
-    // gets wrapped. Same shape as test_persistence.cpp and
-    // integration/cpp/test/test_catalog_write_refusal.cpp.
     class one_table_fault_scope_t final
         : public components::table::storage::single_file_block_manager_t::file_handle_interposer_t {
     public:
@@ -505,8 +452,7 @@ namespace {
         std::string marker_;
     };
 
-    // A manager that can be torn down and reopened over the same directory — the fixture above
-    // wipes its directory in the constructor, so it cannot express a restart.
+    // A separate fixture: `fixture` wipes its directory on construction, so it can't express a restart.
     struct reopenable_disk {
         core::pmr::otterbrix_resource resource;
         log_t log;
@@ -524,8 +470,6 @@ namespace {
             }())
             , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {}
         ~reopenable_disk() {
-            // Destroy the manager first: its dtor joins the internal loop thread, which may
-            // still enqueue children onto the scheduler.
             manager.reset();
             scheduler->stop();
             delete scheduler;
@@ -565,11 +509,7 @@ namespace {
 
 } // namespace
 
-// CASE 1. A pg_proc scan that CANNOT BE PERFORMED must not be reported as "no such function".
-// Phase 1 checkpoints a clean database so the builtin pg_proc rows are in the FILE, not just
-// memory. Phase 2 reopens with the fault seam installed but still clean (load succeeds, handle
-// comes back wrapped), then poisons the handle so every read of pg_proc's data blocks fails —
-// a buffer-pool refill that cannot reach the platter.
+// A pg_proc scan that can't be performed must not read as 'no such function' after checkpoint + poison.
 TEST_CASE("services::disk::resolve::a_failed_catalog_scan_is_not_no_rows") {
     const auto dir = std::filesystem::path(resolve_dir() + "_readfail");
     std::filesystem::remove_all(dir);
@@ -595,7 +535,6 @@ TEST_CASE("services::disk::resolve::a_failed_catalog_scan_is_not_no_rows") {
     INFO("a pg_proc scan that failed must not answer 'there is no function named count'");
     REQUIRE(poisoned.has_error());
 
-    // Clearing the poison and repeating the same call proves the row was there all along.
     plan.crashed = false;
     auto healthy =
         fd2.invoke(&manager_disk_t::resolve_function_by_name, fd2.ctx(), std::string("count"));
@@ -607,10 +546,7 @@ TEST_CASE("services::disk::resolve::a_failed_catalog_scan_is_not_no_rows") {
     std::filesystem::remove_all(dir);
 }
 
-// CASE 2. Same lie through agent_disk_t::scan_local's "this agent does not own the oid" leg. A
-// manager that never bootstrapped owns no pg_cast, so find_cast_oid's scan cannot run at all —
-// answering INVALID_OID would read as "there is no such cast row" to
-// operator_unregister_cast/operator_register_cast.cpp.
+// Same lie via 'agent doesn't own the oid': an unbootstrapped manager owns no pg_cast to scan.
 TEST_CASE("services::disk::resolve::an_unowned_catalog_scan_is_not_no_rows") {
     const auto dir = std::filesystem::path(resolve_dir() + "_unowned");
     std::filesystem::remove_all(dir);

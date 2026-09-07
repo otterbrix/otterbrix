@@ -61,15 +61,12 @@ namespace {
             , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {}
 
         ~disk_only_fixture() {
-            // Destroy the manager first: its dtor joins the internal loop thread,
-            // which may still enqueue children onto the scheduler. Only then is it
-            // safe to stop/delete the scheduler.
+            // Destroy the manager first: its dtor joins the loop thread, which may still enqueue onto the scheduler.
             manager.reset();
             scheduler->stop();
             delete scheduler;
         }
 
-        // Drive a manager mailbox handler synchronously through the test scheduler.
         template<typename Fn, typename... Args>
         auto invoke(Fn fn, Args&&... args) {
             auto [_, future] = actor_zeta::otterbrix::send(manager->address(), fn, std::forward<Args>(args)...);
@@ -104,8 +101,6 @@ namespace {
         }
     };
 
-    // The interposer seam is process-wide; filter by path so only the targeted table's
-    // handle is wrapped. Same shape as the scopes in test_persistence.cpp / test_resolve.cpp.
     class one_table_fault_scope_t final
         : public components::table::storage::single_file_block_manager_t::file_handle_interposer_t {
     public:
@@ -152,9 +147,6 @@ namespace {
     }
 } // namespace
 
-// 1. Fresh start: bootstrap creates one .otbx file per system table under
-//    <path>/<main_db_oid>/<tbl_oid>/ (OID-keyed layout from
-//    services/disk/manager_disk_bootstrap.cpp).
 TEST_CASE("services::disk::sysboot::creates_10_otbx_files") {
     cleanup_boot_dir();
     auto base = std::filesystem::path(boot_test_dir());
@@ -177,13 +169,11 @@ TEST_CASE("services::disk::sysboot::creates_10_otbx_files") {
     cleanup_boot_dir();
 }
 
-// 2. Bootstrap is idempotent: a second call with files present does NOT recreate / overwrite.
 TEST_CASE("services::disk::sysboot::bootstrap_is_idempotent") {
     cleanup_boot_dir();
     auto base = std::filesystem::path(boot_test_dir());
     std::filesystem::create_directories(base);
 
-    // First bootstrap.
     {
         disk_only_fixture fx(base);
         fx.manager->bootstrap_system_tables_sync();
@@ -194,22 +184,17 @@ TEST_CASE("services::disk::sysboot::bootstrap_is_idempotent") {
     auto first_size = std::filesystem::file_size(pg_class_otbx);
     auto first_mtime = std::filesystem::last_write_time(pg_class_otbx);
 
-    // Second bootstrap on the same path — must short-circuit, not overwrite.
     {
         disk_only_fixture fx(base);
         fx.manager->bootstrap_system_tables_sync();
     }
     REQUIRE(std::filesystem::file_size(pg_class_otbx) == first_size);
-    // Extra parens keep Catch2 from stringifying file_time_type on failure: Apple's
-    // filesystem clock uses an __int128 rep, which Catch2's chrono StringMaker
-    // cannot stream (ostream has no __int128 overload) and macOS builds break.
+    // Extra parens stop Catch2 from stringifying file_time_type — its __int128 rep has no ostream overload on macOS.
     REQUIRE((std::filesystem::last_write_time(pg_class_otbx) == first_mtime));
 
     cleanup_boot_dir();
 }
 
-// 3. Restart path: bootstrap_system_tables_sync's load path picks up all 10 tables
-//    created by a prior bootstrap.
 TEST_CASE("services::disk::sysboot::restart_loads_all_10") {
     cleanup_boot_dir();
     auto base = std::filesystem::path(boot_test_dir());
@@ -222,16 +207,13 @@ TEST_CASE("services::disk::sysboot::restart_loads_all_10") {
 
     {
         disk_only_fixture fx(base);
-        // Fresh manager — no in-memory state. The load path picks up the persisted .otbx
-        // files. The call must not throw (each .otbx is a valid empty single-file block manager).
         REQUIRE_NOTHROW(fx.manager->bootstrap_system_tables_sync());
     }
 
     cleanup_boot_dir();
 }
 
-// 4. Empty config_disk.path — bootstrap refuses with a logged error instead of manufacturing
-// a relative-path database under the process CWD.
+// Empty config_disk.path makes bootstrap refuse, instead of manufacturing a relative-path db under the CWD.
 TEST_CASE("services::disk::sysboot::no_path_is_safe_noop") {
     core::pmr::otterbrix_resource resource;
     log_t log = initialization_logger("python", "/tmp/docker_logs/");
@@ -241,19 +223,14 @@ TEST_CASE("services::disk::sysboot::no_path_is_safe_noop") {
     auto m = actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, c, log);
 
     REQUIRE_NOTHROW(m->bootstrap_system_tables_sync());
-    REQUIRE_NOTHROW(m->bootstrap_system_tables_sync()); // idempotent re-run
+    REQUIRE_NOTHROW(m->bootstrap_system_tables_sync());
     REQUIRE_NOTHROW(m->restore_oid_generator_sync());
 
-    // Destroy the manager first: its dtor joins the internal loop thread, which may
-    // still enqueue children onto the scheduler. Only then stop/delete the scheduler.
     m.reset();
     scheduler->stop();
     delete scheduler;
 }
 
-// 5. The OID generator allocates from FIRST_USER_OID by default and hands out
-//    monotonically increasing OIDs. Observed through allocate_oids_batch (restore on an
-//    empty catalog should leave the generator at its default seed).
 TEST_CASE("services::disk::sysboot::oid_generator_default_seed") {
     cleanup_boot_dir();
     auto base = std::filesystem::path(boot_test_dir());
@@ -271,14 +248,12 @@ TEST_CASE("services::disk::sysboot::oid_generator_default_seed") {
     cleanup_boot_dir();
 }
 
-// 6. Each system table has a non-empty column set — no schema accidentally degraded to zero columns.
 TEST_CASE("services::disk::sysboot::all_schemas_non_empty") {
     for (const auto& def : all_system_tables()) {
         REQUIRE(def.columns.size() > 0);
     }
 }
 
-// 7. Bootstrap dir layout: every system table gets its own subdir (no flat namespace).
 TEST_CASE("services::disk::sysboot::dir_layout_per_table") {
     cleanup_boot_dir();
     auto base = std::filesystem::path(boot_test_dir());
@@ -296,8 +271,6 @@ TEST_CASE("services::disk::sysboot::dir_layout_per_table") {
     cleanup_boot_dir();
 }
 
-// 8. Re-running bootstrap on the same in-memory state is idempotent
-//    (does not throw, does not crash on already-loaded entries).
 TEST_CASE("services::disk::sysboot::load_after_bootstrap_in_same_process") {
     cleanup_boot_dir();
     auto base = std::filesystem::path(boot_test_dir());
@@ -306,17 +279,12 @@ TEST_CASE("services::disk::sysboot::load_after_bootstrap_in_same_process") {
     disk_only_fixture fx(base);
     fx.manager->bootstrap_system_tables_sync();
     REQUIRE_NOTHROW(fx.manager->bootstrap_system_tables_sync());
-    REQUIRE_NOTHROW(fx.manager->bootstrap_system_tables_sync()); // double-call
+    REQUIRE_NOTHROW(fx.manager->bootstrap_system_tables_sync());
 
     cleanup_boot_dir();
 }
 
-// A system table that fails to load/create used to come up silently (WARN + empty catalog, or
-// no word at all on a failed create) instead of refusing. The three cases below pin that a
-// failed open/create now stops the start, and that the refusal is survivable (case 9: a repeat
-// start with the cause removed comes up with prior content intact).
-
-// 9. A system table that CANNOT BE OPENED refuses the start, loudly — and the process lives.
+// A failed system-table open/create used to come up silently; it must now refuse the start instead.
 TEST_CASE("services::disk::sysboot::unopenable_system_table_refuses_the_start") {
     cleanup_boot_dir();
     auto base = std::filesystem::path(boot_test_dir());
@@ -325,7 +293,6 @@ TEST_CASE("services::disk::sysboot::unopenable_system_table_refuses_the_start") 
     constexpr uint64_t kRows = 7;
     components::catalog::oid_t user_table = components::catalog::INVALID_OID;
 
-    // Phase 1 — a healthy database with a namespace and a user table carrying rows.
     {
         disk_only_fixture fd(base);
         fd.manager->bootstrap_system_tables_sync();
@@ -343,8 +310,7 @@ TEST_CASE("services::disk::sysboot::unopenable_system_table_refuses_the_start") 
         fd.checkpoint(services::wal::id_t{100});
     }
 
-    // Offset 0 is the main header, the first read on open; the knob's off switch is
-    // UINT64_MAX, not 0, so this value legitimately fails the read.
+    // fail_reads_at_location=0 fails the header read — the knob's off switch is UINT64_MAX, not 0.
     {
         otterbrix_test::fault_plan_t plan;
         plan.fail_reads_at_location = 0;
@@ -354,7 +320,6 @@ TEST_CASE("services::disk::sysboot::unopenable_system_table_refuses_the_start") 
 
         disk_only_fixture fd2(base);
         INFO("a pg_catalog table that could not be opened must stop the start, not be skipped");
-        // Without a refusal the failure is a WARN line and the engine comes up with no pg_class.
         REQUIRE_THROWS_AS(fd2.manager->bootstrap_system_tables_sync(), std::runtime_error);
         REQUIRE(plan.reads_failed > 0);
     }
@@ -376,11 +341,7 @@ TEST_CASE("services::disk::sysboot::unopenable_system_table_refuses_the_start") 
     cleanup_boot_dir();
 }
 
-// 10. restore_oid_generator_sync skips a system table whose entry is null, so a catalog table
-// that did not come up drops its oids from the frontier and the next allocation collides with
-// an oid still alive on disk. Victim is pg_namespace, not pg_class: a namespace's oid lives
-// only in pg_namespace, while a table's attoids also land in pg_attribute above it, so losing
-// pg_class alone would not reproduce the collision.
+// pg_namespace, not pg_class, is the fault target: its oid lives nowhere else, so skipping it collides the frontier.
 TEST_CASE("services::disk::sysboot::a_catalog_that_did_not_come_up_never_lowers_the_oid_frontier") {
     cleanup_boot_dir();
     auto base = std::filesystem::path(boot_test_dir());
@@ -421,15 +382,13 @@ TEST_CASE("services::disk::sysboot::a_catalog_that_did_not_come_up_never_lowers_
     cleanup_boot_dir();
 }
 
-// 11. create_storage_disk_sync returns void, so a system table whose very first write failed
-// used to leave bootstrap_one reporting "freshly created" over storage that does not exist.
+// create_storage_disk_sync returns void, so a failed first write used to leave a table reported as created.
 TEST_CASE("services::disk::sysboot::uncreatable_system_table_refuses_the_start") {
     cleanup_boot_dir();
     auto base = std::filesystem::path(boot_test_dir());
     std::filesystem::create_directories(base);
 
     otterbrix_test::fault_plan_t plan;
-    // Compared with >=, so 1 fails every write including the header write that creates the file.
     plan.fail_writes_from = 1;
     one_table_fault_scope_t scope(
         plan,
@@ -443,7 +402,6 @@ TEST_CASE("services::disk::sysboot::uncreatable_system_table_refuses_the_start")
         refused = true;
     }
     if (!refused) {
-        // The content the silent start actually produced: a pg_namespace with no "public".
         plan.fail_writes_from = 0;
         auto ns = fd.invoke(&manager_disk_t::resolve_namespace, fd.ctx(), std::string("public"));
         INFO("a start that came up over a pg_namespace it could not create has no 'public'");
@@ -456,9 +414,7 @@ TEST_CASE("services::disk::sysboot::uncreatable_system_table_refuses_the_start")
     cleanup_boot_dir();
 }
 
-// 12. A crash between "otbx created" and "first checkpoint committed" leaves a proven-young
-// file (exactly BLOCK_START bytes, no .wal_id sidecar) that opens cleanly with zero rows. This
-// is not a refusal case: the file is healthy and must be seeded, not left empty.
+// A crash before the first checkpoint leaves a healthy, empty BLOCK_START file that must be reseeded.
 TEST_CASE("services::disk::sysboot::a_system_table_that_loads_empty_is_seeded_again") {
     cleanup_boot_dir();
     auto base = std::filesystem::path(boot_test_dir());
@@ -474,7 +430,6 @@ TEST_CASE("services::disk::sysboot::a_system_table_that_loads_empty_is_seeded_ag
     std::filesystem::remove(otbx);
     std::filesystem::remove(std::filesystem::path(otbx.string() + ".wal_id"));
     {
-        // Engine-made, never checkpointed: no file is laid out by hand here.
         const auto* def = find_system_table(components::catalog::well_known_oid::pg_namespace_table);
         REQUIRE(def != nullptr);
         core::pmr::otterbrix_resource create_resource;
@@ -493,15 +448,7 @@ TEST_CASE("services::disk::sysboot::a_system_table_that_loads_empty_is_seeded_ag
     cleanup_boot_dir();
 }
 
-// 13. Catch-up seeding: a database created before pg_class/pg_attribute carried
-// self-description rows loads a pg_class that names the user's tables but no system table.
-// No old binary exists in CI, so the state is fabricated with the engine's own tools: build
-// a modern database with one user table, then scrub every system table's rows out of
-// pg_class/pg_attribute through delete_pg_catalog_rows (the DROP-path delete) and
-// checkpoint. What the files then hold — user rows only, no self-rows — is exactly what the
-// pre-self-description binary persisted. The next open must (a) still resolve the user
-// table through the pg_class read path, (b) resolve pg_class BY NAME again (impossible
-// without a self-row), and (c) change nothing on the open after that.
+// Simulates a database with no self-rows to prove reopen still finds the user table and reseeds pg_class's own row.
 TEST_CASE("services::disk::sysboot::an_old_database_without_self_rows_is_caught_up") {
     cleanup_boot_dir();
     auto base = std::filesystem::path(boot_test_dir());
@@ -517,7 +464,6 @@ TEST_CASE("services::disk::sysboot::an_old_database_without_self_rows_is_caught_
 
     components::catalog::oid_t ns_oid = components::catalog::INVALID_OID;
 
-    // Phase 1 — modern database with one user table, regressed to the old on-disk state.
     {
         disk_only_fixture fd(base);
         fd.manager->bootstrap_system_tables_sync();
@@ -546,8 +492,6 @@ TEST_CASE("services::disk::sysboot::an_old_database_without_self_rows_is_caught_
                       std::int64_t{components::catalog::pg_attribute_col::attrelid},
                       def.relation_oid);
         }
-        // The regression landed: pg_class still names the user table and no system table —
-        // in particular, pg_class no longer resolves ITSELF by name.
         auto rk = fd.manager->relkind_for_oid_sync(pg_class);
         REQUIRE_FALSE(rk.has_error());
         REQUIRE(rk.value() == '\0');
@@ -564,15 +508,12 @@ TEST_CASE("services::disk::sysboot::an_old_database_without_self_rows_is_caught_
     std::uint64_t caught_up_cls_rows = 0;
     std::uint64_t caught_up_att_rows = 0;
 
-    // Phase 2 — the "old" database opens; the catch-up branch must seed the self-rows.
     {
         disk_only_fixture fd2(base);
         REQUIRE_NOTHROW(fd2.manager->bootstrap_system_tables_sync());
         fd2.manager->restore_oid_generator_sync();
         fd2.manager->load_user_table_storages_sync();
 
-        // The user table is still there, resolved through the same pg_class/pg_attribute
-        // read path SELECT uses.
         auto t = test_probe::probe_table(fd2, fd2.ctx(), ns_oid, std::string("t_old"));
         INFO("catching up the catalog must not lose the user table's pg_class row");
         REQUIRE(t.found);
@@ -590,9 +531,6 @@ TEST_CASE("services::disk::sysboot::an_old_database_without_self_rows_is_caught_
         REQUIRE(cls_def != nullptr);
         CHECK(self.columns.size() == cls_def->columns.size());
 
-        // Exactly the user table's rows survived the scrubbed checkpoint, and exactly the
-        // self-rows were seeded on top: 1 user pg_class row + one per system table, and
-        // 1 user column row + one per system column.
         caught_up_cls_rows = disk_test_helpers::read_ok(
             fd2.invoke(&manager_disk_t::storage_total_rows, components::session::session_id_t{}, pg_class));
         caught_up_att_rows = disk_test_helpers::read_ok(
@@ -601,8 +539,7 @@ TEST_CASE("services::disk::sysboot::an_old_database_without_self_rows_is_caught_
         CHECK(caught_up_att_rows == 1 + n_sys_columns);
     }
 
-    // Phase 3 — idempotence: the caught-up rows persisted (their own checkpoint, no
-    // checkpoint_all ran in phase 2), and reopening seeds nothing on top of them.
+    // The catch-up rows persist via their own checkpoint — phase 2 ran no checkpoint_all.
     {
         disk_only_fixture fd3(base);
         REQUIRE_NOTHROW(fd3.manager->bootstrap_system_tables_sync());

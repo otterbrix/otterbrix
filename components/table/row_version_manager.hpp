@@ -12,22 +12,12 @@
 namespace components::table {
 
 #ifdef DEV_MODE
-    // Test-observable count of VERSION SLOTS visited while committing or reverting a
-    // transaction's deletes (chunk_vector_info::commit_all_deletes / revert_all_deletes).
-    // Measured: committing a one-row DELETE visits 1024 slots — one vector — whatever the table
-    // size, so the COMMIT walk is already proportional to the rows touched.
+    // Version slots visited committing/reverting a transaction's deletes. Measured: committing a
+    // one-row DELETE visits 1024 slots (one vector) whatever the table size.
     uint64_t version_slots_visited() noexcept;
     void reset_version_slots_visited() noexcept;
 
-    // Test-observable count of version slots visited by the CLEANUP side —
-    // chunk_vector_info::committed_deleted_count, which agent_disk_t::maybe_cleanup_inner reaches
-    // through collection_t/row_group_t::committed_row_count to decide whether to compact.
-    //
-    // This is a DIFFERENT walk from the one above and needs its own counter: the commit stamps
-    // only the vectors the transaction touched, while the cleanup re-counts EVERY vector that
-    // still carries a committed tombstone. Negligible on a fresh table, but tombstones pile up
-    // (UPDATE is tombstone+append here), so the count grows pass over pass and every later
-    // commit pays for it.
+    // A different walk than the one above: commit stamps only touched vectors, cleanup re-counts every tombstone.
     uint64_t cleanup_slots_visited() noexcept;
     void reset_cleanup_slots_visited() noexcept;
 #endif
@@ -39,30 +29,19 @@ namespace components::table {
 
     struct delete_info;
 
-    static constexpr uint64_t TRANSACTION_ID_START = uint64_t(4611686018427388000);      // 2^62
-    static constexpr uint64_t NOT_DELETED_ID = std::numeric_limits<uint64_t>::max() - 1; // 2^64 - 1
+    static constexpr uint64_t TRANSACTION_ID_START = uint64_t(4611686018427388000);
+    static constexpr uint64_t NOT_DELETED_ID = std::numeric_limits<uint64_t>::max() - 1;
 
-    // THE DIRECT-WRITE TRANSACTION ID: a SANCTIONED path, not a leftover to delete. 0 is the
-    // identity every write carries that commits the instant it lands (WAL replay, bootstrap,
-    // the direct-API write with no open transaction). row_group_t::delete_rows routes such a
-    // write down its is_txn == false leg, stamping deleted[] with an IMMEDIATELY-COMMITTED
-    // version id instead of a pending one — nothing is left for a later publish/revert, and
-    // chunk_vector_info::commit_all_deletes/revert_all_deletes must SKIP rows stamped with this
-    // id rather than rewrite them (they'd otherwise match `deleted[i] == txn_id` on every slot
-    // that happens to hold 0).
+    // A sanctioned path, not a leftover: 0 is the identity of a write that commits the instant it
+    // lands (WAL replay, bootstrap, direct-API); commit_all_deletes/revert_all_deletes must SKIP it.
     static constexpr uint64_t DIRECT_WRITE_TXN_ID = 0;
 
     [[nodiscard]] inline constexpr bool is_direct_write_txn(uint64_t transaction_id) noexcept {
         return transaction_id == DIRECT_WRITE_TXN_ID;
     }
 
-    // Which rows a point fetch by row_id is allowed to produce. NO DEFAULT VALUE anywhere:
-    // every sender names the mode, so forgetting one is a compile error.
-    //   SNAPSHOT — row_version_manager_t::fetch: visible to the accompanying transaction_data.
-    //   RAW      — skip the check; the ONLY legitimate user is the CREATE INDEX backfill, which
-    //              reads DELETED rows on purpose to recover the old key columns.
-    // An EMPTY transaction_data is NOT the same as RAW: it means "see everything COMMITTED", so
-    // a committed delete still hides the row from it.
+    // RAW exists only for the CREATE INDEX backfill (it must read DELETED rows); an empty
+    // transaction_data is not RAW -- it means "everything COMMITTED".
     enum class fetch_visibility_t : uint8_t
     {
         SNAPSHOT = 0,
@@ -74,8 +53,7 @@ namespace components::table {
         transaction_data(uint64_t id, uint64_t time)
             : transaction_id(id)
             , start_time(time) {}
-        // Full snapshot ctor — used by transaction_t::data() to construct a
-        // copy from the transaction's pmr-anchored snapshot vector.
+        // Used by transaction_t::data() to copy from the transaction's pmr-anchored snapshot vector.
         transaction_data(uint64_t id, uint64_t time, uint64_t horizon, const std::pmr::vector<uint64_t>& in_flight)
             : transaction_id(id)
             , start_time(time)
@@ -85,29 +63,10 @@ namespace components::table {
         uint64_t transaction_id{0};
         uint64_t start_time{0};
 
-        // MVCC snapshot captured at begin_transaction by
-        // transaction_manager_t::take_snapshot().
-        //
-        // snapshot_horizon = published_horizon_ at capture time. A commit_id
-        // greater than this committed after the snapshot and is not visible.
-        //
-        // in_flight_snapshot = sorted commit_ids allocated by commit() but not
-        // yet publish()-published when the snapshot was taken. Rows whose
-        // insert_id is in this set stay invisible even below the horizon; they
-        // become visible only to snapshots taken after publish().
-        // (The filter that consumes both fields is use_inserted_version in
-        // row_version_manager.cpp.)
-        //
-        // Default = UINT64_MAX with an empty in_flight_snapshot makes a
-        // default-constructed transaction_data mean "see all committed rows".
-        // begin_transaction overwrites it for MVCC reads, so isolation holds;
-        // catalog scans, recovery and WAL-replay paths that bypass
-        // transaction_manager rely on the default for a see-all view.
+        // snapshot_horizon: ids above this committed after the snapshot, invisible. in_flight_snapshot:
+        // allocated-but-unpublished ids, invisible even below the horizon. Default = see-all-committed.
         uint64_t snapshot_horizon{std::numeric_limits<uint64_t>::max()};
-        // Plain std::vector, not pmr: transaction_data is a value type copied
-        // and copy/move-assigned across actor boundaries. pmr allocators don't
-        // propagate on copy/move assignment, so a pmr vector here would bad_alloc.
-        // The snapshot is tiny (<100 ids), so global-heap value semantics is fine.
+        // Plain std::vector, not pmr: pmr allocators don't propagate on copy/move assignment.
         std::vector<uint64_t> in_flight_snapshot;
     };
     enum class chunk_info_type : uint8_t
@@ -133,10 +92,6 @@ namespace components::table {
         virtual bool fetch(const transaction_data& transaction, int64_t row) = 0;
         virtual void commit_append(uint64_t commit_id, uint64_t start, uint64_t end) = 0;
         virtual uint64_t committed_deleted_count(uint64_t max_count) = 0;
-        // True when ANY stamp in [0, max_count) is not yet visible-to-all under
-        // `watermark`: a pending txn id (>= TRANSACTION_ID_START) or a committed
-        // id > watermark. NOT_DELETED_ID delete slots are "no delete", not stamps.
-        // Feeds data_table_t::compact()'s all-or-nothing MVCC safety gate.
         virtual bool has_version_above(uint64_t watermark, uint64_t max_count) const = 0;
         virtual bool cleanup(uint64_t lowest_transaction, std::unique_ptr<chunk_info>& result) const;
 
@@ -244,26 +199,15 @@ namespace components::table {
         uint16_t rows[1] = {};
     };
 
-    // Addressing contract: every vector_idx / row-offset parameter below is GROUP-LOCAL (slot 0
-    // = the owning row group's first vector). Callers holding collection-absolute coordinates
-    // rebase at the row_group_t boundary. The single exception is fetch(): it takes a
-    // collection-ABSOLUTE row and rebases internally via start_.
-    //
-    // Ownership: SHARED between a row group and its ALTER successors (add_column/remove_column
-    // hand the successor set_version_info(get_or_create_version_info_ptr())), so the last of
-    // them to die frees it. Count lives inside the object (intrusive_ref_counter; shared_ptr
-    // is forbidden). `final` + plain `new` for the same reasons as collection_t.
+    // Every vector_idx/row-offset below is GROUP-LOCAL; fetch() is the exception, taking a
+    // collection-ABSOLUTE row rebased via start_. Ownership is SHARED with ALTER successors.
     class row_version_manager_t final : public boost::intrusive_ref_counter<row_version_manager_t> {
     public:
         explicit row_version_manager_t(int64_t start) noexcept;
 
         int64_t start() const { return start_; }
-        // Re-anchors start_ when the owning row group moves (row_group_t::move_to_collection).
-        // Slot addressing is group-local and unaffected; only fetch()'s rebase depends on start_.
         void set_start(int64_t start);
         uint64_t committed_deleted_count(uint64_t count);
-        // True when any stamp in the first `count` rows is above `watermark`
-        // (pending txn id or committed id newer than the visible-to-all horizon).
         bool has_version_above(uint64_t watermark, uint64_t count);
 
         uint64_t indexing_vector(transaction_data transaction,
@@ -271,10 +215,6 @@ namespace components::table {
                                  vector::indexing_vector_t& indexing_vector,
                                  uint64_t max_count);
         bool fetch(const transaction_data& transaction, uint64_t row);
-        // Raw delete stamp of one row (collection-absolute, rebased like fetch):
-        // NOT_DELETED_ID when no delete was ever recorded, a commit id for a committed
-        // delete, a transaction id for a pending one. Read-only; lets a writer judge
-        // whether a physically present row still occupies its catalog name.
         uint64_t delete_stamp(uint64_t row);
 
         void append_version_info(transaction_data transaction,
@@ -295,9 +235,7 @@ namespace components::table {
         chunk_vector_info& vector_info(uint64_t vector_idx);
         void fill_vector_info(uint64_t vector_idx);
 
-        // Single-owner for these MEMBERS (see the proof on data_table_t). The manager object
-        // itself is shared between ALTER-related row groups (see the class note), but every one
-        // is still reached from the single actor that proof names.
+        // Single-owner for these MEMBERS (see the proof on data_table_t), unlike the manager object.
         int64_t start_;
         std::vector<std::unique_ptr<chunk_info>> vector_info_;
         bool has_changes_;

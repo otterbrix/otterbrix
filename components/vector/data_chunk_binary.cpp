@@ -11,9 +11,6 @@
 
 namespace components::vector {
 
-    // -----------------------------------------------------------------------
-    // Little-endian helpers
-    // -----------------------------------------------------------------------
     namespace {
 
         inline void write_le16(char* destination, uint16_t value) { std::memcpy(destination, &value, 2); }
@@ -36,11 +33,7 @@ namespace components::vector {
             return value;
         }
 
-        // Appending helpers. The payload of a nested column is not a size anyone can compute
-        // ahead of the walk that produces it (a list's child span is data, not schema), so the
-        // writer grows the buffer as it goes and back-patches the one length prefix that needs
-        // it. The buffer is the WAL's reused encode buffer, so after warm-up the growth costs
-        // nothing.
+        // A nested payload's size isn't known ahead of the walk producing it, so the writer grows and back-patches.
         inline void append_le16(services::wal::buffer_t& buffer, uint16_t value) {
             const size_t at = buffer.size();
             buffer.resize(at + 2);
@@ -65,8 +58,7 @@ namespace components::vector {
             std::memcpy(buffer.data() + at, source, length);
         }
 
-        // Return the byte-size of one element for a fixed-width physical type.
-        // Returns 0 for STRING (variable-width) and for composite types (ARRAY, etc.).
+        // 0 marks a variable-width or composite type (STRING, ARRAY, etc.).
         size_t fixed_type_size(types::physical_type physical_type) {
             switch (physical_type) {
                 case types::physical_type::BOOL:
@@ -97,23 +89,13 @@ namespace components::vector {
             return physical_type == types::physical_type::STRING;
         }
 
-        // Elements per row of an ARRAY. 0 means the extension is missing, i.e. a type that
-        // claims to be an ARRAY and cannot say how wide it is — refused rather than guessed.
+        // 0 means the extension is missing: a type claiming ARRAY but unable to say how wide it is.
         uint64_t array_stride(const types::complex_logical_type& type) {
             const auto* extension = type.extension_as<types::array_logical_type_extension>();
             return extension ? extension->size() : 0;
         }
 
-        // Column type header = [spec_size:u32][spec bytes], the CANONICAL type-spec encoding
-        // (types::encode_type_spec) — same codec the table checkpoint uses. Must not go back to
-        // a hand-rolled header enumerating extensions one by one: a leg such a header forgets
-        // replays into a bare STRUCT whose absent field types are walked through a garbage
-        // pointer (a flaky SIGSEGV in read_all_records); the canonical spec round-trips every
-        // persistable type recursively, so a new type can't decode into a crash-shaped half-type.
-        // spec_size 0 marks a type the codec REFUSED to encode; the reader treats it as
-        // corruption (ok=false), never as "assume some type".
-        //
-        // Encode `column_type`'s spec into `spec` (cleared first). Empty result = refusal.
+        // Column type header = [spec_size:u32][spec bytes]; spec_size 0 marks a refused encode.
         void encode_type_spec_or_poison(const types::complex_logical_type& column_type,
                                         std::pmr::vector<std::byte>& spec) {
             spec.clear();
@@ -123,10 +105,6 @@ namespace components::vector {
             }
         }
 
-        // Read one [spec_size:u32][spec bytes] type header and decode it with the
-        // canonical spec codec. Advances scan past the header. A truncated buffer, a
-        // zero spec_size (the writer's refusal poison) or a spec the codec rejects sets
-        // ok=false and returns an INVALID-typed placeholder (caller must check ok).
         types::complex_logical_type
         read_type_header(const char*& scan, const char* end, std::pmr::memory_resource* resource, bool& ok) {
             if (scan + 4 > end) {
@@ -149,25 +127,12 @@ namespace components::vector {
             return std::move(decoded.value());
         }
 
-        // Empty/sentinel chunk returned on deserialize failure. Caller must check
-        // the ok flag and discard the chunk on failure.
         data_chunk_t make_empty_error_chunk(std::pmr::memory_resource* resource) {
             std::pmr::vector<types::complex_logical_type> empty_types(resource);
             return data_chunk_t(resource, empty_types, 1);
         }
 
-        // NESTED COLUMN PAYLOAD — the recursive half of the codec (layout table on the
-        // declaration in data_chunk_binary.hpp). Must NOT be sized by fixed_type_size(), which
-        // answers 0 for LIST/STRUCT/ARRAY: writer and reader would silently agree on 0 bytes,
-        // and the reader's zero-length memcpy leaves every element at the constructor's zero —
-        // invisible on checkpointed rows (always recursive via .otbx), surfacing only on rows
-        // recovered FROM THE JOURNAL.
-        //
-        // Both directions derive the shape from the column TYPE carried in the header, so a
-        // container inside a container is nothing but this function re-entered — no case of its
-        // own needed for nesting. Child order mirrors the .otbx checkpoint's, [validity,
-        // ...children]. The TOP-LEVEL column's own validity stays in the chunk's interleaved
-        // null mask; only the levels BELOW it get a mask of their own here.
+        // Nested payload order is [validity, ...children]; only levels below the top get a mask of their own here.
 
         void append_validity_block(const vector_t& vector, uint64_t count, services::wal::buffer_t& buffer) {
             if (count == 0 || vector.validity().all_valid()) {
@@ -209,10 +174,6 @@ namespace components::vector {
             return true;
         }
 
-        // The list child's length is the WRITTEN SPAN, not the row count: lengths are ragged
-        // and the child buffer is append-only, so it is normally longer than the column is
-        // tall. Taking the max of the buffer's own size and every entry's end keeps a vector
-        // whose bookkeeping disagrees with its entries from truncating real elements.
         uint64_t list_child_count(const vector_t& vector, uint64_t count) {
             uint64_t child_count = vector.size();
             const auto* entries = reinterpret_cast<const types::list_entry_t*>(vector.data());
@@ -225,9 +186,7 @@ namespace components::vector {
             return child_count;
         }
 
-        // Returns false when the column carries a payload this codec has no rule for. The
-        // caller turns that into a POISONED column the reader refuses outright —
-        // writing a short payload instead would recreate the very defect this exists to close.
+        // False means no rule for this payload; the caller poisons the column rather than writing a short one.
         bool append_vector_payload(const vector_t& vector, uint64_t count, services::wal::buffer_t& buffer) {
             const auto physical_type = vector.type().to_physical_type();
 
@@ -286,8 +245,7 @@ namespace components::vector {
 
             const size_t element_size = fixed_type_size(physical_type);
             if (element_size == 0) {
-                // No payload rule for this physical type (BIT / UNKNOWN / INVALID). Nothing to
-                // write when there are no rows; otherwise refuse loudly.
+                // BIT / UNKNOWN / INVALID have no payload rule; only 0 rows can be written.
                 return count == 0;
             }
             append_bytes(buffer, vector.data(), element_size * count);
@@ -373,9 +331,7 @@ namespace components::vector {
                     }
                     const uint64_t child_count = read_le64(scan);
                     scan += 8;
-                    // The child is about to be ALLOCATED to this length, so a count the record
-                    // cannot possibly back with bytes is refused before it is believed. Every
-                    // element of every persistable child type costs at least one byte.
+                    // A count the remaining bytes can't possibly back is refused before it drives an allocation.
                     if (child_count > static_cast<uint64_t>(end - scan)) {
                         return false;
                     }
@@ -406,14 +362,11 @@ namespace components::vector {
 
     } // anonymous namespace
 
-    // -----------------------------------------------------------------------
-    // serialize_binary
-    // -----------------------------------------------------------------------
     void serialize_binary(const data_chunk_t& chunk, services::wal::buffer_t& buffer) {
         const auto num_columns = static_cast<uint16_t>(chunk.column_count());
         const auto num_rows = static_cast<uint32_t>(chunk.size());
 
-        // ----- Build null mask (row-major, 1 bit per cell, bit=1 means valid) -----
+        // Null mask is row-major, 1 bit per cell, bit=1 means valid.
         const uint64_t total_cells = static_cast<uint64_t>(num_columns) * num_rows;
         const uint32_t null_mask_bytes = (total_cells > 0) ? static_cast<uint32_t>((total_cells + 7) / 8) : 0;
 
@@ -428,12 +381,10 @@ namespace components::vector {
 
         const uint32_t actual_mask_bytes = has_nulls ? null_mask_bytes : 0;
 
-        // ----- Write header -----
         append_le16(buffer, num_columns);
         append_le32(buffer, num_rows);
         append_le32(buffer, actual_mask_bytes);
 
-        // ----- Write null mask -----
         if (has_nulls) {
             const size_t at = buffer.size();
             buffer.resize(at + actual_mask_bytes);
@@ -450,7 +401,7 @@ namespace components::vector {
             }
         }
 
-        // ----- Write columns: [spec_size:u32][spec][data_size:u32][payload] -----
+        // Per column: [spec_size:u32][spec][data_size:u32][payload].
         std::pmr::vector<std::byte> spec(chunk.resource());
         for (uint16_t column_index = 0; column_index < num_columns; ++column_index) {
             const auto& column = chunk.data[column_index];
@@ -468,10 +419,7 @@ namespace components::vector {
             const size_t payload_size = buffer.size() - data_start;
 
             if (!payload_written || spec.empty() || payload_size > std::numeric_limits<uint32_t>::max()) {
-                // POISON the whole column — spec_size 0 — which the reader refuses outright.
-                // A column this codec cannot carry must break the record LOUDLY. The
-                // alternative, emitting a short payload, is exactly the defect being closed
-                // here: a decode that reports success and hands replay a column of zeroes.
+                // Poison the whole column (spec_size 0) so the reader refuses it outright.
                 buffer.resize(column_start);
                 append_le32(buffer, 0);
                 append_le32(buffer, 0);
@@ -481,9 +429,6 @@ namespace components::vector {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // deserialize_binary
-    // -----------------------------------------------------------------------
     data_chunk_t deserialize_binary(const char* data, size_t len, std::pmr::memory_resource* resource, bool& ok) {
         ok = true;
         if (len < 10) {
@@ -507,10 +452,7 @@ namespace components::vector {
                 ok = false;
                 return make_empty_error_chunk(resource);
             }
-            // The mask is indexed below by row * num_columns + column BITS, so it must cover
-            // the whole chunk, and a header that says otherwise (truncation, corruption) must
-            // be refused rather than trusted: the per-cell reads would run past the mask into
-            // the first column's type header and decode with wrong NULL flags, ok still true.
+            // Indexed by row * num_columns + column bits, so a mask shorter than the chunk is refused here.
             const uint64_t required_bits = static_cast<uint64_t>(num_rows) * num_columns;
             const uint64_t required_bytes = (required_bits + 7) / 8;
             if (static_cast<uint64_t>(null_mask_size) < required_bytes) {
@@ -521,12 +463,8 @@ namespace components::vector {
             pointer += null_mask_size;
         }
 
-        // The buffer INTERLEAVES the columns — [type header][data_size][data] each — but
-        // data_chunk_t's ctor takes the whole column-type vector up front (columns can't be
-        // appended afterwards), so a first walk collects the types before the chunk exists.
-        // That walk also RECORDS each column's data offset/length so the fill loop below can
-        // address columns directly without re-decoding (and reallocating) a type header per
-        // column on the WAL replay path. Offsets are bounds-checked against `end` here, once.
+        // Interleaved as [type header][data_size][data] per column; a first walk collects types and
+        // offsets since data_chunk_t's ctor needs the whole column-type vector up front.
         std::pmr::vector<types::complex_logical_type> column_types(resource);
         column_types.reserve(num_columns);
         std::pmr::vector<uint64_t> column_data_offsets(resource); // from `data`, to the column's DATA
@@ -562,10 +500,7 @@ namespace components::vector {
         data_chunk_t chunk(resource, column_types, num_rows);
         chunk.set_cardinality(num_rows);
 
-        // Fill pass: address each column's data by the offset the walk above recorded. The
-        // payload reader is bounded by that column's OWN end, and is required to land exactly
-        // on it — a payload that stops short or overruns is a format violation, not a column
-        // to be filled in as far as it goes.
+        // The payload reader must land exactly on that column's own end; short or overrun is a format violation.
         for (uint16_t column_index = 0; column_index < num_columns; ++column_index) {
             const char* column_data = data + column_data_offsets[column_index];
             const char* column_end = column_data + column_data_lengths[column_index];
@@ -578,7 +513,6 @@ namespace components::vector {
                 return make_empty_error_chunk(resource);
             }
 
-            // Apply null mask for this column.
             if (null_mask) {
                 for (uint32_t row_index = 0; row_index < num_rows; ++row_index) {
                     uint64_t bit_index = static_cast<uint64_t>(row_index) * num_columns + column_index;

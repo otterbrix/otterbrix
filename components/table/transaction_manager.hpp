@@ -13,8 +13,7 @@ namespace components::table {
 
     class transaction_manager_t {
     public:
-        // resource backs the in_flight_snapshot vector in every snapshot handed
-        // out. Required, not defaulted, so each snapshot stays valid when moved.
+        // resource backs in_flight_snapshot in every snapshot; required so a moved snapshot stays valid.
         explicit transaction_manager_t(std::pmr::memory_resource* resource);
 
         transaction_t& begin_transaction(session::session_id_t session);
@@ -27,52 +26,19 @@ namespace components::table {
         uint64_t lowest_active_start_time() const;
         bool has_active_transactions() const;
 
-        // Horizon broadcast to the DROP-GC / deferred-index-delete sweeps, in commit-id value
-        // space so `dropped_at_commit_id < horizon` / `entry->commit_id <= horizon` compare
-        // like with like. Same value as compact_watermark(); kept as a separate name for its
-        // own consumer contract.
+        // Same as compact_watermark(); kept as a separate name for the DROP-GC/index-delete contract.
         uint64_t lowest_active_snapshot_horizon() const;
 
-        // Visible-to-all horizon for data_table_t::compact(): every commit_id at
-        // or below the returned value is visible to EVERY current snapshot and to
-        // every snapshot taken later. Computed atomically as the min of
-        //   * published_horizon_ (floor for future snapshots),
-        //   * min(in_flight_commits_) - 1 (committed-unpublished ids and anything
-        //     newer stay protected — future snapshots reject them via
-        //     in_flight_snapshot),
-        //   * per active txn: min(snapshot_horizon, min(in_flight_snapshot) - 1).
-        // Monotonic in the safe direction: a value computed now is never above a
-        // value computed later, so it can ride actor messages without re-checks.
+        // Every commit_id at or below the result is visible to every snapshot, current or future; monotonic.
         uint64_t compact_watermark() const;
 
-        // ProcArray atomic publish barrier: moves a committed txn out of
-        // in_flight_commits_ and advances published_horizon_. MUST be called at
-        // the end of the commit pipeline (after WAL fsync + storage_publish_*),
-        // so a fresh snapshot captures the txn as visible.
+        // Must run at the end of the commit pipeline, after WAL fsync + storage_publish_*.
         void publish(uint64_t commit_id);
 
-        // publish() minus the CAS -- and the missing CAS is the whole point.
-        //
-        // A commit pipeline that dies after commit() allocated the id but before the barrier
-        // leaves that id in in_flight_commits_ with nobody left to remove it: commit() already
-        // erased the txn from active_, so find_transaction() is nullptr and neither ROLLBACK
-        // nor the dispatcher's failure-release net can reach it. The id then floors
-        // visible_to_all_locked() at commit_id-1 forever, stalling compact(), the DROP-GC
-        // sweep and the deferred index-delete sweep.
-        //
-        // published_horizon_ is NOT advanced here, so nothing becomes visible by being
-        // forgotten. The erase itself is safe because operator_commit_transaction_t enforces
-        // an ordering rule -- no step that can fail may run after the first step that stamps
-        // the commit_id -- so a discarded id is stamped on nothing (no row version,
-        // pg_attribute column, index-delete entry, or WAL marker) and there is nothing left
-        // for a reader to hide.
-        //
-        // Monotone in the safe direction (erasing only RAISES min(), never lowers it);
-        // idempotent; a no-op for an id never in flight.
+        // publish() minus the CAS: erases an id orphaned by a dead pipeline; doesn't advance published_horizon_.
         void discard(uint64_t commit_id);
 
-        // Capture an MVCC snapshot atomically. Caller supplies the resource for
-        // the in_flight_snapshot vector so the result can be moved without dangling.
+        // Caller supplies the resource for in_flight_snapshot so the snapshot can move without dangling.
         struct snapshot_t {
             uint64_t snapshot_horizon;
             std::pmr::vector<uint64_t> in_flight_snapshot;
@@ -85,68 +51,27 @@ namespace components::table {
 
         uint64_t published_horizon() const noexcept { return published_horizon_.load(std::memory_order_acquire); }
 
-        // Reopen restores BOTH halves of the commit clock from a SINGLE durable
-        // frontier. The one entry point every reopen restore path must funnel
-        // through, so the two halves can never disagree:
-        //   * current_timestamp_  → max(current, frontier + 1): the fetch_add source
-        //     of every new start_time/commit_id. Raising it past the frontier means
-        //     post-reopen INSERTs draw commit-ids ABOVE the durable band — they no
-        //     longer collide with already-published ids, so a reader that snapshots
-        //     them in-flight and later sees them published judges them visible (and
-        //     persisted added_at_commit_id stay in the past).
-        //   * published_horizon_  → max(current, frontier): post-recovery snapshots
-        //     see every persisted commit as published.
-        // Maintains the invariant current_timestamp_ >= published_horizon_ + 1.
-        // Idempotent — NEVER lowers either value. Called single-threaded at
-        // bootstrap, before schedulers start, so plain store(max(...)) under no
-        // contention suffices.
+        // Raises both halves of the commit clock from one frontier, so they can't disagree; idempotent.
         void restore_commit_clock(uint64_t frontier);
 
-        // Reopen restores the commit-id horizon so persisted catalog columns stay
-        // visible. pg_attribute stamps every column with an added_at_commit_id from
-        // the prior session's clock; a reopened manager starts its clock at {1,0},
-        // so without this seed every new txn's start_time would fall BELOW those
-        // persisted ids and resolve_table's visibility filter would judge all
-        // columns "added after my snapshot" → "column not found".
+        // Seeds the clock after reopen, or persisted pg_attribute columns could look not-yet-added.
         void seed_commit_clock(uint64_t high_water) { restore_commit_clock(high_water); }
 
         std::pmr::memory_resource* resource() const noexcept { return resource_; }
 
     private:
-        // The ONE computation of "visible to all": the greatest commit_id every live AND
-        // future snapshot already sees. Requires lock_ held by the caller (not recursive).
-        // Both public horizon readers are thin wrappers over this.
+        // Backs both public horizon readers; requires lock_ held by the caller (not recursive).
         uint64_t visible_to_all_locked() const;
 
         std::pmr::memory_resource* resource_;
-        // NOT seeded from the journal, unlike the commit clock above -- deliberate, not
-        // obvious, and has already cost one durability bug.
-        //
-        // A pending txn id is a WITHIN-PROCESS name: row_version_manager reads it only as
-        // "id >= TRANSACTION_ID_START ⇒ somebody's uncommitted write", never as an ordering,
-        // and no reopened row carries one (replay stamps transaction_data{0,0}; a loaded row
-        // group starts with null version_info). So restarting the counter at
-        // TRANSACTION_ID_START every process is sound IN MEMORY -- unlike COMMIT ids, which
-        // are stamped into pg_attribute and compared across restarts (hence
-        // restore_commit_clock).
-        //
-        // The one place a pending txn id DOES cross a restart is the journal, where the same
-        // id gets handed out again to a different transaction. A seeding entry point is
-        // constructible (max txn id over replayed records, as base_spaces already derives the
-        // commit-id frontier) but doesn't exist and would live in the bootstrap, not here:
-        // what actually prevents collision today is the replay filter pairing a physical
-        // record with a COMMIT marker at a STRICTLY GREATER wal id
-        // (services::wal::filter_committed_records, services/wal/wal.hpp), which recycling
-        // cannot forge since wal ids keep growing. That filter stays needed regardless (it
-        // also fixes journals already on disk).
+        // NOT seeded from the journal, unlike the commit clock -- deliberate (cost a durability bug once):
+        // txn ids are within-process only; filter_committed_records's wal-order check guards journal replay.
         std::atomic<uint64_t> next_transaction_id_{TRANSACTION_ID_START};
         std::atomic<uint64_t> current_timestamp_{1};
         mutable std::mutex lock_;
         std::unordered_map<uint64_t, std::unique_ptr<transaction_t>> active_;
         std::set<uint64_t> active_start_times_;
-        // ProcArray fields: commit_ids allocated by commit() but not yet
-        // visible until publish(). Snapshots captured during this window must
-        // reject these ids.
+        // commit_ids allocated by commit() but not yet visible until publish(); snapshots must reject them.
         std::set<uint64_t> in_flight_commits_;
         std::atomic<uint64_t> published_horizon_{0};
     };

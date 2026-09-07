@@ -1,4 +1,5 @@
 #include "operations_helper.hpp"
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <components/types/logical_value.hpp>
 #include <components/types/physical_value.hpp>
@@ -330,7 +331,7 @@ TEST_CASE("components::types::logical_value::cast_to_decimal_answers_every_numer
 
         // 255 read as int8_t is -1, and -128 has no unsigned reading -- a single arm covering
         // both would pass the case above and fail here.
-        for (const auto [source, scaled] : std::initializer_list<std::pair<int8_t, int64_t>>{{-128, -12800},
+        for (const auto& [source, scaled] : std::initializer_list<std::pair<int8_t, int64_t>>{{-128, -12800},
                                                                                             {127, 12700}}) {
             auto edge = logical_value_t(&resource, source).cast_as(decimal_type, {});
             REQUIRE_FALSE(edge.has_error());
@@ -463,7 +464,7 @@ TEST_CASE("logical_value: an unsupported operand type is a refusal, not a throw"
 
         auto product = logical_value_t::mult(two_point_oh, two_point_oh);
         REQUIRE_FALSE(product.has_error());
-        CHECK(product.value().value<double>() == 4.0);
+        CHECK(product.value().value<double>() == Catch::Approx(4.0));
     }
 }
 

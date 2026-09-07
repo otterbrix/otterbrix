@@ -28,8 +28,7 @@ using namespace components::expressions;
 namespace components::sql::transform {
 
     namespace {
-        // Parses an oversize integer literal into int64 exactly; false on non-integer text
-        // or a value outside int64 range — caller reports its own "allowed only <integer>" refusal.
+        // False on non-integer text or a value outside int64 range; caller reports its own refusal.
         bool exact_int64_literal(Value* value, int64_t& out) {
             types::int128_t wide{0};
             if (parse_exact_integer(strVal(value), wide) != integer_text_t::exact) {
@@ -82,8 +81,6 @@ namespace components::sql::transform {
             return has_using_join(join->larg) || has_using_join(join->rarg);
         }
 
-        // The visible name of a table function that carries no alias is the
-        // function's own name.
         std::string range_function_name(RangeFunction& node) {
             if (!node.functions || node.functions->lst.empty()) {
                 return {};
@@ -149,8 +146,6 @@ namespace components::sql::transform {
                 auto written = rangevar_to_qualified_name(table);
                 slot_alias = construct_alias(table->alias);
                 const std::string& visible = slot_alias.empty() ? written.relname : slot_alias;
-                // CTE name is a single segment and takes no qualification,
-                // so a qualified item ALWAYS names a table
                 const bool unqualified = written.dbname.empty() && written.schemaname.empty() && written.uuid.empty();
                 if (unqualified) {
                     if (auto cte = cte_queries_.find(written.relname); cte != cte_queries_.end()) {
@@ -179,7 +174,6 @@ namespace components::sql::transform {
             }
             case T_RangeSubselect: {
                 auto* sub = pg_ptr_cast<RangeSubselect>(item);
-                // A derived table fills no slot, its alias is its whole identity
                 slot_alias = construct_alias(sub->alias);
                 auto agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
                 if (sub->lateral && node_join) {
@@ -215,7 +209,6 @@ namespace components::sql::transform {
                                 core::error_code_t::sql_parse_error,
                                 std::pmr::string{"column names count has to equal actual column count", resource_});
                         }
-                        // All chunks share the same column shape; alias every chunk's columns.
                         for (auto& chunk : data_node->chunks()) {
                             size_t column_index = 0;
                             for (auto colname : sub->alias->colnames->lst) {
@@ -254,8 +247,7 @@ namespace components::sql::transform {
                                         name_collection_t& names,
                                         logical_plan::execution_plan_t* plan) {
         if (join->isNatural) {
-            // TODO: NATURAL needs the column lists of both sides to work out what it joins on
-            // for now transformer has no schemas
+            // TODO: the transformer has no schemas yet, so the column lists cannot be worked out here.
             return core::error_t(core::error_code_t::unimplemented_yet,
                                  std::pmr::string{"NATURAL JOIN is not supported: it needs the column lists of "
                                                   "both sides. Name the columns with USING, or write the ON clause",
@@ -269,9 +261,6 @@ namespace components::sql::transform {
         if (nodeTag(join->larg) == T_JoinExpr) {
             name_collection_t inner;
             RETURN_IF_ERROR(join_dfs(resource, pg_ptr_cast<JoinExpr>(join->larg), node_join, inner, plan));
-            // Snapshot the inner join's visible scope before this level records
-            // its own right side. Name and alias travel together: an alias hides
-            // the relation name of its own element, nobody else's.
             auto carry = [&](const qualified_name& nm, const std::string& alias) {
                 if (!nm.relname.empty() || !alias.empty()) {
                     names.extra_left.push_back({nm, alias});
@@ -308,7 +297,6 @@ namespace components::sql::transform {
         }
         node_join->append_child(right);
 
-        // on
         if (join->quals) {
             VALUE_OR_RETURN(auto expr, transform_predicate(join->quals, names, plan));
             node_join->append_expression(expr);
@@ -330,23 +318,8 @@ namespace components::sql::transform {
         logical_plan::node_aggregate_ptr agg = nullptr;
         logical_plan::node_join_ptr join = nullptr;
 
-        // SQL-89 comma-join: `FROM a, b [, c ...] WHERE a.x = b.y` arrives as a
-        // from_items list with multiple top-level entries. libpg_query does NOT
-        // synthesize a FromExpr / JoinExpr in that case — each table is a bare
-        // T_RangeVar (or T_RangeFunction / T_RangeSubselect) sibling.
-        //
-        // The downstream pipeline only knows how to consume a single join root, so
-        // we synthesize a left-deep JoinExpr tree here with jointype=JOIN_INNER and
-        // quals=NULL on every link. jointype_to_ql promotes (JOIN_INNER, quals=NULL)
-        // -> join_type::cross, which produces the cross-product. Inner-join semantics
-        // are recovered by the user's WHERE clause, lowered into a sibling match_t on
-        // the aggregate root; that match_t evaluates against the post-join merged
-        // chunk, so column refs resolve through the join's merged schema regardless of
-        // side_t.
-        //
-        // The synthesized tree mutates `from_items->lst.front()` so the existing
-        // T_JoinExpr branch below picks it up unchanged.
-
+        // libpg_query does not synthesize a JoinExpr for a comma FROM list; jointype_to_ql promotes
+        // the synthesized quals=NULL JOIN_INNER to join_type::cross, and WHERE supplies the predicate.
         if (from_items->lst.size() > 1) {
             auto it = from_items->lst.begin();
             Node* acc = pg_ptr_cast<Node>(it->data);
@@ -359,28 +332,22 @@ namespace components::sql::transform {
                 synth->larg = acc;
                 synth->rarg = rhs;
                 synth->usingClause = nullptr;
-                synth->quals = nullptr; // cross — WHERE supplies the predicate
+                synth->quals = nullptr;
                 synth->alias = nullptr;
                 synth->rtindex = 0;
                 acc = reinterpret_cast<Node*>(synth);
             }
-            // Replace the original multi-entry list with a single top-level JoinExpr
-            // so the dispatch below sees T_JoinExpr.
             from_items->lst.clear();
             from_items->lst.push_back({acc});
         }
 
         auto from_first = from_items->lst.front().data;
         if (nodeTag(from_first) == T_JoinExpr) {
-            // from table_1 join table_2 on cond
             agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
             RETURN_IF_ERROR(join_dfs(resource_, pg_ptr_cast<JoinExpr>(from_first), join, names, plan));
             RETURN_IF_ERROR(names.refuse_indistinguishable_elements(resource_));
             agg->append_child(join);
         } else {
-            // A single FROM element goes through the same lowering as one inside
-            // a join, so a table, a CTE reference, a derived table and a table
-            // function are registered the same way in both places.
             logical_plan::node_join_ptr no_join;
             VALUE_OR_RETURN(auto element,
                             transform_from_element(pg_ptr_cast<Node>(from_first),
@@ -407,20 +374,14 @@ namespace components::sql::transform {
         if (!with_clause) {
             return core::error_t::no_error();
         }
-        // Names from THIS clause only, to tell a duplicate within one WITH list apart
-        // from a collision with another WITH of the same statement (unimplemented scoping).
         std::pmr::unordered_set<std::string_view> this_clause{resource_};
         for (const auto& item : with_clause->ctes->lst) {
             auto* cte = pg_ptr_cast<CommonTableExpr>(item.data);
             if (nodeTag(cte->ctequery) != T_SelectStmt) {
-                // WITH x AS (DELETE/UPDATE/INSERT ... RETURNING ...) — a data-modifying CTE. Deferred:
-                // reject cleanly instead of a bad SelectStmt cast.
                 return core::error_t(core::error_code_t::unimplemented_yet,
                                      std::pmr::string{"data-modifying WITH (CTE) is not supported", resource_});
             }
-            // Registration is a flat per-statement map, and unordered_map::emplace is a silent
-            // no-op on a duplicate key — a name written twice would silently keep the first
-            // body. Both duplicate shapes (within this list, or against an outer WITH) are refused.
+            // unordered_map::emplace silently no-ops on a duplicate key, so it's refused explicitly here.
             if (this_clause.count(cte->ctename) != 0) {
                 std::pmr::string msg{"WITH query name \"", resource_};
                 msg += cte->ctename;
@@ -462,14 +423,13 @@ namespace components::sql::transform {
                     auto* value = &(pg_ptr_cast<A_Const>(limit_count)->val);
                     switch (nodeTag(value)) {
                         case T_Null:
-                            break; // LIMIT ALL — keep unlimit_
+                            break;
                         case T_Integer:
                             limit_val = intVal(value);
                             break;
                         case T_Float:
-                            // An integer literal past int32 doesn't fit the scanner's `ival` and
-                            // lands here as T_Float (scan.l, process_integer_literal); read the
-                            // digits exactly rather than silently truncating the row count.
+                            // Past-int32 literals don't fit the scanner's `ival` and land here as T_Float
+                            // (scan.l); read the digits exactly rather than truncating.
                             if (!exact_int64_literal(value, limit_val)) {
                                 return core::error_t(
                                     core::error_code_t::sql_parse_error,
@@ -506,12 +466,11 @@ namespace components::sql::transform {
                     auto* value = &(pg_ptr_cast<A_Const>(limit_offset)->val);
                     switch (nodeTag(value)) {
                         case T_Null:
-                            break; // OFFSET NULL — treat as 0
+                            break;
                         case T_Integer:
                             offset_val = intVal(value);
                             break;
                         case T_Float:
-                            // Same lexer detour as LIMIT above.
                             if (!exact_int64_literal(value, offset_val)) {
                                 return core::error_t(
                                     core::error_code_t::sql_parse_error,
@@ -557,23 +516,15 @@ namespace components::sql::transform {
         if (!limit_count) {
             return logical_plan::make_node_limit(resource_, db, rel, logical_plan::limit_t::unlimit());
         }
-        // DML has no OFFSET (grammar-enforced): pass a null offset. build_limit_node validates the
-        // count (integer / bound parameter) and defers a ParamRef exactly like a SELECT limit; an
-        // invalid expression comes back as a refusal.
         VALUE_OR_RETURN(auto built, build_limit_node(limit_count, nullptr, db, rel, plan));
         if (!built) {
             return logical_plan::node_limit_ptr{nullptr};
         }
-        // build_limit_node always constructs a node_limit_t — downcast the base node_ptr.
         return logical_plan::node_limit_ptr{static_cast<logical_plan::node_limit_t*>(built.get())};
     }
 
     core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_select(SelectStmt& node,
                                                                                  logical_plan::execution_plan_t* plan) {
-        // Three SelectStmt fields no code below reads; unrefused, each would report
-        // success while silently dropping its half (INTO creates no table, locking
-        // clause locks nothing, WINDOW defines nothing). Checked on every recursion,
-        // so a UNION arm or sub-select carrying one is refused the same way.
         if (node.intoClause) {
             return core::error_t(
                 core::error_code_t::unimplemented_yet,
@@ -593,17 +544,8 @@ namespace components::sql::transform {
             return core::error_t(core::error_code_t::unimplemented_yet,
                                  std::pmr::string{"the WINDOW clause is not supported yet", resource_});
         }
-        // Set operations (UNION / INTERSECT / EXCEPT) are not yet wired
-        // through the transformer. For a SETOP_* node, node.targetList is
-        // null (the column projection lives on the larg / rarg children),
-        // so the for-loop below would dereference null and SIGSEGV. Bail
-        // out cleanly until proper set-operation lowering lands.
-        // dynamic_schema_union sits on this path; lldb pinned the crash to
-        // node.targetList->lst at line 137 here.
-        // Resolve a positional `ORDER BY <n>` (1-based) to the n-th output column's field:
-        // `n` indexes `target_list` (the SELECT list; for a UNION the output names come from
-        // the FIRST arm's list, PostgreSQL semantics). Refuses an out-of-range position, or a
-        // computed column with no alias to name it; `out` is filled in place on success.
+        // A SETOP_* node has a null targetList, so the loop below would SIGSEGV without this bail-out.
+        // For a UNION, positional `ORDER BY <n>` resolves against the first arm's list (PostgreSQL).
         auto positional_sort_field =
             [&](List* target_list, int64_t n, const name_collection_t& nm, column_ref_t& out) -> core::error_t {
             int64_t count = 0;
@@ -635,9 +577,7 @@ namespace components::sql::transform {
         };
 
         if (node.op == SETOP_UNION) {
-            // gram.y attaches withClause / sortClause / limitCount / limitOffset / distinctClause to THIS
-            // compound node (not to larg/rarg). The old early-return dropped all of them silently.
-            // WITH must be registered BEFORE the arms so both can see the CTEs.
+            // WITH must be registered before the arms so both can see the CTEs.
             RETURN_IF_ERROR(register_with_ctes(node.withClause));
             VALUE_OR_RETURN(auto left, transform_select(*node.larg, plan));
             VALUE_OR_RETURN(auto right, transform_select(*node.rarg, plan));
@@ -647,17 +587,12 @@ namespace components::sql::transform {
             const bool has_sort = node.sortClause && !node.sortClause->lst.empty();
             const bool has_distinct = node.distinctClause && !node.distinctClause->lst.empty();
             if (!has_sort && !node.limitCount && !node.limitOffset && !has_distinct) {
-                return union_node; // bare union — no tail clauses to apply
+                return union_node;
             }
 
-            // Wrap the union in an aggregate so the existing sort / limit / distinct children apply:
-            // create_plan_aggregate lowers a non-scan source through its default child_op branch
-            // (union -> sort -> limit / distinct).
             auto agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
             agg->append_child(std::move(union_node));
             if (has_distinct) {
-                // v1: DISTINCT ON over a compound/UNION query is not supported (plain DISTINCT is).
-                // Plain DISTINCT is the NIL List sentinel; a real ON expression is anything else.
                 if (nodeTag(node.distinctClause->lst.front().data) != T_List) {
                     return core::error_t(
                         core::error_code_t::unimplemented_yet,
@@ -666,7 +601,6 @@ namespace components::sql::transform {
                 agg->set_distinct(true);
             }
             if (has_sort) {
-                // Union output columns resolve by NAME at validation, so an empty name scope is fine.
                 name_collection_t union_names;
                 std::vector<expression_ptr> sort_exprs;
                 sort_exprs.reserve(node.sortClause->lst.size());
@@ -684,8 +618,6 @@ namespace components::sql::transform {
                             field,
                             indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(sortby->node), union_names));
                     } else if (nodeTag(sortby->node) == T_A_Const) {
-                        // Positional `ORDER BY <n>`: map to the n-th UNION output column (the
-                        // output names come from the first arm, node.larg's select list).
                         auto* value = &(pg_ptr_cast<A_Const>(sortby->node)->val);
                         if (nodeTag(value) != T_Integer) {
                             return core::error_t(core::error_code_t::sql_parse_error,
@@ -731,8 +663,6 @@ namespace components::sql::transform {
             agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
         }
         if (node.valuesLists) {
-            // Split the literal rows into uniform ≤CAP chunks (only the last is smaller) so
-            // no oversized data_chunk_t is built.
             const uint64_t cap = vector::DEFAULT_VECTOR_CAPACITY;
             const uint64_t total = node.valuesLists->lst.size();
             std::pmr::vector<vector::data_chunk_t> chunks(resource_);
@@ -749,10 +679,8 @@ namespace components::sql::transform {
                         VALUE_OR_RETURN(auto value, get_value(resource_, pg_ptr_cast<Node>(it_value->data)));
                         if (column_index >= chunk.data.size()) {
                             chunk.data.emplace_back(resource_, value.type(), chunk.capacity());
-                            // PostgreSQL names unlabeled VALUES columns column1, column2, ... —
-                            // an aggregate wrapper (LIMIT/ORDER BY tail) and the result cursor
-                            // read a column alias, and an untitled VALUES column would abort in
-                            // complex_logical_type::alias(). Only name columns left unaliased.
+                            // PostgreSQL names unlabeled VALUES columns column1, column2, ... (unaliased
+                            // else aborts complex_logical_type::alias()).
                             if (!chunk.data[column_index].type().has_alias()) {
                                 chunk.data[column_index].set_type_alias("column" + std::to_string(column_index + 1));
                             }
@@ -766,19 +694,13 @@ namespace components::sql::transform {
             auto raw = logical_plan::make_node_raw_data(resource_, std::move(chunks));
             const bool values_has_sort = node.sortClause && !node.sortClause->lst.empty();
             if (!values_has_sort && !node.limitCount && !node.limitOffset) {
-                return raw; // bare VALUES — no tail clauses to apply
+                return raw;
             }
             if (values_has_sort) {
-                // A top-level VALUES row has no named columns to resolve a sort key against;
-                // ORDER BY over VALUES is not yet supported (LIMIT/OFFSET are). Clean error,
-                // never a silently dropped ORDER BY.
                 return core::error_t(
                     core::error_code_t::unimplemented_yet,
                     std::pmr::string{"ORDER BY over a top-level VALUES list is not yet supported", resource_});
             }
-            // Honor VALUES … LIMIT/OFFSET: wrap in an aggregate so create_plan_aggregate lowers
-            // the data source through its default (non-scan) child branch with the authoritative
-            // operator_limit on top (VALUES keeps OFFSET, unlike DML).
             auto values_agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
             values_agg->append_child(std::move(raw));
             VALUE_OR_RETURN(
@@ -795,14 +717,11 @@ namespace components::sql::transform {
         auto select_node =
             logical_plan::make_node_select(resource_, core::dbname_t{agg->dbname()}, core::relname_t{agg->relname()});
 
-        // fields — collect SELECT expressions into select_node.
-        // Star expressions (*) are skipped; an empty select_node means passthrough (SELECT *).
+        // Star expressions are skipped; an empty select_node means passthrough (SELECT *).
         bool has_non_star = false;
         {
             for (auto target : node.targetList->lst) {
                 auto res = pg_ptr_cast<ResTarget>(target.data);
-                // `SELECT +x` projects x itself: peel the identity layers so the stripped
-                // node dispatches to its own arm (column, constant, expression) below.
                 res->val = strip_unary_plus(res->val);
                 if (!res->val) {
                     return core::error_t(core::error_code_t::sql_parse_error,
@@ -810,14 +729,12 @@ namespace components::sql::transform {
                 }
                 switch (nodeTag(res->val)) {
                     case T_FuncCall: {
-                        // Aggregate function in SELECT
                         auto func = pg_ptr_cast<FuncCall>(res->val);
                         RETURN_IF_ERROR(refuse_dropped_call_decorations(resource_, *func));
 
                         auto funcname = std::string{strVal(linitial(func->funcname))};
                         std::pmr::vector<param_storage> args{resource_};
                         args.reserve(func->args->lst.size());
-                        // Note: AGGREGATE(*) invokes parameterless aggregate (agg_star is set to true)
                         for (const auto& arg : func->args->lst) {
                             logical_plan::node_ptr arg_scope = select_node;
                             VALUE_OR_RETURN(
@@ -826,8 +743,6 @@ namespace components::sql::transform {
                             args.emplace_back(std::move(resolved));
                         }
 
-                        // FILTER (WHERE p): lower to a CASE over each argument (or COUNT(CASE ...)
-                        // for a bare aggregate) so only qualifying rows reach the aggregate.
                         VALUE_OR_RETURN(args, apply_aggregate_filter(func->agg_filter, std::move(args), names, plan));
 
                         std::string expr_name;
@@ -849,7 +764,6 @@ namespace components::sql::transform {
                     }
                     case T_ColumnRef: {
                         auto col_ref = pg_ptr_cast<ColumnRef>(res->val);
-                        // Check for star — add a star_expand marker (cleaned up below if it's the only expression)
                         if (col_ref->fields->lst.size() == 1 && nodeTag(col_ref->fields->lst.back().data) == T_A_Star) {
                             if (node.fromClause && !node.fromClause->lst.empty() &&
                                 has_using_join(pg_ptr_cast<Node>(node.fromClause->lst.front().data))) {
@@ -865,11 +779,7 @@ namespace components::sql::transform {
                             has_non_star = true;
                             break;
                         }
-                        // Correlated outer column projected inside the subquery: emit it
-                        // as a constant fed by the correlation parameter. operator_select
-                        // reads that parameter live per projection, so the value the
-                        // lateral join rebinds per outer row is honoured (create_plan_select
-                        // keeps the parameter id rather than baking the value).
+                        // Emitted as a constant param (not a baked value): create_plan_select keeps the id.
                         if (auto corr = try_lateral_correlate(col_ref, names)) {
                             has_non_star = true;
                             std::string out_name =
@@ -885,13 +795,10 @@ namespace components::sql::transform {
                         {
                             VALUE_OR_RETURN(auto col, columnref_to_field(resource_, col_ref, names));
                             if (nodeTag(col_ref->fields->lst.back().data) == T_A_Star && !col.table.empty()) {
-                                // Carry the table qualifier so validator can expand t.x.* by result_alias.
                                 std::pmr::vector<std::pmr::string> star_path{resource_};
                                 star_path.emplace_back(std::pmr::string{col.table, resource_});
                                 star_path.emplace_back(std::pmr::string{"*", resource_});
                                 if (res->name) {
-                                    // `AS` names one column; a star stands for however many the
-                                    // table has, so there is nothing for the name to attach to.
                                     return core::error_t(
                                         core::error_code_t::sql_parse_error,
                                         std::pmr::string{"a column alias cannot be given to '*'", resource_});
@@ -903,7 +810,6 @@ namespace components::sql::transform {
                                 break;
                             }
                             if (res->name) {
-                                // Carry side forward so validate_key doesn't fall back to LEFT on same_schema JOIN.
                                 expressions::key_t out_key{resource_, res->name};
                                 out_key.set_side(col.field.side());
                                 select_node->append_expression(make_scalar_expression(resource_,
@@ -943,9 +849,7 @@ namespace components::sql::transform {
                             auto field_name = std::string(col_ref.field.storage().back());
                             std::string alias = res->name ? res->name : field_name;
                             has_non_star = true;
-                            // 'col ::? type' — type-VARIANT selection, not a cast (mirrors the
-                            // jsonb-chain '::?' branch below); a plain cast here would leave the
-                            // key without its variant annotation and the name would look ambiguous.
+                            // 'col ::? type' is a variant selection, not a cast.
                             if (cast->variant_select) {
                                 auto field_key = std::move(col_ref.field);
                                 field_key.set_cast_type(target_type_res);
@@ -967,9 +871,7 @@ namespace components::sql::transform {
                             select_node->append_expression(conversion);
                             break;
                         }
-                        // '<jsonb nav chain> ::? type' — e.g. `m -> 'a' ->> 'b' ::? string`.
-                        // Resolve the chain to its flattened key, then attach the
-                        // type so find_types picks the matching multi-type variant.
+                        // '<jsonb chain> ::? type' attaches the type to the chain's flattened key.
                         if (cast->arg && nodeTag(cast->arg) == T_A_Expr) {
                             auto* sub = pg_ptr_cast<A_Expr>(cast->arg);
                             if (sub->kind == AEXPR_OP && sub->name &&
@@ -992,9 +894,7 @@ namespace components::sql::transform {
                                 break;
                             }
                         }
-                        // A cast over any other non-literal operand. Falling through to the
-                        // T_A_Const arm below would hand the cast to get_value, which reads an
-                        // A_Expr's `lexpr` pointer as if it were a value — same value every row.
+                        // Falling through would hand this to get_value, reading `lexpr` as a value every row.
                         if (cast->arg && nodeTag(cast->arg) != T_A_Const && nodeTag(cast->arg) != T_ParamRef) {
                             has_non_star = true;
                             VALUE_OR_RETURN(auto target_type_res, get_type(resource_, cast->typeName));
@@ -1028,18 +928,11 @@ namespace components::sql::transform {
                         auto a_expr = pg_ptr_cast<A_Expr>(res->val);
                         if (a_expr->kind == AEXPR_OP) {
                             auto op_str = std::string_view(strVal(a_expr->name->lst.front().data));
-                            // JSONB delete: '#-' always; '-' only when the left side is
-                            // the table itself (document root) — otherwise it is plain
-                            // arithmetic subtraction. a_expr->lexpr is null for unary
-                            // minus ('-x'), so guard before probing it.
+                            // '-' is JSONB delete only when the left side is the table itself, else arithmetic.
                             if (op_str == "#-" ||
                                 (op_str == "-" && a_expr->lexpr && jsonb_lhs_is_table(a_expr->lexpr, names))) {
                                 has_non_star = true;
-                                // '-' with a text-array operand '{a,b}' deletes several
-                                // top-level keys at once (postgres `jsonb - text[]`).
-                                // Each key becomes one delete prefix carried as a param;
-                                // the empty array '{}' deletes nothing. Every other
-                                // spelling ('- key', '#- path') is a single prefix.
+                                // A text-array operand ('-' only) deletes several keys (PostgreSQL `jsonb - text[]`).
                                 if (op_str == "-") {
                                     VALUE_OR_RETURN(auto rhs_res, get_str_value(a_expr->rexpr));
                                     const std::string& rhs = rhs_res;
@@ -1090,8 +983,6 @@ namespace components::sql::transform {
                             if (is_jsonb_nav_operator(op_str)) {
                                 has_non_star = true;
                                 if (jsonb_nav_returns_scalar(op_str)) {
-                                    // Scalar jsonb navigation (->> / #>>) collapses to a
-                                    // get_field on the flattened slash-joined column key.
                                     VALUE_OR_RETURN(auto field_key, resolve_jsonb_scalar_key(a_expr, names));
                                     if (res->name) {
                                         select_node->append_expression(
@@ -1104,8 +995,6 @@ namespace components::sql::transform {
                                             make_scalar_expression(resource_, scalar_type::get_field, field_key));
                                     }
                                 } else {
-                                    // Table-valued navigation (-> / #>): expand the subtree
-                                    // under the prefix into its (rerooted) columns.
                                     VALUE_OR_RETURN(auto prefix_key, resolve_jsonb_prefix_key(a_expr, names));
                                     select_node->append_expression(
                                         make_scalar_expression(resource_, scalar_type::jsonb_expand, prefix_key));
@@ -1113,7 +1002,6 @@ namespace components::sql::transform {
                                 break;
                             }
                         }
-                        // Every other operator spelling yields a boolean
                         has_non_star = true;
                         logical_plan::node_ptr operator_node = select_node;
                         VALUE_OR_RETURN(auto operand, resolve_select_operand(res->val, names, plan, operator_node));
@@ -1131,29 +1019,23 @@ namespace components::sql::transform {
                             base = pg_ptr_cast<A_Indirection>(base)->arg;
                         }
                         if (nodeTag(base) == T_FuncCall) {
-                            // function here is an aggregate_expr and field selection is a scalar_expr
-                            // TODO: proper expression chaining support
+                            // TODO: proper expression chaining support.
                             return core::error_t(
                                 core::error_code_t::unimplemented_yet,
                                 std::pmr::string{
                                     "Otterbrix does not support field selection from function results for now",
                                     resource_});
                         }
-                        // (table_alias.struct_col).* needs schema-aware struct expansion;
-                        // not supported — surface explicitly instead of silent miswiring.
                         if (nodeTag(indirection->indirection->lst.back().data) == T_A_Star &&
                             nodeTag(base) == T_ColumnRef && pg_ptr_cast<ColumnRef>(base)->fields->lst.size() > 1) {
                             return core::error_t(
                                 core::error_code_t::unimplemented_yet,
                                 std::pmr::string{"struct field wildcard (alias.struct).* not supported", resource_});
                         }
-                        // The reference itself goes through the same reader as
-                        // every other clause uses, so a projection and a predicate
-                        // over one field cannot disagree about which field it is.
                         VALUE_OR_RETURN(auto col, node_to_field(resource_, res->val, names));
                         auto& field = col.field;
                         if (field.storage().size() == 1 && field.storage().front() == "*") {
-                            break; // skip star
+                            break;
                         }
                         has_non_star = true;
                         select_node->append_expression(
@@ -1198,9 +1080,7 @@ namespace components::sql::transform {
                 }
             }
 
-            // If select_node holds exactly one bare star_expand (pure SELECT *), treat as passthrough.
-            // Qualified star (SELECT t.x.*) carries an alias key and must reach the validator's
-            // pre-expand loop to be filtered by result_alias.
+            // A qualified star (t.x.*) carries an alias key and must reach the validator's pre-expand loop.
             auto& sel_exprs = select_node->expressions();
             if (sel_exprs.size() == 1 && sel_exprs[0]->group() == expression_group::scalar) {
                 auto* s = static_cast<const scalar_expression_t*>(sel_exprs[0].get());
@@ -1211,18 +1091,8 @@ namespace components::sql::transform {
             }
         }
 
-        // Correlated EXISTS / NOT EXISTS in WHERE -> LATERAL semi- / anti-join.
-        // A sole-predicate `WHERE EXISTS (SELECT ... WHERE inner.k = outer.k)` is the
-        // canonical SEMI join (emit each outer row iff the inner side has >=1 match);
-        // `WHERE NOT EXISTS (...)` is the ANTI join (emit iff the inner side has none).
-        // The flatten path cannot resolve an outer column, so we speculatively
-        // transform the EXISTS body with lateral correlation scope active: if it
-        // references an outer column (correlations captured), the outer FROM source
-        // becomes the join's left child and the inner sub-plan its right child,
-        // re-rooted under a fresh container aggregate. An UNCORRELATED EXISTS keeps
-        // the (single-pass) flatten path. Only a correct plan can result: a
-        // mis-detected correlation either errors or runs a slower-but-correct
-        // per-row lateral join — never a wrong answer.
+        // WHERE EXISTS lowers to a LATERAL semi join (NOT EXISTS an anti join); since the flatten path
+        // can't resolve an outer column, the body is speculatively transformed with correlation scope active.
         bool where_consumed_by_semi_anti = false;
         if (node.whereClause && agg) {
             SubLink* exists_sub = nullptr;
@@ -1248,21 +1118,16 @@ namespace components::sql::transform {
                 auto join =
                     logical_plan::make_node_join(resource_, core::dbname_t{}, core::relname_t{}, semi_anti_type);
                 join->set_lateral(true);
-                join->append_child(agg); // outer / left = the FROM source (single-table or FROM-join)
+                join->append_child(agg);
 
                 const std::size_t saved_subq = plan->sub_queries.size();
 
-                // Expose the outer scope so a correlated inner column lowers to a
-                // correlation parameter (see try_lateral_correlate); mirrors join_dfs's
-                // FROM-clause LATERAL path.
                 auto* prev_outer = lateral_outer_names_;
                 auto* prev_join = lateral_join_;
                 auto* prev_plan = lateral_plan_;
                 auto prev_map = std::move(lateral_correlation_map_);
                 lateral_correlation_map_.clear();
-                // The speculative inner transform must not steal this level's pending
-                // internal aggregates (its epilogue flushes + clears the stash) — the
-                // clobber would persist even when the speculative build is discarded.
+                // Must not steal this level's pending internal aggregates even if this build is discarded.
                 auto prev_pending = std::move(pending_internal_aggs_);
                 pending_internal_aggs_.clear();
                 lateral_outer_names_ = &names;
@@ -1274,36 +1139,24 @@ namespace components::sql::transform {
                 lateral_plan_ = prev_plan;
                 lateral_correlation_map_ = std::move(prev_map);
                 pending_internal_aggs_ = std::move(prev_pending);
-                // The inner build is speculative only in the sense that it may be reused on either
-                // branch below; a refusal from it is final either way.
                 if (body_res.has_error()) {
                     return body_res.error();
                 }
                 auto body = std::move(body_res.value());
 
-                // Route to the semi/anti join when the body is correlated. If it was
-                // uncorrelated but its speculative transform already appended nested
-                // sub-queries, keep the (correct, per-row) lateral join rather than
-                // rebuild it as a flattened duplicate. Otherwise (the common
-                // uncorrelated case) the ALREADY-transformed body is reused on the
-                // flatten path below — one transform, no re-parse and no dead
-                // parameter bindings from a discarded pass left in plan->parameters.
+                // A body that already appended sub-queries keeps the lateral join too (avoids a duplicate).
                 const bool correlated = !join->correlations().empty();
                 if (correlated || plan->sub_queries.size() != saved_subq) {
                     auto inner_agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
                     inner_agg->append_child(std::move(body));
                     join->append_child(inner_agg);
-                    // ON = all_true: the inner sub-plan already filters via the bound
-                    // correlation parameters, so the existence of any inner row is the match.
+                    // ON = all_true: the inner sub-plan already filters, so any inner row is a match.
                     join->append_expression(make_compare_expression(resource_, compare_type::all_true));
                     auto container = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
                     container->append_child(join);
                     agg = container;
                 } else {
-                    // Uncorrelated EXISTS: flatten the reused body exactly like
-                    // transform_sublink_expr's EXISTS_SUBLINK arm (plus the AEXPR_NOT
-                    // union_not wrap for NOT EXISTS) and transform()'s T_SelectStmt
-                    // resolve wrap for the sub-query's primary table.
+                    // Flattens the reused body like transform_sublink_expr's EXISTS_SUBLINK arm.
                     auto param_true = plan->parameters->add_parameter(types::logical_value_t{resource_, true});
                     auto param_exists =
                         plan->parameters->add_parameter(types::logical_value_t{resource_, types::logical_type::NA});
@@ -1336,7 +1189,6 @@ namespace components::sql::transform {
             }
         }
 
-        // where
         if (node.whereClause && !where_consumed_by_semi_anti) {
             VALUE_OR_RETURN(auto expr_res, transform_predicate(node.whereClause, names, plan));
             expression_ptr expr = std::move(expr_res);
@@ -1351,7 +1203,7 @@ namespace components::sql::transform {
         bool has_group_by = node.groupClause && !node.groupClause->lst.empty();
 
         if (has_group_by) {
-            // TODO: check GROUP BY & SELECT field correctness: every non-agg & non-const field MUST BE in GROUP BY!
+            // TODO: check GROUP BY & SELECT field correctness: every non-agg, non-const field must be in GROUP BY.
             for (auto field : node.groupClause->lst) {
                 if (nodeTag(field.data) != T_ColumnRef) {
                     return core::error_t(core::error_code_t::sql_parse_error,
@@ -1366,11 +1218,7 @@ namespace components::sql::transform {
             }
         }
 
-        // Parser/Transformer can not distinguish regular function from aggregate one
-        // So we have to pick: place all in select and create group node later, or
-        // place all in group, and disassemble it, if there is no actual grouping to be done
-        // If we add arena allocator for the plan it will be safer to allocate upfront
-        // (so everything is placed in group noe)
+        // The parser can't tell a function from an aggregate, so both are routed into the group first.
         if (has_non_star) {
             for (auto& expr : select_node->expressions()) {
                 group->append_expression(expr);
@@ -1378,11 +1226,7 @@ namespace components::sql::transform {
             select_node->expressions().clear();
             group->internal_aggregate_count = 0;
         } else if (has_group_by) {
-            // SELECT * over a grouped query projects the GROUPING KEYS: they are the only columns
-            // with one value per group. The group emits its target list and a group_field is a
-            // reduction key rather than an output column, so the keys have to be NAMED in that
-            // target list like any other projected column. Snapshot the size first -- the loop
-            // appends to the very vector it reads.
+            // Snapshot the size first — the loop appends to the vector it reads.
             const size_t key_count = group->expressions().size();
             for (size_t i = 0; i < key_count; i++) {
                 const auto& key_expr = group->expressions()[i];
@@ -1398,10 +1242,8 @@ namespace components::sql::transform {
         }
         pending_internal_aggs_.clear();
 
-        // Having is transformed AFTER aggregates are routed to the group so resolve_having_operand
-        // can reuse them; a HAVING aggregate not already in SELECT is appended to the group as a
-        // hidden __having_<fn>_<n> column. Snapshot the group size first so those hidden HAVING-only
-        // aggregates (the tail the group grows by here) can be told apart from the visible columns.
+        // HAVING is transformed after aggregates are routed to the group, so resolve_having_operand can
+        // reuse them; snapshot the size first to tell its hidden __having_<fn>_<n> columns apart.
         size_t visible_group_count = group->expressions().size();
         expression_ptr having_expr;
         if (node.havingClause) {
@@ -1409,11 +1251,7 @@ namespace components::sql::transform {
         }
         size_t hidden_having_count = group->expressions().size() - visible_group_count;
 
-        // HAVING is a first-class post-aggregation stage: it is lowered to a SEPARATE $having node
-        // (an operator_match above the group), never folded into the group node. A HAVING clause
-        // also makes the query grouped (implicit GROUP BY ()) — force a scalar (0-key) group even
-        // when nothing else populated it, so a bare HAVING TRUE/FALSE is APPLIED above a single
-        // collapsed row rather than silently dropped.
+        // A HAVING clause makes the query grouped (implicit GROUP BY ()) even with an empty group.
         if (!group->expressions().empty() || having_expr) {
             agg->append_child(group);
             if (having_expr) {
@@ -1424,12 +1262,10 @@ namespace components::sql::transform {
             }
         }
 
-        // distinct
         if (node.distinctClause && !node.distinctClause->lst.empty()) {
             agg->set_distinct(true);
-            // Plain DISTINCT is the grammar sentinel list_make1(resource, NIL): a single element that
-            // IS the NIL List node (nodeTag == T_List). DISTINCT ON (...) carries the real ON
-            // expression nodes (ColumnRef / A_Indirection / ...) instead.
+            // Plain DISTINCT is the grammar sentinel list_make1(resource, NIL) — a single element that
+            // is the NIL List node (nodeTag == T_List); DISTINCT ON carries real ON expression nodes instead.
             if (nodeTag(node.distinctClause->lst.front().data) != T_List) {
                 std::pmr::vector<expressions::key_t> on_keys(resource_);
                 for (auto on_it : node.distinctClause->lst) {
@@ -1442,14 +1278,12 @@ namespace components::sql::transform {
                                         indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(on_it.data), names));
                         on_keys.emplace_back(std::move(res.field));
                     } else {
-                        // v1: only plain column references. DISTINCT ON (a + b) etc. is a follow-up.
                         return core::error_t(
                             core::error_code_t::unimplemented_yet,
                             std::pmr::string{"DISTINCT ON supports only plain column references", resource_});
                     }
                 }
-                // PostgreSQL rule: when ORDER BY is present the ON keys must be its leading keys.
-                // Without ORDER BY, DISTINCT ON keeps the first row per key in input order.
+                // PostgreSQL: DISTINCT ON keys must lead ORDER BY when present, else first row per key wins.
                 if (node.sortClause && !node.sortClause->lst.empty()) {
                     std::pmr::vector<std::pmr::string> lead_sort_names(resource_);
                     for (auto sort_it : node.sortClause->lst) {
@@ -1482,7 +1316,6 @@ namespace components::sql::transform {
             }
         }
 
-        // order by
         if (node.sortClause && !node.sortClause->lst.empty()) {
             std::vector<expression_ptr> sort_exprs;
             sort_exprs.reserve(node.sortClause->lst.size());
@@ -1490,17 +1323,13 @@ namespace components::sql::transform {
                 auto sortby = pg_ptr_cast<SortBy>(sort_it.data);
                 bool is_desc = sortby->sortby_dir == SORTBY_DESC;
                 auto null_ord = map_sortby_nulls(sortby->sortby_nulls);
-                // Unary plus is the identity: strip every `+`-layer and dispatch on what remains
-                // (`+v` sorts as v, `+(a+b)` as the expression, `+2` as the positional constant).
-                // A unary operator arrives as A_Expr{op, lexpr = NULL, rexpr = operand}.
-                // Unary plus is the identity: `+v` sorts as v, `+2` as the positional constant.
+                // Unary plus is stripped before dispatch (`+v` sorts as v, `+2` as the positional constant).
                 Node* sort_node = strip_unary_plus(sortby->node);
                 if (!sort_node) {
                     return core::error_t(core::error_code_t::sql_parse_error,
                                          std::pmr::string{"ORDER BY operator is missing its operand", resource_});
                 }
                 const auto order = is_desc ? sort_order::desc : sort_order::asc;
-                // `ORDER BY <n>` addresses the n-th output column instead of computing n.
                 if (nodeTag(sort_node) == T_A_Const && nodeTag(&pg_ptr_cast<A_Const>(sort_node)->val) == T_Integer) {
                     column_ref_t field(resource_);
                     RETURN_IF_ERROR(positional_sort_field(node.targetList,
@@ -1510,7 +1339,6 @@ namespace components::sql::transform {
                     sort_exprs.emplace_back(make_sort_expression(resource_, field.field, order, null_ord));
                     continue;
                 }
-                // Everything else is an ordinary expression
                 logical_plan::node_ptr sort_scope = group;
                 VALUE_OR_RETURN(auto operand, resolve_select_operand(sort_node, names, plan, sort_scope));
                 if (!std::holds_alternative<expressions::key_t>(operand)) {
@@ -1536,26 +1364,18 @@ namespace components::sql::transform {
             }
         }
         if (!has_non_star && hidden_having_count > 0 && visible_group_count == 0) {
-            // Pure SELECT * with an aggregate-only HAVING and no GROUP BY (SELECT * FROM t HAVING
-            // count(*) > 5): with no GROUP BY the star routes nothing to the group, so the visible
-            // set is empty and there is nothing well-defined to project. PostgreSQL and
-            // default-mode MySQL error here (no engine returns the base rows).
+            // PostgreSQL and default-mode MySQL both error here rather than return the base rows.
             return core::error_t(core::error_code_t::sql_parse_error,
                                  std::pmr::string{"column must appear in a GROUP BY clause or be used in "
                                                   "an aggregate function",
                                                   resource_});
         }
         if (hidden_having_count > 0) {
-            // ONLY the visible group-output columns — the first visible_group_count
-            // expressions. This sits ABOVE the sort, which is why the group cannot strip them
-            // itself: an ORDER BY key hidden in the group output has to survive that far.
-            // internal_aggregate_count stays 0 on purpose (setting it >0 is a BLOCKER: the
-            // validator would drop the __having_* column the HAVING match resolves against).
+            // Only the visible_group_count columns are re-added; internal_aggregate_count stays 0
+            // (>0 makes the validator drop the __having_* column the HAVING match resolves against).
             select_node->expressions().clear();
             for (size_t i = 0; i < visible_group_count; ++i) {
                 const auto& ge = group->expressions()[i];
-                // A group_field is a reduction key, not an output column — the target list names
-                // the key separately (as a get_field), and that entry is what projects it.
                 if (ge->group() == expression_group::scalar &&
                     static_cast<const scalar_expression_t*>(ge.get())->type() == scalar_type::group_field) {
                     continue;
@@ -1568,7 +1388,6 @@ namespace components::sql::transform {
             agg->append_child(select_node);
         }
 
-        // limit / offset
         VALUE_OR_RETURN(auto limit_node,
                         build_limit_node(node.limitCount,
                                          node.limitOffset,

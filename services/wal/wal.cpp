@@ -11,18 +11,7 @@
 
 namespace services::wal {
 
-    // -----------------------------------------------------------------------
-    // Segment file naming
-    //
-    //   wal_<database_oid>_000000
-    //   wal_<database_oid>_000001
-    //   ...
-    //
-    // database_oid is rendered as decimal (e.g. "4" for main_database).
-    // -----------------------------------------------------------------------
-
     static std::string segment_filename(const std::string& db_dir_name, uint32_t index) {
-        // Format: wal_<db>_NNNNNN
         std::ostringstream oss;
         oss << "wal_" << db_dir_name << "_";
         oss.width(6);
@@ -30,10 +19,6 @@ namespace services::wal {
         oss << index;
         return oss.str();
     }
-
-    // -----------------------------------------------------------------------
-    // Construction
-    // -----------------------------------------------------------------------
 
     wal_worker_t::wal_worker_t(std::pmr::memory_resource* resource,
                                log_t& log,
@@ -49,12 +34,9 @@ namespace services::wal {
         , encode_buf_(this->resource()) {
         trace(log_, "wal_worker::create for database_oid={}", static_cast<unsigned>(database_oid_));
 
-        // Ensure the database WAL directory exists.
         std::filesystem::create_directories(database_dir_);
 
-        // Recover state from existing segment files on disk. A refusal is LATCHED, not
-        // dropped: an actor constructor has no caller to answer, but every handler below
-        // does, and each of them refuses while it is set. See recover_from_disk().
+        // A refusal here is latched, not dropped: a constructor has no caller to answer, but every handler below does.
         recovery_error_ = recover_from_disk();
         if (recovery_error_.contains_error()) {
             error(log_,
@@ -65,7 +47,6 @@ namespace services::wal {
             return;
         }
 
-        // Open a writer for the current (or first) segment.
         if (auto writer_error = ensure_writer(); writer_error.contains_error()) {
             recovery_error_ = writer_error;
             error(log_,
@@ -77,9 +58,8 @@ namespace services::wal {
 
     wal_worker_t::~wal_worker_t() {
         trace(log_, "wal_worker::destroy for database_oid={}", static_cast<unsigned>(database_oid_));
-        // Flush HERE, where there is still a logger to answer to. ~wal_page_writer_t keeps a
-        // last-resort flush, but it can only latch its refusal into a member nobody reads —
-        // so the durability-carrying flush is this one.
+        // Flushed here, where there's still a logger to answer to; the destructor's last-resort flush latches its
+        // refusal where nobody reads it.
         if (writer_) {
             if (auto flush_error = writer_->flush(); flush_error.contains_error()) {
                 error(log_,
@@ -92,10 +72,6 @@ namespace services::wal {
     }
 
     auto wal_worker_t::make_type() const noexcept -> const char* { return "wal_worker"; }
-
-    // -----------------------------------------------------------------------
-    // behavior -- message dispatch
-    // -----------------------------------------------------------------------
 
     actor_zeta::behavior_t wal_worker_t::behavior(actor_zeta::mailbox::message* msg) {
         switch (msg->command()) {
@@ -136,18 +112,10 @@ namespace services::wal {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // current_wal_id
-    // -----------------------------------------------------------------------
-
     wal_worker_t::unique_future<wal::id_t> wal_worker_t::current_wal_id(session_id_t session) {
         trace(log_, "wal_worker::current_wal_id , session : {}", session.data());
         co_return id_.load(std::memory_order_relaxed);
     }
-
-    // -----------------------------------------------------------------------
-    // write_physical_insert
-    // -----------------------------------------------------------------------
 
     wal_worker_t::unique_future<core::result_wrapper_t<wal::id_t>>
     wal_worker_t::write_physical_insert(session_id_t /*session*/,
@@ -169,9 +137,8 @@ namespace services::wal {
               row_count);
 
         encode_buf_.clear();
-        // The chain moves when the journal does: last_crc_ takes encode_*'s crc only after
-        // append() accepts the record, or a refused write would leave the chain naming a record
-        // never in the journal — disagreeing with recover_from_disk() on restart.
+        // last_crc_ only takes the crc once append() accepts the record, so a refused write can't leave the chain
+        // naming a record never journaled.
         const auto record_crc = encode_insert(encode_buf_,
                                               this->resource(),
                                               last_crc_,
@@ -200,10 +167,6 @@ namespace services::wal {
         co_return core::result_wrapper_t<wal::id_t>{wal_id};
     }
 
-    // -----------------------------------------------------------------------
-    // write_physical_delete
-    // -----------------------------------------------------------------------
-
     wal_worker_t::unique_future<core::result_wrapper_t<wal::id_t>>
     wal_worker_t::write_physical_delete(session_id_t /*session*/,
                                         components::catalog::oid_t table_oid,
@@ -219,8 +182,6 @@ namespace services::wal {
         trace(log_, "wal_worker::write_physical_delete , wal_id : {} , txn : {} , count : {}", wal_id, txn_id, count);
 
         encode_buf_.clear();
-        // Chain discipline: see write_physical_insert — the crc is committed to last_crc_
-        // only after append() accepts the record.
         const auto record_crc = encode_delete(encode_buf_, last_crc_, wal_id, txn_id, table_oid, row_ids.data(), count);
 
         if (auto writer_error = ensure_writer(); writer_error.contains_error()) {
@@ -241,10 +202,6 @@ namespace services::wal {
         co_return core::result_wrapper_t<wal::id_t>{wal_id};
     }
 
-    // -----------------------------------------------------------------------
-    // write_physical_update
-    // -----------------------------------------------------------------------
-
     wal_worker_t::unique_future<core::result_wrapper_t<wal::id_t>>
     wal_worker_t::write_physical_update(session_id_t /*session*/,
                                         components::catalog::oid_t table_oid,
@@ -261,7 +218,6 @@ namespace services::wal {
         trace(log_, "wal_worker::write_physical_update , wal_id : {} , txn : {} , count : {}", wal_id, txn_id, count);
 
         encode_buf_.clear();
-        // Chain discipline: see write_physical_insert.
         const auto record_crc = encode_update(encode_buf_,
                                               this->resource(),
                                               last_crc_,
@@ -290,10 +246,6 @@ namespace services::wal {
         co_return core::result_wrapper_t<wal::id_t>{wal_id};
     }
 
-    // -----------------------------------------------------------------------
-    // write_physical_add_column
-    // -----------------------------------------------------------------------
-
     wal_worker_t::unique_future<core::result_wrapper_t<wal::id_t>>
     wal_worker_t::write_physical_add_column(session_id_t /*session*/,
                                             components::catalog::oid_t table_oid,
@@ -313,7 +265,6 @@ namespace services::wal {
               column_count);
 
         encode_buf_.clear();
-        // Chain discipline: see write_physical_insert.
         const auto record_crc =
             encode_add_column(encode_buf_, last_crc_, wal_id, txn_id, table_oid, *schema_chunk, column_count);
 
@@ -335,10 +286,6 @@ namespace services::wal {
         co_return core::result_wrapper_t<wal::id_t>{wal_id};
     }
 
-    // -----------------------------------------------------------------------
-    // commit_txn
-    // -----------------------------------------------------------------------
-
     wal_worker_t::unique_future<core::result_wrapper_t<wal::id_t>> wal_worker_t::commit_txn(session_id_t /*session*/,
                                                                                             uint64_t transaction_id,
                                                                                             wal_sync_mode sync_mode,
@@ -357,16 +304,13 @@ namespace services::wal {
               static_cast<int>(sync_mode));
 
         if (sync_mode == wal_sync_mode::OFF) {
-            // OFF mode writes nothing, so the chain must not move either: last_crc_ names the
-            // last record IN the journal, and a marker that never lands is not one.
+            // OFF writes nothing, so the chain must not move either: a marker that never lands isn't the last record
+            // in the journal.
             co_return core::result_wrapper_t<wal::id_t>{wal_id};
         }
 
         encode_buf_.clear();
-        // Chain discipline: see write_physical_insert. The chain takes the marker's crc once
-        // append() accepts it — buffered is "in the journal" (the same claim every DML write
-        // above makes); DURABLE is the flush below, whose refusal fails the commit without
-        // un-writing the marker: the page stays buffered and the next flush retries it.
+        // append() accepting the marker only means buffered; the flush below is what makes it durable.
         const auto record_crc = encode_commit(encode_buf_, last_crc_, wal_id, transaction_id, commit_id);
 
         if (auto writer_error = ensure_writer(); writer_error.contains_error()) {
@@ -383,11 +327,8 @@ namespace services::wal {
         }
         last_crc_ = record_crc;
 
-        // THE DURABILITY CLAIM IS THIS CALL, so its answer must not be dropped. Under
-        // wal_sync_mode::FULL, returning the wal_id over a failed fsync reports a durable
-        // commit over a page that never reached the device. Under NORMAL the promise is weaker
-        // (buffered page, no fsync), but a REFUSED write is still a record that is not in the
-        // journal, so both legs travel the wrapper.
+        // This call is the durability claim: under FULL, a failed fsync over a returned wal_id reports a commit that
+        // never reached the device; under NORMAL a refused write still isn't in the journal.
         auto sync_error = sync_mode == wal_sync_mode::FULL ? writer_->flush_and_sync() : writer_->flush();
         if (sync_error.contains_error()) {
             error(log_,
@@ -402,38 +343,13 @@ namespace services::wal {
         co_return core::result_wrapper_t<wal::id_t>{wal_id};
     }
 
-    // Is the interval between what the answer reaches and the next id the journal can still vouch
-    // for NON-EMPTY? `answered_through` is the highest id the reply is known to be complete up to
-    // (it starts at the caller's after_wal_id and rises with every record handed back);
-    // `next_verified_lsn` is the first id past the damage that some page still vouches for. If the
-    // second is more than one above the first, the ids in between exist, were asked about, and are
-    // not in the reply: a HOLE, not a short answer.
-    //
-    // One condition applied to every segment the same way. A break entirely BELOW after_wal_id is
-    // read straight through — a deliberate difference from wal_reader_t, not an oversight: replay
-    // asks "what may I apply from the beginning", so any break bounds it, while the catchup asks
-    // about one WINDOW and old damage outside that window hides nothing from it.
+    // True when ids between answered_through and next_verified_lsn are missing: a hole, not a short answer.
     static bool hides_requested_id(wal::id_t answered_through, wal::id_t next_verified_lsn) noexcept {
         return next_verified_lsn > answered_through + 1;
     }
 
-    // -----------------------------------------------------------------------
-    // load
-    //
-    // CONTRACT: THE WHOLE WINDOW (after_wal_id, high-water] OR A REFUSAL — no partial success. A
-    // third question about a damaged journal, distinct from the other two: wal_reader_t asks
-    // "what may I APPLY" (a prefix, stops at the first break); recover_from_disk asks "where do I
-    // RESUME" (ignores breaks, a page past one still vouches for its ids); this asks "is the
-    // window WHOLE", because its only caller (operator_create_index_backfill.cpp) declares the
-    // index valid on whatever it gets — a missing range would make the published index silently
-    // answer with a SUBSET for its whole life. Without this check, load would concatenate the
-    // STOP-A prefix of segment k with the whole of segment k+1 and report success anyway.
-    //
-    // Two passes: read all records from all segments, collect the committed txn_ids from COMMIT
-    // records, then return only physical records whose txn_id is committed (or txn_id == 0), plus
-    // the COMMIT markers themselves.
-    // -----------------------------------------------------------------------
-
+    // Contract: the whole window or a refusal. Unlike wal_reader_t (a prefix) or recover_from_disk (ignores breaks),
+    // this asks whether the window is whole, since its only caller (CREATE INDEX backfill) trusts whatever it gets.
     wal_worker_t::unique_future<core::result_wrapper_t<std::vector<record_t>>>
     wal_worker_t::load(session_id_t session, wal::id_t after_wal_id) {
         trace(log_, "wal_worker::load , session : {} , after_wal_id : {}", session.data(), after_wal_id);
@@ -442,9 +358,6 @@ namespace services::wal {
             co_return core::result_wrapper_t<std::vector<record_t>>{recovery_error_};
         }
 
-        // Flush current writer so all data is on disk. A refusal here means the newest
-        // records are NOT on disk, so anything read below would be an incomplete answer
-        // presented as a complete one.
         if (writer_) {
             if (auto flush_error = writer_->flush(); flush_error.contains_error()) {
                 co_return core::result_wrapper_t<std::vector<record_t>>{std::move(flush_error)};
@@ -453,28 +366,18 @@ namespace services::wal {
 
         auto segments = discover_segments();
 
-        // Pass 1: read all raw records from all segments.
-        //
-        // discover_segments() returns the files in ascending name order, which is ascending
-        // segment index, which is ascending id — the walk below relies on that and on
-        // nothing else.
+        // discover_segments() returns files in ascending name/index/id order; the walk below relies on that alone.
         std::vector<record_t> all_records;
-        // The highest id the reply is complete up to. Taken from the records actually HANDED
-        // BACK rather than from a page header: a page's page_end_lsn counts a record that
-        // merely STARTS on it, and a record spanning into a broken page is one read_all_records
-        // never returns. Starting it at after_wal_id folds in "was this id even asked for".
+        // Taken from records actually handed back, not a page header, since one spanning into a broken page is never
+        // returned.
         wal::id_t answered_through = after_wal_id;
-        // A break drops everything behind it in ITS OWN segment (STOP-A), so it opens a gap
-        // whose far edge is only visible in the NEXT segment. Carried across iterations.
+        // A break drops everything behind it in its own segment (STOP-A), a gap only visible in the next segment.
         bool hole_open = false;
         wal::id_t hole_low = 0;
         for (const auto& seg_path : segments) {
             wal_page_reader_t reader(this->resource(), seg_path);
             const auto scan = reader.scan_pages();
 
-            // Close a gap left open by an earlier segment. If this segment's first
-            // still-verifiable id sits more than one above where the answer reached, the ids
-            // in between were skipped rather than cut off.
             if (hole_open && scan.first_verified_page_lsn != 0) {
                 if (hides_requested_id(hole_low, scan.first_verified_page_lsn)) {
                     error(log_,
@@ -499,9 +402,7 @@ namespace services::wal {
 
             auto seg_records = reader.read_all_records(after_wal_id);
             if (seg_records.has_error()) {
-                // An unreadable segment is a HOLE in the id range, not a short tail: the
-                // segments that follow it open fine and would be handed back as if the gap
-                // were not there. The only honest answer is the refusal.
+                // An unreadable segment is a hole, not a short tail: later segments open fine and would hide the gap.
                 error(log_,
                       "wal_worker::load , segment '{}' could not be read , refusing rather than answering "
                       "with a hole: {}",
@@ -517,11 +418,6 @@ namespace services::wal {
             }
 
             if (!scan.chain_intact) {
-                // SAY IT, at the level the damage deserves — a crash-torn tail and committed
-                // transactions stranded past the break are not the same event and must not
-                // share a log line (the same split wal_reader_t and recover_from_disk make).
-                // Silence here makes a catchup over a damaged journal indistinguishable from
-                // a clean one.
                 if (scan.verified_pages_after_break > 0) {
                     error(log_,
                           "wal_worker::load , db_oid={} , CRC chain broken in segment '{}' at data page {} , {} "
@@ -540,7 +436,6 @@ namespace services::wal {
                          scan.first_broken_page);
                 }
 
-                // Damage inside THIS segment that the segment itself can prove hid ids.
                 if (scan.first_verified_lsn_after_break != 0 &&
                     hides_requested_id(answered_through, scan.first_verified_lsn_after_break)) {
                     error(log_,
@@ -563,46 +458,25 @@ namespace services::wal {
                                          this->resource()}}};
                 }
 
-                // Nothing in this segment settles it. A LATER segment may — or may not:
-                // when this is the last segment, the break is the ordinary crash-torn tail,
-                // nothing sits beyond it, and there is nothing to refuse about. That case
-                // deliberately falls out of the loop with the hole still open and is
-                // answered, because banning CREATE INDEX after every crash would be a
-                // failure on a path that cannot be repaired from inside.
+                // On the last segment the break is an ordinary crash-torn tail, so the hole falls out of the loop
+                // still open and gets answered.
                 hole_open = true;
                 hole_low = answered_through;
             }
         }
 
-        // Pass 2: keep records belonging to committed transactions — the SHARED,
-        // wal-id-ordered filter (filter_committed_records, wal.hpp), the same one the
-        // bootstrap replay applies. It has to stay shared: an open-coded unordered set
-        // membership test here, or a second copy of it in wal_reader.cpp, lets through the
-        // CREATE INDEX backfill records of a recycled txn id that never committed in THIS
-        // incarnation.
+        // filter_committed_records must stay the one shared filter with bootstrap replay, or a recycled txn id's
+        // backfill could pass uncommitted.
         std::vector<record_t> result = filter_committed_records(std::move(all_records), nullptr);
 
-        // Sort by wal_id ascending.
         std::sort(result.begin(), result.end(), [](const record_t& a, const record_t& b) { return a.id < b.id; });
 
         trace(log_, "wal_worker::load , returning {} records", result.size());
         co_return core::result_wrapper_t<std::vector<record_t>>{std::move(result)};
     }
 
-    // -----------------------------------------------------------------------
-    // truncate_before
-    //
-    // Delete segment files where the highest wal_id in the file is
-    // <= checkpoint_wal_id.
-    //
-    // W-TORN contract: the caller (manager_dispatcher_t after checkpoint_all)
-    // must pass min(prev_checkpoint_wal_id_) across all DISK tables — NOT the
-    // latest committed wal_id. The latest wal_id would discard records still
-    // needed if a table's next checkpoint round dies before its header commit:
-    // the two-slot root then reopens the SUPERSEDED root at next startup, whose
-    // WAL floor is the prev id.
-    // -----------------------------------------------------------------------
-
+    // W-TORN contract: the caller must pass min(prev_checkpoint_wal_id_) across all disk tables, not the latest
+    // committed wal_id, which could discard records a table still needs before its header commit.
     wal_worker_t::unique_future<core::error_t> wal_worker_t::truncate_before(session_id_t /*session*/,
                                                                              wal::id_t checkpoint_wal_id) {
         trace(log_, "wal_worker::truncate_before , checkpoint_wal_id : {}", checkpoint_wal_id);
@@ -613,20 +487,14 @@ namespace services::wal {
 
         auto segments = discover_segments();
         for (const auto& seg_path : segments) {
-            // Do not delete the segment that the writer is currently using.
             if (writer_ && seg_path == writer_->current_segment_path()) {
                 continue;
             }
 
-            // Read page headers to find the maximum wal_id in this segment.
             wal_page_reader_t reader(this->resource(), seg_path);
 
-            // "COULD NOT READ" IS NOT "IS EMPTY". Collapsing both into page_count() == 0 makes
-            // the branch below unlink the file for either — so the one segment whose contents
-            // nobody could account for is the one that gets destroyed. REFUSE:
-            // the segment stays on disk, a later round can read it once the cause is gone,
-            // and replaying an already-checkpointed segment is idempotent (each table skips
-            // records at or below its own .otbx.wal_id), so keeping it costs nothing.
+            // Could-not-read is not is-empty: page_count() == 0 for both would destroy the one segment nobody could
+            // account for.
             if (!reader.is_open()) {
                 error(log_,
                       "wal_worker::truncate_before , segment '{}' could not be opened , REFUSING to truncate "
@@ -638,26 +506,15 @@ namespace services::wal {
 
             size_t pc = reader.page_count();
             if (pc == 0) {
-                // Genuinely empty segment (opened, holds no data page) -- safe to remove.
                 remove_segment(seg_path);
                 continue;
             }
 
-            // The last data page's page_end_lsn is the file's highest wal_id, but only if that
-            // page still VERIFIES — a corrupt page's copy of it is exactly what the checksum
-            // failed to vouch for, and trusting a low value there would unlink a segment full of
-            // records ABOVE the checkpoint. Checking THIS page (not the whole chain) is
-            // deliberate: a segment bounded at or below the checkpoint by its last page is fully
-            // superseded regardless of earlier breaks. ONE READ decides both halves — splitting
-            // into verify_page_checksum then a second read_page_header would swallow that read's
-            // own failure into a zeroed header (page_end_lsn == 0, which unlinks unconditionally).
+            // The last page's page_end_lsn bounds the file only if that page still verifies; one read decides both,
+            // so a second read can't swallow its own failure into a zeroed header that unlinks unconditionally.
             wal_page_header_t last_hdr{};
             if (!reader.read_verified_page_header(pc, last_hdr)) {
-                // SKIP THIS FILE, do not refuse the whole truncation: unlike the unopenable
-                // case above, the other segments are still perfectly accountable, so they can
-                // be reclaimed correctly. Keeping this one costs disk and nothing else —
-                // replay is filtered per table by the checkpoint wal_id sidecar, so re-reading
-                // it changes nothing.
+                // Skip this file rather than refuse the whole truncation: the other segments are still accountable.
                 error(log_,
                       "wal_worker::truncate_before , the last data page of segment '{}' cannot vouch for its "
                       "own bound (unreadable or failing its checksum) , REFUSING to remove it",
@@ -673,9 +530,6 @@ namespace services::wal {
         co_return core::error_t::no_error();
     }
 
-    // A segment that survives its unlink is harmless: replay is filtered per table by the
-    // checkpoint wal_id sidecar, so re-reading it changes nothing. Say so anyway rather than
-    // discarding the answer.
     void wal_worker_t::remove_segment(const std::filesystem::path& seg_path) {
         std::error_code ec;
         if (!std::filesystem::remove(seg_path, ec) || ec) {
@@ -687,18 +541,7 @@ namespace services::wal {
         }
     }
 
-    // On startup this must: (1) find the highest wal_id already on disk, (2) pick the segment the
-    // writer resumes into, (3) recover last_crc_. A CRC break answers only these — it does NOT
-    // truncate anything: this reads the remaining segments for the high-water mark alone,
-    // replaying not a byte, since actually truncating the tail would destroy COMMITTED
-    // transactions irreversibly at startup. (An unopenable segment still refuses to start, unlike
-    // a torn trailing page, because an unopenable one yields nothing to bound the id space at
-    // all, while a torn tail is the ordinary crash outcome.)
-    //
-    // What is still lost: replay stops at the break (wal_reader_t, STOP-A), so committed
-    // transactions recorded after it are NOT re-applied until the segment is repaired — logged at
-    // error level; a torn tail with nothing behind it only warns.
-
+    // A CRC break here does not truncate anything, only bounds the high-water mark; replay stops at the break (STOP-A).
     core::error_t wal_worker_t::recover_from_disk() {
         auto segments = discover_segments();
         if (segments.empty()) {
@@ -708,10 +551,7 @@ namespace services::wal {
             return core::error_t::no_error();
         }
 
-        // THE HIGHEST SEGMENT INDEX COMES FROM THE FILE NAMES, not from the scan loop below:
-        // that loop stops at the first CRC break, so a break in segment 000000 would leave
-        // this at 0 while 000001.. sat in the same directory. A name needs no checksum to be
-        // trusted.
+        // Taken from the file names, not the scan loop, which stops at the first CRC break.
         uint32_t max_seg_index = 0;
         for (const auto& seg_path : segments) {
             uint32_t seg_idx = parse_segment_index(seg_path, database_dir_name_);
@@ -728,18 +568,13 @@ namespace services::wal {
         for (const auto& seg_path : segments) {
             wal_page_reader_t reader(this->resource(), seg_path);
 
-            // A segment that will not OPEN is a different failure from a segment whose CRC
-            // chain breaks, and it must not be folded into the same "read what you can and
-            // carry on" branch. A CRC break still lets every intact page vouch for its own
-            // page_end_lsn, so max_wal_id below is a true high-water mark of what is on disk;
-            // an unopened segment yields nothing, so max_wal_id would land BELOW ids that are
-            // already written, and next_wal_id() would then hand them out a second time.
+            // An unopenable segment can't fold into the same branch as a CRC break: a break still lets intact pages
+            // vouch for their page_end_lsn, but an unopened segment yields nothing, so max_wal_id would land below
+            // ids already written.
             if (!reader.is_open()) {
                 return reader.open_error();
             }
 
-            // (1) THE ALLOCATOR BOUND. Every data page whose checksum verifies is trustworthy
-            //     about its own page_end_lsn, including pages sitting past a break.
             const auto scan = reader.scan_pages();
             if (scan.highest_page_end_lsn > max_wal_id) {
                 max_wal_id = scan.highest_page_end_lsn;
@@ -771,9 +606,7 @@ namespace services::wal {
                 }
             }
 
-            // (2) THE CRC CHAIN LINK. last_crc_ is the last_crc32 stamped into the next
-            //     record; no reader validates it, so the honest value is the crc of the last
-            //     record that could actually be decoded, not of one inferred past a break.
+            // No reader validates last_crc_: it's the crc of the last record actually decoded, not one past a break.
             auto records = reader.read_all_records(0);
             if (records.has_error()) {
                 return records.error();
@@ -789,10 +622,7 @@ namespace services::wal {
         id_.store(max_wal_id, std::memory_order_relaxed);
         last_crc_ = recovered_crc;
 
-        // (3) WHERE THE WRITER RESUMES. Appending into a segment whose chain is broken puts
-        //     the new record behind the corruption point, where read_all_records stops — the
-        //     journal would accept it, report it durable, and never hand it back. Start a
-        //     fresh segment instead: that creates a file and destroys none.
+        // Appending into a broken chain lands behind the corruption point, durable but never handed back.
         const bool rotate_away = resume_segment_broken && max_seg_index != std::numeric_limits<uint32_t>::max();
         current_segment_index_ = rotate_away ? max_seg_index + 1 : max_seg_index;
         if (rotate_away) {
@@ -803,10 +633,7 @@ namespace services::wal {
                  max_seg_index,
                  current_segment_index_);
         } else if (resume_segment_broken) {
-            // The segment index space is exhausted, so there is no fresh segment to move to.
-            // Opening is still the right answer — refusing here would brick a database over a
-            // counter — but the consequence has to be stated: appends land behind the break
-            // and no reader will reach them.
+            // Opening is still right even with the index space exhausted, but appends now land behind the break.
             error(log_,
                   "wal_worker::recover , db_oid={} , segment {} has a broken chain and the segment index space "
                   "is exhausted , writes continue BEHIND the corruption point and will not be readable back",
@@ -823,21 +650,10 @@ namespace services::wal {
         return core::error_t::no_error();
     }
 
-    // -----------------------------------------------------------------------
-    // ensure_writer
-    //
-    // Create the page writer if it doesn't exist. If the current segment
-    // exceeds the configured max size, rotate to a new segment.
-    // -----------------------------------------------------------------------
-
     core::error_t wal_worker_t::ensure_writer() {
         if (writer_ && writer_->torn_tail()) {
-            // A refused mid-record flush left an ORPHAN PARTIAL_CONT span at the end of this
-            // segment. Any page appended after it would be read as that span's continuation
-            // bytes, not as records — the same "append behind the corruption point" hazard
-            // recover_from_disk rotates away from at startup. The writer's buffer is already
-            // empty (append discarded the continuation page), so nothing buffered is lost by
-            // rotating here.
+            // A refused mid-record flush left an orphan PARTIAL_CONT span; any page appended after it reads as
+            // continuation bytes, not records.
             warn(log_,
                  "wal_worker::ensure_writer , db_oid={} , segment '{}' ends in an orphan span left by a "
                  "refused write , writing continues in a NEW segment",
@@ -847,14 +663,11 @@ namespace services::wal {
             ++current_segment_index_;
         }
         if (writer_) {
-            // Check if the current segment file has exceeded max size.
             auto seg = writer_->current_segment_path();
             std::error_code ec;
             auto sz = std::filesystem::file_size(seg, ec);
             if (!ec && sz >= config_.max_segment_size) {
-                // Flush + close current writer, open a new segment. Rotating away from a page
-                // that did NOT reach the disk loses it outright: the next writer starts at
-                // offset 0 of a different file and nothing ever revisits this one.
+                // Rotating away from a page that didn't reach disk loses it outright.
                 if (auto flush_error = writer_->flush(); flush_error.contains_error()) {
                     return flush_error;
                 }
@@ -873,17 +686,12 @@ namespace services::wal {
                                                       config_.max_segment_size);
         if (writer_->open_error().contains_error()) {
             auto open_error = writer_->open_error();
-            // Drop the unusable writer so a later call retries the open instead of appending
-            // into a handle that is not there.
+            // Dropped so a later call retries the open instead of appending into a handle that isn't there.
             writer_.reset();
             return open_error;
         }
         return core::error_t::no_error();
     }
-
-    // -----------------------------------------------------------------------
-    // Segment file helpers
-    // -----------------------------------------------------------------------
 
     std::filesystem::path wal_worker_t::segment_path(uint32_t seg_index) const {
         return database_dir_ / segment_filename(database_dir_name_, seg_index);
@@ -908,7 +716,7 @@ namespace services::wal {
             }
         }
 
-        // Sort by segment index (lexicographic on the zero-padded suffix works).
+        // Sorted lexicographically, which works because the suffix is zero-padded.
         std::sort(result.begin(), result.end());
         return result;
     }
@@ -919,11 +727,7 @@ namespace services::wal {
         if (fname.size() <= prefix.size() || fname.compare(0, prefix.size(), prefix) != 0) {
             return static_cast<uint32_t>(-1);
         }
-        // from_chars over the WHOLE suffix — the std::stoul-under-catch(...) that stood
-        // here both used exceptions as control flow and HALF-PARSED foreign names:
-        // "000012.bak" and "12abc" answered 12, so a stray neighbour of the journal took
-        // part in the max-segment-index arithmetic that decides where the next segment
-        // is written. The engine writes digits and nothing else; anything else refuses.
+        // from_chars over the whole suffix, not std::stoul+catch, which half-parsed foreign names like "12abc" as 12.
         const std::string_view suffix{fname.data() + prefix.size(), fname.size() - prefix.size()};
         uint32_t index = 0;
         const auto [ptr, ec] = std::from_chars(suffix.data(), suffix.data() + suffix.size(), index);

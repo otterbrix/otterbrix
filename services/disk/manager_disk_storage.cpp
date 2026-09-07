@@ -10,9 +10,7 @@ namespace services::disk {
 
     core::result_wrapper_t<uint64_t> manager_disk_t::direct_append_sync(catalog::oid_t table_oid,
                                                                         components::vector::data_chunk_t& data) {
-        // Bootstrap / WAL-replay only (pre-scheduler-start). Replay records carry no
-        // MVCC txn, so the append commits under transaction_data{0, 0}. The
-        // storage_entry_sync borrow is safe in this single-threaded window.
+        // Bootstrap/WAL-replay: replay carries no MVCC txn; storage_entry_sync's borrow is safe, single-threaded.
         const components::table::transaction_data txn{0, 0};
         components::storage::storage_t* s = nullptr;
         if (!agents_.empty()) {
@@ -24,9 +22,7 @@ namespace services::disk {
                 }
             }
         }
-        // An empty chunk is the one legit no-op (same as direct_delete_sync's no-ids case); a
-        // missing storage is a refusal — recovery has committed rows with nowhere to land, and
-        // 0 also means "first row of a fresh table", so the two must not share a value.
+        // Empty chunk is the legit no-op; missing storage is a refusal, not 0 -- 0 means "first row".
         if (data.size() == 0) {
             return uint64_t{0};
         }
@@ -71,9 +67,6 @@ namespace services::disk {
             local.data = std::move(expanded_data);
         }
 
-        // WAL-replay only, single-threaded: a write_conflict/out_of_memory here is a hard
-        // recovery fault, reported via the wrapper (0 is indistinguishable from a fresh
-        // table's first row).
         auto append_r = s->append(local, txn);
         if (append_r.has_error()) {
             error(log_,
@@ -85,13 +78,9 @@ namespace services::disk {
         return append_r.value();
     }
 
-    // Each replay router below names the owning agent via pool_idx_for_oid; a missing agent or
-    // slot is a journalled change with nowhere to land, reported rather than dropped.
     core::error_t manager_disk_t::direct_delete_sync(catalog::oid_t table_oid,
                                                      const std::pmr::vector<int64_t>& row_ids,
                                                      uint64_t count) {
-        // Bootstrap / WAL-replay only; routes the physical delete to the owning agent
-        // under transaction_data{0, 0} (DIRECT_WRITE_TXN_ID — replay carries no MVCC txn).
         if (agents_.empty()) {
             return core::error_t{core::error_code_t::io_error,
                                  std::pmr::string{"direct_delete_sync: no disk agents", resource()}};
@@ -124,8 +113,6 @@ namespace services::disk {
 
     core::error_t manager_disk_t::direct_add_column_sync(catalog::oid_t table_oid,
                                                          const components::vector::data_chunk_t& schema_chunk) {
-        // Bootstrap / WAL-replay only; routes the schema-growth record to the owning
-        // agent so the new columns exist before the dependent PHYSICAL_INSERT replays.
         if (agents_.empty()) {
             return core::error_t{core::error_code_t::io_error,
                                  std::pmr::string{"direct_add_column_sync: no disk agents", resource()}};
@@ -138,9 +125,7 @@ namespace services::disk {
         return agents_[pool_idx]->direct_add_column_sync(table_oid, schema_chunk);
     }
 
-    // --- Storage management ---
-    // Every site routes through agents_[pool_idx_for_oid(oid)] (storage_entry_sync
-    // borrow or storage_*_inner mailbox handler). No manager-side storage_t* survives.
+    // Every site routes through agents_[pool_idx_for_oid(oid)]; no manager-side storage_t* survives.
 
     manager_disk_t::unique_future<void>
     manager_disk_t::create_storage_disk(session_id_t session,
@@ -152,10 +137,6 @@ namespace services::disk {
               "manager_disk_t::create_storage_disk , session : {} , oid : {}",
               session.data(),
               static_cast<unsigned>(table_oid));
-        // Pure router for runtime CREATE TABLE … DISK. The manager only derives the
-        // path string; create_directories + SFBM construction (which holds the
-        // exclusive posix WRITE_LOCK) both run on the agent thread via
-        // create_storage_disk_inner. Only oid/columns(by value)/path cross the mailbox.
         auto otbx_path = config_.path / std::to_string(static_cast<unsigned>(database_oid)) /
                          std::to_string(static_cast<unsigned>(table_oid)) / "table.otbx";
         if (!agents_.empty()) {
@@ -189,12 +170,7 @@ namespace services::disk {
     manager_disk_t::unique_future<void>
     manager_disk_t::drop_storage_many(session_id_t /*session*/,
                                       std::pmr::vector<components::catalog::oid_t> table_oids) {
-        // Partition oids per owning agent (pool_idx_for_oid), then fan out one
-        // drop_storage_many_inner per agent in PARALLEL — a per-oid singular drop
-        // would route one agent per oid with a co_await each, so N drops cost N
-        // round-trips; here they cost one (at most num_agents parallel sends). Each
-        // agent's inner loops the same idempotent erase, so an over-routed oid no-ops.
-        // Same partition-by-agent shape as storage_publish_commits.
+        // Partitions oids per owning agent and fans out in PARALLEL: costs at most num_agents round-trips, not N.
         if (agents_.empty()) {
             co_return;
         }
@@ -231,12 +207,6 @@ namespace services::disk {
         co_return;
     }
 
-    // --- Storage queries ---
-
-    // Every router below treats "no agents / empty slot" as a request with NOWHERE TO LAND and
-    // reports it as an error — the leg's natural empty value (0 rows, empty types, etc.) would
-    // read as a legitimately empty table. storage_close_cursor is the one exception: releasing
-    // an unreachable cursor is already the state being asked for.
     manager_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<components::types::complex_logical_type>>>
     manager_disk_t::storage_types(session_id_t /*session*/, catalog::oid_t table_oid) {
         if (agents_.empty()) {
@@ -277,13 +247,9 @@ namespace services::disk {
         co_return co_await std::move(fut);
     }
 
-    // --- Storage data operations ---
-
     manager_disk_t::unique_future<void> manager_disk_t::storage_close_cursor(session_id_t session,
                                                                             catalog::oid_t table_oid,
                                                                             uint64_t cursor_id) {
-        // Transparent router. Fire-and-forget by shape: releasing a cursor has no result
-        // to report and no failure mode — an unknown id is already the desired state.
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
             auto& agent = agents_[pool_idx];
@@ -302,8 +268,6 @@ namespace services::disk {
 
     manager_disk_t::unique_future<core::result_wrapper_t<uint64_t>>
     manager_disk_t::storage_open_scan_hold(session_id_t session, catalog::oid_t table_oid) {
-        // Transparent router; unlike storage_close_cursor a hold that has NOWHERE to land is an
-        // error, not a no-op — the caller is about to trust its row ids to it.
         if (agents_.empty()) {
             co_return core::error_t{core::error_code_t::io_error,
                                     std::pmr::string{"storage_open_scan_hold: no disk agents", resource()}};
@@ -324,8 +288,6 @@ namespace services::disk {
 
     manager_disk_t::unique_future<core::result_wrapper_t<uint64_t>>
     manager_disk_t::storage_compact_epoch(session_id_t session, catalog::oid_t table_oid) {
-        // Transparent router; an epoch that has NOWHERE to come from is an error, not a zero —
-        // an index stamped with a made-up number would pass the fetch check it exists to arm.
         if (agents_.empty()) {
             co_return core::error_t{core::error_code_t::io_error,
                                     std::pmr::string{"storage_compact_epoch: no disk agents", resource()}};
@@ -352,10 +314,6 @@ namespace services::disk {
                                              int64_t limit,
                                              std::vector<size_t> projected_cols,
                                              components::table::transaction_data txn) {
-        // Transparent router: the agent reply carries the batch + minted/advanced cursor_id
-        // (and any scan_error); forward the wrapper unchanged so the scan source operator
-        // turns it into an error cursor on has_error() and keeps the cursor id otherwise. The
-        // session is forwarded so the agent can mint a (session, counter) cursor id.
         if (agents_.empty()) {
             co_return core::error_t{core::error_code_t::io_error,
                                     std::pmr::string{"storage_fetch_next_batch: no disk agents", resource()}};
@@ -389,8 +347,6 @@ namespace services::disk {
                                    std::vector<size_t> projected_cols,
                                    components::table::transaction_data txn,
                                    components::operators::pushed_aggregate_spec_t spec) {
-        // Transparent router: pool_idx_for_oid -> the owning agent's storage_reduce_inner,
-        // forwarding the one-reply reduced result (or its error) unchanged.
         if (agents_.empty()) {
             co_return core::error_t{core::error_code_t::io_error,
                                     std::pmr::string{"storage_reduce: no disk agents", resource()}};
@@ -425,7 +381,6 @@ namespace services::disk {
                                   components::table::fetch_visibility_t visibility,
                                   int64_t limit,
                                   uint64_t expected_compact_epoch) {
-        // Nothing asked, nothing fetched — same as storage_delete_rows: an empty request needs no route.
         if (count == 0) {
             co_return std::pmr::vector<components::vector::data_chunk_t>(resource());
         }
@@ -459,15 +414,6 @@ namespace services::disk {
     manager_disk_t::storage_append(execution_context_t ctx,
                                    catalog::oid_t table_oid,
                                    std::pmr::vector<components::vector::data_chunk_t> data) {
-        // The full preprocessing pipeline (schema adoption/growth, column
-        // expansion, NOT NULL, dedup, type promotion) and the canonical write live
-        // in the agent twin, so every same-oid access is serialized by the agent's
-        // mailbox — no borrowed-pointer access from the manager loop thread. The agent
-        // owns the WAL-first write; the chunks append sequentially through the same mailbox,
-        // so the per-chunk segments stay contiguous and coalesce into one [range_start, total)
-        // range. The agent reply wraps a write_conflict / out_of_memory; the first error aborts
-        // the batch (the wrapper is forwarded unchanged so operator_insert surfaces it).
-        // An append with no rows needs no route: a zero-length range is the honest answer.
         bool has_rows = false;
         for (const auto& chunk : data) {
             if (chunk.size() != 0) {
@@ -526,11 +472,6 @@ namespace services::disk {
                                    catalog::oid_t table_oid,
                                    std::pmr::vector<components::vector::vector_t> row_ids,
                                    std::pmr::vector<components::vector::data_chunk_t> data) {
-        // Router to the agent twin — the agent's mailbox serializes the canonical write with
-        // every other same-oid access. row_ids[i] pairs with data[i]; the per-chunk new-row
-        // segments are contiguous and coalesce into one range. The agent reply wraps a
-        // write_conflict / out_of_memory; the first error aborts the batch.
-        // Same rule as storage_append: an update carrying no rows needs no route.
         bool has_rows = false;
         for (const auto& chunk : data) {
             if (chunk.size() != 0) {
@@ -582,8 +523,7 @@ namespace services::disk {
         co_return std::pair<int64_t, uint64_t>{range_start, total_count};
     }
 
-    // The reply wraps the count: a route that does not exist is a delete that DID NOT HAPPEN,
-    // and reporting 0 would let an ON DELETE CASCADE drop nothing and still report success.
+    // The reply wraps the count: a route that doesn't exist is a delete that DID NOT HAPPEN, not 0 rows.
     manager_disk_t::unique_future<core::result_wrapper_t<uint64_t>>
     manager_disk_t::storage_delete_rows(execution_context_t ctx,
                                         catalog::oid_t table_oid,
@@ -611,18 +551,13 @@ namespace services::disk {
         co_return co_await std::move(fut);
     }
 
-    // MVCC commit/revert methods
-
     manager_disk_t::unique_future<void>
     manager_disk_t::storage_publish_commits(execution_context_t /*ctx*/,
                                             uint64_t commit_id,
                                             std::vector<components::pg_catalog_append_range_t> ranges) {
-        // Ranges may mix catalog/user OIDs; each is partitioned to its OWNING agent by
-        // pool_idx_for_oid, so a miss there means the OWNER has no storage — a flip that DID
-        // NOT HAPPEN, not an over-route. See report_publish_revert_miss in agent_disk.cpp.
+        // A partition miss means the OWNER has no storage (see report_publish_revert_miss in agent_disk.cpp).
         if (!agents_.empty()) {
-            // emplace_back() yields vector(alloc): libc++ uses-allocator construction
-            // appends per_agent's allocator as a trailing arg to the inner vector's ctor.
+            // emplace_back() with no args still yields vector(alloc) via libc++'s uses-allocator construction.
             std::pmr::vector<std::pmr::vector<components::pg_catalog_append_range_t>> per_agent{resource()};
             per_agent.reserve(agents_.size());
             for (std::size_t i = 0; i < agents_.size(); ++i) {
@@ -663,7 +598,6 @@ namespace services::disk {
         if (txn_id == 0)
             co_return;
 
-        // Same partition-by-agent fanout as storage_publish_commits.
         if (!agents_.empty()) {
             std::pmr::vector<std::pmr::vector<catalog::oid_t>> per_agent{resource()};
             per_agent.reserve(agents_.size());
@@ -700,8 +634,7 @@ namespace services::disk {
     manager_disk_t::unique_future<void>
     manager_disk_t::storage_revert_appends(execution_context_t /*ctx*/,
                                            std::vector<components::pg_catalog_append_range_t> ranges) {
-        // Batched abort, same partition-by-agent fanout as storage_publish_commits;
-        // each agent's inner handler reverse-iterates to unwind in append-order opposite.
+        // Each agent's inner handler reverse-iterates to unwind in the opposite of append order.
         if (!agents_.empty()) {
             std::pmr::vector<std::pmr::vector<components::pg_catalog_append_range_t>> per_agent{resource()};
             per_agent.reserve(agents_.size());
@@ -737,9 +670,7 @@ namespace services::disk {
 
     manager_disk_t::unique_future<void> manager_disk_t::storage_revert_deletes(execution_context_t ctx,
                                                                                std::vector<catalog::oid_t> tables) {
-        // Abort-path mirror of storage_publish_deletes: same partition-by-agent
-        // fanout, but the agent inner un-stamps this txn's pending delete marks
-        // back to NOT_DELETED_ID (revert_all_deletes) instead of stamping a commit_id.
+        // Un-stamps this txn's pending deletes back to NOT_DELETED_ID (revert_all_deletes), not a commit_id.
         const auto txn_id = ctx.txn.transaction_id;
         if (txn_id == 0)
             co_return;
@@ -776,4 +707,4 @@ namespace services::disk {
         co_return;
     }
 
-} //namespace services::disk
+}

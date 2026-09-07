@@ -7,10 +7,7 @@ namespace services::disk {
     using namespace detail;
 
     void manager_disk_t::set_manager_wal_sync(actor_zeta::address_t address) {
-        // Fan the WAL address into every agent so the CATALOG agent can write physical
-        // WAL records for catalog DDL on its own thread. Bootstrap-only (single-threaded,
-        // agents already spawned in the ctor). No-op when no agents (empty config path).
-        // The manager itself keeps no copy — nothing here ever read one.
+        // Fanned into every agent, bootstrap-only; the manager itself keeps no copy.
         for (auto& agent : agents_) {
             if (agent != nullptr) {
                 agent->set_manager_wal_sync(address);
@@ -19,9 +16,7 @@ namespace services::disk {
     }
 
     void manager_disk_t::create_agent(int count_agents) {
-        // Roles align with pool_idx_for_oid: slot 0 = CATALOG (pg_* system
-        // tables); slots 1..N-1 = USER_POOL (user tables hashed by
-        // oid % (N-1)).
+        // Roles align with pool_idx_for_oid: slot 0 = CATALOG, slots 1..N-1 = USER_POOL.
         for (int i = 0; i < count_agents; i++) {
             const std::size_t slot = agents_.size();
             auto name_agent = "agent_disk_" + std::to_string(slot + 1);
@@ -40,8 +35,7 @@ namespace services::disk {
               current_wal_id,
               compact_watermark);
 
-        // Fan checkpoint_inner to every agent; each returns a checkpoint_result_t carrying
-        // min(prev_checkpoint_wal_id_) over its entries (max() sentinel when it owns none).
+        // Each agent returns min(prev_checkpoint_wal_id_) over its entries (max() sentinel if it owns none).
         std::pmr::vector<unique_future<checkpoint_result_t>> agent_futures{resource()};
         agent_futures.reserve(agents_.size());
         for (auto& agent_ptr : agents_) {
@@ -56,11 +50,6 @@ namespace services::disk {
             agent_futures.emplace_back(std::move(fut));
         }
 
-        // Aggregate: min over min_prev_checkpoint_wal_id, plus round tallies. The return type
-        // stays wal::id_t (the WAL round's contract), so the tallies' only channel to the
-        // operator is the log line below -- without it, a round that deferred everything and
-        // one that checkpointed everything looked the same, and the auto-round couldn't see
-        // its floor was pinned.
         wal::id_t min_prev_id = std::numeric_limits<wal::id_t>::max();
         uint64_t deferred = 0;
         uint64_t rewritten = 0;
@@ -74,23 +63,11 @@ namespace services::disk {
         }
 
         if (deferred > 0) {
-            // Observed as boundaries 31/55/55/135 with one truncation deleting nothing: every
-            // dirty entry sat behind a gate (usually MVCC compact), its unchanged prev pinned
-            // the floor, and the round truncated nothing. Structurally safe -- the pinned floor
-            // is what keeps the deferred tables' replay records alive -- but must not be silent,
-            // or the WAL grows round after round while every health line reports success.
-            //
-            // The floor is min(prev) over every entry, and a deferred entry's prev doesn't
-            // move, so `deferred > 0` is the exact condition for "something is holding the
-            // floor" -- the earlier `deferred > 0 && rewritten == 0` proxy went blind in a
-            // MIXED round (one table gated, another rewritten) where the floor is held just
-            // the same.
-            //
-            // Split into two log levels because the two shapes aren't the same news: a round
-            // that rewrote nothing means the WAL only grows if it repeats, while a round that
-            // rewrote something with one entry waiting is the ordinary steady state of a busy
-            // database (an open cursor or live version stamp defers every round by design) --
-            // warning on that would spam every round for a cursor's whole life.
+            // Observed as boundaries 31/55/55/135 with one truncation deleting nothing: a deferred entry's prev doesn't
+            // move, pinning the WAL floor -- structurally safe, but must not be silent or the WAL grows every round
+            // while every health line reports success. Two log levels since a round that rewrote nothing means the WAL
+            // only grows if it repeats, while one that rewrote something with an entry waiting is the ordinary steady
+            // state of a busy database.
             const auto floor_reported = static_cast<std::uint64_t>(min_prev_id);
             if (rewritten == 0) {
                 warn(log_,
@@ -116,15 +93,8 @@ namespace services::disk {
         }
 
         if (!agents_.empty()) {
-            // The sentinel means "no entry reported a floor", not "no entry was checkpointed":
-            // every entry contributes prev_checkpoint_wal_id to the min in all three shapes --
-            // committed this round (prev <- the superseded root's id), DEFERRED by
-            // checkpoint_inner (prev unchanged, pinning the floor at its still-durable root so
-            // replay records stay reachable), or UNCHANGED (not a deferral, so prev <- current
-            // advances exactly as a rewrite would -- otherwise the WAL would stop truncating
-            // altogether). min_prev_id survives as max() only when the agents own nothing
-            // checkpointable; sealing then would hand truncate_before max() (delete the whole
-            // WAL), so report 0 ("do not truncate") instead.
+            // The sentinel means "no entry reported a floor", not "no entry was checkpointed"; it survives as max()
+            // only when the agents own nothing checkpointable, so report 0 instead of handing truncate_before max().
             const bool wal_floor_reported = (min_prev_id != std::numeric_limits<wal::id_t>::max());
 
             trace(log_,
@@ -146,8 +116,6 @@ namespace services::disk {
                                                                    uint64_t lowest_active_start_time) {
         trace(log_, "manager_disk_t::vacuum_all , session : {}", session.data());
 
-        // Per-agent vacuum_inner runs the canonical cleanup_versions over that agent's own slice;
-        // the set of storages is partitioned across the agents.
         std::pmr::vector<unique_future<void>> agent_futures{resource()};
         agent_futures.reserve(agents_.size());
         for (auto& agent_ptr : agents_) {
@@ -173,15 +141,7 @@ namespace services::disk {
     manager_disk_t::maybe_cleanup_many(execution_context_t /*ctx*/,
                                        std::pmr::vector<components::catalog::oid_t> table_oids,
                                        uint64_t compact_watermark) {
-        // Each table_oid routes to its owning agent's maybe_cleanup_inner so the threshold check +
-        // compact (row_group rebuild) is mailbox-serialized with every same-oid access. Running it
-        // manager-side via a storage_entry_sync borrow would duplicate the compact and race
-        // agent-side scans. INVALID_OID entries are skipped (defensively).
-        //
-        // Two-phase fan-out: send every per-oid message collecting futures, then await all.
-        // maybe_cleanup_inner is per-oid, so co-owned oids that hash to the same agent enqueue
-        // several messages; same-target mailbox FIFO preserves their order, so awaiting is
-        // completion-sync only.
+        // Each table_oid routes to its owning agent so the threshold check + compact stays mailbox-serialized per oid.
         std::pmr::vector<unique_future<void>> agent_futures{resource()};
         agent_futures.reserve(table_oids.size());
         for (const auto table_oid : table_oids) {
@@ -209,8 +169,6 @@ namespace services::disk {
         co_return;
     }
 
-    // --- Synchronous storage creation (for init before schedulers start) ---
-
     core::error_t manager_disk_t::create_storage_disk_sync(components::catalog::oid_t table_oid,
                                                            components::catalog::oid_t /*database_oid*/,
                                                            std::vector<components::table::column_definition_t> columns,
@@ -220,8 +178,7 @@ namespace services::disk {
               "manager_disk_t::create_storage_disk_sync , oid : {} , path : {}",
               static_cast<unsigned>(table_oid),
               otbx_path.string());
-        // SFBM is constructed on the agent thread via bootstrap_create_disk_inner_sync;
-        // the manager never opens .otbx (would race the exclusive WRITE_LOCK).
+        // The manager never opens .otbx itself (would race the WRITE_LOCK); construction happens on the agent thread.
         if (agents_.empty()) {
             return core::error_t(core::error_code_t::io_error,
                                  std::pmr::string{"create_storage_disk_sync: no disk agents to own oid " +
@@ -229,17 +186,8 @@ namespace services::disk {
                                                   resource()});
         }
 
-        // The WAL-replay synthesis leg of "every storage column carries its attoid": base_spaces'
-        // replay synthesises a storage for a table whose .otbx was lost, out of the WAL chunk's
-        // column types, which carry only a name. Left at 0, those columns would stay unidentified
-        // and the bootstrap reconciliation would refuse the whole table for good.
-        //
-        // The catalog is final by this point (system-table records replay first), so identity IS
-        // knowable here. Binding by name destroys nothing on a miss -- a column with no catalog
-        // row just stays unidentified (the relkind='g' case, described by pg_computed_column
-        // instead). A no-op for every other caller: bootstrap_system_tables_sync runs before
-        // pg_attribute holds anything, and rehydrate_missing_user_storages_sync already passes
-        // columns stamped by collect_catalog_columns_sync (set_attoid is idempotent).
+        // WAL-replay synthesis leg of "every column carries its attoid": replayed columns are name-only, so this binds
+        // by name (safe once the catalog is final).
         {
             bool needs_identity = false;
             for (const auto& col : columns) {
@@ -274,9 +222,7 @@ namespace services::disk {
               static_cast<unsigned>(table_oid),
               pool_idx_c,
               otbx_path.string());
-        // Whether the file was there BEFORE this call, decided before the call can change it.
-        // It is the only thing that separates "the stump this create just made" from "a file
-        // that was already on disk", and only the first may be removed below.
+        // Decided before the call can change it, separating a stump this create just made from a file already on disk.
         std::error_code pre_ec;
         const bool existed_before = std::filesystem::exists(otbx_path, pre_ec) && !pre_ec;
 
@@ -285,10 +231,7 @@ namespace services::disk {
         if (ok) {
             return core::error_t::no_error();
         }
-        // One `false`, two unrelated causes the agent can't narrow (already-owned oid, or a
-        // construction that failed to build the .otbx) -- reading both as "already owns" turned
-        // a device refusing the very first write into a trace line about a duplicate. The
-        // post-condition asks the real question instead: does the owning agent hold this oid now.
+        // One `false`, two unrelated causes; the real question is whether the agent holds this oid now.
         if (agent->has_storage_sync(table_oid)) {
             trace(log_,
                   "manager_disk_t::create_storage_disk_sync: agent[{}] already owns oid {} (path={})",
@@ -297,13 +240,7 @@ namespace services::disk {
                   otbx_path.string());
             return core::error_t::no_error();
         }
-        // A refusal may not leave behind the thing that blocks the retry: FILE_CREATE_NEW still
-        // leaves a zero-byte, header-less stump when the first write fails. Left alone, the next
-        // start takes the LOAD leg, refuses it as "not a database," and rehydrate declines to
-        // create over an existing file -- a transient device error would brick the table forever.
-        // Removing it destroys no evidence (it never held a byte, made seconds ago, named in the
-        // log line below). A file that already existed is never touched here -- FILE_CREATE_NEW
-        // would have failed outright on it.
+        // A refusal must not leave the zero-byte stump FILE_CREATE_NEW makes on a failed write.
         if (!existed_before) {
             std::error_code stump_ec;
             if (std::filesystem::exists(otbx_path, stump_ec) && !stump_ec &&
@@ -334,10 +271,7 @@ namespace services::disk {
               static_cast<unsigned>(table_oid),
               otbx_path.string());
 
-        // The SFBM holds an exclusive posix WRITE_LOCK on the .otbx (per-process:
-        // closing either fd releases it for both). Double-constructing the same OID
-        // would race the lock and corrupt fsync/mmap pairing, so only the agent
-        // thread opens it.
+        // The SFBM holds an exclusive posix WRITE_LOCK, so only the agent thread opens it.
         const std::size_t pool_idx = agents_.empty() ? 0 : pool_idx_for_oid(table_oid, agents_.size());
         trace(log_,
               "manager_disk_t::load_storage_disk_sync: load oid={} pool_idx={} path={}",
@@ -345,19 +279,7 @@ namespace services::disk {
               pool_idx,
               otbx_path.string());
 
-        // Pre-read the sidecar wal_id before constructing the SFBM so bootstrap_disk_inner_sync can
-        // seed set_checkpoint_wal_id atomically on the agent thread. Filesystem-only, so it stays
-        // on the manager thread (pre-scheduler-start, no actor ownership).
-        //
-        // Absent and unreadable are different answers: wal::id_t{0} means "no checkpoint ever
-        // committed" and disarms the young-file contradiction check below, so handing it back for
-        // a sidecar that exists but couldn't be read would report the opposite fact. It's also not
-        // a reason to refuse the table -- a short sidecar isn't corruption (the write is
-        // staged-then-published atomic, but an older build or outside damage can still leave one
-        // short, and the .otbx opens fine either way), and refusing the open would be the whole
-        // database's end for a system table (bootstrap_one throws with no catch). So the read
-        // reports, the table opens with its floor marked unreadable, and the replay filter drops
-        // that table's records instead of duplicating them.
+        // Pre-read before the SFBM exists; absent and unreadable must answer differently.
         auto read_sidecar_wal_id = [&](const std::filesystem::path& base) -> core::result_wrapper_t<wal::id_t> {
             auto sidecar = base;
             sidecar += ".wal_id";
@@ -388,10 +310,7 @@ namespace services::disk {
                                  resource()});
         };
 
-        // Resolve the catalog schema overlay for a possibly-young file BEFORE any open.
-        // System-table callers pass the builtin schema; user-table callers pass {} and the
-        // columns come from pg_attribute (agents_[0], same read rehydrate uses — this runs on
-        // the single-threaded bootstrap/recovery path).
+        // Resolved before any open: system tables pass the builtin schema; user tables' columns come from pg_attribute.
         bool is_computed = false;
         if (catalog_columns.empty() && table_oid >= components::catalog::FIRST_USER_OID) {
             std::unordered_set<components::catalog::oid_t> wanted{table_oid};
@@ -399,22 +318,11 @@ namespace services::disk {
             if (auto it = resolved.find(table_oid); it != resolved.end()) {
                 catalog_columns = std::move(it->second);
             }
-            // Computed (relkind='g') tables are disk-backed like everything
-            // else, but their catalog schema is legitimately EMPTY (columns are
-            // adopted from appended chunks and live in pg_computed_column, not
-            // pg_attribute). Resolve the relkind so a young computed .otbx opens
-            // schema-less instead of being deferred/refused, and so the entry
-            // keeps its dynamic-schema append semantics across restarts.
+            // Computed (relkind='g') tables have a legitimately empty schema; resolving relkind opens a young one
+            // schema-less.
             if (catalog_columns.empty()) {
-                // A relkind that couldn't be read is not "regular": carrying on that assumption
-                // only defers a young file (deferral needs an exact BLOCK_START-byte .otbx); a
-                // checkpointed table past that size would instead open as an ordinary row-storage
-                // table with its dynamic-schema semantics silently gone.
-                //
-                // Refusing is per-table and can't brick: this block is guarded by
-                // `table_oid >= FIRST_USER_OID` (no system table reaches it), and every way
-                // relkind_for_oid_sync can fail is repaired once pg_class comes up, which
-                // bootstrap_system_tables_sync refuses to start without.
+                // Assuming "regular" on a failed relkind read would silently drop a checkpointed table's dynamic-schema
+                // semantics.
                 auto relkind_r = relkind_for_oid_sync(table_oid);
                 if (relkind_r.has_error()) {
                     error(log_,
@@ -434,12 +342,7 @@ namespace services::disk {
             }
         }
 
-        // Read once, up front: the agent seeds its checkpoint floor from it, and the young-file
-        // contradiction check below consults it only in the refusing direction. An unreadable
-        // floor does not stop the open -- the .otbx itself is fine, only whether it already
-        // absorbed some WAL records is unknown, a question only replay asks -- so the failure is
-        // carried as a loud flag on the entry rather than a refusal (see read_sidecar_wal_id
-        // above for why a refusal here would end a system table's database).
+        // The agent seeds its checkpoint floor from this; an unreadable one only flags the entry, not the open.
         auto sidecar_r = read_sidecar_wal_id(otbx_path);
         const bool sidecar_readable = !sidecar_r.has_error();
         if (!sidecar_readable) {
@@ -450,12 +353,6 @@ namespace services::disk {
         }
         const auto sidecar_id = sidecar_readable ? sidecar_r.value() : wal::id_t{0};
 
-        // Transfer to the agent, passing the sidecar wal_id so the SFBM picks up
-        // the checkpoint floor atomically.
-        // Same one-bool-two-outcomes shape as the create leg, and the same separation: the
-        // agent answers false both for an oid already in its slice and for a load that failed
-        // on the agent thread, and only the first is a legitimate skip. Whichever it was, the
-        // question is whether the owning agent holds a storage for the oid afterwards.
         auto transfer_to_agent = [&](const std::filesystem::path& path) -> core::error_t {
             if (agents_.empty()) {
                 return core::error_t(core::error_code_t::io_error,
@@ -473,8 +370,7 @@ namespace services::disk {
                 return core::error_t::no_error();
             }
             if (agent->has_storage_sync(table_oid)) {
-                // Duplicate key: bootstrap_disk_inner_sync's pre-construction probe
-                // drops the incoming SFBM, so no WRITE_LOCK race occurs.
+                // The pre-construction probe drops the incoming SFBM on a duplicate key, so no WRITE_LOCK race.
                 trace(log_,
                       "manager_disk_t::load_storage_disk_sync: agent[{}] already owns oid {} (path={})",
                       pool_idx,
@@ -489,14 +385,9 @@ namespace services::disk {
                                                   resource()});
         };
 
-        // Crash recovery is the two-slot shadow-paged root inside the .otbx
-        // (load_existing_database's slot reconciliation); no external backup and no file-shuffle
-        // recovery run here any more. Every refusal below shares one contract: the .otbx is
-        // reported and left byte-identical -- no rename, no truncation, no quarantine copy, no
-        // 0-byte file manufactured for a missing one.
+        // Crash recovery is the two-slot shadow-paged root inside the .otbx; every refusal leaves it byte-identical.
         if (!std::filesystem::exists(otbx_path)) {
-            // Callers guard existence, so arriving here means the file vanished between their
-            // check and this load: refuse loudly rather than let the probe interpret rubble.
+            // Callers guard existence, so arriving here means the file vanished between their check and this load.
             return core::error_t(core::error_code_t::data_corruption,
                                  std::pmr::string{"load_storage_disk_sync: " + otbx_path.string() +
                                                       " does not exist (a DISK table's file was expected here; "
@@ -504,33 +395,15 @@ namespace services::disk {
                                                   resource()});
         }
 
-        // A stray sidecar in the engine-owned `table.otbx.*` namespace (e.g. a pre-shadow-paging
-        // backup or quarantine file) makes the on-disk state ambiguous. Guessing which file is
-        // authoritative is a forbidden guess, and deleting the stray would destroy the
-        // operator's evidence -- refuse loudly and touch nothing.
+        // A stray sidecar in the engine-owned namespace makes the on-disk state ambiguous, so it's refused.
         if (auto sidecar_err = verify_otbx_sidecars(otbx_path, resource()); sidecar_err.contains_error()) {
             warn(log_, "load_storage_disk_sync: {}", sidecar_err.what.c_str());
             return sidecar_err;
         }
 
-        // A file of exactly BLOCK_START bytes is the never-checkpointed signature (three header
-        // sectors, no blocks); a checkpointed file's blocks always put it past that size. Two
-        // consequences, refusing-first:
-        //
-        //   1. Contradiction: a `.wal_id` sidecar only exists for a table that committed a root,
-        //      so "no checkpointed content" and "a checkpoint at wal id N" can't both be true --
-        //      something rebuilt or truncated the .otbx out from under its sidecar, and opening
-        //      it as empty would silently discard whatever that checkpoint held. Consulted only
-        //      in the refusing direction: an unreadable or absent sidecar proves nothing (a
-        //      zero-length one next to a young .otbx is the legal crash image of a first
-        //      checkpoint whose rename landed but data didn't), and a sidecar written by a
-        //      skip-rewrite round can't reach a young file (a young table is
-        //      modified-since-checkpoint by construction).
-        //   2. Defer: a young file needs the catalog's schema to open as empty; if none resolved,
-        //      this walk simply ran before the catalog knows the table (bootstrap precedes WAL
-        //      replay). Defer rather than refuse -- the post-replay walk revisits every unloaded
-        //      .otbx once the catalog is repopulated, and refuses loudly there if the file turns
-        //      out not to be a valid young database.
+        // A file of exactly BLOCK_START bytes is the never-checkpointed signature; a `.wal_id` sidecar recording a real
+        // checkpoint would contradict that, so refuse rather than discard it. A young file with no resolved schema just
+        // means this walk ran before the catalog knew the table; defer, since the post-replay walk revisits it.
         {
             std::error_code size_ec;
             const auto file_bytes = std::filesystem::file_size(otbx_path, size_ec);
@@ -559,12 +432,7 @@ namespace services::disk {
             }
         }
 
-        // The DISK load ctor records open/metadata failure via construction_failed() rather than
-        // throwing (bootstrap_disk_inner_sync is noexcept, reachable on the agent thread). Probed
-        // on the manager thread to read that flag, then destroyed to release the WRITE_LOCK before
-        // the agent reopens (per-process lock; closing this fd frees it, and the window is
-        // single-threaded so there's no race). With no external backup, this error is the
-        // operator's only diagnostic.
+        // Probed on the manager thread, then destroyed to free the WRITE_LOCK before the agent reopens.
         bool probe_failed = false;
         std::string probe_error;
         {
@@ -585,13 +453,7 @@ namespace services::disk {
     }
 
     core::error_t verify_otbx_sidecars(const std::filesystem::path& otbx_path, std::pmr::memory_resource* resource) {
-        // The engine owns every name extending the table file's own (`table.otbx.*`). This build
-        // writes only the `.wal_id` sidecar and its `.tmp` staging file (a crash between the tmp
-        // write and the rename legitimately leaves the latter behind); anything else in that
-        // namespace -- a pre-shadow-paging backup or quarantine file included -- is refused by
-        // name rather than renamed or deleted, since the stray is the operator's evidence of
-        // which build wrote the directory (no guessing over an ambiguous state). Files
-        // outside the namespace are not this engine's to police.
+        // The engine owns every name extending the table file's own; this build writes only `.wal_id`/`.tmp`.
         const auto dir = otbx_path.parent_path();
         const auto base = otbx_path.filename().string();
         const std::string wal_id_name = base + ".wal_id";
@@ -626,10 +488,7 @@ namespace services::disk {
     core::result_wrapper_t<wal::id_t>
     manager_disk_t::peek_checkpoint_wal_id_from_disk(components::catalog::oid_t table_oid,
                                                      components::catalog::oid_t database_oid) const {
-        // Probe the routed agent slice first: a loaded entry already carries the floor its own
-        // load read, so no file is touched -- and it carries the failure too, since a table
-        // loaded over an unreadable sidecar holds an UNKNOWN floor, not 0 (returning 0 would be
-        // exactly the "never checkpointed" answer this function exists to stop producing).
+        // A loaded entry carries the floor its own load read; an unreadable sidecar means an unknown floor, not 0.
         if (!agents_.empty()) {
             const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
             if (idx < agents_.size() && agents_[idx] != nullptr) {
@@ -648,11 +507,7 @@ namespace services::disk {
                 }
             }
         }
-        // No loaded entry: read the sidecar directly (pre-replay bootstrap path) -- not a
-        // fallback, since answering wal::id_t{0} on every read failure would tell the replay
-        // filter "never checkpointed" and re-apply records on top of what the checkpoint already
-        // holds. Only "no sidecar exists" may answer 0, and that includes the three checks below:
-        // none of them establishes that, only that this function lacks enough to look for one.
+        // Not a fallback: answering 0 on every read failure would tell the replay filter "never checkpointed" wrongly.
         if (table_oid == components::catalog::INVALID_OID) {
             return core::error_t(core::error_code_t::io_error,
                                  std::pmr::string{"peek_checkpoint_wal_id_from_disk: asked for the checkpoint floor "
@@ -712,17 +567,10 @@ namespace services::disk {
         auto otbx_path = config_.path / std::to_string(static_cast<unsigned>(database_oid)) /
                          std::to_string(static_cast<unsigned>(table_oid)) / "table.otbx";
         if (!std::filesystem::exists(otbx_path)) {
-            // NOTHING TO READ, and that is a legal state here: replay legitimately runs ahead
-            // of a table's first checkpoint, and the caller synthesises the storage from the
-            // record's own chunk. Kept distinct from the refusal below precisely because the
-            // caller's response to it is to CREATE a file at this path.
+            // Legal here: replay can run ahead of a checkpoint, synthesising the storage from the chunk instead.
             return core::error_t::no_error();
         }
-        // Pass no overlay: load_storage_disk_sync resolves a user table's columns from
-        // pg_attribute itself, already in place by replay time. A load failure here must not be
-        // swallowed into a warn -- that would leave replay synthesising a fresh storage over a
-        // file that exists but didn't open, making the committed rows the .otbx already holds
-        // unreachable. Report instead; the caller stops.
+        // Must not be swallowed into a warn, or replay would synthesise over unreachable committed rows.
         if (auto err = load_storage_disk_sync(table_oid, database_oid, otbx_path, {}); err.contains_error()) {
             error(log_,
                   "load_storage_for_wal_replay_sync: failed to load {}: {}",
@@ -733,6 +581,4 @@ namespace services::disk {
         return core::error_t::no_error();
     }
 
-    // Shared helpers for catalog row construction. Used by bootstrap_system_tables_sync
-    // and by the ddl_*_sync methods further below. Single anonymous namespace shared by both.
 } // namespace services::disk

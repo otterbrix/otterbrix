@@ -6,11 +6,14 @@ add_definitions(-DDEV_MODE)
 # otterbrix::physical_plan: that OBJECT library carries every DDL/DML operator, and those
 # reach into services::*, which would drag the whole engine into a unit test about which
 # arena an error message lives on. operator_data / operator_write_data come along because
-# operator_t holds intrusive pointers to them.
+# operator_t holds intrusive pointers to them; operator_match is a pure read-only filter and
+# reaches no service, so the residency test can measure it here.
 set(${PROJECT_NAME}_SOURCES
         test_operator_error_residency.cpp
+        test_operator_match_residency.cpp
         test_operator_raw_data_resource.cpp
         ../operators/operator.cpp
+        ../operators/operator_match.cpp
         ../operators/operator_data.cpp
         ../operators/operator_raw_data.cpp
         ../operators/operator_write_data.cpp

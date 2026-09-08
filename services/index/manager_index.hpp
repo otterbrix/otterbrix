@@ -201,7 +201,7 @@ namespace services::index {
                                                       core::date::timezone_offset_t session_tz,
                                                       uint64_t built_compact_epoch);
 
-        // Never silently downgrades to in-memory.
+        // Refuses loudly rather than answering with an index that does not exist.
         unique_future<core::error_t> create_index(session_id_t session,
                                                   components::catalog::oid_t table_oid,
                                                   components::catalog::oid_t index_oid,

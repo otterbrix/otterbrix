@@ -1716,7 +1716,7 @@ namespace services::index {
         co_return first_error;
     }
 
-    // A declared bypass of the rule-3 pipeline; do not add a second sender.
+    // The dispatcher's horizon sweep is the only sender; do not add a second one.
     manager_index_t::unique_future<void> manager_index_t::on_horizon_advanced(uint64_t new_horizon) {
         trace(log_, "manager_index_t::on_horizon_advanced , horizon : {}", new_horizon);
 

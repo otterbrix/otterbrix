@@ -467,6 +467,13 @@ namespace components::operators {
 
             auto op = [&]([[maybe_unused]] std::pmr::memory_resource* res)
                 -> actor_zeta::unique_future<dml_detail::flush_outcome_t> {
+                // Deliberately per chunk, not hoisted. Hoisting one schema off the first non-empty
+                // chunk rests on "they all agree", which nothing here establishes: chunk types come
+                // from the DATA (an all-NULL segment resolves a column to NA), and data_chunk_t::copy
+                // checks the column count with an assert NDEBUG strips, then skips any column whose
+                // DESTINATION is NA-typed (components/vector/data_chunk.cpp:282-288). A disagreeing
+                // chunk would therefore lose columns from the WAL record and the index mirror with no
+                // error at all -- a silent wrong answer bought for a types() rebuild.
                 auto copy_of = [this](const data_chunk_t& src) {
                     data_chunk_t dst(resource_, src.types(), src.size());
                     src.copy(dst, 0);
@@ -480,6 +487,18 @@ namespace components::operators {
                 chunks_vector_t idx_old(resource_);
                 chunks_vector_t idx_new(resource_);
                 std::pmr::vector<int64_t> idx_row_ids(resource_);
+
+                // reserve() takes capacity to EXACTLY the requested size, so a reserve(size() + n)
+                // inside the loop reallocates on every chunk -- worse than push_back's own geometric
+                // growth. One exact reserve, like operator_delete.cpp:380.
+                uint64_t total_row_ids = 0;
+                for (const auto& probe : output_->chunks()) {
+                    total_row_ids += probe.size();
+                }
+                wal_row_ids.reserve(total_row_ids);
+                if (mirror_index) {
+                    idx_row_ids.reserve(total_row_ids);
+                }
 
                 size_t out_chunk_idx = 0;
                 for (auto& out_chunk : output_->chunks()) {

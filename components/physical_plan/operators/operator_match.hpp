@@ -31,9 +31,6 @@ namespace components::operators {
         source_next(pipeline::context_t* ctx) override;
 
     private:
-        // True only when left_ is a scan source; a sink's row_ids are zero-filled and must not propagate.
-        [[nodiscard]] bool row_ids_meaningful_() const noexcept { return left_ != nullptr && is_scan(left_->type()); }
-
         const expressions::expression_ptr expression_;
         const logical_plan::limit_t limit_;
 
@@ -45,12 +42,11 @@ namespace components::operators {
         expressions::condition_kind condition_{expressions::condition_kind::always};
 
         // Shared filter core (R6): filters one chunk, advancing `limit_total`, appending survivors
-        // to `out`; row_ids propagate only when `row_ids_meaningful`.
+        // to `out`; row_ids are gathered with the rest (zero placeholders over a sink).
         [[nodiscard]] core::error_t filter_batch_(std::pmr::memory_resource* resource,
                                                   const vector::vector_t* decisions,
                                                   const std::vector<size_t>& populated_cols,
                                                   bool sparse,
-                                                  bool row_ids_meaningful,
                                                   const std::pmr::vector<types::complex_logical_type>& types,
                                                   const vector::data_chunk_t& chunk,
                                                   int64_t& limit_total,

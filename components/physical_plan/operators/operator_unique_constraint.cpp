@@ -108,9 +108,18 @@ namespace components::operators {
             }
             std::pmr::vector<components::vector::data_chunk_t> key_chunks(resource_);
             key_chunks.reserve(in_chunks.size());
+            // Every key column below is reference()d off the write-set column, so the view owns no
+            // column buffer: an EMPTY projection list makes all of them placeholders
+            // (components/vector/data_chunk.cpp:120-122). The plain ctor allocated a full
+            // capacity-sized buffer per key column, zeroed it, and dropped it unread at the
+            // reference() -- 8 KiB per BIGINT key per chunk. Same shape execution_dag.cpp:122 builds.
+            const std::vector<size_t> no_owned_columns;
             for (auto& chunk : in_chunks) {
                 const uint64_t n = chunk.size();
-                components::vector::data_chunk_t keys_chunk(resource_, key_types, n == 0 ? 1 : n);
+                components::vector::data_chunk_t keys_chunk(resource_,
+                                                            key_types,
+                                                            no_owned_columns,
+                                                            n == 0 ? 1 : n);
                 for (std::size_t j = 0; j < sources.size(); ++j) {
                     // Every chunk is read at the front chunk's positions, so a layout/type mismatch would read
                     // past the array or the wrong column in silence. Same per-chunk guard as

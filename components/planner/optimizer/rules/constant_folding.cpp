@@ -72,15 +72,11 @@ namespace components::planner::optimizer {
                 return false;
             }
 
-            // Fold only both-numeric or same-type operands. A mixed pair ('a' + 1, DATE + INTERVAL) is
-            // declined: logical_value_t's arithmetic dispatches on the LEFT type alone and would throw
-            // value<T>() reading the right operand through the left arm's getter (a components/types
-            // defect this rule must not trip at plan time). Declining just leaves it for the runtime evaluator.
-            const auto left_type = left_val.type().type();
-            const auto right_type = right_val.type().type();
-            if (left_type != right_type && !(is_numeric(left_type) && is_numeric(right_type))) {
-                return false;
-            }
+            // No type guard here any more: logical_value_t's arithmetic used to dispatch on the LEFT
+            // type alone and read the right operand through the wrong getter, so a mixed pair had to
+            // be declined at plan time. It refuses mismatches itself now and answers DATE + INTERVAL
+            // properly; a refusal travels back through result_wrapper_t below, which leaves the
+            // expression to the runtime evaluator -- exactly what declining did.
 
             auto result = [&]() -> core::result_wrapper_t<expr_value_t> {
                 switch (op) {

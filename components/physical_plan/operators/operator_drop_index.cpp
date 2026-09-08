@@ -105,8 +105,9 @@ namespace components::operators {
             }
         }
 
-        // Drop the in-memory index entry. Tolerant of an unknown oid: no error
-        // if the engine never saw the index (metadata existed but backfill never ran).
+        // Unregister with the index manager, which also drops the store's directory. Tolerant of
+        // an unknown oid: no error if the engine never saw the index (metadata existed but
+        // backfill never ran).
         if (ctx->index_address != actor_zeta::address_t::empty_address()) {
             auto [_ix, ixf] = actor_zeta::otterbrix::send(ctx->index_address,
                                                           &services::index::manager_index_t::drop_index,

@@ -121,7 +121,7 @@ namespace services::index {
         // Reports the first refusal, or an unflushed index could read as flushed to a truncating checkpoint.
         unique_future<core::error_t> flush_all_indexes(session_id_t session);
 
-        // compact() shifts row positions, invalidating positional refs an in-memory index holds.
+        // compact() shifts row positions, invalidating the positional refs an index holds.
         unique_future<std::pmr::vector<components::catalog::oid_t>>
         tables_without_indexes(session_id_t session, std::pmr::vector<components::catalog::oid_t> table_oids);
 

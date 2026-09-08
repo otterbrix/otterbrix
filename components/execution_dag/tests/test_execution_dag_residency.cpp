@@ -6,9 +6,8 @@
 
 #include <components/execution_dag/execution_dag.hpp>
 #include <core/pmr.hpp>
+#include <core/counting_resource.hpp>
 
-#include <atomic>
-#include <cstdint>
 #include <memory_resource>
 #include <optional>
 
@@ -19,42 +18,8 @@ using components::types::logical_type;
 
 namespace {
 
-    class counting_resource_t final : public std::pmr::memory_resource {
-    public:
-        std::atomic<uint64_t> allocations{0};
-        std::atomic<uint64_t> bytes{0};
-
-        void reset() noexcept {
-            allocations.store(0, std::memory_order_relaxed);
-            bytes.store(0, std::memory_order_relaxed);
-        }
-
-    private:
-        void* do_allocate(size_t size, size_t align) override {
-            allocations.fetch_add(1, std::memory_order_relaxed);
-            bytes.fetch_add(size, std::memory_order_relaxed);
-            return std::pmr::new_delete_resource()->allocate(size, align);
-        }
-        void do_deallocate(void* p, size_t size, size_t align) override {
-            std::pmr::new_delete_resource()->deallocate(p, size, align);
-        }
-        bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override { return this == &other; }
-    };
-
-    // leaked on purpose: memory it hands out may be freed long after this window closes
-    counting_resource_t& process_default_probe() {
-        static counting_resource_t* probe = new counting_resource_t();
-        return *probe;
-    }
-
-    struct default_resource_window_t final {
-        std::pmr::memory_resource* previous;
-
-        explicit default_resource_window_t(std::pmr::memory_resource* probe)
-            : previous(std::pmr::set_default_resource(probe)) {}
-
-        ~default_resource_window_t() { std::pmr::set_default_resource(previous); }
-    };
+    using core::pmr::default_resource_window_t;
+    using core::pmr::process_default_probe;
 
 } // namespace
 
@@ -70,9 +35,9 @@ TEST_CASE("components::execution_dag::every internal vector lives on the arena t
         default_resource_window_t window{&probe};
         graph.emplace(&arena);
     }
-    const uint64_t after_construction = probe.allocations.load();
+    const auto after_construction = probe.allocations();
     INFO("allocations taken from the process-global default resource while constructing the graph: "
-         << after_construction << " (" << probe.bytes.load() << " bytes)");
+         << after_construction << " (" << probe.allocated_bytes() << " bytes)");
     CHECK(after_construction == 0);
 
     auto left = graph->declare_slot();
@@ -98,6 +63,6 @@ TEST_CASE("components::execution_dag::every internal vector lives on the arena t
     }
 
     INFO("allocations taken from the process-global default resource during prepare(): "
-         << probe.allocations.load() << " (" << probe.bytes.load() << " bytes)");
-    CHECK(probe.allocations.load() == 0);
+         << probe.allocations() << " (" << probe.allocated_bytes() << " bytes)");
+    CHECK(probe.allocations() == 0);
 }

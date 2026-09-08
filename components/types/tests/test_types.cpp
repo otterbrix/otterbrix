@@ -4,6 +4,7 @@
 #include <components/types/logical_value.hpp>
 #include <components/types/physical_value.hpp>
 #include <core/operations_helper.hpp>
+#include <core/counting_resource.hpp>
 #include <core/pmr.hpp>
 #include <array>
 #include <cstddef>
@@ -560,28 +561,6 @@ TEST_CASE("components::types::logical_value::mixed_operand_arithmetic_refuses") 
     }
 }
 
-namespace {
-    // `allocations` tells an arena that was used apart from one that was merely named.
-    struct counting_resource_t final : std::pmr::memory_resource {
-        explicit counting_resource_t(std::pmr::memory_resource* upstream) noexcept
-            : upstream_(upstream) {}
-
-        size_t allocations = 0;
-        size_t bytes = 0;
-
-    private:
-        void* do_allocate(size_t b, size_t a) override {
-            ++allocations;
-            bytes += b;
-            return upstream_->allocate(b, a);
-        }
-        void do_deallocate(void* p, size_t b, size_t a) override { upstream_->deallocate(p, b, a); }
-        bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override { return this == &other; }
-
-        std::pmr::memory_resource* upstream_;
-    };
-}
-
 TEST_CASE("components::types::complex_logical_type::create_decimal_reports_on_the_caller_arena") {
     // The refusal message is built and still live on the caller's arena after the result is moved --
     // error_t's copy assignment re-anchors onto the default resource, so a correct build can still fail.
@@ -589,13 +568,13 @@ TEST_CASE("components::types::complex_logical_type::create_decimal_reports_on_th
     std::pmr::monotonic_buffer_resource stack_arena{storage.data(),
                                                    storage.size(),
                                                    std::pmr::null_memory_resource()};
-    counting_resource_t arena{&stack_arena};
+    core::pmr::counting_resource_t arena{&stack_arena};
 
     INFO("an out-of-window DECIMAL reports on the arena it was handed");
     auto refused = complex_logical_type::create_decimal(&arena, 39, 0);
     REQUIRE(refused.has_error());
     CHECK(refused.error().type == core::error_code_t::invalid_parameter);
-    CHECK(arena.allocations >= 1);
+    CHECK(arena.allocations() >= 1);
     CHECK(refused.error().what.get_allocator().resource() == &arena);
     CHECK(std::string_view{refused.error().what}.find("DECIMAL(39,0)") != std::string_view::npos);
 
@@ -604,20 +583,20 @@ TEST_CASE("components::types::complex_logical_type::create_decimal_reports_on_th
     std::pmr::monotonic_buffer_resource other_stack{other_storage.data(),
                                                     other_storage.size(),
                                                     std::pmr::null_memory_resource()};
-    counting_resource_t other{&other_stack};
-    const size_t first_arena_allocations = arena.allocations;
+    core::pmr::counting_resource_t other{&other_stack};
+    const size_t first_arena_allocations = arena.allocations();
     auto refused_elsewhere = complex_logical_type::create_decimal(&other, 5, 7);
     REQUIRE(refused_elsewhere.has_error());
-    CHECK(other.allocations >= 1);
+    CHECK(other.allocations() >= 1);
     CHECK(refused_elsewhere.error().what.get_allocator().resource() == &other);
-    CHECK(arena.allocations == first_arena_allocations);
+    CHECK(arena.allocations() == first_arena_allocations);
 
     INFO("an in-window DECIMAL costs the arena nothing");
-    const size_t before = arena.allocations;
+    const size_t before = arena.allocations();
     auto built = complex_logical_type::create_decimal(&arena, 18, 4);
     REQUIRE_FALSE(built.has_error());
     CHECK(built.value().type() == logical_type::DECIMAL);
-    CHECK(arena.allocations == before);
+    CHECK(arena.allocations() == before);
 }
 
 TEST_CASE("components::types::complex_logical_type::decimal_helpers_name_an_arena_of_their_own") {

@@ -9,6 +9,7 @@
 #include <components/planner/optimizer/rules/pushdown_filter.hpp>
 #include <components/types/logical_value.hpp>
 #include <components/types/types.hpp>
+#include <core/counting_resource.hpp>
 #include <core/date/date_types.hpp>
 
 #include <memory_resource>
@@ -20,57 +21,7 @@ namespace {
     core::dbname_t adb() { return core::dbname_t{std::string{"database"}}; }
     core::relname_t arel() { return core::relname_t{std::string{"collection"}}; }
 
-    // The resource itself is a program-lifetime singleton, NOT the RAII object below: whatever
-    // allocates while counting is installed keeps a pointer to the resource and deallocates through
-    // it LATER. A run's copies land in `outer`'s subtree, which outlives the counting scope, so a
-    // stack-local resource here is a use-after-scope (ASAN: stack-use-after-scope in ~key_t()).
-    class counting_resource_t final : public std::pmr::memory_resource {
-    public:
-        // Captured once, before the first install, so a deallocation arriving after uninstall still
-        // reaches the resource that actually served it.
-        void arm() noexcept {
-            if (upstream_ == nullptr) {
-                upstream_ = std::pmr::get_default_resource();
-            }
-            allocations_ = 0;
-        }
-
-        size_t allocations() const noexcept { return allocations_; }
-
-    private:
-        void* do_allocate(size_t bytes, size_t align) override {
-            ++allocations_;
-            return upstream_->allocate(bytes, align);
-        }
-        void do_deallocate(void* p, size_t bytes, size_t align) override { upstream_->deallocate(p, bytes, align); }
-        bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override { return this == &other; }
-
-        std::pmr::memory_resource* upstream_ = nullptr;
-        size_t allocations_ = 0;
-    };
-
-    counting_resource_t& counting_resource() {
-        static counting_resource_t instance;
-        return instance;
-    }
-
-    // Counts what lands on the process default resource, the only way to see un-placed pmr copies;
-    // assumes Catch2 runs cases on a single thread.
-    class default_resource_counter_t final {
-    public:
-        default_resource_counter_t() {
-            counting_resource().arm();
-            previous_ = std::pmr::set_default_resource(&counting_resource());
-        }
-        default_resource_counter_t(const default_resource_counter_t&) = delete;
-        default_resource_counter_t& operator=(const default_resource_counter_t&) = delete;
-        ~default_resource_counter_t() { std::pmr::set_default_resource(previous_); }
-
-        size_t allocations() const noexcept { return counting_resource().allocations(); }
-
-    private:
-        std::pmr::memory_resource* previous_ = nullptr;
-    };
+    using core::pmr::default_resource_counter_t;
 
     // path()[0] is pre-stamped to `idx`, matching what validate_schema stamps at runtime.
     components::expressions::key_t akey(std::pmr::memory_resource* r, const char* name, size_t idx, side_t side) {

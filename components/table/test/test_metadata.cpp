@@ -1,6 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/storage/buffer_pool.hpp>
-#include <components/table/storage/transient_block_manager.hpp>
 #include <components/table/storage/metadata_manager.hpp>
 #include <components/table/storage/metadata_reader.hpp>
 #include <components/table/storage/metadata_writer.hpp>

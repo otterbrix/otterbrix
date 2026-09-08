@@ -89,7 +89,7 @@ namespace components::table {
 
         auto entry = handles.find(primary_id);
         if (entry == handles.end()) {
-            auto& buffer_manager = block->block_manager.buffer_manager;
+            auto& buffer_manager = block->buffer_manager;
             auto pinned = buffer_manager.pin(block);
             if (pinned.has_error()) {
                 fetch_error = pinned.error();

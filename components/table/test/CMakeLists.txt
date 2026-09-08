@@ -21,6 +21,7 @@ set(${PROJECT_NAME}_SOURCES
         test_checkpoint_in_place.cpp
         test_transaction_manager.cpp
         test_mvcc_operations.cpp
+        test_one_block_manager.cpp
         test_statistics.cpp
         test_block_e_procarray.cpp
         test_disk_backed_scan.cpp
@@ -66,3 +67,6 @@ target_link_libraries(
 include(CTest)
 include(Catch)
 catch_discover_tests(${PROJECT_NAME})
+
+target_compile_definitions(${PROJECT_NAME} PRIVATE
+        TABLE_STORAGE_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../storage")

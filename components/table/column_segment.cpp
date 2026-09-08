@@ -123,13 +123,13 @@ namespace components::table {
         }
 
         core::error_t string_read_error(column_segment_t& segment, const char* what) {
-            std::pmr::string message(segment.block->block_manager.buffer_manager.resource());
+            std::pmr::string message(segment.block->buffer_manager.resource());
             message.append(what);
             return core::error_t(core::error_code_t::data_corruption, std::move(message));
         }
 
         core::error_t string_read_error(column_segment_t& segment, const char* what, uint64_t block_id) {
-            std::pmr::string message(segment.block->block_manager.buffer_manager.resource());
+            std::pmr::string message(segment.block->buffer_manager.resource());
             message.append(what);
             message.append(" (block id ");
             message.append(std::to_string(block_id).c_str());
@@ -138,7 +138,7 @@ namespace components::table {
         }
 
         core::error_t unsupported_segment_type_error(column_segment_t& segment, const char* what) {
-            std::pmr::string message(segment.block->block_manager.buffer_manager.resource());
+            std::pmr::string message(segment.block->buffer_manager.resource());
             message.append(what);
             message.append(": no segment storage for physical type ");
             message.append(std::to_string(static_cast<int>(segment.type.to_physical_type())).c_str());
@@ -148,7 +148,7 @@ namespace components::table {
         // Reading a segment stamped with a compression this reader does not implement as raw bytes
         // would be silent corruption -- the BITPACKING trap. Refused on the caller's channel.
         core::error_t unreadable_compression_error(column_segment_t& segment, const char* what) {
-            std::pmr::string message(segment.block->block_manager.buffer_manager.resource());
+            std::pmr::string message(segment.block->buffer_manager.resource());
             message.append(what);
             message.append(": segment is stamped with compression byte ");
             message.append(std::to_string(static_cast<int>(segment.compression())).c_str());
@@ -201,7 +201,7 @@ namespace components::table {
                                                 std::byte* base_ptr,
                                                 int32_t dict_offset,
                                                 uint32_t string_length) {
-            auto block_size = segment.block_manager().block_size();
+            auto block_size = segment.block_size();
             string_location_t location;
             if (!fetch_string_location(dict, base_ptr, dict_offset, block_size, location)) {
                 state.fetch_error =
@@ -234,7 +234,7 @@ namespace components::table {
 #ifdef DEV_MODE
             components::table::note_string_materialization();
 #endif
-            auto block_size = segment.block_manager().block_size();
+            auto block_size = segment.block_size();
             string_location_t location;
             if (!fetch_string_location(dict, base_ptr, dict_offset, block_size, location)) {
                 error = string_read_error(segment, "fetch_string: dictionary offset outside the block");
@@ -252,7 +252,7 @@ namespace components::table {
                 if (!overflow) {
                     return std::string_view(nullptr, 0);
                 }
-                auto pinned = segment.block->block_manager.buffer_manager.pin(overflow);
+                auto pinned = segment.block->buffer_manager.pin(overflow);
                 if (pinned.has_error()) {
                     error = pinned.error();
                     return std::string_view(nullptr, 0);
@@ -270,8 +270,8 @@ namespace components::table {
             std::shared_ptr<storage::block_handle_t> block;
             storage::buffer_handle_t handle;
 
-            auto& buffer_manager = segment.block->block_manager.buffer_manager;
-            auto block_size = segment.block_manager().block_size();
+            auto& buffer_manager = segment.block->buffer_manager;
+            auto block_size = segment.block_size();
             // A [length][bytes] record must fit one block; refuse rather than write an unrepresentable payload.
             if (static_cast<uint64_t>(total_length) > block_size) {
                 std::pmr::string message(buffer_manager.resource());
@@ -361,7 +361,7 @@ namespace components::table {
             }
             auto& handle = *handle_ptr;
             auto dataptr = handle.ptr() + segment.block_offset();
-            vector::validity_mask_t mask(segment.block->block_manager.buffer_manager.resource(),
+            vector::validity_mask_t mask(segment.block->buffer_manager.resource(),
                                          reinterpret_cast<uint64_t*>(dataptr));
             auto& result_mask = result.validity();
             if (!mask.row_is_valid(static_cast<uint64_t>(row_id))) {
@@ -487,7 +487,7 @@ namespace components::table {
                 return append_count;
             }
 
-            vector::validity_mask_t mask(segment.block->block_manager.buffer_manager.resource(),
+            vector::validity_mask_t mask(segment.block->buffer_manager.resource(),
                                          reinterpret_cast<uint64_t*>(handle.ptr()));
             for (uint64_t i = 0; i < append_count; i++) {
                 auto idx = data.referenced_indexing->get_index(offset + i);
@@ -511,7 +511,7 @@ namespace components::table {
 
         core::result_wrapper_t<uint64_t>
         string_append(column_segment_t& segment, vector::unified_vector_format& data, uint64_t offset, uint64_t count) {
-            auto& buffer_manager = segment.block->block_manager.buffer_manager;
+            auto& buffer_manager = segment.block->buffer_manager;
             auto pinned = buffer_manager.pin(segment.block);
             if (pinned.has_error()) {
                 return pinned.convert_error<uint64_t>();
@@ -548,7 +548,7 @@ namespace components::table {
 
                 bool use_overflow_block = false;
                 uint64_t required_space = string_length;
-                if (required_space >= string_block_limit(segment.block_manager().block_size())) {
+                if (required_space >= string_block_limit(segment.block_size())) {
                     required_space = BIG_STRING_MARKER_BASE_SIZE;
                     use_overflow_block = true;
                 }
@@ -570,7 +570,7 @@ namespace components::table {
 
                     write_string_marker(dict_pos, block, current_offset);
 
-                    assert(static_cast<uint64_t>(*dictionary_size) <= segment.block_manager().block_size());
+                    assert(static_cast<uint64_t>(*dictionary_size) <= segment.block_size());
                     result_data[target_idx] = -static_cast<int32_t>((*dictionary_size));
                 } else {
                     assert(string_length < std::numeric_limits<uint16_t>::max());
@@ -579,10 +579,10 @@ namespace components::table {
                     auto dict_pos = end - *dictionary_size;
                     memcpy(dict_pos, source_data[source_idx].data(), string_length);
 
-                    assert(static_cast<uint64_t>(*dictionary_size) <= segment.block_manager().block_size());
+                    assert(static_cast<uint64_t>(*dictionary_size) <= segment.block_size());
                     result_data[target_idx] = static_cast<int32_t>(*dictionary_size);
                 }
-                assert(remaining_space(segment, handle) <= segment.block_manager().block_size());
+                assert(remaining_space(segment, handle) <= segment.block_size());
             }
             segment.count += count;
             return count;
@@ -1014,7 +1014,7 @@ namespace components::table {
 
         static std::pmr::memory_resource* segment_arena(const std::shared_ptr<storage::block_handle_t>& block) {
             assert(block && "a column segment takes its arena from its block; the handle cannot be null");
-            return block->block_manager.buffer_manager.resource();
+            return block->buffer_manager.resource();
         }
     } // namespace impl
 
@@ -1036,10 +1036,10 @@ namespace components::table {
         , offset_(offset)
         , segment_size_(segment_size)
         , segment_statistics_(impl::segment_arena(this->block)) {
-        assert(segment_size_ <= block_manager().block_size());
+        assert(segment_size_ <= block->block_size());
 
         if (type.type() == types::logical_type::VALIDITY) {
-            auto& buffer_manager = this->block->block_manager.buffer_manager;
+            auto& buffer_manager = this->block->buffer_manager;
             if (block_id_ == storage::INVALID_BLOCK) {
                 auto pinned = buffer_manager.pin(this->block);
                 assert(!pinned.has_error() && "pin of freshly-registered managed block must not OOM");
@@ -1048,7 +1048,7 @@ namespace components::table {
                 }
             }
         } else if (type.type() == types::logical_type::STRING_LITERAL) {
-            auto& buffer_manager = this->block->block_manager.buffer_manager;
+            auto& buffer_manager = this->block->buffer_manager;
             if (block_id_ == storage::INVALID_BLOCK) {
                 auto pinned = buffer_manager.pin(this->block);
                 assert(!pinned.has_error() && "pin of freshly-registered managed block must not OOM");
@@ -1063,13 +1063,13 @@ namespace components::table {
             if (segment_state) {
                 // A duplicate block id means corrupt data; can't throw from a constructor, so it latches here.
                 for (uint64_t overflow_block_id : segment_state->blocks) {
-                    if (!state->register_block(this->block->block_manager, overflow_block_id)) {
+                    if (!state->register_block(*this->block->file_manager(), overflow_block_id)) {
                         if (!construction_error_.contains_error()) {
                             construction_error_ = core::error_t(
                                 core::error_code_t::data_corruption,
                                 std::pmr::string("column load: the persisted big-string overflow list names block " +
                                                      std::to_string(overflow_block_id) + " twice",
-                                                 this->block->block_manager.buffer_manager.resource()));
+                                                 this->block->buffer_manager.resource()));
                         }
                     }
                 }
@@ -1089,7 +1089,7 @@ namespace components::table {
         , segment_state_(std::move(other.segment_state_))
         , segment_statistics_(std::move(other.segment_statistics_))
         , construction_error_(std::move(other.construction_error_)) {
-        assert(!block || segment_size_ <= block_manager().block_size());
+        assert(!block || segment_size_ <= block->block_size());
     }
 
     column_segment_t::column_segment_t(column_segment_t&& other, int64_t start)
@@ -1103,7 +1103,7 @@ namespace components::table {
         , segment_state_(std::move(other.segment_state_))
         , segment_statistics_(std::move(other.segment_statistics_))
         , construction_error_(std::move(other.construction_error_)) {
-        assert(!block || segment_size_ <= block_manager().block_size());
+        assert(!block || segment_size_ <= block->block_size());
     }
 
     uint64_t column_segment_t::segment_size() const { return segment_size_; }
@@ -1133,9 +1133,9 @@ namespace components::table {
                                               uint64_t tuple_count,
                                               storage::partial_block_manager_t& pbm,
                                               std::vector<uint64_t>& out_blocks) {
-        auto& buffer_manager = block->block_manager.buffer_manager;
+        auto& buffer_manager = block->buffer_manager;
         auto* resource = buffer_manager.resource();
-        const uint64_t block_size = block_manager().block_size();
+        const uint64_t block_size = block->block_size();
 
         auto corrupt = [&](const char* what) {
             std::pmr::string message(resource);
@@ -1210,7 +1210,7 @@ namespace components::table {
     core::result_wrapper_t<uint64_t> column_segment_t::compact_string_dictionary(std::byte* segment_copy,
                                                                                  uint64_t segment_size,
                                                                                  uint64_t tuple_count) const {
-        auto* resource = block->block_manager.buffer_manager.resource();
+        auto* resource = block->buffer_manager.resource();
         auto corrupt = [&](const char* what) {
             std::pmr::string message(resource);
             message.append("checkpoint of STRING segment: ");
@@ -1264,7 +1264,7 @@ namespace components::table {
     }
 
     void column_segment_t::initialize_scan(column_scan_state& state) {
-        auto& buffer_manager = block->block_manager.buffer_manager;
+        auto& buffer_manager = block->buffer_manager;
         auto pinned = buffer_manager.pin(block);
         if (pinned.has_error()) {
             state.scan_error = pinned.error();
@@ -1284,7 +1284,7 @@ namespace components::table {
                     core::error_t(core::error_code_t::invalid_parameter,
                                   std::pmr::string("column scan: an entire-vector scan cannot honour a result "
                                                    "offset",
-                                                   block->block_manager.buffer_manager.resource()));
+                                                   block->buffer_manager.resource()));
                 return;
             }
             scan(state, scan_count, result);
@@ -1415,9 +1415,9 @@ namespace components::table {
     core::result_wrapper_t<bool> column_segment_t::resize(uint64_t new_size) {
         assert(new_size > segment_size_);
         assert(offset_ == 0);
-        assert(block && new_size <= block_manager().block_size());
+        assert(block && new_size <= block->block_size());
 
-        auto& buffer_manager = block->block_manager.buffer_manager;
+        auto& buffer_manager = block->buffer_manager;
         auto old_handle = buffer_manager.pin(block);
         if (old_handle.has_error()) {
             return old_handle.convert_error<bool>();
@@ -1436,7 +1436,7 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> column_segment_t::initialize_append(column_append_state& state) {
-        auto& buffer_manager = block->block_manager.buffer_manager;
+        auto& buffer_manager = block->buffer_manager;
         auto handle = buffer_manager.pin(block);
         if (handle.has_error()) {
             return handle.convert_error<bool>();
@@ -1523,7 +1523,7 @@ namespace components::table {
                 return ((count + vector::DEFAULT_VECTOR_CAPACITY - 1) / vector::DEFAULT_VECTOR_CAPACITY) *
                        vector::validity_mask_t::STANDARD_MASK_SIZE;
             case types::physical_type::STRING: {
-                auto& buffer_manager = block->block_manager.buffer_manager;
+                auto& buffer_manager = block->buffer_manager;
                 auto pinned = buffer_manager.pin(block);
                 if (pinned.has_error()) {
                     return pinned.convert_error<uint64_t>();
@@ -1534,7 +1534,7 @@ namespace components::table {
                 auto offset_size = impl::DICTIONARY_HEADER_SIZE + count * sizeof(int32_t);
                 auto total_size = offset_size + dict.size;
 
-                auto block_size = block_manager().block_size();
+                auto block_size = block->block_size();
                 if (total_size >= block_size / 5 * 4) {
                     return segment_size_;
                 }
@@ -1558,7 +1558,7 @@ namespace components::table {
         // Fixed-size segments just had raw values overwritten, so reverting only drops the count.
         if (type.to_physical_type() == types::physical_type::STRING) {
             uint64_t new_count = start_row - static_cast<uint64_t>(start);
-            auto& buffer_manager = block->block_manager.buffer_manager;
+            auto& buffer_manager = block->buffer_manager;
             auto pinned = buffer_manager.pin(block);
             if (pinned.has_error()) {
                 return pinned.convert_error<bool>();
@@ -1575,7 +1575,7 @@ namespace components::table {
         if (type.to_physical_type() == types::physical_type::BIT) {
             uint64_t start_bit = start_row - static_cast<uint64_t>(start);
 
-            auto& buffer_manager = block->block_manager.buffer_manager;
+            auto& buffer_manager = block->buffer_manager;
             auto pinned = buffer_manager.pin(block);
             if (pinned.has_error()) {
                 return pinned.convert_error<bool>();

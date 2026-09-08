@@ -4,7 +4,7 @@
 
 #include "buffer_handle.hpp"
 #include "buffer_pool.hpp"
-#include "transient_block_manager.hpp"
+#include "block_manager.hpp"
 
 namespace components::table::storage {
 
@@ -24,7 +24,6 @@ namespace components::table::storage {
         , fs_(fs)
         , buffer_pool_(buffer_pool)
         , temp_id_(MAXIMUM_BLOCK) {
-        temp_block_manager_ = std::make_unique<transient_block_manager_t>(*this, DEFAULT_BLOCK_ALLOC_SIZE);
         for (uint64_t i = 0; i < static_cast<uint64_t>(memory_tag::MEMORY_TAG_COUNT); i++) {
             evicted_data_per_tag_[i] = 0;
         }
@@ -50,11 +49,11 @@ namespace components::table::storage {
 
     buffer_pool_t& standard_buffer_manager_t::buffer_pool() const { return buffer_pool_; }
 
-    uint64_t standard_buffer_manager_t::block_allocation_size() const {
-        return temp_block_manager_->block_allocation_size();
-    }
+    uint64_t standard_buffer_manager_t::block_allocation_size() const { return DEFAULT_BLOCK_ALLOC_SIZE; }
 
-    uint64_t standard_buffer_manager_t::block_size() const { return temp_block_manager_->block_size(); }
+    uint64_t standard_buffer_manager_t::block_size() const {
+        return DEFAULT_BLOCK_ALLOC_SIZE - DEFAULT_BLOCK_HEADER_SIZE;
+    }
 
     core::result_wrapper_t<temp_buffer_pool_reservation_t>
     standard_buffer_manager_t::evict_blocks_or_error(memory_tag tag,
@@ -103,7 +102,8 @@ namespace components::table::storage {
 
         auto buffer = construct_manager_buffer(size, nullptr, file_buffer_type::TINY_BUFFER);
 
-        auto result = std::make_shared<block_handle_t>(*temp_block_manager_,
+        auto result = std::make_shared<block_handle_t>(*this,
+                                                       DEFAULT_BLOCK_ALLOC_SIZE,
                                                        ++temp_id_,
                                                        tag,
                                                        std::move(buffer),
@@ -126,7 +126,8 @@ namespace components::table::storage {
         auto buffer = construct_manager_buffer(block_size, std::move(reusable_buffer));
         destroy_buffer_condition destroy_buffer_condition =
             can_destroy ? destroy_buffer_condition::EVICTION : destroy_buffer_condition::BLOCK;
-        return std::make_shared<block_handle_t>(*temp_block_manager_,
+        return std::make_shared<block_handle_t>(*this,
+                                                DEFAULT_BLOCK_ALLOC_SIZE,
                                                 ++temp_id_,
                                                 tag,
                                                 std::move(buffer),
@@ -190,7 +191,10 @@ namespace components::table::storage {
                                           const std::map<uint64_t, uint64_t>& load_map,
                                           uint64_t first_block,
                                           uint64_t last_block) {
-        auto& block_manager = handles[0]->block_manager;
+        // Only prefetch() calls this, and prefetch() has no callers at all; a handle with no file
+        // behind it therefore never reaches here.
+        assert(handles[0]->file_manager() != nullptr);
+        auto& block_manager = *handles[0]->file_manager();
         uint64_t block_count = last_block - first_block + 1;
 
         auto intermediate_buffer = allocate(memory_tag::BASE_TABLE, block_count * block_manager.block_size());

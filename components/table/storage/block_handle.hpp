@@ -17,6 +17,7 @@ namespace components::table::storage {
     inline constexpr uint64_t INVALID_TEMP_SLOT = UINT64_MAX;
 
     class block_manager_t;
+    class buffer_manager_t;
     class buffer_pool_t;
     class buffer_handle_t;
 
@@ -80,8 +81,20 @@ namespace components::table::storage {
 
     class block_handle_t : public std::enable_shared_from_this<block_handle_t> {
     public:
+        // Disk-backed: the manager is the one that can read and write this block's file.
         block_handle_t(block_manager_t& block_manager, uint64_t block_id, memory_tag tag);
         block_handle_t(block_manager_t& block_manager,
+                       uint64_t block_id,
+                       memory_tag tag,
+                       std::unique_ptr<file_buffer_t> buffer,
+                       destroy_buffer_condition destroy_buffer_condition,
+                       uint64_t block_size,
+                       buffer_pool_reservation_t&& reservation);
+        // No file behind it: the buffer manager minted these bytes itself, so there is no block
+        // manager to name. Everything such a handle needs from one is the buffer manager and the
+        // block geometry, both carried here.
+        block_handle_t(buffer_manager_t& buffer_manager,
+                       uint64_t block_alloc_size,
                        uint64_t block_id,
                        memory_tag tag,
                        std::unique_ptr<file_buffer_t> buffer,
@@ -193,9 +206,19 @@ namespace components::table::storage {
 
         bool can_unload() const;
 
-        block_manager_t& block_manager;
+        buffer_manager_t& buffer_manager;
+
+        uint64_t block_allocation_size() const noexcept { return block_alloc_size_; }
+        uint64_t block_size() const noexcept { return block_alloc_size_ - DEFAULT_BLOCK_HEADER_SIZE; }
+
+        // Null exactly when there is no file behind this block. The file-facing paths below are
+        // gated on block_id_ < MAXIMUM_BLOCK, which is the stronger test: a disk manager can also
+        // hand out ids above it (see components/table/test/test_wave_table.cpp).
+        block_manager_t* file_manager() const noexcept { return file_manager_; }
 
     private:
+        block_manager_t* file_manager_;
+        uint64_t block_alloc_size_;
         std::mutex lock_;
         std::atomic<block_state> state_;
         std::atomic<int32_t> readers_;

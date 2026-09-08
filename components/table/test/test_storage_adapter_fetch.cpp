@@ -5,11 +5,15 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstdio>
+#include <string>
+#include <unistd.h>
+
 #include <components/storage/table_storage_adapter.hpp>
 #include <components/table/column_state.hpp>
 #include <components/table/data_table.hpp>
 #include <components/table/storage/buffer_pool.hpp>
-#include <components/table/storage/transient_block_manager.hpp>
+#include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
 #include <components/table/table_state.hpp>
 #include <components/vector/data_chunk.hpp>
@@ -25,15 +29,29 @@ namespace tstorage = components::table::storage;
 
 namespace {
 
+    const std::string& adapter_fetch_db_path() {
+        static const std::string path = "/tmp/test_otterbrix_storage_adapter_fetch_" + std::to_string(::getpid()) + ".otbx";
+        std::remove(path.c_str());
+        return path;
+    }
+
     struct adapter_env_t {
         core::pmr::otterbrix_resource resource;
         core::filesystem::local_file_system_t fs;
         tstorage::buffer_pool_t buffer_pool;
         tstorage::standard_buffer_manager_t buffer_manager;
+        // A real disk manager over a scratch file: what these tests need is a column without a
+        // catalog, not a storage layer that cannot do I/O.
+        tstorage::single_file_block_manager_t block_manager;
 
         adapter_env_t()
             : buffer_pool(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24)
-            , buffer_manager(&resource, fs, buffer_pool) {}
+            , buffer_manager(&resource, fs, buffer_pool)
+            , block_manager(buffer_manager, fs, adapter_fetch_db_path()) {
+            REQUIRE_FALSE(block_manager.create_new_database().has_error());
+        }
+
+        ~adapter_env_t() { std::remove(adapter_fetch_db_path().c_str()); }
     };
 
     // Overwrites the block id named by the sole big-string marker: [dict_size][dict_end] header,
@@ -88,7 +106,7 @@ namespace {
 
 TEST_CASE("storage_adapter: fetch returns owned big-string bytes on the intact path") {
     adapter_env_t env;
-    tstorage::transient_block_manager_t bm(env.buffer_manager, tstorage::DEFAULT_BLOCK_ALLOC_SIZE);
+    auto& bm = env.block_manager;
     const std::string big(5000, 'q');
     auto built = build_big_string_table(env, bm, big);
 
@@ -109,7 +127,7 @@ TEST_CASE("storage_adapter: fetch returns owned big-string bytes on the intact p
 
 TEST_CASE("storage_adapter: a fetch failure reaches the storage caller as an error") {
     adapter_env_t env;
-    tstorage::transient_block_manager_t bm(env.buffer_manager, tstorage::DEFAULT_BLOCK_ALLOC_SIZE);
+    auto& bm = env.block_manager;
     const std::string big(5000, 'r');
     auto built = build_big_string_table(env, bm, big);
 

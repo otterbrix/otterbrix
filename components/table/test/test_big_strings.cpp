@@ -6,7 +6,6 @@
 #include <components/table/data_table.hpp>
 #include <components/table/persistent_column_data.hpp>
 #include <components/table/storage/buffer_pool.hpp>
-#include <components/table/storage/transient_block_manager.hpp>
 #include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/storage/metadata_manager.hpp>
 #include <components/table/storage/partial_block_manager.hpp>
@@ -455,8 +454,10 @@ namespace {
 // An unresolvable marker must report through the fetch/scan error channel, not abort: reachable
 // from a plain SELECT (NDEBUG included), so one bad dictionary byte would brick the database.
 TEST_CASE("big_strings: an unresolvable overflow block reports an error and does not abort") {
+    cleanup_bigstr_file();
     bigstr_env_t env;
-    tstorage::transient_block_manager_t block_manager(env.buffer_manager, tstorage::DEFAULT_BLOCK_ALLOC_SIZE);
+    tstorage::single_file_block_manager_t block_manager(env.buffer_manager, env.fs, bigstr_db_path());
+    REQUIRE_FALSE(block_manager.create_new_database().has_error());
 
     const std::string big(5000, 'z');
 
@@ -705,8 +706,10 @@ TEST_CASE("big_strings: a scan failure mid-compact loses no rows and frees no bl
 // update() fetches the row's PRIOR version but never checked state.scan_error: a failed
 // big-string read recorded an EMPTY string as the prior version instead of surfacing the error.
 TEST_CASE("big_strings: update surfaces a failed pre-image read instead of recording ''") {
+    cleanup_bigstr_file();
     bigstr_env_t env;
-    tstorage::transient_block_manager_t block_manager(env.buffer_manager, tstorage::DEFAULT_BLOCK_ALLOC_SIZE);
+    tstorage::single_file_block_manager_t block_manager(env.buffer_manager, env.fs, bigstr_db_path());
+    REQUIRE_FALSE(block_manager.create_new_database().has_error());
 
     const std::string big(5000, 'u');
 

@@ -126,7 +126,9 @@ namespace components::table {
 
         uint64_t block_id() { return block_id_; }
 
-        storage::block_manager_t& block_manager() const { return block->block_manager; }
+        // Geometry only: a segment that has not reached the disk yet has no block manager, and
+        // the numbers are the same either way.
+        uint64_t block_size() const { return block->block_size(); }
 
         uint64_t block_offset() { return offset_; }
 

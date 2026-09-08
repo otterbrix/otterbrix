@@ -86,7 +86,6 @@ namespace components::table::storage {
         core::filesystem::local_file_system_t& fs_;
         buffer_pool_t& buffer_pool_;
         std::atomic<uint64_t> temp_id_;
-        std::unique_ptr<block_manager_t> temp_block_manager_;
         std::atomic<uint64_t> evicted_data_per_tag_[static_cast<uint64_t>(memory_tag::MEMORY_TAG_COUNT)];
 
     private:

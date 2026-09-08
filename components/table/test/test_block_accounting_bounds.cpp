@@ -364,7 +364,7 @@ TEST_CASE("components::table::column_segment::a_segment_larger_than_its_block_is
     auto& block = registered.value();
     REQUIRE(block != nullptr);
 
-    const uint64_t limit = block->block_manager.block_size();
+    const uint64_t limit = block->block_size();
     REQUIRE(limit > 0);
 
     // BIGINT on purpose: VALIDITY/STRING_LITERAL types would overrun the block before reaching the guard.

@@ -251,7 +251,9 @@ TEST_CASE("core::tests::self_move_assignment") {
 #elif defined(__GNUC__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wpessimizing-move"
+#if __GNUC__ >= 13
 #pragma GCC diagnostic ignored "-Wself-move"
+#endif
 #endif
 
     buff = std::move(buff);

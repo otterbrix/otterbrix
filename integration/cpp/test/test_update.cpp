@@ -14,7 +14,6 @@
 TEST_CASE("integration::cpp::test_update::set_unknown_operators") {
     auto config = test_create_config(integration_fixture_path("test_update/set_unknown_operators"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     auto exec = [&](const std::string& sql) {
@@ -53,7 +52,6 @@ TEST_CASE("integration::cpp::test_update::set_unknown_operators") {
 TEST_CASE("integration::cpp::test_update::set_unary_operand_arity") {
     auto config = test_create_config(integration_fixture_path("test_update/set_unary_operand_arity"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     auto exec = [&](const std::string& sql) {
@@ -83,7 +81,6 @@ TEST_CASE("integration::cpp::test_update::set_unary_operand_arity") {
 TEST_CASE("integration::cpp::test_update::set_unsupported_expressions") {
     auto config = test_create_config(integration_fixture_path("test_update/set_unsupported_expressions"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     auto exec = [&](const std::string& sql) {
@@ -111,7 +108,6 @@ TEST_CASE("integration::cpp::test_update::set_unsupported_expressions") {
 TEST_CASE("integration::cpp::test_update::set_null") {
     auto config = test_create_config(integration_fixture_path("test_update/set_null"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     auto exec = [&](const std::string& sql) {
@@ -144,7 +140,6 @@ TEST_CASE("integration::cpp::test_update::set_null") {
 TEST_CASE("integration::cpp::test_update::gather_is_one_copy_per_column") {
     auto config = test_create_config(integration_fixture_path("test_update/gather_cost"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     auto exec = [&](const std::string& sql) {

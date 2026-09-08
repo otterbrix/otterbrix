@@ -29,7 +29,6 @@ namespace {
 TEST_CASE("integration::cpp::unresolved_target_dml_refusal") {
     auto config = test_create_config(integration_fixture_path("test_unresolved_target_dml_refusal/base"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     auto exec = [&](const std::string& sql) {

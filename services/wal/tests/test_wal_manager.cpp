@@ -86,16 +86,13 @@ static const std::filesystem::path base_mgr_path =
 
 struct test_wal_manager {
     // 0 keeps auto-checkpoint off; non-zero lets the auto-checkpoint TEST_CASE trip it in one commit.
-    test_wal_manager(const std::filesystem::path& path,
-                     bool wal_enabled = true,
-                     std::uintmax_t auto_checkpoint_threshold_bytes = 0)
+    test_wal_manager(const std::filesystem::path& path, std::uintmax_t auto_checkpoint_threshold_bytes = 0)
         : path_(path)
         , resource_()
         , log_(initialization_logger("python", "/tmp/docker_logs/"))
         , scheduler_(new actor_zeta::shared_work(3, 1000))
         , config_([&]() {
             configuration::config_wal c(path);
-            c.on = wal_enabled;
             if (auto_checkpoint_threshold_bytes > 0) {
                 c.auto_checkpoint_threshold_bytes = auto_checkpoint_threshold_bytes;
             }
@@ -304,58 +301,6 @@ TEST_CASE("wal_manager::current_wal_id") {
     REQUIRE(cur_id >= 3);
 }
 
-TEST_CASE("wal_manager::disabled") {
-    test_wal_manager env(base_mgr_path / "disabled", /*wal_enabled=*/false);
-
-    {
-        // Same arena note as send_insert: env.resource_ outlives the manager.
-        auto* arena = &env.resource_;
-        auto chunk = gen_data_chunk(5, arena);
-        auto [ns, fut] = actor_zeta::otterbrix::send(env.address(),
-                                                     &manager_wal_replicate_t::write_physical_insert,
-                                                     session_id_t::generate_uid(),
-                                                     kTestTableOidA,
-                                                     to_batch(std::make_unique<data_chunk_t>(std::move(chunk))),
-                                                     uint64_t{0},
-                                                     uint64_t{5},
-                                                     uint64_t{800},
-                                                     kMainDb);
-
-        auto wal_id = await_value(fut);
-        REQUIRE(wal_id == 0);
-    }
-
-    {
-        auto [ns, fut] = actor_zeta::otterbrix::send(env.address(),
-                                                     &manager_wal_replicate_t::commit_txn,
-                                                     session_id_t::generate_uid(),
-                                                     uint64_t{800},
-                                                     wal_sync_mode::NORMAL,
-                                                     kMainDb,
-                                                     uint64_t{0});
-
-        REQUIRE(await_value(fut) == 0);
-    }
-
-    {
-        auto [ns, fut] = actor_zeta::otterbrix::send(env.address(),
-                                                     &manager_wal_replicate_t::load,
-                                                     session_id_t::generate_uid(),
-                                                     services::wal::id_t{0});
-
-        auto records = await_value(fut);
-        REQUIRE(records.empty());
-    }
-
-    {
-        auto [ns, fut] = actor_zeta::otterbrix::send(env.address(),
-                                                     &manager_wal_replicate_t::current_wal_id,
-                                                     session_id_t::generate_uid());
-
-        REQUIRE(await_ready(fut) == 0);
-    }
-}
-
 TEST_CASE("wal_manager::rewire_dispatcher_address") {
     test_wal_manager env(base_mgr_path / "sync_addr");
 
@@ -375,9 +320,7 @@ TEST_CASE("wal_manager::rewire_dispatcher_address") {
 // never runs, truncate_before must not fire); the full chain is exercised by the disk integration fixtures.
 TEST_CASE("wal_manager::auto_checkpoint_triggers_on_byte_threshold") {
     // Tiny threshold so a single commit's WAL bytes cross it.
-    test_wal_manager env(base_mgr_path / "auto_ckpt",
-                         /*wal_enabled=*/true,
-                         /*auto_checkpoint_threshold_bytes=*/1);
+    test_wal_manager env(base_mgr_path / "auto_ckpt", /*auto_checkpoint_threshold_bytes=*/1);
 
     REQUIRE_FALSE(env.manager_->needs_auto_checkpoint());
 

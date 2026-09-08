@@ -11,7 +11,6 @@
 TEST_CASE("integration::cpp::index_rebuild_live_snapshot::open_snapshot_checkpoint_shifts_rebuilt_row_ids") {
     auto config = test_create_config(integration_fixture_path("test_index_rebuild_live_snapshot"));
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
 
     constexpr int64_t kRows = 2000;

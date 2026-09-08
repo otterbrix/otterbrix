@@ -25,7 +25,6 @@ namespace {
 TEST_CASE("integration::cpp::streaming_dml::insert_select_streams_and_lands") {
     auto config = test_create_config(integration_fixture_path("test_streaming_dml_insert"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -76,7 +75,6 @@ TEST_CASE("integration::cpp::streaming_dml::insert_select_streams_and_lands") {
 TEST_CASE("integration::cpp::streaming_dml::insert_values_streams") {
     auto config = test_create_config(integration_fixture_path("test_streaming_dml_values"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -109,7 +107,6 @@ TEST_CASE("integration::cpp::streaming_dml::insert_values_returning_streams") {
     // RETURNING re-reads the appended segment after push()+await_async_and_resume commits it.
     auto config = test_create_config(integration_fixture_path("test_streaming_dml_values_returning"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -139,7 +136,6 @@ TEST_CASE("integration::cpp::streaming_dml::insert_values_returning_streams") {
 TEST_CASE("integration::cpp::streaming_dml::delete_predicate_streams_and_lands") {
     auto config = test_create_config(integration_fixture_path("test_streaming_dml_delete"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -192,7 +188,6 @@ TEST_CASE("integration::cpp::streaming_dml::delete_predicate_streams_and_lands")
 TEST_CASE("integration::cpp::streaming_dml::update_predicate_streams_and_lands") {
     auto config = test_create_config(integration_fixture_path("test_streaming_dml_update"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -260,7 +255,6 @@ TEST_CASE("integration::cpp::streaming_dml::update_predicate_streams_and_lands")
 TEST_CASE("integration::cpp::streaming_dml::fk_check_streams_insert_select") {
     auto config = test_create_config(integration_fixture_path("test_streaming_dml_fk_check"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -311,7 +305,6 @@ TEST_CASE("integration::cpp::streaming_dml::fk_check_streams_insert_select") {
 TEST_CASE("integration::cpp::streaming_dml::check_constraint_streams_insert_select") {
     auto config = test_create_config(integration_fixture_path("test_streaming_dml_check"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -356,7 +349,6 @@ TEST_CASE("integration::cpp::streaming_dml::check_constraint_streams_insert_sele
 TEST_CASE("integration::cpp::streaming_dml::fk_cascade_streams_delete") {
     auto config = test_create_config(integration_fixture_path("test_streaming_dml_cascade"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -404,7 +396,6 @@ TEST_CASE("integration::cpp::streaming_dml::dml_limit_bounds_affected_rows") {
     // disk scan if pushable, on operator_match otherwise, or on the semi-join's own bound.
     auto config = test_create_config(integration_fixture_path("test_streaming_dml_limit"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 

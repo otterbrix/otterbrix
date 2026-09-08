@@ -16,7 +16,6 @@ int main() {
     auto config = configuration::config::create_config(integration_fixture_path("profile_arithmetic"));
     std::filesystem::remove_all(config.main_path);
     std::filesystem::create_directories(config.main_path);
-    config.wal.on = false;
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();

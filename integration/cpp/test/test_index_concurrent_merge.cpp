@@ -90,7 +90,6 @@ namespace {
 TEST_CASE("integration::cpp::index_concurrent_merge::readers_and_writers_share_one_hashed_index") {
     auto config = test_create_config(integration_fixture_path("test_index_concurrent_merge/one_index"));
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
     // Small enough that the committed inserts below rotate — and therefore merge — over
     // and over instead of once.

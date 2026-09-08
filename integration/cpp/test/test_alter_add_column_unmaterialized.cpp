@@ -53,7 +53,6 @@ namespace {
 TEST_CASE("integration::cpp::alter_add_column_unmaterialized::select_column_reads_null") {
     auto config = test_create_config(integration_fixture_path("test_alter_add_column_unmaterialized/select_column"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -67,7 +66,6 @@ TEST_CASE("integration::cpp::alter_add_column_unmaterialized::select_column_read
 TEST_CASE("integration::cpp::alter_add_column_unmaterialized::select_star_reads_null") {
     auto config = test_create_config(integration_fixture_path("test_alter_add_column_unmaterialized/select_star"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -85,7 +83,6 @@ TEST_CASE("integration::cpp::alter_add_column_unmaterialized::select_star_reads_
 TEST_CASE("integration::cpp::alter_add_column_unmaterialized::predicate_on_column") {
     auto config = test_create_config(integration_fixture_path("test_alter_add_column_unmaterialized/predicate"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -111,7 +108,6 @@ TEST_CASE("integration::cpp::alter_add_column_unmaterialized::predicate_on_colum
 TEST_CASE("integration::cpp::alter_add_column_unmaterialized::aggregates_over_column") {
     auto config = test_create_config(integration_fixture_path("test_alter_add_column_unmaterialized/aggregates"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -139,7 +135,6 @@ TEST_CASE("integration::cpp::alter_add_column_unmaterialized::aggregates_over_co
 TEST_CASE("integration::cpp::alter_add_column_unmaterialized::order_and_group_by_column") {
     auto config = test_create_config(integration_fixture_path("test_alter_add_column_unmaterialized/order_group"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -167,7 +162,6 @@ TEST_CASE("integration::cpp::alter_add_column_unmaterialized::order_and_group_by
 TEST_CASE("integration::cpp::alter_add_column_unmaterialized::materializing_insert_keeps_old_rows_null") {
     auto config = test_create_config(integration_fixture_path("test_alter_add_column_unmaterialized/materialize"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -201,7 +195,6 @@ TEST_CASE("integration::cpp::alter_add_column_unmaterialized::materializing_inse
 TEST_CASE("integration::cpp::alter_add_column_unmaterialized::survives_restart_before_first_insert") {
     auto config = test_create_config(integration_fixture_path("test_alter_add_column_unmaterialized/restart"));
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
 
     {
@@ -228,7 +221,6 @@ TEST_CASE("integration::cpp::alter_add_column_unmaterialized::survives_restart_b
 TEST_CASE("integration::cpp::alter_add_column_unmaterialized::default_backfills_old_rows") {
     auto config = test_create_config(integration_fixture_path("test_alter_add_column_unmaterialized/with_default"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -258,7 +250,6 @@ TEST_CASE("integration::cpp::alter_add_column_unmaterialized::default_answers_th
     auto config =
         test_create_config(integration_fixture_path("test_alter_add_column_unmaterialized/default_predicate"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -284,7 +275,6 @@ TEST_CASE("integration::cpp::alter_add_column_unmaterialized::default_survives_r
     auto config =
         test_create_config(integration_fixture_path("test_alter_add_column_unmaterialized/default_restart"));
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
 
     {
@@ -333,7 +323,6 @@ TEST_CASE("integration::cpp::alter_add_column_unmaterialized::default_survives_r
 TEST_CASE("integration::cpp::alter_add_column_unmaterialized::dml_over_the_column") {
     auto config = test_create_config(integration_fixture_path("test_alter_add_column_unmaterialized/dml"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 

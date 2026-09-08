@@ -108,7 +108,6 @@ namespace {
             cfg.log.level = (o.log == "trace") ? log_t::level::trace : log_t::level::off;
             // The WAL is NOT optional here: a run without it misleads -- DELETE column
             // pruning measured 3.6x without durable writes and exactly nothing with them.
-            cfg.wal.on = true;
             return cfg;
         }
     };

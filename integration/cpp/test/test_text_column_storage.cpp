@@ -73,7 +73,6 @@ namespace {
         measurement_t out;
         auto config = test_create_config(root);
         test_clear_directory(config);
-        config.wal.on = true;
         config.log.level = log_t::level::off;
 
         const std::string small(static_cast<size_t>(value_length), 'x');

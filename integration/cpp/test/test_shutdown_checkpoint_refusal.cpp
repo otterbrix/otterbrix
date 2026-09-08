@@ -65,7 +65,6 @@ TEST_CASE("integration::cpp::shutdown_checkpoint::a_refused_final_checkpoint_is_
                      std::to_string(::getpid());
     auto config = test_create_config(dir);
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::err;
     // Small segments so the load rolls the journal over: truncate_before never opens the
     // writer's current segment, so a single segment gives the armed refusal nothing to hit.

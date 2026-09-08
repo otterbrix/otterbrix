@@ -302,7 +302,6 @@ namespace {
 TEST_CASE("integration::cpp::auto_checkpoint_rebuild_refusal::a_refused_rebuild_may_not_cost_the_journal") {
     auto config = test_create_config(integration_fixture_path("test_auto_checkpoint_rebuild_refusal/db"));
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
     config.wal.max_segment_size = kSegmentBytes;
     config.wal.auto_checkpoint_threshold_bytes = kAutoCheckpointBytes;

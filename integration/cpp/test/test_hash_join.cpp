@@ -146,7 +146,6 @@ static const std::string db = "hashjoindb";
 TEST_CASE("integration::cpp::hash_join::correctness") {
     auto config = test_create_config(integration_fixture_path("test_hash_join/base"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto dispatcher = space.dispatcher();
     auto session = otterbrix::session_id_t();
@@ -219,7 +218,6 @@ TEST_CASE("integration::cpp::hash_join::correctness") {
 TEST_CASE("integration::cpp::hash_join::multi_build_chunk_values") {
     auto config = test_create_config(integration_fixture_path("test_hash_join/mbchunk"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto dispatcher = space.dispatcher();
     auto session = otterbrix::session_id_t();
@@ -352,7 +350,6 @@ TEST_CASE("integration::cpp::hash_join::build_side_selection") {
 TEST_CASE("integration::cpp::hash_join::build_side_swap_values") {
     auto config = test_create_config(integration_fixture_path("test_hash_join/buildside"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto dispatcher = space.dispatcher();
     auto session = otterbrix::session_id_t();
@@ -433,7 +430,6 @@ TEST_CASE("integration::cpp::hash_join::build_side_swap_values") {
 TEST_CASE("integration::cpp::hash_join::multiway_comma_join") {
     auto config = test_create_config(integration_fixture_path("test_hash_join/multiway"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto dispatcher = space.dispatcher();
     auto session = otterbrix::session_id_t();
@@ -557,7 +553,6 @@ TEST_CASE("integration::cpp::hash_join::filtered_side_swap_requires_size_evidenc
 TEST_CASE("integration::cpp::hash_join::build_side_syntactic_inmemory") {
     auto config = test_create_config(integration_fixture_path("test_hash_join/syntactic"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto dispatcher = space.dispatcher();
     auto session = otterbrix::session_id_t();
@@ -618,7 +613,6 @@ TEST_CASE("integration::cpp::hash_join::build_side_syntactic_inmemory") {
 TEST_CASE("integration::cpp::hash_join::filtered_left_count_fetched_through_wrapper") {
     auto config = test_create_config(integration_fixture_path("test_hash_join/wrapped_count"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto dispatcher = space.dispatcher();
     auto session = otterbrix::session_id_t();

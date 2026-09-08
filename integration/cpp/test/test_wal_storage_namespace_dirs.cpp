@@ -51,7 +51,6 @@ namespace {
 TEST_CASE("integration::cpp::wal_storage_namespace_dirs::no_worker_for_a_storage_namespace_directory") {
     auto config = test_create_config(integration_fixture_path("test_wal_storage_namespace_dirs/db"));
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
 
     {

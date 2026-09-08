@@ -79,7 +79,6 @@ namespace {
 TEST_CASE("integration::cpp::drop_under_cursor::vanished_entry_fails_loudly_not_a_short_success") {
     auto config = test_create_config(integration_fixture_path("test_drop_under_cursor/db"));
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
 
     gate_guard_t guard;

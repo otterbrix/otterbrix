@@ -53,8 +53,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::create_index_catchup_refusal::the_build_does_not_read_the_journal") {
-    auto config = make_test_config(integration_fixture_path("test_create_index_catchup_refusal/refused"),
-                                   /*wal_on=*/true);
+    auto config = make_test_config(integration_fixture_path("test_create_index_catchup_refusal/refused"));
     config.log.level = log_t::level::off;
 
     wal_open_refusal_t fault;

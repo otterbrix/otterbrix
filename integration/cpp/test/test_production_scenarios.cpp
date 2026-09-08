@@ -93,7 +93,6 @@ TEST_CASE("integration::cpp::production::a_clear_that_cannot_finish_is_reported_
 TEST_CASE("integration::cpp::production::scale_100k_group_by") {
     auto config = test_create_config(production_fixture("scale_100k"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -157,7 +156,6 @@ TEST_CASE("integration::cpp::production::scale_100k_group_by") {
 TEST_CASE("integration::cpp::production::multi_table_join") {
     auto config = test_create_config(production_fixture("multi_join"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -262,7 +260,6 @@ TEST_CASE("integration::cpp::production::multi_table_join") {
 TEST_CASE("integration::cpp::production::null_join_keys") {
     auto config = test_create_config(production_fixture("null_join"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -372,7 +369,6 @@ TEST_CASE("integration::cpp::production::null_join_keys") {
 TEST_CASE("integration::cpp::production::unicode_strings") {
     auto config = test_create_config(production_fixture("unicode"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -452,7 +448,6 @@ TEST_CASE("integration::cpp::production::unicode_strings") {
 TEST_CASE("integration::cpp::production::concurrent_insert") {
     auto config = test_create_config(production_fixture("concurrent_insert"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -527,7 +522,6 @@ TEST_CASE("integration::cpp::production::concurrent_insert") {
 TEST_CASE("integration::cpp::production::concurrent_read_write") {
     auto config = test_create_config(production_fixture("concurrent_rw"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -673,7 +667,6 @@ TEST_CASE("integration::cpp::production::large_checkpoint_100k") {
 TEST_CASE("integration::cpp::production::complex_where") {
     auto config = test_create_config(production_fixture("complex_where"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1024,7 +1017,6 @@ TEST_CASE("integration::cpp::production::compaction_checkpoint_cycle") {
 TEST_CASE("integration::cpp::production::large_scan_segfault_red", "[step1]") {
     auto config = test_create_config(production_fixture("large_scan_segfault"));
     test_clear_directory(config);
-    config.wal.on = true;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1156,7 +1148,6 @@ TEST_CASE("integration::cpp::production::large_scan_segfault_red", "[step1]") {
 TEST_CASE("integration::cpp::production::reopen_resolves_columns_after_checkpoint") {
     auto config = test_create_config(production_fixture("reopen_resolve_columns"));
     test_clear_directory(config);
-    config.wal.on = true;
 
     INFO("phase 1: disk-backed CREATE TABLE, INSERT, CHECKPOINT");
     {

@@ -55,11 +55,7 @@ namespace {
                                                                                  disk_config_.bitcask_flush_threshold,
                                                                                  disk_config_.bitcask_segment_record_limit,
                                                                                  disk_config_.btree_flush_threshold))
-            , wal_config_([&]() {
-                configuration::config_wal c;
-                c.on = false;
-                return c;
-            }())
+            , wal_config_(disk_path)
             , manager_wal_(actor_zeta::spawn<manager_wal_replicate_t>(resource,
                                                                       scheduler_,
                                                                       wal_config_,

@@ -177,7 +177,6 @@ std::unique_ptr<aggregate_function> make_call_counter_func(std::pmr::memory_reso
 TEST_CASE("integration::cpp::test_batch_where") {
     auto config = test_create_config(integration_fixture_path("test_batch_where"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -302,7 +301,6 @@ TEST_CASE("integration::cpp::test_batch_where") {
 TEST_CASE("integration::cpp::test_batch_aggregate") {
     auto config = test_create_config(integration_fixture_path("test_batch_aggregate"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -505,7 +503,6 @@ TEST_CASE("integration::cpp::test_batch_join") {
     // Every left row matches exactly one right row, 4 left rows per category.
     auto config = test_create_config(integration_fixture_path("test_batch_join"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -655,7 +652,6 @@ TEST_CASE("integration::cpp::test_batch_join") {
 TEST_CASE("integration::cpp::test_batch_edge_cases") {
     auto config = test_create_config(integration_fixture_path("test_batch_edge"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -764,7 +760,6 @@ TEST_CASE("integration::cpp::test_batch_boundaries") {
 
     auto config = test_create_config(integration_fixture_path("test_batch_boundaries_" + std::to_string(row_count)));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 

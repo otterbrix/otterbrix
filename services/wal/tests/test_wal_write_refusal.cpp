@@ -100,7 +100,6 @@ namespace {
         std::filesystem::remove_all(path);
         std::filesystem::create_directories(path);
         configuration::config_wal config(path);
-        config.on = true;
         if (max_segment_size != 0) {
             config.max_segment_size = max_segment_size;
         }
@@ -267,7 +266,6 @@ TEST_CASE("wal::refusal::startup_replay_refuses_a_segment_that_will_not_open") {
     auto log = initialization_logger("python", "/tmp/docker_logs/");
     core::pmr::otterbrix_resource resource;
     configuration::config_wal config(path);
-    config.on = true;
 
     {
         wal_env_t env(path);

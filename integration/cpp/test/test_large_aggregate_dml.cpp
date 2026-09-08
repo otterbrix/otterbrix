@@ -54,7 +54,6 @@ namespace {
 TEST_CASE("integration::cpp::large_aggregate_dml::group_by_over_1024_distinct_groups") {
     auto config = test_create_config(integration_fixture_path("test_large_aggregate_dml_group_by"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -81,7 +80,6 @@ TEST_CASE("integration::cpp::large_aggregate_dml::group_by_over_1024_distinct_gr
 TEST_CASE("integration::cpp::large_aggregate_dml::count_distinct_over_hot_group_over_1024_rows") {
     auto config = test_create_config(integration_fixture_path("test_large_aggregate_dml_count_distinct"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -105,7 +103,6 @@ TEST_CASE("integration::cpp::large_aggregate_dml::count_distinct_over_hot_group_
 TEST_CASE("integration::cpp::large_aggregate_dml::delete_using_secondary_table_over_1024_rows") {
     auto config = test_create_config(integration_fixture_path("test_large_aggregate_dml_delete_using"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -153,7 +150,6 @@ TEST_CASE("integration::cpp::large_aggregate_dml::delete_using_secondary_table_o
 TEST_CASE("integration::cpp::large_aggregate_dml::cascade_delete_over_1024_children") {
     auto config = test_create_config(integration_fixture_path("test_large_aggregate_dml_cascade"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 

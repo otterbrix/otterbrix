@@ -61,7 +61,6 @@ namespace {
             , wal_config([&]() {
                 configuration::config_wal c;
                 c.path = dir;
-                c.on = true;
                 return c;
             }())
             , disk_config([&]() {
@@ -112,7 +111,6 @@ namespace {
         auto log = initialization_logger("python", "/tmp/docker_logs/");
         configuration::config_wal c;
         c.path = dir;
-        c.on = true;
         core::pmr::otterbrix_resource reader_resource;
         services::wal::wal_reader_t reader(&reader_resource, c, log);
         auto records_result = reader.read_committed_records(services::wal::id_t{0});
@@ -131,7 +129,6 @@ namespace {
         auto log = initialization_logger("python", "/tmp/docker_logs/");
         configuration::config_wal c;
         c.path = dir;
-        c.on = true;
         core::pmr::otterbrix_resource reader_resource;
         services::wal::wal_reader_t reader(&reader_resource, c, log);
         auto records_result = reader.read_committed_records(services::wal::id_t{0});
@@ -154,7 +151,6 @@ namespace {
         auto log = initialization_logger("python", "/tmp/docker_logs/");
         configuration::config_wal c;
         c.path = dir;
-        c.on = true;
         core::pmr::otterbrix_resource reader_resource;
         services::wal::wal_reader_t reader(&reader_resource, c, log);
         auto records_result = reader.read_committed_records(services::wal::id_t{0});
@@ -337,7 +333,6 @@ TEST_CASE("services::disk::wal_catalog::all_records_under_pg_catalog_database") 
     auto log = initialization_logger("python", "/tmp/docker_logs/");
     configuration::config_wal c;
     c.path = dir;
-    c.on = true;
     core::pmr::otterbrix_resource reader_resource;
     services::wal::wal_reader_t reader(&reader_resource, c, log);
     auto records_result = reader.read_committed_records(services::wal::id_t{0});
@@ -516,7 +511,6 @@ namespace {
         auto log = initialization_logger("python", "/tmp/docker_logs/");
         configuration::config_wal c;
         c.path = dir;
-        c.on = true;
         core::pmr::otterbrix_resource reader_resource;
         services::wal::wal_reader_t reader(&reader_resource, c, log);
         auto records_result = reader.read_committed_records(services::wal::id_t{0});
@@ -623,7 +617,6 @@ TEST_CASE("services::disk::wal_catalog::a_growth_append_journals_the_add_column_
         auto log = initialization_logger("python", "/tmp/docker_logs/");
         configuration::config_wal c;
         c.path = dir;
-        c.on = true;
         core::pmr::otterbrix_resource reader_resource;
         services::wal::wal_reader_t reader(&reader_resource, c, log);
         auto records_result = reader.read_committed_records(services::wal::id_t{0});
@@ -721,7 +714,6 @@ TEST_CASE("services::disk::wal_catalog::the_backfill_stamp_survives_a_kill_throu
     core::pmr::otterbrix_resource reader_resource;
     configuration::config_wal wal_c;
     wal_c.path = dir;
-    wal_c.on = true;
     auto reader_log = initialization_logger("python", "/tmp/docker_logs/");
     services::wal::wal_reader_t reader(&reader_resource, wal_c, reader_log);
     auto records_result = reader.read_committed_records(services::wal::id_t{0});

@@ -53,7 +53,6 @@ namespace {
 TEST_CASE("integration::cpp::null_agg::count_over_all_null_group_is_zero") {
     auto config = test_create_config(integration_fixture_path("test_null_agg/grp"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(ok(d, "CREATE DATABASE ag;"));
@@ -80,7 +79,6 @@ TEST_CASE("integration::cpp::null_agg::count_over_all_null_group_is_zero") {
 TEST_CASE("integration::cpp::null_agg::count_over_all_null_table_is_zero") {
     auto config = test_create_config(integration_fixture_path("test_null_agg/nogrp"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(ok(d, "CREATE DATABASE ag;"));

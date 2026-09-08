@@ -32,7 +32,6 @@ namespace {
 TEST_CASE("integration::cpp::test_fk_parent_column_drop::referenced_parent_column_cannot_be_dropped", "[fkdropcol]") {
     auto config = test_create_config(integration_fixture_path("test_fk_parent_column_drop/referenced"));
     test_clear_directory(config);
-    config.wal.on = false;
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -83,7 +82,6 @@ TEST_CASE("integration::cpp::test_fk_parent_column_drop::referenced_parent_colum
 TEST_CASE("integration::cpp::test_fk_parent_column_drop::unreferenced_parent_column_still_drops", "[fkdropcol]") {
     auto config = test_create_config(integration_fixture_path("test_fk_parent_column_drop/unreferenced"));
     test_clear_directory(config);
-    config.wal.on = false;
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -111,7 +109,6 @@ TEST_CASE("integration::cpp::test_fk_parent_column_drop::child_key_column_drop_t
           "[fkdropcol]") {
     auto config = test_create_config(integration_fixture_path("test_fk_parent_column_drop/child_side"));
     test_clear_directory(config);
-    config.wal.on = false;
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -144,7 +141,6 @@ TEST_CASE("integration::cpp::test_fk_parent_column_drop::dropping_the_parent_tab
           "[fkdropcol]") {
     auto config = test_create_config(integration_fixture_path("test_fk_parent_column_drop/drop_parent_table"));
     test_clear_directory(config);
-    config.wal.on = false;
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -172,7 +168,6 @@ TEST_CASE("integration::cpp::test_fk_parent_column_drop::dropping_the_parent_tab
 TEST_CASE("integration::cpp::test_fk_parent_column_drop::drop_constraint_does_not_claim_success", "[fkdropcol]") {
     auto config = test_create_config(integration_fixture_path("test_fk_parent_column_drop/drop_constraint"));
     test_clear_directory(config);
-    config.wal.on = false;
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* d = space.dispatcher();

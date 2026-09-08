@@ -11,7 +11,6 @@
 TEST_CASE("integration::cpp::delete_affected_count::txn_re_delete_reports_zero", "[deletecount]") {
     auto config = test_create_config(integration_fixture_path("test_delete_affected_count/txn"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* d = space.dispatcher();
     auto exec = [&](otterbrix::session_id_t& s, const std::string& sql) { return d->execute_sql(s, sql); };

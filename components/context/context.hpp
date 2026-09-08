@@ -34,7 +34,8 @@ namespace components::pipeline {
         const compute::function_registry_t* function_registry = nullptr;
         logical_plan::storage_parameters parameters;
 
-        // disk_address/index_address are always live; wal_address is no_mailbox() when WAL is off.
+        // All three are live in any engine base_spaces builds. no_mailbox() here means a unit-test
+        // topology driving an operator without that manager -- never a production configuration.
         actor_zeta::address_t disk_address;
         actor_zeta::address_t index_address;
         actor_zeta::address_t wal_address;

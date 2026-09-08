@@ -265,7 +265,7 @@ TEST_CASE("block_reachability: delete + compact + checkpoint accounts for freed 
             }
             row_ids_chunk.set_cardinality(batch);
             table_delete_state del_state(&env.resource);
-            table->delete_rows(del_state, row_ids_chunk.data[0], batch, txn_id);
+            REQUIRE_FALSE(table->delete_rows(del_state, row_ids_chunk.data[0], batch, txn_id).has_error());
             deleted += batch;
         }
         auto commit_id = mgr.commit(session);

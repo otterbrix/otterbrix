@@ -388,7 +388,6 @@ TEST_CASE("integration::cpp::test_index::no_type base check") {
 TEST_CASE("integration::cpp::test_index::delete_and_update") {
     auto config = test_create_config(integration_fixture_path("test_index/delete_and_update"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -939,7 +938,6 @@ TEST_CASE("integration::cpp::test_index::drop_index_folds_catalog_deletes") {
 TEST_CASE("integration::cpp::test_index::expression_elements_rejected") {
     auto config = test_create_config(integration_fixture_path("test_index/expression_elements_rejected"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     auto exec = [&](const std::string& sql) {

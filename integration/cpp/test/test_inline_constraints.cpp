@@ -24,7 +24,6 @@ namespace {
         explicit env_t(const std::string& dir)
             : config(test_create_config(integration_fixture_path("test_inline_constraints/" + dir))) {
             test_clear_directory(config);
-            config.wal.on = false;
             config.log.level = log_t::level::off;
         }
     };

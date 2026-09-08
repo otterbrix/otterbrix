@@ -2,7 +2,9 @@
 
 #include "../otterbrix.h"
 
+#include <cstddef>
 #include <string>
+#include <type_traits>
 #include <unistd.h>
 
 namespace {
@@ -38,8 +40,6 @@ namespace {
             cfg.wal_path = sv(wal_path);
             cfg.disk_path = sv(disk_path);
             cfg.main_path = sv(main_path);
-            cfg.wal_on = false;
-            cfg.sync_to_disk = false;
 
             ptr = otterbrix_create(cfg);
         }
@@ -328,4 +328,27 @@ TEST_CASE("c-api: cursor_get_value returns nullptr for OOB row/column", "[c-api]
     REQUIRE(cursor_get_value(cur, 0, 100) == nullptr);
 
     release_cursor(cur);
+}
+
+namespace {
+    template<typename T, typename = void>
+    struct has_sync_to_disk : std::false_type {};
+    template<typename T>
+    struct has_sync_to_disk<T, std::void_t<decltype(std::declval<const T&>().sync_to_disk)>> : std::true_type {};
+
+    template<typename T, typename = void>
+    struct has_wal_on : std::false_type {};
+    template<typename T>
+    struct has_wal_on<T, std::void_t<decltype(std::declval<const T&>().wal_on)>> : std::true_type {};
+} // namespace
+
+// The C struct is the contract the hand-written C# mirror copies field for field, and nothing
+// there is checked by a compiler -- so the shape is pinned here instead.
+TEST_CASE("c-api: config_t carries no boolean switches", "[c-api][abi]") {
+    CHECK_FALSE(has_sync_to_disk<config_t>::value);
+    CHECK_FALSE(has_wal_on<config_t>::value);
+    CHECK(std::is_standard_layout_v<config_t>);
+    // Now that both bools are gone, main_path really is the last field, and sizeof says so --
+    // it could not while a trailing bool hid inside the tail padding.
+    CHECK(sizeof(config_t) == offsetof(config_t, main_path) + sizeof(string_view_t));
 }

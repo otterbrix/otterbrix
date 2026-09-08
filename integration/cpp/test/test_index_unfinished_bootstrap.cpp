@@ -43,7 +43,6 @@ TEST_CASE("integration::cpp::index_unfinished_bootstrap::an_unopenable_index_is_
                       std::to_string(::getpid());
     auto config = test_create_config(base);
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
 
     std::filesystem::path index_dir;

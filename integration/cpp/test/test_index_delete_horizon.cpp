@@ -68,7 +68,6 @@ namespace {
 TEST_CASE("integration::cpp::index_delete_horizon::committed_delete_keeps_the_older_snapshots_row") {
     auto config = test_create_config(integration_fixture_path("test_index_delete_horizon/older_snapshot"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -165,7 +164,6 @@ TEST_CASE("integration::cpp::index_delete_horizon::committed_delete_keeps_the_ol
 TEST_CASE("integration::cpp::index_delete_horizon::the_index_still_forgets_once_nobody_is_looking") {
     auto config = test_create_config(integration_fixture_path("test_index_delete_horizon/forgets"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 

@@ -20,7 +20,6 @@ namespace {
 TEST_CASE("integration::cpp::bounded_execution::group_by_and_scalar_aggregate", "[.][bounded-exec]") {
     auto config = test_create_config(integration_fixture_path("test_bounded_execution"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 

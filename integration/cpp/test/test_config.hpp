@@ -123,11 +123,11 @@ namespace test_helpers {
         return dispatcher->execute_sql(otterbrix::session_id_t(), sql);
     }
 
-    // No disk flag: every table is disk-backed, so `path` is where the data goes, full stop.
-    inline configuration::config make_test_config(const std::filesystem::path& path, bool wal_on = false) {
+    // No disk flag and no wal flag: every table is disk-backed and every write is journalled,
+    // so `path` is where the data goes, full stop.
+    inline configuration::config make_test_config(const std::filesystem::path& path) {
         auto config = test_create_config(path);
         test_clear_directory(config);
-        config.wal.on = wal_on;
         return config;
     }
 

@@ -38,7 +38,7 @@ namespace {
 // Control: the serial autocommit case is refused by the snapshot check and stays refused.
 TEST_CASE("catalog_name_uniqueness::control_serial_double_create_table") {
     const auto dir = integration_fixture_path("test_catalog_name_uniqueness/serial");
-    auto config = make_test_config(dir, /*wal_on=*/true);
+    auto config = make_test_config(dir);
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -53,7 +53,7 @@ TEST_CASE("catalog_name_uniqueness::control_serial_double_create_table") {
 
 TEST_CASE("catalog_name_uniqueness::create_table_from_two_txn_sessions") {
     const auto dir = integration_fixture_path("test_catalog_name_uniqueness/table");
-    auto config = make_test_config(dir, /*wal_on=*/true);
+    auto config = make_test_config(dir);
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -94,7 +94,7 @@ TEST_CASE("catalog_name_uniqueness::create_table_from_two_txn_sessions") {
 // Same shape as CREATE TABLE, but for pg_namespace.
 TEST_CASE("catalog_name_uniqueness::create_database_against_uncommitted_namespace") {
     const auto dir = integration_fixture_path("test_catalog_name_uniqueness/database");
-    auto config = make_test_config(dir, /*wal_on=*/true);
+    auto config = make_test_config(dir);
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -116,7 +116,7 @@ TEST_CASE("catalog_name_uniqueness::create_database_against_uncommitted_namespac
 // Same shape, for pg_type.
 TEST_CASE("catalog_name_uniqueness::create_type_against_uncommitted_type") {
     const auto dir = integration_fixture_path("test_catalog_name_uniqueness/type");
-    auto config = make_test_config(dir, /*wal_on=*/true);
+    auto config = make_test_config(dir);
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -138,7 +138,7 @@ TEST_CASE("catalog_name_uniqueness::create_type_against_uncommitted_type") {
 // Same shape; an index's name lives in its own pg_class row (relkind='i').
 TEST_CASE("catalog_name_uniqueness::create_index_against_uncommitted_index") {
     const auto dir = integration_fixture_path("test_catalog_name_uniqueness/index");
-    auto config = make_test_config(dir, /*wal_on=*/true);
+    auto config = make_test_config(dir);
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* d = space.dispatcher();

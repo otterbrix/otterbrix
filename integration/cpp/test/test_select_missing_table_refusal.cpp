@@ -18,7 +18,6 @@ using namespace components;
 TEST_CASE("integration::cpp::select_missing_table_refusal") {
     auto config = test_create_config(integration_fixture_path("test_select_missing_table_refusal/base"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -70,7 +69,6 @@ TEST_CASE("integration::cpp::select_missing_table_refusal") {
 TEST_CASE("integration::cpp::select_unqualified_existing_table") {
     auto config = test_create_config(integration_fixture_path("test_select_missing_table_refusal/unqualified"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 

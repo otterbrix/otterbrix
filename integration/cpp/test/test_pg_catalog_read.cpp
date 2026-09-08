@@ -13,8 +13,7 @@
 using namespace components;
 
 TEST_CASE("integration::cpp::pg_catalog_read::pg_class_lists_user_tables") {
-    auto config = test_helpers::make_test_config(integration_fixture_path("pg_catalog_read/base"),
-                                                 /*wal_on=*/false);
+    auto config = test_helpers::make_test_config(integration_fixture_path("pg_catalog_read/base"));
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();

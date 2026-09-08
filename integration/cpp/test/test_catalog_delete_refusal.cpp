@@ -188,7 +188,7 @@ namespace {
 
 TEST_CASE("integration::cpp::test_catalog_delete_refusal::drop_table_fails_when_the_catalog_delete_is_refused") {
     const std::filesystem::path dir = integration_fixture_path("test_catalog_delete_refusal/drop_table");
-    auto config = test_helpers::make_test_config(dir, /*wal_on=*/true);
+    auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
     wal_fault_scope_t fault;
@@ -225,7 +225,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::drop_table_fails_when_
 // The collapse guard: a change that made every DROP TABLE fail would satisfy the case above too.
 TEST_CASE("integration::cpp::test_catalog_delete_refusal::a_healthy_drop_table_scrubs_the_catalog") {
     const std::filesystem::path dir = integration_fixture_path("test_catalog_delete_refusal/healthy");
-    auto config = test_helpers::make_test_config(dir, /*wal_on=*/true);
+    auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
     delete_refusal_spaces_t space(config);
@@ -244,7 +244,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::a_healthy_drop_table_s
 // delete_pg_catalog_rows_inner's scan must carry ctx->txn, or it can't see an unpublished row.
 TEST_CASE("integration::cpp::test_catalog_delete_refusal::a_column_added_and_dropped_in_one_transaction_is_dropped") {
     const std::filesystem::path dir = integration_fixture_path("test_catalog_delete_refusal/add_drop_in_txn");
-    auto config = test_helpers::make_test_config(dir, /*wal_on=*/true);
+    auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
     delete_refusal_spaces_t space(config);
@@ -279,7 +279,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::a_column_added_and_dro
 // The collapse guard for the case above, split across two autocommit statements.
 TEST_CASE("integration::cpp::test_catalog_delete_refusal::a_column_added_and_dropped_in_autocommit_is_dropped") {
     const std::filesystem::path dir = integration_fixture_path("test_catalog_delete_refusal/add_drop_autocommit");
-    auto config = test_helpers::make_test_config(dir, /*wal_on=*/true);
+    auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
     delete_refusal_spaces_t space(config);
@@ -301,7 +301,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::a_column_added_and_dro
 // silently skips in-transaction rows (floor: components/table/test/test_update_merge.cpp).
 TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_in_transaction_add_column_row_carries_its_commit_id") {
     const std::filesystem::path dir = integration_fixture_path("test_catalog_delete_refusal/added_at_backfill");
-    auto config = test_helpers::make_test_config(dir, /*wal_on=*/true);
+    auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
     delete_refusal_spaces_t space(config);
@@ -325,7 +325,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_in_transaction_add_
 TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_autocommit_add_column_row_carries_its_commit_id") {
     const std::filesystem::path dir =
         integration_fixture_path("test_catalog_delete_refusal/added_at_backfill_autocommit");
-    auto config = test_helpers::make_test_config(dir, /*wal_on=*/true);
+    auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
     delete_refusal_spaces_t space(config);
@@ -349,7 +349,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_autocommit_add_colu
 // One ALTER alone cannot reach merge_update_loop_internal's leg; a second patch does, hence two here.
 TEST_CASE("integration::cpp::test_catalog_delete_refusal::two_added_columns_each_carry_their_own_commit_id") {
     const std::filesystem::path dir = integration_fixture_path("test_catalog_delete_refusal/added_at_backfill_twice");
-    auto config = test_helpers::make_test_config(dir, /*wal_on=*/true);
+    auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
     delete_refusal_spaces_t space(config);
@@ -395,7 +395,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::two_added_columns_each
 // manager_disk_t::max_persisted_commit_id_sync, the reopen frontier.
 TEST_CASE("integration::cpp::test_catalog_delete_refusal::a_dropped_columns_tombstone_carries_its_commit_id") {
     const std::filesystem::path dir = integration_fixture_path("test_catalog_delete_refusal/dropped_at_backfill");
-    auto config = test_helpers::make_test_config(dir, /*wal_on=*/true);
+    auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
     delete_refusal_spaces_t space(config);
@@ -426,7 +426,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::a_dropped_columns_tomb
 // out this case still passes; with the ctx.txn scan reverted it fails at phase 1 with `0 != 0`.
 TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_added_columns_commit_id_survives_a_restart") {
     const std::filesystem::path dir = integration_fixture_path("test_catalog_delete_refusal/added_at_restart");
-    auto config = test_helpers::make_test_config(dir, /*wal_on=*/true);
+    auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
     const std::string table = "added_at_restart_t";
@@ -491,7 +491,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_added_columns_commi
 // it should have replaced -- unnoticed, since that route (unique_future<void>) has no error channel.
 TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_in_transaction_rename_leaves_one_attribute_row") {
     const std::filesystem::path dir = integration_fixture_path("test_catalog_delete_refusal/rename_in_txn");
-    auto config = test_helpers::make_test_config(dir, /*wal_on=*/true);
+    auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
     delete_refusal_spaces_t space(config);
@@ -520,7 +520,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_in_transaction_rena
 
 TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_in_transaction_create_index_leaves_one_pg_index_row") {
     const std::filesystem::path dir = integration_fixture_path("test_catalog_delete_refusal/create_index_in_txn");
-    auto config = test_helpers::make_test_config(dir, /*wal_on=*/true);
+    auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
     delete_refusal_spaces_t space(config);

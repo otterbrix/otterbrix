@@ -68,7 +68,6 @@ namespace {
             , scheduler_(new actor_zeta::shared_work(2, 1000))
             , config_([&]() {
                 configuration::config_wal c(path);
-                c.on = true;
                 return c;
             }())
             , manager_(actor_zeta::spawn<manager_wal_replicate_t>(&resource_,
@@ -184,7 +183,6 @@ TEST_CASE("wal::txn_reuse::bootstrap_replay_rejects_the_recycled_uncommitted_txn
     auto log = initialization_logger("python", "/tmp/docker_logs/");
     core::pmr::otterbrix_resource resource;
     configuration::config_wal config(path);
-    config.on = true;
 
     {
         wal_reader_t reader(&resource, config, log);

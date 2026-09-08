@@ -361,7 +361,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::two_table_join") {
 
 // Flattened columns survive a WAL/disk round-trip. correct: aliases == {b, c}.
 TEST_CASE("integration::cpp::test_jsonb_support::persistence") {
-    auto config = make_test_config(fixture_dir("persist"), true);
+    auto config = make_test_config(fixture_dir("persist"));
     {
         test_spaces space(config);
         auto* d = space.dispatcher();

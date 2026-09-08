@@ -33,7 +33,6 @@ namespace {
 TEST_CASE("integration::cpp::streaming_recursive_cte::fixpoint_streams_and_is_correct") {
     auto config = test_create_config(integration_fixture_path("test_streaming_recursive_cte/fixpoint"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -64,7 +63,6 @@ TEST_CASE("integration::cpp::streaming_recursive_cte::outer_plan_no_longer_mater
     // advance anywhere in this statement (outer chain or fixpoint).
     auto config = test_create_config(integration_fixture_path("test_streaming_recursive_cte/no_materialize"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -91,7 +89,6 @@ TEST_CASE("integration::cpp::streaming_recursive_cte::outer_plan_no_longer_mater
 TEST_CASE("integration::cpp::streaming_recursive_cte::subtree_and_depth_stream") {
     auto config = test_create_config(integration_fixture_path("test_streaming_recursive_cte/subtree"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 

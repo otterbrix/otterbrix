@@ -79,7 +79,6 @@ namespace {
 TEST_CASE("integration::cpp::test_subqueries::where_clause") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/where_clause"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -282,7 +281,6 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
 TEST_CASE("integration::cpp::test_subqueries::correlated_exists_semi_anti") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/correlated_exists_semi_anti"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -377,7 +375,6 @@ TEST_CASE("integration::cpp::test_subqueries::correlated_exists_semi_anti") {
 TEST_CASE("integration::cpp::test_subqueries::select_list_and_from") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/select_list_and_from"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -489,7 +486,6 @@ TEST_CASE("integration::cpp::test_subqueries::select_list_and_from") {
 TEST_CASE("integration::cpp::test_subqueries::join") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/join"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -548,7 +544,6 @@ TEST_CASE("integration::cpp::test_subqueries::join") {
 TEST_CASE("integration::cpp::test_subqueries::having") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/having"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -598,7 +593,6 @@ TEST_CASE("integration::cpp::test_subqueries::having") {
 TEST_CASE("integration::cpp::test_subqueries::nested") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/nested"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -736,7 +730,6 @@ TEST_CASE("integration::cpp::test_subqueries::nested") {
 TEST_CASE("integration::cpp::test_subqueries::dml") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/dml"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -849,7 +842,6 @@ TEST_CASE("integration::cpp::test_subqueries::dml") {
 TEST_CASE("integration::cpp::test_subqueries::cte") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/cte"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -951,7 +943,6 @@ TEST_CASE("integration::cpp::test_subqueries::cte") {
 TEST_CASE("integration::cpp::test_subqueries::union") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/union"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1034,7 +1025,6 @@ TEST_CASE("integration::cpp::test_subqueries::union") {
 TEST_CASE("integration::cpp::test_subqueries::union_group_limit_offset") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/union_group_limit_offset"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1124,7 +1114,6 @@ TEST_CASE("integration::cpp::test_subqueries::union_group_limit_offset") {
 TEST_CASE("integration::cpp::test_subqueries::union_complex_types") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/union_complex_types"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1250,7 +1239,6 @@ namespace {
 TEST_CASE("integration::cpp::test_subqueries::recursive_cte") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/recursive_cte"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1339,7 +1327,6 @@ TEST_CASE("integration::cpp::test_subqueries::recursive_cte") {
 TEST_CASE("integration::cpp::test_subqueries::tier0_unsupported_sublink_forms") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/tier0_unsupported_sublink_forms"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1400,7 +1387,6 @@ TEST_CASE("integration::cpp::test_subqueries::tier0_unsupported_sublink_forms") 
 TEST_CASE("integration::cpp::test_subqueries::where_having_boolean_required") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/where_having_boolean_required"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1479,7 +1465,6 @@ TEST_CASE("integration::cpp::test_subqueries::where_having_boolean_required") {
 TEST_CASE("integration::cpp::test_subqueries::bool_numeric_coercion") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/bool_numeric_coercion"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1526,7 +1511,6 @@ TEST_CASE("integration::cpp::test_subqueries::bool_numeric_coercion") {
 TEST_CASE("integration::cpp::test_subqueries::union_order_by_limit") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/union_order_by_limit"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1593,7 +1577,6 @@ TEST_CASE("integration::cpp::test_subqueries::union_order_by_limit") {
 TEST_CASE("integration::cpp::test_subqueries::positional_order_by") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/positional_order_by"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1652,7 +1635,6 @@ TEST_CASE("integration::cpp::test_subqueries::positional_order_by") {
 TEST_CASE("integration::cpp::test_subqueries::in_subquery_spans_all_chunks") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/in_subquery_spans_all_chunks"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1708,7 +1690,6 @@ TEST_CASE("integration::cpp::test_subqueries::in_subquery_spans_all_chunks") {
 TEST_CASE("integration::cpp::test_subqueries::recursive_cte_union_distinct") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/recursive_cte_union_distinct"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1758,7 +1739,6 @@ TEST_CASE("integration::cpp::test_subqueries::recursive_cte_union_distinct") {
 TEST_CASE("integration::cpp::test_subqueries::distinct_dedup_fidelity") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/distinct_dedup_fidelity"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1804,7 +1784,6 @@ TEST_CASE("integration::cpp::test_subqueries::distinct_dedup_fidelity") {
 TEST_CASE("integration::cpp::test_subqueries::with_before_dml") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/with_before_dml"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1867,7 +1846,6 @@ TEST_CASE("integration::cpp::test_subqueries::with_before_dml") {
 TEST_CASE("integration::cpp::test_subqueries::distinct_limit_offset") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/distinct_limit_offset"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1927,7 +1905,6 @@ TEST_CASE("integration::cpp::test_subqueries::distinct_limit_offset") {
 TEST_CASE("integration::cpp::test_subqueries::nonpushable_where_limit_tail") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/nonpushable_where_limit_tail"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1968,7 +1945,6 @@ TEST_CASE("integration::cpp::test_subqueries::nonpushable_where_limit_tail") {
 TEST_CASE("integration::cpp::test_subqueries::limit_unification_regressions") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/limit_unification_regressions"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -2023,7 +1999,6 @@ TEST_CASE("integration::cpp::test_subqueries::limit_unification_regressions") {
 TEST_CASE("integration::cpp::test_subqueries::values_top_level_limit") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/values_top_level_limit"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -2053,7 +2028,6 @@ TEST_CASE("integration::cpp::test_subqueries::values_top_level_limit") {
 TEST_CASE("integration::cpp::test_subqueries::exists_operand") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/exists_operand"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -2086,7 +2060,6 @@ TEST_CASE("integration::cpp::test_subqueries::exists_operand") {
 TEST_CASE("integration::cpp::test_subqueries::value_position_scalar") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/value_position_scalar"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -2135,7 +2108,6 @@ TEST_CASE("integration::cpp::test_subqueries::value_position_scalar") {
 TEST_CASE("integration::cpp::test_subqueries::null_literal_typing") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/null_literal_typing"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -2175,7 +2147,6 @@ TEST_CASE("integration::cpp::test_subqueries::null_literal_typing") {
 TEST_CASE("integration::cpp::test_subqueries::like_ilike_family") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/like_ilike_family"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -2227,7 +2198,6 @@ TEST_CASE("integration::cpp::test_subqueries::like_ilike_family") {
 TEST_CASE("integration::cpp::test_subqueries::any_subquery_disk_pushdown") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/any_subquery_disk_pushdown"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -2284,7 +2254,6 @@ TEST_CASE("integration::cpp::test_subqueries::any_subquery_disk_pushdown") {
 TEST_CASE("integration::cpp::test_subqueries::like_any_disk_pushdown") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/like_any_disk_pushdown"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -2345,7 +2314,6 @@ TEST_CASE("integration::cpp::test_subqueries::like_any_disk_pushdown") {
 TEST_CASE("integration::cpp::test_subqueries::union_null_reconcile") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/union_null_reconcile"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -2378,7 +2346,6 @@ TEST_CASE("integration::cpp::test_subqueries::union_null_reconcile") {
 TEST_CASE("integration::cpp::test_subqueries::sort_elimination") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/sort_elimination"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -2471,7 +2438,6 @@ TEST_CASE("integration::cpp::test_subqueries::sort_elimination") {
 TEST_CASE("integration::cpp::test_subqueries::in_not_in_null_semantics") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/in_not_in_null_semantics"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -2554,7 +2520,6 @@ TEST_CASE("integration::cpp::test_subqueries::in_not_in_null_semantics") {
 TEST_CASE("integration::cpp::test_subqueries::outer_aggregate_survives_where_subquery") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/outer_agg_where_subquery"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -2599,7 +2564,6 @@ TEST_CASE("integration::cpp::test_subqueries::outer_aggregate_survives_where_sub
 TEST_CASE("integration::cpp::test_subqueries::distinct_on_subquery_sort_kept") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/distinct_on_subquery_sort"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 

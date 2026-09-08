@@ -10,7 +10,7 @@
 using namespace test_helpers;
 
 TEST_CASE("integration::cpp::test_tinyint_numeric_cast::a_tinyint_column_lands_in_a_numeric_column") {
-    auto config = make_test_config(integration_fixture_path("test_tinyint_numeric_cast/signed"), true);
+    auto config = make_test_config(integration_fixture_path("test_tinyint_numeric_cast/signed"));
     config.log.level = log_t::level::off;
 
     test_spaces space(config);
@@ -49,7 +49,7 @@ TEST_CASE("integration::cpp::test_tinyint_numeric_cast::a_tinyint_column_lands_i
 }
 
 TEST_CASE("integration::cpp::test_tinyint_numeric_cast::a_utinyint_column_lands_in_a_numeric_column") {
-    auto config = make_test_config(integration_fixture_path("test_tinyint_numeric_cast/unsigned"), true);
+    auto config = make_test_config(integration_fixture_path("test_tinyint_numeric_cast/unsigned"));
     config.log.level = log_t::level::off;
 
     test_spaces space(config);

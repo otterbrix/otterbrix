@@ -152,7 +152,6 @@ namespace {
         std::filesystem::remove_all(path);
         std::filesystem::create_directories(path);
         configuration::config_wal config(path);
-        config.on = true;
         if (max_segment_size != 0) {
             config.max_segment_size = max_segment_size;
         }

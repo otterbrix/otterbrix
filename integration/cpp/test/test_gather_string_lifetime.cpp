@@ -14,7 +14,6 @@
 TEST_CASE("integration::cpp::test_gather_string_lifetime::gather_leaves_no_borrowed_strings", "[.][gatherstr]") {
     auto config = test_create_config(integration_fixture_path("test_gather_string/lifetime"));
     test_clear_directory(config);
-    config.wal.on = false;
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* d = space.dispatcher();

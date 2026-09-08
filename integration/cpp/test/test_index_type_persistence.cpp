@@ -43,7 +43,6 @@ namespace {
 TEST_CASE("integration::cpp::test_index_type_persistence::hash_index_type_survives_restart") {
     auto config = test_create_config(integration_fixture_path("test_index_type_persistence/hash_restart"));
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
 
     std::filesystem::path index_dir;
@@ -108,7 +107,6 @@ namespace {
 TEST_CASE("integration::cpp::test_index_type_persistence::temporal_key_type_survives_restart") {
     auto config = test_create_config(integration_fixture_path("test_index_type_persistence/temporal_restart"));
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
 
     const char* before[] = {

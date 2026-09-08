@@ -26,7 +26,6 @@ TEST_CASE("integration::cpp::update_upsert::an_upsert_plan_is_refused_not_quietl
     auto config =
         test_create_config(integration_fixture_path("test_update_upsert_refusal/refused"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 

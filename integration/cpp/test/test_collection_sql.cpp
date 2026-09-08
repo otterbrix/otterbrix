@@ -17,7 +17,6 @@ using id_par = core::parameter_id_t;
 TEST_CASE("integration::cpp::test_collection::sql::base") {
     auto config = test_create_config(integration_fixture_path("test_collection_sql/base"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -417,7 +416,6 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
 TEST_CASE("integration::cpp::test_collection::sql::group_by") {
     auto config = test_create_config(integration_fixture_path("test_collection_sql/group_by"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -516,7 +514,6 @@ TEST_CASE("integration::cpp::test_collection::sql::group_by") {
 TEST_CASE("integration::cpp::test_collection::sql::invalid_queries") {
     auto config = test_create_config(integration_fixture_path("test_collection_sql/invalid_queries"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -546,7 +543,6 @@ TEST_CASE("integration::cpp::test_collection::sql::invalid_queries") {
 TEST_CASE("integration::cpp::test_collection::sql::index") {
     auto config = test_create_config(integration_fixture_path("test_collection_sql/base"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -681,7 +677,6 @@ TEST_CASE("integration::cpp::test_collection::sql::index") {
 TEST_CASE("integration::cpp::test_collection::sql::udt") {
     auto config = test_create_config(integration_fixture_path("test_collection_sql/udt"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -923,7 +918,6 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
 TEST_CASE("integration::cpp::test_collection::sql::union_all_null_column_keeps_stamped_type") {
     auto config = test_create_config(integration_fixture_path("test_collection_sql/union_stamped_type"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -961,7 +955,6 @@ TEST_CASE("integration::cpp::test_collection::sql::union_all_null_column_keeps_s
 TEST_CASE("integration::cpp::test_collection::sql::union_null_branch_keeps_left_column_name") {
     auto config = test_create_config(integration_fixture_path("test_collection_sql/union_null_alias"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 

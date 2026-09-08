@@ -25,7 +25,6 @@ namespace {
 TEST_CASE("integration::cpp::test_returning::insert") {
     auto config = test_create_config(integration_fixture_path("test_returning/insert"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     setup(dispatcher);
@@ -85,7 +84,6 @@ TEST_CASE("integration::cpp::test_returning::insert") {
 TEST_CASE("integration::cpp::test_returning::update") {
     auto config = test_create_config(integration_fixture_path("test_returning/update"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     setup(dispatcher);
@@ -136,7 +134,6 @@ TEST_CASE("integration::cpp::test_returning::update") {
 TEST_CASE("integration::cpp::test_returning::delete") {
     auto config = test_create_config(integration_fixture_path("test_returning/delete"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     setup(dispatcher);
@@ -182,7 +179,6 @@ TEST_CASE("integration::cpp::test_returning::delete") {
 TEST_CASE("integration::cpp::test_returning::delete_using") {
     auto config = test_create_config(integration_fixture_path("test_returning/delete_using"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     {
@@ -291,7 +287,6 @@ TEST_CASE("integration::cpp::test_returning::delete_using_absolute_row_ids") {
     // first USING-delete makes that gap for a second USING-delete to be checked against.
     auto config = test_create_config(integration_fixture_path("test_returning/delete_using_absolute_row_ids"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     {
@@ -373,7 +368,6 @@ TEST_CASE("integration::cpp::test_returning::delete_using_absolute_row_ids") {
 TEST_CASE("integration::cpp::test_returning::update_from") {
     auto config = test_create_config(integration_fixture_path("test_returning/update_from"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     {
@@ -466,7 +460,6 @@ TEST_CASE("integration::cpp::test_returning::update_from") {
 TEST_CASE("integration::cpp::test_returning::roundtrip") {
     auto config = test_create_config(integration_fixture_path("test_returning/roundtrip"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     {
@@ -581,7 +574,6 @@ TEST_CASE("integration::cpp::test_returning::batching") {
     constexpr int kRows = 2500;
     auto config = test_create_config(integration_fixture_path("test_returning/batching"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     setup(dispatcher);
@@ -624,7 +616,6 @@ TEST_CASE("integration::cpp::test_returning::update_from_absolute_row_ids") {
     // for the streaming UPDATE ... FROM branch; also verifies index consistency after the update.
     auto config = test_create_config(integration_fixture_path("test_returning/update_from_absolute_row_ids"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     {
@@ -712,7 +703,6 @@ TEST_CASE("integration::cpp::test_returning::join_dml_streaming_multibatch") {
     constexpr int kRows = 2500;
     auto config = test_create_config(integration_fixture_path("test_returning/join_dml_streaming_multibatch"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     {
@@ -789,7 +779,6 @@ TEST_CASE("integration::cpp::test_returning::join_dml_streaming_multibatch") {
 TEST_CASE("integration::cpp::test_returning::insert_returning_error_reverts_append") {
     auto config = test_create_config(integration_fixture_path("test_returning/insert_error_revert"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     setup(dispatcher);
@@ -827,7 +816,6 @@ TEST_CASE("integration::cpp::test_returning::insert_returning_error_reverts_appe
 TEST_CASE("integration::cpp::test_returning::update_returning_error_leaves_no_writes") {
     auto config = test_create_config(integration_fixture_path("test_returning/update_error_clean"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     setup(dispatcher);

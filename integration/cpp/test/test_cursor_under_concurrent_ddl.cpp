@@ -122,7 +122,6 @@ namespace {
 TEST_CASE("integration::cursor_under_concurrent_ddl::surviving_projected_column_stays_itself") {
     auto config = test_create_config(integration_fixture_path("cursor_under_ddl/surviving_column"));
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
 
     test_spaces space(config);
@@ -163,7 +162,6 @@ TEST_CASE("integration::cursor_under_concurrent_ddl::surviving_projected_column_
 TEST_CASE("integration::cursor_under_concurrent_ddl::projected_column_dropped_refuses_loudly") {
     auto config = test_create_config(integration_fixture_path("cursor_under_ddl/dropped_column"));
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
 
     test_spaces space(config);
@@ -182,7 +180,6 @@ TEST_CASE("integration::cursor_under_concurrent_ddl::projected_column_dropped_re
 TEST_CASE("integration::cursor_under_concurrent_ddl::shifted_filter_ordinals_refuse_loudly") {
     auto config = test_create_config(integration_fixture_path("cursor_under_ddl/shifted_filter"));
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
 
     test_spaces space(config);

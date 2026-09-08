@@ -36,7 +36,6 @@ namespace {
 TEST_CASE("integration::cpp::checkpoint_rebuild_snapshot::a_commit_after_the_statements_snapshot_stays_indexed") {
     auto config = test_create_config(integration_fixture_path("test_checkpoint_rebuild_snapshot"));
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
     // Far above anything this case writes, so an automatic round can't silently repair the very loss under test.
     config.wal.auto_checkpoint_threshold_bytes = 1024ull * 1024ull * 1024ull;

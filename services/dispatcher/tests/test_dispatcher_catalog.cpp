@@ -38,6 +38,10 @@ using namespace components::types;
 // in-memory snapshot to read.
 
 namespace {
+    std::string catalog_dir(const char* leaf) {
+        return "/tmp/test_dispatcher_catalog_" + std::to_string(::getpid()) + "/" + leaf;
+    }
+
     // Clears on the way in too, so a run that died mid-test can't leave its directory for the next to boot from.
     const std::string& scrubbed(const std::string& path) {
         std::error_code ec;
@@ -55,11 +59,7 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
         , scheduler_(new core::non_thread_scheduler::scheduler_test_t(1, 1))
         , disk_config_(disk_path)
         , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource, scheduler_, scheduler_, disk_config_, log_))
-        , wal_config_([&]() {
-            configuration::config_wal c;
-            c.on = false;
-            return c;
-        }())
+        , wal_config_(disk_path)
         , manager_wal_(actor_zeta::spawn<manager_wal_replicate_t>(resource,
                                                                    scheduler_,
                                                                    wal_config_,
@@ -192,7 +192,7 @@ private:
 
 TEST_CASE("services::dispatcher::schemeful_operations") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
-    test_dispatcher test(mr.get(), "/tmp/test_dispatcher_disk_schemeful");
+    test_dispatcher test(mr.get(), catalog_dir("disk_schemeful"));
 
     test.execute_sql("CREATE DATABASE test;");
     (void) test.take_result();
@@ -261,7 +261,7 @@ TEST_CASE("services::dispatcher::schemeful_operations") {
 
 TEST_CASE("services::dispatcher::computed_operations") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
-    test_dispatcher test(mr.get(), "/tmp/test_dispatcher_disk_computed");
+    test_dispatcher test(mr.get(), catalog_dir("disk_computed"));
 
     test.execute_sql("CREATE DATABASE test;");
     (void) test.take_result();
@@ -310,10 +310,6 @@ TEST_CASE("services::dispatcher::computed_operations") {
 // truncation (a narrower key) and a token 2^32 above an oid (wraps into the neighbouring column).
 
 namespace {
-
-    std::string catalog_dir(const char* leaf) {
-        return "/tmp/test_dispatcher_catalog_" + std::to_string(::getpid()) + "/" + leaf;
-    }
 
     // `conkey_text` overwrites the encoded column list; a non-null `contype_text` overwrites the
     // constraint-kind code.

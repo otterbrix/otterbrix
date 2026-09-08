@@ -73,8 +73,7 @@ namespace {
 // try_trigger_cleanup_if_horizon_advanced's `new_lowest > last_broadcast_horizon_` gate must
 // re-fire after the discard, or the deferred-delete queue never drains again.
 TEST_CASE("integration::cpp::commit_discard_horizon::an_orphaned_commit_id_stops_the_sweeps") {
-    auto config = make_test_config(integration_fixture_path("test_commit_discard_horizon/sweeps"),
-                                   /*wal_on=*/true);
+    auto config = make_test_config(integration_fixture_path("test_commit_discard_horizon/sweeps"));
     config.log.level = log_t::level::off;
 
     wal_fault_scope_t fault;
@@ -122,8 +121,7 @@ TEST_CASE("integration::cpp::commit_discard_horizon::an_orphaned_commit_id_stops
 // discarded id as added_at_commit_id, dragging published_horizon_ past it and silently publishing
 // a transaction the engine refused.
 TEST_CASE("integration::cpp::commit_discard_horizon::a_discarded_transactions_rows_never_appear") {
-    auto config = make_test_config(integration_fixture_path("test_commit_discard_horizon/visibility"),
-                                   /*wal_on=*/true);
+    auto config = make_test_config(integration_fixture_path("test_commit_discard_horizon/visibility"));
     config.log.level = log_t::level::off;
 
     wal_fault_scope_t fault;

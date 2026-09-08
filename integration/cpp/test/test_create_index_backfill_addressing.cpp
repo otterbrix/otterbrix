@@ -40,7 +40,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::create_index_backfill_addressing::a_second_build_may_not_restage_the_first_index") {
-    auto config = make_test_config(fixture_root() + "/db", /*wal_on=*/true);
+    auto config = make_test_config(fixture_root() + "/db");
     config.log.level = log_t::level::off;
     // The meter is process-wide and an automatic checkpoint's repopulate_table bumps it too, so the threshold
     // below takes that off the board rather than hoping it won't fire mid-window.

@@ -43,8 +43,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::create_index_inflight_dml::uncommitted_insert_lands_in_the_index") {
-    auto config = make_test_config(integration_fixture_path("test_create_index_inflight_dml/uncommitted"),
-                                   /*wal_on=*/true);
+    auto config = make_test_config(integration_fixture_path("test_create_index_inflight_dml/uncommitted"));
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -108,8 +107,7 @@ TEST_CASE("integration::cpp::create_index_inflight_dml::uncommitted_insert_lands
 
 // A DELETE held uncommitted across the build, then rolled back: the build may not act on an undecided delete.
 TEST_CASE("integration::cpp::create_index_inflight_dml::rolled_back_delete_keeps_the_row_indexed") {
-    auto config = make_test_config(integration_fixture_path("test_create_index_inflight_dml/rolled_back_delete"),
-                                   /*wal_on=*/true);
+    auto config = make_test_config(integration_fixture_path("test_create_index_inflight_dml/rolled_back_delete"));
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -144,8 +142,7 @@ TEST_CASE("integration::cpp::create_index_inflight_dml::rolled_back_delete_keeps
 // Planned while the table has no index, then frozen at the pre-drive seam while CREATE INDEX finishes
 // elsewhere; only post-append reconciliation with manager_index can carry its rows into the index.
 TEST_CASE("integration::cpp::create_index_inflight_dml::stale_planned_insert_reaches_the_built_index") {
-    auto config = make_test_config(integration_fixture_path("test_create_index_inflight_dml/stale_plan"),
-                                   /*wal_on=*/true);
+    auto config = make_test_config(integration_fixture_path("test_create_index_inflight_dml/stale_plan"));
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* d = space.dispatcher();

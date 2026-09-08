@@ -13,7 +13,6 @@
 TEST_CASE("integration::cpp::test_struct_null_field_read::select_whole_struct_cell_with_a_null_field") {
     auto config = test_create_config(integration_fixture_path("test_struct_null_field_read/select"));
     test_clear_directory(config);
-    config.wal.on = false;
     config.log.level = log_t::level::off;
 
     test_spaces space(config);

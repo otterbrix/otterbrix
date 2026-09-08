@@ -76,7 +76,6 @@ TEST_CASE("integration::cpp::test_s3_cleanup_scaling::contiguous_tombstones_recl
           "[.][s3cleanup]") {
     auto config = test_create_config(integration_fixture_path("test_s3/cleanup"));
     test_clear_directory(config);
-    config.wal.on = false;
     config.log.level = log_t::level::off;
 
     core::pmr::otterbrix_resource resource;
@@ -165,7 +164,6 @@ TEST_CASE("integration::cpp::test_s3_cleanup_scaling::scattered_tombstones_recla
           "[.][s3cleanup]") {
     auto config = test_create_config(integration_fixture_path("test_s3/cleanup_scattered"));
     test_clear_directory(config);
-    config.wal.on = false;
     config.log.level = log_t::level::off;
 
     core::pmr::otterbrix_resource resource;
@@ -241,7 +239,6 @@ TEST_CASE("integration::cpp::test_s3_cleanup_scaling::scattered_tombstones_recla
 TEST_CASE("integration::cpp::test_s3_cleanup_scaling::indexed_table_cleanup_cost", "[.][s3cleanup]") {
     auto config = test_create_config(integration_fixture_path("test_s3/cleanup_indexed"));
     test_clear_directory(config);
-    config.wal.on = false;
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* d = space.dispatcher();

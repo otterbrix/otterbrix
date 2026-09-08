@@ -49,7 +49,6 @@ namespace {
 TEST_CASE("integration::cpp::index_ordered_read_through_agent::every_predicate_is_answered_by_the_agent") {
     auto config = test_create_config(integration_fixture_path("test_index_ordered_read_through_agent/predicates"));
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
 
     test_spaces space(config);
@@ -102,7 +101,6 @@ TEST_CASE("integration::cpp::index_ordered_read_through_agent::every_predicate_i
 TEST_CASE("integration::cpp::index_ordered_read_through_agent::dml_and_restart_are_reflected") {
     auto config = test_create_config(integration_fixture_path("test_index_ordered_read_through_agent/dml"));
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
 
     // Scoped: the restart below needs this instance torn down first (one otterbrix
@@ -195,7 +193,6 @@ TEST_CASE("integration::cpp::index_ordered_read_through_agent::dml_and_restart_a
 TEST_CASE("integration::cpp::index_ordered_read_through_agent::own_uncommitted_rows_satisfy_a_range") {
     auto config = test_create_config(integration_fixture_path("test_index_ordered_read_through_agent/visibility"));
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
 
     test_spaces space(config);

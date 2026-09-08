@@ -50,8 +50,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::test_oid_alloc_refusal::create_table_refuses_when_the_oid_round_delivers_nothing") {
-    auto config = test_helpers::make_test_config(integration_fixture_path("test_oid_alloc_refusal/empty"),
-                                                 /*wal_on=*/false);
+    auto config = test_helpers::make_test_config(integration_fixture_path("test_oid_alloc_refusal/empty"));
     config.log.level = log_t::level::off;
 
     test_spaces space(config);
@@ -94,8 +93,7 @@ TEST_CASE("integration::cpp::test_oid_alloc_refusal::create_table_refuses_when_t
 // The batch has a live buffer, so a read past its last OID returns a plausible number instead of crashing,
 // and the pg_attribute row for the last column is written with it.
 TEST_CASE("integration::cpp::test_oid_alloc_refusal::create_table_refuses_when_the_oid_round_is_one_short") {
-    auto config = test_helpers::make_test_config(integration_fixture_path("test_oid_alloc_refusal/short"),
-                                                 /*wal_on=*/false);
+    auto config = test_helpers::make_test_config(integration_fixture_path("test_oid_alloc_refusal/short"));
     config.log.level = log_t::level::off;
 
     test_spaces space(config);

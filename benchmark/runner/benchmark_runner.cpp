@@ -33,7 +33,6 @@ private:
         auto cfg = configuration::config::create_config(std::filesystem::current_path() /
                                                         "otterbrix_benchmark_data");
         cfg.log.level = log_t::level::off;
-        cfg.wal.on = config.wal_on;
         return cfg;
     }
 };

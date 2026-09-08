@@ -49,7 +49,6 @@ namespace {
             , wal_config([&]() {
                 configuration::config_wal c;
                 c.path = dir;
-                c.on = true;
                 return c;
             }())
             , disk_config([&]() {

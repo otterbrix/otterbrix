@@ -102,7 +102,6 @@ namespace {
 TEST_CASE("integration::cpp::fk_cascade_row_identity::cascade_deletes_only_the_children_it_owns") {
     auto config = test_create_config(integration_fixture_path("test_fk_cascade_row_identity/cascade"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -148,7 +147,6 @@ TEST_CASE("integration::cpp::fk_cascade_row_identity::cascade_deletes_only_the_c
 TEST_CASE("integration::cpp::fk_cascade_row_identity::cascade_over_an_already_emptied_child_set") {
     auto config = test_create_config(integration_fixture_path("test_fk_cascade_row_identity/cascade_empty"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -180,7 +178,6 @@ TEST_CASE("integration::cpp::fk_cascade_row_identity::cascade_over_an_already_em
 TEST_CASE("integration::cpp::fk_cascade_row_identity::set_null_writes_only_the_children_it_owns") {
     auto config = test_create_config(integration_fixture_path("test_fk_cascade_row_identity/set_null"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 

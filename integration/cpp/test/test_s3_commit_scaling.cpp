@@ -49,7 +49,6 @@ namespace {
 TEST_CASE("integration::cpp::test_s3_commit_scaling::single_row_delete_vs_table_size", "[.][s3probe]") {
     auto config = test_create_config(integration_fixture_path("test_s3/scaling"));
     test_clear_directory(config);
-    config.wal.on = false;
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* d = space.dispatcher();

@@ -25,7 +25,6 @@ namespace {
 TEST_CASE("integration::cpp::test_computed_schema::basic_insert_and_select") {
     auto config = test_create_config(cs_fixture_dir("basic"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -74,7 +73,6 @@ TEST_CASE("integration::cpp::test_computed_schema::basic_insert_and_select") {
 TEST_CASE("integration::cpp::test_computed_schema::evolving_schema") {
     auto config = test_create_config(cs_fixture_dir("evolving"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -122,7 +120,6 @@ TEST_CASE("integration::cpp::test_computed_schema::evolving_schema") {
 TEST_CASE("integration::cpp::test_computed_schema::multitype_select_star") {
     auto config = test_create_config(cs_fixture_dir("multitype_star"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     auto exec = [&](const std::string& sql) {
@@ -179,7 +176,6 @@ TEST_CASE("integration::cpp::test_computed_schema::multitype_select_star") {
 TEST_CASE("integration::cpp::test_computed_schema::delete_rows") {
     auto config = test_create_config(cs_fixture_dir("delete"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -221,7 +217,6 @@ TEST_CASE("integration::cpp::test_computed_schema::delete_rows") {
 TEST_CASE("integration::cpp::test_computed_schema::jsonb_scalar_navigation") {
     auto config = test_create_config(cs_fixture_dir("jsonb_scalar"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -284,7 +279,6 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_scalar_navigation") {
 TEST_CASE("integration::cpp::test_computed_schema::jsonb_exists") {
     auto config = test_create_config(cs_fixture_dir("jsonb_exists"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -329,7 +323,6 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_exists") {
 TEST_CASE("integration::cpp::test_computed_schema::jsonb_delete") {
     auto config = test_create_config(cs_fixture_dir("jsonb_delete"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -354,7 +347,6 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_delete") {
 TEST_CASE("integration::cpp::test_computed_schema::jsonb_expand") {
     auto config = test_create_config(cs_fixture_dir("jsonb_expand"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -378,7 +370,6 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_expand") {
 TEST_CASE("integration::cpp::test_computed_schema::multitype_variant_select") {
     auto config = test_create_config(cs_fixture_dir("multitype_variant"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     auto exec = [&](const std::string& sql) {
@@ -427,7 +418,6 @@ TEST_CASE("integration::cpp::test_computed_schema::multitype_variant_select") {
 TEST_CASE("integration::cpp::test_computed_schema::jsonb_operators_with_multitype") {
     auto config = test_create_config(cs_fixture_dir("jsonb_multitype"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     auto exec = [&](const std::string& sql) {
@@ -480,7 +470,6 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_operators_with_multityp
 TEST_CASE("integration::cpp::test_computed_schema::jsonb_multitype_semantics") {
     auto config = test_create_config(cs_fixture_dir("jsonb_mt_sem"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     auto exec = [&](const std::string& sql) {
@@ -541,7 +530,6 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_multitype_semantics") {
 TEST_CASE("integration::cpp::test_computed_schema::unary_minus_not_jsonb_delete") {
     auto config = test_create_config(cs_fixture_dir("unary_minus"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     auto exec = [&](const std::string& sql) {

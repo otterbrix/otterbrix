@@ -184,7 +184,8 @@ namespace services::dispatcher {
         std::pmr::vector<services::collection::executor::executor_ptr> executors_;
         std::pmr::vector<actor_zeta::address_t> executor_addresses_;
 
-        // Constructor arguments, never defaults; wal_address_ is empty exactly when the WAL is off.
+        // Constructor arguments, never defaults. An empty wal_address_ means a test topology that
+        // spawned no WAL manager, not a configuration a user can ask for.
         actor_zeta::address_t wal_address_;
         actor_zeta::address_t disk_address_;
         actor_zeta::address_t index_address_;

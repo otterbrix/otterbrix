@@ -171,7 +171,6 @@ namespace {
 TEST_CASE("integration::cpp::checkpoint_rebuild_before_truncate::a_refused_truncate_may_not_cost_the_index_rebuild") {
     auto config = test_create_config(integration_fixture_path("test_checkpoint_rebuild_before_truncate/orig"));
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
     config.wal.max_segment_size = kSegmentBytes;
     // Far above anything this case writes, so an automatic round can't fire mid-case and repair the state under test.
@@ -236,7 +235,6 @@ TEST_CASE("integration::cpp::checkpoint_rebuild_before_truncate::a_refused_trunc
     } // the destructor's CHECKPOINT runs against the original directory only
 
     auto crash_config = test_create_config(crash_dir);
-    crash_config.wal.on = true;
     crash_config.log.level = log_t::level::off;
     crash_config.wal.max_segment_size = kSegmentBytes;
     crash_config.wal.auto_checkpoint_threshold_bytes = 1024ull * 1024ull * 1024ull;

@@ -126,8 +126,7 @@ TEST_CASE("integration::cpp::test_insert_scaling::duplicate_id_with_primary_key_
 // No in-process id set to rebuild: the constraint's existing-row check reads reloaded
 // storage, so close+reopen must reject the same duplicate.
 TEST_CASE("integration::cpp::test_insert_scaling::duplicate_id_rejection_survives_restart") {
-    auto config = make_test_config(integration_fixture_path("test_insert_scaling/restart"),
-                                   true);
+    auto config = make_test_config(integration_fixture_path("test_insert_scaling/restart"));
 
     INFO("phase 1: table with PRIMARY KEY(_id), two rows, duplicate rejected");
     {

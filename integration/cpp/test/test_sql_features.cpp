@@ -20,7 +20,6 @@ static const collection_name_t collection_name = "testcollection";
 TEST_CASE("integration::cpp::test_sql_features::is_null") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/is_null"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -135,7 +134,6 @@ TEST_CASE("integration::cpp::test_sql_features::is_null") {
 TEST_CASE("integration::cpp::test_sql_features::in_list") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/in_list"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -216,7 +214,6 @@ TEST_CASE("integration::cpp::test_sql_features::in_list") {
 TEST_CASE("integration::cpp::test_sql_features::between") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/between"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -297,7 +294,6 @@ TEST_CASE("integration::cpp::test_sql_features::between") {
 TEST_CASE("integration::cpp::test_sql_features::like") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/like"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -427,7 +423,6 @@ TEST_CASE("integration::cpp::test_sql_features::like") {
 TEST_CASE("integration::cpp::test_sql_features::like_disk_pushdown") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/like_disk_pushdown"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -501,7 +496,6 @@ TEST_CASE("integration::cpp::test_sql_features::like_non_string_operand_errors")
     // A non-string LIKE subject must error cleanly, never be reinterpreted as a string_view (crash risk).
     auto config = test_create_config(integration_fixture_path("test_sql_features/like_non_string_subject"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -564,7 +558,6 @@ TEST_CASE("integration::cpp::test_sql_features::like_non_string_operand_errors")
 TEST_CASE("integration::cpp::test_sql_features::like_all_null_element_three_valued") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/like_all_null_element"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -615,7 +608,6 @@ TEST_CASE("integration::cpp::test_sql_features::like_all_null_element_three_valu
 TEST_CASE("integration::cpp::test_sql_features::like_any_non_string_elements_need_a_cast") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/like_any_non_string_elements"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -657,7 +649,6 @@ TEST_CASE("integration::cpp::test_sql_features::regex_invalid_pattern_disk_error
     // Built via the plan API directly since SQL LIKE always pre-converts through like_to_regex.
     auto config = test_create_config(integration_fixture_path("test_sql_features/regex_invalid_pattern_disk"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -702,7 +693,6 @@ TEST_CASE("integration::cpp::test_sql_features::like_matches_non_utf8_bytes") {
     // RE2 defaults to UTF-8; core::regex_t must compile Latin-1 (byte-wise) so LIKE matches non-UTF-8 bytes.
     auto config = test_create_config(integration_fixture_path("test_sql_features/like_latin1_bytes"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -742,7 +732,6 @@ TEST_CASE("integration::cpp::test_sql_features::like_matches_non_utf8_bytes") {
 TEST_CASE("integration::cpp::test_sql_features::distinct") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/distinct"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -808,7 +797,6 @@ TEST_CASE("integration::cpp::test_sql_features::distinct") {
 TEST_CASE("integration::cpp::test_sql_features::distinct_on") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/distinct_on"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -874,7 +862,6 @@ TEST_CASE("integration::cpp::test_sql_features::distinct_on") {
 TEST_CASE("integration::cpp::test_sql_features::count_distinct") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/count_distinct"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -944,7 +931,6 @@ TEST_CASE("integration::cpp::test_sql_features::count_distinct") {
 TEST_CASE("integration::cpp::test_sql_features::having") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/having"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -999,7 +985,6 @@ TEST_CASE("integration::cpp::test_sql_features::having") {
 TEST_CASE("integration::cpp::test_sql_features::having_first_class_node") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/having_first_class_node"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1154,7 +1139,6 @@ TEST_CASE("integration::cpp::test_sql_features::having_first_class_node") {
 TEST_CASE("integration::cpp::test_sql_features::edge_cases") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/edge_cases"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1292,7 +1276,6 @@ TEST_CASE("integration::cpp::test_sql_features::edge_cases") {
 TEST_CASE("integration::cpp::test_sql_features::coalesce") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/coalesce"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1401,7 +1384,6 @@ TEST_CASE("integration::cpp::test_sql_features::coalesce") {
 TEST_CASE("integration::cpp::test_sql_features::case_when") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/case_when"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1465,7 +1447,6 @@ TEST_CASE("integration::cpp::test_sql_features::case_when") {
 TEST_CASE("integration::cpp::test_sql_features::case_when_null_and_like") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/case_when_null_and_like"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1523,7 +1504,6 @@ TEST_CASE("integration::cpp::test_sql_features::case_when_null_and_like") {
 TEST_CASE("integration::cpp::test_sql_features::case_when_in_aggregate") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/case_when_in_aggregate"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1678,7 +1658,6 @@ TEST_CASE("integration::cpp::test_sql_features::case_when_in_aggregate") {
 TEST_CASE("integration::cpp::test_sql_features::update_with_is_null") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/update_is_null"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1737,7 +1716,6 @@ TEST_CASE("integration::cpp::test_sql_features::update_with_is_null") {
 TEST_CASE("integration::cpp::test_sql_features::datetime") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/datetime"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -2107,7 +2085,6 @@ TEST_CASE("integration::cpp::test_sql_features::datetime") {
 TEST_CASE("integration::cpp::test_sql_features::decimal_type") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/decimal_type"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -2156,7 +2133,6 @@ TEST_CASE("integration::cpp::test_sql_features::decimal_type") {
 TEST_CASE("integration::cpp::test_sql_features::check_constraint") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/check_constraint"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -2201,7 +2177,6 @@ TEST_CASE("integration::cpp::test_sql_features::check_constraint") {
     {
         auto config2 = test_create_config(integration_fixture_path("test_sql_features/check_constraint_compound"));
         test_clear_directory(config2);
-        config2.wal.on = false;
         test_spaces space2(config2);
         auto* d2 = space2.dispatcher();
         {
@@ -2240,7 +2215,6 @@ TEST_CASE("integration::cpp::test_sql_features::check_constraint") {
     {
         auto config3 = test_create_config(integration_fixture_path("test_sql_features/check_constraint_notnull"));
         test_clear_directory(config3);
-        config3.wal.on = false;
         test_spaces space3(config3);
         auto* d3 = space3.dispatcher();
         {
@@ -2270,7 +2244,6 @@ TEST_CASE("integration::cpp::test_sql_features::check_constraint_on_update") {
     // Issue #558.C: CHECK constraints must be enforced on UPDATE, not only INSERT.
     auto config = test_create_config(integration_fixture_path("test_sql_features/check_constraint_on_update"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -2344,7 +2317,6 @@ TEST_CASE("integration::cpp::test_sql_features::check_constraint_on_update") {
         auto config2 =
             test_create_config(integration_fixture_path("test_sql_features/check_constraint_on_update_compound"));
         test_clear_directory(config2);
-        config2.wal.on = false;
         test_spaces space2(config2);
         auto* d2 = space2.dispatcher();
         {
@@ -2384,7 +2356,6 @@ TEST_CASE("integration::cpp::test_sql_features::check_constraint_on_update") {
 TEST_CASE("integration::cpp::test_sql_features::check_constraint_invalid_expr") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/check_constraint_invalid_expr"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -2455,7 +2426,6 @@ TEST_CASE("integration::cpp::test_sql_features::check_constraint_invalid_expr") 
 TEST_CASE("integration::cpp::test_sql_features::ddl_error_propagation") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/ddl_error_propagation"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -2529,7 +2499,6 @@ TEST_CASE("integration::cpp::test_sql_features::ddl_error_propagation") {
 TEST_CASE("integration::cpp::test_sql_features::check_pred_cache") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/check_pred_cache"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -2607,7 +2576,6 @@ TEST_CASE("integration::cpp::test_sql_features::check_pred_cache") {
 TEST_CASE("integration::cpp::test_sql_features::fk_enforcement") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/fk_enforcement"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -2696,7 +2664,6 @@ TEST_CASE("integration::cpp::test_sql_features::fk_enforcement") {
 TEST_CASE("integration::cpp::test_sql_features::fk_cascade_restrict") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/fk_cascade_restrict"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -2765,7 +2732,6 @@ TEST_CASE("integration::cpp::test_sql_features::fk_cascade_restrict") {
 TEST_CASE("integration::cpp::test_sql_features::fk_match_full") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/fk_match_full"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -2834,7 +2800,6 @@ TEST_CASE("integration::cpp::test_sql_features::fk_match_full") {
 TEST_CASE("integration::cpp::test_sql_features::fk_cascade_delete") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/fk_cascade_delete"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -2907,7 +2872,6 @@ TEST_CASE("integration::cpp::test_sql_features::fk_cascade_delete") {
 TEST_CASE("integration::cpp::test_sql_features::fk_set_null") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/fk_set_null"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -2979,7 +2943,6 @@ TEST_CASE("integration::cpp::test_sql_features::fk_set_null") {
 TEST_CASE("integration::cpp::test_sql_features::fk_cascade_delete_rollback_restores_children") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/fk_cascade_delete_rollback"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -3058,7 +3021,6 @@ TEST_CASE("integration::cpp::test_sql_features::fk_cascade_delete_rollback_resto
 TEST_CASE("integration::cpp::test_sql_features::fk_set_null_rollback_restores_fk") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/fk_set_null_rollback"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -3136,7 +3098,6 @@ TEST_CASE("integration::cpp::test_sql_features::fk_set_null_rollback_restores_fk
 TEST_CASE("integration::cpp::test_sql_features::fk_cross_logical_same_physical_key_is_answered") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/fk_cross_logical_key"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -3205,7 +3166,6 @@ namespace {
 TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_basic_flow") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/dynamic_schema_basic"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -3269,7 +3229,6 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_basic_flow") {
 TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_drop_column") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/dynamic_schema_drop"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -3319,7 +3278,6 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_drop_column") {
 TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_multi_statement_txn") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/dynamic_schema_multi_stmt"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -3521,7 +3479,6 @@ TEST_CASE("integration::cpp::test_sql_features::ddl_inside_explicit_txn_transact
 TEST_CASE("integration::cpp::test_sql_features::alter_table_nonexistent_characterization") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/alter_nonexistent"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -3546,7 +3503,6 @@ TEST_CASE("integration::cpp::test_sql_features::alter_table_nonexistent_characte
 TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_type_evolution_multistep") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/dynamic_schema_type_evolution"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -3593,7 +3549,6 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_type_evolution_mu
 TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_re_add_after_drop") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/dynamic_schema_readd"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -3639,7 +3594,6 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_re_add_after_drop
 TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_drop_then_readd_preserves_old_data") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/dynamic_schema_drop_then_readd"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -3714,7 +3668,6 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_drop_then_readd_p
 TEST_CASE("integration::cpp::test_sql_features::drop_database_cascade_cleanup") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/drop_db_cascade"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -3829,7 +3782,6 @@ TEST_CASE("integration::cpp::test_sql_features::drop_database_cascade_cleanup") 
 TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_join") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/dynamic_schema_join"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -3882,7 +3834,6 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_join") {
 TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_join_static") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/dynamic_schema_join_static"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -3934,7 +3885,6 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_join_static") {
 TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_union") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/dynamic_schema_union"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -3982,7 +3932,6 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_union") {
 TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_subquery") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/dynamic_schema_subquery"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -4020,7 +3969,6 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_subquery") {
 TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_groupby") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/dynamic_schema_groupby"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -4061,7 +4009,6 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_groupby") {
 TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_orderby") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/dynamic_schema_orderby"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -4104,7 +4051,6 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_orderby") {
 TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_vector") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/dynamic_schema_vector"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -4161,7 +4107,6 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_vector") {
 TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_struct") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/dynamic_schema_struct"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -4219,7 +4164,6 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_struct") {
 TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_array") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/dynamic_schema_array"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -4275,7 +4219,6 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_array") {
 TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_mixed_complex") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/dynamic_schema_mixed_complex"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -4336,7 +4279,6 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_mixed_complex") {
 TEST_CASE("integration::cpp::test_sql_features::set_timezone") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/set_timezone"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -4393,7 +4335,6 @@ TEST_CASE("integration::cpp::test_sql_features::set_timezone") {
 TEST_CASE("integration::cpp::test_sql_features::comma_join") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/comma_join"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -4446,7 +4387,6 @@ TEST_CASE("integration::cpp::test_sql_features::comma_join") {
 TEST_CASE("integration::cpp::test_sql_features::create_view_e2e") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/create_view_e2e"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     auto session = otterbrix::session_id_t();
@@ -4476,7 +4416,6 @@ TEST_CASE("integration::cpp::test_sql_features::create_view_e2e") {
 TEST_CASE("integration::cpp::test_sql_features::create_matview_e2e") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/create_matview_e2e"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     auto session = otterbrix::session_id_t();
@@ -4503,7 +4442,6 @@ TEST_CASE("integration::cpp::test_sql_features::create_matview_e2e") {
 TEST_CASE("integration::cpp::test_sql_features::create_database_if_not_exists") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/create_db_if_not_exists"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -4531,7 +4469,6 @@ TEST_CASE("integration::cpp::test_sql_features::create_database_if_not_exists") 
 TEST_CASE("integration::cpp::test_sql_features::create_table_if_not_exists") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/create_tbl_if_not_exists"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -4658,7 +4595,6 @@ TEST_CASE("integration::cpp::test_sql_features::rollback_indexed_insert_leaves_c
 TEST_CASE("integration::cpp::test_sql_features::vacuum_after_alter_keeps_working") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/vacuum_after_alter"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -5090,7 +5026,6 @@ TEST_CASE("integration::cpp::test_sql_features::indexed_insert_commit_visible_af
 TEST_CASE("integration::cpp::test_sql_features::ddl statements return an empty cursor") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/ddl_empty_cursor"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -5156,7 +5091,6 @@ TEST_CASE("integration::cpp::test_sql_features::ddl statements return an empty c
 TEST_CASE("integration::cpp::test_sql_features::values_leading_null_column_promotes") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/values_leading_null"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -5198,7 +5132,6 @@ TEST_CASE("integration::cpp::test_sql_features::values_leading_null_column_promo
 TEST_CASE("integration::cpp::test_sql_features::constant_predicate_folding") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/constant_predicate"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -5267,7 +5200,6 @@ TEST_CASE("integration::cpp::test_sql_features::constant_predicate_folding") {
 TEST_CASE("integration::cpp::test_sql_features::column_vs_column") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/column_vs_column"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     auto run = [&](const std::string& sql) {
@@ -5365,14 +5297,12 @@ TEST_CASE("integration::cpp::test_sql_features::expression_filter_pushdown") {
 
     auto config = test_create_config(integration_fixture_path("test_sql_features/expression_filter_pushdown"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* disk = space.dispatcher();
     seed(disk);
 
     auto mconfig = test_create_config(integration_fixture_path("test_sql_features/expression_filter_pushdown_mem"));
     test_clear_directory(mconfig);
-    mconfig.wal.on = false;
     test_spaces mspace(mconfig);
     auto* mem = mspace.dispatcher();
     seed(mem);
@@ -5476,14 +5406,12 @@ TEST_CASE("integration::cpp::test_sql_features::union_filter_pushdown") {
 
     auto config = test_create_config(integration_fixture_path("test_sql_features/union_filter_pushdown"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* disk = space.dispatcher();
     seed(disk);
 
     auto mconfig = test_create_config(integration_fixture_path("test_sql_features/union_filter_pushdown_mem"));
     test_clear_directory(mconfig);
-    mconfig.wal.on = false;
     test_spaces mspace(mconfig);
     auto* mem = mspace.dispatcher();
     seed(mem);
@@ -5583,14 +5511,12 @@ TEST_CASE("integration::cpp::test_sql_features::col_vs_col_disk_promotes_like_in
 
     auto config = test_create_config(integration_fixture_path("test_sql_features/col_vs_col_promote"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* disk = space.dispatcher();
     seed(disk);
 
     auto mconfig = test_create_config(integration_fixture_path("test_sql_features/col_vs_col_promote_mem"));
     test_clear_directory(mconfig);
-    mconfig.wal.on = false;
     test_spaces mspace(mconfig);
     auto* mem = mspace.dispatcher();
     seed(mem);

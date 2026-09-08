@@ -72,7 +72,9 @@ namespace {
         core::error_t update(vector_t& ids, data_chunk_t& d) override { return inner_.update(ids, d); }
         core::result_wrapper_t<std::pair<int64_t, uint64_t>>
         update(vector_t& ids, data_chunk_t& d, transaction_data txn) override { return inner_.update(ids, d, txn); }
-        uint64_t delete_rows(vector_t& ids, uint64_t c) override { return inner_.delete_rows(ids, c); }
+        core::result_wrapper_t<uint64_t> delete_rows(vector_t& ids, uint64_t c) override {
+            return inner_.delete_rows(ids, c);
+        }
         std::pmr::memory_resource* resource() const override { return inner_.resource(); }
 
         core::result_wrapper_t<bool> scan_batched(std::pmr::vector<data_chunk_t>& batches,

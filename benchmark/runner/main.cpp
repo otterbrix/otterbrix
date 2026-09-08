@@ -22,7 +22,6 @@ void print_usage() {
               << "  --timeout=N         Timeout per benchmark (seconds)\n"
               << "  --benchmarks=DIR    Directory with .benchmark/.sql files\n"
               << "  --file=PATH         Run a single .benchmark or .sql file\n"
-              << "  --wal               Enable WAL\n"
               << "  --config=FILE       Load benchmark config (enable/disable benchmarks)\n"
               << "  --generate-config=FILE  Generate config file from loaded benchmarks\n"
               << "  --skip-load         Skip setup/load phase\n"
@@ -70,8 +69,6 @@ int main(int argc, char* argv[]) {
             config.show_query = true;
         } else if (arg == "--explain") {
             config.explain_mode = true;
-        } else if (arg == "--wal") {
-            config.wal_on = true;
         } else if (arg == "--skip-load") {
             config.skip_load = true;
         } else if (arg == "--load-only") {

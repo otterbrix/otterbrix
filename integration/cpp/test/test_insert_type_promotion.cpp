@@ -47,7 +47,6 @@ namespace {
 TEST_CASE("integration::cpp::test_insert_type_promotion::growth_is_not_quadratic") {
     auto config = test_create_config(integration_fixture_path("test_insert_type_promotion/growth"));
     test_clear_directory(config);
-    config.wal.on = false;
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -134,7 +133,6 @@ namespace {
 TEST_CASE("integration::cpp::test_insert_type_promotion::integer_literals_keep_their_value") {
     auto config = test_create_config(integration_fixture_path("test_insert_type_promotion/literal_values"));
     test_clear_directory(config);
-    config.wal.on = false;
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -200,7 +198,6 @@ TEST_CASE("integration::cpp::test_insert_type_promotion::integer_literals_keep_t
 TEST_CASE("integration::cpp::test_insert_type_promotion::literal_outside_the_column_range_is_rejected") {
     auto config = test_create_config(integration_fixture_path("test_insert_type_promotion/column_range"));
     test_clear_directory(config);
-    config.wal.on = false;
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();

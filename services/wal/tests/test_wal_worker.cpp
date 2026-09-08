@@ -90,7 +90,6 @@ struct test_wal_worker {
         , scheduler_(new actor_zeta::shared_work(3, 1000))
         , config_([&]() {
             configuration::config_wal c(path);
-            c.on = true;
             return c;
         }())
         , manager_(actor_zeta::spawn<manager_wal_replicate_t>(&resource_,
@@ -327,7 +326,6 @@ TEST_CASE("wal_worker::corruption_stop") {
         auto log = initialization_logger("python", "/tmp/docker_logs/");
         auto scheduler = std::make_unique<actor_zeta::shared_work>(3, 1000);
         configuration::config_wal config(test_path);
-        config.on = true;
 
         auto manager = actor_zeta::spawn<manager_wal_replicate_t>(&resource,
                                                                   scheduler.get(),
@@ -391,7 +389,6 @@ TEST_CASE("wal_worker::corruption_stop") {
     auto log = initialization_logger("python", "/tmp/docker_logs/");
     auto scheduler = std::make_unique<actor_zeta::shared_work>(3, 1000);
     configuration::config_wal config(test_path);
-    config.on = true;
 
     auto manager = actor_zeta::spawn<manager_wal_replicate_t>(&resource,
                                                               scheduler.get(),
@@ -433,7 +430,6 @@ TEST_CASE("wal_worker::crc_chain_startup") {
         auto log = initialization_logger("python", "/tmp/docker_logs/");
         auto scheduler = std::make_unique<actor_zeta::shared_work>(3, 1000);
         configuration::config_wal config(test_path);
-        config.on = true;
 
         auto manager = actor_zeta::spawn<manager_wal_replicate_t>(&resource,
                                                                   scheduler.get(),
@@ -483,7 +479,6 @@ TEST_CASE("wal_worker::crc_chain_startup") {
         auto log = initialization_logger("python", "/tmp/docker_logs/");
         auto scheduler = std::make_unique<actor_zeta::shared_work>(3, 1000);
         configuration::config_wal config(test_path);
-        config.on = true;
 
         auto manager = actor_zeta::spawn<manager_wal_replicate_t>(&resource,
                                                                   scheduler.get(),
@@ -530,7 +525,6 @@ TEST_CASE("wal_worker::segment_rotation") {
     auto log = initialization_logger("python", "/tmp/docker_logs/");
     auto scheduler = std::make_unique<actor_zeta::shared_work>(3, 1000);
     configuration::config_wal config(test_path);
-    config.on = true;
     config.max_segment_size = 8192;
 
     auto manager = actor_zeta::spawn<manager_wal_replicate_t>(&resource,
@@ -624,7 +618,6 @@ TEST_CASE("wal_worker::fsync_full_mode") {
     auto log = initialization_logger("python", "/tmp/docker_logs/");
     auto scheduler = std::make_unique<actor_zeta::shared_work>(3, 1000);
     configuration::config_wal config(test_path);
-    config.on = true;
 
     auto manager = actor_zeta::spawn<manager_wal_replicate_t>(&resource,
                                                               scheduler.get(),
@@ -684,7 +677,6 @@ TEST_CASE("wal_worker::fsync_off_mode") {
     auto log = initialization_logger("python", "/tmp/docker_logs/");
     auto scheduler = std::make_unique<actor_zeta::shared_work>(3, 1000);
     configuration::config_wal config(test_path);
-    config.on = true;
 
     auto manager = actor_zeta::spawn<manager_wal_replicate_t>(&resource,
                                                               scheduler.get(),

@@ -16,7 +16,6 @@
 TEST_CASE("integration::cpp::dispatcher::watchdog_quiet_on_healthy_runs") {
     auto config = test_create_config(integration_fixture_path("test_dispatcher_watchdog/healthy"));
     test_clear_directory(config);
-    config.wal.on = false;
     config.log.level = log_t::level::warn;
 
     {

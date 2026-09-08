@@ -51,8 +51,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::pg_catalog_dml_guard::delete_from_pg_class_cannot_erase_user_tables") {
-    auto config = test_helpers::make_test_config(integration_fixture_path("pg_catalog_dml_guard/delete_pg_class"),
-                                                 /*wal_on=*/true);
+    auto config = test_helpers::make_test_config(integration_fixture_path("pg_catalog_dml_guard/delete_pg_class"));
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -67,8 +66,7 @@ TEST_CASE("integration::cpp::pg_catalog_dml_guard::delete_from_pg_class_cannot_e
 
 // pg_attribute is the column list; a guard covering only pg_class would pass this one.
 TEST_CASE("integration::cpp::pg_catalog_dml_guard::delete_from_pg_attribute_cannot_erase_columns") {
-    auto config = test_helpers::make_test_config(integration_fixture_path("pg_catalog_dml_guard/delete_pg_attribute"),
-                                                 /*wal_on=*/true);
+    auto config = test_helpers::make_test_config(integration_fixture_path("pg_catalog_dml_guard/delete_pg_attribute"));
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -80,8 +78,7 @@ TEST_CASE("integration::cpp::pg_catalog_dml_guard::delete_from_pg_attribute_cann
 
 // UPDATE, not DELETE: renaming leaves the row count intact, so a guard keyed on row counts would miss it.
 TEST_CASE("integration::cpp::pg_catalog_dml_guard::update_of_pg_class_cannot_rename_a_user_table") {
-    auto config = test_helpers::make_test_config(integration_fixture_path("pg_catalog_dml_guard/update_pg_class"),
-                                                 /*wal_on=*/true);
+    auto config = test_helpers::make_test_config(integration_fixture_path("pg_catalog_dml_guard/update_pg_class"));
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -97,8 +94,7 @@ TEST_CASE("integration::cpp::pg_catalog_dml_guard::update_of_pg_class_cannot_ren
 // INSERT would mint a pg_class row with no storage behind it, and an oid future allocations could
 // reuse once a restart reseeds from max+1.
 TEST_CASE("integration::cpp::pg_catalog_dml_guard::insert_into_pg_class_cannot_mint_a_relation") {
-    auto config = test_helpers::make_test_config(integration_fixture_path("pg_catalog_dml_guard/insert_pg_class"),
-                                                 /*wal_on=*/true);
+    auto config = test_helpers::make_test_config(integration_fixture_path("pg_catalog_dml_guard/insert_pg_class"));
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -111,8 +107,7 @@ TEST_CASE("integration::cpp::pg_catalog_dml_guard::insert_into_pg_class_cannot_m
 }
 
 TEST_CASE("integration::cpp::pg_catalog_dml_guard::ddl_cannot_drop_or_alter_the_catalog") {
-    auto config = test_helpers::make_test_config(integration_fixture_path("pg_catalog_dml_guard/ddl_pg_class"),
-                                                 /*wal_on=*/true);
+    auto config = test_helpers::make_test_config(integration_fixture_path("pg_catalog_dml_guard/ddl_pg_class"));
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -131,8 +126,7 @@ TEST_CASE("integration::cpp::pg_catalog_dml_guard::ddl_cannot_drop_or_alter_the_
 // CREATE INDEX neither drops nor alters, so the guards above don't cover it; PostgreSQL allows it
 // via allow_system_table_mods, otterbrix has no such escape hatch.
 TEST_CASE("integration::cpp::pg_catalog_dml_guard::create_index_cannot_target_the_catalog") {
-    auto config = test_helpers::make_test_config(integration_fixture_path("pg_catalog_dml_guard/index_pg_class"),
-                                                 /*wal_on=*/true);
+    auto config = test_helpers::make_test_config(integration_fixture_path("pg_catalog_dml_guard/index_pg_class"));
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -151,8 +145,7 @@ TEST_CASE("integration::cpp::pg_catalog_dml_guard::create_index_cannot_target_th
 // The catalog check only fires for a create_index ROOT. Nested under a sequence_t (built here as
 // a raw plan) the child arm has no such check -- this case walks that arm.
 TEST_CASE("integration::cpp::pg_catalog_dml_guard::sequence_wrapped_create_index_cannot_reach_the_catalog") {
-    auto config = test_helpers::make_test_config(integration_fixture_path("pg_catalog_dml_guard/index_pg_class_seq"),
-                                                 /*wal_on=*/true);
+    auto config = test_helpers::make_test_config(integration_fixture_path("pg_catalog_dml_guard/index_pg_class_seq"));
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();

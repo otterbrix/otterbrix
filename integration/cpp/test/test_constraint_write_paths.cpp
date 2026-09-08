@@ -47,7 +47,6 @@ namespace {
     configuration::config config_for(const std::string& name) {
         auto config = test_create_config(integration_fixture_path("test_constraint_write_paths/" + name));
         test_clear_directory(config);
-        config.wal.on = false;
         config.log.level = log_t::level::off;
         return config;
     }

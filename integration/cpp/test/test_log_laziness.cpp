@@ -11,7 +11,6 @@
 TEST_CASE("integration::cpp::test_log_laziness::plan_is_not_stringified_when_logging_is_off") {
     auto config = test_create_config(integration_fixture_path("test_log_laziness/off"));
     test_clear_directory(config);
-    config.wal.on = false;
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();

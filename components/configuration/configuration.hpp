@@ -16,10 +16,6 @@ namespace configuration {
 
     struct config_wal final {
         std::filesystem::path path;
-        // The WAL can genuinely be switched off — manager_wal_replicate_t reads this into
-        // `enabled_` and base_spaces hands the dispatcher an empty address when it is false.
-        bool on{true};
-        bool sync_to_disk{true};
         uint32_t page_size{4096};
         std::size_t max_segment_size{4 * 1024 * 1024}; // 4 MB per segment
         // WAL_AUTO_CHECKPOINT_THRESHOLD_BYTES: trigger checkpoint_all when cumulative WAL

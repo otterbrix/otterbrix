@@ -33,7 +33,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::test_wide_integer_literal::int64_literals_reach_a_bigint_column_intact") {
-    auto config = make_test_config(integration_fixture_path("test_wide_integer_literal/bigint"), true);
+    auto config = make_test_config(integration_fixture_path("test_wide_integer_literal/bigint"));
     config.log.level = log_t::level::off;
 
     test_spaces space(config);
@@ -60,7 +60,7 @@ TEST_CASE("integration::cpp::test_wide_integer_literal::int64_literals_reach_a_b
 }
 
 TEST_CASE("integration::cpp::test_wide_integer_literal::a_wide_literal_in_a_predicate_matches_the_stored_row") {
-    auto config = make_test_config(integration_fixture_path("test_wide_integer_literal/predicate"), true);
+    auto config = make_test_config(integration_fixture_path("test_wide_integer_literal/predicate"));
     config.log.level = log_t::level::off;
 
     test_spaces space(config);
@@ -103,7 +103,7 @@ TEST_CASE("integration::cpp::test_wide_integer_literal::a_wide_literal_in_a_pred
 }
 
 TEST_CASE("integration::cpp::test_wide_integer_literal::a_literal_past_int64_reaches_a_wide_numeric_column") {
-    auto config = make_test_config(integration_fixture_path("test_wide_integer_literal/numeric128"), true);
+    auto config = make_test_config(integration_fixture_path("test_wide_integer_literal/numeric128"));
     config.log.level = log_t::level::off;
 
     test_spaces space(config);
@@ -125,7 +125,7 @@ TEST_CASE("integration::cpp::test_wide_integer_literal::a_literal_past_int64_rea
 }
 
 TEST_CASE("integration::cpp::test_wide_integer_literal::a_literal_wider_than_its_column_is_refused") {
-    auto config = make_test_config(integration_fixture_path("test_wide_integer_literal/column_range"), true);
+    auto config = make_test_config(integration_fixture_path("test_wide_integer_literal/column_range"));
     config.log.level = log_t::level::off;
 
     test_spaces space(config);
@@ -147,7 +147,7 @@ TEST_CASE("integration::cpp::test_wide_integer_literal::a_literal_wider_than_its
 }
 
 TEST_CASE("integration::cpp::test_wide_integer_literal::a_literal_no_type_can_hold_is_refused_loudly") {
-    auto config = make_test_config(integration_fixture_path("test_wide_integer_literal/overflow"), true);
+    auto config = make_test_config(integration_fixture_path("test_wide_integer_literal/overflow"));
     config.log.level = log_t::level::off;
 
     test_spaces space(config);

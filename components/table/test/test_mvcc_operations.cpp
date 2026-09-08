@@ -11,6 +11,15 @@
 
 #include <set>
 
+namespace {
+    // delete_rows answers a refusal, not just a count: result_wrapper_t::value() asserts the
+    // channel was cleared first, so a test that wants the number has to clear it.
+    uint64_t deleted_or_fail(core::result_wrapper_t<uint64_t> r) {
+        REQUIRE_FALSE(r.has_error());
+        return r.value();
+    }
+} // namespace
+
 using namespace components::types;
 using namespace components::vector;
 using namespace components::table;
@@ -225,7 +234,7 @@ TEST_CASE("components::table::mvcc::delete_rows_txn_commit_all_deletes") {
     auto txn_id = txn.data().transaction_id;
 
     table_delete_state del_state(&env.resource);
-    table->delete_rows(del_state, row_ids_chunk.data[0], 5, txn_id);
+    REQUIRE_FALSE(table->delete_rows(del_state, row_ids_chunk.data[0], 5, txn_id).has_error());
 
     // mgr.commit() erases txn from active_map, so `txn` is dangling from here on
     auto commit_id = mgr.commit(session);
@@ -257,7 +266,7 @@ TEST_CASE("components::table::mvcc::delete_rows_txn_without_commit_visible") {
     auto txn_id = txn.data().transaction_id;
 
     table_delete_state del_state(&env.resource);
-    table->delete_rows(del_state, row_ids_chunk.data[0], 5, txn_id);
+    REQUIRE_FALSE(table->delete_rows(del_state, row_ids_chunk.data[0], 5, txn_id).has_error());
 
     mgr.abort(session); // also erases txn from active_map; leave it uncommitted
 
@@ -285,7 +294,7 @@ TEST_CASE("components::table::mvcc::cleanup_committed_deletes") {
 
     auto txn_id = txn.data().transaction_id;
     table_delete_state del_state(&env.resource);
-    table->delete_rows(del_state, row_ids_chunk.data[0], 10, txn_id);
+    REQUIRE_FALSE(table->delete_rows(del_state, row_ids_chunk.data[0], 10, txn_id).has_error());
 
     auto commit_id = mgr.commit(session);
     mgr.publish(commit_id);
@@ -320,7 +329,7 @@ TEST_CASE("components::table::mvcc::cleanup_partial_deletes") {
 
     auto txn_id = txn.data().transaction_id;
     table_delete_state del_state(&env.resource);
-    table->delete_rows(del_state, row_ids_chunk.data[0], 5, txn_id);
+    REQUIRE_FALSE(table->delete_rows(del_state, row_ids_chunk.data[0], 5, txn_id).has_error());
 
     auto commit_id = mgr.commit(session);
     mgr.publish(commit_id);
@@ -355,7 +364,7 @@ TEST_CASE("components::table::mvcc::compact_after_delete") {
 
     auto txn_id = txn.data().transaction_id;
     table_delete_state del_state(&env.resource);
-    table->delete_rows(del_state, row_ids_chunk.data[0], 50, txn_id);
+    REQUIRE_FALSE(table->delete_rows(del_state, row_ids_chunk.data[0], 50, txn_id).has_error());
 
     auto commit_id = mgr.commit(session);
     mgr.publish(commit_id);
@@ -418,7 +427,7 @@ TEST_CASE("components::table::mvcc::delete_not_visible_until_commit") {
 
     auto txn_id = txn1.data().transaction_id;
     table_delete_state del_state(&env.resource);
-    table->delete_rows(del_state, row_ids_chunk.data[0], 5, txn_id);
+    REQUIRE_FALSE(table->delete_rows(del_state, row_ids_chunk.data[0], 5, txn_id).has_error());
 
     auto s2 = components::session::session_id_t::generate_uid();
     auto& txn2 = mgr.begin_transaction(s2);
@@ -490,7 +499,7 @@ namespace {
         row_ids_chunk.set_cardinality(1);
 
         table_delete_state del_state(&env.resource);
-        table.delete_rows(del_state, row_ids_chunk.data[0], 1, txn_id);
+        REQUIRE_FALSE(table.delete_rows(del_state, row_ids_chunk.data[0], 1, txn_id).has_error());
     }
 
     std::set<int64_t> make_range(int64_t first, int64_t last) {
@@ -720,7 +729,7 @@ TEST_CASE("components::table::mvcc::aborted_update_revert_restores_row") {
         auto del_state = table->initialize_delete({});
         auto row_ids = vector_t(&env.resource, complex_logical_type(logical_type::BIGINT), 1);
         row_ids.set_value(0, logical_value_t(&env.resource, int64_t(0)));
-        REQUIRE(table->delete_rows(*del_state, row_ids, 1, txn_id) == 1);
+        REQUIRE(deleted_or_fail(table->delete_rows(*del_state, row_ids, 1, txn_id)) == 1);
     }
     int64_t appended_start = 0;
     {
@@ -765,7 +774,7 @@ TEST_CASE("components::table::mvcc::aborted_update_revert_restores_row") {
         auto del_state = table->initialize_delete({});
         auto row_ids = vector_t(&env.resource, complex_logical_type(logical_type::BIGINT), 1);
         row_ids.set_value(0, logical_value_t(&env.resource, int64_t(0)));
-        REQUIRE(table->delete_rows(*del_state, row_ids, 1, txn2) == 1);
+        REQUIRE(deleted_or_fail(table->delete_rows(*del_state, row_ids, 1, txn2)) == 1);
     }
     int64_t start2 = 0;
     {
@@ -836,7 +845,7 @@ TEST_CASE("components::table::mvcc::committed_row_count_after_delete_past_1024")
     auto del_state = table->initialize_delete({});
     auto row_ids = vector_t(&env.resource, complex_logical_type(logical_type::BIGINT), 1);
     row_ids.set_value(0, logical_value_t(&env.resource, int64_t(1030))); // lives in row group 1
-    REQUIRE(table->delete_rows(*del_state, row_ids, 1, txn_id) == 1);
+    REQUIRE(deleted_or_fail(table->delete_rows(*del_state, row_ids, 1, txn_id)) == 1);
 
     auto commit_id = mgr.commit(session);
     mgr.publish(commit_id);
@@ -863,7 +872,7 @@ TEST_CASE("components::table::mvcc::compact_refused_while_delete_past_1024_pendi
     auto del_state = table->initialize_delete({});
     auto row_ids = vector_t(&env.resource, complex_logical_type(logical_type::BIGINT), 1);
     row_ids.set_value(0, logical_value_t(&env.resource, int64_t(1030))); // pending, no commit
-    REQUIRE(table->delete_rows(*del_state, row_ids, 1, txn_id) == 1);
+    REQUIRE(deleted_or_fail(table->delete_rows(*del_state, row_ids, 1, txn_id)) == 1);
 
     REQUIRE_FALSE(table->compact(mgr.compact_watermark()));
 
@@ -1053,7 +1062,7 @@ namespace {
             row_ids.set_value(i, logical_value_t(&env.resource, first_row + static_cast<int64_t>(i)));
         }
         auto del_state = table.initialize_delete({});
-        REQUIRE(table.delete_rows(*del_state, row_ids, count, txn_id) == count);
+        REQUIRE(deleted_or_fail(table.delete_rows(*del_state, row_ids, count, txn_id)) == count);
 
         auto commit_id = mgr.commit(session);
         mgr.publish(commit_id);

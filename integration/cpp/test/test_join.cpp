@@ -21,7 +21,6 @@ static const std::string collection_name_2 = "testcollection_2";
 TEST_CASE("integration::cpp::test_join") {
     auto config = test_create_config(integration_fixture_path("test_join/base"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto dispatcher = space.dispatcher();
 

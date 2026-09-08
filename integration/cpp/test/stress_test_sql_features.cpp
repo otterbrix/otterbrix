@@ -20,7 +20,6 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_stress_1000_rando
     // a minute and that a final SELECT * returns all 1000 rows.
     auto config = test_create_config(integration_fixture_path("test_sql_features/dynamic_schema_stress"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 

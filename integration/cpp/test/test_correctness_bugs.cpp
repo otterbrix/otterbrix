@@ -38,7 +38,6 @@ namespace {
 TEST_CASE("integration::cpp::correctness_bugs::array_int_slot_width") {
     auto config = test_create_config(integration_fixture_path("test_correctness_bugs/array_int_slot_width"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -92,7 +91,6 @@ TEST_CASE("integration::cpp::correctness_bugs::unsupported_boolean_text_arithmet
     auto config =
         test_create_config(integration_fixture_path("test_correctness_bugs/unsupported_boolean_text_arithmetic"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -138,7 +136,6 @@ TEST_CASE("integration::cpp::correctness_bugs::unsupported_boolean_text_arithmet
 TEST_CASE("integration::cpp::correctness_bugs::alias_collision") {
     auto config = test_create_config(integration_fixture_path("test_correctness_bugs/alias_collision"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -187,7 +184,6 @@ TEST_CASE("integration::cpp::correctness_bugs::star_prefix") {
     SECTION("table-qualified star") {
         auto config = test_create_config(integration_fixture_path("test_correctness_bugs/star_prefix_table"));
         test_clear_directory(config);
-        config.wal.on = false;
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -235,7 +231,6 @@ TEST_CASE("integration::cpp::correctness_bugs::star_prefix") {
     SECTION("struct field wildcard (out of scope, must error)") {
         auto config = test_create_config(integration_fixture_path("test_correctness_bugs/star_prefix_struct"));
         test_clear_directory(config);
-        config.wal.on = false;
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -269,7 +264,6 @@ TEST_CASE("integration::cpp::correctness_bugs::star_prefix") {
 TEST_CASE("integration::cpp::correctness_bugs::count_case_no_else") {
     auto config = test_create_config(integration_fixture_path("test_correctness_bugs/count_case_no_else"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -314,7 +308,6 @@ TEST_CASE("integration::cpp::correctness_bugs::count_case_no_else") {
 TEST_CASE("integration::cpp::correctness_bugs::min_max_avg_case_no_else") {
     auto config = test_create_config(integration_fixture_path("test_correctness_bugs/min_max_avg_case_no_else"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -387,7 +380,6 @@ TEST_CASE("integration::cpp::correctness_bugs::min_max_avg_case_no_else") {
 TEST_CASE("integration::cpp::correctness_bugs::case_condition_null_operand") {
     auto config = test_create_config(integration_fixture_path("test_correctness_bugs/case_condition_null_operand"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -422,7 +414,6 @@ TEST_CASE("integration::cpp::correctness_bugs::case_condition_null_operand") {
 TEST_CASE("integration::cpp::correctness_bugs::enum_scan_predicate") {
     auto config = test_create_config(integration_fixture_path("test_correctness_bugs/enum_scan_predicate"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -494,7 +485,6 @@ TEST_CASE("integration::cpp::correctness_bugs::check_violation_autocommit_no_lin
     auto config =
         test_create_config(integration_fixture_path("test_correctness_bugs/check_violation_autocommit_no_linger"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -554,7 +544,6 @@ TEST_CASE("integration::cpp::correctness_bugs::fk_violation_autocommit_no_linger
     auto config =
         test_create_config(integration_fixture_path("test_correctness_bugs/fk_violation_autocommit_no_linger"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -626,7 +615,6 @@ TEST_CASE("integration::cpp::correctness_bugs::check_violation_autocommit_revert
     auto config =
         test_create_config(integration_fixture_path("test_correctness_bugs/check_violation_reverts_physical_append"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -661,7 +649,6 @@ TEST_CASE("integration::cpp::correctness_bugs::check_violation_autocommit_revert
 TEST_CASE("integration::cpp::correctness_bugs::check_violation_revert_does_not_leak_string_payload") {
     auto config = test_create_config(integration_fixture_path("test_correctness_bugs/check_violation_string_leak"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -706,7 +693,6 @@ TEST_CASE("integration::cpp::correctness_bugs::check_violation_revert_mid_segmen
     auto config =
         test_create_config(integration_fixture_path("test_correctness_bugs/check_violation_string_leak_mid_segment"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -782,7 +768,6 @@ TEST_CASE("integration::cpp::correctness_bugs::fk_violation_autocommit_reverts_p
     auto config =
         test_create_config(integration_fixture_path("test_correctness_bugs/fk_violation_reverts_physical_append"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -828,7 +813,6 @@ TEST_CASE("integration::cpp::correctness_bugs::fk_violation_autocommit_reverts_p
 TEST_CASE("integration::cpp::correctness_bugs::fk_rejected_delete_leaves_row_updatable_and_deletable") {
     auto config = test_create_config(integration_fixture_path("test_correctness_bugs/fk_rejected_delete_row_identity"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -900,7 +884,6 @@ TEST_CASE("integration::cpp::correctness_bugs::fk_rejected_delete_leaves_row_upd
 TEST_CASE("integration::cpp::correctness_bugs::constraint_rejected_update_leaves_row_updatable") {
     auto config = test_create_config(integration_fixture_path("test_correctness_bugs/rejected_update_row_identity"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -971,7 +954,6 @@ TEST_CASE("integration::cpp::correctness_bugs::aggregate_column_arg_empty_table"
     auto config =
         test_create_config(integration_fixture_path("test_correctness_bugs/aggregate_column_arg_empty_table"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1029,7 +1011,6 @@ TEST_CASE("integration::cpp::correctness_bugs::aggregate_column_arg_empty_table"
 TEST_CASE("integration::cpp::correctness_bugs::projection_over_empty_table") {
     auto config = test_create_config(integration_fixture_path("test_correctness_bugs/projection_over_empty_table"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1065,7 +1046,6 @@ TEST_CASE("integration::cpp::correctness_bugs::projection_over_empty_table") {
 TEST_CASE("integration::cpp::correctness_bugs::like_null_pattern") {
     auto config = test_create_config(integration_fixture_path("test_correctness_bugs/like_null_pattern"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1107,7 +1087,6 @@ TEST_CASE("integration::cpp::correctness_bugs::like_null_pattern") {
 TEST_CASE("integration::cpp::correctness_bugs::scalar_not_like_null_subject") {
     auto config = test_create_config(integration_fixture_path("test_correctness_bugs/scalar_not_like_null_subject"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1149,7 +1128,6 @@ TEST_CASE("integration::cpp::correctness_bugs::decimal_operand_comparison_descal
     auto config =
         test_create_config(integration_fixture_path("test_correctness_bugs/decimal_operand_comparison_descale"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 

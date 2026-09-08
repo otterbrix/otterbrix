@@ -33,7 +33,6 @@ namespace {
 TEST_CASE("integration::cpp::index_agent_owns_hash_storage::existing_hash_index_answers_after_restart") {
     auto config = test_create_config(integration_fixture_path("test_index_agent_owns_hash_storage/existing"));
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
 
     // Scoped: the writing instance must tear down before the reading one starts.
@@ -89,7 +88,6 @@ TEST_CASE("integration::cpp::index_agent_owns_hash_storage::existing_hash_index_
 TEST_CASE("integration::cpp::index_agent_owns_hash_storage::long_key_hash_index_answers_after_restart") {
     auto config = test_create_config(integration_fixture_path("test_index_agent_owns_hash_storage/long_key"));
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
 
     // 200 chars puts the encoded key well past the 64-byte inline limit; the keydir stores a

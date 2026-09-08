@@ -39,7 +39,6 @@ namespace {
 TEST_CASE("integration::cpp::test_index_threshold_config::every_road_honours_the_configured_segment_limit") {
     auto config = test_create_config(integration_fixture_path("test_index_threshold_config/segments"));
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
     config.disk.bitcask_segment_record_limit = kSegmentRecordLimit;
 

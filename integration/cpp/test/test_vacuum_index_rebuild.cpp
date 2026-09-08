@@ -117,7 +117,6 @@ namespace {
 TEST_CASE("integration::cpp::vacuum_index_rebuild::vacuum_does_not_rebuild_what_it_never_renumbers") {
     auto config = test_create_config(integration_fixture_path("test_vacuum_index_rebuild/vacuum"));
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
     // Far above anything this case writes: an automatic checkpoint round DOES compact, and one
     // firing mid-case would legitimately repopulate and make the number below unattributable.
@@ -169,7 +168,6 @@ TEST_CASE("integration::cpp::vacuum_index_rebuild::vacuum_does_not_rebuild_what_
 TEST_CASE("integration::cpp::vacuum_index_rebuild::a_compacting_checkpoint_still_owes_the_rebuild") {
     auto config = test_create_config(integration_fixture_path("test_vacuum_index_rebuild/checkpoint"));
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
     config.wal.auto_checkpoint_threshold_bytes = 1024ull * 1024ull * 1024ull;
 
@@ -211,7 +209,6 @@ TEST_CASE("integration::cpp::vacuum_index_rebuild::what_a_vacuum_costs_on_an_ind
           "[.][vacuumcost]") {
     auto config = test_create_config(integration_fixture_path("test_vacuum_index_rebuild/cost"));
     test_clear_directory(config);
-    config.wal.on = false;
     config.log.level = log_t::level::off;
 
     test_spaces space(config);

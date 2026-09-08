@@ -14,8 +14,7 @@
 
 TEST_CASE("integration::cpp::test_index_flush_refusal::checkpoint_fails_when_an_index_flush_cannot_reach_the_disk") {
     auto config = test_helpers::make_test_config(
-        integration_fixture_path("test_index_flush_refusal/checkpoint"),
-        /*wal_on=*/true);
+        integration_fixture_path("test_index_flush_refusal/checkpoint"));
     config.log.level = log_t::level::off;
 
     test_spaces space(config);

@@ -109,7 +109,6 @@ namespace {
 TEST_CASE("integration::cpp::test_alter_rename_column::rename_column_rebinds_the_name") {
     auto config = test_create_config(integration_fixture_path("test_alter_rename_column/rebind"));
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
 
     test_spaces space(config);
@@ -152,7 +151,6 @@ TEST_CASE("integration::cpp::test_alter_rename_column::rename_column_rebinds_the
 TEST_CASE("integration::cpp::test_alter_rename_column::renamed_column_survives_restart_with_its_data") {
     auto config = test_create_config(integration_fixture_path("test_alter_rename_column/restart"));
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
 
     core::pmr::otterbrix_resource resource;
@@ -261,7 +259,6 @@ TEST_CASE("integration::cpp::test_alter_rename_column::renamed_column_survives_r
 TEST_CASE("integration::cpp::test_alter_rename_column::renamed_column_survives_a_crash_before_the_checkpoint") {
     auto config = test_create_config(integration_fixture_path("test_alter_rename_column/crash"));
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
 
     core::pmr::otterbrix_resource resource;
@@ -365,7 +362,6 @@ TEST_CASE("integration::cpp::test_alter_rename_column::renamed_column_survives_a
 TEST_CASE("integration::cpp::test_alter_rename_column::rename_and_unmaterialized_add_column_are_distinguishable") {
     auto config = test_create_config(integration_fixture_path("test_alter_rename_column/add_vs_rename"));
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
 
     core::pmr::otterbrix_resource resource;

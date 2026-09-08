@@ -25,7 +25,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::test_index_key_type_gate::unrepresentable_key_types_are_refused") {
-    auto config = make_test_config(integration_fixture_path("test_index_key_type_gate/refused"), true);
+    auto config = make_test_config(integration_fixture_path("test_index_key_type_gate/refused"));
     test_spaces space(config);
     auto* d = space.dispatcher();
 
@@ -47,7 +47,7 @@ TEST_CASE("integration::cpp::test_index_key_type_gate::unrepresentable_key_types
 
 // Mirror case: every representable type must be accepted too -- over-refusing is as much a defect.
 TEST_CASE("integration::cpp::test_index_key_type_gate::representable_key_types_are_accepted") {
-    auto config = make_test_config(integration_fixture_path("test_index_key_type_gate/accepted"), true);
+    auto config = make_test_config(integration_fixture_path("test_index_key_type_gate/accepted"));
     test_spaces space(config);
     auto* d = space.dispatcher();
 
@@ -67,7 +67,7 @@ TEST_CASE("integration::cpp::test_index_key_type_gate::representable_key_types_a
 // Bulk INSERT never calls convert() (goes through insert_bulk_unchecked), so the abort half is
 // pinned separately in services/index/tests/test_index_disk.cpp.
 TEST_CASE("integration::cpp::test_index_key_type_gate::temporal_indexes_return_the_right_rows") {
-    auto config = make_test_config(integration_fixture_path("test_index_key_type_gate/temporal"), true);
+    auto config = make_test_config(integration_fixture_path("test_index_key_type_gate/temporal"));
     test_spaces space(config);
     auto* d = space.dispatcher();
 
@@ -113,7 +113,7 @@ TEST_CASE("integration::cpp::test_index_key_type_gate::temporal_indexes_return_t
 // DECIMAL sits on the seam: physical_value (b+tree) has no DECIMAL representation and refuses it;
 // the hash side round-trips it via append_decimal_payload, proven here with real inserts.
 TEST_CASE("integration::cpp::test_index_key_type_gate::decimal_is_hash_only") {
-    auto config = make_test_config(integration_fixture_path("test_index_key_type_gate/decimal"), true);
+    auto config = make_test_config(integration_fixture_path("test_index_key_type_gate/decimal"));
     test_spaces space(config);
     auto* d = space.dispatcher();
 
@@ -141,7 +141,7 @@ TEST_CASE("integration::cpp::test_index_key_type_gate::decimal_is_hash_only") {
 // A DATE key compares as its raw INT32 day count (physical_value has no temporal tag), so
 // post-restart probes must land in the same encoding domain as pre-restart keys.
 TEST_CASE("integration::cpp::test_index_key_type_gate::temporal_index_survives_restart") {
-    auto config = make_test_config(integration_fixture_path("test_index_key_type_gate/restart"), true);
+    auto config = make_test_config(integration_fixture_path("test_index_key_type_gate/restart"));
 
     {
         test_spaces space(config);

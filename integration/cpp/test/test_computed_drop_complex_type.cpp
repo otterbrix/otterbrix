@@ -44,7 +44,6 @@ namespace {
 TEST_CASE("integration::cpp::computed_drop::simple_field_is_hidden") {
     auto config = test_create_config(fixture_path("simple"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* d = space.dispatcher();
 
@@ -65,7 +64,6 @@ TEST_CASE("integration::cpp::computed_drop::simple_field_is_hidden") {
 TEST_CASE("integration::cpp::computed_drop::complex_typed_field_is_hidden") {
     auto config = test_create_config(fixture_path("complex"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* d = space.dispatcher();
 
@@ -93,7 +91,6 @@ TEST_CASE("integration::cpp::computed_drop::complex_typed_field_is_hidden") {
 TEST_CASE("integration::cpp::computed_drop::rename_on_computed_table_refused_loudly") {
     auto config = test_create_config(fixture_path("rename"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* d = space.dispatcher();
 
@@ -122,7 +119,6 @@ TEST_CASE("integration::cpp::computed_drop::rename_on_computed_table_refused_lou
 TEST_CASE("integration::cpp::computed_drop::every_variant_of_the_field_is_hidden") {
     auto config = test_create_config(fixture_path("variants"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* d = space.dispatcher();
 

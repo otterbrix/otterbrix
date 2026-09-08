@@ -210,7 +210,7 @@ namespace {
 TEST_CASE("integration::cpp::test_catalog_read_refusal::register_udf_fails_when_pg_proc_cannot_be_read") {
     const std::filesystem::path dir = integration_fixture_path("test_catalog_read_refusal/register_udf");
     std::filesystem::remove_all(dir);
-    auto config = test_helpers::make_test_config(dir, /*wal_on=*/true);
+    auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
     {
@@ -224,7 +224,7 @@ TEST_CASE("integration::cpp::test_catalog_read_refusal::register_udf_fails_when_
         "/" + std::to_string(static_cast<unsigned>(components::catalog::well_known_oid::pg_proc_table)) + "/";
 
     const std::filesystem::path probe_dir = std::filesystem::path(dir.string() + "_probe");
-    auto probe_config = test_helpers::make_test_config(probe_dir, /*wal_on=*/true);
+    auto probe_config = test_helpers::make_test_config(probe_dir);
     probe_config.log.level = log_t::level::off;
     std::filesystem::remove_all(probe_dir);
     std::filesystem::copy(dir, probe_dir, std::filesystem::copy_options::recursive);
@@ -279,7 +279,7 @@ TEST_CASE("integration::cpp::test_catalog_read_refusal::register_udf_fails_when_
 TEST_CASE("integration::cpp::test_catalog_read_refusal::a_healthy_second_overload_is_already_exists") {
     const std::filesystem::path dir = integration_fixture_path("test_catalog_read_refusal/duplicate");
     std::filesystem::remove_all(dir);
-    auto config = test_helpers::make_test_config(dir, /*wal_on=*/true);
+    auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
     read_refusal_spaces_t space(config);

@@ -14,7 +14,6 @@
 TEST_CASE("integration::cpp::arithmetic_type_guards::mixed_bool_int_insert_survives") {
     auto config = test_create_config(integration_fixture_path("test_arithmetic_type_guards/mixed_insert"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -71,7 +70,6 @@ namespace {
 TEST_CASE("integration::cpp::arithmetic_type_guards::where_arithmetic_rejects_non_numeric") {
     auto config = test_create_config(integration_fixture_path("test_arithmetic_type_guards/where_guards"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     setup(dispatcher);
@@ -107,7 +105,6 @@ TEST_CASE("integration::cpp::arithmetic_type_guards::where_arithmetic_rejects_no
 TEST_CASE("integration::cpp::arithmetic_type_guards::where_null_3vl_preserved") {
     auto config = test_create_config(integration_fixture_path("test_arithmetic_type_guards/where_3vl"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -146,7 +143,6 @@ TEST_CASE("integration::cpp::arithmetic_type_guards::where_null_3vl_preserved") 
 TEST_CASE("integration::cpp::arithmetic_type_guards::update_rejects_non_numeric_arithmetic") {
     auto config = test_create_config(integration_fixture_path("test_arithmetic_type_guards/update_guard"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     setup(dispatcher);

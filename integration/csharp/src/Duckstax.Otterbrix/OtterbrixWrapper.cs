@@ -45,8 +45,6 @@ namespace Duckstax.Otterbrix
         public string walPath;
         public string diskPath;
         public string mainPath;
-        public bool walOn;
-        public bool syncWalToDisk;
 
         public Config() {
             level = LogLevel.Trace;
@@ -54,28 +52,21 @@ namespace Duckstax.Otterbrix
             walPath = System.Environment.CurrentDirectory + "/wal";
             diskPath = System.Environment.CurrentDirectory + "/disk";
             mainPath = System.Environment.CurrentDirectory;
-            walOn = true;
-            syncWalToDisk = true;
         }
-        // No `disk` parameter: every table is disk-backed, so there is nothing for it to
-        // select. TransferConfig below must stay field-for-field with the C `config_t` --
-        // LayoutKind.Sequential marshals by position, so a stale field there would shift
-        // walOn/syncWalToDisk onto the wrong bytes.
-        public Config(LogLevel level,
-                      string path,
-                      bool wal,
-                      bool walDiskSync) {
+        // No `disk`, `walDiskSync` or `wal` parameter: every table is disk-backed, every commit
+        // fsyncs, and the journal is not optional. TransferConfig below must stay field-for-field
+        // with the C `config_t` -- LayoutKind.Sequential marshals by position, so a stale field
+        // there would land on the wrong bytes with nothing to report it.
+        public Config(LogLevel level, string path) {
             this.level = level;
             logPath = path + "/log";
             walPath = path + "/wal";
             diskPath = path + "/disk";
             mainPath = path;
-            walOn = wal;
-            syncWalToDisk = walDiskSync;
         }
         public static Config DefaultConfig() { return new Config(); }
         public static Config CreateConfig(string path) {
-            return new Config(LogLevel.Trace, path, true, true);
+            return new Config(LogLevel.Trace, path);
         }
     }
 
@@ -90,16 +81,12 @@ namespace Duckstax.Otterbrix
             public StringPasser walPath;
             public StringPasser diskPath;
             public StringPasser mainPath;
-            public bool walOn;
-            public bool syncWalToDisk;
             public TransferConfig(ref Config config) {
                 this.level = (int) config.level;
                 this.logPath = new StringPasser(ref config.logPath);
                 this.walPath = new StringPasser(ref config.walPath);
                 this.diskPath = new StringPasser(ref config.diskPath);
                 this.mainPath = new StringPasser(ref config.mainPath);
-                this.walOn = config.walOn;
-                this.syncWalToDisk = config.syncWalToDisk;
             }
         }
 

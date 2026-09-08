@@ -80,7 +80,6 @@ namespace {
 TEST_CASE("integration::cpp::delete_floor_resurrection::committed_delete_survives_restart") {
     auto config = test_create_config(integration_fixture_path("test_delete_floor_resurrection/src"));
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
     // auto_checkpoint disabled: the only checkpoint here is the explicit one fired into the held window.
     config.wal.auto_checkpoint_threshold_bytes = 0;
@@ -124,7 +123,6 @@ TEST_CASE("integration::cpp::delete_floor_resurrection::committed_delete_survive
 
     {
         auto crash_config = test_create_config(crash_dir);
-        crash_config.wal.on = true;
         crash_config.log.level = log_t::level::off;
         crash_config.wal.auto_checkpoint_threshold_bytes = 0;
 

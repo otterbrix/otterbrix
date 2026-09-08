@@ -61,7 +61,6 @@ namespace {
 TEST_CASE("integration::cpp::index_stale_after_compact::a_crash_after_a_compacting_checkpoint_keeps_the_index") {
     auto config = test_create_config(integration_fixture_path("test_index_stale_after_compact/orig"));
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
 
     const std::filesystem::path crash_dir = integration_fixture_path("test_index_stale_after_compact/crashed");
@@ -118,7 +117,6 @@ TEST_CASE("integration::cpp::index_stale_after_compact::a_crash_after_a_compacti
     } // the destructor's CHECKPOINT runs against the ORIGINAL directory only
 
     auto crash_config = test_create_config(crash_dir);
-    crash_config.wal.on = true;
     crash_config.log.level = log_t::level::off;
     {
         test_spaces space(crash_config);
@@ -179,7 +177,6 @@ TEST_CASE("integration::cpp::index_stale_after_compact::a_crash_after_a_compacti
 TEST_CASE("integration::cpp::index_stale_after_compact::the_wal_auto_checkpoint_rebuilds_what_it_renumbers") {
     auto config = test_create_config(integration_fixture_path("test_index_stale_after_compact/auto"));
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
     // Small enough that a handful of multi-row statements trips it.
     config.wal.auto_checkpoint_threshold_bytes = 8 * 1024;

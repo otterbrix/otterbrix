@@ -88,7 +88,6 @@ namespace {
 TEST_CASE("integration::cpp::test_raw_join") {
     auto config = test_create_config(integration_fixture_path("test_raw_join/base"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto dispatcher = space.dispatcher();
     auto* res = dispatcher->resource();

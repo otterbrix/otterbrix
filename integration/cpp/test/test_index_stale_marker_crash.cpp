@@ -199,7 +199,6 @@ namespace {
 TEST_CASE("integration::cpp::index_stale_marker_crash::a_restart_may_not_wire_an_index_left_naming_precompact_rows") {
     auto config = test_create_config(fixture_root() + "/orig");
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
     config.wal.auto_checkpoint_threshold_bytes = 1024ull * 1024ull * 1024ull;
 
@@ -296,7 +295,6 @@ TEST_CASE("integration::cpp::index_stale_marker_crash::a_restart_may_not_wire_an
     } // the destructor's CHECKPOINT runs against the ORIGINAL directory only
 
     auto crash_config = test_create_config(crash_dir);
-    crash_config.wal.on = true;
     crash_config.log.level = log_t::level::off;
     crash_config.wal.auto_checkpoint_threshold_bytes = 1024ull * 1024ull * 1024ull;
     {

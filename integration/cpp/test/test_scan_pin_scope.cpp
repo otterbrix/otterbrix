@@ -42,7 +42,6 @@ namespace {
 TEST_CASE("integration::cpp::test_scan_pin_scope::a_scan_pins_per_segment_not_per_row", "[.][scanpin]") {
     auto config = test_create_config(integration_fixture_path("test_scan_pin/scope"));
     test_clear_directory(config);
-    config.wal.on = false;
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -89,7 +88,6 @@ TEST_CASE("integration::cpp::test_scan_pin_scope::a_scan_pins_per_segment_not_pe
 TEST_CASE("integration::cpp::test_scan_pin_scope::predicate_evaluation_pins_per_segment", "[.][predpin]") {
     auto config = test_create_config(integration_fixture_path("test_scan_pin/predicate"));
     test_clear_directory(config);
-    config.wal.on = false;
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* d = space.dispatcher();

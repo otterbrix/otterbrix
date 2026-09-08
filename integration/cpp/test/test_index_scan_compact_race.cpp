@@ -105,7 +105,6 @@ namespace {
 TEST_CASE("integration::cpp::index_scan_compact_race::matched_row_ids_survive_a_compacting_checkpoint") {
     auto config = test_create_config(integration_fixture_path("test_index_scan_compact_race/src"));
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
     // No automatic checkpoint, so the only compact is the explicit CHECKPOINT fired into the
     // held window.

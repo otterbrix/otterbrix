@@ -71,7 +71,6 @@ namespace {
 TEST_CASE("integration::cpp::test_index_txn_log_routing::hash_journals_btree_does_not") {
     auto config = test_create_config(integration_fixture_path("test_index_txn_log_routing/routes"));
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
 
     std::filesystem::path bitcask_dir;

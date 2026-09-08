@@ -110,7 +110,6 @@ namespace {
 TEST_CASE("integration::cpp::index_stale_window::reader_in_window_is_refused_not_lied_to") {
     auto config = test_create_config(integration_fixture_path("test_index_stale_window_refusal/src"));
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
     // No automatic checkpoint: the only compacts are the explicit CHECKPOINTs below, so every
     // outcome is attributable to a known round.

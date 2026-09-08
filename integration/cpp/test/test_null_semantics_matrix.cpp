@@ -205,7 +205,7 @@ TEST_CASE("integration::cpp::null_matrix::comparisons_computing_table") {
 }
 
 TEST_CASE("integration::cpp::null_matrix::comparisons_disk_and_restart") {
-    auto config = test_helpers::make_test_config(integration_fixture_path("nmx/cmp_disk"), true);
+    auto config = test_helpers::make_test_config(integration_fixture_path("nmx/cmp_disk"));
     {
         test_spaces space(config);
         auto* d = space.dispatcher();
@@ -248,7 +248,7 @@ TEST_CASE("integration::cpp::null_matrix::arithmetic_projection") {
 }
 
 TEST_CASE("integration::cpp::null_matrix::arithmetic_where_and_update") {
-    auto config = test_helpers::make_test_config(integration_fixture_path("nmx/arith_wu"), true);
+    auto config = test_helpers::make_test_config(integration_fixture_path("nmx/arith_wu"));
     {
         test_spaces space(config);
         auto* d = space.dispatcher();
@@ -450,7 +450,7 @@ TEST_CASE("integration::cpp::null_matrix::array_element") {
 }
 
 TEST_CASE("integration::cpp::null_matrix::index_parity") {
-    auto config = test_helpers::make_test_config(integration_fixture_path("nmx/idx"), true);
+    auto config = test_helpers::make_test_config(integration_fixture_path("nmx/idx"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(okq(d, "CREATE DATABASE m;"));

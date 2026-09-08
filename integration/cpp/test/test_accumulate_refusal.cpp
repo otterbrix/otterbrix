@@ -28,8 +28,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::accumulate_refusal::a_successful_dml_statement_has_published_its_rows") {
-    auto config = test_helpers::make_test_config(integration_fixture_path("test_accumulate_refusal/dml"),
-                                                 /*wal_on=*/true);
+    auto config = test_helpers::make_test_config(integration_fixture_path("test_accumulate_refusal/dml"));
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -69,8 +68,7 @@ TEST_CASE("integration::cpp::accumulate_refusal::a_successful_dml_statement_has_
 }
 
 TEST_CASE("integration::cpp::accumulate_refusal::an_explicit_transaction_publishes_what_its_statements_reported") {
-    auto config = test_helpers::make_test_config(integration_fixture_path("test_accumulate_refusal/explicit"),
-                                                 /*wal_on=*/true);
+    auto config = test_helpers::make_test_config(integration_fixture_path("test_accumulate_refusal/explicit"));
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -93,8 +91,7 @@ TEST_CASE("integration::cpp::accumulate_refusal::an_explicit_transaction_publish
 }
 
 TEST_CASE("integration::cpp::accumulate_refusal::a_successful_ddl_statement_has_published_its_catalog_rows") {
-    auto config = test_helpers::make_test_config(integration_fixture_path("test_accumulate_refusal/ddl"),
-                                                 /*wal_on=*/true);
+    auto config = test_helpers::make_test_config(integration_fixture_path("test_accumulate_refusal/ddl"));
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();

@@ -116,11 +116,7 @@ struct admin_fixture : actor_zeta::actor::actor_mixin<admin_fixture> {
         , scheduler_(new core::non_thread_scheduler::scheduler_test_t(1, 1))
         , disk_config_(disk_path)
         , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource, scheduler_, scheduler_, disk_config_, log_))
-        , wal_config_([&]() {
-            configuration::config_wal c;
-            c.on = false;
-            return c;
-        }())
+        , wal_config_(disk_path)
         , manager_wal_(actor_zeta::spawn<manager_wal_replicate_t>(resource,
                                                                    scheduler_,
                                                                    wal_config_,

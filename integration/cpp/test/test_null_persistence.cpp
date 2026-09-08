@@ -19,7 +19,6 @@
 TEST_CASE("integration::cpp::test_null_persistence::nulls_survive_checkpoint_and_restart") {
     auto config = test_create_config(integration_fixture_path("test_null_persistence/basic"));
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
 
     INFO("phase 1: disk table with NULLs in a nullable column, verified, then CHECKPOINT");
@@ -103,7 +102,6 @@ TEST_CASE("integration::cpp::test_null_persistence::nulls_survive_checkpoint_and
 TEST_CASE("integration::cpp::test_null_persistence::nested_nulls_survive_checkpoint_and_restart") {
     auto config = test_create_config(integration_fixture_path("test_null_persistence/nested"));
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
 
     INFO("phase 1: LIST + ARRAY + STRUCT columns with whole-cell and interior NULLs, then CHECKPOINT");
@@ -237,7 +235,6 @@ TEST_CASE("integration::cpp::test_null_persistence::nested_nulls_survive_checkpo
 TEST_CASE("integration::cpp::test_null_persistence::nulls_survive_past_first_row_group") {
     auto config = test_create_config(integration_fixture_path("test_null_persistence/multi_rg"));
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
 
     constexpr int64_t ROWS = 3000;    // > 2 row groups of 1024

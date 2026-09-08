@@ -131,7 +131,7 @@ namespace services::wal {
 
         // Reads only; commit_txn resets the counter, run_auto_checkpoint rebases after the checkpoint.
         bool needs_auto_checkpoint() const noexcept {
-            return config_.on && config_.auto_checkpoint_threshold_bytes > 0 &&
+            return config_.auto_checkpoint_threshold_bytes > 0 &&
                    wal_bytes_since_checkpoint_.load(std::memory_order_relaxed) >=
                        config_.auto_checkpoint_threshold_bytes;
         }
@@ -154,7 +154,6 @@ namespace services::wal {
         actor_zeta::scheduler_raw scheduler_;
         configuration::config_wal config_;
         log_t log_;
-        bool enabled_;
         atomic_id_t global_id_{0};
         // Written from the commit_txn coroutine, read by the dispatcher thread via needs_auto_checkpoint().
         std::atomic<std::uintmax_t> wal_bytes_since_checkpoint_{0};

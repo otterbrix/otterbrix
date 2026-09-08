@@ -9,7 +9,6 @@
 #include <core/executor.hpp>
 #include <core/file/file_handle.hpp>
 #include <core/file/local_file_system.hpp>
-#include <core/pipeline_bypass.hpp>
 #include <cstdint>
 #include <memory>
 #include <services/disk/manager_disk.hpp>
@@ -63,6 +62,14 @@ namespace otterbrix {
         } path_guard{main_path_};
 
         services::wal::id_t last_wal_id{0};
+
+        // An empty wal.path is not "no WAL", it is a WAL nobody can find: manager_wal_replicate_t
+        // skips its recovery scan on it and total_wal_bytes() answers 0, so the auto-checkpoint
+        // threshold never fires. Refused here rather than left as a second, quieter off switch.
+        if (config.wal.path.empty()) {
+            throw std::runtime_error("spaces::startup REFUSED , config.wal.path is empty: the WAL is the "
+                                     "table's only redo record between checkpoints and has nowhere to write");
+        }
 
         if (!config.disk.path.empty()) {
             const auto legacy_catalog_otbx = config.disk.path / "catalog.otbx";
@@ -123,14 +130,11 @@ namespace otterbrix {
         trace(log_, "spaces::manager_wal finish");
 
         trace(log_, "spaces::manager_dispatcher start");
-        // Deliberately absent when the WAL is off, so every wal-address guard skips the round-trip.
-        const auto effective_wal_address =
-            config.wal.on ? manager_wal_address : components::pipeline::no_mailbox();
         manager_dispatcher_ =
             actor_zeta::spawn<services::dispatcher::manager_dispatcher_t>(&resource,
                                                                           scheduler_dispatcher_.get(),
                                                                           log_,
-                                                                          effective_wal_address,
+                                                                          manager_wal_address,
                                                                           manager_disk_address,
                                                                           manager_index_address,
                                                                           config.execution.dml_flush_row_threshold,
@@ -167,7 +171,7 @@ namespace otterbrix {
                   rehydrated.value());
         }
 
-        disk.set_manager_wal_sync(effective_wal_address);
+        disk.set_manager_wal_sync(manager_wal_address);
 
         // System-table records mutate the catalog user-table restore depends on.
         if (!wal_records.empty()) {
@@ -236,8 +240,7 @@ namespace otterbrix {
 
             // Legal only pre-scheduler-start (a running engine would corrupt snapshots); synthesis
             // mutates manager_disk_t::storages_ with no lock, and a parallel variant TSan-confirmed raced on it.
-            auto replay_one = core::maintenance::pipeline_bypass<
-                core::maintenance::bypass_site::wal_replay_storage_synthesis>(
+            auto replay_one =
                 [&disk, &log = log_](components::catalog::oid_t table_oid,
                                         components::catalog::oid_t ns_oid,
                                         std::vector<services::wal::record_t*>& records) {
@@ -454,7 +457,7 @@ namespace otterbrix {
                                 break;
                         }
                     }
-                });
+                };
 
             for (auto& [oid, records] : system_by_oid) {
                 replay_one(oid, ns_for(oid), records);

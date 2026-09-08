@@ -2670,7 +2670,6 @@ TEST_CASE("integration::cpp::test_persistence::indexed_table_compact_survives_re
 // unconditionally, so phase-1 rows must survive reopen (storage_append must not silently no-op).
 TEST_CASE("integration::cpp::test_persistence::reopen_reinsert_visible") {
     auto config = test_create_config(integration_fixture_path("test_persistence/reopen_in_memory_reinsert"));
-    config.wal.on = false;
     test_clear_directory(config);
 
     INFO("phase 1: create table + insert 100 rows");

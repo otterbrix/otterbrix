@@ -46,7 +46,6 @@ namespace {
 #define STRPROJ_ENV(dirname)                                                                                           \
     auto config = test_create_config(integration_fixture_path("test_string_projection/" dirname));                    \
     test_clear_directory(config);                                                                                      \
-    config.wal.on = false;                                                                                             \
     config.log.level = log_t::level::off;                                                                              \
     test_spaces space(config);                                                                                         \
     auto* d = space.dispatcher();                                                                                      \

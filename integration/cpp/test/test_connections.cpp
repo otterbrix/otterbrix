@@ -15,7 +15,6 @@ constexpr size_t work_per_thread = doc_num / num_threads;
 TEST_CASE("integration::cpp::test_otterbrix_multithread") {
     auto config = test_create_config(integration_fixture_path("test_otterbrix_multithread"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -87,7 +86,6 @@ TEST_CASE("integration::cpp::test_otterbrix_multithread") {
 TEST_CASE("integration::cpp::test_connectors") {
     auto config = test_create_config(integration_fixture_path("test_connectors"));
     test_clear_directory(config);
-    config.wal.on = false;
     auto otterbrix = otterbrix::make_otterbrix(config);
 
     INFO("initialization");
@@ -168,7 +166,6 @@ TEST_CASE("integration::cpp::connection::execute_after_close_refuses_loudly") {
     auto config = test_create_config(integration_fixture_path("test_connection_after_close") /
                                      std::to_string(::getpid()));
     test_clear_directory(config);
-    config.wal.on = false;
     auto otterbrix = otterbrix::make_otterbrix(config);
 
     otterbrix::connection_t connection(otterbrix);

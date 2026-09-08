@@ -44,7 +44,6 @@ namespace {
     test_spaces make_space(const std::string& subdir) {
         auto config = test_create_config(integration_fixture_path("test_parameterized_queries/" + subdir));
         test_clear_directory(config);
-        config.wal.on = false;
         return test_spaces(config);
     }
 } // namespace

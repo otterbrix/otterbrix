@@ -34,7 +34,6 @@ namespace {
 TEST_CASE("integration::cpp::index_fetch_visibility::point_fetch_honours_the_readers_snapshot") {
     auto config = test_create_config(integration_fixture_path("test_index_fetch_visibility/snapshot"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -107,7 +106,6 @@ TEST_CASE("integration::cpp::index_fetch_visibility::point_fetch_honours_the_rea
 TEST_CASE("integration::cpp::index_fetch_visibility::point_fetch_keeps_rows_the_snapshot_owns") {
     auto config = test_create_config(integration_fixture_path("test_index_fetch_visibility/retain"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 

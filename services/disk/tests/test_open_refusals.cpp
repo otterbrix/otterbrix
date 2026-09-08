@@ -1095,7 +1095,6 @@ TEST_CASE("services::disk::open::a_refused_journal_record_cancels_the_backfill_p
         fault.refuse_open = true;
 
         configuration::config_wal wal_config(wal_dir);
-        wal_config.on = true;
 
         open_fixture fx(base);
         auto wal_manager = actor_zeta::spawn<services::wal::manager_wal_replicate_t>(
@@ -1123,7 +1122,6 @@ TEST_CASE("services::disk::open::a_refused_journal_record_cancels_the_backfill_p
         wal_backfill_fault_scope_t fault;
 
         configuration::config_wal wal_config(wal_dir);
-        wal_config.on = true;
 
         open_fixture fx(base);
         auto wal_manager = actor_zeta::spawn<services::wal::manager_wal_replicate_t>(

@@ -79,7 +79,6 @@ namespace {
     configuration::config_wal reopen_config(const std::filesystem::path& path) {
         std::filesystem::create_directories(path);
         configuration::config_wal config(path);
-        config.on = true;
         return config;
     }
 

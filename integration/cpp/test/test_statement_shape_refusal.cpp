@@ -23,7 +23,6 @@ namespace {
 TEST_CASE("integration::cpp::statement_shape::no_statement_is_a_named_refusal") {
     auto config = test_create_config(integration_fixture_path("test_statement_shape_w3/no_statement"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -47,7 +46,6 @@ TEST_CASE("integration::cpp::statement_shape::no_statement_is_a_named_refusal") 
 TEST_CASE("integration::cpp::statement_shape::multi_statement_is_refused_whole") {
     auto config = test_create_config(integration_fixture_path("test_statement_shape_w3/multi"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 

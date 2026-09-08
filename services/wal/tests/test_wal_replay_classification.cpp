@@ -68,7 +68,6 @@ namespace {
             , scheduler_(new actor_zeta::shared_work(2, 1000))
             , config_([&]() {
                 configuration::config_wal c(path);
-                c.on = true;
                 return c;
             }())
             , manager_(actor_zeta::spawn<manager_wal_replicate_t>(&resource_,
@@ -135,7 +134,6 @@ TEST_CASE("wal::classification::replay_skips_a_foreign_named_directory") {
     auto log = initialization_logger("python", "/tmp/docker_logs/");
     core::pmr::otterbrix_resource resource;
     configuration::config_wal config(path);
-    config.on = true;
 
     const auto db_dir = config.path / std::to_string(static_cast<unsigned>(kMainDb));
     REQUIRE(std::filesystem::exists(db_dir));

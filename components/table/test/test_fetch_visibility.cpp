@@ -23,6 +23,15 @@
 #include <string>
 #include <unistd.h>
 
+namespace {
+    // delete_rows answers a refusal, not just a count: result_wrapper_t::value() asserts the
+    // channel was cleared first, so a test that wants the number has to clear it.
+    uint64_t deleted_or_fail(core::result_wrapper_t<uint64_t> r) {
+        REQUIRE_FALSE(r.has_error());
+        return r.value();
+    }
+} // namespace
+
 using namespace components::types;
 using namespace components::vector;
 using namespace components::table;
@@ -95,7 +104,7 @@ namespace {
         ids.set_cardinality(1);
 
         table_delete_state del_state(&env.resource);
-        REQUIRE(table.delete_rows(del_state, ids.data[0], 1, txn_id) == 1);
+        REQUIRE(deleted_or_fail(table.delete_rows(del_state, ids.data[0], 1, txn_id)) == 1);
     }
 
     struct fetched_t {

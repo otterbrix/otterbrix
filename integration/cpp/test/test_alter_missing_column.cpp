@@ -43,7 +43,6 @@ namespace {
 TEST_CASE("integration::cpp::test_alter_missing_column::drop_missing_column_is_refused", "[altermissing]") {
     auto config = test_create_config(integration_fixture_path("test_alter_missing_column/drop_missing"));
     test_clear_directory(config);
-    config.wal.on = false;
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -81,7 +80,6 @@ TEST_CASE("integration::cpp::test_alter_missing_column::drop_missing_column_is_r
 TEST_CASE("integration::cpp::test_alter_missing_column::drop_missing_column_if_exists_is_accepted", "[altermissing]") {
     auto config = test_create_config(integration_fixture_path("test_alter_missing_column/drop_if_exists"));
     test_clear_directory(config);
-    config.wal.on = false;
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -119,7 +117,6 @@ TEST_CASE("integration::cpp::test_alter_missing_column::drop_missing_column_if_e
 TEST_CASE("integration::cpp::test_alter_missing_column::rename_missing_column_is_refused", "[altermissing]") {
     auto config = test_create_config(integration_fixture_path("test_alter_missing_column/rename_missing"));
     test_clear_directory(config);
-    config.wal.on = false;
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -158,7 +155,6 @@ TEST_CASE("integration::cpp::test_alter_missing_column::document_table_drop_exis
           "[altermissing]") {
     auto config = test_create_config(integration_fixture_path("test_alter_missing_column/doc_drop"));
     test_clear_directory(config);
-    config.wal.on = false;
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -190,7 +186,6 @@ TEST_CASE("integration::cpp::test_alter_missing_column::document_table_drop_miss
           "[altermissing]") {
     auto config = test_create_config(integration_fixture_path("test_alter_missing_column/doc_drop_missing"));
     test_clear_directory(config);
-    config.wal.on = false;
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -225,7 +220,6 @@ TEST_CASE("integration::cpp::test_alter_missing_column::document_table_rename_is
           "[altermissing]") {
     auto config = test_create_config(integration_fixture_path("test_alter_missing_column/doc_rename"));
     test_clear_directory(config);
-    config.wal.on = false;
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* d = space.dispatcher();

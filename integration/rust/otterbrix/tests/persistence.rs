@@ -18,8 +18,6 @@ fn persistent_config(dir: &str) -> Config {
         .wal_path(format!("{dir}/wal"))
         .disk_path(format!("{dir}/disk"))
         .main_path(format!("{dir}/main"))
-        .wal_on(true)
-        .sync_to_disk(true)
         .build()
 }
 

@@ -34,7 +34,6 @@ namespace {
     configuration::config config_for(const std::string& name) {
         auto config = test_create_config(integration_fixture_path("test_check_constraint_ddl/" + name));
         test_clear_directory(config);
-        config.wal.on = false;
         config.log.level = log_t::level::off;
         return config;
     }

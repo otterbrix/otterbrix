@@ -60,7 +60,6 @@ namespace {
 TEST_CASE("integration::cpp::index_scan_limit_cap::capped_answer_is_the_uncapped_answer_truncated") {
     auto config = test_create_config(integration_fixture_path("test_index_scan_limit_cap/prefix"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -136,7 +135,6 @@ TEST_CASE("integration::cpp::index_scan_limit_cap::capped_answer_is_the_uncapped
 TEST_CASE("integration::cpp::index_scan_limit_cap::a_cap_wider_than_the_match_returns_every_row") {
     auto config = test_create_config(integration_fixture_path("test_index_scan_limit_cap/wide"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 

@@ -40,7 +40,6 @@ namespace {
 TEST_CASE("integration::cpp::multiple_pk::doubled_by_alter_is_refused_at_use_and_repairable") {
     auto config = test_create_config(fixture_path("alter"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* d = space.dispatcher();
 
@@ -77,7 +76,6 @@ TEST_CASE("integration::cpp::multiple_pk::doubled_by_alter_is_refused_at_use_and
 TEST_CASE("integration::cpp::multiple_pk::doubled_inline_is_refused_at_use") {
     auto config = test_create_config(fixture_path("inline"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* d = space.dispatcher();
 

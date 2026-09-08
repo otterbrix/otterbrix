@@ -33,7 +33,6 @@ namespace {
 TEST_CASE("integration::cpp::unary_plus::select_column_identity") {
     auto config = test_create_config(integration_fixture_path("test_unary_plus/select_identity"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     setup(dispatcher);
@@ -50,7 +49,6 @@ TEST_CASE("integration::cpp::unary_plus::select_column_identity") {
 TEST_CASE("integration::cpp::unary_plus::select_text_identity") {
     auto config = test_create_config(integration_fixture_path("test_unary_plus/select_text"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     setup(dispatcher);
@@ -68,7 +66,6 @@ TEST_CASE("integration::cpp::unary_plus::select_text_identity") {
 TEST_CASE("integration::cpp::unary_plus::nested_layers") {
     auto config = test_create_config(integration_fixture_path("test_unary_plus/nested"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     setup(dispatcher);
@@ -99,7 +96,6 @@ TEST_CASE("integration::cpp::unary_plus::nested_layers") {
 TEST_CASE("integration::cpp::unary_plus::where_operand_identity") {
     auto config = test_create_config(integration_fixture_path("test_unary_plus/where_operand"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     setup(dispatcher);
@@ -116,7 +112,6 @@ TEST_CASE("integration::cpp::unary_plus::where_operand_identity") {
 TEST_CASE("integration::cpp::unary_plus::aggregate_argument_identity") {
     auto config = test_create_config(integration_fixture_path("test_unary_plus/aggregate_arg"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     setup(dispatcher);
@@ -131,7 +126,6 @@ TEST_CASE("integration::cpp::unary_plus::aggregate_argument_identity") {
 TEST_CASE("integration::cpp::unary_plus::computing_table_identity") {
     auto config = test_create_config(integration_fixture_path("test_unary_plus/computing"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 

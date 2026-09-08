@@ -63,8 +63,7 @@ namespace {
 // If write_physical_insert answered with the wal_id regardless, storage_append would
 // materialize the rows with nothing in the journal to replay them from.
 TEST_CASE("integration::cpp::test_wal_write_refusal::insert_fails_when_the_wal_page_write_is_refused") {
-    auto config = test_helpers::make_test_config(integration_fixture_path("test_wal_write_refusal/insert"),
-                                                 /*wal_on=*/true);
+    auto config = test_helpers::make_test_config(integration_fixture_path("test_wal_write_refusal/insert"));
     config.log.level = log_t::level::off;
 
     wal_fault_scope_t fault;
@@ -90,8 +89,7 @@ TEST_CASE("integration::cpp::test_wal_write_refusal::insert_fails_when_the_wal_p
 // records would leave it below ids already on disk, so the next write reuses them and corrupts
 // the CRC chain.
 TEST_CASE("integration::cpp::test_wal_write_refusal::startup_refuses_a_wal_segment_that_will_not_open") {
-    auto config = test_helpers::make_test_config(integration_fixture_path("test_wal_write_refusal/startup"),
-                                                 /*wal_on=*/true);
+    auto config = test_helpers::make_test_config(integration_fixture_path("test_wal_write_refusal/startup"));
     config.log.level = log_t::level::off;
 
     {

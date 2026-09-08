@@ -166,7 +166,6 @@ namespace {
     configuration::config make_config(const std::string& sub) {
         auto config = test_create_config(integration_fixture_path("test_index_stale_window_measure/" + sub));
         test_clear_directory(config);
-        config.wal.on = true;
         config.log.level = log_t::level::off;
         // No automatic checkpoint: the only compacts are the explicit CHECKPOINTs this
         // measurement fires, so every corruption is attributable to a known round.

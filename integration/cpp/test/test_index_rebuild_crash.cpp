@@ -26,7 +26,6 @@ namespace {
 TEST_CASE("integration::cpp::index_rebuild_crash::mid_table_delete_shifts_rebuilt_row_ids") {
     auto config = test_create_config(integration_fixture_path("test_index_rebuild_crash/orig"));
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
 
     const std::filesystem::path crash_dir = integration_fixture_path("test_index_rebuild_crash/crashed");
@@ -64,7 +63,6 @@ TEST_CASE("integration::cpp::index_rebuild_crash::mid_table_delete_shifts_rebuil
     } // the destructor checkpoint runs against the ORIGINAL dir only
 
     auto crash_config = test_create_config(crash_dir);
-    crash_config.wal.on = true;
     crash_config.log.level = log_t::level::off;
     {
         test_spaces space(crash_config);
@@ -96,7 +94,6 @@ TEST_CASE("integration::cpp::index_rebuild_crash::mid_table_delete_shifts_rebuil
 TEST_CASE("integration::cpp::index_rebuild_crash::delete_all_then_crash_returns_nothing") {
     auto config = test_create_config(integration_fixture_path("test_index_rebuild_crash/orig_all"));
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
 
     const std::filesystem::path crash_dir =
@@ -120,7 +117,6 @@ TEST_CASE("integration::cpp::index_rebuild_crash::delete_all_then_crash_returns_
     }
 
     auto crash_config = test_create_config(crash_dir);
-    crash_config.wal.on = true;
     crash_config.log.level = log_t::level::off;
     {
         test_spaces space(crash_config);

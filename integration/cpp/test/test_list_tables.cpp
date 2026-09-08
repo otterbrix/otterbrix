@@ -97,7 +97,6 @@ TEST_CASE("integration::cpp::list_tables::filters_system_rows_and_non_tables") {
 TEST_CASE("integration::cpp::list_tables::two_tables_never_read_as_empty") {
     auto config = test_create_config(integration_fixture_path("list_tables/two_tables"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 

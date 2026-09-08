@@ -28,7 +28,6 @@ struct benchmark_configuration_t {
     bool explain_mode = false;
     std::string output_file;
     std::string single_file;
-    bool wal_on = false;
     bool verbose = false;
     bool skip_load = false;
     bool load_only = false;

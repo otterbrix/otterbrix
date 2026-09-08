@@ -12,7 +12,6 @@
 
 #include <actor-zeta/spawn.hpp>
 #include <core/executor.hpp>
-#include <core/pipeline_bypass.hpp>
 #include <services/wal/wal_page_reader.hpp>
 
 // Kept out of wal_contract.hpp to avoid an include cycle (these pull back only services/wal/base.hpp).
@@ -53,13 +52,12 @@ namespace services::wal {
         , scheduler_(scheduler)
         , config_(std::move(config))
         , log_(log.clone())
-        , enabled_(config_.on)
         , manager_disk_(std::move(disk_address))
         , manager_dispatcher_(actor_zeta::address_t::empty_address())
         , manager_index_(std::move(index_address))
         , recovery_error_(core::error_t::no_error()) {
-        trace(log_, "manager_wal_replicate start, enabled={}", enabled_);
-        if (enabled_ && !config_.path.empty()) {
+        trace(log_, "manager_wal_replicate start");
+        if (!config_.path.empty()) {
             std::filesystem::create_directories(config_.path);
             wal::id_t max_recovered_id = 0;
             for (const auto& entry : std::filesystem::directory_iterator(config_.path)) {
@@ -294,9 +292,6 @@ namespace services::wal {
 
     manager_wal_replicate_t::unique_future<core::result_wrapper_t<std::vector<record_t>>>
     manager_wal_replicate_t::load(session_id_t session, wal::id_t wal_id) {
-        if (!enabled_) {
-            co_return core::result_wrapper_t<std::vector<record_t>>{std::vector<record_t>{}};
-        }
         if (recovery_error_.contains_error()) {
             co_return core::result_wrapper_t<std::vector<record_t>>{recovery_error_};
         }
@@ -336,9 +331,6 @@ namespace services::wal {
                                         wal_sync_mode sync_mode,
                                         components::catalog::oid_t database_oid,
                                         uint64_t commit_id) {
-        if (!enabled_) {
-            co_return core::result_wrapper_t<wal::id_t>{wal::id_t{0}};
-        }
         if (recovery_error_.contains_error()) {
             co_return core::result_wrapper_t<wal::id_t>{recovery_error_};
         }
@@ -372,10 +364,12 @@ namespace services::wal {
             wal_bytes_since_checkpoint_.store(total - base, std::memory_order_relaxed);
         }
 
-        // The byte counter resets here (trigger time), not at completion. BYPASS (3 of 3, core/pipeline_bypass.hpp): no
-        // statement is above this frame, so a refusal is logged and the round abandoned instead.
-        auto trigger_auto_checkpoint =
-            core::maintenance::pipeline_bypass<core::maintenance::bypass_site::wal_auto_checkpoint>([&] {
+        // The byte counter resets here (trigger time), not at completion. This self-sends rather
+        // than routing through the pipeline so the checkpoint never sits on a committer's latency
+        // path (services/wal/wal_contract.hpp) -- a statement IS above this frame
+        // (operator_commit_transaction sends commit_txn and awaits it), so the refusal is logged
+        // and the round abandoned instead of travelling back up.
+        auto trigger_auto_checkpoint = [&] {
                 if (needs_auto_checkpoint() && !auto_checkpoint_in_flight_) {
                     auto_checkpoint_in_flight_ = true;
                     reset_auto_checkpoint_bytes();
@@ -385,13 +379,13 @@ namespace services::wal {
                     // parked for poll_auto_checkpoint_.
                     pending_auto_checkpoint_.emplace_back(std::move(ac_fut));
                 }
-            });
+        };
         trigger_auto_checkpoint();
         co_return core::result_wrapper_t<wal::id_t>{result.value()};
     }
 
     std::uintmax_t manager_wal_replicate_t::total_wal_bytes() const noexcept {
-        if (!enabled_ || config_.path.empty())
+        if (config_.path.empty())
             return 0;
         std::uintmax_t total = 0;
         std::error_code ec;
@@ -424,9 +418,6 @@ namespace services::wal {
 
     manager_wal_replicate_t::unique_future<core::error_t>
     manager_wal_replicate_t::truncate_before(session_id_t session, wal::id_t checkpoint_wal_id) {
-        if (!enabled_) {
-            co_return core::error_t::no_error();
-        }
         if (recovery_error_.contains_error()) {
             co_return recovery_error_;
         }
@@ -554,9 +545,6 @@ namespace services::wal {
     }
 
     manager_wal_replicate_t::unique_future<wal::id_t> manager_wal_replicate_t::current_wal_id(session_id_t session) {
-        if (!enabled_) {
-            co_return wal::id_t{0};
-        }
 
         wal::id_t max_id = 0;
         for (auto& [db_oid, worker] : wal_actors_) {
@@ -582,10 +570,7 @@ namespace services::wal {
                                                    uint64_t row_count,
                                                    uint64_t txn_id,
                                                    components::catalog::oid_t database_oid) {
-        // A zero id here is a legitimate no-op, not a refusal; refusals travel in result_wrapper_t.
-        if (!enabled_) {
-            co_return core::result_wrapper_t<wal::id_t>{wal::id_t{0}};
-        }
+        // An empty batch is a legitimate no-op, not a refusal; refusals travel in result_wrapper_t.
         if (batch_row_count(chunks) == 0) {
             co_return core::result_wrapper_t<wal::id_t>{wal::id_t{0}};
         }
@@ -618,9 +603,6 @@ namespace services::wal {
                                                    uint64_t count,
                                                    uint64_t txn_id,
                                                    components::catalog::oid_t database_oid) {
-        if (!enabled_) {
-            co_return core::result_wrapper_t<wal::id_t>{wal::id_t{0}};
-        }
         if (recovery_error_.contains_error()) {
             co_return core::result_wrapper_t<wal::id_t>{recovery_error_};
         }
@@ -650,9 +632,6 @@ namespace services::wal {
                                                    uint64_t count,
                                                    uint64_t txn_id,
                                                    components::catalog::oid_t database_oid) {
-        if (!enabled_) {
-            co_return core::result_wrapper_t<wal::id_t>{wal::id_t{0}};
-        }
         if (batch_row_count(new_data) == 0) {
             co_return core::result_wrapper_t<wal::id_t>{wal::id_t{0}};
         }
@@ -685,9 +664,6 @@ namespace services::wal {
                                                        uint64_t column_count,
                                                        uint64_t txn_id,
                                                        components::catalog::oid_t database_oid) {
-        if (!enabled_) {
-            co_return core::result_wrapper_t<wal::id_t>{wal::id_t{0}};
-        }
         if (recovery_error_.contains_error()) {
             co_return core::result_wrapper_t<wal::id_t>{recovery_error_};
         }

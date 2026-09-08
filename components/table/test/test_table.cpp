@@ -10,6 +10,15 @@
 #include <string>
 #include <unistd.h>
 
+namespace {
+    // delete_rows answers a refusal, not just a count: result_wrapper_t::value() asserts the
+    // channel was cleared first, so a test that wants the number has to clear it.
+    uint64_t deleted_or_fail(core::result_wrapper_t<uint64_t> r) {
+        REQUIRE_FALSE(r.has_error());
+        return r.value();
+    }
+} // namespace
+
 TEST_CASE("components::table::data_table") {
     using namespace components::types;
     using namespace components::vector;
@@ -441,7 +450,7 @@ TEST_CASE("components::table::data_table") {
             v.set_value(i / 2, int64_t(i));
         }
         auto state = data_table->initialize_delete({});
-        auto deleted_count = data_table->delete_rows(*state, v, test_size / 2, 0);
+        auto deleted_count = deleted_or_fail(data_table->delete_rows(*state, v, test_size / 2, 0));
         REQUIRE(deleted_count == test_size / 2);
     }
     INFO("Scan after delete");

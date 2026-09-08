@@ -61,7 +61,6 @@ namespace {
 TEST_CASE("integration::cpp::test_explain::sql") {
     auto config = test_create_config(integration_fixture_path("test_explain/sql"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -217,7 +216,6 @@ TEST_CASE("integration::cpp::test_explain::sql") {
 TEST_CASE("integration::cpp::test_explain::inline_subquery_initplan") {
     auto config = test_create_config(integration_fixture_path("test_explain/inline_subquery_initplan"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -352,7 +350,6 @@ TEST_CASE("integration::cpp::test_explain::inline_subquery_initplan") {
 TEST_CASE("integration::cpp::test_explain::per_query_renderer") {
     auto config = test_create_config(integration_fixture_path("test_explain/per_query_renderer"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -448,7 +445,6 @@ TEST_CASE("integration::cpp::test_explain::per_query_renderer") {
 TEST_CASE("integration::cpp::test_explain::renderer_registration_edges") {
     auto config = test_create_config(integration_fixture_path("test_explain/renderer_registration_edges"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -503,7 +499,6 @@ TEST_CASE("integration::cpp::test_explain::renderer_registration_edges") {
 TEST_CASE("integration::cpp::test_explain::analyze_recursive_cte_rows") {
     auto config = test_create_config(integration_fixture_path("test_explain/analyze_recursive_cte_rows"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -581,7 +576,6 @@ TEST_CASE("integration::cpp::test_explain::analyze_per_loop_rows_round") {
 TEST_CASE("integration::cpp::test_explain::limit_node_when_effective") {
     auto config = test_create_config(integration_fixture_path("test_explain/limit_node_when_effective"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -652,7 +646,6 @@ TEST_CASE("integration::cpp::test_explain::limit_node_when_effective") {
 TEST_CASE("integration::cpp::test_explain::having_node_labeled") {
     auto config = test_create_config(integration_fixture_path("test_explain/having_node_labeled"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -690,7 +683,6 @@ TEST_CASE("integration::cpp::test_explain::having_node_labeled") {
 TEST_CASE("integration::cpp::test_explain::operator_labels") {
     auto config = test_create_config(integration_fixture_path("test_explain/operator_labels"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -748,7 +740,7 @@ TEST_CASE("integration::cpp::test_explain::operator_labels") {
 
 // A WHERE conjunct on a name shared by both join sides must reach the correct side's scan, not a residual Filter.
 TEST_CASE("integration::cpp::test_explain::join_shared_column_name_pushdown") {
-    auto config = test_helpers::make_test_config(integration_fixture_path("test_explain/join_shared_col"), true);
+    auto config = test_helpers::make_test_config(integration_fixture_path("test_explain/join_shared_col"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -802,7 +794,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::test_explain::transitive_equi_predicate_propagation") {
-    auto config = test_helpers::make_test_config(integration_fixture_path("test_explain/transitive_equi"), false);
+    auto config = test_helpers::make_test_config(integration_fixture_path("test_explain/transitive_equi"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -876,7 +868,6 @@ TEST_CASE("integration::cpp::test_explain::transitive_equi_predicate_propagation
 TEST_CASE("integration::cpp::test_explain::distinct_under_group_by") {
     auto config = test_create_config(integration_fixture_path("test_explain/distinct_under_group_by"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 

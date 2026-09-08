@@ -38,7 +38,7 @@ namespace {
 }
 
 TEST_CASE("integration::cpp::test_decimal_literal_exactness::a_bare_fractional_literal_reaches_a_numeric_column") {
-    auto config = make_test_config(integration_fixture_path("test_decimal_literal_exactness/numeric128"), true);
+    auto config = make_test_config(integration_fixture_path("test_decimal_literal_exactness/numeric128"));
     config.log.level = log_t::level::off;
 
     test_spaces space(config);
@@ -62,7 +62,7 @@ TEST_CASE("integration::cpp::test_decimal_literal_exactness::a_bare_fractional_l
 }
 
 TEST_CASE("integration::cpp::test_decimal_literal_exactness::an_int64_backed_column_keeps_its_cents") {
-    auto config = make_test_config(integration_fixture_path("test_decimal_literal_exactness/numeric64"), true);
+    auto config = make_test_config(integration_fixture_path("test_decimal_literal_exactness/numeric64"));
     config.log.level = log_t::level::off;
 
     test_spaces space(config);
@@ -85,7 +85,7 @@ TEST_CASE("integration::cpp::test_decimal_literal_exactness::an_int64_backed_col
 }
 
 TEST_CASE("integration::cpp::test_decimal_literal_exactness::a_literal_too_wide_for_the_column_is_refused") {
-    auto config = make_test_config(integration_fixture_path("test_decimal_literal_exactness/range"), true);
+    auto config = make_test_config(integration_fixture_path("test_decimal_literal_exactness/range"));
     config.log.level = log_t::level::off;
 
     test_spaces space(config);
@@ -106,7 +106,7 @@ TEST_CASE("integration::cpp::test_decimal_literal_exactness::a_literal_too_wide_
 }
 
 TEST_CASE("integration::cpp::test_decimal_literal_exactness::nulls_and_other_targets_are_left_alone") {
-    auto config = make_test_config(integration_fixture_path("test_decimal_literal_exactness/edges"), true);
+    auto config = make_test_config(integration_fixture_path("test_decimal_literal_exactness/edges"));
     config.log.level = log_t::level::off;
 
     test_spaces space(config);
@@ -132,7 +132,7 @@ TEST_CASE("integration::cpp::test_decimal_literal_exactness::nulls_and_other_tar
 }
 
 TEST_CASE("integration::cpp::test_decimal_literal_exactness::an_integer_literal_in_the_same_column_still_stores") {
-    auto config = make_test_config(integration_fixture_path("test_decimal_literal_exactness/mixed"), true);
+    auto config = make_test_config(integration_fixture_path("test_decimal_literal_exactness/mixed"));
     config.log.level = log_t::level::off;
 
     test_spaces space(config);
@@ -150,7 +150,7 @@ TEST_CASE("integration::cpp::test_decimal_literal_exactness::an_integer_literal_
 }
 
 TEST_CASE("integration::cpp::test_decimal_literal_exactness::a_literal_beside_a_bound_parameter_stays_exact") {
-    auto config = make_test_config(integration_fixture_path("test_decimal_literal_exactness/params"), true);
+    auto config = make_test_config(integration_fixture_path("test_decimal_literal_exactness/params"));
     config.log.level = log_t::level::off;
 
     test_spaces space(config);

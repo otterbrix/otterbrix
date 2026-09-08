@@ -10,7 +10,6 @@
 TEST_CASE("integration::cpp::test_index_create_failure::unopenable_disk_index_is_an_error") {
     auto config = test_create_config(integration_fixture_path("test_index_create_failure/unopenable"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     auto exec = [&](const std::string& sql) {

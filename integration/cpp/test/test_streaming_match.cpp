@@ -24,7 +24,6 @@ namespace {
 TEST_CASE("integration::cpp::streaming_match::like_filter_streams_and_lands") {
     auto config = test_create_config(integration_fixture_path("test_streaming_match_like"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -66,7 +65,6 @@ TEST_CASE("integration::cpp::streaming_match::like_filter_streams_and_lands") {
 TEST_CASE("integration::cpp::streaming_match::like_filter_with_limit_caps_across_batches") {
     auto config = test_create_config(integration_fixture_path("test_streaming_match_limit"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -121,7 +119,6 @@ namespace {
 TEST_CASE("integration::cpp::streaming_match::having_count_filter_returns_correct_rows") {
     auto config = test_create_config(integration_fixture_path("test_streaming_match_having"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     setup_match_over_sink_db(dispatcher);
@@ -135,7 +132,6 @@ TEST_CASE("integration::cpp::streaming_match::having_count_filter_returns_correc
 TEST_CASE("integration::cpp::streaming_match::join_with_nonpushdown_filter_returns_correct_rows") {
     auto config = test_create_config(integration_fixture_path("test_streaming_match_join_filter"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     setup_match_over_sink_db(dispatcher);
@@ -153,7 +149,6 @@ TEST_CASE("integration::cpp::streaming_match::delete_where_in_group_subquery_lan
     // DML over a GROUP BY sink-derived subquery: exercises defect (a) (no real row_ids).
     auto config = test_create_config(integration_fixture_path("test_streaming_match_delete_group"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     setup_match_over_sink_db(dispatcher);
@@ -184,7 +179,6 @@ TEST_CASE("integration::cpp::streaming_match::delete_using_large_build_side_does
     // data_chunk_t, aborting on the capacity<=1024 assert; it's now iterated per chunk.
     auto config = test_create_config(integration_fixture_path("test_streaming_match_delete_using_large"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     REQUIRE(exec(dispatcher, "CREATE DATABASE BigDb;")->is_success());
@@ -214,7 +208,6 @@ TEST_CASE("integration::cpp::streaming_match::delete_using_with_nonpushdown_filt
     // DML over a JOIN sink with a non-pushdown filter: exercises defect (a) (no real row_ids).
     auto config = test_create_config(integration_fixture_path("test_streaming_match_delete_using"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     setup_match_over_sink_db(dispatcher);
@@ -245,7 +238,6 @@ TEST_CASE("integration::cpp::streaming_match::like_all_null_element_disk_three_v
     // rows) — the filter builder used to exclude regex from that NULL-element collapse.
     auto config = test_create_config(integration_fixture_path("test_streaming_match_like_all_null_disk"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -282,7 +274,6 @@ TEST_CASE("integration::cpp::streaming_match::like_all_null_element_disk_three_v
 TEST_CASE("integration::cpp::streaming_match::late_mat_gather_selective_disk_values_land") {
     auto config = test_create_config(integration_fixture_path("test_streaming_match_late_mat_gather"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 

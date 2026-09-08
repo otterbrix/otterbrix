@@ -17,7 +17,6 @@
 TEST_CASE("integration::cpp::test_index_bootstrap_failure::engine_starts_when_an_index_cannot_open") {
     auto config = test_create_config(integration_fixture_path("test_index_bootstrap_failure/restart"));
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
 
     std::filesystem::path index_dir;

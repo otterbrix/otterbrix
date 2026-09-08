@@ -49,8 +49,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::unqualified_name_ambiguity::select_is_refused_not_answered_from_either") {
-    auto config = test_helpers::make_test_config(integration_fixture_path("unqualified_ambiguity/select"),
-                                                 /*wal_on=*/true);
+    auto config = test_helpers::make_test_config(integration_fixture_path("unqualified_ambiguity/select"));
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -69,8 +68,7 @@ TEST_CASE("integration::cpp::unqualified_name_ambiguity::select_is_refused_not_a
 // A silent pick on DML would destroy the losing table's rows, not just misreport them, so DML
 // needs the same refusal proven separately from SELECT.
 TEST_CASE("integration::cpp::unqualified_name_ambiguity::dml_is_refused_and_both_tables_keep_their_rows") {
-    auto config = test_helpers::make_test_config(integration_fixture_path("unqualified_ambiguity/dml"),
-                                                 /*wal_on=*/true);
+    auto config = test_helpers::make_test_config(integration_fixture_path("unqualified_ambiguity/dml"));
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -92,8 +90,7 @@ TEST_CASE("integration::cpp::unqualified_name_ambiguity::dml_is_refused_and_both
 // pg_catalog is searched before user namespaces, so a same-named user table must not turn this
 // into another ambiguous_name case.
 TEST_CASE("integration::cpp::unqualified_name_ambiguity::pg_catalog_wins_over_a_user_shadow") {
-    auto config = test_helpers::make_test_config(integration_fixture_path("unqualified_ambiguity/pg_catalog_shadow"),
-                                                 /*wal_on=*/true);
+    auto config = test_helpers::make_test_config(integration_fixture_path("unqualified_ambiguity/pg_catalog_shadow"));
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();

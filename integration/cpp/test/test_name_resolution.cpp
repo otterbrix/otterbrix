@@ -316,7 +316,6 @@ namespace {
         explicit database_t(const std::string& path)
             : config(test_create_config(path)) {
             test_clear_directory(config);
-            config.wal.on = false;
             space = std::make_unique<test_spaces>(config);
         }
 
@@ -707,7 +706,6 @@ TEST_CASE("name_resolution::using::cross_join_still_has_no_predicate") {
 TEST_CASE("name_resolution::using::row_count_is_not_a_cross_product") {
     auto config = test_create_config(integration_fixture_path("test_name_resolution/using"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 

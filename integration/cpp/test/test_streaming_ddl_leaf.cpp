@@ -36,7 +36,6 @@ namespace {
 TEST_CASE("integration::cpp::streaming_ddl_leaf::create_table_streams_and_lands") {
     auto config = test_create_config(integration_fixture_path("test_streaming_ddl_create"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -56,7 +55,6 @@ TEST_CASE("integration::cpp::streaming_ddl_leaf::create_table_streams_and_lands"
 TEST_CASE("integration::cpp::streaming_ddl_leaf::alter_column_add_drop_rename_stream") {
     auto config = test_create_config(integration_fixture_path("test_streaming_ddl_alter"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -81,7 +79,6 @@ TEST_CASE("integration::cpp::streaming_ddl_leaf::alter_column_add_drop_rename_st
 TEST_CASE("integration::cpp::streaming_ddl_leaf::multi_clause_alter_streams") {
     auto config = test_create_config(integration_fixture_path("test_streaming_ddl_multi_alter"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -104,7 +101,6 @@ TEST_CASE("integration::cpp::streaming_ddl_leaf::multi_clause_alter_streams") {
 TEST_CASE("integration::cpp::streaming_ddl_leaf::create_index_chain_streams") {
     auto config = test_create_config(integration_fixture_path("test_streaming_ddl_createidx"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -133,7 +129,6 @@ TEST_CASE("integration::cpp::streaming_ddl_leaf::create_index_chain_streams") {
 TEST_CASE("integration::cpp::streaming_ddl_leaf::drop_index_streams") {
     auto config = test_create_config(integration_fixture_path("test_streaming_ddl_dropidx"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -157,7 +152,6 @@ TEST_CASE("integration::cpp::streaming_ddl_leaf::drop_index_streams") {
 TEST_CASE("integration::cpp::streaming_ddl_leaf::set_timezone_streams_and_validates") {
     auto config = test_create_config(integration_fixture_path("test_streaming_ddl_tz"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -175,7 +169,6 @@ TEST_CASE("integration::cpp::streaming_ddl_leaf::set_timezone_streams_and_valida
 TEST_CASE("integration::cpp::streaming_ddl_leaf::vacuum_and_checkpoint_stream") {
     auto config = test_create_config(integration_fixture_path("test_streaming_ddl_maint"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -198,7 +191,6 @@ TEST_CASE("integration::cpp::streaming_ddl_leaf::vacuum_and_checkpoint_stream") 
 TEST_CASE("integration::cpp::streaming_ddl_leaf::explicit_begin_commit_roundtrip") {
     auto config = test_create_config(integration_fixture_path("test_streaming_ddl_txn"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 

@@ -20,8 +20,7 @@ using namespace test_helpers;
 TEST_CASE("integration::cpp::ddl_commit_marker::carries_the_drained_commit_id") {
     auto config =
         make_test_config(integration_fixture_path("test_ddl_commit_marker_after_drain") /
-                             std::to_string(::getpid()),
-                         /*wal_on=*/true);
+                         std::to_string(::getpid()));
     config.log.level = log_t::level::off;
 
     test_spaces space(config);

@@ -49,7 +49,7 @@ namespace {
 
 TEST_CASE("integration::cpp::test_catalog_write_refusal::create_table_fails_when_a_catalog_row_cannot_be_written") {
     const std::filesystem::path dir = integration_fixture_path("test_catalog_write_refusal/create_table");
-    auto config = test_helpers::make_test_config(dir, /*wal_on=*/true);
+    auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
     const auto marker =

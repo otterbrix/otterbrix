@@ -216,7 +216,7 @@ namespace {
     void measure_checkpoint_and_footprint(unsigned run, std::vector<series_t>& all) {
         const std::string dir =
             integration_fixture_path("measure_storage_costs/checkpoint_" + std::to_string(run)).string();
-        auto config = make_test_config(dir, /*wal_on=*/true);
+        auto config = make_test_config(dir);
 
         test_spaces space(config);
         auto* d = space.dispatcher();
@@ -272,7 +272,7 @@ namespace {
         {
             const std::string dir =
                 integration_fixture_path("measure_storage_costs/insert_1k_" + std::to_string(run)).string();
-            auto config = make_test_config(dir, /*wal_on=*/true);
+            auto config = make_test_config(dir);
             test_spaces space(config);
             auto* d = space.dispatcher();
             must_sql(d, "CREATE DATABASE bdb;");
@@ -285,7 +285,7 @@ namespace {
         {
             const std::string dir =
                 integration_fixture_path("measure_storage_costs/insert_100k_" + std::to_string(run)).string();
-            auto config = make_test_config(dir, /*wal_on=*/true);
+            auto config = make_test_config(dir);
             test_spaces space(config);
             auto* d = space.dispatcher();
             must_sql(d, "CREATE DATABASE bdb;");
@@ -315,7 +315,7 @@ namespace {
     // ---- (4) point SELECT through an index -----------------------------------
     void measure_index(unsigned run, std::vector<series_t>& all) {
         const std::string dir = integration_fixture_path("measure_storage_costs/index_" + std::to_string(run)).string();
-        auto config = make_test_config(dir, /*wal_on=*/true);
+        auto config = make_test_config(dir);
         test_spaces space(config);
         auto* d = space.dispatcher();
 

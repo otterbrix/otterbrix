@@ -20,7 +20,6 @@ static std::string mirror_gate_plan_text(const components::cursor::cursor_t_ptr&
 TEST_CASE("integration::cpp::test_index_mirror_gate::table_without_indexes_pays_no_chunk_copy") {
     auto config = test_create_config(integration_fixture_path("test_index_mirror_gate/plain"));
     test_clear_directory(config);
-    config.wal.on = false;
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -60,7 +59,6 @@ TEST_CASE("integration::cpp::test_index_mirror_gate::table_without_indexes_pays_
 TEST_CASE("integration::cpp::test_index_mirror_gate::indexed_table_still_mirrors") {
     auto config = test_create_config(integration_fixture_path("test_index_mirror_gate/indexed"));
     test_clear_directory(config);
-    config.wal.on = false;
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -123,7 +121,6 @@ TEST_CASE("integration::cpp::test_index_mirror_gate::indexed_table_still_mirrors
 TEST_CASE("integration::cpp::test_index_mirror_gate::dropping_a_twin_index_leaves_the_survivor_live") {
     auto config = test_create_config(integration_fixture_path("test_index_mirror_gate/twin"));
     test_clear_directory(config);
-    config.wal.on = false;
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();

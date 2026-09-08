@@ -125,7 +125,6 @@ namespace {
 TEST_CASE("integration::cpp::test_alter_drop_column_reclaim::disk_drop_column_returns_blocks") {
     auto config = test_create_config(integration_fixture_path("test_alter_drop_column_reclaim/disk_drop"));
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
 
     core::pmr::otterbrix_resource resource;
@@ -235,7 +234,6 @@ TEST_CASE("integration::cpp::test_alter_drop_column_reclaim::disk_drop_column_re
 TEST_CASE("integration::cpp::test_alter_drop_column_reclaim::crash_before_checkpoint_rearms_the_release") {
     auto config = test_create_config(integration_fixture_path("test_alter_drop_column_reclaim/crash_rearm"));
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
 
     core::pmr::otterbrix_resource resource;

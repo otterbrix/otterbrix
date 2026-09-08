@@ -62,7 +62,6 @@ namespace {
 TEST_CASE("integration::cpp::test_wal_nested_payload_replay::array_payload_survives_replay_of_the_journal") {
     auto config = test_create_config(integration_fixture_path("test_wal_nested_payload_replay/array"));
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
 
     INFO("phase 1: the first rows, made durable by an explicit CHECKPOINT");
@@ -157,7 +156,6 @@ TEST_CASE("integration::cpp::test_wal_nested_payload_replay::array_payload_survi
 TEST_CASE("integration::cpp::test_wal_nested_payload_replay::list_and_struct_payload_survive_replay_of_the_journal") {
     auto config = test_create_config(integration_fixture_path("test_wal_nested_payload_replay/list_struct"));
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
 
     INFO("phase 1: checkpointed rows, so the durable half is known-good and isolated");

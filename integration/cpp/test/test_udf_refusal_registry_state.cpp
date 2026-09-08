@@ -184,7 +184,7 @@ TEST_CASE("integration::cpp::test_udf_refusal_registry_state::register_udf_leave
     const std::filesystem::path dir =
         integration_fixture_path("test_udf_refusal_registry_state/namespace_read_refusal");
     std::filesystem::remove_all(dir);
-    auto config = test_helpers::make_test_config(dir, /*wal_on=*/true);
+    auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
     {
@@ -197,7 +197,7 @@ TEST_CASE("integration::cpp::test_udf_refusal_registry_state::register_udf_leave
         "/" + std::to_string(static_cast<unsigned>(components::catalog::well_known_oid::pg_namespace_table)) + "/";
 
     const std::filesystem::path probe_dir = std::filesystem::path(dir.string() + "_probe");
-    auto probe_config = test_helpers::make_test_config(probe_dir, /*wal_on=*/true);
+    auto probe_config = test_helpers::make_test_config(probe_dir);
     probe_config.log.level = log_t::level::off;
     // make_test_config clears the directory it is handed, so the copy has to come after it.
     std::filesystem::remove_all(probe_dir);
@@ -263,7 +263,7 @@ TEST_CASE("integration::cpp::test_udf_refusal_registry_state::register_udf_leave
 TEST_CASE("integration::cpp::test_udf_refusal_registry_state::a_healthy_registration_reaches_pg_proc") {
     const std::filesystem::path dir = integration_fixture_path("test_udf_refusal_registry_state/healthy");
     std::filesystem::remove_all(dir);
-    auto config = test_helpers::make_test_config(dir, /*wal_on=*/true);
+    auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
     udf_refusal_spaces_t space(config);

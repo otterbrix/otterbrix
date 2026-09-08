@@ -40,7 +40,6 @@ namespace {
 TEST_CASE("integration::cpp::index_read_through_agent::hash_lookup_returns_every_duplicate") {
     auto config = test_create_config(integration_fixture_path("test_index_read_through_agent/duplicates"));
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
 
     {
@@ -126,7 +125,6 @@ TEST_CASE("integration::cpp::index_read_through_agent::hash_lookup_returns_every
 TEST_CASE("integration::cpp::index_read_through_agent::own_uncommitted_insert_is_visible_only_to_its_txn") {
     auto config = test_create_config(integration_fixture_path("test_index_read_through_agent/visibility"));
     test_clear_directory(config);
-    config.wal.on = true;
     config.log.level = log_t::level::off;
 
     test_spaces space(config);

@@ -97,7 +97,6 @@ namespace {
 TEST_CASE("integration::cpp::fk_arity_mismatch::cascade_refuses_instead_of_orphaning") {
     auto config = test_create_config(integration_fixture_path("test_fk_arity_mismatch/cascade"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -119,7 +118,6 @@ TEST_CASE("integration::cpp::fk_arity_mismatch::cascade_refuses_instead_of_orpha
 TEST_CASE("integration::cpp::fk_arity_mismatch::restrict_refuses_instead_of_orphaning") {
     auto config = test_create_config(integration_fixture_path("test_fk_arity_mismatch/restrict"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -141,7 +139,6 @@ TEST_CASE("integration::cpp::fk_arity_mismatch::restrict_refuses_instead_of_orph
 TEST_CASE("integration::cpp::fk_arity_mismatch::insert_names_the_real_defect") {
     auto config = test_create_config(integration_fixture_path("test_fk_arity_mismatch/insert"));
     test_clear_directory(config);
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 

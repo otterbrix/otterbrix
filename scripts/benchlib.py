@@ -277,15 +277,12 @@ def runner_cmd(runner: Path,
                *,
                runs: int | None = None,
                out_csv: Path | None = None,
-               disk: bool = True,
                load_only: bool = False,
                skip_load: bool = False,
                checkpoint_mb: int = 0) -> list[str]:
     cmd = [str(runner), f"--file={query_file}"]
     if runs is not None:
         cmd.append(f"--runs={runs}")
-    if disk:
-        cmd.append("--disk")
     if out_csv is not None:
         cmd.append(f"--out={out_csv}")
     if load_only:
@@ -311,7 +308,6 @@ def measure_lookup(runner: Path,
                      query_file,
                      runs=runs,
                      out_csv=out_csv,
-                     disk=True,
                      load_only=False,
                      skip_load=skip_load,
                      checkpoint_mb=checkpoint_mb)
@@ -336,7 +332,6 @@ def measure_load_only(runner: Path,
                       suppress_output: bool = True) -> float:
     cmd = runner_cmd(runner,
                      query_file,
-                     disk=True,
                      load_only=True,
                      skip_load=False,
                      checkpoint_mb=checkpoint_mb)
@@ -365,7 +360,6 @@ def measure_restart(runner: Path,
                      query_file,
                      runs=restart_runs,
                      out_csv=out_csv,
-                     disk=True,
                      skip_load=True)
     t0 = time.perf_counter()
     run_process(cmd, scenario_dir, suppress_output=suppress_output)

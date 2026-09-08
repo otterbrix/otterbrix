@@ -81,7 +81,7 @@ def runner_cmd(
     no_setup: bool = False,
     checkpoint_mb: int = 0,
 ) -> list[str]:
-    cmd = [str(runner), f"--file={sql_file}", "--disk"]
+    cmd = [str(runner), f"--file={sql_file}"]
     if runs is not None:
         cmd.append(f"--runs={runs}")
     if out_csv is not None:

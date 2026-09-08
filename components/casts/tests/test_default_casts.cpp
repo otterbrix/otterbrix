@@ -610,7 +610,7 @@ TEST_CASE("default casts: two DECIMALs promote to their deduced supertype") {
     }
 }
 
-TEST_CASE("default casts: DECIMAL <-> string round-trips, rounds, handles specials (explicit-only)") {
+TEST_CASE("default casts: DECIMAL <-> string round-trips, rounds, handles specials") {
     auto* resource = std::pmr::get_default_resource();
     cast_registry_t registry{resource};
     register_default_casts(registry);
@@ -687,7 +687,7 @@ TEST_CASE("default casts: DECIMAL <-> string round-trips, rounds, handles specia
     }
 }
 
-TEST_CASE("default casts: string conversions are explicit-only and non-throwing") {
+TEST_CASE("default casts: string conversions are not implicit and non-throwing") {
     auto* resource = std::pmr::get_default_resource();
     cast_registry_t registry{resource};
     register_default_casts(registry);
@@ -697,8 +697,6 @@ TEST_CASE("default casts: string conversions are explicit-only and non-throwing"
     REQUIRE(to_string != nullptr);
     REQUIRE(from_string != nullptr);
 
-    // Explicit-only: never chosen implicitly, so a string never becomes a numeric
-    // common type (and vice versa).
     REQUIRE_FALSE(to_string->promotes());
     REQUIRE_FALSE(from_string->promotes());
     REQUIRE_FALSE(registry.find_best_common_type(integer_type, string_type).has_value());
@@ -777,7 +775,7 @@ TEST_CASE("default casts: date/time conversions, string parse/format, and to_str
     const complex_logical_type timestamp_type{logical_type::TIMESTAMP};
     const complex_logical_type timestamptz_type{logical_type::TIMESTAMP_TZ};
 
-    // Registration: type<->type is implicit, string<->datetime explicit-only, and a
+    // Registration: type<->type is implicit, string<->datetime assignment, and a
     // date widened to a timestamp is the common type of the two.
     {
         const cast_entry* date_to_ts = registry.find(date_type, timestamp_type);
@@ -1758,11 +1756,11 @@ TEST_CASE("cast_registry: level_of passes containers through and takes structs a
     };
 
     // Leaf: a widening is implicit, a narrowing is assignment, number -> string is assignment
-    // (PostgreSQL's I/O rule) and string -> number is explicit-only.
+    // (PostgreSQL's I/O rule) and so is string -> number, the reverse I/O direction.
     REQUIRE(registry.level_of(i32, i64) == std::optional<level>{level::implicit});
     REQUIRE(registry.level_of(i64, i32) == std::optional<level>{level::assignment});
     REQUIRE(registry.level_of(i32, str) == std::optional<level>{level::assignment});
-    REQUIRE(registry.level_of(str, i32) == std::optional<level>{level::explicit_only});
+    REQUIRE(registry.level_of(str, i32) == std::optional<level>{level::assignment});
 
     // Containers pass the element's level through unchanged.
     REQUIRE(registry.level_of(complex_logical_type::create_list(i32), complex_logical_type::create_list(i64)) ==
@@ -2275,7 +2273,7 @@ TEST_CASE("cast_registry: a shape-changing container cast is capped at assignmen
     const complex_logical_type array2_str =
         complex_logical_type::create_array(complex_logical_type{logical_type::STRING_LITERAL}, 2);
     REQUIRE(registry.level_of(list_str, complex_logical_type::create_array(i32, 2)) ==
-            std::optional<level>{level::explicit_only}); // string -> int element is explicit
+            std::optional<level>{level::assignment}); // string -> int element is assignment
     REQUIRE(registry.level_of(list_i32, array2_str) == std::optional<level>{level::assignment});
 
     // So the fill direction never promotes, whatever the element...
@@ -2317,16 +2315,16 @@ TEST_CASE("cast_registry: the requested coercion level gates what resolve() retu
     REQUIRE_FALSE(registry.resolve(i32, str, level::implicit).has_value());
     REQUIRE(registry.resolve(i32, str, level::assignment).has_value());
 
-    // An explicit-only cast (string -> anything) needs a written CAST.
+    // string -> number is an assignment cast: an INSERT may take it, arithmetic may not.
     REQUIRE_FALSE(registry.resolve(str, i32, level::implicit).has_value());
-    REQUIRE_FALSE(registry.resolve(str, i32, level::assignment).has_value());
+    REQUIRE(registry.resolve(str, i32, level::assignment).has_value());
     REQUIRE(registry.resolve(str, i32, level::explicit_only).has_value());
 
     // The level is threaded down into containers unchanged, so a nested pair must itself be
-    // permitted: list<string> -> list<int> is explicit-only, exactly like its element.
+    // permitted: list<string> -> list<int> is assignment, exactly like its element.
     const complex_logical_type list_str = complex_logical_type::create_list(str);
     const complex_logical_type list_i32 = complex_logical_type::create_list(i32);
-    REQUIRE_FALSE(registry.resolve(list_str, list_i32, level::assignment).has_value());
+    REQUIRE(registry.resolve(list_str, list_i32, level::assignment).has_value());
     REQUIRE(registry.resolve(list_str, list_i32, level::explicit_only).has_value());
 }
 

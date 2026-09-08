@@ -636,24 +636,6 @@ namespace services::dispatcher {
                              std::pmr::string{"type: \'" + alias + "\' is not registered in catalog", resource});
     }
 
-    namespace {
-        // Reverse-lookup: namespace_oid -> dbname. Linear scan over the small
-        // namespace entry list; only invoked when a node carries a valid
-        // table_oid and we need to populate table_dbnames for the UDT type
-        // probe in check_node. Returns empty string_view if not found.
-        std::string_view dbname_for_ns_oid(const catalog_resolves_t* resolves, components::catalog::oid_t ns_oid) {
-            if (!resolves || !resolves->namespaces) {
-                return {};
-            }
-            for (const auto& entry : resolves->namespaces->entries()) {
-                if (entry.namespace_oid == ns_oid) {
-                    return entry.dbname;
-                }
-            }
-            return {};
-        }
-    } // namespace
-
     core::error_t convert_column_defaults(std::pmr::memory_resource* resource,
                                           const components::casts::cast_registry_t* cast_registry,
                                           const components::graph_execution_context& execution_context,
@@ -688,8 +670,6 @@ namespace services::dispatcher {
                                  const components::graph_execution_context& execution_context) {
         const auto session_tz = execution_context.timezone_offset;
 
-        std::pmr::vector<complex_logical_type> encountered_types{resource};
-        std::set<std::string> table_dbnames;
         core::error_t result = core::error_t::no_error();
         // 'g' once the VALUES target is a schemaless computing table (see the
         // NA-column drop after chunk reconciliation below).
@@ -713,183 +693,20 @@ namespace services::dispatcher {
                     return false;
                 }
                 insert_target_relkind = tbl->relkind;
-                if (tbl->relkind != 'g') {
-                    for (const auto& column : tbl->columns) {
-                        encountered_types.emplace_back(column.type);
-                    }
-                    if (auto ns_name = dbname_for_ns_oid(resolves, tbl->namespace_oid); !ns_name.empty()) {
-                        table_dbnames.emplace(ns_name);
-                    }
-                }
             }
             // pull/double-check check format from collection referenced by logical_plan and data stored inside node_data_t
             if (node->type() == node_type::data_t) {
                 auto* data_node = reinterpret_cast<node_data_t*>(node);
 
-                // Probe the plan's resolved type entries by dbname.
-                auto type_visible = [&](std::string_view name) {
-                    if (!resolves) {
-                        return false;
-                    }
-                    for (const auto& db : table_dbnames) {
-                        if (resolves->type_md(std::string_view(db), name))
-                            return true;
-                    }
-                    return resolves->type_md(std::string_view{"public"}, name) ||
-                           resolves->type_md(std::string_view{"pg_catalog"}, name);
-                };
-
-                // Raw data is a batch of ≤CAP chunks sharing one column shape; coerce each.
-                for (auto& chunk : data_node->chunks()) {
-                    for (auto& column : chunk.data) {
-                        auto it = std::find_if(encountered_types.begin(),
-                                               encountered_types.end(),
-                                               [&column](const complex_logical_type& type) {
-                                                   return type.alias() == column.type().alias();
-                                               });
-                        // if this is a registered type, then conversion is required
-                        bool ty_exists =
-                            it != encountered_types.end() && type_visible(std::string_view(it->type_name()));
-                        if (ty_exists) {
-                            if (is_duration(it->type()) && column.type().type() == logical_type::STRING_LITERAL) {
-                                components::vector::vector_t new_column(resource, *it, chunk.capacity());
-                                for (size_t i = 0; i < chunk.size(); i++) {
-                                    auto str = column.data<std::string_view>()[i];
-                                    std::optional<logical_value_t> parsed_val;
-                                    switch (it->type()) {
-                                        case logical_type::DATE:
-                                            if (auto parsed = core::date::parse_date(str)) {
-                                                parsed_val = logical_value_t(resource, *parsed);
-                                            }
-                                            break;
-                                        case logical_type::TIME:
-                                            if (auto parsed = core::date::parse_time(str)) {
-                                                parsed_val = logical_value_t(resource, *parsed);
-                                            }
-                                            break;
-                                        case logical_type::TIME_TZ:
-                                            if (auto parsed = core::date::parse_timetz(str)) {
-                                                parsed_val = logical_value_t(resource, *parsed);
-                                            }
-                                            break;
-                                        case logical_type::TIMESTAMP:
-                                            if (auto parsed = core::date::parse_timestamp(str)) {
-                                                parsed_val = logical_value_t(resource, *parsed);
-                                            }
-                                            break;
-                                        case logical_type::TIMESTAMP_TZ:
-                                            if (auto parsed = core::date::parse_timestamptz(str)) {
-                                                parsed_val = logical_value_t(resource, *parsed);
-                                            }
-                                            break;
-                                        case logical_type::INTERVAL:
-                                            if (auto parsed = core::date::parse_interval(str)) {
-                                                parsed_val = logical_value_t(resource, *parsed);
-                                            }
-                                            break;
-                                        default:
-                                            break;
-                                    }
-                                    if (!parsed_val) {
-                                        result = core::error_t(
-                                            core::error_code_t::schema_error,
-                                            std::pmr::string{"couldn't convert string to date/time type: \'" +
-                                                                 it->alias() + "\', value: \'" + std::string(str) +
-                                                                 "\'",
-                                                             resource});
-                                        return false;
-                                    }
-                                    new_column.set_value(i, *parsed_val);
-                                }
-                                column = std::move(new_column);
-                            } else if (it->type() == logical_type::DECIMAL &&
-                                       (is_numeric(column.type().type()) ||
-                                        column.type().type() == logical_type::STRING_LITERAL)) {
-                                components::vector::vector_t new_column(resource, *it, chunk.capacity());
-                                for (size_t i = 0; i < chunk.size(); i++) {
-                                    auto casted = column.value(i).cast_as(*it, session_tz);
-                                    if (casted.has_error()) {
-                                        result = casted.error();
-                                        return false;
-                                    }
-                                    const auto& val = casted.value();
-                                    if (val.type().type() == logical_type::NA) {
-                                        result = core::error_t(
-                                            core::error_code_t::schema_error,
-                                            std::pmr::string{"couldn't convert value to decimal type: \'" +
-                                                                 it->alias() + "\'",
-                                                             resource});
-                                        return false;
-                                    }
-                                    new_column.set_value(i, val);
-                                }
-                                column = std::move(new_column);
-                            } else if (!check_type_exists(resource,
-                                                          resolves,
-                                                          it->type_name(),
-                                                          std::span<const std::string>())
-                                            .contains_error()) {
-                                // if this is a registered type, then conversion is required
-                                if (it->type() == logical_type::STRUCT) {
-                                    components::vector::vector_t new_column(resource, *it, chunk.capacity());
-                                    for (size_t i = 0; i < chunk.size(); i++) {
-                                        auto casted = column.value(i).cast_as(*it, session_tz);
-                                        if (casted.has_error()) {
-                                            result = casted.error();
-                                            return false;
-                                        }
-                                        const auto& val = casted.value();
-                                        if (val.type().type() == logical_type::NA) {
-                                            result = core::error_t(
-                                                core::error_code_t::schema_error,
-                                                std::pmr::string{"couldn't convert parsed ROW to type: \'" +
-                                                                     it->alias() + "\'",
-                                                                 resource});
-                                            return false;
-                                        } else {
-                                            new_column.set_value(i, val);
-                                        }
-                                    }
-                                    column = std::move(new_column);
-                                } else if (it->type() == logical_type::ENUM) {
-                                    components::vector::vector_t new_column(resource, *it, chunk.capacity());
-                                    for (size_t i = 0; i < chunk.size(); i++) {
-                                        auto val = column.data<std::string_view>()[i];
-                                        auto enum_val = logical_value_t::create_enum(resource, *it, val);
-                                        if (enum_val.type().type() == logical_type::NA) {
-                                            result =
-                                                core::error_t(core::error_code_t::schema_error,
-                                                              std::pmr::string{"enum: \'" + it->alias() +
-                                                                                   "\' does not contain value: \'" +
-                                                                                   std::string(val) + "\'",
-                                                                               resource});
-                                            return false;
-                                        } else {
-                                            new_column.set_value(i, enum_val);
-                                        }
-                                    }
-                                    column = std::move(new_column);
-                                } else {
-                                    assert(false &&
-                                           "missing type conversion in dispatcher_t::check_collections_format_");
-                                }
-                            }
-                        }
-                        // A column still typed NA after reconciliation carries no
-                        // storable type. On a schemaless computing table that is an
-                        // absent key (every row null), not a real column, and handing
-                        // an all-NA column to storage segfaults the append. A declared
-                        // table never reaches here NA — its columns are typed by the
-                        // schema — so drop such columns only for a computing target.
-                        if (insert_target_relkind == 'g') {
-                            auto& cols = chunk.data;
-                            cols.erase(std::remove_if(cols.begin(),
-                                                      cols.end(),
-                                                      [](const components::vector::vector_t& c) {
-                                                          return c.type().type() == logical_type::NA;
-                                                      }),
-                                       cols.end());
-                        }
+                if (insert_target_relkind == 'g') {
+                    for (auto& chunk : data_node->chunks()) {
+                        auto& cols = chunk.data;
+                        cols.erase(std::remove_if(cols.begin(),
+                                                  cols.end(),
+                                                  [](const components::vector::vector_t& c) {
+                                                      return c.type().type() == logical_type::NA;
+                                                  }),
+                                   cols.end());
                     }
                 }
             }

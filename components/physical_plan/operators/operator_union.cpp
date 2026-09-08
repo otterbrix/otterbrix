@@ -196,24 +196,16 @@ namespace components::operators {
         emit_shape_if_silent();
     }
 
-    core::error_t operator_union_t::push(pipeline::context_t*, vector::data_chunk_t&&, chunks_vector_t&) {
-        // Both inputs are materialized by separate sub-plans before this operator runs
-        // (traverse_plan_ splits the union's left and right children). The streaming
-        // pump's left batches are therefore a redundant view of left_->output(), which
-        // finalize() reads directly — so push() folds nothing and emits nothing.
+    core::error_t operator_union_t::push(pipeline::context_t*, vector::data_chunk_t&& input, chunks_vector_t&) {
+        // Blocking sink: accumulate the left batch; the right side is not readable until finalize()
+        buffered_left_.emplace_back(std::move(input));
         return core::error_t::no_error();
     }
 
     core::error_t operator_union_t::finalize(pipeline::context_t*, chunks_vector_t& out) {
-        // Emit the union of the two MATERIALIZED sides (the emit_union_ core).
-        if (!left_ || !left_->output()) {
-            return core::error_t::no_error();
-        }
-        auto* res = left_->output()->resource();
-        const auto& left_chunks = left_->output()->chunks();
-        chunks_vector_t empty_right(res);
+        chunks_vector_t empty_right(resource_);
         const chunks_vector_t& right_chunks = (right_ && right_->output()) ? right_->output()->chunks() : empty_right;
-        emit_union_(res, left_chunks, right_chunks, out);
+        emit_union_(resource_, buffered_left_, right_chunks, out);
         return core::error_t::no_error();
     }
 

@@ -702,6 +702,18 @@ TEST_CASE("integration::cpp::lateral_subquery::body_evaluated_per_outer_row") {
         REQUIRE(count_rows("SELECT * FROM s.owners, LATERAL (SELECT items.amount FROM s.items "
                            "WHERE items.owner_id = owners.id LIMIT 1) sub;") == 2);
     }
+    SECTION("union") {
+        // owner 1 -> {7}; owner 2 -> {7, 8}
+        REQUIRE(count_rows("SELECT * FROM s.owners, LATERAL (SELECT items.amount FROM s.items "
+                           "WHERE items.owner_id = owners.id UNION SELECT items.amount FROM s.items "
+                           "WHERE items.owner_id = owners.id) sub;") == 3);
+    }
+    SECTION("union_all") {
+        // owner 1 -> 2 + 2 rows; owner 2 -> 2 + 2
+        REQUIRE(count_rows("SELECT * FROM s.owners, LATERAL (SELECT items.amount FROM s.items "
+                           "WHERE items.owner_id = owners.id UNION ALL SELECT items.amount FROM s.items "
+                           "WHERE items.owner_id = owners.id) sub;") == 8);
+    }
     SECTION("order_by_with_limit") {
         REQUIRE(count_rows("SELECT * FROM s.owners, LATERAL (SELECT items.amount FROM s.items "
                            "WHERE items.owner_id = owners.id ORDER BY items.amount LIMIT 1) sub;") == 2);

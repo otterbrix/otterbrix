@@ -165,3 +165,32 @@ TEST_CASE("integration::cpp::streaming_recursive_cte::subtree_and_depth_stream")
     const auto runs_after = services::collection::executor::streaming_pipeline_runs();
     REQUIRE(runs_after > runs_before);
 }
+
+// A UNION nested inside the anchor is evaluated by the same run_subplan seam that drives
+// every fixpoint pass, so it must produce its rows there exactly as it does at top level.
+TEST_CASE("integration::cpp::streaming_recursive_cte::union_in_anchor") {
+    auto config = test_create_config("/tmp/test_streaming_recursive_cte_union_anchor");
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    setup_org(dispatcher);
+
+    // The anchor unions two branches that both select the CEO, so it contributes one row;
+    // the recursive term then walks the whole chart below it.
+    auto cur = exec(dispatcher,
+                    "WITH RECURSIVE hierarchy AS ("
+                    "  (SELECT id, name FROM RC.OrgChart WHERE manager_id = 0 "
+                    "   UNION "
+                    "   SELECT id, name FROM RC.OrgChart WHERE id = 1) "
+                    "  UNION ALL "
+                    "  SELECT e.id, e.name "
+                    "  FROM RC.OrgChart e "
+                    "  JOIN hierarchy h ON e.manager_id = h.id"
+                    ") "
+                    "SELECT name FROM hierarchy ORDER BY id;");
+    INFO("error: " << (cur->is_error() ? cur->get_error().what.c_str() : "none"));
+    REQUIRE(cur->is_success());
+    REQUIRE(cur->size() == 5);
+    REQUIRE(cur->value(0, 0).value<std::string_view>() == "CEO");
+    REQUIRE(cur->value(0, 4).value<std::string_view>() == "Designer");
+}

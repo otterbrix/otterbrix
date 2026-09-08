@@ -78,6 +78,47 @@ TEST_CASE("integration::cpp::lateral_subquery::correlated_where") {
     REQUIRE(collect(*cur, id_i, n_i, v_i) == expected);
 }
 
+TEST_CASE("integration::cpp::lateral_subquery::order_by_in_correlated_body") {
+    auto config = test_create_config("/tmp/test_lateral_subquery_order_by");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    seed(dispatcher);
+
+    auto session = otterbrix::session_id_t();
+    auto cur = dispatcher->execute_sql(session,
+                                       "SELECT * FROM s.outer_t, LATERAL (SELECT inner_t.v FROM s.inner_t WHERE "
+                                       "inner_t.k = outer_t.id ORDER BY inner_t.v) sub;");
+    INFO("error: " << (cur->is_error() ? cur->get_error().what.c_str() : "none"));
+    REQUIRE(cur->is_success());
+    int id_index = find_column(*cur, "id");
+    int n_index = find_column(*cur, "n");
+    int v_index = find_column(*cur, "v");
+    REQUIRE(id_index >= 0);
+    REQUIRE(n_index >= 0);
+    REQUIRE(v_index >= 0);
+    // ORDER BY reorders each outer row's own inner rows; it never changes which pairs exist.
+    std::multiset<row3_t> expected{{{1, 10, 100}}, {{1, 10, 101}}, {{2, 20, 200}}};
+    REQUIRE(collect(*cur, id_index, n_index, v_index) == expected);
+
+    std::optional<int64_t> current_id;
+    std::optional<int64_t> previous_value;
+    for (uint64_t row = 0; row < cur->size(); ++row) {
+        const int64_t id = cur->value(static_cast<uint64_t>(id_index), row).value<int64_t>();
+        const int64_t value = cur->value(static_cast<uint64_t>(v_index), row).value<int64_t>();
+        if (current_id != id) {
+            current_id = id;
+            previous_value = std::nullopt;
+        }
+        if (previous_value.has_value()) {
+            REQUIRE(*previous_value <= value);
+        }
+        previous_value = value;
+    }
+}
+
 // Regression for the batched-join_builder use-after-free / row-mixup under
 // LATERAL. The lazy builder buffered a raw pointer to each outer row's per-iteration
 // inner result (destroyed each iteration) and a SINGLE left_chunk_ pointer overwritten
@@ -625,4 +666,58 @@ TEST_CASE("integration::cpp::dml_lateral::update_from_lateral_duplicate_matches_
         rows.insert(std::array<int64_t, 2>{check->value(0, r).value<int64_t>(), check->value(1, r).value<int64_t>()});
     }
     REQUIRE(rows == std::multiset<std::array<int64_t, 2>>{{{1, 111}}, {{2, 222}}, {{3, 0}}});
+}
+
+// A LATERAL body is evaluated independently for each outer row, whatever the body
+// contains: the rows one outer row produces never depend on an earlier outer row.
+TEST_CASE("integration::cpp::lateral_subquery::body_evaluated_per_outer_row") {
+    auto config = test_create_config("/tmp/test_lateral_subquery_body_per_row");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto session = otterbrix::session_id_t();
+    dispatcher->execute_sql(session, "CREATE DATABASE s;");
+    dispatcher->execute_sql(session, "CREATE TABLE s.owners (id BIGINT);");
+    dispatcher->execute_sql(session, "INSERT INTO s.owners (id) VALUES (1), (2);");
+    dispatcher->execute_sql(session, "CREATE TABLE s.items (owner_id BIGINT, amount BIGINT);");
+    dispatcher->execute_sql(session, "INSERT INTO s.items (owner_id, amount) VALUES (1, 7), (1, 7), (2, 7), (2, 8);");
+
+    auto count_rows = [&](const std::string& sql) -> uint64_t {
+        auto cur = dispatcher->execute_sql(session, sql);
+        INFO("sql: " << sql);
+        INFO("error: " << (cur->is_error() ? cur->get_error().what.c_str() : "none"));
+        REQUIRE(cur->is_success());
+        return cur->size();
+    };
+
+    SECTION("distinct") {
+        // owner 1 -> {7}; owner 2 -> {7, 8}
+        REQUIRE(count_rows("SELECT * FROM s.owners, LATERAL (SELECT DISTINCT items.amount FROM s.items "
+                           "WHERE items.owner_id = owners.id) sub;") == 3);
+    }
+    SECTION("limit") {
+        REQUIRE(count_rows("SELECT * FROM s.owners, LATERAL (SELECT items.amount FROM s.items "
+                           "WHERE items.owner_id = owners.id LIMIT 1) sub;") == 2);
+    }
+    SECTION("order_by_with_limit") {
+        REQUIRE(count_rows("SELECT * FROM s.owners, LATERAL (SELECT items.amount FROM s.items "
+                           "WHERE items.owner_id = owners.id ORDER BY items.amount LIMIT 1) sub;") == 2);
+    }
+    SECTION("grouped_aggregate") {
+        REQUIRE(count_rows("SELECT * FROM s.owners, LATERAL (SELECT items.owner_id, sum(items.amount) FROM s.items "
+                           "WHERE items.owner_id = owners.id GROUP BY items.owner_id) sub;") == 2);
+    }
+    SECTION("grouped_aggregate_with_having") {
+        REQUIRE(count_rows("SELECT * FROM s.owners, LATERAL (SELECT items.owner_id, sum(items.amount) FROM s.items "
+                           "WHERE items.owner_id = owners.id GROUP BY items.owner_id "
+                           "HAVING sum(items.amount) > 0) sub;") == 2);
+    }
+    SECTION("grouped_by_computed_key") {
+        // owner 1 -> one parity group; owner 2 -> two
+        REQUIRE(count_rows("SELECT * FROM s.owners, LATERAL (SELECT items.amount % 2 AS parity, sum(items.amount) "
+                           "FROM s.items WHERE items.owner_id = owners.id GROUP BY items.amount % 2) sub;") == 3);
+    }
 }

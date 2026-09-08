@@ -35,6 +35,8 @@ namespace components::operators {
 
         [[nodiscard]] core::error_t finalize(pipeline::context_t* ctx, chunks_vector_t& out) override;
 
+        void reset_pipeline_state() noexcept override { stream_pos_ = 0; }
+
     private:
         const logical_plan::limit_t limit_;
 

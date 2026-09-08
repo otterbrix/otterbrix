@@ -23,6 +23,12 @@ namespace components::operators {
 
         [[nodiscard]] core::error_t finalize(pipeline::context_t* ctx, chunks_vector_t& out) override;
 
+        void reset_pipeline_state() noexcept override {
+            seen_.clear();
+            retained_.clear();
+            retained_fill_ = 0;
+        }
+
         // DISTINCT ON: dedup on this ON-key column subset (indices into the operator's input layer)
         // instead of the whole row; the full row is still emitted. Empty = whole-row dedup (plain
         // DISTINCT). A setter (not a defaulted ctor arg) so no get_default_resource() allocation (R14).

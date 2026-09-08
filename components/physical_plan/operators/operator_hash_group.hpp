@@ -39,6 +39,21 @@ namespace components::operators {
         push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& out) override;
         [[nodiscard]] core::error_t finalize(pipeline::context_t* ctx, chunks_vector_t& out) override;
 
+        void reset_pipeline_state() noexcept override {
+            graph_.reset();
+            key_slots_.clear();
+            key_probe_.clear();
+            hashes_.clear();
+            key_columns_.clear();
+            row_groups_.clear();
+            index_.clear();
+            index_mask_ = 0;
+            key_blocks_.clear();
+            group_count_ = 0;
+            plan_built_ = false;
+            any_input_ = false;
+        }
+
     private:
         std::pmr::vector<projected_column_t> keys_;
         std::pmr::vector<projected_column_t> computed_keys_;

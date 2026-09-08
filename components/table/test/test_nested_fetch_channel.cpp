@@ -3,13 +3,17 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstdio>
+#include <string>
+#include <unistd.h>
+
 #include <components/storage/table_storage_adapter.hpp>
 #include <components/table/column_segment.hpp>
 #include <components/table/column_state.hpp>
 #include <components/table/data_table.hpp>
 #include <components/table/storage/buffer_pool.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
-#include <components/table/storage/transient_block_manager.hpp>
+#include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/table_state.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <core/file/local_file_system.hpp>
@@ -25,15 +29,29 @@ namespace tstorage = components::table::storage;
 
 namespace {
 
+    const std::string& nested_fetch_db_path() {
+        static const std::string path = "/tmp/test_otterbrix_nested_fetch_channel_" + std::to_string(::getpid()) + ".otbx";
+        std::remove(path.c_str());
+        return path;
+    }
+
     struct nested_env_t {
         core::pmr::otterbrix_resource resource;
         core::filesystem::local_file_system_t fs;
         tstorage::buffer_pool_t buffer_pool;
         tstorage::standard_buffer_manager_t buffer_manager;
+        // A real disk manager over a scratch file: what these tests need is a column without a
+        // catalog, not a storage layer that cannot do I/O.
+        tstorage::single_file_block_manager_t block_manager;
 
         nested_env_t()
             : buffer_pool(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24)
-            , buffer_manager(&resource, fs, buffer_pool) {}
+            , buffer_manager(&resource, fs, buffer_pool)
+            , block_manager(buffer_manager, fs, nested_fetch_db_path()) {
+            REQUIRE_FALSE(block_manager.create_new_database().has_error());
+        }
+
+        ~nested_env_t() { std::remove(nested_fetch_db_path().c_str()); }
     };
 
     enum class shape_t
@@ -191,7 +209,7 @@ namespace {
 // row_group_t judges only the top-level column_scan_state, so a struct child's scan_error had no reader.
 TEST_CASE("nested scan: a data_corruption raised under a struct stops the scan") {
     nested_env_t env;
-    tstorage::transient_block_manager_t bm(env.buffer_manager, tstorage::DEFAULT_BLOCK_ALLOC_SIZE);
+    auto& bm = env.block_manager;
     const std::string big(5000, 's');
 
     shape_t shape = shape_t::STRUCT_OF_STRING;
@@ -223,7 +241,7 @@ TEST_CASE("nested scan: a data_corruption raised under a struct stops the scan")
 // The child's fetch_error needs a reader, or the adapter reports success over an empty field.
 TEST_CASE("nested fetch: a data_corruption raised under a struct reaches the statement") {
     nested_env_t env;
-    tstorage::transient_block_manager_t bm(env.buffer_manager, tstorage::DEFAULT_BLOCK_ALLOC_SIZE);
+    auto& bm = env.block_manager;
     const std::string big(5000, 'n');
 
     shape_t shape = shape_t::STRUCT_OF_STRING;
@@ -254,7 +272,7 @@ TEST_CASE("nested fetch: a data_corruption raised under a struct reaches the sta
 // LIST is skipped: its element always copies via string_scan_partial -> fetch_string_owned, flag or not.
 TEST_CASE("nested fetch: a big string in a struct field outlives the pins that read it") {
     nested_env_t env;
-    tstorage::transient_block_manager_t bm(env.buffer_manager, tstorage::DEFAULT_BLOCK_ALLOC_SIZE);
+    auto& bm = env.block_manager;
     const std::string big(5000, 'p');
 
     shape_t shape = shape_t::STRUCT_OF_STRING;

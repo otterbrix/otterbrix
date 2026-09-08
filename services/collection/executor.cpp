@@ -1567,8 +1567,11 @@ namespace services::collection::executor {
                 auto [_pa, paf] = actor_zeta::otterbrix::send(disk_address_,
                                                               &services::disk::manager_disk_t::storage_revert_appends,
                                                               pgc_ctx,
-                                                              std::move(revert_ranges));
-                co_await std::move(paf);
+                                                              std::move(revert_ranges),
+                                                              /*tail_only=*/false);
+                if (const auto reverted = co_await std::move(paf); reverted.contains_error()) {
+                    ::error(log_, "executor: pg_catalog append rollback did not complete: {}", reverted.what);
+                }
             }
 
             if (index_address_ != actor_zeta::address_t::empty_address()) {
@@ -1749,8 +1752,11 @@ namespace services::collection::executor {
                         actor_zeta::otterbrix::send(disk_address_,
                                                     &services::disk::manager_disk_t::storage_revert_appends,
                                                     rv_ctx,
-                                                    std::move(revert_ranges));
-                    co_await std::move(rvf);
+                                                    std::move(revert_ranges),
+                                                    /*tail_only=*/false);
+                    if (const auto reverted = co_await std::move(rvf); reverted.contains_error()) {
+                        ::error(log_, "executor: pg_index append rollback did not complete: {}", reverted.what);
+                    }
                 }
                 if (table_oid != components::catalog::INVALID_OID &&
                     index_address_ != actor_zeta::address_t::empty_address()) {

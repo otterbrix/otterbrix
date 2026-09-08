@@ -61,6 +61,9 @@ set( ${PROJECT_NAME}_SOURCES
         test_checkpoint_rebuild_snapshot.cpp
         test_dml_dictionary_rowids.cpp
         test_persistence_gaps.cpp
+        test_auto_checkpoint_fires_on_threshold.cpp
+        test_wal_address_always_wired.cpp
+        test_replay_floor_reopen.cpp
         test_delete_floor_resurrection.cpp
         test_index_scan_compact_race.cpp
         test_index_stale_window_measure.cpp
@@ -117,6 +120,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_create_index_inflight_dml.cpp
         test_create_index_backfill_addressing.cpp
         test_index_stale_marker_crash.cpp
+        test_row_id_reuse_crash.cpp
         test_correctness_bugs.cpp
         test_order_by_expressions.cpp
         test_order_by_nulls.cpp
@@ -199,6 +203,8 @@ set( ${PROJECT_NAME}_SOURCES
         test_pg_catalog_read.cpp
         test_catalog_name_uniqueness.cpp
         test_unqualified_name_ambiguity.cpp
+        test_rollback_freezes_checkpoint.cpp
+        test_wal_replay_rowid_drift.cpp
 
         # TODO: casts for dynamic schema
         # stress tests with sanitizer are incredibly slow

@@ -113,6 +113,26 @@ namespace services::planner::impl {
             return true;
         }
 
+        // Where the indexed column lands in a fetched chunk, so index_scan can re-read it off the row
+        // and re-apply the comparison the index answered. -1 when the table's columns were not
+        // resolved into this context, or the key names none of them (a path into a nested value):
+        // the scan then runs without the recheck rather than refusing every answer.
+        int64_t indexed_chunk_position(const context_storage_t& context,
+                                       components::catalog::oid_t table_oid,
+                                       const components::expressions::key_t& key) {
+            const auto* metadata = context.table_metadata_for(table_oid);
+            if (metadata == nullptr) {
+                return -1;
+            }
+            const auto name = key.as_string();
+            for (const auto& column : metadata->columns) {
+                if (column.chunk_position >= 0 && column.attname == name) {
+                    return column.chunk_position;
+                }
+            }
+            return -1;
+        }
+
         components::operators::operator_ptr create_plan_match_(const context_storage_t& context,
                                                                components::catalog::oid_t table_oid,
                                                                const components::expressions::expression_ptr& expr,
@@ -132,15 +152,17 @@ namespace services::planner::impl {
                             auto& value = get_parameter(context.parameters, param_id);
                             auto ctype = key_on_left ? comp_expr->type() : mirror_compare(comp_expr->type());
                             auto preferred_index_type = context.preferred_index_type_for_compare(table_oid, key, ctype);
-                            return boost::intrusive_ptr(new components::operators::index_scan(context.resource,
-                                                                                              context.log.clone(),
-                                                                                              table_oid,
-                                                                                              key,
-                                                                                              value,
-                                                                                              ctype,
-                                                                                              preferred_index_type,
-                                                                                              limit,
-                                                                                              projected_cols));
+                            return boost::intrusive_ptr(
+                                new components::operators::index_scan(context.resource,
+                                                                      context.log.clone(),
+                                                                      table_oid,
+                                                                      key,
+                                                                      value,
+                                                                      ctype,
+                                                                      preferred_index_type,
+                                                                      limit,
+                                                                      projected_cols,
+                                                                      indexed_chunk_position(context, table_oid, key)));
                         }
                     }
 

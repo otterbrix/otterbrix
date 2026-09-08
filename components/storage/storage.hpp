@@ -113,13 +113,21 @@ namespace components::storage {
         [[nodiscard]] virtual core::result_wrapper_t<std::pair<int64_t, uint64_t>>
         update(vector::vector_t& row_ids, vector::data_chunk_t& data, table::transaction_data txn) = 0;
 
-        virtual uint64_t delete_rows(vector::vector_t& row_ids, uint64_t count) = 0;
+        // A count alone cannot separate "deleted nothing" from "stopped part-way": a row id that
+        // names no row group is a refusal, and it travels here.
+        [[nodiscard]] virtual core::result_wrapper_t<uint64_t> delete_rows(vector::vector_t& row_ids,
+                                                                          uint64_t count) = 0;
 
-        virtual uint64_t delete_rows(vector::vector_t& row_ids, uint64_t count, uint64_t /*txn_id*/) {
+        [[nodiscard]] virtual core::result_wrapper_t<uint64_t>
+        delete_rows(vector::vector_t& row_ids, uint64_t count, uint64_t /*txn_id*/) {
             return delete_rows(row_ids, count);
         }
         virtual void commit_append(uint64_t /*commit_id*/, int64_t /*row_start*/, uint64_t /*count*/) {}
-        virtual void revert_append(int64_t /*row_start*/, uint64_t /*count*/) {}
+        // Rolling back an append can itself fail; the caller is on an abort path and can do no
+        // more than record it, but it must be told rather than left to guess.
+        [[nodiscard]] virtual core::error_t revert_append(int64_t /*row_start*/, uint64_t /*count*/) {
+            return core::error_t::no_error();
+        }
         virtual void commit_all_deletes(uint64_t /*txn_id*/, uint64_t /*commit_id*/) {}
         virtual void revert_all_deletes(uint64_t /*txn_id*/) {}
 

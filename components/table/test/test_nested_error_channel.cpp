@@ -12,13 +12,15 @@
 #include <components/table/list_column_data.hpp>
 #include <components/table/storage/buffer_pool.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
-#include <components/table/storage/transient_block_manager.hpp>
+#include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/struct_column_data.hpp>
 #include <components/table/table_state.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <core/file/local_file_system.hpp>
 
+#include <cstdio>
 #include <cstring>
+#include <unistd.h>
 #include <vector>
 
 using namespace components::types;
@@ -28,15 +30,30 @@ namespace tstorage = components::table::storage;
 
 namespace {
 
+    const std::string& scratch_db_path() {
+        static const std::string path =
+            "/tmp/test_otterbrix_nested_error_channel_" + std::to_string(::getpid()) + ".otbx";
+        std::remove(path.c_str());
+        return path;
+    }
+
     struct env_t {
         core::pmr::otterbrix_resource resource;
         core::filesystem::local_file_system_t fs;
         tstorage::buffer_pool_t buffer_pool;
         tstorage::standard_buffer_manager_t buffer_manager;
+        // A real disk manager over a scratch file: what these tests need is a column without a
+        // catalog, not a storage layer that cannot do I/O.
+        tstorage::single_file_block_manager_t block_manager;
 
         env_t()
             : buffer_pool(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24)
-            , buffer_manager(&resource, fs, buffer_pool) {}
+            , buffer_manager(&resource, fs, buffer_pool)
+            , block_manager(buffer_manager, fs, scratch_db_path()) {
+            REQUIRE_FALSE(block_manager.create_new_database().has_error());
+        }
+
+        ~env_t() { std::remove(scratch_db_path().c_str()); }
     };
 
     // Returns the append state too, so a case can reach the segments the append just wrote.
@@ -111,7 +128,7 @@ namespace {
 // (1)+(2) LIST/ARRAY point fetch: NOT IMPLEMENTED, reported not thrown; unreachable via SQL, tested directly.
 TEST_CASE("nested column: a LIST point fetch refuses on the scan state instead of throwing") {
     env_t env;
-    tstorage::transient_block_manager_t bm(env.buffer_manager, tstorage::DEFAULT_BLOCK_ALLOC_SIZE);
+    auto& bm = env.block_manager;
 
     auto list_type = complex_logical_type::create_list(complex_logical_type{logical_type::UBIGINT});
     auto built = build_nested_column(env, bm, list_type, {{1, 2}, {3, 4, 5}});
@@ -128,7 +145,7 @@ TEST_CASE("nested column: a LIST point fetch refuses on the scan state instead o
 
 TEST_CASE("nested column: an ARRAY point fetch refuses on the scan state instead of throwing") {
     env_t env;
-    tstorage::transient_block_manager_t bm(env.buffer_manager, tstorage::DEFAULT_BLOCK_ALLOC_SIZE);
+    auto& bm = env.block_manager;
 
     auto array_type = complex_logical_type::create_array(complex_logical_type{logical_type::UBIGINT}, 2);
     auto built = build_nested_column(env, bm, array_type, {{1, 2}, {3, 4}});
@@ -147,7 +164,7 @@ TEST_CASE("nested column: an ARRAY point fetch refuses on the scan state instead
 // (own segment payload), so a corrupt run is a read failure, not a program error.
 TEST_CASE("nested column: a list offset past the element column reports data_corruption") {
     env_t env;
-    tstorage::transient_block_manager_t bm(env.buffer_manager, tstorage::DEFAULT_BLOCK_ALLOC_SIZE);
+    auto& bm = env.block_manager;
 
     auto list_type = complex_logical_type::create_list(complex_logical_type{logical_type::UBIGINT});
     auto built = build_nested_column(env, bm, list_type, {{10, 20}, {30, 40, 50}});
@@ -197,7 +214,7 @@ TEST_CASE("nested column: a list offset past the element column reports data_cor
 // REPLAY leg of update (the txn leg is delete+append and never hits this), on the disk agent's thread.
 TEST_CASE("nested column: an in-place LIST update cannot change the list length, and says so") {
     env_t env;
-    tstorage::transient_block_manager_t bm(env.buffer_manager, tstorage::DEFAULT_BLOCK_ALLOC_SIZE);
+    auto& bm = env.block_manager;
 
     auto list_type = complex_logical_type::create_list(complex_logical_type{logical_type::UBIGINT});
     std::vector<logical_value_t> rows;
@@ -228,7 +245,7 @@ TEST_CASE("nested column: an in-place LIST update cannot change the list length,
 // (5)+(6) A malformed STRUCT sub-column path is refused; this call is update_column's only reachable surface.
 TEST_CASE("nested column: a struct sub-column update path is validated on the update channel") {
     env_t env;
-    tstorage::transient_block_manager_t bm(env.buffer_manager, tstorage::DEFAULT_BLOCK_ALLOC_SIZE);
+    auto& bm = env.block_manager;
 
     std::pmr::vector<complex_logical_type> fields(&env.resource);
     fields.emplace_back(logical_type::BIGINT, "a");
@@ -275,7 +292,7 @@ TEST_CASE("nested column: a struct sub-column update path is validated on the up
 // (7) An unnamed struct is refused at the append gate: REACHABLE via create_variant's LIST(struct) with no alias.
 TEST_CASE("nested column: an unnamed nested struct is refused by initialize_append") {
     env_t env;
-    tstorage::transient_block_manager_t bm(env.buffer_manager, tstorage::DEFAULT_BLOCK_ALLOC_SIZE);
+    auto& bm = env.block_manager;
 
     std::pmr::vector<complex_logical_type> fields(&env.resource);
     fields.emplace_back(logical_type::BIGINT, "a");
@@ -316,7 +333,7 @@ TEST_CASE("nested column: an unnamed nested struct is refused by initialize_appe
 // fetch(), which passes the caller's vector straight down; no SQL path names it directly.
 TEST_CASE("column scan: a flat-vector scan over a non-flat result refuses on the scan state") {
     env_t env;
-    tstorage::transient_block_manager_t bm(env.buffer_manager, tstorage::DEFAULT_BLOCK_ALLOC_SIZE);
+    auto& bm = env.block_manager;
 
     auto column = column_data_t::create_column(&env.resource, bm, 0, 0, complex_logical_type{logical_type::UBIGINT});
     {
@@ -349,7 +366,7 @@ TEST_CASE("column scan: a flat-vector scan over a non-flat result refuses on the
 // create_index_scan API, though no production caller passes COMMITTED_ROWS_DISALLOW_UPDATES today.
 TEST_CASE("column scan: an index-build scan over a column with updates refuses") {
     env_t env;
-    tstorage::transient_block_manager_t bm(env.buffer_manager, tstorage::DEFAULT_BLOCK_ALLOC_SIZE);
+    auto& bm = env.block_manager;
 
     std::vector<logical_value_t> rows;
     for (int64_t i = 0; i < 4; i++) {

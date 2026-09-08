@@ -28,6 +28,7 @@ namespace components::operators {
         // (built mid-txn, never committed).
         std::vector<components::catalog::oid_t> dropped_storage_oids;
         std::vector<components::catalog::oid_t> created_storage_oids;
+        std::vector<components::pg_catalog_append_range_t> base_appends;
         std::vector<components::table::created_index_t> created_indexes;
         if (ctx->current_message_sender != actor_zeta::address_t::empty_address()) {
             auto [_dr, drf] =
@@ -37,6 +38,7 @@ namespace components::operators {
             services::dispatcher::txn_abort_drain_t drain = co_await std::move(drf);
             txn_data = drain.txn;
             swap_appends = std::move(drain.swap_appends);
+            base_appends = std::move(drain.base_appends);
             base_append_tables = std::move(drain.base_append_tables);
             base_delete_tables = std::move(drain.base_delete_tables);
             pg_catalog_delete_tables = std::move(drain.pg_catalog_delete_tables);
@@ -51,8 +53,36 @@ namespace components::operators {
             auto [_r, rf] = actor_zeta::otterbrix::send(ctx->disk_address,
                                                         &services::disk::manager_disk_t::storage_revert_appends,
                                                         swap_ctx,
-                                                        std::move(swap_appends));
-            co_await std::move(rf);
+                                                        std::move(swap_appends),
+                                                        /*tail_only=*/false);
+            // Already aborting, so there is nothing left to fail: a rollback that could not finish
+            // is recorded rather than swallowed.
+            if (const auto reverted = co_await std::move(rf); reverted.contains_error()) {
+                error(log(),
+                      "operator_abort_transaction: pg_catalog append rollback did not complete: {}",
+                      reverted.what);
+            }
+        }
+
+        // The user-table half. Without it the rows stay with stamps no commit ever rewrote
+        // (row_version_manager: commit_append is the only writer of inserted[]), and since those stamps
+        // live in the txn-id space they sit above any commit-id watermark forever — so
+        // has_versions_above defers this table from every later checkpoint round and the WAL floor
+        // freezes. tail_only because the removal truncates; a range with a concurrent session's rows
+        // behind it is left in place and reported.
+        if (txn_data.transaction_id != 0 && !base_appends.empty() &&
+            ctx->disk_address != actor_zeta::address_t::empty_address()) {
+            components::execution_context_t base_ctx{ctx->session, txn_data, {}};
+            auto [_b, bf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                        &services::disk::manager_disk_t::storage_revert_appends,
+                                                        base_ctx,
+                                                        std::move(base_appends),
+                                                        /*tail_only=*/true);
+            if (const auto reverted = co_await std::move(bf); reverted.contains_error()) {
+                error(log(),
+                      "operator_abort_transaction: base-table append rollback did not complete: {}",
+                      reverted.what);
+            }
         }
 
         // Reverts this txn's PENDING index insert/delete entries — parity with executor.cpp's failed-DML path,

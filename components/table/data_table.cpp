@@ -460,13 +460,13 @@ namespace components::table {
         return result;
     }
 
-    uint64_t data_table_t::delete_rows(table_delete_state&,
-                                       vector::vector_t& row_identifiers,
-                                       uint64_t count,
-                                       uint64_t transaction_id) {
+    core::result_wrapper_t<uint64_t> data_table_t::delete_rows(table_delete_state&,
+                                                              vector::vector_t& row_identifiers,
+                                                              uint64_t count,
+                                                              uint64_t transaction_id) {
         assert(row_identifiers.type().type() == types::logical_type::BIGINT);
         if (count == 0) {
-            return 0;
+            return core::result_wrapper_t<uint64_t>{uint64_t{0}};
         }
 
         mark_modified();
@@ -488,9 +488,11 @@ namespace components::table {
             uint64_t current_count = pos - start;
 
             vector::vector_t offset_ids(row_identifiers, current_offset, pos);
-            delete_count += row_groups_->delete_rows(*this, ids + current_offset, current_count, transaction_id);
+            VALUE_OR_RETURN(auto deleted,
+                            row_groups_->delete_rows(*this, ids + current_offset, current_count, transaction_id));
+            delete_count += deleted;
         }
-        return delete_count;
+        return core::result_wrapper_t<uint64_t>{delete_count};
     }
 
     std::unique_ptr<table_update_state>

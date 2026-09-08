@@ -631,9 +631,11 @@ namespace services::disk {
         co_return;
     }
 
-    manager_disk_t::unique_future<void>
+    manager_disk_t::unique_future<core::error_t>
     manager_disk_t::storage_revert_appends(execution_context_t /*ctx*/,
-                                           std::vector<components::pg_catalog_append_range_t> ranges) {
+                                           std::vector<components::pg_catalog_append_range_t> ranges,
+                                           bool tail_only) {
+        auto first_error = core::error_t::no_error();
         // Each agent's inner handler reverse-iterates to unwind in the opposite of append order.
         if (!agents_.empty()) {
             std::pmr::vector<std::pmr::vector<components::pg_catalog_append_range_t>> per_agent{resource()};
@@ -647,7 +649,7 @@ namespace services::disk {
                 const std::size_t pool_idx = pool_idx_for_oid(r.table_oid, agents_.size());
                 per_agent[pool_idx].push_back(r);
             }
-            std::pmr::vector<unique_future<void>> agent_futures{resource()};
+            std::pmr::vector<unique_future<core::error_t>> agent_futures{resource()};
             agent_futures.reserve(per_agent.size());
             for (std::size_t i = 0; i < per_agent.size(); ++i) {
                 if (per_agent[i].empty())
@@ -655,17 +657,21 @@ namespace services::disk {
                 auto& agent = agents_[i];
                 auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
                                                                       &agent_disk_t::storage_revert_appends_inner,
-                                                                      std::move(per_agent[i]));
+                                                                      std::move(per_agent[i]),
+                                                                      tail_only);
                 if (needs_sched) {
                     scheduler_disk_->enqueue(agent.get());
                 }
                 agent_futures.emplace_back(std::move(fut));
             }
             for (auto& f : agent_futures) {
-                co_await std::move(f);
+                auto agent_error = co_await std::move(f);
+                if (agent_error.contains_error() && !first_error.contains_error()) {
+                    first_error = agent_error;
+                }
             }
         }
-        co_return;
+        co_return first_error;
     }
 
     manager_disk_t::unique_future<void> manager_disk_t::storage_revert_deletes(execution_context_t ctx,

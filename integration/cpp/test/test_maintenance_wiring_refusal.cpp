@@ -66,7 +66,9 @@ TEST_CASE("integration::cpp::maintenance_wiring::index_scan_without_index_servic
                        components::expressions::compare_type::eq,
                        lp::index_type::no_valid,
                        lp::limit_t::unlimit(),
-                       {}};
+                       {},
+                       // No chunk position: this scan never reaches a fetch to recheck.
+                       -1};
 
     components::pipeline::context_t ctx{lp::storage_parameters{res},
                                         components::pipeline::no_mailbox(),

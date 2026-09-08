@@ -258,7 +258,12 @@ namespace components::storage {
             }
 
             auto delete_state = table_.initialize_delete({});
-            table_.delete_rows(*delete_state, row_ids, count, txn.transaction_id);
+            // An update is a delete then an append: if the delete refuses, appending would leave
+            // both the old and the new row.
+            if (auto deleted = table_.delete_rows(*delete_state, row_ids, count, txn.transaction_id);
+                deleted.has_error()) {
+                return deleted.convert_error<std::pair<int64_t, uint64_t>>();
+            }
 
             table::table_append_state append_state(resource_);
             auto lock_r = table_.append_lock(append_state);
@@ -279,12 +284,13 @@ namespace components::storage {
             return std::pair<int64_t, uint64_t>{start_row, count};
         }
 
-        uint64_t delete_rows(vector::vector_t& row_ids, uint64_t count) override {
+        core::result_wrapper_t<uint64_t> delete_rows(vector::vector_t& row_ids, uint64_t count) override {
             auto delete_state = table_.initialize_delete({});
             return table_.delete_rows(*delete_state, row_ids, count, 0);
         }
 
-        uint64_t delete_rows(vector::vector_t& row_ids, uint64_t count, uint64_t txn_id) override {
+        core::result_wrapper_t<uint64_t>
+        delete_rows(vector::vector_t& row_ids, uint64_t count, uint64_t txn_id) override {
             auto delete_state = table_.initialize_delete({});
             return table_.delete_rows(*delete_state, row_ids, count, txn_id);
         }
@@ -293,17 +299,12 @@ namespace components::storage {
             table_.commit_append(commit_id, row_start, count);
         }
 
-        void revert_append(int64_t row_start, uint64_t count) override {
-            // void can't propagate the refusal, and result_wrapper_t is [[nodiscard]], so report to stderr instead.
+        core::error_t revert_append(int64_t row_start, uint64_t count) override {
             auto reverted = table_.revert_append(row_start, count);
             if (reverted.has_error()) {
-                std::fprintf(stderr,
-                             "components::storage::table_storage_adapter_t::revert_append: rollback of rows "
-                             "[%lld, +%llu) could not complete: %s\n",
-                             static_cast<long long>(row_start),
-                             static_cast<unsigned long long>(count),
-                             reverted.error().what.c_str());
+                return reverted.error();
             }
+            return core::error_t::no_error();
         }
 
         void commit_all_deletes(uint64_t txn_id, uint64_t commit_id) override {

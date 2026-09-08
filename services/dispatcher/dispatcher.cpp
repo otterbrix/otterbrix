@@ -16,7 +16,6 @@
 #include <components/physical_plan_generator/impl/create_plan_register_cast.hpp>
 #include <components/physical_plan_generator/impl/create_plan_register_udf.hpp>
 #include <core/executor.hpp>
-#include <core/pipeline_bypass.hpp>
 #include <core/tracy/tracy.hpp>
 
 #include <services/collection/context_storage.hpp>
@@ -370,8 +369,7 @@ namespace services::dispatcher {
         auto new_lowest = txn_manager_.lowest_active_snapshot_horizon();
         if (new_lowest > last_broadcast_horizon_) {
             last_broadcast_horizon_ = new_lowest;
-            auto sweep_broadcast =
-                core::maintenance::pipeline_bypass<core::maintenance::bypass_site::horizon_gc_sweep>([&] {
+            auto sweep_broadcast = [&] {
                     if (disk_has_dropped_) {
                         auto disk_send_result =
                             actor_zeta::otterbrix::send(disk_address_,
@@ -386,7 +384,7 @@ namespace services::dispatcher {
                                                         new_lowest);
                         pending_void_.emplace_back(std::move(index_send_result.second));
                     }
-                });
+            };
             sweep_broadcast();
         }
     }
@@ -1064,8 +1062,11 @@ namespace services::dispatcher {
             auto backfills_discarded = txn_t->drain_pg_attribute_commit_id_backfills();
             (void) backfills_discarded;
             auto drained_appends = txn_t->drain_base_appends();
+            out.base_appends.reserve(drained_appends.size());
             for (const auto& r : drained_appends) {
                 out.base_append_tables.insert(r.table_oid);
+                out.base_appends.push_back(
+                    components::pg_catalog_append_range_t{r.table_oid, r.row_start, r.row_count});
             }
             auto drained_deletes = txn_t->drain_base_deletes();
             for (const auto& d : drained_deletes) {

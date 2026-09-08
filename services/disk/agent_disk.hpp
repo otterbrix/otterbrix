@@ -175,8 +175,8 @@ namespace services::disk {
         unique_future<void> storage_revert_deletes_inner(uint64_t txn_id,
                                                          std::pmr::vector<components::catalog::oid_t> tables);
 
-        unique_future<void>
-        storage_revert_appends_inner(std::pmr::vector<components::pg_catalog_append_range_t> ranges);
+        unique_future<core::error_t>
+        storage_revert_appends_inner(std::pmr::vector<components::pg_catalog_append_range_t> ranges, bool tail_only);
 
         // (0, 0) means an EMPTY chunk, not "no storage".
         unique_future<core::result_wrapper_t<std::pair<int64_t, uint64_t>>>

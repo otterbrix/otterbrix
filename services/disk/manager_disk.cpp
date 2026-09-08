@@ -661,7 +661,8 @@ namespace services::disk {
         }
     }
 
-    // Rule-3 pipeline bypass (core/pipeline_bypass.hpp): horizon keeps this off files a snapshot may read.
+    // Reached only from the dispatcher's horizon sweep, which does not route through the pipeline:
+    // the DROP it reclaims already did, and the horizon keeps this off files a snapshot may read.
     manager_disk_t::unique_future<void> manager_disk_t::on_horizon_advanced(uint64_t new_horizon) {
         trace(log_, "manager_disk::on_horizon_advanced , horizon : {}", new_horizon);
 

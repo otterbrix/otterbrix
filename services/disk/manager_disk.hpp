@@ -623,8 +623,9 @@ namespace services::disk {
                                                     uint64_t commit_id,
                                                     std::set<components::catalog::oid_t> tables);
 
-        unique_future<void> storage_revert_appends(execution_context_t ctx,
-                                                   std::vector<components::pg_catalog_append_range_t> ranges);
+        unique_future<core::error_t> storage_revert_appends(execution_context_t ctx,
+                                                            std::vector<components::pg_catalog_append_range_t> ranges,
+                                                            bool tail_only);
 
         unique_future<void> storage_revert_deletes(execution_context_t ctx,
                                                    std::vector<components::catalog::oid_t> tables);

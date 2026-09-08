@@ -15,6 +15,11 @@ namespace components::operators {
     // than one batch must bump this past 1 (proving it streams, not materializes).
 #ifdef DEV_MODE
     uint64_t create_index_backfill_batches() noexcept;
+    // Counts runs handed over by partial_copy rather than moved whole. Only a batch with a HOLE in
+    // its physical row ids takes that leg, and nothing in the suite produced one until
+    // backfill_over_a_mid_batch_hole -- so without this counter a test could not tell that it
+    // reached the branch at all, only that the answer happened to be right.
+    uint64_t create_index_backfill_partial_copies() noexcept;
 #endif
 
     // pg_class/pg_index(indisvalid=false)/pg_depend rows are already written by

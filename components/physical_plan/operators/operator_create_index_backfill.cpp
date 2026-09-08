@@ -17,9 +17,13 @@ namespace components::operators {
 #ifdef DEV_MODE
     namespace {
         std::atomic<uint64_t> g_create_index_backfill_batches{0};
+        std::atomic<uint64_t> g_create_index_backfill_partial_copies{0};
     } // namespace
     uint64_t create_index_backfill_batches() noexcept {
         return g_create_index_backfill_batches.load(std::memory_order_relaxed);
+    }
+    uint64_t create_index_backfill_partial_copies() noexcept {
+        return g_create_index_backfill_partial_copies.load(std::memory_order_relaxed);
     }
 #endif
 
@@ -160,7 +164,13 @@ namespace components::operators {
             for (uint64_t base = 0; base < total_rows; base += components::vector::DEFAULT_VECTOR_CAPACITY) {
                 const uint64_t count =
                     std::min<uint64_t>(components::vector::DEFAULT_VECTOR_CAPACITY, total_rows - base);
-                components::vector::vector_t fetch_ids(resource_, components::types::logical_type::BIGINT, count);
+                // create_data, but no zeroing: every one of `count` slots is written right below.
+                components::vector::vector_t fetch_ids(resource_,
+                                                       components::types::complex_logical_type{
+                                                           components::types::logical_type::BIGINT},
+                                                       /*create_data=*/true,
+                                                       /*zero_data=*/false,
+                                                       count);
                 for (uint64_t k = 0; k < count; ++k) {
                     fetch_ids.data<int64_t>()[k] = static_cast<int64_t>(base + k);
                 }
@@ -200,7 +210,21 @@ namespace components::operators {
                             ++run_len;
                         }
                         std::pmr::vector<components::vector::data_chunk_t> idx_chunks(resource_);
-                        idx_chunks.push_back(batch_chunk.partial_copy(resource_, run_start, run_len));
+                        // The whole chunk is one run -- the ordinary case for a table with no holes.
+                        // partial_copy would rebuild every column here (a fresh validity mask, a
+                        // copied complex_logical_type per column, an index slice for dictionaries);
+                        // nothing reads batch_chunk after this, so it can simply be handed over.
+                        // run_len == sz forces run_start == 0 (the scan above bounds run_len by
+                        // sz - run_start), and run_start += run_len then ends the loop -- so the
+                        // moved-from chunk is never read on a later turn.
+                        if (run_len == sz) {
+                            idx_chunks.push_back(std::move(batch_chunk));
+                        } else {
+#ifdef DEV_MODE
+                            g_create_index_backfill_partial_copies.fetch_add(1, std::memory_order_relaxed);
+#endif
+                            idx_chunks.push_back(batch_chunk.partial_copy(resource_, run_start, run_len));
+                        }
                         auto [_ir, irf] = actor_zeta::otterbrix::send(
                             ctx->index_address,
                             &services::index::manager_index_t::apply_wal_record_for_index,

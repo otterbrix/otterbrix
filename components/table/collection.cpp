@@ -397,22 +397,20 @@ namespace components::table {
         total_rows_ += data.total_rows_.load();
     }
 
-    uint64_t collection_t::delete_rows(data_table_t& table, int64_t* ids, uint64_t count, uint64_t transaction_id) {
+    core::result_wrapper_t<uint64_t>
+    collection_t::delete_rows(data_table_t& table, int64_t* ids, uint64_t count, uint64_t transaction_id) {
         uint64_t delete_count = 0;
         uint64_t pos = 0;
         do {
             uint64_t start = pos;
             auto row_group = row_groups_->get_segment(ids[start]);
             if (!row_group) {
-                // No error channel here (the return is the deleted-row count); stop and report
-                // on stderr rather than deleting "some nearby rows" instead.
-                std::fprintf(stderr,
-                             "components::table::collection_t::delete_rows: row id %lld names no row group; "
-                             "stopping after %llu of %llu deletions\n",
-                             static_cast<long long>(ids[start]),
-                             static_cast<unsigned long long>(delete_count),
-                             static_cast<unsigned long long>(count));
-                return delete_count;
+                // get_segment miss rides the channel this function now returns: a partial delete
+                // must not read back as a completed one -- the count alone cannot tell them apart
+                // (see the repeat-delete case in services/disk/tests/test_error_handling.cpp).
+                return core::error_t(
+                    core::error_code_t::invalid_parameter,
+                    std::pmr::string("table delete: a row id names no row group of this table", resource_));
             }
             for (pos++; pos < count; pos++) {
                 assert(ids[pos] >= 0);

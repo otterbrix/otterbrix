@@ -220,8 +220,17 @@ namespace services::disk {
         actor_zeta::unique_future<void> storage_publish_deletes(execution_context_t ctx,
                                                                 uint64_t commit_id,
                                                                 std::set<components::catalog::oid_t> tables);
-        actor_zeta::unique_future<void>
-        storage_revert_appends(execution_context_t ctx, std::vector<components::pg_catalog_append_range_t> ranges);
+        actor_zeta::unique_future<core::error_t>
+        // tail_only: revert a range ONLY while it is still the table's last one. Version stamps are not
+        // persisted (components/table/row_group.cpp write_to_disk) and a row group without them reads
+        // back as all-committed, so an aborted row left in the table would come back alive after a
+        // checkpoint -- removing it is the only way its stamps stop deferring the round. But the removal
+        // is a TRUNCATION (components/table/collection.cpp revert_append), so a range with somebody
+        // else's rows behind it must be left alone rather than take them down with it. pg_catalog's own
+        // swap ranges pass false: they are reverted under the catalog's own serialization.
+        storage_revert_appends(execution_context_t ctx,
+                               std::vector<components::pg_catalog_append_range_t> ranges,
+                               bool tail_only);
 
         // Abort path: un-stamps this txn's pending delete marks back to NOT_DELETED_ID.
         actor_zeta::unique_future<void> storage_revert_deletes(execution_context_t ctx,

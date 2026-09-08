@@ -1,5 +1,8 @@
 #include "index_scan.hpp"
 
+#include <algorithm>
+
+#include <components/physical_plan/operators/compare_3vl.hpp>
 #include <services/disk/manager_disk.hpp>
 #include <services/index/manager_index.hpp>
 
@@ -21,7 +24,8 @@ namespace components::operators {
                            expressions::compare_type compare_type,
                            components::logical_plan::index_type preferred_index_type,
                            logical_plan::limit_t limit,
-                           std::vector<size_t> projected_cols)
+                           std::vector<size_t> projected_cols,
+                           int64_t key_chunk_col)
         : read_only_operator_t(resource, log, operator_type::index_scan)
         , table_oid_(table_oid)
         // Copied onto the operator's arena — key_ is read after the logical node's is released.
@@ -30,7 +34,54 @@ namespace components::operators {
         , compare_type_(compare_type)
         , preferred_index_type_(preferred_index_type)
         , limit_(limit)
-        , projected_cols_(std::move(projected_cols)) {}
+        , projected_cols_(std::move(projected_cols))
+        , key_chunk_col_(key_chunk_col)
+        , fetch_cols_(projected_cols_) {
+        // An EMPTY projection already means every column, so the key cell is there; widening it would
+        // NARROW the answer to one column instead.
+        if (key_chunk_col_ >= 0 && !fetch_cols_.empty()) {
+            const auto key_col = static_cast<size_t>(key_chunk_col_);
+            if (std::find(fetch_cols_.begin(), fetch_cols_.end(), key_col) == fetch_cols_.end()) {
+                fetch_cols_.push_back(key_col);
+            }
+        }
+    }
+
+    core::error_t index_scan::recheck_answered_rows_() const {
+        if (key_chunk_col_ < 0) {
+            return core::error_t::no_error();
+        }
+        const auto key_col = static_cast<uint64_t>(key_chunk_col_);
+        for (const auto& chunk : batch_) {
+            if (key_col >= chunk.column_count()) {
+                // The fetched width disagrees with the width plan-gen resolved against: nothing here can
+                // be trusted to be the row the index meant, so refuse rather than skip the check.
+                return core::error_t{core::error_code_t::stale_index,
+                                     std::pmr::string{"index_scan: the fetched row is narrower than the "
+                                                      "indexed column position the plan resolved; the index "
+                                                      "answer cannot be verified",
+                                                      resource_}};
+            }
+            for (uint64_t row = 0; row < chunk.size(); ++row) {
+                // Bound to a named local: chunk.value() is a temporary, and a string cell hands out a
+                // view into it.
+                const auto cell = chunk.value(key_col, row);
+                // selects(): the WHERE rule, so an UNKNOWN (a NULL cell) fails the recheck too --
+                // the index had no business naming a row the predicate does not select.
+                if (types::selects(eval_compare_3vl(compare_type_, cell, value_))) {
+                    continue;
+                }
+                return core::error_t{core::error_code_t::stale_index,
+                                     std::pmr::string{"index_scan: the index named a row that does not "
+                                                      "satisfy the predicate it was searched with — its "
+                                                      "row ids no longer name the rows it indexed (a "
+                                                      "restart that left the index ahead of its table); "
+                                                      "rebuild the index and retry the statement",
+                                                      resource_}};
+            }
+        }
+        return core::error_t::no_error();
+    }
 
     actor_zeta::unique_future<core::error_t> index_scan::open_index_window(pipeline::context_t* ctx) {
         auto [_s, sf] = preferred_index_type_ == logical_plan::index_type::no_valid
@@ -86,7 +137,7 @@ namespace components::operators {
                                                     table_oid_,
                                                     std::move(row_ids),
                                                     count,
-                                                    projected_cols_,
+                                                    fetch_cols_,
                                                     ctx->txn,
                                                     table::fetch_visibility_t::SNAPSHOT,
                                                     // -1 uncapped, else stops after this many rows.
@@ -193,6 +244,14 @@ namespace components::operators {
             }
             batch_ = std::move(batch_r.value());
             batch_pos_ = 0;
+            // Before ANY row leaves: a refusal that let the first chunk through would already have
+            // handed the caller a wrong row.
+            if (auto stale = recheck_answered_rows_(); stale.contains_error()) {
+                batch_.clear();
+                set_error(stale);
+                mark_failed();
+                co_return core::result_wrapper_t<vector::data_chunk_t>(std::move(stale));
+            }
         }
 
         // No cap here: already applied below the visibility filter.

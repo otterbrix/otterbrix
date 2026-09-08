@@ -236,7 +236,9 @@ namespace services::disk {
         for (uint64_t i = 0; i < count; i++) {
             ids_vec.set_value(i, row_ids[i]);
         }
-        const uint64_t deleted = entry->storage->delete_rows(ids_vec, count, txn.transaction_id);
+        // The storage refuses a row id that names no row group; the count-mismatch check below
+        // stays for the case where it deleted fewer than journalled without refusing.
+        VALUE_OR_RETURN(const uint64_t deleted, entry->storage->delete_rows(ids_vec, count, txn.transaction_id));
         if (deleted != count) {
             std::pmr::string what{"agent_disk::direct_delete_sync: the storage deleted ", resource()};
             what.append(std::to_string(deleted).c_str());
@@ -719,14 +721,15 @@ namespace services::disk {
                   static_cast<unsigned>(table_oid),
                   start_row,
                   materialized_start);
-            s->revert_append(static_cast<int64_t>(materialized_start), actual_count);
+            const auto reverted = s->revert_append(static_cast<int64_t>(materialized_start), actual_count);
             std::pmr::string what{"agent_disk::storage_append_inner: journalled start_row ", resource()};
             what.append(std::to_string(start_row).c_str());
             what.append(" but the rows materialized at ");
             what.append(std::to_string(materialized_start).c_str());
             what.append(" for table oid ");
             what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
-            what.append("; the rows were reverted and nothing was appended");
+            what.append(reverted.contains_error() ? "; the rows could NOT be reverted and nothing was appended"
+                                                  : "; the rows were reverted and nothing was appended");
             co_return core::error_t{core::error_code_t::data_corruption, std::move(what)};
         }
         co_return std::make_pair(materialized_start, actual_count);
@@ -815,8 +818,12 @@ namespace services::disk {
         co_return;
     }
 
-    agent_disk_t::unique_future<void>
-    agent_disk_t::storage_revert_appends_inner(std::pmr::vector<components::pg_catalog_append_range_t> ranges) {
+    agent_disk_t::unique_future<core::error_t>
+    agent_disk_t::storage_revert_appends_inner(std::pmr::vector<components::pg_catalog_append_range_t> ranges,
+                                              bool tail_only) {
+        // Reports the FIRST refusal but keeps unwinding: a range that cannot be rolled back must not
+        // strand the ranges after it.
+        auto first_error = core::error_t::no_error();
         for (auto it = ranges.rbegin(); it != ranges.rend(); ++it) {
             if (it->count == 0) {
                 continue;
@@ -831,9 +838,30 @@ namespace services::disk {
                 report_publish_revert_miss(log_, pool_idx_, "storage_revert_appends_inner", it->table_oid);
                 continue;
             }
-            entry->storage->revert_append(it->start_row, it->count);
+            // Reverse iteration is what makes a multi-statement transaction work here: dropping its LAST
+            // range moves the frontier back onto the one before it, so each in turn becomes the tail.
+            if (tail_only) {
+                const auto frontier = entry->storage->total_rows();
+                if (it->start_row < 0 || static_cast<uint64_t>(it->start_row) + it->count != frontier) {
+                    warn(log_,
+                         "agent_disk[{}]::storage_revert_appends_inner oid={} range [{}, {}) is no longer the "
+                         "table's tail (it holds {} rows) — the rows stay, and their pending stamps keep "
+                         "deferring this table's checkpoint rounds until the process restarts; truncating here "
+                         "would take a concurrent session's rows down with them",
+                         pool_idx_,
+                         static_cast<unsigned>(it->table_oid),
+                         it->start_row,
+                         static_cast<uint64_t>(it->start_row) + it->count,
+                         frontier);
+                    continue;
+                }
+            }
+            if (auto reverted = entry->storage->revert_append(it->start_row, it->count);
+                reverted.contains_error() && !first_error.contains_error()) {
+                first_error = reverted;
+            }
         }
-        co_return;
+        co_return first_error;
     }
 
     agent_disk_t::unique_future<core::result_wrapper_t<std::pair<int64_t, uint64_t>>>
@@ -934,6 +962,27 @@ namespace services::disk {
         const uint64_t budget = capped ? static_cast<uint64_t>(limit) : 0;
         uint64_t produced = 0;
         const auto* ids = row_ids.data<int64_t>();
+        // An id past the table's frontier is not an invisible row -- the gather skips it silently
+        // (components/table/collection.cpp: an id outside every row group is dropped), and the caller
+        // reads the short answer as "no such row". For an INDEX answer that is a lie: the index named
+        // rows the table does not have, because a crash left it ahead of the table's last checkpoint.
+        // Refuse rather than answer short; a shortfall from MVCC visibility or LIMIT stays legal
+        // because it is bounded by ids that DO exist.
+        if (expected_compact_epoch != k_fetch_epoch_unchecked) {
+            const auto frontier = static_cast<int64_t>(entry->storage->total_rows());
+            for (uint64_t i = 0; i < count; ++i) {
+                if (ids[i] >= 0 && ids[i] < frontier) {
+                    continue;
+                }
+                std::pmr::string what{"storage_fetch: the index answered row id ", resource()};
+                what.append(std::to_string(ids[i]).c_str());
+                what.append(", which the table does not have (it holds ");
+                what.append(std::to_string(frontier).c_str());
+                what.append(" rows) -- the index is ahead of its table after a restart; rebuild the "
+                            "index and retry the statement");
+                co_return core::error_t{core::error_code_t::stale_index, std::move(what)};
+            }
+        }
         for (uint64_t offset = 0; offset < count; offset += components::vector::DEFAULT_VECTOR_CAPACITY) {
             if (capped && produced >= budget) {
                 break;

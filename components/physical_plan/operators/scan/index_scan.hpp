@@ -30,7 +30,11 @@ namespace components::operators {
                    expressions::compare_type compare_type,
                    components::logical_plan::index_type preferred_index_type,
                    logical_plan::limit_t limit,
-                   std::vector<size_t> projected_cols);
+                   std::vector<size_t> projected_cols,
+                   // Position of the indexed column in a fetched chunk, or -1 when plan-gen could
+                   // not resolve it. Feeds the recheck below; -1 leaves the answer on the epoch
+                   // gate alone.
+                   int64_t key_chunk_col);
 
         const expressions::key_t& key() const { return key_; }
         const types::logical_value_t& value() const { return value_; }
@@ -77,6 +81,15 @@ namespace components::operators {
         actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<vector::data_chunk_t>>>
         fetch_matched_window(pipeline::context_t* ctx);
 
+        // The epoch gate proves the row ids were not RENUMBERED; it cannot prove they still name the
+        // rows the index meant. A crash that leaves the index ahead of the table (the index is durable
+        // per commit, the table only per checkpoint) does not move any epoch, so the ids survive the
+        // gate and a later INSERT reuses them. This re-reads the indexed column off the fetched row and
+        // re-applies the very comparison the index answered. A row that fails it REFUSES the statement
+        // -- it is never filtered out: a silent filter would turn a stale index into a quietly short
+        // answer, and correctness here is worth an error the caller can retry.
+        [[nodiscard]] core::error_t recheck_answered_rows_() const;
+
         components::catalog::oid_t table_oid_;
         const expressions::key_t key_;
         const types::logical_value_t value_;
@@ -86,6 +99,10 @@ namespace components::operators {
         // Empty means every column; without it, point-fetch pays a heap-copy per matched row
         // for unnamed text columns too.
         const std::vector<size_t> projected_cols_;
+        const int64_t key_chunk_col_;
+        // projected_cols_ widened by key_chunk_col_ so the recheck has the cell to read. Built once:
+        // a per-fetch copy would allocate on the point-lookup path.
+        std::vector<size_t> fetch_cols_;
 
         // If the scan drains having produced zero rows, it emits one schema'd 0-row guard chunk
         // (scalar aggregate COUNT=0 / OUTER-join NULL-pad) before the 0-column drain sentinel.

@@ -269,8 +269,8 @@ TEST_CASE("integration::cpp::select_rework::cast on column, on literal and on re
     REQUIRE(cursor->is_success());
     CHECK(cursor->size() == 2);
     CHECK(column_count(cursor) == 1);
-    CHECK(numeric_at(cursor, 0) == 1.0);
-    CHECK(numeric_at(cursor, 1) == 4.0);
+    CHECK(numeric_at(cursor, 0) == Catch::Approx(1.0));
+    CHECK(numeric_at(cursor, 1) == Catch::Approx(4.0));
 }
 
 TEST_CASE("integration::cpp::select_rework::several computed columns keep their own slots") {

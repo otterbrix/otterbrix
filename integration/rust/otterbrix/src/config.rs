@@ -70,25 +70,16 @@ impl Config {
 ///
 /// `<cwd>` is the process's current working directory at the moment
 /// [`build`](ConfigBuilder::build) is called.
-#[derive(Debug, Clone)]
+// Derived, not hand-written: every field's default IS its type's default now. The manual impl was
+// needed only while wal_on and sync_to_disk defaulted to true, and clippy::derivable_impls (denied
+// via -D warnings in scripts/check.sh) refuses to let it outlive them.
+#[derive(Debug, Clone, Default)]
 pub struct ConfigBuilder {
     level: i32,
     log_path: Option<PathBuf>,
     wal_path: Option<PathBuf>,
     disk_path: Option<PathBuf>,
     main_path: Option<PathBuf>,
-}
-
-impl Default for ConfigBuilder {
-    fn default() -> Self {
-        Self {
-            level: 0,
-            log_path: None,
-            wal_path: None,
-            disk_path: None,
-            main_path: None,
-        }
-    }
 }
 
 impl ConfigBuilder {

@@ -772,7 +772,10 @@ TEST_CASE("services::disk::error::a_publish_or_revert_that_finds_no_storage_says
     {
         std::vector<components::pg_catalog_append_range_t> ranges;
         ranges.push_back(components::pg_catalog_append_range_t{nowhere, 0, 3});
-        fx.invoke(&manager_disk_t::storage_revert_appends, txn_ctx(), std::move(ranges), false);
+        // An unowned oid is reported through publish_revert_misses and skipped, not refused, so the
+        // handler itself must still answer no_error -- which is what the next line counts on.
+        REQUIRE_FALSE(fx.invoke(&manager_disk_t::storage_revert_appends, txn_ctx(), std::move(ranges), false)
+                          .contains_error());
         REQUIRE(services::disk::publish_revert_misses() == 4);
     }
 

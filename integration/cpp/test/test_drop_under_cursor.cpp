@@ -81,9 +81,9 @@ TEST_CASE("integration::cpp::drop_under_cursor::vanished_entry_fails_loudly_not_
     test_clear_directory(config);
     config.log.level = log_t::level::off;
 
-    gate_guard_t guard;
-
+    // Engine first: see test_index_scan_compact_race -- a seam outliving the engine spins on teardown.
     test_spaces space(config);
+    gate_guard_t guard;
     auto* d = space.dispatcher();
     seed(d);
 

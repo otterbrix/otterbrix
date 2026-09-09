@@ -86,10 +86,11 @@ TEST_CASE("integration::cpp::delete_floor_resurrection::committed_delete_survive
 
     const std::filesystem::path crash_dir = integration_fixture_path("test_delete_floor_resurrection/crash");
 
-    gate_guard_t guard;
-
     {
+        // Engine first, seam second: a guard declared outside this block outlives the engine,
+        // so the seam stays armed while the world tears down and the hold loop spins in it.
         test_spaces space(config);
+        gate_guard_t guard;
         auto* d = space.dispatcher();
         seed(d);
 

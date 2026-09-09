@@ -115,8 +115,9 @@ TEST_CASE("integration::cpp::index_stale_window::reader_in_window_is_refused_not
     // outcome is attributable to a known round.
     config.wal.auto_checkpoint_threshold_bytes = 0;
 
-    gate_guard_t guard;
+    // Engine first: a seam outliving the engine keeps the hold loop spinning during teardown.
     test_spaces space(config);
+    gate_guard_t guard;
     auto* d = space.dispatcher();
 
     REQUIRE(exec(d, "CREATE DATABASE rdb;")->is_success());

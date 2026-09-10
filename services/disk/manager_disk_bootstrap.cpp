@@ -223,18 +223,34 @@ namespace services::disk {
         if (const auto* settings_def = catalog::find_system_table(pg_settings_oid)) {
             if (bootstrap_one(*settings_def)) {
                 freshly_created.insert(catalog::well_known_oid::pg_settings_table);
-                auto row = make_row(resource(), settings_def->columns, [&](data_chunk_t& chunk, auto*) {
-                    chunk.set_value(0, 0, std::string_view("TimeZone"));
-                    // Lowercase deliberately: timezone_to_offset needs lowercase; "UTC" here would warn on every start.
-                    chunk.set_value(1, 0, std::string_view("utc"));
-                });
-                seed_row(catalog::well_known_oid::pg_settings_table, settings_def->name, row);
-                require_seeded(catalog::well_known_oid::pg_settings_table, settings_def->name, 1);
+                catalog::session_catalog_t defaults;
+                for (const auto& def : catalog::all_settings()) {
+                    auto value = catalog::current_setting_value(defaults, def.id, resource());
+                    auto canonical = catalog::canonical_setting_value(def.id, value, resource());
+                    assert(!canonical.has_error() && "a built-in default that the setting itself refuses");
+                    auto row = make_row(resource(), settings_def->columns, [&](data_chunk_t& chunk, auto*) {
+                        chunk.set_value(0, 0, def.catalog_name);
+                        chunk.set_value(1, 0, std::string_view(canonical.value().data(), canonical.value().size()));
+                    });
+                    seed_row(catalog::well_known_oid::pg_settings_table, settings_def->name, row);
+                }
+                require_seeded(catalog::well_known_oid::pg_settings_table,
+                               settings_def->name,
+                               catalog::all_settings().size());
             }
-            auto tz_name = read_setting_sync("TimeZone");
-            if (!tz_name.empty()) {
-                if (auto err = stored_catalog_.set_timezone(resource(), tz_name); err.contains_error()) {
-                    warn(log_, "bootstrap: stored catalog refused timezone '{}': {}", tz_name, err.what);
+            // pg_settings is append-only, so this reads what SET last wrote, or the seed.
+            for (const auto& def : catalog::all_settings()) {
+                auto stored = read_setting_sync(def.catalog_name);
+                if (stored.empty()) {
+                    continue;
+                }
+                if (auto err = catalog::set_setting(stored_catalog_, def.id, stored, resource());
+                    err.contains_error()) {
+                    warn(log_,
+                         "bootstrap: stored catalog refused {} = '{}': {}",
+                         def.sql_name,
+                         stored,
+                         err.what);
                 }
             }
         }

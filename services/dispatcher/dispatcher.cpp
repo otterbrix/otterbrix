@@ -389,6 +389,12 @@ namespace services::dispatcher {
         }
     }
 
+    // it is not the best approach, but a little bit more stable than pure session hashing
+    std::size_t manager_dispatcher_t::next_executor_index() noexcept {
+        assert(!executors_.empty());
+        return next_executor_++ % executors_.size();
+    }
+
     manager_dispatcher_t::unique_future<void> manager_dispatcher_t::on_drop_resource_marked(uint8_t subscriber_kind) {
         if (subscriber_kind == DISK_KIND) {
             disk_has_dropped_ = true;
@@ -429,7 +435,7 @@ namespace services::dispatcher {
         }
 
         assert(!executors_.empty());
-        const std::size_t pool_idx = std::hash<components::session::session_id_t>{}(session) % executors_.size();
+        const std::size_t pool_idx = next_executor_index();
         trace(log_, "manager_dispatcher_t::execute_plan: routing to executor[{}]", pool_idx);
         auto [needs_sched, future] = actor_zeta::otterbrix::send(executor_addresses_[pool_idx],
                                                                  &collection::executor::executor_t::execute_plan_full,
@@ -440,17 +446,20 @@ namespace services::dispatcher {
         }
         auto exec_result = co_await std::move(future);
 
-        if (!exec_result.applied_timezone.empty()) {
-            auto tz_err = default_tz_cat_.set_timezone(
-                resource(),
-                std::string_view{exec_result.applied_timezone.data(), exec_result.applied_timezone.size()});
-            if (tz_err.contains_error()) {
+        if (!exec_result.applied_setting_value.empty()) {
+            const auto& setting_def = components::catalog::find_setting_by_id(exec_result.applied_setting);
+            auto apply_err = components::catalog::set_setting(default_settings_,
+                                                              exec_result.applied_setting,
+                                                              exec_result.applied_setting_value,
+                                                              resource());
+            if (apply_err.contains_error()) {
                 error(log_,
-                      "manager_dispatcher_t::execute_plan: session timezone cache refused '{}' AFTER it was "
+                      "manager_dispatcher_t::execute_plan: settings cache refused {} = '{}' AFTER it was "
                       "persisted to pg_settings: {}",
-                      std::string_view{exec_result.applied_timezone.data(), exec_result.applied_timezone.size()},
-                      tz_err.what);
-                exec_result.cursor = components::cursor::make_cursor(resource(), std::move(tz_err));
+                      setting_def.sql_name,
+                      exec_result.applied_setting_value,
+                      apply_err.what);
+                exec_result.cursor = components::cursor::make_cursor(resource(), std::move(apply_err));
             }
         }
 
@@ -525,7 +534,7 @@ namespace services::dispatcher {
             co_return fanout_error;
         }
 
-        services::context_storage_t cstor{resource(), log_.clone(), session_tz(session)};
+        services::context_storage_t cstor{resource(), log_.clone(), session_settings(session)};
         auto op = services::planner::impl::create_plan_register_udf(cstor, plan, std::move(executor_uids));
         if (!op) {
             co_await unwind_udf_fanout_(session, std::move(registered));
@@ -676,7 +685,7 @@ namespace services::dispatcher {
                                                                 core::function_name_t{std::move(function_name)},
                                                                 std::move(inputs)));
 
-        services::context_storage_t cstor{resource(), log_.clone(), session_tz(session)};
+        services::context_storage_t cstor{resource(), log_.clone(), session_settings(session)};
         components::compute::function_registry_t fn_registry{resource()};
         auto op = services::planner::create_plan(cstor,
                                                  fn_registry,
@@ -762,7 +771,7 @@ namespace services::dispatcher {
         auto leaf =
             boost::intrusive_ptr(new components::logical_plan::node_register_cast_t(resource(), source, target, entry));
         auto plan = make_cast_resolve_plan(resource(), leaf, source, target);
-        const std::size_t pool_idx = std::hash<components::session::session_id_t>{}(session) % executors_.size();
+        const std::size_t pool_idx = next_executor_index();
         auto [needs_sched, fut] = actor_zeta::otterbrix::send(executor_addresses_[pool_idx],
                                                               &collection::executor::executor_t::execute_plan_full,
                                                               session,
@@ -829,7 +838,7 @@ namespace services::dispatcher {
 
         auto write_leaf = boost::intrusive_ptr(
             new components::logical_plan::node_register_cast_t(resource(), resolved_source, resolved_target, entry));
-        services::context_storage_t cstor{resource(), log_.clone(), session_tz(session)};
+        services::context_storage_t cstor{resource(), log_.clone(), session_settings(session)};
         auto op = services::planner::impl::create_plan_register_cast(cstor, write_leaf);
         if (!op) {
             co_return core::error_t{core::error_code_t::create_physical_plan_error,
@@ -880,7 +889,7 @@ namespace services::dispatcher {
         auto leaf =
             boost::intrusive_ptr(new components::logical_plan::node_unregister_cast_t(resource(), source, target));
         auto plan = make_cast_resolve_plan(resource(), leaf, source, target);
-        const std::size_t pool_idx = std::hash<components::session::session_id_t>{}(session) % executors_.size();
+        const std::size_t pool_idx = next_executor_index();
         auto [needs_sched, fut] = actor_zeta::otterbrix::send(executor_addresses_[pool_idx],
                                                               &collection::executor::executor_t::execute_plan_full,
                                                               session,
@@ -950,7 +959,7 @@ namespace services::dispatcher {
 
         auto write_leaf = boost::intrusive_ptr(
             new components::logical_plan::node_unregister_cast_t(resource(), resolved_source, resolved_target));
-        services::context_storage_t cstor{resource(), log_.clone(), session_tz(session)};
+        services::context_storage_t cstor{resource(), log_.clone(), session_settings(session)};
         auto op = services::planner::impl::create_plan_unregister_cast(cstor, write_leaf);
         if (!op) {
             co_return core::error_t{core::error_code_t::create_physical_plan_error,
@@ -997,7 +1006,7 @@ namespace services::dispatcher {
         auto& txn = txn_manager_.begin_transaction(session);
         txn_session_context_t out;
         out.txn = txn.data();
-        out.session_tz = session_tz(session);
+        out.settings = session_settings(session);
         out.is_explicit = txn.is_explicit();
         out.lowest_active_start_time = txn_manager_.lowest_active_start_time();
         trace(log_,

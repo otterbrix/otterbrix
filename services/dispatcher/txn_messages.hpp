@@ -1,6 +1,7 @@
 #pragma once
 
 #include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/session_catalog.hpp>
 #include <components/context/pg_catalog_swap.hpp>
 #include <components/table/transaction.hpp>
 #include <core/date/date_types.hpp>
@@ -24,13 +25,13 @@ namespace services::dispatcher {
     // at plan start gives the executor everything it needs:
     //   txn      — the (idempotently begun) active txn snapshot for the session;
     //              shared MVCC scope for resolve + the operator pipeline.
-    //   session_tz — dispatcher-owned session timezone (feeds context_storage_t).
+    //   settings — dispatcher-owned settings cache (feeds context_storage_t).
     //   is_explicit — whether a prior SQL BEGIN marked this txn explicit; the
     //              executor's DML tail uses it to pick accumulate-vs-publish.
     //   lowest_active_start_time — VACUUM/MVCC GC gate value for pipeline ctx.
     struct txn_session_context_t {
         components::table::transaction_data txn{0, 0};
-        core::date::timezone_offset_t session_tz{};
+        components::catalog::session_catalog_t settings{};
         bool is_explicit{false};
         uint64_t lowest_active_start_time{0};
     };

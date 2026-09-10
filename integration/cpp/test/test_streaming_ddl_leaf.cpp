@@ -155,7 +155,7 @@ TEST_CASE("integration::cpp::streaming_ddl_leaf::set_timezone_streams_and_valida
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    // SET TIMEZONE -> operator_set_timezone_t.
+    // SET TIMEZONE -> operator_set_setting_t.
     exec_streamed(dispatcher, "SET TIMEZONE TO 'UTC';");
 
     // An invalid timezone must still be rejected: validation lives at the top of

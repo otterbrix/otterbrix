@@ -56,7 +56,7 @@ namespace {
 
 TEST_CASE("create_plan: aggregate with pushdown group child lowers to merge over pushed_reduce_scan") {
     core::pmr::otterbrix_resource resource;
-    services::context_storage_t context(&resource, log_t{}, core::date::timezone_offset_t{});
+    services::context_storage_t context(&resource, log_t{}, components::catalog::session_catalog_t{});
     components::compute::function_registry_t registry(&resource);
 
     auto node = build_agg(&resource, /*pushdown=*/true);
@@ -73,7 +73,7 @@ TEST_CASE("create_plan: aggregate with pushdown group child lowers to merge over
 
 TEST_CASE("create_plan: aggregate WITHOUT pushdown lowers to the normal aggregate chain") {
     core::pmr::otterbrix_resource resource;
-    services::context_storage_t context(&resource, log_t{}, core::date::timezone_offset_t{});
+    services::context_storage_t context(&resource, log_t{}, components::catalog::session_catalog_t{});
     components::compute::function_registry_t registry(&resource);
 
     // The aggregate NAMES its table, so the planner demands a resolved, known oid

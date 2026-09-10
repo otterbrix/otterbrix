@@ -1,5 +1,5 @@
 #include "wrapper_dispatcher.hpp"
-#include <components/logical_plan/node_set_timezone.hpp>
+#include <components/logical_plan/node_set_setting.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/transformer/transform_result.hpp>
 #include <components/sql/transformer/utils.hpp>
@@ -244,10 +244,9 @@ namespace otterbrix {
     }
 
     auto wrapper_dispatcher_t::set_timezone(const session_id_t& session, std::string timezone_name) -> cursor_t_ptr {
-        std::transform(timezone_name.begin(), timezone_name.end(), timezone_name.begin(), [](unsigned char character) {
-            return static_cast<char>(std::tolower(character));
-        });
-        auto node = components::logical_plan::make_node_set_timezone(resource(), std::move(timezone_name));
+        auto node = components::logical_plan::make_node_set_setting(resource(),
+                                                                    components::catalog::setting_id::timezone,
+                                                                    std::move(timezone_name));
         return send_plan(
             session,
             components::logical_plan::execution_plan_t{resource(),

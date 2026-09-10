@@ -47,7 +47,7 @@ set(SOURCE_${PROJECT_NAME}
         node_recursive_cte.cpp
         node_cte_scan.cpp
         node_update.cpp
-        node_set_timezone.cpp
+        node_set_setting.cpp
         node_vacuum.cpp
         param_storage.cpp
 )

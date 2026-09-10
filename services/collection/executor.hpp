@@ -3,6 +3,7 @@
 #include <components/base/collection_full_name.hpp>
 #include <components/casts/cast_registry.hpp>
 #include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/settings.hpp>
 #include <components/compute/function.hpp>
 #include <components/context/pg_catalog_swap.hpp>
 #include <components/context/subplan_runner.hpp>
@@ -64,7 +65,7 @@ namespace services::collection::executor {
 
     struct execute_result_t {
         components::cursor::cursor_t_ptr cursor;
-        // Drained by execute_plan_full's commit tail; the dispatcher reads only cursor and applied_timezone.
+        // Drained by execute_plan_full's commit tail; the dispatcher reads only cursor and applied setting.
         std::vector<components::pg_catalog_append_range_t> pg_catalog_appends{};
         std::set<components::catalog::oid_t> pg_catalog_delete_tables{};
         std::vector<components::pg_attribute_commit_id_backfill_t> pg_attribute_commit_id_backfills{};
@@ -77,8 +78,8 @@ namespace services::collection::executor {
         std::vector<components::table::created_index_t> created_indexes{};
         // Non-zero only after a commit ran; CREATE INDEX's backfill tail needs the allocated commit_id.
         uint64_t commit_id{0};
-        // Non-empty only after SET TIMEZONE persists a new zone; the dispatcher refreshes default_tz_cat_.
-        std::string applied_timezone{};
+        components::catalog::setting_id applied_setting{};
+        std::string applied_setting_value{};
         // Move-only, and everything from here down is appended at the END: a brace initializer that sets
         // only a prefix of the members has to keep compiling.
         std::optional<explain_plan_node> captured_explain_ir{};
@@ -113,6 +114,8 @@ namespace services::collection::executor {
         std::set<components::catalog::oid_t> pg_catalog_delete_tables;
         std::vector<components::pg_attribute_commit_id_backfill_t> pg_attribute_commit_id_backfills;
         uint64_t commit_id{0};
+        components::catalog::setting_id applied_setting{};
+        std::string applied_setting_value;
     };
 
     // Implements subplan_runner_t: an operator inside this executor's coroutine drives a child sub-plan via
@@ -222,7 +225,7 @@ namespace services::collection::executor {
         // Unified commit publisher: builds node_transaction_t(commit) — ddl_mode adds the flush/WAL prefix.
         unique_future<execute_result_t> run_commit_pipeline_(components::session::session_id_t session,
                                                              components::table::transaction_data txn,
-                                                             core::date::timezone_offset_t session_tz,
+                                                             const components::graph_execution_context& settings,
                                                              uint64_t lowest_active_start_time,
                                                              bool ddl_mode);
 

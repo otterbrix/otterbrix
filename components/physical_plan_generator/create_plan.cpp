@@ -32,7 +32,7 @@
 #include "impl/create_plan_resolve_type.hpp"
 #include "impl/create_plan_select.hpp"
 #include "impl/create_plan_sequence.hpp"
-#include "impl/create_plan_set_timezone.hpp"
+#include "impl/create_plan_set_setting.hpp"
 #include "impl/create_plan_sort.hpp"
 #include "impl/create_plan_union.hpp"
 #include "impl/create_plan_unregister_udf.hpp"
@@ -136,8 +136,8 @@ namespace services::planner {
                 return impl::create_plan_dynamic_cascade_delete(context, node);
             case node_type::checkpoint_t:
                 return impl::create_plan_checkpoint(context, node);
-            case node_type::set_timezone_t:
-                return impl::create_plan_set_timezone(context, node);
+            case node_type::set_setting_t:
+                return impl::create_plan_set_setting(context, node);
             case node_type::vacuum_t:
                 return impl::create_plan_vacuum(context, node);
             case node_type::create_matview_t:

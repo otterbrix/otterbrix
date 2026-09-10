@@ -188,7 +188,11 @@ TEST_CASE("services::disk::wal_catalog::bootstrap_seeds_a_recognized_timezone") 
         CAPTURE(seeded);
         REQUIRE(core::date::timezone_to_offset(seeded).has_value());
         components::catalog::session_catalog_t accepts;
-        REQUIRE_FALSE(accepts.set_timezone(&fx.resource, seeded).contains_error());
+        REQUIRE_FALSE(components::catalog::set_setting(accepts,
+                                                       components::catalog::setting_id::timezone,
+                                                       seeded,
+                                                       &fx.resource)
+                          .contains_error());
         REQUIRE(accepts.timezone_offset == core::date::timezone_offset_t{0});
     }
     cleanup_dir(dir);

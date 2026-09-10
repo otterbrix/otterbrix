@@ -19,6 +19,7 @@
 #include <components/catalog/results/ddl_result.hpp>
 #include <components/catalog/results/resolve_result.hpp>
 #include <components/catalog/session_catalog.hpp>
+#include <components/catalog/settings.hpp>
 #include <components/configuration/configuration.hpp>
 #include <components/context/execution_context.hpp>
 #include <components/context/pg_catalog_swap.hpp>

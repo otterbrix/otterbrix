@@ -61,7 +61,7 @@ namespace services::dispatcher {
 
     // Thin router + txn-state mailbox service + executor-pool admin: per-query work lives entirely
     // in executor_t; the dispatcher owns only state that must stay global — txn_manager_ (reachable
-    // solely through the txn_*_msg handlers below), default_tz_cat_, the executor pool, DROP-GC flags.
+    // solely through the txn_*_msg handlers below), default_settings_, the executor pool, DROP-GC flags.
     class manager_dispatcher_t final : public actor_zeta::actor::actor_mixin<manager_dispatcher_t> {
     public:
         template<typename T>
@@ -172,6 +172,8 @@ namespace services::dispatcher {
 
         void try_trigger_cleanup_if_horizon_advanced() noexcept;
 
+        std::size_t next_executor_index() noexcept;
+
         std::pmr::memory_resource* resource_;
         actor_zeta::scheduler_raw scheduler_;
         log_t log_;
@@ -183,6 +185,7 @@ namespace services::dispatcher {
 
         std::pmr::vector<services::collection::executor::executor_ptr> executors_;
         std::pmr::vector<actor_zeta::address_t> executor_addresses_;
+        std::size_t next_executor_{0};
 
         // Constructor arguments, never defaults. An empty wal_address_ means a test topology that
         // spawned no WAL manager, not a configuration a user can ask for.
@@ -205,10 +208,13 @@ namespace services::dispatcher {
 
         components::table::transaction_manager_t txn_manager_;
         components::casts::cast_registry_t cast_registry_;
-        components::catalog::session_catalog_t default_tz_cat_;
+        // global cached settings. updated on every set.
+        // TODO: settings for the session
+        components::catalog::session_catalog_t default_settings_;
 
-        core::date::timezone_offset_t session_tz(components::session::session_id_t /*session*/) const {
-            return default_tz_cat_.timezone_offset;
+        const components::catalog::session_catalog_t&
+        session_settings(components::session::session_id_t /*session*/) const {
+            return default_settings_;
         }
 
         // Fire-and-forget GC list for broadcast/register sends, drained via poll_pending().

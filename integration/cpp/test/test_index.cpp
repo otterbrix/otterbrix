@@ -879,7 +879,7 @@ TEST_CASE("integration::cpp::test_index::drop_index_folds_catalog_deletes") {
     std::pmr::monotonic_buffer_resource arena;
     auto* res = &arena;
 
-    services::context_storage_t context(res, log_t{}, core::date::timezone_offset_t{});
+    services::context_storage_t context(res, log_t{}, components::catalog::session_catalog_t{});
     components::compute::function_registry_t registry(res);
 
     namespace lp = components::logical_plan;

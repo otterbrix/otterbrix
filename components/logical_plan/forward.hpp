@@ -76,7 +76,7 @@ namespace components::logical_plan {
         // Leaf that allocates a batch of OIDs from the disk-side oid_generator;
         // the DDL planner reads the batch via node_allocate_oids_t::oids().
         allocate_oids_t,
-        set_timezone_t,
+        set_setting_t,
         // Host-extension carrier: a leaf owned by embedding-host code (federation
         // gateways, custom sources). Pure DATA — just its (db, rel) logical identity;
         // it resolves / types / EXPLAIN-names from the catalog like any table. Its

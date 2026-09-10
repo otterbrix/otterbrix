@@ -40,7 +40,7 @@ namespace {
 TEST_CASE("physical_plan_generator::sequence::an_unlowerable_first_child_refuses_the_sequence") {
     std::pmr::monotonic_buffer_resource arena;
     auto* res = &arena;
-    services::context_storage_t context(res, log_t{}, core::date::timezone_offset_t{});
+    services::context_storage_t context(res, log_t{}, components::catalog::session_catalog_t{});
     components::compute::function_registry_t registry(res);
 
     auto seq = boost::intrusive_ptr(new lp::node_sequence_t(res));
@@ -57,7 +57,7 @@ TEST_CASE("physical_plan_generator::sequence::an_unlowerable_first_child_refuses
 TEST_CASE("physical_plan_generator::sequence::an_unlowerable_later_child_refuses_instead_of_dereferencing_null") {
     std::pmr::monotonic_buffer_resource arena;
     auto* res = &arena;
-    services::context_storage_t context(res, log_t{}, core::date::timezone_offset_t{});
+    services::context_storage_t context(res, log_t{}, components::catalog::session_catalog_t{});
     components::compute::function_registry_t registry(res);
 
     auto seq = boost::intrusive_ptr(new lp::node_sequence_t(res));
@@ -72,7 +72,7 @@ TEST_CASE("physical_plan_generator::sequence::an_unlowerable_later_child_refuses
 TEST_CASE("physical_plan_generator::sequence::all_lowerable_children_still_chain") {
     std::pmr::monotonic_buffer_resource arena;
     auto* res = &arena;
-    services::context_storage_t context(res, log_t{}, core::date::timezone_offset_t{});
+    services::context_storage_t context(res, log_t{}, components::catalog::session_catalog_t{});
     components::compute::function_registry_t registry(res);
 
     auto seq = boost::intrusive_ptr(new lp::node_sequence_t(res));
@@ -89,7 +89,7 @@ TEST_CASE("physical_plan_generator::sequence::all_lowerable_children_still_chain
 TEST_CASE("physical_plan_generator::sequence::the_first_written_clause_executes_first_in_the_alter_chain") {
     std::pmr::monotonic_buffer_resource arena;
     auto* res = &arena;
-    services::context_storage_t context(res, log_t{}, core::date::timezone_offset_t{});
+    services::context_storage_t context(res, log_t{}, components::catalog::session_catalog_t{});
     components::compute::function_registry_t registry(res);
 
     auto seq = boost::intrusive_ptr(new lp::node_sequence_t(res));

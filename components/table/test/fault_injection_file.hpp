@@ -7,6 +7,7 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <vector>
 
 #include <components/table/storage/single_file_block_manager.hpp>
@@ -42,6 +43,7 @@ namespace otterbrix_test {
         ~faulty_file_handle_t() override = default;
 
         bool write(void* buffer, uint64_t nr_bytes, uint64_t location) override {
+            std::lock_guard lock(plan_mutex_);
             if (plan_.crashed) {
                 return false;
             }
@@ -71,6 +73,7 @@ namespace otterbrix_test {
         }
 
         core::filesystem::write_result_t write(void* buffer, uint64_t nr_bytes) override {
+            std::lock_guard lock(plan_mutex_);
             if (plan_.crashed) {
                 return core::filesystem::write_result_t::refused(0);
             }
@@ -95,6 +98,7 @@ namespace otterbrix_test {
         }
 
         bool read(void* buffer, uint64_t nr_bytes, uint64_t location) override {
+            std::lock_guard lock(plan_mutex_);
             if (plan_.crashed) {
                 return false;
             }
@@ -106,6 +110,7 @@ namespace otterbrix_test {
         }
 
         int64_t read(void* buffer, uint64_t nr_bytes) override {
+            std::lock_guard lock(plan_mutex_);
             if (plan_.crashed) {
                 return -1;
             }
@@ -113,6 +118,7 @@ namespace otterbrix_test {
         }
 
         bool sync() override {
+            std::lock_guard lock(plan_mutex_);
             if (plan_.crashed) {
                 return false;
             }
@@ -129,6 +135,7 @@ namespace otterbrix_test {
         }
 
         bool truncate(int64_t new_size) override {
+            std::lock_guard lock(plan_mutex_);
             if (plan_.crashed) {
                 return false;
             }
@@ -136,6 +143,7 @@ namespace otterbrix_test {
         }
 
         bool trim(uint64_t offset_bytes, uint64_t length_bytes) override {
+            std::lock_guard lock(plan_mutex_);
             if (plan_.crashed) {
                 return false;
             }
@@ -152,6 +160,7 @@ namespace otterbrix_test {
 
         // Undoes writes newest-first and truncates to the last synced length, as a real crash would.
         void crash_revert() {
+            std::lock_guard lock(plan_mutex_);
             for (auto it = undo_.rbegin(); it != undo_.rend(); ++it) {
                 if (!it->old_bytes.empty()) {
                     inner_->write(it->old_bytes.data(), it->old_bytes.size(), it->location);
@@ -183,6 +192,8 @@ namespace otterbrix_test {
             undo_.push_back(std::move(entry));
         }
 
+        // One plan serves every wrapped file, and the disk agents write their files from different threads.
+        static inline std::mutex plan_mutex_;
         std::unique_ptr<core::filesystem::file_handle_t> inner_;
         fault_plan_t& plan_;
         std::vector<undo_entry_t> undo_;

@@ -123,6 +123,22 @@ namespace test_helpers {
         return dispatcher->execute_sql(otterbrix::session_id_t(), sql);
     }
 
+    constexpr std::size_t kExecutorPool = 4; // dispatcher.hpp executor_pool_size_
+
+    inline std::size_t executor_of(const otterbrix::session_id_t& session) {
+        return std::hash<otterbrix::session_id_t>{}(session) % kExecutorPool;
+    }
+
+    // Use to get session bound to different executor
+    inline otterbrix::session_id_t session_avoiding_executor(std::size_t executor_idx) {
+        for (;;) {
+            otterbrix::session_id_t candidate{};
+            if (executor_of(candidate) != executor_idx) {
+                return candidate;
+            }
+        }
+    }
+
     // No disk flag and no wal flag: every table is disk-backed and every write is journalled,
     // so `path` is where the data goes, full stop.
     inline configuration::config make_test_config(const std::filesystem::path& path) {

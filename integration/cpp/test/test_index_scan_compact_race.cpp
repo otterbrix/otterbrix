@@ -13,7 +13,6 @@
 #include <string>
 #include <string_view>
 #include <thread>
-#include <iostream>
 
 // An index scan's matched row ids cross two actor hops (search, then storage_fetch); a compact
 // landing between them renumbers every survivor (rebuilt at id 0), so index_scan holds
@@ -103,15 +102,6 @@ namespace {
 
 } // namespace
 
-namespace {
-    // Written to stderr, not INFO: a ctest timeout kills the process, so Catch2 never prints its
-    // scoped messages and a hung run leaves no trace of how far it got. ctest -V streams stderr as
-    // it appears, so these survive the kill and name the phase that hung.
-    void mark(const char* phase) {
-        std::cerr << "[phase] " << phase << std::endl;
-    }
-} // namespace
-
 TEST_CASE("integration::cpp::index_scan_compact_race::matched_row_ids_survive_a_compacting_checkpoint") {
     auto config = test_create_config(integration_fixture_path("test_index_scan_compact_race/src"));
     test_clear_directory(config);
@@ -162,25 +152,21 @@ TEST_CASE("integration::cpp::index_scan_compact_race::matched_row_ids_survive_a_
         REQUIRE(held_cur->value(0, 0).value<int64_t>() == kProbeId);
     }
 
-    mark("raced: arming");
     services::disk::reset_checkpoint_entry_tallies();
     guard.gate.armed.store(true, std::memory_order_release);
     components::cursor::cursor_t_ptr raced_cur;
-    std::thread reader([&] {
-        auto session = otterbrix::session_id_t();
-        raced_cur = d->execute_sql(session, indexed_query());
-    });
+    const auto scan_session = otterbrix::session_id_t();
+    std::thread reader([&] { raced_cur = d->execute_sql(scan_session, indexed_query()); });
 
     INFO("the scan must reach the between-awaits seam");
     REQUIRE(wait_flag(guard.gate.reached, std::chrono::seconds(30)));
 
-    mark("raced: gate reached, firing CHECKPOINT");
-    REQUIRE(exec(d, "CHECKPOINT;")->is_success());
+    // Away from the scan's executor: it is parked on the seam and holds its mailbox.
+    const auto cp_session = session_avoiding_executor(executor_of(scan_session));
+    REQUIRE(d->execute_sql(cp_session, "CHECKPOINT;")->is_success());
 
-    mark("raced: checkpoint done, releasing");
     guard.gate.released.store(true, std::memory_order_release);
     reader.join();
-    mark("raced: reader joined");
     guard.gate.armed.store(false, std::memory_order_release);
 
     INFO("checkpoint round inside the window: rewritten=" << services::disk::checkpoint_entries_rewritten()

@@ -373,11 +373,6 @@ namespace core::b_plus_tree {
             }
         }
 
-        if (!record_nodes || modified_nodes.front()->unique_entry_count() != max_node_capacity_ ||
-            current_node->unique_entry_count() < max_node_capacity_) {
-            tree_mutex_.unlock();
-        }
-
         bool result;
         if (current_node->unique_entry_count() < max_node_capacity_) {
             release_locks_(modified_nodes);
@@ -424,11 +419,11 @@ namespace core::b_plus_tree {
                 inner_node_t* new_root = new inner_node_t(resource_, min_node_capacity_, max_node_capacity_);
                 new_root->initialize(root_, insert_node);
                 root_ = static_cast<base_node_t*>(new_root);
-                tree_mutex_.unlock();
             }
             node->unlock_exclusive();
         }
         current_node->unlock_exclusive();
+        tree_mutex_.unlock();
         if (result) {
             item_count_++;
         }
@@ -725,12 +720,13 @@ namespace core::b_plus_tree {
     }
 
     void btree_t::list_indices(std::vector<index_t>& result) {
+        tree_mutex_.lock_shared();
         auto first_leaf = find_leaf_node_(std::numeric_limits<index_t>::min());
         if (!first_leaf) {
+            tree_mutex_.unlock_shared();
             return;
         }
 
-        tree_mutex_.lock_shared();
         first_leaf->unlock_shared();
 
         result.reserve(item_count_);
@@ -966,81 +962,72 @@ namespace core::b_plus_tree {
     }
 
     bool btree_t::contains_index(const index_t& index) {
-        if (root_ == nullptr) {
-            return false;
-        }
-
+        tree_mutex_.lock_shared();
         auto node = find_leaf_node_(index);
         bool result = false;
         if (node) {
             result = node->contains_index(index);
             node->unlock_shared();
         }
+        tree_mutex_.unlock_shared();
         return result;
     }
 
     bool btree_t::contains(const index_t& index, item_data item) {
-        if (root_ == nullptr) {
-            return false;
-        }
-
+        tree_mutex_.lock_shared();
         auto node = find_leaf_node_(index);
         bool result = false;
         if (node) {
             result = node->contains(index, item);
             node->unlock_shared();
         }
+        tree_mutex_.unlock_shared();
         return result;
     }
 
     size_t btree_t::item_count(const index_t& index) {
-        if (root_ == nullptr) {
-            return 0;
-        }
-
+        tree_mutex_.lock_shared();
         auto node = find_leaf_node_(index);
         size_t result = 0;
         if (node) {
             result = node->item_count(index);
             node->unlock_shared();
         }
+        tree_mutex_.unlock_shared();
         return result;
     }
 
     btree_t::item_data btree_t::get_item(const index_t& index, size_t position) {
-        if (root_ == nullptr) {
-            return {nullptr, 0};
-        }
-
+        tree_mutex_.lock_shared();
         auto node = find_leaf_node_(index);
         item_data result = {nullptr, 0};
         if (node) {
             result = node->get_item(index, position);
             node->unlock_shared();
         }
+        tree_mutex_.unlock_shared();
         return result;
     }
 
     void btree_t::get_items(std::vector<item_data>& result, const index_t& index) {
-        if (root_ == nullptr) {
-            return;
-        }
-
+        tree_mutex_.lock_shared();
         auto node = find_leaf_node_(index);
         if (node) {
             node->get_items(result, index);
             node->unlock_shared();
         }
+        tree_mutex_.unlock_shared();
     }
     size_t btree_t::size() const { return item_count_; }
 
     size_t btree_t::unique_indices_count() {
+        tree_mutex_.lock_shared();
         auto first_leaf = find_leaf_node_(std::numeric_limits<index_t>::min());
         if (!first_leaf) {
+            tree_mutex_.unlock_shared();
             return 0;
         }
 
-        tree_mutex_.lock_shared();
         first_leaf->unlock_shared();
 
         size_t result = 0;
@@ -1054,10 +1041,7 @@ namespace core::b_plus_tree {
     }
 
     btree_t::leaf_node_t* btree_t::find_leaf_node_(const index_t& index) {
-        tree_mutex_.lock_shared();
-
         if (root_ == nullptr) {
-            tree_mutex_.unlock_shared();
             return nullptr;
         }
 
@@ -1065,7 +1049,6 @@ namespace core::b_plus_tree {
         base_node_t* parent = nullptr;
 
         current_node->lock_shared();
-        tree_mutex_.unlock_shared();
 
         while (current_node->is_inner_node()) {
             if (parent) {

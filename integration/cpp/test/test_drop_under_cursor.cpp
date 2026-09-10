@@ -90,17 +90,16 @@ TEST_CASE("integration::cpp::drop_under_cursor::vanished_entry_fails_loudly_not_
     guard.gate.armed.store(true, std::memory_order_release);
 
     components::cursor::cursor_t_ptr reader_cursor;
-    std::thread reader([&] {
-        auto session = otterbrix::session_id_t();
-        reader_cursor = d->execute_sql(session, "SELECT id FROM adb.t;");
-    });
+    const auto reader_session = otterbrix::session_id_t();
+    std::thread reader([&] { reader_cursor = d->execute_sql(reader_session, "SELECT id FROM adb.t;"); });
 
     INFO("the reader must reach the between-batches seam");
     REQUIRE(wait_flag(guard.gate.reached, std::chrono::seconds(30)));
 
     {
-        auto session = otterbrix::session_id_t();
-        auto drop_cur = d->execute_sql(session, "DROP TABLE adb.t;");
+        // Away from the reader's executor: it is parked on the seam and holds its mailbox.
+        const auto drop_session = session_avoiding_executor(executor_of(reader_session));
+        auto drop_cur = d->execute_sql(drop_session, "DROP TABLE adb.t;");
         REQUIRE(drop_cur->is_success());
     }
 

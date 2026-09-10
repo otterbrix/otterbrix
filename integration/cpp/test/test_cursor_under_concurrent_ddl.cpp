@@ -11,7 +11,6 @@
 #include <sstream>
 #include <string>
 #include <thread>
-#include <iostream>
 
 // A cursor re-applies its stored positional projection to storage's current schema on every
 // fetch, so a concurrent DROP COLUMN between two fetches makes stored positions name different
@@ -102,25 +101,19 @@ namespace {
         gate_guard_t guard;
         guard.gate.armed.store(true, std::memory_order_release);
 
-        std::thread reader([&] {
-            auto session = otterbrix::session_id_t();
-            out.reader_cursor = dispatcher->execute_sql(session, reader_sql);
-        });
+        const auto reader_session = otterbrix::session_id_t();
+        std::thread reader([&] { out.reader_cursor = dispatcher->execute_sql(reader_session, reader_sql); });
 
-        // stderr, not INFO: a ctest timeout kills the process before Catch2 prints anything, and
-        // ctest -V streams stderr as it appears -- so these name the phase that hung.
         out.gate_reached = wait_flag(guard.gate.reached, std::chrono::seconds(30));
-        std::cerr << "[phase] gate_reached=" << out.gate_reached << std::endl;
         if (out.gate_reached) {
-            auto session = otterbrix::session_id_t();
-            std::cerr << "[phase] firing DDL while the reader holds" << std::endl;
-            auto ddl_cur = dispatcher->execute_sql(session, ddl_sql);
+            // Away from the reader's executor: it is parked on the seam and holds its mailbox.
+            const auto ddl_session = test_helpers::session_avoiding_executor(
+                test_helpers::executor_of(reader_session));
+            auto ddl_cur = dispatcher->execute_sql(ddl_session, ddl_sql);
             out.ddl_ok = ddl_cur->is_success();
-            std::cerr << "[phase] DDL returned ok=" << out.ddl_ok << std::endl;
         }
         guard.gate.released.store(true, std::memory_order_release);
         reader.join();
-        std::cerr << "[phase] reader joined" << std::endl;
         return out;
     }
 

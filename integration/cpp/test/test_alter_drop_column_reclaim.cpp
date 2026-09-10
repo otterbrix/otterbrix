@@ -235,6 +235,8 @@ TEST_CASE("integration::cpp::test_alter_drop_column_reclaim::crash_before_checkp
     auto config = test_create_config(integration_fixture_path("test_alter_drop_column_reclaim/crash_rearm"));
     test_clear_directory(config);
     config.log.level = log_t::level::off;
+    // The kill must land before any checkpoint: only the shutdown one, which runs after the arm, may try.
+    config.wal.auto_checkpoint_threshold_bytes = 1024ull * 1024ull * 1024ull;
 
     core::pmr::otterbrix_resource resource;
 

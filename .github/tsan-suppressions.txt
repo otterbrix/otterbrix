@@ -1,6 +1,16 @@
 # ThreadSanitizer suppressions, consumed by CI via TSAN_OPTIONS=suppressions=...
-# Put here ONLY verified false positives, e.g. reports whose both stacks lie entirely
-# inside the actor-zeta runtime (its lock-free queues synchronize in ways TSan cannot
-# see through). Format: one "race:<symbol-or-file-substring>" per line, with a short
-# justification comment above each entry.
-# Real otterbrix races must stay OUT of this file and stay visible in CI.
+#
+# Only a verified false positive belongs here, and only with the reason it is one written
+# beside it. A suppression over an unexplained report is worse than a red job: it buys a green
+# tick and throws away the finding.
+
+# b_plus_tree takes every node lock under tree_mutex_, held for the whole operation --
+# exclusively by a writer, shared by a reader -- so a node lock is never contended. The
+# deadlock detector still builds cycles out of node addresses: a descent locks parent then
+# child, and remove locks the neighbour on either side of the node it holds.
+deadlock:core::b_plus_tree
+
+# boost::lockfree's freelist reads a tagged pointer speculatively and discards what it read
+# when the ABA-protected CAS fails; the value is never used unless the CAS confirms it. That
+# is not expressible to TSAN. manager_disk_t's inbox_ is one of these queues.
+race:boost::lockfree

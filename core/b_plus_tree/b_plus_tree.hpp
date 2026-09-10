@@ -247,6 +247,8 @@ namespace core::b_plus_tree {
         filesystem::local_file_system_t& fs_;
         std::pmr::memory_resource* resource_;
         index_t (*key_func_)(const item_data&);
+        // Writers hold it exclusively and readers shared, each for the whole operation: a descent reads its
+        // children's bounds without their locks, and a scan walks the leaf chain under this lock alone.
         std::shared_mutex tree_mutex_;
         base_node_t* root_ = nullptr;
         std::filesystem::path storage_directory_;
@@ -269,12 +271,13 @@ namespace core::b_plus_tree {
 
     template<typename T, typename Deserializer, typename Predicate>
     bool btree_t::full_scan(std::pmr::vector<T>* result, Deserializer deserializer, Predicate predicate) {
+        tree_mutex_.lock_shared();
         auto first_leaf = find_leaf_node_(std::numeric_limits<index_t>::min());
         if (!first_leaf) {
+            tree_mutex_.unlock_shared();
             return false;
         }
 
-        tree_mutex_.lock_shared();
         first_leaf->unlock_shared();
 
         while (first_leaf) {
@@ -319,12 +322,13 @@ namespace core::b_plus_tree {
                                  std::pmr::vector<T>* result,
                                  Deserializer deserializer,
                                  Predicate predicate) {
+        tree_mutex_.lock_shared();
         auto first_leaf = find_leaf_node_(min_index);
         if (!first_leaf || limit == 0) {
+            tree_mutex_.unlock_shared();
             return false;
         }
 
-        tree_mutex_.lock_shared();
         first_leaf->unlock_shared();
 
         while (first_leaf) {
@@ -382,12 +386,13 @@ namespace core::b_plus_tree {
                                  std::pmr::vector<T>* result,
                                  Deserializer deserializer,
                                  Predicate predicate) {
+        tree_mutex_.lock_shared();
         auto last_leaf = find_leaf_node_(max_index);
         if (!last_leaf || limit == 0) {
+            tree_mutex_.unlock_shared();
             return false;
         }
 
-        tree_mutex_.lock_shared();
         last_leaf->unlock_shared();
 
         while (last_leaf) {

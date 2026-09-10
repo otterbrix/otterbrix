@@ -18,7 +18,7 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          sudo apt update && sudo apt install -y build-essential ninja-build python3-pip curl gnupg apt-transport-https flex bison
+          sudo apt update && sudo apt install -y build-essential ninja-build python3-pip curl gnupg apt-transport-https flex bison g++-12
 
       - name: conan installation and configuration
         run: |
@@ -30,23 +30,26 @@ jobs:
         run: |
           mkdir build && cd build
           cp ../conanfile.py .
-          conan install . --build missing -s build_type=Release -s compiler.cppstd=20
+          # actor-zeta is rebuilt from source with -fsanitize=thread: its mailbox CAS lives
+          # out-of-line in the prebuilt archive, and an uninstrumented dependency makes the
+          # sender-to-actor happens-before edge invisible. See .github/tsan-deps.profile
+          conan install . --build missing --build="actor-zeta/*" \
+            -pr:h ../.github/tsan-deps.profile \
+            -s build_type=Release -s compiler.cppstd=20
 
       # TSan runtime aborts with "unexpected memory mapping" under high-entropy ASLR
       - name: Reduce ASLR entropy for TSan
         run: sudo sysctl vm.mmap_rnd_bits=28
 
       - name: build
-        env:
-          CC: gcc
         run: |
           cd build
-          cmake  -G Ninja -DCMAKE_TOOLCHAIN_FILE=./build/Release/generators/conan_toolchain.cmake -DCMAKE_BUILD_TYPE=Release -DDEV_MODE=ON -DEXAMPLE=ON -DENABLE_TSAN=ON ..
+          cmake  -G Ninja -DCMAKE_C_COMPILER=gcc-12 -DCMAKE_CXX_COMPILER=g++-12 -DCMAKE_TOOLCHAIN_FILE=./build/Release/generators/conan_toolchain.cmake -DCMAKE_BUILD_TYPE=Release -DDEV_MODE=ON -DEXAMPLE=ON -DENABLE_TSAN=ON ..
           cmake --build .
 
       - name: Test
         env:
-          TSAN_OPTIONS: suppressions=${{ github.workspace }}/.github/tsan-suppressions.txt history_size=7 second_deadlock_stack=1
+          TSAN_OPTIONS: suppressions=${{ github.workspace }}/.github/tsan-suppressions.txt second_deadlock_stack=1
         run: |
           cd build
-          ctest -C Release -V --output-on-failure
+          ctest -C Release --output-on-failure

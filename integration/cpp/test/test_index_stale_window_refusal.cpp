@@ -30,7 +30,6 @@ namespace {
     constexpr int64_t kSlide = 1000;
     constexpr int kAttempts = 6;
     constexpr int kDelayMs = 100;
-    constexpr std::size_t kExecutorPool = 4; // dispatcher.hpp executor_pool_size_
 
     struct repopulate_hold_gate_t final : components::operators::checkpoint_repopulate_gate_t {
         std::atomic<bool> armed{false};
@@ -71,16 +70,6 @@ namespace {
         return true;
     }
 
-    // The parked CHECKPOINT's executor holds its mailbox through every co_await (basic_actor);
-    // mint a reader session that hashes onto a different executor.
-    otterbrix::session_id_t session_avoiding_executor(std::size_t executor_idx) {
-        for (;;) {
-            otterbrix::session_id_t s{};
-            if (std::hash<otterbrix::session_id_t>{}(s) % kExecutorPool != executor_idx) {
-                return s;
-            }
-        }
-    }
 
     std::string probe_sql(int64_t probe_id) {
         return "SELECT id FROM rdb.t WHERE k = " + std::to_string(10 * probe_id) + ";";
@@ -154,7 +143,7 @@ TEST_CASE("integration::cpp::index_stale_window::reader_in_window_is_refused_not
         const std::string probe = probe_sql(p);
 
         auto cp_session = otterbrix::session_id_t();
-        const std::size_t cp_idx = std::hash<otterbrix::session_id_t>{}(cp_session) % kExecutorPool;
+        const std::size_t cp_idx = executor_of(cp_session);
 
         guard.gate.armed.store(true, std::memory_order_release);
         components::cursor::cursor_t_ptr cp_cur;

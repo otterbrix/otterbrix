@@ -40,7 +40,6 @@ using namespace test_helpers;
 namespace {
 
     constexpr int64_t kSlide = 1000; // per-iteration front DELETE + tail INSERT
-    constexpr std::size_t kExecutorPool = 4; // dispatcher.hpp executor_pool_size_
 
     struct repopulate_hold_gate_t final : components::operators::checkpoint_repopulate_gate_t {
         std::atomic<bool> armed{false};
@@ -81,17 +80,6 @@ namespace {
         return true;
     }
 
-    // The parked CHECKPOINT's executor holds its mailbox through every co_await (basic_actor), so
-    // a reader session hashing onto the same executor would only queue behind the round instead of
-    // racing it. Mint a session that lands on a different executor.
-    otterbrix::session_id_t session_avoiding_executor(std::size_t executor_idx) {
-        for (;;) {
-            otterbrix::session_id_t s{};
-            if (std::hash<otterbrix::session_id_t>{}(s) % kExecutorPool != executor_idx) {
-                return s;
-            }
-        }
-    }
 
     struct probe_outcome_t {
         bool success{false};
@@ -207,7 +195,7 @@ namespace {
             const std::string probe = probe_sql(p);
 
             auto cp_session = otterbrix::session_id_t();
-            const std::size_t cp_idx = std::hash<otterbrix::session_id_t>{}(cp_session) % kExecutorPool;
+            const std::size_t cp_idx = executor_of(cp_session);
 
             std::atomic<bool> stop{false};
             std::vector<probe_outcome_t> outcomes;
@@ -353,7 +341,7 @@ TEST_CASE("integration::cpp::index_stale_window::seam_between_compact_and_rebuil
             const std::string probe = probe_sql(p);
 
             auto cp_session = otterbrix::session_id_t();
-            const std::size_t cp_idx = std::hash<otterbrix::session_id_t>{}(cp_session) % kExecutorPool;
+            const std::size_t cp_idx = executor_of(cp_session);
 
             services::disk::reset_checkpoint_entry_tallies();
             guard.gate.armed.store(true, std::memory_order_release);

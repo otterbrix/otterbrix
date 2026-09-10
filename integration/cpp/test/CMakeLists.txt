@@ -250,7 +250,10 @@ target_link_libraries(
 
 include(CTest)
 include(Catch)
-catch_discover_tests(${PROJECT_NAME} PROPERTIES TIMEOUT 1800)
+# TODO: proper timeout config for ASAN & TSAN
+# ctest --timeout cannot lower an explicit TIMEOUT property, so the cap is a configure-time knob
+set(OTTERBRIX_TEST_TIMEOUT 1800 CACHE STRING "per-test ctest timeout, seconds")
+catch_discover_tests(${PROJECT_NAME} PROPERTIES TIMEOUT ${OTTERBRIX_TEST_TIMEOUT})
 
 # Profiling binary for arithmetic
 add_executable(profile_arithmetic profile_arithmetic.cpp)

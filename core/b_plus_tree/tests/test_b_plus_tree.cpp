@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <atomic>
 #include <catch2/catch_test_macros.hpp>
 
 #include <components/log/log.hpp>
@@ -2998,6 +2999,67 @@ TEST_CASE("core::b_plus_tree::b+tree") {
         }
     }
 }
+
+// Regression: a scan held its first leaf while it waited for tree_mutex_, and an append held tree_mutex_ while it
+// waited for that leaf, so neither moved.
+TEST_CASE("core::b_plus_tree::a_scan_does_not_deadlock_an_append_into_its_first_leaf") {
+    auto resource = core::pmr::otterbrix_resource();
+    path_t testing_directory = scratch_dir("btree_scan_and_append");
+    local_file_system_t fs = local_file_system_t();
+    if (directory_exists(fs, testing_directory)) {
+        remove_directory(fs, testing_directory);
+    }
+    create_directory(fs, testing_directory);
+
+    auto key_getter = [](const block_t::item_data& data) -> block_t::index_t {
+        uint64_t val;
+        std::memcpy(&val, data.data, sizeof(val));
+        return block_t::index_t(val);
+    };
+
+    constexpr uint64_t kAppended = 2000;
+    constexpr uint64_t kSeeded = 1000;
+    std::vector<uint64_t> keys(kAppended + kSeeded);
+    for (uint64_t i = 0; i < keys.size(); i++) {
+        keys[i] = i;
+    }
+
+    // Small nodes give the tree inner levels, so an append descends through node locks.
+    btree_t tree(&resource, fs, testing_directory, key_getter, 32);
+    for (uint64_t i = kAppended; i < keys.size(); i++) {
+        REQUIRE(tree.append({reinterpret_cast<data_ptr_t>(&keys[i]), sizeof(uint64_t)}));
+    }
+
+    std::atomic<bool> appending{true};
+    std::atomic<size_t> broken_scans{0};
+    std::thread scanner([&] {
+        while (appending) {
+            std::pmr::vector<uint64_t> scanned(&resource);
+            const bool walked = tree.full_scan<uint64_t>(&scanned, [](void* buffer, size_t) {
+                return read_unaligned<uint64_t>(buffer);
+            });
+            if (!walked || scanned.size() < kSeeded || !std::is_sorted(scanned.begin(), scanned.end())) {
+                broken_scans++;
+            }
+            std::this_thread::yield();
+        }
+    });
+
+    // Each key sorts below everything stored, so each append descends into the leaf the scan starts from.
+    uint64_t stored = 0;
+    for (uint64_t i = kAppended; i > 0; i--) {
+        if (tree.append({reinterpret_cast<data_ptr_t>(&keys[i - 1]), sizeof(uint64_t)})) {
+            stored++;
+        }
+    }
+    appending = false;
+    scanner.join();
+
+    REQUIRE(broken_scans == 0);
+    REQUIRE(stored == kAppended);
+    REQUIRE(tree.size() == keys.size());
+}
+
 // Regression: the leaf header had only a structural check (segment count vs capacity), so a flipped bit passed silently.
 TEST_CASE("core::b_plus_tree::a_tampered_leaf_header_is_refused_not_believed") {
     auto resource = core::pmr::otterbrix_resource();

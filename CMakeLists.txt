@@ -58,7 +58,10 @@ endif()
 # We do not use -Werror flag with sanitizers for the following reasons:
 # 1) Sanitizers force us to build absl locally, which does contains warnings
 # 2) Incomplete support of macOS makes development too cumbersome with -Werror enabled
-set(USE_Werror "$<NOT:$<OR:$<BOOL:${APPLE}>,$<BOOL:${ENABLE_ASAN}>,$<BOOL:${ENABLE_UBSAN}>>>")
+# 3) A sanitizer teaches the compiler new complaints the code cannot answer: under
+#    -fsanitize=thread gcc rejects every std::atomic_thread_fence it cannot model (-Wtsan),
+#    and its std::string bounds analysis at -O0 reports impossible memcpy overlaps (-Wrestrict).
+set(USE_Werror "$<NOT:$<OR:$<BOOL:${APPLE}>,$<BOOL:${ENABLE_ASAN}>,$<BOOL:${ENABLE_TSAN}>,$<BOOL:${ENABLE_UBSAN}>>>")
 
 if ((CMAKE_CXX_COMPILER_ID MATCHES "GNU") OR (CMAKE_CXX_COMPILER_ID MATCHES "Clang"))
     add_compile_options(

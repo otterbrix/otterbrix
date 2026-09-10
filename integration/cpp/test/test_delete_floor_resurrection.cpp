@@ -98,16 +98,20 @@ TEST_CASE("integration::cpp::delete_floor_resurrection::committed_delete_survive
 
         guard.gate.armed.store(true, std::memory_order_release);
 
+        const auto del_session = otterbrix::session_id_t();
         std::thread deleter([&] {
-            auto session = otterbrix::session_id_t();
-            auto cur = d->execute_sql(session, "DELETE FROM adb.t WHERE id <= " + std::to_string(kDeleteUpTo) + ";");
+            auto cur =
+                d->execute_sql(del_session, "DELETE FROM adb.t WHERE id <= " + std::to_string(kDeleteUpTo) + ";");
             REQUIRE(cur->is_success());
         });
 
         INFO("the delete must reach the post-WAL seam");
         REQUIRE(wait_flag(guard.gate.reached, std::chrono::seconds(30)));
 
-        REQUIRE(exec(d, "CHECKPOINT;")->is_success());
+        // Executor holds its mailbox through every co_await, a statement hashed onto a parked one is never dispatched,
+        // mint the second session away
+        const auto cp_session = session_avoiding_executor(executor_of(del_session));
+        REQUIRE(d->execute_sql(cp_session, "CHECKPOINT;")->is_success());
 
         guard.gate.released.store(true, std::memory_order_release);
         deleter.join();

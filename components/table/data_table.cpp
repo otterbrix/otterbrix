@@ -230,7 +230,7 @@ namespace components::table {
                 chunk.reset();
             }
 
-            new_collection->finalize_append(append_state, transaction_data{0, 0});
+            new_collection->finalize_append(append_state, transaction_data::committed());
         }
 
         auto old_collection = row_groups_;
@@ -495,84 +495,6 @@ namespace components::table {
         return core::result_wrapper_t<uint64_t>{delete_count};
     }
 
-    std::unique_ptr<table_update_state>
-    data_table_t::initialize_update(const std::vector<std::unique_ptr<bound_constraint_t>>& bound_constraints) {
-        auto result = std::make_unique<table_update_state>();
-        result->constraint = initialize_constraint_state(bound_constraints);
-        return result;
-    }
-
-    core::result_wrapper_t<std::pair<int64_t, uint64_t>>
-    data_table_t::update(table_update_state&,
-                         vector::vector_t& row_ids,
-                         // const std::vector<uint64_t>& column_ids,
-                         vector::data_chunk_t& data) {
-        assert(row_ids.type().to_physical_type() == types::physical_type::INT64);
-
-        uint64_t count = data.size();
-        if (count == 0) {
-            return std::pair<int64_t, uint64_t>{0, 0};
-        }
-
-        // Without this check the overlay would go into a collection the successor replaced, silently losing the write.
-        if (!is_root_) {
-            return core::error_t(core::error_code_t::write_conflict,
-                                 std::pmr::string("Transaction conflict: updating a table that has been altered!",
-                                                  resource_));
-        }
-        vector::vector_t max_row_id_vec(resource_,
-                                        types::logical_value_t(resource_, static_cast<int64_t>(MAX_ROW_ID)),
-                                        count);
-        vector::vector_t row_ids_slice(resource_, types::logical_type::BIGINT, count);
-        vector::data_chunk_t updates_slice(resource_, data.types(), count);
-        vector::indexing_vector_t sel_local_update(resource_, count);
-        vector::indexing_vector_t sel_global_update(resource_, count);
-
-        auto update_count = count - vector::vector_ops::compare<std::greater_equal<>>(row_ids,
-                                                                                      max_row_id_vec,
-                                                                                      count,
-                                                                                      &sel_local_update,
-                                                                                      &sel_global_update);
-        if (update_count > 0) {
-            updates_slice.slice(data, sel_global_update, update_count);
-            updates_slice.flatten();
-            row_ids_slice.slice(row_ids, sel_global_update, update_count);
-            row_ids_slice.flatten(update_count);
-
-            std::vector<uint64_t> column_ids;
-            column_ids.reserve(column_count());
-            for (size_t i = 0; i < column_count(); i++) {
-                column_ids.emplace_back(i);
-            }
-            mark_modified();
-            auto updated = row_groups_->update(row_ids_slice.data<int64_t>(), column_ids, updates_slice);
-            if (updated.has_error()) {
-                return updated.convert_error<std::pair<int64_t, uint64_t>>();
-            }
-        }
-        return std::pair<int64_t, uint64_t>{0, update_count};
-    }
-
-    core::result_wrapper_t<bool> data_table_t::update_column(vector::vector_t& row_ids,
-                                                             const std::vector<uint64_t>& column_path,
-                                                             vector::data_chunk_t& updates) {
-        assert(row_ids.type().type() == types::logical_type::BIGINT);
-        assert(updates.column_count() == 1);
-        if (updates.size() == 0) {
-            return true;
-        }
-
-        if (!is_root_) {
-            return core::error_t(
-                core::error_code_t::write_conflict,
-                std::pmr::string("Transaction conflict: cannot update a table that has been altered!", resource_));
-        }
-
-        updates.flatten();
-        row_ids.flatten(updates.size());
-        mark_modified();
-        return row_groups_->update_column(row_ids, column_path, updates);
-    }
 
     uint64_t data_table_t::column_count() const { return column_definitions_.size(); }
 

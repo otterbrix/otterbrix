@@ -44,7 +44,7 @@
 // same recipe with `USING hash (k)` fails identically (k = 2010 -> id 999999). btree is the subject
 // because it is what CREATE INDEX gives without being asked, and because it is the one with no
 // recovery-side commit filter at all -- services/index/manager_index.cpp:663-694 hands the bitcask
-// agent a committed_commit_ids set (:669-676) and hands the btree agent nothing (:686-687) -- so
+// agent a commit_ids set (:669-676) and hands the btree agent nothing (:686-687) -- so
 // the reproduction does not lean on how that set is computed.
 //
 // THE CRASH. A plain copy-the-directory crash does NOT open this window: the table's recovery

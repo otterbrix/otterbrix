@@ -66,7 +66,7 @@ namespace services::index {
                uint64_t flush_threshold,
                uint64_t segment_record_limit,
                log_t& log,
-               std::pmr::set<std::uint64_t> committed_commit_ids);
+               std::pmr::set<std::uint64_t> commit_ids);
 
         // The ctor does no I/O so it cannot fail; open_store() below is the fallible half, called
         // only from create(). Public because actor_zeta::spawn placement-news the actor.
@@ -77,7 +77,7 @@ namespace services::index {
                               uint64_t flush_threshold,
                               uint64_t segment_record_limit,
                               log_t& log,
-                              std::pmr::set<std::uint64_t> committed_commit_ids);
+                              std::pmr::set<std::uint64_t> commit_ids);
         ~bitcask_index_agent_t();
 
         [[nodiscard]] components::catalog::oid_t table_oid() const noexcept { return table_oid_; }

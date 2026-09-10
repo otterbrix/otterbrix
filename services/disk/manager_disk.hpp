@@ -50,7 +50,7 @@
 
 namespace services::disk {
 
-    using session_id_t = ::components::session::session_id_t;
+    using session_id_t = components::session::session_id_t;
 
     /// Owns a table's data_table_t and the storage stack behind its table.otbx.
     class table_storage_t {
@@ -79,9 +79,6 @@ namespace services::disk {
 
         /// Unlike storage_degraded(), does not latch — a transient error must stay retryable.
         [[nodiscard]] bool last_checkpoint_failed() const noexcept { return last_checkpoint_failed_; }
-
-        /// Asked only on the failed-round retry path (walks every segment); over-reporting is safe.
-        [[nodiscard]] bool has_pending_update_overlay();
 
         /// A .otbx carries no version metadata: checkpointing over a stamp above `watermark` resurrects the row.
         [[nodiscard]] bool has_versions_above(uint64_t watermark) const;
@@ -442,9 +439,8 @@ namespace services::disk {
         unique_future<core::result_wrapper_t<std::pmr::vector<std::uint64_t>>>
         delete_pg_catalog_rows_many(execution_context_t ctx, std::pmr::vector<pg_catalog_delete_spec_t> specs);
 
-        // Patches backfilled pg_attribute rows after commit_id is known, before storage_publish_commits
-        // flips visibility.
-        unique_future<core::error_t>
+        // Stamps backfilled pg_attribute rows once commit_id is known. Runs ABOVE the WAL commit marker
+        unique_future<components::pg_attribute_backfill_result_t>
         update_pg_attribute_commit_id_fields(execution_context_t ctx,
                                              std::pmr::vector<components::pg_attribute_commit_id_backfill_t> backfills,
                                              std::uint64_t commit_id);
@@ -489,15 +485,25 @@ namespace services::disk {
 
         // ALTER TABLE ADD COLUMN: operator_alter_column_add_t; computed tables: operator_computed_field_register_t.
 
-        core::result_wrapper_t<uint64_t> direct_append_sync(components::catalog::oid_t table_oid,
-                                                            components::vector::data_chunk_t& data);
-        // These three refuse (not no-op) with no storage: on WAL replay, a dropped mutation never re-derives.
-        [[nodiscard]] core::error_t direct_delete_sync(components::catalog::oid_t table_oid,
-                                                       const std::pmr::vector<int64_t>& row_ids,
+        core::result_wrapper_t<uint64_t> append_sync(components::catalog::oid_t table_oid,
+                                                     components::vector::data_chunk_t& data,
+                                                     components::table::transaction_data txn);
+        [[nodiscard]] core::error_t commit_append_sync(components::catalog::oid_t table_oid,
+                                                       uint64_t commit_id,
+                                                       int64_t row_start,
                                                        uint64_t count);
-        [[nodiscard]] core::error_t direct_update_sync(components::catalog::oid_t table_oid,
-                                                       const std::pmr::vector<int64_t>& row_ids,
-                                                       components::vector::data_chunk_t& new_data);
+        [[nodiscard]] core::error_t delete_sync(components::catalog::oid_t table_oid,
+                                                const std::pmr::vector<int64_t>& row_ids,
+                                                uint64_t count,
+                                                components::table::transaction_data txn);
+        [[nodiscard]] core::error_t commit_all_deletes_sync(components::catalog::oid_t table_oid,
+                                                            uint64_t txn_id,
+                                                            uint64_t commit_id);
+        [[nodiscard]] core::result_wrapper_t<components::storage::appended_range_t>
+        update_sync(components::catalog::oid_t table_oid,
+                    const std::pmr::vector<int64_t>& row_ids,
+                    components::vector::data_chunk_t& new_data,
+                    components::table::transaction_data txn);
         [[nodiscard]] core::error_t direct_add_column_sync(components::catalog::oid_t table_oid,
                                                            const components::vector::data_chunk_t& schema_chunk);
 
@@ -600,12 +606,12 @@ namespace services::disk {
                       components::table::fetch_visibility_t visibility,
                       int64_t limit,
                       uint64_t expected_compact_epoch);
-        unique_future<core::result_wrapper_t<std::pair<uint64_t, uint64_t>>>
+        unique_future<core::result_wrapper_t<components::storage::appended_range_t>>
         storage_append(execution_context_t ctx,
                        components::catalog::oid_t table_oid,
                        std::pmr::vector<components::vector::data_chunk_t> data);
 
-        unique_future<core::result_wrapper_t<std::pair<int64_t, uint64_t>>>
+        unique_future<core::result_wrapper_t<components::storage::appended_range_t>>
         storage_update(execution_context_t ctx,
                        components::catalog::oid_t table_oid,
                        std::pmr::vector<components::vector::vector_t> row_ids,
@@ -712,7 +718,7 @@ namespace services::disk {
         scan_table(components::catalog::oid_t table_oid,
                    std::unique_ptr<components::table::table_filter_t> filter,
                    std::vector<std::size_t> projected_cols,
-                   components::table::transaction_data txn = components::table::transaction_data{});
+                   components::table::transaction_data txn = components::table::transaction_data::committed());
 
         static constexpr std::size_t pool_idx_for_oid(components::catalog::oid_t oid, std::size_t pool_size) noexcept {
             if (pool_size == 0)

@@ -210,7 +210,7 @@ struct oid_round_fixture : actor_zeta::actor::actor_mixin<oid_round_fixture> {
     probe_fixture probe_fx() { return probe_fixture{this, *resource_}; }
 
     components::execution_context_t read_ctx() {
-        // probe_see_all_txn, not transaction_data{0, 0}: a 0 start_time would hide every ALTER-added column.
+        // probe_see_all_txn, not transaction_data::committed(): a 0 start_time would hide every ALTER-added column.
         return components::execution_context_t{session_id_t{}, test_probe::probe_see_all_txn(), {}};
     }
 

@@ -321,7 +321,6 @@ namespace components::table {
 
     template<table_scan_type TYPE>
     void row_group_t::templated_scan(collection_scan_state& state, vector::data_chunk_t& result) {
-        constexpr bool ALLOW_UPDATES = TYPE != table_scan_type::COMMITTED_ROWS_DISALLOW_UPDATES;
         const auto& column_ids = state.column_ids();
         auto* filter = state.filter();
         for (auto& column_state : state.column_scans) {
@@ -364,10 +363,7 @@ namespace components::table {
                         if (TYPE == table_scan_type::REGULAR) {
                             col_data.scan(state.vector_index, state.column_scans[i], result.data[out_idx]);
                         } else {
-                            col_data.scan_committed(state.vector_index,
-                                                    state.column_scans[i],
-                                                    result.data[out_idx],
-                                                    ALLOW_UPDATES);
+                            col_data.scan_committed(state.vector_index, state.column_scans[i], result.data[out_idx]);
                         }
                     }
                 }
@@ -387,7 +383,6 @@ namespace components::table {
                     indexing.reset(nullptr);
                 }
                 if (filter) {
-                    assert(ALLOW_UPDATES);
                     filter_indexing(collection_->resource(),
                                     state.vector_index,
                                     indexing,
@@ -479,8 +474,7 @@ namespace components::table {
                                                       state.column_scans[i],
                                                       result.data[out_idx],
                                                       indexing,
-                                                      approved_tuple_count,
-                                                      ALLOW_UPDATES);
+                                                      approved_tuple_count);
                         }
                     }
                 }
@@ -519,9 +513,6 @@ namespace components::table {
         switch (type) {
             case table_scan_type::COMMITTED_ROWS:
                 templated_scan<table_scan_type::COMMITTED_ROWS>(state, result);
-                break;
-            case table_scan_type::COMMITTED_ROWS_DISALLOW_UPDATES:
-                templated_scan<table_scan_type::COMMITTED_ROWS_DISALLOW_UPDATES>(state, result);
                 break;
             case table_scan_type::LATEST_COMMITTED_ROWS:
                 templated_scan<table_scan_type::COMMITTED_ROWS>(state, result);
@@ -589,6 +580,10 @@ namespace components::table {
             row_group_end = row_group_size();
         }
         this->count = row_group_end;
+        // Not required, but lowers memory consumption, when there are not updates history
+        if (is_direct_write_txn(txn.transaction_id) && version_info() == nullptr) {
+            return;
+        }
         get_or_create_version_info().append_version_info(txn, count, row_group_start, row_group_end);
     }
 
@@ -655,54 +650,7 @@ namespace components::table {
         return true;
     }
 
-    core::result_wrapper_t<bool> row_group_t::update(vector::data_chunk_t& update_chunk,
-                                                     int64_t* ids,
-                                                     uint64_t offset,
-                                                     uint64_t count,
-                                                     const std::vector<uint64_t>& column_ids) {
-        for (uint64_t i = 0; i < column_ids.size(); i++) {
-            auto column = column_ids[i];
-            assert(column != std::numeric_limits<uint64_t>::max());
-            auto& col_data = get_column(column);
-            assert(col_data.type().type() == update_chunk.data[i].type().type());
-            core::result_wrapper_t<bool> updated = [&]() -> core::result_wrapper_t<bool> {
-                if (offset > 0) {
-                    vector::vector_t sliced_vector(update_chunk.data[i], offset, count);
-                    sliced_vector.flatten(count);
-                    return col_data.update(column, sliced_vector, ids + offset, count);
-                }
-                return col_data.update(column, update_chunk.data[i], ids, count);
-            }();
-            if (updated.has_error()) {
-                return updated; // out_of_memory / data_corruption / io_error
-            }
-        }
-        return true;
-    }
 
-    core::result_wrapper_t<bool> row_group_t::update_column(vector::data_chunk_t& updates,
-                                                            vector::vector_t& row_ids,
-                                                            const std::vector<uint64_t>& column_path,
-                                                            uint64_t offset,
-                                                            uint64_t count) {
-        assert(updates.column_count() == 1);
-        auto ids = row_ids.data<int64_t>();
-
-        if (column_path.empty() || column_path[0] >= columns_.size()) {
-            return core::error_t(
-                core::error_code_t::invalid_parameter,
-                std::pmr::string("row group update: the column path names no column of this row group",
-                                 collection_->resource()));
-        }
-        auto primary_column_idx = column_path[0];
-        auto& col_data = get_column(primary_column_idx);
-        if (offset > 0) {
-            vector::vector_t sliced_vector(updates.data[0], offset, count);
-            sliced_vector.flatten(count);
-            return col_data.update_column(column_path, sliced_vector, ids + offset, count, 1);
-        }
-        return col_data.update_column(column_path, updates.data[0], ids, count, 1);
-    }
 
     uint64_t row_group_t::committed_row_count() {
         auto* vi = version_info_.load();
@@ -744,19 +692,14 @@ namespace components::table {
 
     class version_delete_state {
     public:
-        version_delete_state(row_group_t& info,
-                             uint64_t current_version,
-                             data_table_t& table,
-                             int64_t base_row,
-                             bool is_txn = false)
+        version_delete_state(row_group_t& info, uint64_t current_version, data_table_t& table, int64_t base_row)
             : info(info)
             , table(table)
             , current_chunk(storage::INVALID_INDEX)
             , current_version(current_version)
             , base_row(base_row)
             , delete_count(0)
-            , count(0)
-            , is_txn_(is_txn) {}
+            , count(0) {}
 
         row_group_t& info;
         data_table_t& table;
@@ -767,22 +710,13 @@ namespace components::table {
         uint64_t chunk_row;
         uint64_t delete_count;
         uint64_t count;
-        bool is_txn_;
 
         void delete_row(int64_t row_id);
         void flush();
     };
 
-    uint64_t row_group_t::delete_rows(uint64_t vector_idx, int64_t rows[], uint64_t count) {
-        const auto delete_id = ++current_version_;
-        auto deleted = get_or_create_version_info().delete_rows(vector_idx, delete_id, rows, count);
-        ++current_version_;
-        return deleted;
-    }
-
     uint64_t row_group_t::delete_rows(data_table_t& table, int64_t* ids, uint64_t count, uint64_t transaction_id) {
-        const bool is_txn = !is_direct_write_txn(transaction_id);
-        version_delete_state del_state(*this, transaction_id, table, start, is_txn);
+        version_delete_state del_state(*this, transaction_id, table, start);
 
         for (uint64_t i = 0; i < count; i++) {
             assert(ids[i] >= 0);
@@ -900,14 +834,7 @@ namespace components::table {
         if (count == 0) {
             return;
         }
-        uint64_t actual_delete_count;
-        if (is_txn_) {
-            actual_delete_count =
-                info.get_or_create_version_info().delete_rows(current_chunk, current_version, rows, count);
-        } else {
-            actual_delete_count = info.delete_rows(current_chunk, rows, count);
-        }
-        delete_count += actual_delete_count;
+        delete_count += info.get_or_create_version_info().delete_rows(current_chunk, current_version, rows, count);
         count = 0;
     }
     namespace {

@@ -6,14 +6,13 @@
 #include <set>
 #include <string>
 
-// WAL replay numbers appended rows POSITIONALLY: base_spaces.cpp:311-316 feeds every committed
-// PHYSICAL_INSERT chunk to direct_append_sync and DISCARDS the start row it answers with
-// (manager_disk_storage.cpp:11,76 -- the value is returned, and manager_disk_bootstrap.cpp:194 even
-// says it "answers with the start row, not a count"), while the journalled
-// record_t::physical_row_start (record.hpp:42, decoded at wal_binary.cpp:373) is read by nobody in
-// production -- a full-tree grep finds only services/wal/tests/test_wal_binary.cpp:59. So the row id
-// a replayed row gets is "how many rows the table already holds at replay time", not the id it had
-// when it was written.
+// WAL replay numbers appended rows POSITIONALLY: base_spaces.cpp feeds every committed
+// PHYSICAL_INSERT chunk to append_sync, which lands it at whatever the table's end happens to be.
+// The start row it answers with is used only to stamp the commit (commit_append_sync), never to
+// POSITION the rows, and the journalled record_t::physical_row_start (record.hpp, decoded at
+// wal_binary.cpp) is read by nobody in production -- a full-tree grep finds only
+// services/wal/tests/test_wal_binary.cpp:59. So the row id a replayed row gets is "how many rows the
+// table already holds at replay time", not the id it had when it was written.
 //
 // That is an identity only while every slot AHEAD of the row is replayed too. One transaction still
 // IN FLIGHT when the machine dies breaks it: its rows already consumed physical slots

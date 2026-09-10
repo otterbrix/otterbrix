@@ -214,7 +214,6 @@ namespace components::table {
         std::string segment_type;
         int64_t segment_start{0};
         uint64_t segment_count{0};
-        bool has_updates{false};
         uint32_t block_id{0};
         std::vector<uint64_t> additional_blocks;
         uint64_t block_offset{0};

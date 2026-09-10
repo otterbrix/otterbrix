@@ -98,7 +98,7 @@ namespace {
         REQUIRE(state.append_state.states != nullptr);
         out.payload_segment = state.append_state.states[1].current;
         REQUIRE(out.payload_segment != nullptr);
-        out.table->finalize_append(state, transaction_data{0, 0});
+        out.table->finalize_append(state, transaction_data::committed());
         return out;
     }
 
@@ -118,7 +118,7 @@ TEST_CASE("storage_adapter: fetch returns owned big-string bytes on the intact p
     vector_t row_ids(&env.resource, logical_type::BIGINT, 1);
     row_ids.data<int64_t>()[0] = 0;
 
-    auto fetch_r = storage.fetch(out, row_ids, 1, {}, transaction_data{}, fetch_visibility_t::SNAPSHOT);
+    auto fetch_r = storage.fetch(out, row_ids, 1, {}, transaction_data::committed(), fetch_visibility_t::SNAPSHOT);
     REQUIRE_FALSE(fetch_r.has_error());
     REQUIRE(out.size() == 1);
     const auto cell = out.value(1, 0); // named local: chunk.value() is a temporary
@@ -142,7 +142,7 @@ TEST_CASE("storage_adapter: a fetch failure reaches the storage caller as an err
     vector_t row_ids(&env.resource, logical_type::BIGINT, 1);
     row_ids.data<int64_t>()[0] = 0;
 
-    auto fetch_r = storage.fetch(out, row_ids, 1, {}, transaction_data{}, fetch_visibility_t::SNAPSHOT);
+    auto fetch_r = storage.fetch(out, row_ids, 1, {}, transaction_data::committed(), fetch_visibility_t::SNAPSHOT);
     REQUIRE(fetch_r.has_error());
     REQUIRE(fetch_r.error().type == core::error_code_t::data_corruption);
 }

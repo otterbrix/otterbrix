@@ -72,7 +72,7 @@ namespace {
         REQUIRE_FALSE(table.append_lock(state).has_error());
         REQUIRE_FALSE(table.initialize_append(state).has_error());
         REQUIRE_FALSE(table.append(chunk, state).has_error());
-        table.finalize_append(state, transaction_data{0, 0});
+        table.finalize_append(state, transaction_data::committed());
     }
 
     void append_rows_txn(data_table_t& table, test_env& env, int64_t start, uint64_t count, transaction_data txn) {
@@ -634,7 +634,7 @@ namespace {
         REQUIRE_FALSE(table.append_lock(state).has_error());
         REQUIRE_FALSE(table.initialize_append(state).has_error());
         REQUIRE_FALSE(table.append(chunk, state).has_error());
-        table.finalize_append(state, transaction_data{0, 0});
+        table.finalize_append(state, transaction_data::committed());
     }
 
     std::vector<std::pair<int64_t, int64_t>> scan_pairs(data_table_t& table, test_env& env) { // a desync = wrong pair
@@ -720,7 +720,7 @@ TEST_CASE("components::table::mvcc::aborted_update_revert_restores_row") {
         REQUIRE_FALSE(table->append_lock(state).has_error());
         REQUIRE_FALSE(table->initialize_append(state).has_error());
         REQUIRE_FALSE(table->append(chunk, state).has_error());
-        table->finalize_append(state, transaction_data{0, 0});
+        table->finalize_append(state, transaction_data::committed());
     }
 
     const uint64_t txn_id = TRANSACTION_ID_START + 5;
@@ -920,7 +920,7 @@ namespace {
         REQUIRE_FALSE(table.append_lock(state).has_error());
         REQUIRE_FALSE(table.initialize_append(state).has_error());
         REQUIRE_FALSE(table.append(chunk, state).has_error());
-        table.finalize_append(state, transaction_data{0, 0});
+        table.finalize_append(state, transaction_data::committed());
     }
 
     void append_array_rows(data_table_t& table, test_env& env, uint64_t row_begin, uint64_t count, uint64_t base) {
@@ -941,7 +941,7 @@ namespace {
         REQUIRE_FALSE(table.append_lock(state).has_error());
         REQUIRE_FALSE(table.initialize_append(state).has_error());
         REQUIRE_FALSE(table.append(chunk, state).has_error());
-        table.finalize_append(state, transaction_data{0, 0});
+        table.finalize_append(state, transaction_data::committed());
     }
 
     void verify_list_rows(data_table_t& table, test_env& env, uint64_t total, uint64_t new_from, uint64_t new_base) {
@@ -1180,8 +1180,8 @@ TEST_CASE("components::table::mvcc::cleanup_still_reclaims_insert_only_history")
         REQUIRE(result != nullptr);
         REQUIRE(result->type == chunk_info_type::CONSTANT_INFO);
         REQUIRE(result->cast<chunk_constant_info>().delete_id == kOldCommit + 1);
-        REQUIRE_FALSE(result->fetch(transaction_data{}, 0));
-        REQUIRE_FALSE(result->fetch(transaction_data{}, DEFAULT_VECTOR_CAPACITY - 1));
+        REQUIRE_FALSE(result->fetch(transaction_data::committed(), 0));
+        REQUIRE_FALSE(result->fetch(transaction_data::committed(), DEFAULT_VECTOR_CAPACITY - 1));
     }
 
     // deleted by TWO transactions: a constant carries only ONE stamp, so collapse is off

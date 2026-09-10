@@ -89,7 +89,7 @@ namespace {
         }
 
         components::execution_context_t ctx() {
-            return components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}};
+            return components::execution_context_t{session_id_t{}, components::table::transaction_data::committed(), {}};
         }
     };
 } // namespace
@@ -188,7 +188,7 @@ TEST_CASE("test_recovery_orphaned_uncommitted_ddl") {
     cleanup_dir(dir);
 }
 
-// 'g' columns replay via pg_computed_column through direct_append_sync, bypassing the operator pipeline.
+// 'g' columns replay via pg_computed_column through append_sync, bypassing the operator pipeline.
 TEST_CASE("services::disk::recovery::dynamic_schema_persists_across_restart") {
     auto dir = recovery_test_dir() + "/dynamic_schema";
     cleanup_dir(dir);

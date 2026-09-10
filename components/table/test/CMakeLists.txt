@@ -34,18 +34,14 @@ set(${PROJECT_NAME}_SOURCES
         test_alter_version_sharing.cpp
         test_collection_ownership.cpp
         test_wide_decimal_storage.cpp
-        test_update_merge.cpp
         test_block_accounting_bounds.cpp
         test_wave_table.cpp
         test_segment_tree_reinitialize.cpp
-        test_storage_update_rollback.cpp
-        test_update_overlay_predicate.cpp
         test_column_identity_restamp.cpp
         test_predicate_fetch_state.cpp
         test_string_write_through.cpp
         test_compression_byte_validation.cpp
         test_construction_error_move.cpp
-        test_nontransactional_update_contract.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

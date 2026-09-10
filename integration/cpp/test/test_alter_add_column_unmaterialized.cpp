@@ -390,3 +390,27 @@ TEST_CASE("integration::cpp::alter_add_column_unmaterialized::dml_over_the_colum
         CHECK(cur->value(0, 0).value<int64_t>() == 1);
     }
 }
+
+TEST_CASE("integration::cpp::alter_add_column_unmaterialized::one_insert_materializes_several_added_columns") {
+    auto config = test_create_config(integration_fixture_path("test_alter_add_column_unmaterialized/several"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    run_ok(dispatcher, "CREATE DATABASE TestDatabase;");
+    run_ok(dispatcher, "CREATE TABLE TestDatabase.t (id bigint, name text);");
+    run_ok(dispatcher, "INSERT INTO TestDatabase.t (id, name) VALUES (1, 'one');");
+    run_ok(dispatcher, "ALTER TABLE TestDatabase.t ADD COLUMN a bigint;");
+    run_ok(dispatcher, "ALTER TABLE TestDatabase.t ADD COLUMN b bigint;");
+    run_ok(dispatcher, "INSERT INTO TestDatabase.t (id, name, a, b) VALUES (2, 'two', 42, 43);");
+
+    auto cur = run_ok(dispatcher, "SELECT id, a, b FROM TestDatabase.t ORDER BY id;");
+    REQUIRE(cur->size() == 2);
+    INFO("the row that predates both columns reads NULL for them");
+    CHECK(cur->value(1, 0).is_null());
+    CHECK(cur->value(2, 0).is_null());
+    INFO("and each added column keeps its own value, not the other's");
+    CHECK(cur->value(0, 1).value<int64_t>() == 2);
+    CHECK(cur->value(1, 1).value<int64_t>() == 42);
+    CHECK(cur->value(2, 1).value<int64_t>() == 43);
+}

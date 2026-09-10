@@ -52,14 +52,14 @@ namespace services::index {
                              std::pmr::memory_resource* resource,
                              uint64_t flush_threshold,
                              uint64_t segment_record_limit,
-                             std::pmr::set<std::uint64_t> committed_commit_ids,
+                             std::pmr::set<std::uint64_t> commit_ids,
                              deferred_open_t);
 
         bitcask_index_disk_t(const path_t& path,
                              std::pmr::memory_resource* resource,
                              uint64_t flush_threshold,
                              uint64_t segment_record_limit,
-                             std::pmr::set<std::uint64_t> committed_commit_ids);
+                             std::pmr::set<std::uint64_t> commit_ids);
         ~bitcask_index_disk_t();
 
         bitcask_index_disk_t(const bitcask_index_disk_t&) = delete;
@@ -229,7 +229,7 @@ namespace services::index {
         bool merge_pending_{false};
         // WAL-replay committed COMMIT ids, not txn ids: txn ids restart at TRANSACTION_ID_START
         // each process, so an older incarnation's marker could vouch for a newer, uncommitted frame.
-        std::pmr::set<std::uint64_t> committed_commit_ids_;
+        std::pmr::set<std::uint64_t> commit_ids_;
         // Set only for a ROTATED segment's CRC failure (damage, since rotated segments never
         // change) — never the ACTIVE segment's, which is a torn write repaired in place.
         bool crc_failure_{false};

@@ -548,7 +548,7 @@ namespace services::index {
                                                         components::catalog::oid_t index_oid,
                                                         components::logical_plan::index_type type,
                                                         components::index::keys_base_storage_t keys,
-                                                        std::pmr::set<std::uint64_t> committed_commit_ids) {
+                                                        std::pmr::set<std::uint64_t> commit_ids) {
         // Mirrors create_index's gates and agent-first order (see there for why each gate exists).
         auto it = indexes_per_oid_.find(table_oid);
         if (it == indexes_per_oid_.end()) {
@@ -592,7 +592,7 @@ namespace services::index {
                                  resource_}};
         }
 
-        auto spawned = spawn_disk_agent(table_oid, index_oid, type, std::move(committed_commit_ids));
+        auto spawned = spawn_disk_agent(table_oid, index_oid, type, std::move(commit_ids));
         if (spawned.has_error()) {
             return spawned.error();
         }
@@ -663,7 +663,7 @@ namespace services::index {
     manager_index_t::spawn_disk_agent(components::catalog::oid_t table_oid,
                                       components::catalog::oid_t index_oid,
                                       components::logical_plan::index_type type,
-                                      std::pmr::set<std::uint64_t> committed_commit_ids) {
+                                      std::pmr::set<std::uint64_t> commit_ids) {
         // The one place pg_index.indtype maps to a backend class: hashed -> bitcask LSM, else -> ordered b+tree.
         if (type == components::logical_plan::index_type::hashed) {
             auto agent = bitcask_index_agent_t::create(resource_,
@@ -673,7 +673,7 @@ namespace services::index {
                                                        bitcask_flush_threshold_,
                                                        bitcask_segment_record_limit_,
                                                        log_,
-                                                       std::move(committed_commit_ids));
+                                                       std::move(commit_ids));
             if (agent.has_error()) {
                 return agent.error();
             }

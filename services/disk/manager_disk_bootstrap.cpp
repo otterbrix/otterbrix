@@ -191,9 +191,10 @@ namespace services::disk {
             return needs_seeding;
         };
 
-        // direct_append_sync answers with the start row, not a count, so require_seeded re-checks the total afterwards.
+        // txn 0: a builtin row is committed the moment it lands, so it needs no commit_append_sync.
         auto seed_row = [&](catalog::oid_t tbl_oid, std::string_view tbl_name, components::vector::data_chunk_t& row) {
-            if (auto seeded = direct_append_sync(tbl_oid, row); seeded.has_error()) {
+            if (auto seeded = append_sync(tbl_oid, row, components::table::transaction_data::committed());
+                seeded.has_error()) {
                 error(log_,
                       "bootstrap , builtin row for system table {} oid={} was not written: {}",
                       std::string(tbl_name),
@@ -218,7 +219,7 @@ namespace services::disk {
 
         std::unordered_set<catalog::oid_t> freshly_created;
 
-        // pg_settings must bootstrap first — seeding elsewhere reads the timezone via direct_append_sync.
+        // pg_settings must bootstrap first — seeding elsewhere reads the timezone via append_sync.
         if (const auto* settings_def = catalog::find_system_table(pg_settings_oid)) {
             if (bootstrap_one(*settings_def)) {
                 freshly_created.insert(catalog::well_known_oid::pg_settings_table);
@@ -514,7 +515,7 @@ namespace services::disk {
         core::pmr::otterbrix_resource scan_resource;
         // Reads via the same default-transaction_data path resolve_table takes, folding the backfill's MVCC UPDATE.
         components::vector::data_chunk_t chunk(&scan_resource, types, total);
-        storage.scan(chunk, /*filter=*/nullptr, /*limit=*/-1, components::table::transaction_data{});
+        storage.scan(chunk, /*filter=*/nullptr, /*limit=*/-1, components::table::transaction_data::committed());
 
         std::uint64_t max_commit_id = 0;
         for (uint64_t i = 0; i < chunk.size(); ++i) {
@@ -1095,7 +1096,7 @@ namespace services::disk {
                                                    /*filter=*/nullptr,
                                                    /*limit=*/-1,
                                                    /*projected_cols=*/nullptr,
-                                                   components::table::transaction_data{});
+                                                   components::table::transaction_data::committed());
         if (scan_r.has_error()) {
             // A partial batch set would silently rebuild a disagreeing index.
             auto log = log_.clone();

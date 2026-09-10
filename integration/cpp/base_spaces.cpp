@@ -17,6 +17,7 @@
 #include <services/index/manager_index.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 #include <services/wal/wal_reader.hpp>
+#include <map>
 #include <set>
 #include <thread>
 
@@ -80,9 +81,9 @@ namespace otterbrix {
         }
 
         // Index txn-log frames are durable before the WAL commit marker, so uncommitted entries need this set.
-        std::set<std::uint64_t> committed_txn_ids;
+        std::set<std::uint64_t> commit_ids;
         services::wal::wal_reader_t wal_reader(&resource, config.wal, log_);
-        auto wal_records_result = wal_reader.read_committed_records(last_wal_id, &committed_txn_ids);
+        auto wal_records_result = wal_reader.read_committed_records(last_wal_id, &commit_ids);
 
         // Refuses rather than allocating IDs below what's already on disk; writes/deletes nothing.
         if (wal_records_result.has_error()) {
@@ -244,6 +245,26 @@ namespace otterbrix {
                 [&disk, &log = log_](components::catalog::oid_t table_oid,
                                         components::catalog::oid_t ns_oid,
                                         std::vector<services::wal::record_t*>& records) {
+                    std::map<std::uint64_t, std::uint64_t> pending_delete_commits;
+                    auto commit_delete_group =
+                        [&disk, &log](components::catalog::oid_t oid, std::uint64_t txn_id, std::uint64_t commit_id) {
+                            if (auto err = disk.commit_all_deletes_sync(oid, txn_id, commit_id);
+                                err.contains_error()) {
+                                error(log, "spaces::replay: {}", err.what);
+                            }
+                        };
+                    auto flush_delete_commit = [&](components::catalog::oid_t oid,
+                                                   std::uint64_t txn_id,
+                                                   std::uint64_t commit_id) {
+                        if (txn_id == 0) {
+                            return;
+                        }
+                        auto it = pending_delete_commits.find(txn_id);
+                        if (it != pending_delete_commits.end() && it->second != commit_id) {
+                            commit_delete_group(oid, txn_id, it->second);
+                            pending_delete_commits.erase(it);
+                        }
+                    };
                     for (auto* r : records) {
                         switch (r->record_type) {
                             case services::wal::wal_record_type::PHYSICAL_INSERT:
@@ -309,14 +330,35 @@ namespace otterbrix {
                                         }
                                     }
                                     for (auto& chunk : r->physical_data) {
-                                        if (auto append_r = disk.direct_append_sync(table_oid, chunk);
-                                            append_r.has_error()) {
+                                        const auto chunk_count = static_cast<uint64_t>(chunk.size());
+                                        auto append_r = disk.append_sync(
+                                            table_oid,
+                                            chunk,
+                                            components::table::transaction_data{r->transaction_id, 0});
+                                        if (append_r.has_error()) {
                                             error(log,
                                                   "spaces::replay: {} committed row(s) for table oid={} were not "
                                                   "restored: {}",
                                                   chunk.size(),
                                                   static_cast<unsigned>(table_oid),
                                                   append_r.error().what);
+                                            continue;
+                                        }
+                                        if (r->transaction_id == 0) {
+                                            continue;
+                                        }
+                                        if (auto committed =
+                                                disk.commit_append_sync(table_oid,
+                                                                        r->commit_id,
+                                                                        static_cast<int64_t>(append_r.value()),
+                                                                        chunk_count);
+                                            committed.contains_error()) {
+                                            error(log,
+                                                  "spaces::replay: {} row(s) for table oid={} were restored but "
+                                                  "their commit stamp was not applied: {}",
+                                                  chunk_count,
+                                                  static_cast<unsigned>(table_oid),
+                                                  committed.what);
                                         }
                                     }
                                 }
@@ -399,11 +441,18 @@ namespace otterbrix {
                                         error(log, "spaces::replay: {}", load_err.what);
                                     }
                                 }
-                                if (auto del_err = disk.direct_delete_sync(table_oid,
-                                                                                r->physical_row_ids,
-                                                                                r->physical_row_count);
+                                flush_delete_commit(table_oid, r->transaction_id, r->commit_id);
+                                if (auto del_err = disk.delete_sync(
+                                        table_oid,
+                                        r->physical_row_ids,
+                                        r->physical_row_count,
+                                        components::table::transaction_data{r->transaction_id, 0});
                                     del_err.contains_error()) {
                                     error(log, "spaces::replay: {}", del_err.what);
+                                    break;
+                                }
+                                if (r->transaction_id != 0) {
+                                    pending_delete_commits[r->transaction_id] = r->commit_id;
                                 }
                                 break;
                             }
@@ -446,9 +495,28 @@ namespace otterbrix {
                                         if (take < n) {
                                             chunk.set_cardinality(take);
                                         }
-                                        if (auto upd_err = disk.direct_update_sync(table_oid, ids, chunk);
-                                            upd_err.contains_error()) {
-                                            error(log, "spaces::replay: {}", upd_err.what);
+                                        flush_delete_commit(table_oid, r->transaction_id, r->commit_id);
+                                        auto upd_r = disk.update_sync(
+                                            table_oid,
+                                            ids,
+                                            chunk,
+                                            components::table::transaction_data{r->transaction_id, 0});
+                                        if (upd_r.has_error()) {
+                                            error(log, "spaces::replay: {}", upd_r.error().what);
+                                            continue;
+                                        }
+                                        if (r->transaction_id == 0) {
+                                            continue;
+                                        }
+                                        pending_delete_commits[r->transaction_id] = r->commit_id;
+                                        const auto upd = upd_r.value();
+                                        if (auto committed =
+                                                disk.commit_append_sync(table_oid,
+                                                                        r->commit_id,
+                                                                        upd.start_row,
+                                                                        upd.count);
+                                            committed.contains_error()) {
+                                            error(log, "spaces::replay: {}", committed.what);
                                         }
                                     }
                                 }
@@ -456,6 +524,9 @@ namespace otterbrix {
                             default:
                                 break;
                         }
+                    }
+                    for (const auto& [txn_id, commit_id] : pending_delete_commits) {
+                        commit_delete_group(table_oid, txn_id, commit_id);
                     }
                 };
 
@@ -542,7 +613,7 @@ namespace otterbrix {
         }
 
         // Travels by value — legal only during this single-threaded bootstrap window.
-        bootstrap_indexes_sync(committed_txn_ids);
+        bootstrap_indexes_sync(commit_ids);
 
         scheduler_dispatcher_->start();
         scheduler_->start();
@@ -596,7 +667,7 @@ namespace otterbrix {
 
     // The table pass must precede the pg_index pass: bootstrap_index_sync attaches to a table the
     // index manager already knows about.
-    void base_otterbrix_t::bootstrap_indexes_sync(const std::set<std::uint64_t>& committed_txn_ids) {
+    void base_otterbrix_t::bootstrap_indexes_sync(const std::set<std::uint64_t>& commit_ids) {
         auto live_tables = manager_disk_->scan_live_table_oids_sync();
         for (auto oid : live_tables) {
             manager_index_->bootstrap_engine_sync(oid);
@@ -644,8 +715,8 @@ namespace otterbrix {
                 continue;
             }
 
-            std::pmr::set<std::uint64_t> committed_for_agent(committed_txn_ids.begin(),
-                                                             committed_txn_ids.end(),
+            std::pmr::set<std::uint64_t> committed_for_agent(commit_ids.begin(),
+                                                             commit_ids.end(),
                                                              &resource);
 
             auto wire_error = manager_index_->bootstrap_index_sync(row.table_oid,

@@ -89,7 +89,7 @@ namespace {
 
         components::execution_context_t ctx() {
             return components::execution_context_t{session_id_t{},
-                                                   components::table::transaction_data{0, 0},
+                                                   components::table::transaction_data::committed(),
                                                    {}};
         }
 
@@ -148,7 +148,7 @@ namespace {
         std::pmr::vector<components::vector::data_chunk_t> batch(&fx.resource);
         batch.emplace_back(std::move(chunk));
         components::execution_context_t append_ctx{session_id_t{},
-                                                   components::table::transaction_data{0, 0},
+                                                   components::table::transaction_data::committed(),
                                                    {},
                                                    table_oid};
         auto r = fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, std::move(batch));
@@ -200,7 +200,17 @@ namespace {
         return fx.invoke(&manager_disk_t::update_pg_attribute_commit_id_fields,
                          disk_test_helpers::auto_ctx(),
                          std::move(markers),
-                         commit_id);
+                         commit_id)
+            .refusal;
+    }
+
+    // Replay applies an UPDATE the way a statement does
+    core::error_t replay_update(open_fixture& fx,
+                                catalog::oid_t table_oid,
+                                const std::pmr::vector<std::int64_t>& row_ids,
+                                components::vector::data_chunk_t& chunk) {
+        auto updated = fx.manager->update_sync(table_oid, row_ids, chunk, components::table::transaction_data::committed());
+        return updated.has_error() ? updated.error() : core::error_t::no_error();
     }
 } // namespace
 
@@ -312,7 +322,7 @@ TEST_CASE("services::disk::open::replayed_rows_with_nowhere_to_land_are_refused"
         chunk.set_value(0, i, static_cast<std::int64_t>(i));
     }
 
-    auto appended = fx.manager->direct_append_sync(table_oid, chunk);
+    auto appended = fx.manager->append_sync(table_oid, chunk, components::table::transaction_data::committed());
     INFO("five committed rows replayed into a table with no storage must be reported, not returned as row 0");
     CHECK(appended.has_error());
 
@@ -323,10 +333,10 @@ TEST_CASE("services::disk::open::replayed_rows_with_nowhere_to_land_are_refused"
     REQUIRE(fx.manager->has_storage(table_oid));
     components::vector::data_chunk_t empty(&fx.resource, types, 1);
     empty.set_cardinality(0);
-    auto nothing = fx.manager->direct_append_sync(table_oid, empty);
+    auto nothing = fx.manager->append_sync(table_oid, empty, components::table::transaction_data::committed());
     CHECK_FALSE(nothing.has_error());
 
-    auto landed = fx.manager->direct_append_sync(table_oid, chunk);
+    auto landed = fx.manager->append_sync(table_oid, chunk, components::table::transaction_data::committed());
     REQUIRE_FALSE(landed.has_error());
     CHECK(landed.value() == 0);
     auto rows = read_ok(fx.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, table_oid));
@@ -739,20 +749,19 @@ TEST_CASE("services::disk::open::a_replayed_update_that_lost_a_value_restores_th
         std::pmr::vector<std::int64_t> ids(&fx.resource);
         ids.push_back(1);
 
-        auto upd = fx.manager->direct_update_sync(table_oid, ids, wide);
-        INFO("a replayed update that dropped a journalled value must say so");
+        auto upd = replay_update(fx, table_oid,  ids, wide);
+        INFO("a replayed update that cannot carry every journalled value must be refused");
         CHECK(upd.contains_error());
-        INFO("and the answer must name the column whose value was dropped");
-        CHECK(std::string(upd.what.c_str()).find("not_materialized_yet") != std::string::npos);
 
-        INFO("the materialized columns of a partially-lost replayed update must still be restored");
-        CHECK(rows_where_value_is(fx, table_oid, 777) == 1);
-        CHECK(rows_where_value_is(fx, table_oid, 1) == 0);
+        INFO("and it must apply NOTHING: a delete-stamp + append either lands whole or not at all,");
+        INFO("unlike the in-place overlay it replaced, which wrote the half it could and then reported");
+        CHECK(rows_where_value_is(fx, table_oid, 777) == 0);
+        CHECK(rows_where_value_is(fx, table_oid, 1) == 1);
 
         std::pmr::vector<std::int64_t> no_ids(&fx.resource);
         components::vector::data_chunk_t no_rows(&fx.resource, wide_types, 1);
         no_rows.set_cardinality(0);
-        CHECK_FALSE(fx.manager->direct_update_sync(table_oid, no_ids, no_rows).contains_error());
+        CHECK_FALSE(replay_update(fx, table_oid, no_ids, no_rows).contains_error());
 
         components::vector::data_chunk_t wide_but_empty(&fx.resource, wide_types, 1);
         wide_but_empty.set_cardinality(1);
@@ -760,7 +769,7 @@ TEST_CASE("services::disk::open::a_replayed_update_that_lost_a_value_restores_th
         wide_but_empty.data[1].validity().set_invalid(0);
         std::pmr::vector<std::int64_t> one_id(&fx.resource);
         one_id.push_back(1);
-        CHECK_FALSE(fx.manager->direct_update_sync(table_oid, one_id, wide_but_empty).contains_error());
+        CHECK_FALSE(replay_update(fx, table_oid, one_id, wide_but_empty).contains_error());
         CHECK(rows_where_value_is(fx, table_oid, 778) == 1);
         CHECK(rows_where_value_is(fx, table_oid, 777) == 0);
 
@@ -821,7 +830,7 @@ TEST_CASE("services::disk::open::a_replayed_update_with_mismatched_row_ids_is_re
             two_ids.push_back(0);
             two_ids.push_back(1);
             auto chunk = one_row_chunk(555);
-            auto err = fx.manager->direct_update_sync(table_oid, two_ids, chunk);
+            auto err = replay_update(fx, table_oid, two_ids, chunk);
             INFO("a record pairing 2 row ids with 1 row must be refused, not half-applied");
             CHECK(err.contains_error());
             CHECK(rows_where_value_is(fx, table_oid, 555) == 0);
@@ -830,7 +839,7 @@ TEST_CASE("services::disk::open::a_replayed_update_with_mismatched_row_ids_is_re
         {
             std::pmr::vector<std::int64_t> no_ids(&fx.resource);
             auto chunk = one_row_chunk(556);
-            auto err = fx.manager->direct_update_sync(table_oid, no_ids, chunk);
+            auto err = replay_update(fx, table_oid, no_ids, chunk);
             INFO("an update that names rows but no row ids must be refused, not no-opped");
             CHECK(err.contains_error());
             CHECK(rows_where_value_is(fx, table_oid, 556) == 0);
@@ -843,7 +852,7 @@ TEST_CASE("services::disk::open::a_replayed_update_with_mismatched_row_ids_is_re
             chunk.set_cardinality(2);
             chunk.set_value(0, 0, static_cast<std::int64_t>(557));
             chunk.set_value(0, 1, static_cast<std::int64_t>(558));
-            auto err = fx.manager->direct_update_sync(table_oid, one_id, chunk);
+            auto err = replay_update(fx, table_oid, one_id, chunk);
             INFO("a record pairing 1 row id with 2 rows must be refused before anything reads past the ids");
             CHECK(err.contains_error());
         }
@@ -852,10 +861,9 @@ TEST_CASE("services::disk::open::a_replayed_update_with_mismatched_row_ids_is_re
             std::pmr::vector<std::int64_t> ghost_id(&fx.resource);
             ghost_id.push_back(std::int64_t{1} << 55); // MAX_ROW_ID (column_data.hpp)
             auto chunk = one_row_chunk(666);
-            auto err = fx.manager->direct_update_sync(table_oid, ghost_id, chunk);
-            INFO("an update applied to 0 of its 1 row must not report like one applied to all");
+            auto err = replay_update(fx, table_oid,  ghost_id, chunk);
+            INFO("a row id past MAX_ROW_ID names no row: the update must be refused, not silently dropped");
             CHECK(err.contains_error());
-            CHECK(std::string(err.what.c_str()).find("0 of") != std::string::npos);
             CHECK(rows_where_value_is(fx, table_oid, 666) == 0);
         }
 
@@ -863,7 +871,7 @@ TEST_CASE("services::disk::open::a_replayed_update_with_mismatched_row_ids_is_re
             std::pmr::vector<std::int64_t> id(&fx.resource);
             id.push_back(2);
             auto chunk = one_row_chunk(999);
-            CHECK_FALSE(fx.manager->direct_update_sync(table_oid, id, chunk).contains_error());
+            CHECK_FALSE(replay_update(fx, table_oid, id, chunk).contains_error());
             CHECK(rows_where_value_is(fx, table_oid, 999) == 1);
         }
 
@@ -906,14 +914,14 @@ TEST_CASE("services::disk::open::a_replayed_delete_that_deleted_less_than_named_
         {
             std::pmr::vector<std::int64_t> id(&fx.resource);
             id.push_back(1);
-            CHECK_FALSE(fx.manager->direct_delete_sync(table_oid, id, 1).contains_error());
+            CHECK_FALSE(fx.manager->delete_sync(table_oid, id, 1, components::table::transaction_data::committed()).contains_error());
             CHECK(rows_where_value_is(fx, table_oid, 1) == 0);
         }
 
         {
             std::pmr::vector<std::int64_t> id(&fx.resource);
             id.push_back(1);
-            auto err = fx.manager->direct_delete_sync(table_oid, id, 1);
+            auto err = fx.manager->delete_sync(table_oid, id, 1, components::table::transaction_data::committed());
             INFO("a replayed delete that deleted 0 of its 1 named row must be refused");
             CHECK(err.contains_error());
             CHECK(std::string(err.what.c_str()).find("0 of") != std::string::npos);
@@ -922,7 +930,7 @@ TEST_CASE("services::disk::open::a_replayed_delete_that_deleted_less_than_named_
         {
             std::pmr::vector<std::int64_t> id(&fx.resource);
             id.push_back(0);
-            auto err = fx.manager->direct_delete_sync(table_oid, id, 2);
+            auto err = fx.manager->delete_sync(table_oid, id, 2, components::table::transaction_data::committed());
             INFO("a record whose count outruns its row ids must be refused before anything reads the tail");
             CHECK(err.contains_error());
             CHECK(rows_where_value_is(fx, table_oid, 0) == 1);
@@ -932,14 +940,14 @@ TEST_CASE("services::disk::open::a_replayed_delete_that_deleted_less_than_named_
             std::pmr::vector<std::int64_t> ids(&fx.resource);
             ids.push_back(0);
             ids.push_back(2);
-            auto err = fx.manager->direct_delete_sync(table_oid, ids, 1);
+            auto err = fx.manager->delete_sync(table_oid, ids, 1, components::table::transaction_data::committed());
             INFO("a record naming more row ids than its count must be refused, not half-applied");
             CHECK(err.contains_error());
         }
 
         {
             std::pmr::vector<std::int64_t> no_ids(&fx.resource);
-            CHECK_FALSE(fx.manager->direct_delete_sync(table_oid, no_ids, 0).contains_error());
+            CHECK_FALSE(fx.manager->delete_sync(table_oid, no_ids, 0, components::table::transaction_data::committed()).contains_error());
         }
 
         CHECK(rows_where_value_is(fx, table_oid, 0) == 1);

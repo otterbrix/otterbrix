@@ -76,7 +76,7 @@ namespace {
         }
 
         components::execution_context_t ctx() {
-            return components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}};
+            return components::execution_context_t{session_id_t{}, components::table::transaction_data::committed(), {}};
         }
     };
 } // namespace
@@ -192,13 +192,13 @@ TEST_CASE("services::disk::error::delete_rows_refusal_is_not_a_zero_count") {
         std::pmr::vector<data_chunk_t> batch(&fx.resource);
         batch.emplace_back(std::move(chunk));
         components::execution_context_t append_ctx{session_id_t{},
-                                                   components::table::transaction_data{0, 0},
+                                                   components::table::transaction_data::committed(),
                                                    {},
                                                    table_oid};
         auto appended = fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, std::move(batch));
         REQUIRE_FALSE(appended.has_error());
-        REQUIRE(appended.value().second == 3);
-        first_row = static_cast<int64_t>(appended.value().first);
+        REQUIRE(appended.value().count == 3);
+        first_row = appended.value().start_row;
     }
 
     auto ids_of = [&](int64_t base, uint64_t n) {
@@ -269,7 +269,7 @@ namespace {
         // one txn are contiguous, so the first chunk's start_row is the whole range's start.
         constexpr std::uint64_t kChunk = 1000;
         components::execution_context_t append_ctx{session_id_t{},
-                                                   components::table::transaction_data{0, 0},
+                                                   components::table::transaction_data::committed(),
                                                    {},
                                                    table_oid};
         for (std::uint64_t done = 0; done < nrows; done += kChunk) {
@@ -287,9 +287,9 @@ namespace {
             batch.emplace_back(std::move(chunk));
             auto appended = fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, std::move(batch));
             REQUIRE_FALSE(appended.has_error());
-            REQUIRE(appended.value().second == n);
+            REQUIRE(appended.value().count == n);
             if (done == 0) {
-                first_row_out = static_cast<int64_t>(appended.value().first);
+                first_row_out = appended.value().start_row;
             }
         }
         return table_oid;
@@ -388,7 +388,7 @@ TEST_CASE("services::disk::error::append_refusal_is_not_a_zero_range") {
     const auto nowhere = static_cast<catalog::oid_t>(table_oid + 4242);
 
     components::execution_context_t append_ctx{session_id_t{},
-                                               components::table::transaction_data{0, 0},
+                                               components::table::transaction_data::committed(),
                                                {},
                                                table_oid};
 
@@ -396,24 +396,24 @@ TEST_CASE("services::disk::error::append_refusal_is_not_a_zero_range") {
     {
         auto r = fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, one_column_batch(&fx.resource, 2));
         REQUIRE_FALSE(r.has_error());
-        REQUIRE(r.value().second == 2);
+        REQUIRE(r.value().count == 2);
     }
 
     INFO("appending no rows is not a refusal, whatever the oid");
     {
         components::execution_context_t nowhere_ctx{session_id_t{},
-                                                    components::table::transaction_data{0, 0},
+                                                    components::table::transaction_data::committed(),
                                                     {},
                                                     nowhere};
         auto r = fx.invoke(&manager_disk_t::storage_append, nowhere_ctx, nowhere, one_column_batch(&fx.resource, 0));
         REQUIRE_FALSE(r.has_error());
-        REQUIRE(r.value().second == 0);
+        REQUIRE(r.value().count == 0);
     }
 
     INFO("an oid with no storage anywhere: the append DID NOT HAPPEN, and says so");
     {
         components::execution_context_t nowhere_ctx{session_id_t{},
-                                                    components::table::transaction_data{0, 0},
+                                                    components::table::transaction_data::committed(),
                                                     {},
                                                     nowhere};
         auto r = fx.invoke(&manager_disk_t::storage_append, nowhere_ctx, nowhere, one_column_batch(&fx.resource, 2));
@@ -437,7 +437,7 @@ TEST_CASE("services::disk::error::update_refusal_is_not_a_zero_range") {
                            std::move(ids),
                            one_column_batch(&fx.resource, 0));
         REQUIRE_FALSE(r.has_error());
-        REQUIRE(r.value().second == 0);
+        REQUIRE(r.value().count == 0);
     }
 
     INFO("an oid with no storage anywhere: the update DID NOT HAPPEN, and says so");
@@ -641,7 +641,7 @@ TEST_CASE("services::disk::error::a_manager_with_no_agents_refuses_instead_of_an
                      with_open_snapshot(0, 0))
                     .has_error());
         {
-            components::execution_context_t ctx{session_id_t{}, components::table::transaction_data{0, 0}, {}, oid};
+            components::execution_context_t ctx{session_id_t{}, components::table::transaction_data::committed(), {}, oid};
             REQUIRE(call(&manager_disk_t::storage_append, ctx, oid, one_column_batch(&resource, 2)).has_error());
         }
         {
@@ -703,7 +703,7 @@ TEST_CASE("services::disk::error::a_not_null_violation_is_a_refusal_not_an_empty
     };
 
     components::execution_context_t append_ctx{session_id_t{},
-                                               components::table::transaction_data{0, 0},
+                                               components::table::transaction_data::committed(),
                                                {},
                                                table_oid};
 
@@ -724,7 +724,7 @@ TEST_CASE("services::disk::error::a_not_null_violation_is_a_refusal_not_an_empty
     {
         auto r = fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, two_col_chunk(false));
         REQUIRE_FALSE(r.has_error());
-        REQUIRE(r.value().second == 2);
+        REQUIRE(r.value().count == 2);
     }
 }
 

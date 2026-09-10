@@ -145,7 +145,7 @@ namespace {
         out.leaf_segment = field_append->current;
         REQUIRE(out.leaf_segment != nullptr);
         REQUIRE(out.leaf_segment->type.to_physical_type() == physical_type::STRING);
-        out.table->finalize_append(state, transaction_data{0, 0});
+        out.table->finalize_append(state, transaction_data::committed());
         return out;
     }
 
@@ -201,7 +201,7 @@ namespace {
         components::storage::storage_t& storage = adapter;
         vector_t row_ids(&env.resource, logical_type::BIGINT, 1);
         row_ids.data<int64_t>()[0] = 0;
-        return storage.fetch(out, row_ids, 1, {}, transaction_data{}, fetch_visibility_t::SNAPSHOT);
+        return storage.fetch(out, row_ids, 1, {}, transaction_data::committed(), fetch_visibility_t::SNAPSHOT);
     }
 
 } // namespace
@@ -223,7 +223,7 @@ TEST_CASE("nested scan: a data_corruption raised under a struct stops the scan")
 
     {
         std::pmr::vector<data_chunk_t> batches(&env.resource);
-        auto ok = storage.scan_batched(batches, nullptr, -1, nullptr, transaction_data{});
+        auto ok = storage.scan_batched(batches, nullptr, -1, nullptr, transaction_data::committed());
         REQUIRE_FALSE(ok.has_error());
         REQUIRE(batches.size() == 1);
         REQUIRE(batches.front().size() == 1);
@@ -233,7 +233,7 @@ TEST_CASE("nested scan: a data_corruption raised under a struct stops the scan")
     overwrite_only_overflow_marker(env, *built.leaf_segment, tstorage::MAXIMUM_BLOCK + 424242);
 
     std::pmr::vector<data_chunk_t> batches(&env.resource);
-    auto scanned = storage.scan_batched(batches, nullptr, -1, nullptr, transaction_data{});
+    auto scanned = storage.scan_batched(batches, nullptr, -1, nullptr, transaction_data::committed());
     REQUIRE(scanned.has_error());
     REQUIRE(scanned.error().type == core::error_code_t::data_corruption);
 }

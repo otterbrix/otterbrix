@@ -413,7 +413,7 @@ namespace services::index {
                                                std::pmr::memory_resource* resource,
                                                uint64_t flush_threshold,
                                                uint64_t segment_record_limit,
-                                               std::pmr::set<std::uint64_t> committed_commit_ids,
+                                               std::pmr::set<std::uint64_t> commit_ids,
                                                deferred_open_t)
         : resource_(resource)
         , flush_threshold_(flush_threshold)
@@ -421,7 +421,7 @@ namespace services::index {
         , hash_index_file_path_(path_ / hash_index_file)
         , fs_(core::filesystem::local_file_system_t())
         , segment_record_limit_(segment_record_limit)
-        , committed_commit_ids_(committed_commit_ids.begin(), committed_commit_ids.end(), resource) {}
+        , commit_ids_(commit_ids.begin(), commit_ids.end(), resource) {}
 
     // open() writes to its directory (CURRENT via temp+rename); no lock, so it must own the directory alone.
     core::error_t bitcask_index_disk_t::open() {
@@ -444,12 +444,12 @@ namespace services::index {
                                                std::pmr::memory_resource* resource,
                                                uint64_t flush_threshold,
                                                uint64_t segment_record_limit,
-                                               std::pmr::set<std::uint64_t> committed_commit_ids)
+                                               std::pmr::set<std::uint64_t> commit_ids)
         : bitcask_index_disk_t(path,
                                resource,
                                flush_threshold,
                                segment_record_limit,
-                               std::move(committed_commit_ids),
+                               std::move(commit_ids),
                                deferred_open_t{}) {
         if (const auto open_error = open(); open_error.contains_error()) {
             std::fprintf(stderr,
@@ -1172,7 +1172,7 @@ namespace services::index {
         return core::error_t::no_error();
     }
 
-    // Txn-log frames land durable before the WAL commit marker; a frame applies only if committed_commit_ids_ has it.
+    // Txn-log frames land durable before the WAL commit marker; a frame applies only if commit_ids_ has it.
     core::error_t bitcask_index_disk_t::recover_txn_log() {
         const auto log_path = txn_log_file_path();
         txn_log_clean_end_ = no_tail_to_trim;
@@ -1232,7 +1232,7 @@ namespace services::index {
 
             // commit_id (unlike txn_id) is issued at most once ever, so set membership alone decides a frame;
             // zero is never issued and is refused rather than looked up.
-            const bool committed = header.commit_id != 0 && committed_commit_ids_.count(header.commit_id) > 0;
+            const bool committed = header.commit_id != 0 && commit_ids_.count(header.commit_id) > 0;
             if (header.op_kind != 1 && header.op_kind != 2) {
                 return io_failure("bitcask: the txn log holds a frame with an unknown op kind");
             }

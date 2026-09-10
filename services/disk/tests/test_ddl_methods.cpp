@@ -56,7 +56,7 @@ namespace {
                                    std::unique_ptr<components::table::table_filter_t>(nullptr),
                                    int64_t{-1},
                                    std::vector<size_t>{},
-                                   components::table::transaction_data{0, 0});
+                                   components::table::transaction_data::committed());
             REQUIRE_FALSE(reply.has_error());
             auto batch = std::move(reply.value());
             cursor_id = batch.cursor_id;
@@ -115,7 +115,7 @@ namespace {
         }
 
         components::execution_context_t ctx() {
-            return components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}};
+            return components::execution_context_t{session_id_t{}, components::table::transaction_data::committed(), {}};
         }
     };
 } // namespace
@@ -544,7 +544,7 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
         chunk->set_value(1, 0, std::int64_t{2});
         chunk->set_value(2, 0, std::int64_t{3});
         components::execution_context_t append_ctx{session_id_t{},
-                                                   components::table::transaction_data{0, 0},
+                                                   components::table::transaction_data::committed(),
                                                    {},
                                                    table_oid};
         std::ignore =
@@ -653,7 +653,7 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
               /*is_computed=*/true);
 
     auto append_ctx = [&](catalog::oid_t toid) {
-        return components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}, toid};
+        return components::execution_context_t{session_id_t{}, components::table::transaction_data::committed(), {}, toid};
     };
 
     auto build_chunk = [&](std::vector<std::pair<std::string, complex_logical_type>> cols,
@@ -771,7 +771,7 @@ TEST_CASE("services::disk::ddl::drop_storage_many_erases_n") {
         chunk->set_cardinality(1);
         chunk->set_value(0, 0, kval);
         chunk->set_value(1, 0, std::int64_t{kval * 10});
-        components::execution_context_t append_ctx{session_id_t{}, components::table::transaction_data{0, 0}, {}, oid};
+        components::execution_context_t append_ctx{session_id_t{}, components::table::transaction_data::committed(), {}, oid};
         std::ignore =
             fx.invoke(&manager_disk_t::storage_append, append_ctx, oid, to_batch(&fx.resource, std::move(chunk)));
     };
@@ -1010,14 +1010,16 @@ TEST_CASE("services::disk::ddl::replay_mutations_refuse_when_the_owner_has_no_st
     std::pmr::vector<std::int64_t> ids(&fx.resource);
     ids.push_back(0);
 
-    CHECK(fx.manager->direct_delete_sync(nowhere, ids, 1).type == core::error_code_t::io_error);
+    CHECK(fx.manager->delete_sync(nowhere, ids, 1, components::table::transaction_data::committed()).type ==
+          core::error_code_t::io_error);
 
     std::pmr::vector<components::types::complex_logical_type> upd_types(&fx.resource);
     upd_types.push_back(components::types::complex_logical_type{components::types::logical_type::BIGINT});
     components::vector::data_chunk_t upd(&fx.resource, upd_types, 1);
     upd.set_cardinality(1);
     upd.set_value(0, 0, std::int64_t{7});
-    CHECK(fx.manager->direct_update_sync(nowhere, ids, upd).type == core::error_code_t::io_error);
+    CHECK(fx.manager->update_sync(nowhere, ids, upd, components::table::transaction_data::committed()).error().type ==
+          core::error_code_t::io_error);
 
     auto added_type = components::types::complex_logical_type{components::types::logical_type::BIGINT};
     added_type.set_alias("grown");
@@ -1028,7 +1030,8 @@ TEST_CASE("services::disk::ddl::replay_mutations_refuse_when_the_owner_has_no_st
     CHECK(fx.manager->direct_add_column_sync(nowhere, schema_chunk).type == core::error_code_t::io_error);
 
     std::pmr::vector<std::int64_t> no_ids(&fx.resource);
-    CHECK(fx.manager->direct_delete_sync(nowhere, no_ids, 0).type == core::error_code_t::none);
+    CHECK(fx.manager->delete_sync(nowhere, no_ids, 0, components::table::transaction_data::committed()).type ==
+          core::error_code_t::none);
 
     auto ns_oid = test_create_namespace(fx, "nsreplay");
     std::vector<components::table::column_definition_t> cols;

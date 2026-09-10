@@ -187,8 +187,7 @@ namespace {
     constexpr std::size_t kReadRefused = static_cast<std::size_t>(-1);
 
     std::size_t pg_proc_rows_named(read_refusal_spaces_t& space, const std::string& name) {
-        table::transaction_data td{0, 0};
-        td.snapshot_horizon = std::numeric_limits<uint64_t>::max();
+        auto td = table::transaction_data::committed();
         execution_context_t exec_ctx{otterbrix::session_id_t{}, td, {}};
         auto [_, fut] = actor_zeta::otterbrix::send(space.disk()->address(),
                                                     &services::disk::manager_disk_t::resolve_function_by_name,

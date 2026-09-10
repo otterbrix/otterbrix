@@ -51,7 +51,7 @@ namespace {
             REQUIRE_FALSE(initialize_append_result.has_error());
             auto append_result = table.append(chunk, state);
             REQUIRE_FALSE(append_result.has_error());
-            table.finalize_append(state, transaction_data{0, 0});
+            table.finalize_append(state, transaction_data::committed());
             offset += batch;
         }
     }
@@ -82,7 +82,7 @@ namespace {
             REQUIRE_FALSE(table.append_lock(state).has_error());
             REQUIRE_FALSE(table.initialize_append(state).has_error());
             REQUIRE_FALSE(table.append(chunk, state).has_error());
-            table.finalize_append(state, transaction_data{0, 0});
+            table.finalize_append(state, transaction_data::committed());
             offset += batch;
         }
     }
@@ -283,7 +283,7 @@ TEST_CASE("services::disk::table_storage::checkpoint_preserves_multi_column") {
             REQUIRE_FALSE(initialize_append_result.has_error());
             auto append_result = ts.table().append(chunk, state);
             REQUIRE_FALSE(append_result.has_error());
-            ts.table().finalize_append(state, transaction_data{0, 0});
+            ts.table().finalize_append(state, transaction_data::committed());
             offset += batch;
         }
         REQUIRE(ts.table().calculate_size() == NUM_ROWS);
@@ -347,7 +347,7 @@ TEST_CASE("services::disk::table_storage::drop_column_keeps_surviving_data") {
         REQUIRE_FALSE(initialize_append_result.has_error());
         auto append_result = ts.table().append(chunk, state);
         REQUIRE_FALSE(append_result.has_error());
-        ts.table().finalize_append(state, transaction_data{0, 0});
+        ts.table().finalize_append(state, transaction_data::committed());
     }
     REQUIRE(ts.table().calculate_size() == NUM_ROWS);
 

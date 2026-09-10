@@ -33,7 +33,7 @@ namespace components::table {
     static constexpr uint64_t NOT_DELETED_ID = std::numeric_limits<uint64_t>::max() - 1;
 
     // A sanctioned path, not a leftover: 0 is the identity of a write that commits the instant it
-    // lands (WAL replay, bootstrap, direct-API); commit_all_deletes/revert_all_deletes must SKIP it.
+    // lands (WAL replay, bootstrap); commit_all_deletes/revert_all_deletes must SKIP it.
     static constexpr uint64_t DIRECT_WRITE_TXN_ID = 0;
 
     [[nodiscard]] inline constexpr bool is_direct_write_txn(uint64_t transaction_id) noexcept {
@@ -53,6 +53,9 @@ namespace components::table {
         transaction_data(uint64_t id, uint64_t time)
             : transaction_id(id)
             , start_time(time) {}
+
+        // All commited transactions are affected by read and write
+        static transaction_data committed() { return transaction_data{}; }
         // Used by transaction_t::data() to copy from the transaction's pmr-anchored snapshot vector.
         transaction_data(uint64_t id, uint64_t time, uint64_t horizon, const std::pmr::vector<uint64_t>& in_flight)
             : transaction_id(id)

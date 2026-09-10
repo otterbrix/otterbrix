@@ -92,7 +92,7 @@ namespace {
             REQUIRE_FALSE(table.append_lock(state).has_error());
             REQUIRE_FALSE(table.initialize_append(state).has_error());
             REQUIRE_FALSE(table.append(chunk, state).has_error());
-            table.finalize_append(state, transaction_data{0, 0});
+            table.finalize_append(state, transaction_data::committed());
         }
     }
 
@@ -211,13 +211,13 @@ TEST_CASE("components::table::fetch_visibility::raw_still_reads_committed_delete
     INFO("SNAPSHOT with an EMPTY transaction_data still honours the committed delete");
     {
         // Pre-fix this returned rows==1: the committed tombstone was never consulted.
-        auto got = fetch_rows(storage, env, *table, one, transaction_data{}, fetch_visibility_t::SNAPSHOT);
+        auto got = fetch_rows(storage, env, *table, one, transaction_data::committed(), fetch_visibility_t::SNAPSHOT);
         REQUIRE(got.rows == 0);
     }
 
     INFO("RAW reads the deleted row anyway — the CREATE INDEX backfill depends on this");
     {
-        auto got = fetch_rows(storage, env, *table, one, transaction_data{}, fetch_visibility_t::RAW);
+        auto got = fetch_rows(storage, env, *table, one, transaction_data::committed(), fetch_visibility_t::RAW);
         REQUIRE(got.rows == 1);
         REQUIRE(got.row_ids.front() == kProbe);
         REQUIRE(got.values.front() == kProbe);
@@ -249,7 +249,7 @@ TEST_CASE("components::table::fetch_visibility::the_answer_names_the_rows_it_car
     // Past the end of the table: it resolves to no row group at all.
     request.push_back(static_cast<int64_t>(kRows) + 10);
 
-    auto got = fetch_rows(storage, env, *table, request, transaction_data{}, fetch_visibility_t::SNAPSHOT);
+    auto got = fetch_rows(storage, env, *table, request, transaction_data::committed(), fetch_visibility_t::SNAPSHOT);
     // Pre-fix: cardinality 3 (tombstoned row survived) with row_ids memcpy'd from the request,
     // so slot 1 named a row the chunk did not actually carry.
     REQUIRE(got.rows == 2);

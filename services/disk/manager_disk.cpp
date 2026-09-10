@@ -210,18 +210,6 @@ namespace services::disk {
         checkpoint_wal_id_known_ = true;
     }
 
-    bool table_storage_t::has_pending_update_overlay() {
-        if (!table_) {
-            return false;
-        }
-        for (const auto& info : table_->get_column_segment_info()) {
-            if (info.has_updates) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     bool table_storage_t::has_versions_above(uint64_t watermark) const {
         if (!table_) {
             return false;

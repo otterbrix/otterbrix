@@ -8,7 +8,7 @@ namespace services::disk {
 
     // Catalog reads route to agent-0 (pool_idx_for_oid); reading via the mailbox instead of a
     // borrowed storage_entry_sync pointer avoids racing agent-0's compact path (checkpoint/vacuum/
-    // maybe_cleanup_inner). transaction_data{} means "see all committed".
+    // maybe_cleanup_inner). committed() is the see-everything-committed snapshot.
 
     // A read that could not be performed must be an error, never an empty batch: empty is also
     // what "no matching rows" looks like (same rule as read_chunks_by_key below).
@@ -42,7 +42,7 @@ namespace services::disk {
         co_return co_await std::move(fut);
     }
 
-    // ctx.txn, not the default snapshot (same rule below): under transaction_data{} a namespace
+    // ctx.txn, not the default snapshot (same rule below): under committed() a namespace
     // this transaction created or dropped reads as its opposite, corrupting its own
     // name-collision / follow-up-DDL checks.
     manager_disk_t::unique_future<core::result_wrapper_t<resolve_namespace_result_t>>
@@ -78,7 +78,7 @@ namespace services::disk {
     // ctx.txn, not the default snapshot: operator_unregister_udf_t treats a delete-spec count
     // of 0 as "function still in catalog", and the delete's own scan
     // (agent_disk_t::delete_pg_catalog_rows_inner) carries the caller's transaction — a read on
-    // transaction_data{} would disagree by still listing rows this transaction already deleted.
+    // committed() would disagree by still listing rows this transaction already deleted.
     manager_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<resolve_function_result_t>>>
     manager_disk_t::resolve_function_by_name(execution_context_t ctx, std::string name) {
         std::pmr::vector<resolve_function_result_t> out(resource());

@@ -9,7 +9,6 @@ set(SOURCE_${PROJECT_NAME}
         struct_column_data.cpp
         validity_column_data.cpp
         column_segment.cpp
-        update_segment.cpp
         column_state.cpp
         row_group.cpp
         table_state.cpp

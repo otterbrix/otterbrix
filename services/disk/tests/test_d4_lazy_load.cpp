@@ -79,7 +79,7 @@ namespace {
         }
 
         components::execution_context_t ctx() {
-            return components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}};
+            return components::execution_context_t{session_id_t{}, components::table::transaction_data::committed(), {}};
         }
     };
 

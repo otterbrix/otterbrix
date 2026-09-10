@@ -35,17 +35,8 @@ TEST_CASE("components::table::column") {
     constexpr size_t test_size = DEFAULT_VECTOR_CAPACITY;
     constexpr size_t array_size = 128;
     constexpr size_t max_list_size = 128;
-    constexpr size_t update_size = 32;
     constexpr size_t str_index_length = 10;
     auto list_length = [&](size_t i) { return i - (i / max_list_size) * max_list_size; };
-    auto generate_update = [&](std::unique_ptr<column_data_t>& column) {
-        vector_t v(&resource, column->type(), update_size);
-        column_fetch_state state;
-        for (size_t i = 0; i < update_size; i++) {
-            column->fetch_row(state, static_cast<int64_t>(i), v, update_size - i - 1);
-        }
-        return v;
-    };
 
     auto generate_string = [](size_t i) {
         auto number = std::to_string(i);
@@ -108,34 +99,6 @@ TEST_CASE("components::table::column") {
                 REQUIRE(value.value<uint64_t>() == i);
             }
         }
-        {
-            std::vector<int64_t> ids;
-            ids.reserve(update_size);
-            vector_t v = generate_update(column);
-            for (size_t i = 0; i < update_size; i++) {
-                ids.emplace_back(i);
-            }
-            auto update_result = column->update(0, v, ids.data(), update_size);
-            REQUIRE_FALSE(update_result.has_error());
-        }
-        {
-            vector_t v(&resource, logical_type::UBIGINT, test_size);
-            column_scan_state state;
-            state.child_states.resize(1);
-            column->initialize_scan(state);
-            column->scan(0, state, v);
-            for (size_t i = 0; i < update_size; i++) {
-                size_t inverse = update_size - i - 1;
-                logical_value_t value = v.value(i);
-                REQUIRE(value.type().type() == logical_type::UBIGINT);
-                REQUIRE(value.value<uint64_t>() == inverse);
-            }
-            for (size_t i = update_size; i < test_size; i++) {
-                logical_value_t value = v.value(i);
-                REQUIRE(value.type().type() == logical_type::UBIGINT);
-                REQUIRE(value.value<uint64_t>() == i);
-            }
-        }
     }
     INFO("string");
     {
@@ -177,36 +140,6 @@ TEST_CASE("components::table::column") {
             column->initialize_scan(state);
             column->scan(0, state, v);
             for (size_t i = 0; i < test_size; i++) {
-                logical_value_t value = v.value(i);
-                REQUIRE(value.type().type() == logical_type::STRING_LITERAL);
-                std::string result = *(value.value<std::string*>());
-                REQUIRE(result == generate_string(i));
-            }
-        }
-        {
-            std::vector<int64_t> ids;
-            ids.reserve(update_size);
-            vector_t v = generate_update(column);
-            for (size_t i = 0; i < update_size; i++) {
-                ids.emplace_back(i);
-            }
-            auto update_result = column->update(0, v, ids.data(), update_size);
-            REQUIRE_FALSE(update_result.has_error());
-        }
-        {
-            vector_t v(&resource, logical_type::STRING_LITERAL, test_size);
-            column_scan_state state;
-            state.child_states.resize(1);
-            column->initialize_scan(state);
-            column->scan(0, state, v);
-            for (size_t i = 0; i < update_size; i++) {
-                size_t inverse = update_size - i - 1;
-                logical_value_t value = v.value(i);
-                REQUIRE(value.type().type() == logical_type::STRING_LITERAL);
-                std::string result = *(value.value<std::string*>());
-                REQUIRE(result == generate_string(inverse));
-            }
-            for (size_t i = update_size; i < test_size; i++) {
                 logical_value_t value = v.value(i);
                 REQUIRE(value.type().type() == logical_type::STRING_LITERAL);
                 std::string result = *(value.value<std::string*>());
@@ -266,41 +199,6 @@ TEST_CASE("components::table::column") {
             column->initialize_scan(state);
             column->scan(0, state, v);
             for (size_t i = 0; i < test_size; i++) {
-                logical_value_t value = v.value(i);
-                REQUIRE(value.type().type() == logical_type::ARRAY);
-                for (size_t j = 0; j < array_size; j++) {
-                    REQUIRE(value.children()[j].type().type() == logical_type::UBIGINT);
-                    REQUIRE(value.children()[j].value<uint64_t>() == i * array_size + j);
-                }
-            }
-        }
-        {
-            std::vector<int64_t> ids;
-            ids.reserve(update_size);
-            vector_t v = generate_update(column);
-            for (size_t i = 0; i < update_size; i++) {
-                ids.emplace_back(i);
-            }
-            auto update_result = column->update(0, v, ids.data(), update_size);
-            REQUIRE_FALSE(update_result.has_error());
-        }
-        {
-            vector_t v(&resource, complex_logical_type::create_array(logical_type::UBIGINT, array_size), test_size);
-            column_scan_state state;
-            state.child_states.resize(2);
-            state.child_states[1].child_states.resize(1);
-            column->initialize_scan(state);
-            column->scan(0, state, v);
-            for (size_t i = 0; i < update_size; i++) {
-                size_t inverse = update_size - i - 1;
-                logical_value_t value = v.value(i);
-                REQUIRE(value.type().type() == logical_type::ARRAY);
-                for (size_t j = 0; j < array_size; j++) {
-                    REQUIRE(value.children()[j].type().type() == logical_type::UBIGINT);
-                    REQUIRE(value.children()[j].value<uint64_t>() == inverse * array_size + j);
-                }
-            }
-            for (size_t i = update_size; i < test_size; i++) {
                 logical_value_t value = v.value(i);
                 REQUIRE(value.type().type() == logical_type::ARRAY);
                 for (size_t j = 0; j < array_size; j++) {
@@ -383,45 +281,6 @@ TEST_CASE("components::table::column") {
                 }
             }
         }
-        {
-            std::vector<int64_t> ids;
-            ids.reserve(update_size);
-            vector_t v = generate_update(column);
-            for (size_t i = 0; i < update_size; i++) {
-                ids.emplace_back(i);
-            }
-            auto update_result = column->update(0, v, ids.data(), update_size);
-            REQUIRE_FALSE(update_result.has_error());
-        }
-        {
-            vector_t v(&resource,
-                       complex_logical_type::create_array(logical_type::STRING_LITERAL, array_size),
-                       test_size);
-            column_scan_state state;
-            state.child_states.resize(2);
-            state.child_states[1].child_states.resize(1);
-            column->initialize_scan(state);
-            column->scan(0, state, v);
-            for (size_t i = 0; i < update_size; i++) {
-                size_t inverse = update_size - i - 1;
-                logical_value_t value = v.value(i);
-                REQUIRE(value.type().type() == logical_type::ARRAY);
-                for (size_t j = 0; j < array_size; j++) {
-                    REQUIRE(value.children()[j].type().type() == logical_type::STRING_LITERAL);
-                    std::string result = *(value.children()[j].value<std::string*>());
-                    REQUIRE(result == generate_string(inverse * array_size + j));
-                }
-            }
-            for (size_t i = update_size; i < test_size; i++) {
-                logical_value_t value = v.value(i);
-                REQUIRE(value.type().type() == logical_type::ARRAY);
-                for (size_t j = 0; j < array_size; j++) {
-                    REQUIRE(value.children()[j].type().type() == logical_type::STRING_LITERAL);
-                    std::string result = *(value.children()[j].value<std::string*>());
-                    REQUIRE(result == generate_string(i * array_size + j));
-                }
-            }
-        }
     }
     INFO("list of fixed size");
     {
@@ -483,47 +342,6 @@ TEST_CASE("components::table::column") {
             }
         }
         // In place and length-preserving: each row keeps its stored list length.
-        {
-            std::vector<int64_t> ids;
-            ids.reserve(update_size);
-            vector_t v(&resource, complex_logical_type::create_list(logical_type::UBIGINT), update_size);
-            for (size_t i = 0; i < update_size; i++) {
-                std::vector<uint64_t> list;
-                list.reserve(list_length(i));
-                for (size_t j = 0; j < list_length(i); j++) {
-                    list.emplace_back(uint64_t{1000000 + i * list_length(i) + j});
-                }
-                v.set_value(i, list);
-                ids.emplace_back(static_cast<int64_t>(i));
-            }
-            auto update_result = column->update(0, v, ids.data(), update_size);
-            REQUIRE_FALSE(update_result.has_error());
-        }
-        {
-            vector_t v(&resource, complex_logical_type::create_list(logical_type::UBIGINT), test_size);
-            column_scan_state state;
-            state.child_states.resize(2);
-            state.child_states[1].child_states.resize(1);
-            column->initialize_scan(state);
-            column->scan(0, state, v);
-            for (size_t i = 0; i < update_size; i++) {
-                logical_value_t value = v.value(i);
-                REQUIRE(value.type().type() == logical_type::LIST);
-                REQUIRE(value.children().size() == list_length(i));
-                for (size_t j = 0; j < list_length(i); j++) {
-                    REQUIRE(value.children()[j].type().type() == logical_type::UBIGINT);
-                    REQUIRE(value.children()[j].value<uint64_t>() == 1000000 + i * list_length(i) + j);
-                }
-            }
-            for (size_t i = update_size; i < test_size; i++) {
-                logical_value_t value = v.value(i);
-                REQUIRE(value.type().type() == logical_type::LIST);
-                for (size_t j = 0; j < list_length(i); j++) {
-                    REQUIRE(value.children()[j].type().type() == logical_type::UBIGINT);
-                    REQUIRE(value.children()[j].value<uint64_t>() == i * list_length(i) + j);
-                }
-            }
-        }
     }
     INFO("list of string");
     {
@@ -594,54 +412,6 @@ TEST_CASE("components::table::column") {
         // In place and length-preserving: each row keeps its stored list length. String elements exercise
         // the variable-width child path: the new strings live in the child column's update heap, the same
         // buffer that backs a plain string.
-        {
-            std::vector<int64_t> ids;
-            ids.reserve(update_size);
-            vector_t v(&resource, complex_logical_type::create_list(logical_type::STRING_LITERAL), update_size);
-            for (size_t i = 0; i < update_size; i++) {
-                std::vector<std::string> storage;
-                storage.reserve(list_length(i));
-                for (size_t j = 0; j < list_length(i); j++) {
-                    storage.push_back(generate_string(1000000 + i * list_length(i) + j));
-                }
-                std::vector<std::string_view> list;
-                list.reserve(list_length(i));
-                for (const auto& s : storage) {
-                    list.emplace_back(std::string_view{s});
-                }
-                v.set_value(i, list);
-                ids.emplace_back(static_cast<int64_t>(i));
-            }
-            auto update_result = column->update(0, v, ids.data(), update_size);
-            REQUIRE_FALSE(update_result.has_error());
-        }
-        {
-            vector_t v(&resource, complex_logical_type::create_list(logical_type::STRING_LITERAL), test_size);
-            column_scan_state state;
-            state.child_states.resize(2);
-            state.child_states[1].child_states.resize(1);
-            column->initialize_scan(state);
-            column->scan(0, state, v);
-            for (size_t i = 0; i < update_size; i++) {
-                logical_value_t value = v.value(i);
-                REQUIRE(value.type().type() == logical_type::LIST);
-                REQUIRE(value.children().size() == list_length(i));
-                for (size_t j = 0; j < list_length(i); j++) {
-                    REQUIRE(value.children()[j].type().type() == logical_type::STRING_LITERAL);
-                    std::string result = *(value.children()[j].value<std::string*>());
-                    REQUIRE(result == generate_string(1000000 + i * list_length(i) + j));
-                }
-            }
-            for (size_t i = update_size; i < test_size; i++) {
-                logical_value_t value = v.value(i);
-                REQUIRE(value.type().type() == logical_type::LIST);
-                for (size_t j = 0; j < list_length(i); j++) {
-                    REQUIRE(value.children()[j].type().type() == logical_type::STRING_LITERAL);
-                    std::string result = *(value.children()[j].value<std::string*>());
-                    REQUIRE(result == generate_string(i * list_length(i) + j));
-                }
-            }
-        }
     }
     INFO("struct");
     {
@@ -758,79 +528,6 @@ TEST_CASE("components::table::column") {
         }
         /*
         // Update
-        {
-            std::vector<int64_t> ids;
-            ids.reserve(update_size);
-            vector_t v = generate_update(column);
-            for(size_t i = 0; i < update_size; i++) {
-                ids.emplace_back(i);
-            }
-            column->update(0, v, ids.data(), update_size);
-        }
-        // Scan after update
-        {
-            vector_t v(&resource, struct_type, test_size);
-            column_scan_state state;
-            state.child_states.resize(struct_type.child_types().size() + 1);
-            state.scan_child_column.resize(struct_type.child_types().size());
-            for(size_t i = 0; i < state.scan_child_column.size(); i++) {
-                state.scan_child_column[i] = true;
-            }
-            state.child_states[1].child_states.resize(1);
-            state.child_states[2].child_states.resize(1);
-            state.child_states[3].child_states.resize(1);
-            state.child_states[4].child_states.resize(2);
-            state.child_states[4].child_states[1].child_states.resize(1);
-            column->initialize_scan(state);
-            column->scan(0, state, v);
-            for(size_t i = 0; i < update_size; i++) {
-                size_t inverse = update_size - i - 1;
-                logical_value_t value = v.value(i);
-                REQUIRE(value.type().type() == logical_type::STRUCT);
-                REQUIRE(value.type().alias() == "test_struct");
-                REQUIRE(value.type().child_types()[0].type() == logical_type::BOOLEAN);
-                REQUIRE(value.type().child_types()[0].alias() == "flag");
-                REQUIRE(value.type().child_types()[1].type() == logical_type::INTEGER);
-                REQUIRE(value.type().child_types()[1].alias() == "number");
-                REQUIRE(value.type().child_types()[2].type() == logical_type::STRING_LITERAL);
-                REQUIRE(value.type().child_types()[2].alias() == "name");
-                REQUIRE(value.type().child_types()[3].type() == logical_type::LIST);
-                REQUIRE(value.type().child_types()[3].child_type().type() == logical_type::USMALLINT);
-                REQUIRE(value.type().child_types()[3].alias() == "array");
-
-                REQUIRE(value.children()[0].value<bool>() == test_data[inverse].flag);
-                REQUIRE(value.children()[1].value<int32_t>() == test_data[inverse].number);
-                REQUIRE(*value.children()[2].value<std::string*>() == test_data[inverse].name);
-                std::vector arr(*value.children()[3].value<std::vector<logical_value_t>*>());
-                REQUIRE(arr.size() == test_data[inverse].array.size());
-                for(size_t j = 0; j < arr.size(); j++) {
-                    REQUIRE(arr[j].value<uint16_t>() == test_data[inverse].array[j]);
-                }
-            }
-            for(size_t i = update_size; i < test_size; i++) {
-                logical_value_t value = v.value(i);
-                REQUIRE(value.type().type() == logical_type::STRUCT);
-                REQUIRE(value.type().alias() == "test_struct");
-                REQUIRE(value.type().child_types()[0].type() == logical_type::BOOLEAN);
-                REQUIRE(value.type().child_types()[0].alias() == "flag");
-                REQUIRE(value.type().child_types()[1].type() == logical_type::INTEGER);
-                REQUIRE(value.type().child_types()[1].alias() == "number");
-                REQUIRE(value.type().child_types()[2].type() == logical_type::STRING_LITERAL);
-                REQUIRE(value.type().child_types()[2].alias() == "name");
-                REQUIRE(value.type().child_types()[3].type() == logical_type::LIST);
-                REQUIRE(value.type().child_types()[3].child_type().type() == logical_type::USMALLINT);
-                REQUIRE(value.type().child_types()[3].alias() == "array");
-
-                REQUIRE(value.children()[0].value<bool>() == test_data[i].flag);
-                REQUIRE(value.children()[1].value<int32_t>() == test_data[i].number);
-                REQUIRE(*value.children()[2].value<std::string*>() == test_data[i].name);
-                std::vector arr(*value.children()[3].value<std::vector<logical_value_t>*>());
-                REQUIRE(arr.size() == test_data[i].array.size());
-                for(size_t j = 0; j < arr.size(); j++) {
-                    REQUIRE(arr[j].value<uint16_t>() == test_data[i].array[j]);
-                }
-            }
-        }
         */
     }
 

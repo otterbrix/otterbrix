@@ -130,7 +130,7 @@ namespace {
 
         resolve_namespace_result_t resolve_namespace(const std::string& name) {
             components::execution_context_t ctx{components::session::session_id_t{},
-                                                components::table::transaction_data{0, 0},
+                                                components::table::transaction_data::committed(),
                                                 {}};
             auto [_, fut] = actor_zeta::otterbrix::send(manager_disk_->address(),
                                                         &manager_disk_t::resolve_namespace,
@@ -149,7 +149,7 @@ namespace {
         }
 
         test_probe::probe_table_result_t resolve_table(components::catalog::oid_t ns_oid, const std::string& tname) {
-            // probe_see_all_txn, not transaction_data{0, 0}: a start_time of 0 would hide every ALTER-added column.
+            // probe_see_all_txn, not transaction_data::committed(): a start_time of 0 would hide every ALTER-added column.
             components::execution_context_t ctx{components::session::session_id_t{},
                                                 test_probe::probe_see_all_txn(),
                                                 {}};

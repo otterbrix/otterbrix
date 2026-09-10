@@ -30,7 +30,7 @@
 #include <thread>
 #include <unistd.h>
 
-// append_pg_catalog_row calls write_physical_insert before direct_append_sync — WAL-then-storage.
+// append_pg_catalog_row calls write_physical_insert before the storage append — WAL-then-storage.
 
 using namespace services::disk;
 namespace catalog = components::catalog;
@@ -101,7 +101,7 @@ namespace {
         }
 
         components::execution_context_t ctx() {
-            return components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}};
+            return components::execution_context_t{session_id_t{}, components::table::transaction_data::committed(), {}};
         }
     };
 
@@ -577,7 +577,7 @@ TEST_CASE("services::disk::wal_catalog::a_growth_append_journals_the_add_column_
                                table_oid,
                                bigint_batch(&fx.resource, {"a"}, 1, 1));
             REQUIRE_FALSE(r.has_error());
-            REQUIRE(r.value().second == 1);
+            REQUIRE(r.value().count == 1);
         }
 
         {
@@ -587,7 +587,7 @@ TEST_CASE("services::disk::wal_catalog::a_growth_append_journals_the_add_column_
                                bigint_batch(&fx.resource, {"a", "b"}, 1, 2));
             INFO("the drained add-column path must not hang and must not fail the growth append");
             REQUIRE_FALSE(r.has_error());
-            REQUIRE(r.value().second == 1);
+            REQUIRE(r.value().count == 1);
         }
 
         {
@@ -702,11 +702,11 @@ TEST_CASE("services::disk::wal_catalog::the_backfill_stamp_survives_a_kill_throu
         b.attoid = attoid_a;
         b.kind = components::pg_attribute_commit_id_backfill_t::kind_t::added_at;
         backfills.push_back(std::move(b));
-        auto stamp_err = fx.invoke(&manager_disk_t::update_pg_attribute_commit_id_fields,
-                                   auto_ctx(),
-                                   std::move(backfills),
-                                   std::uint64_t{4242});
-        REQUIRE_FALSE(stamp_err.contains_error());
+        auto stamped = fx.invoke(&manager_disk_t::update_pg_attribute_commit_id_fields,
+                                 auto_ctx(),
+                                 std::move(backfills),
+                                 std::uint64_t{4242});
+        REQUIRE_FALSE(stamped.refusal.contains_error());
         REQUIRE(read_added_at(fx, attoid_a) == 4242);
     }
 
@@ -728,13 +728,17 @@ TEST_CASE("services::disk::wal_catalog::the_backfill_stamp_survives_a_kill_throu
                 continue;
             if (r.record_type == services::wal::wal_record_type::PHYSICAL_INSERT) {
                 for (auto& chunk : r.physical_data) {
-                    auto append_r = fx2.disk->direct_append_sync(pg_attr, chunk);
+                    auto append_r =
+                        fx2.disk->append_sync(pg_attr, chunk, components::table::transaction_data::committed());
                     REQUIRE_FALSE(append_r.has_error());
                 }
             } else if (r.record_type == services::wal::wal_record_type::PHYSICAL_UPDATE) {
                 REQUIRE_FALSE(r.physical_data.empty());
-                auto upd_err = fx2.disk->direct_update_sync(pg_attr, r.physical_row_ids, r.physical_data.front());
-                REQUIRE_FALSE(upd_err.contains_error());
+                auto upd_r = fx2.disk->update_sync(pg_attr,
+                                                   r.physical_row_ids,
+                                                   r.physical_data.front(),
+                                                   components::table::transaction_data::committed());
+                REQUIRE_FALSE(upd_r.has_error());
                 ++updates_applied;
             }
         }

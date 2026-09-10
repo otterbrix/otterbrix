@@ -45,31 +45,26 @@ namespace components::table {
         validity.initialize_scan_with_offset(state.child_states[0], row_idx);
     }
 
-    uint64_t standard_column_data_t::scan(uint64_t vector_index,
-                                          column_scan_state& state,
-                                          vector::vector_t& result,
-                                          uint64_t target_count) {
+    uint64_t
+    standard_column_data_t::scan(column_scan_state& state, vector::vector_t& result, uint64_t target_count) {
         assert(state.row_index == state.child_states[0].row_index);
         // Targets the same result base as the main data: without this sync a multi-vector scan
         // into one growing chunk (compact's rebuild) folded the whole table's NULL pattern into
         // the first 1024 rows while the data landed right.
         state.child_states[0].result_offset = state.result_offset;
-        auto scan_count = column_data_t::scan(vector_index, state, result, target_count);
-        validity.scan(vector_index, state.child_states[0], result, target_count);
+        auto scan_count = column_data_t::scan(state, result, target_count);
+        validity.scan(state.child_states[0], result, target_count);
         // The validity child reads on its own state; row_group_t only judges this one.
         state.collect_child_errors();
         return scan_count;
     }
 
-    uint64_t standard_column_data_t::scan_committed(uint64_t vector_index,
-                                                    column_scan_state& state,
-                                                    vector::vector_t& result,
-                                                    bool allow_updates,
-                                                    uint64_t target_count) {
+    uint64_t
+    standard_column_data_t::scan_committed(column_scan_state& state, vector::vector_t& result, uint64_t target_count) {
         assert(state.row_index == state.child_states[0].row_index);
         state.child_states[0].result_offset = state.result_offset; // see scan(): validity targets the same base
-        auto scan_count = column_data_t::scan_committed(vector_index, state, result, allow_updates, target_count);
-        validity.scan_committed(vector_index, state.child_states[0], result, allow_updates, target_count);
+        auto scan_count = column_data_t::scan_committed(state, result, target_count);
+        validity.scan_committed(state.child_states[0], result, target_count);
         state.collect_child_errors(); // see scan()
         return scan_count;
     }
@@ -138,32 +133,6 @@ namespace components::table {
         validity.fetch(state.child_states[0], row_id, result);
         state.collect_child_errors(); // column_data_t::update reads state.scan_error after this
         return scan_count;
-    }
-
-    core::result_wrapper_t<bool> standard_column_data_t::update(uint64_t column_index,
-                                                                vector::vector_t& update_vector,
-                                                                int64_t* row_ids,
-                                                                uint64_t update_count) {
-        auto base = column_data_t::update(column_index, update_vector, row_ids, update_count);
-        if (base.has_error()) {
-            return base;
-        }
-        return validity.update(column_index, update_vector, row_ids, update_count);
-    }
-
-    core::result_wrapper_t<bool> standard_column_data_t::update_column(const std::vector<uint64_t>& column_path,
-                                                                       vector::vector_t& update_vector,
-                                                                       int64_t* row_ids,
-                                                                       uint64_t update_count,
-                                                                       uint64_t depth) {
-        if (depth >= column_path.size()) {
-            // The FULL update (this class's override), never the base leg directly: the base
-            // updates only the data column, so a value written over a backfilled-NULL row
-            // without its validity bit stayed invisible.
-            return update(column_path[0], update_vector, row_ids, update_count);
-        } else {
-            return validity.update_column(column_path, update_vector, row_ids, update_count, depth + 1);
-        }
     }
 
     void standard_column_data_t::fetch_row(column_fetch_state& state,

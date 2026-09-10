@@ -21,10 +21,10 @@ namespace services::disk::detail {
     // ---------------------------------------------------------------------------
     // inline_scan: scan `table` as `txn` sees it; fn(chunk, row_index) per visible
     // row, false stops early.
-    // txn is not optional: transaction_data{} means "committed direct writes only"
-    // (insert_id == 0), not "see everything" — pass whatever txn a preceding
-    // txn-carrying read (read_chunks_by_key, scan_by_keys, ...) used, or the scan
-    // disagrees with it about visibility and misreads "not found".
+    // txn is not optional. transaction_data::committed() leaves snapshot_horizon at its
+    // maximum, so it sees every COMMITTED row and no pending write — pass whatever txn a preceding
+    // txn-carrying read (read_chunks_by_key, scan_by_keys, ...) used, or the scan disagrees with it
+    // about visibility and misreads "not found".
     // ---------------------------------------------------------------------------
 
     namespace detail_impl_ {

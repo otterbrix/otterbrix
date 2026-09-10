@@ -546,7 +546,7 @@ namespace services::dispatcher {
                                              disk_address_,
                                              index_address_,
                                              wal_address_};
-        pctx.txn = components::table::transaction_data{0, 0};
+        pctx.txn = components::table::transaction_data::committed();
 
         op->prepare();
         co_await op->await_async_and_resume(&pctx);
@@ -700,7 +700,7 @@ namespace services::dispatcher {
                                              disk_address_,
                                              index_address_,
                                              wal_address_};
-        pctx.txn = components::table::transaction_data{0, 0};
+        pctx.txn = components::table::transaction_data::committed();
 
         op->prepare();
         co_await op->await_async_and_resume(&pctx);
@@ -848,7 +848,7 @@ namespace services::dispatcher {
                                              disk_address_,
                                              index_address_,
                                              wal_address_};
-        pctx.txn = components::table::transaction_data{0, 0};
+        pctx.txn = components::table::transaction_data::committed();
         op->prepare();
         co_await op->await_async_and_resume(&pctx);
         if (pctx.has_pending_disk_futures()) {
@@ -969,7 +969,7 @@ namespace services::dispatcher {
                                              disk_address_,
                                              index_address_,
                                              wal_address_};
-        pctx.txn = components::table::transaction_data{0, 0};
+        pctx.txn = components::table::transaction_data::committed();
         op->prepare();
         co_await op->await_async_and_resume(&pctx);
         if (pctx.has_pending_disk_futures()) {

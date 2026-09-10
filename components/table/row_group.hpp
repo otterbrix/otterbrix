@@ -94,7 +94,6 @@ namespace components::table {
         // The count shrinks even on a column refusal: an untruncated count over a truncated column would over-read.
         [[nodiscard]] core::result_wrapper_t<bool> revert_append(uint64_t row_group_start);
 
-        uint64_t delete_rows(uint64_t vector_idx, int64_t rows[], uint64_t count);
         uint64_t delete_rows(data_table_t& table, int64_t* row_ids, uint64_t count, uint64_t transaction_id);
         void commit_delete(uint64_t commit_id, uint64_t vector_idx, const delete_info& info);
         void commit_all_deletes(uint64_t txn_id, uint64_t commit_id);
@@ -106,19 +105,6 @@ namespace components::table {
         [[nodiscard]] core::result_wrapper_t<bool> initialize_append(row_group_append_state& append_state);
         [[nodiscard]] core::result_wrapper_t<bool>
         append(row_group_append_state& append_state, vector::data_chunk_t& chunk, uint64_t append_count);
-
-        // NOT write_conflict -- that refusal lives one level up, on data_table_t::update's is_root_ predicate.
-        [[nodiscard]] core::result_wrapper_t<bool> update(vector::data_chunk_t& updates,
-                                                          int64_t* ids,
-                                                          uint64_t offset,
-                                                          uint64_t count,
-                                                          const std::vector<uint64_t>& column_ids);
-        // column_path[0] is this row group's own column ordinal; depth 1+ is struct field k (0 = validity).
-        [[nodiscard]] core::result_wrapper_t<bool> update_column(vector::data_chunk_t& updates,
-                                                                 vector::vector_t& row_ids,
-                                                                 const std::vector<uint64_t>& column_path,
-                                                                 uint64_t offset,
-                                                                 uint64_t count);
 
         void get_column_segment_info(uint64_t row_group_index, std::vector<column_segment_info>& result);
 

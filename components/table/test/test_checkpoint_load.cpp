@@ -55,7 +55,7 @@ namespace {
             REQUIRE_FALSE(table.append_lock(state).has_error());
             REQUIRE_FALSE(table.initialize_append(state).has_error());
             REQUIRE_FALSE(table.append(chunk, state).has_error());
-            table.finalize_append(state, transaction_data{0, 0});
+            table.finalize_append(state, transaction_data::committed());
             offset += batch;
         }
     }
@@ -80,7 +80,7 @@ namespace {
             REQUIRE_FALSE(table.append_lock(state).has_error());
             REQUIRE_FALSE(table.initialize_append(state).has_error());
             REQUIRE_FALSE(table.append(chunk, state).has_error());
-            table.finalize_append(state, transaction_data{0, 0});
+            table.finalize_append(state, transaction_data::committed());
             offset += batch;
         }
     }
@@ -106,7 +106,7 @@ namespace {
             REQUIRE_FALSE(table.append_lock(state).has_error());
             REQUIRE_FALSE(table.initialize_append(state).has_error());
             REQUIRE_FALSE(table.append(chunk, state).has_error());
-            table.finalize_append(state, transaction_data{0, 0});
+            table.finalize_append(state, transaction_data::committed());
             offset += batch;
         }
     }
@@ -210,7 +210,7 @@ TEST_CASE("checkpoint_load: three columns INT64 + STRING + DOUBLE") {
             REQUIRE_FALSE(table->append_lock(state).has_error());
             REQUIRE_FALSE(table->initialize_append(state).has_error());
             REQUIRE_FALSE(table->append(chunk, state).has_error());
-            table->finalize_append(state, transaction_data{0, 0});
+            table->finalize_append(state, transaction_data::committed());
             offset += batch;
         }
 
@@ -860,7 +860,7 @@ namespace {
             REQUIRE_FALSE(table.append_lock(state).has_error());
             REQUIRE_FALSE(table.initialize_append(state).has_error());
             REQUIRE_FALSE(table.append(chunk, state).has_error());
-            table.finalize_append(state, transaction_data{0, 0});
+            table.finalize_append(state, transaction_data::committed());
             offset += batch;
         }
     }
@@ -1007,7 +1007,7 @@ TEST_CASE("checkpoint_load: LIST column round-trips its child data") {
         REQUIRE_FALSE(table->append_lock(state).has_error());
         REQUIRE_FALSE(table->initialize_append(state).has_error());
         REQUIRE_FALSE(table->append(chunk, state).has_error());
-        table->finalize_append(state, transaction_data{0, 0});
+        table->finalize_append(state, transaction_data::committed());
         }
         REQUIRE(table->calculate_size() == NUM_ROWS);
 
@@ -1089,7 +1089,7 @@ TEST_CASE("checkpoint_load: ARRAY column round-trips its child data") {
         REQUIRE_FALSE(table->append_lock(state).has_error());
         REQUIRE_FALSE(table->initialize_append(state).has_error());
         REQUIRE_FALSE(table->append(chunk, state).has_error());
-        table->finalize_append(state, transaction_data{0, 0});
+        table->finalize_append(state, transaction_data::committed());
         }
         REQUIRE(table->calculate_size() == NUM_ROWS);
 
@@ -1171,7 +1171,7 @@ TEST_CASE("checkpoint_load: STRUCT column round-trips its fields") {
         REQUIRE_FALSE(table->append_lock(state).has_error());
         REQUIRE_FALSE(table->initialize_append(state).has_error());
         REQUIRE_FALSE(table->append(chunk, state).has_error());
-        table->finalize_append(state, transaction_data{0, 0});
+        table->finalize_append(state, transaction_data::committed());
         }
         REQUIRE(table->calculate_size() == NUM_ROWS);
 
@@ -1260,7 +1260,7 @@ TEST_CASE("checkpoint_load: NULL validity round-trips, reopen allocates no new b
             REQUIRE_FALSE(table->append_lock(state).has_error());
             REQUIRE_FALSE(table->initialize_append(state).has_error());
             REQUIRE_FALSE(table->append(chunk, state).has_error());
-            table->finalize_append(state, transaction_data{0, 0});
+            table->finalize_append(state, transaction_data::committed());
             offset += batch;
         }
         REQUIRE(table->calculate_size() == NUM_ROWS);
@@ -1360,7 +1360,7 @@ TEST_CASE("checkpoint_load: compact preserves NULL validity across row groups") 
         REQUIRE_FALSE(table->append_lock(state).has_error());
         REQUIRE_FALSE(table->initialize_append(state).has_error());
         REQUIRE_FALSE(table->append(chunk, state).has_error());
-        table->finalize_append(state, transaction_data{0, 0});
+        table->finalize_append(state, transaction_data::committed());
     }
     REQUIRE(table->calculate_size() == NUM_ROWS);
 
@@ -1427,7 +1427,7 @@ TEST_CASE("checkpoint_load: NULL validity survives boundary-crossing appends") {
             REQUIRE_FALSE(table->append_lock(state).has_error());
             REQUIRE_FALSE(table->initialize_append(state).has_error());
             REQUIRE_FALSE(table->append(chunk, state).has_error());
-            table->finalize_append(state, transaction_data{0, 0});
+            table->finalize_append(state, transaction_data::committed());
         }
         REQUIRE(table->calculate_size() == NUM_ROWS);
 
@@ -1588,7 +1588,7 @@ TEST_CASE("checkpoint_load: 4-byte CONSTANT segment must not misalign the segmen
             REQUIRE_FALSE(table->append_lock(state).has_error());
             REQUIRE_FALSE(table->initialize_append(state).has_error());
             REQUIRE_FALSE(table->append(chunk, state).has_error());
-            table->finalize_append(state, transaction_data{0, 0});
+            table->finalize_append(state, transaction_data::committed());
             offset += batch;
         }
         REQUIRE(table->calculate_size() == NUM_ROWS);

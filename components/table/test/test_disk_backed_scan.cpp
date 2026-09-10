@@ -59,7 +59,7 @@ namespace {
             REQUIRE_FALSE(table.append_lock(state).has_error());
             REQUIRE_FALSE(table.initialize_append(state).has_error());
             REQUIRE_FALSE(table.append(chunk, state).has_error());
-            table.finalize_append(state, transaction_data{0, 0});
+            table.finalize_append(state, transaction_data::committed());
             offset += batch;
         }
     }
@@ -94,7 +94,7 @@ namespace {
             REQUIRE_FALSE(table.append_lock(state).has_error());
             REQUIRE_FALSE(table.initialize_append(state).has_error());
             REQUIRE_FALSE(table.append(chunk, state).has_error());
-            table.finalize_append(state, transaction_data{0, 0});
+            table.finalize_append(state, transaction_data::committed());
             offset += batch;
         }
     }
@@ -202,7 +202,7 @@ TEST_CASE("disk_backed_scan: streaming fetch_next_batch reloads correctly under 
     while (!drained) {
         data_chunk_t batch(&env.resource, types, DEFAULT_VECTOR_CAPACITY);
         auto r =
-            table->fetch_next_batch(batch, column_ids, nullptr, transaction_data{0, 0}, next_row, max_row, drained);
+            table->fetch_next_batch(batch, column_ids, nullptr, transaction_data::committed(), next_row, max_row, drained);
         REQUIRE_FALSE(r.has_error());
         for (uint64_t i = 0; i < batch.size(); i++) {
             auto val = batch.data[0].value(i);
@@ -264,7 +264,7 @@ TEST_CASE("disk_backed_scan: streaming fetch_next_batch over reopened checkpoint
             data_chunk_t batch(&env.resource, types, DEFAULT_VECTOR_CAPACITY);
             auto r =
                 loaded
-                    ->fetch_next_batch(batch, column_ids, nullptr, transaction_data{0, 0}, next_row, max_row, drained);
+                    ->fetch_next_batch(batch, column_ids, nullptr, transaction_data::committed(), next_row, max_row, drained);
             REQUIRE_FALSE(r.has_error());
             for (uint64_t i = 0; i < batch.size(); i++) {
                 auto val = batch.data[0].value(i);
@@ -491,7 +491,7 @@ TEST_CASE("disk_backed_scan: B2 write-through packs segments, no per-segment ove
         REQUIRE_FALSE(table->append_lock(state).has_error());
         REQUIRE_FALSE(table->initialize_append(state).has_error());
         REQUIRE_FALSE(table->append(chunk, state).has_error());
-        table->finalize_append(state, transaction_data{0, 0});
+        table->finalize_append(state, transaction_data::committed());
         offset += batch;
     }
     REQUIRE(table->calculate_size() == ROWS);
@@ -576,7 +576,7 @@ TEST_CASE("disk_backed_scan: streaming STRING batch survives block eviction (no 
     data_chunk_t held(&env.resource, types, DEFAULT_VECTOR_CAPACITY);
     {
         auto r =
-            loaded->fetch_next_batch(held, column_ids, nullptr, transaction_data{0, 0}, next_row, max_row, drained);
+            loaded->fetch_next_batch(held, column_ids, nullptr, transaction_data::committed(), next_row, max_row, drained);
         REQUIRE_FALSE(r.has_error());
     }
     REQUIRE(held.size() > 0);
@@ -586,7 +586,7 @@ TEST_CASE("disk_backed_scan: streaming STRING batch survives block eviction (no 
     while (!drained) {
         data_chunk_t scratch(&env.resource, types, DEFAULT_VECTOR_CAPACITY);
         auto r =
-            loaded->fetch_next_batch(scratch, column_ids, nullptr, transaction_data{0, 0}, next_row, max_row, drained);
+            loaded->fetch_next_batch(scratch, column_ids, nullptr, transaction_data::committed(), next_row, max_row, drained);
         REQUIRE_FALSE(r.has_error());
     }
 
@@ -628,7 +628,7 @@ TEST_CASE("disk_backed_scan: multi-row-group revert leaves surviving row intact"
         REQUIRE_FALSE(table->append_lock(state).has_error());
         REQUIRE_FALSE(table->initialize_append(state).has_error());
         REQUIRE_FALSE(table->append(chunk, state).has_error());
-        table->finalize_append(state, transaction_data{0, 0});
+        table->finalize_append(state, transaction_data::committed());
     }
 
     // Spans >= 4 row groups so several close and get packed to disk mid-append.
@@ -648,7 +648,7 @@ TEST_CASE("disk_backed_scan: multi-row-group revert leaves surviving row intact"
             REQUIRE_FALSE(table->append_lock(state).has_error());
             REQUIRE_FALSE(table->initialize_append(state).has_error());
             REQUIRE_FALSE(table->append(chunk, state).has_error());
-            table->finalize_append(state, transaction_data{0, 0});
+            table->finalize_append(state, transaction_data::committed());
             offset += batch;
         }
     }

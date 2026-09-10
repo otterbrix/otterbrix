@@ -172,7 +172,7 @@ struct admin_fixture : actor_zeta::actor::actor_mixin<admin_fixture> {
     }
 
     components::execution_context_t read_ctx() {
-        return components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}};
+        return components::execution_context_t{session_id_t{}, components::table::transaction_data::committed(), {}};
     }
 
     std::size_t pg_proc_rows(const std::string& fname) {

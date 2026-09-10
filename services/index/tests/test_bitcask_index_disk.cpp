@@ -69,12 +69,12 @@ namespace {
     bitcask_index_disk_t
     make_test_index(const std::filesystem::path& path,
                     std::pmr::memory_resource* resource,
-                    std::pmr::set<std::uint64_t> committed_commit_ids = std::pmr::set<std::uint64_t>{}) {
+                    std::pmr::set<std::uint64_t> commit_ids = std::pmr::set<std::uint64_t>{}) {
         return bitcask_index_disk_t(path,
                                     resource,
                                     test_flush_threshold,
                                     test_segment_record_limit,
-                                    std::move(committed_commit_ids));
+                                    std::move(commit_ids));
     }
 
     // Members are commit ids (what the recover gate matches a frame by), not txn ids.

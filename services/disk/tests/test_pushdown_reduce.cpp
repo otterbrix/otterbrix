@@ -238,7 +238,7 @@ TEST_CASE("pushdown_reduce: manager routes a storage_reduce and replies a well-f
                            table_oid,
                            std::unique_ptr<components::table::table_filter_t>(nullptr),
                            std::vector<size_t>{},
-                           components::table::transaction_data{},
+                           components::table::transaction_data::committed(),
                            build_sum_spec(&fx.resource, /*group_col=*/-1, /*val_col=*/0));
 
     REQUIRE_FALSE(reply.has_error());

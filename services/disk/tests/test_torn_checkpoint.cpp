@@ -58,7 +58,7 @@ namespace {
         REQUIRE_FALSE(init_result.has_error());
         auto append_result = table.append(chunk, state);
         REQUIRE_FALSE(append_result.has_error());
-        table.finalize_append(state, transaction_data{0, 0});
+        table.finalize_append(state, transaction_data::committed());
     }
 
     void append_range(data_table_t& table, std::pmr::memory_resource* res, int64_t first, int64_t count) {

@@ -181,7 +181,7 @@ namespace components::operators {
                                                               std::move(fetch_ids),
                                                               count,
                                                               std::vector<size_t>{},
-                                                              components::table::transaction_data{},
+                                                              components::table::transaction_data::committed(),
                                                               components::table::fetch_visibility_t::RAW,
                                                               /*limit=*/int64_t{-1},
                                                               services::disk::k_fetch_epoch_unchecked);

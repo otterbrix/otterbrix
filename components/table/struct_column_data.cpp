@@ -67,14 +67,11 @@ namespace components::table {
         }
     }
 
-    uint64_t struct_column_data_t::scan(uint64_t vector_index,
-                                        column_scan_state& state,
-                                        vector::vector_t& result,
-                                        uint64_t target_count) {
+    uint64_t struct_column_data_t::scan(column_scan_state& state, vector::vector_t& result, uint64_t target_count) {
         // Children write at the parent's result base; without this a multi-vector scan folded
         // all NULL bits to offset 0 (see standard_column_data_t::scan).
         state.child_states[0].result_offset = state.result_offset;
-        auto scan_count = validity.scan(vector_index, state.child_states[0], result, target_count);
+        auto scan_count = validity.scan(state.child_states[0], result, target_count);
         auto& child_entries = result.entries();
         for (uint64_t i = 0; i < sub_columns.size(); i++) {
             auto& target_vector = *child_entries[i];
@@ -84,21 +81,17 @@ namespace components::table {
                 continue;
             }
             state.child_states[i + 1].result_offset = state.result_offset;
-            sub_columns[i]->scan(vector_index, state.child_states[i + 1], target_vector, target_count);
+            sub_columns[i]->scan(state.child_states[i + 1], target_vector, target_count);
         }
         // Every byte came off a child state; row_group_t only ever looks at THIS one.
         state.collect_child_errors();
         return scan_count;
     }
 
-    uint64_t struct_column_data_t::scan_committed(uint64_t vector_index,
-                                                  column_scan_state& state,
-                                                  vector::vector_t& result,
-                                                  bool allow_updates,
-                                                  uint64_t target_count) {
+    uint64_t
+    struct_column_data_t::scan_committed(column_scan_state& state, vector::vector_t& result, uint64_t target_count) {
         state.child_states[0].result_offset = state.result_offset; // see scan(): children target the same base
-        auto scan_count =
-            validity.scan_committed(vector_index, state.child_states[0], result, allow_updates, target_count);
+        auto scan_count = validity.scan_committed(state.child_states[0], result, target_count);
         auto& child_entries = result.entries();
         for (uint64_t i = 0; i < sub_columns.size(); i++) {
             auto& target_vector = *child_entries[i];
@@ -108,11 +101,7 @@ namespace components::table {
                 continue;
             }
             state.child_states[i + 1].result_offset = state.result_offset;
-            sub_columns[i]->scan_committed(vector_index,
-                                           state.child_states[i + 1],
-                                           target_vector,
-                                           allow_updates,
-                                           target_count);
+            sub_columns[i]->scan_committed(state.child_states[i + 1], target_vector, target_count);
         }
         state.collect_child_errors(); // see scan()
         return scan_count;
@@ -219,58 +208,6 @@ namespace components::table {
         }
         state.collect_child_errors(); // the fields read on child states; column_data_t::update reads this one
         return scan_count;
-    }
-
-    core::result_wrapper_t<bool> struct_column_data_t::update(uint64_t column_index,
-                                                              vector::vector_t& update_vector,
-                                                              int64_t* row_ids,
-                                                              uint64_t update_count) {
-        auto v = validity.update(column_index, update_vector, row_ids, update_count);
-        if (v.has_error()) {
-            return v;
-        }
-        auto& child_entries = update_vector.entries();
-        for (uint64_t i = 0; i < child_entries.size(); i++) {
-            auto child = sub_columns[i]->update(column_index, *child_entries[i], row_ids, update_count);
-            if (child.has_error()) {
-                return child;
-            }
-        }
-        return true;
-    }
-
-    core::result_wrapper_t<bool> struct_column_data_t::update_column(const std::vector<uint64_t>& column_path,
-                                                                     vector::vector_t& update_vector,
-                                                                     int64_t* row_ids,
-                                                                     uint64_t update_count,
-                                                                     uint64_t depth) {
-        if (depth >= column_path.size()) {
-            // Nothing to write: a struct cell's bytes all live in fields. Returned as an error,
-            // not thrown: throwing here would hang the coroutine instead of failing
-            // it. row_group_t::update_column, the only caller, is itself uncalled today.
-            return core::error_t(
-                core::error_code_t::invalid_parameter,
-                std::pmr::string("struct column update: the column path ends on the struct itself; name a field",
-                                 resource()));
-        }
-        auto update_column = column_path[depth];
-        if (update_column == 0) {
-            return validity.update_column(column_path, update_vector, row_ids, update_count, depth + 1);
-        } else {
-            if (update_column > sub_columns.size()) {
-                // Same channel, same reason: the path names a field this struct does not have.
-                return core::error_t(core::error_code_t::invalid_parameter,
-                                     std::pmr::string("struct column update: the column path names field " +
-                                                          std::to_string(update_column) + " of a struct with " +
-                                                          std::to_string(sub_columns.size()) + " fields",
-                                                      resource()));
-            }
-            return sub_columns[update_column - 1]->update_column(column_path,
-                                                                 update_vector,
-                                                                 row_ids,
-                                                                 update_count,
-                                                                 depth + 1);
-        }
     }
 
     void struct_column_data_t::fetch_row(column_fetch_state& state,

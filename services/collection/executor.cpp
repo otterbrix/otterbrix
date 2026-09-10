@@ -1256,7 +1256,7 @@ namespace services::collection::executor {
                                                      disk_address_,
                                                      index_address_,
                                                      wal_address_};
-                pctx.txn = components::table::transaction_data{0, 0};
+                pctx.txn = components::table::transaction_data::committed();
                 op->prepare();
                 auto drive_err = co_await drive_subplan_(op, &pctx);
                 if (drive_err.contains_error()) {
@@ -2331,7 +2331,7 @@ namespace services::collection::executor {
                                                             std::move(fetch_ids),
                                                             gap.row_count,
                                                             std::vector<size_t>{},
-                                                            components::table::transaction_data{},
+                                                            components::table::transaction_data::committed(),
                                                             components::table::fetch_visibility_t::RAW,
                                                             /*limit=*/int64_t{-1},
                                                             services::disk::k_fetch_epoch_unchecked);

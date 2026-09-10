@@ -80,15 +80,11 @@ namespace components::table {
         state.last_offset = child_offset;
     }
 
-    uint64_t list_column_data_t::scan(uint64_t, column_scan_state& state, vector::vector_t& result, uint64_t count) {
+    uint64_t list_column_data_t::scan(column_scan_state& state, vector::vector_t& result, uint64_t count) {
         return scan_count(state, result, count);
     }
 
-    uint64_t list_column_data_t::scan_committed(uint64_t,
-                                                column_scan_state& state,
-                                                vector::vector_t& result,
-                                                bool,
-                                                uint64_t count) {
+    uint64_t list_column_data_t::scan_committed(column_scan_state& state, vector::vector_t& result, uint64_t count) {
         return scan_count(state, result, count);
     }
 
@@ -96,7 +92,6 @@ namespace components::table {
         if (count == 0) {
             return 0;
         }
-        assert(!updates_);
 
         auto prev_state_result_offset = state.result_offset;
         state.result_offset = 0;
@@ -145,8 +140,8 @@ namespace components::table {
             }
             state.child_states[1].result_offset = prev_size;
             result.reserve(prev_size + child_scan_count);
-            // scan_count (not scan_count_with_updates) so the child's validity sub-column is restored:
-            // a NULL list element must survive the round trip. Mirrors the ARRAY child scan.
+            // The virtual scan_count, so the child's validity sub-column is restored: a NULL list
+            // element must survive the round trip. Mirrors the ARRAY child scan.
             child_column->scan_count(state.child_states[1], child_entry, child_scan_count);
         }
         state.last_offset = current_offset;
@@ -367,70 +362,7 @@ namespace components::table {
         return child_ids;
     }
 
-    core::result_wrapper_t<bool> list_column_data_t::update(uint64_t column_index,
-                                                            vector::vector_t& update_vector,
-                                                            int64_t* row_ids,
-                                                            uint64_t update_count) {
-        if (update_count == 0) {
-            return true;
-        }
-        vector::vector_t child_update(resource_, type_.child_type());
-        VALUE_OR_RETURN(auto child_ids, gather_child_update(update_vector, row_ids, update_count, child_update));
-        // One child update per element run inside one update window, with the gathered element
-        // vector sliced to the run: update_segment_t::update addresses its update vector by
-        // position within the call, so passing the whole gathered vector with ids from a later
-        // window read the wrong slice (see array_column_data_t::update for the shared story).
-        const uint64_t total = child_ids.size();
-        const int64_t child_start = child_column->start();
-        const int64_t cap = static_cast<int64_t>(vector::DEFAULT_VECTOR_CAPACITY);
-        uint64_t pos = 0;
-        while (pos < total) {
-            const uint64_t run_start = pos;
-            const int64_t window = (child_ids[pos] - child_start) / cap;
-            for (pos++; pos < total && (child_ids[pos] - child_start) / cap == window; pos++) {
-            }
-            const uint64_t run = pos - run_start;
-            vector::vector_t window_slice(child_update, run_start, run);
-            window_slice.flatten(run);
-            auto child = child_column->update(column_index, window_slice, child_ids.data() + run_start, run);
-            if (child.has_error()) {
-                return child;
-            }
-        }
-        return true;
-    }
 
-    core::result_wrapper_t<bool> list_column_data_t::update_column(const std::vector<uint64_t>& column_path,
-                                                                   vector::vector_t& update_vector,
-                                                                   int64_t* row_ids,
-                                                                   uint64_t update_count,
-                                                                   uint64_t depth) {
-        if (update_count == 0) {
-            return true;
-        }
-        vector::vector_t child_update(resource_, type_.child_type());
-        VALUE_OR_RETURN(auto child_ids, gather_child_update(update_vector, row_ids, update_count, child_update));
-        // Same window-run walk as update() above.
-        const uint64_t total = child_ids.size();
-        const int64_t child_start = child_column->start();
-        const int64_t cap = static_cast<int64_t>(vector::DEFAULT_VECTOR_CAPACITY);
-        uint64_t pos = 0;
-        while (pos < total) {
-            const uint64_t run_start = pos;
-            const int64_t window = (child_ids[pos] - child_start) / cap;
-            for (pos++; pos < total && (child_ids[pos] - child_start) / cap == window; pos++) {
-            }
-            const uint64_t run = pos - run_start;
-            vector::vector_t window_slice(child_update, run_start, run);
-            window_slice.flatten(run);
-            auto child =
-                child_column->update_column(column_path, window_slice, child_ids.data() + run_start, run, depth);
-            if (child.has_error()) {
-                return child;
-            }
-        }
-        return true;
-    }
 
     void list_column_data_t::fetch_row(column_fetch_state& state,
                                        int64_t row_id,

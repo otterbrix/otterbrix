@@ -70,19 +70,6 @@ namespace components::table {
         [[nodiscard]] core::result_wrapper_t<uint64_t>
         delete_rows(table_delete_state& state, vector::vector_t& row_ids, uint64_t count, uint64_t transaction_id);
 
-        std::unique_ptr<table_update_state>
-        initialize_update(const std::vector<std::unique_ptr<bound_constraint_t>>& bound_constraints);
-        // NOT A TRANSACTIONAL UPDATE: the overlay it writes publishes immediately with no version
-        // chain or undo; the txn-carrying UPDATE a statement runs is delete-stamp + append instead.
-        [[nodiscard]] core::result_wrapper_t<std::pair<int64_t, uint64_t>>
-        update(table_update_state& state,
-               vector::vector_t& row_ids,
-               // const std::vector<uint64_t>& column_ids,
-               vector::data_chunk_t& data);
-        [[nodiscard]] core::result_wrapper_t<bool> update_column(vector::vector_t& row_ids,
-                                                                 const std::vector<uint64_t>& column_path,
-                                                                 vector::data_chunk_t& updates);
-
         // write_conflict when concurrent DDL altered the table (no longer root); true on success.
         [[nodiscard]] core::result_wrapper_t<bool> append_lock(table_append_state& state);
         [[nodiscard]] core::result_wrapper_t<bool> initialize_append(table_append_state& state);

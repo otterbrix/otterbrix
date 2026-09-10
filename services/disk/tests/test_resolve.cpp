@@ -93,7 +93,7 @@ namespace {
         }
 
         components::execution_context_t ctx() {
-            return components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}};
+            return components::execution_context_t{session_id_t{}, components::table::transaction_data::committed(), {}};
         }
     };
 } // namespace
@@ -207,7 +207,7 @@ TEST_CASE("services::disk::resolve::read_chunks_by_keys_multi_key_parity") {
             chunk->set_value(1, r, pvals[r]);
         }
         components::execution_context_t append_ctx{session_id_t{},
-                                                   components::table::transaction_data{0, 0},
+                                                   components::table::transaction_data::committed(),
                                                    {},
                                                    table_oid};
         auto append_r =
@@ -388,7 +388,7 @@ TEST_CASE("services::disk::resolve::projected_read_matches_full_read") {
         chunk->set_value(1, 0, std::int64_t{70});
         chunk->set_value(2, 0, std::int64_t{700});
         components::execution_context_t append_ctx{session_id_t{},
-                                                   components::table::transaction_data{0, 0},
+                                                   components::table::transaction_data::committed(),
                                                    {},
                                                    table_oid};
         auto append_r =
@@ -476,7 +476,7 @@ namespace {
         }
 
         components::execution_context_t ctx() {
-            return components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}};
+            return components::execution_context_t{session_id_t{}, components::table::transaction_data::committed(), {}};
         }
 
         template<typename Fn, typename... Args>

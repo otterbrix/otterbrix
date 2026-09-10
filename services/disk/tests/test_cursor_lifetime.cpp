@@ -114,7 +114,7 @@ namespace {
             std::pmr::vector<data_chunk_t> batch(&fx.resource);
             batch.emplace_back(std::move(*chunk));
             components::execution_context_t append_ctx{session_id_t{},
-                                                       components::table::transaction_data{0, 0},
+                                                       components::table::transaction_data::committed(),
                                                        {},
                                                        table_oid};
             auto r = fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, std::move(batch));

@@ -4,7 +4,6 @@
 #include "column_segment.hpp"
 #include "column_state.hpp"
 #include "segment_tree.hpp"
-#include "update_segment.hpp"
 #include <boost/smart_ptr/intrusive_ref_counter.hpp>
 #include <components/types/tri_bool.hpp>
 
@@ -64,25 +63,17 @@ namespace components::table {
         virtual void set_start(int64_t new_start);
         const types::complex_logical_type& root_type() const;
         const types::complex_logical_type& type() const { return type_; }
-        // True once the overlay object EXISTS, not once it changed a value; never clears.
-        bool has_update_segment() const;
         virtual scan_vector_type
         get_vector_scan_type(column_scan_state& state, uint64_t scan_count, vector::vector_t& result);
         virtual void initialize_scan(column_scan_state& state);
         virtual void initialize_scan_with_offset(column_scan_state& state, int64_t row_idx);
+        // The vector index sizes the last, partial vector of the column
         uint64_t scan(uint64_t vector_index, column_scan_state& state, vector::vector_t& result);
-        uint64_t
-        scan_committed(uint64_t vector_index, column_scan_state& state, vector::vector_t& result, bool allow_updates);
-        virtual uint64_t
-        scan(uint64_t vector_index, column_scan_state& state, vector::vector_t& result, uint64_t scan_count);
-        virtual uint64_t scan_committed(uint64_t vector_index,
-                                        column_scan_state& state,
-                                        vector::vector_t& result,
-                                        bool allow_updates,
-                                        uint64_t scan_count);
+        uint64_t scan_committed(uint64_t vector_index, column_scan_state& state, vector::vector_t& result);
+        virtual uint64_t scan(column_scan_state& state, vector::vector_t& result, uint64_t scan_count);
+        virtual uint64_t scan_committed(column_scan_state& state, vector::vector_t& result, uint64_t scan_count);
 
         virtual uint64_t scan_count(column_scan_state& state, vector::vector_t& result, uint64_t count);
-        uint64_t scan_count_with_updates(column_scan_state& state, vector::vector_t& result, uint64_t count);
 
         virtual void select(uint64_t vector_index,
                             column_scan_state& state,
@@ -93,8 +84,7 @@ namespace components::table {
                                       column_scan_state& state,
                                       vector::vector_t& result,
                                       vector::indexing_vector_t& indexing,
-                                      uint64_t count,
-                                      bool allow_updates);
+                                      uint64_t count);
         virtual void filter_scan(uint64_t vector_index,
                                  column_scan_state& state,
                                  vector::vector_t& result,
@@ -104,8 +94,7 @@ namespace components::table {
                                            column_scan_state& state,
                                            vector::vector_t& result,
                                            vector::indexing_vector_t& indexing,
-                                           uint64_t count,
-                                           bool allow_updates);
+                                           uint64_t count);
 
         virtual void skip(column_scan_state& state, uint64_t count = vector::DEFAULT_VECTOR_CAPACITY);
 
@@ -120,15 +109,6 @@ namespace components::table {
         virtual uint64_t fetch(column_scan_state& state, int64_t row_id, vector::vector_t& result);
         virtual void
         fetch_row(column_fetch_state& state, int64_t row_id, vector::vector_t& result, uint64_t result_idx);
-
-        // NOT write_conflict -- the update overlay carries no transaction stamp to conflict with.
-        [[nodiscard]] virtual core::result_wrapper_t<bool>
-        update(uint64_t column_index, vector::vector_t& update_vector, int64_t* row_ids, uint64_t update_count);
-        [[nodiscard]] virtual core::result_wrapper_t<bool> update_column(const std::vector<uint64_t>& column_path,
-                                                                         vector::vector_t& update_vector,
-                                                                         int64_t* row_ids,
-                                                                         uint64_t update_count,
-                                                                         uint64_t depth);
 
         virtual void get_column_segment_info(uint64_t row_group_index,
                                              std::vector<uint64_t> col_path,
@@ -174,24 +154,6 @@ namespace components::table {
 
         uint64_t
         scan_vector(column_scan_state& state, vector::vector_t& result, uint64_t remaining, scan_vector_type scan_type);
-        template<bool SCAN_COMMITTED, bool ALLOW_UPDATES>
-        uint64_t
-        scan_vector(uint64_t vector_index, column_scan_state& state, vector::vector_t& result, uint64_t target_scan);
-
-        // `state` lets allow_updates == false over a column that HAS updates report on state.scan_error.
-        void fetch_updates(column_scan_state& state,
-                           uint64_t vector_index,
-                           vector::vector_t& result,
-                           uint64_t result_offset,
-                           uint64_t scan_count,
-                           bool allow_updates,
-                           bool scan_committed);
-        void fetch_update_row(int64_t row_id, vector::vector_t& result, uint64_t result_idx);
-        [[nodiscard]] core::result_wrapper_t<bool> update_internal(uint64_t column_index,
-                                                                   vector::vector_t& update_vector,
-                                                                   int64_t* row_ids,
-                                                                   uint64_t update_count,
-                                                                   vector::vector_t& base_vector);
 
         uint64_t vector_count(uint64_t vector_index) const;
 
@@ -211,7 +173,6 @@ namespace components::table {
         column_data_t* parent_;
         segment_tree_t<column_segment_t> data_;
         // Single-owner: see the proof on data_table_t (components/table/data_table.hpp).
-        std::unique_ptr<update_segment_t> updates_;
         uint64_t allocation_size_;
         base_statistics_t statistics_;
 

@@ -62,7 +62,7 @@ namespace {
         REQUIRE_FALSE(table.append_lock(state).has_error());
         REQUIRE_FALSE(table.initialize_append(state).has_error());
         REQUIRE_FALSE(table.append(chunk, state).has_error());
-        table.finalize_append(state, transaction_data{0, 0});
+        table.finalize_append(state, transaction_data::committed());
     }
 
     std::vector<std::string> scan_strings(data_table_t& table, uint64_t upper_bound) {
@@ -201,7 +201,7 @@ namespace {
             REQUIRE_FALSE(table.append_lock(state).has_error());
             REQUIRE_FALSE(table.initialize_append(state).has_error());
             REQUIRE_FALSE(table.append(chunk, state).has_error());
-            table.finalize_append(state, transaction_data{0, 0});
+            table.finalize_append(state, transaction_data::committed());
             offset += batch;
         }
     }
@@ -638,7 +638,7 @@ TEST_CASE("big_strings: a scan failure mid-compact loses no rows and frees no bl
         REQUIRE_FALSE(table->append(chunk, state).has_error());
         REQUIRE(state.append_state.states != nullptr);
         REQUIRE(state.append_state.states[1].current != nullptr);
-        table->finalize_append(state, transaction_data{0, 0});
+        table->finalize_append(state, transaction_data::committed());
     }
 
     {
@@ -703,41 +703,6 @@ TEST_CASE("big_strings: a scan failure mid-compact loses no rows and frees no bl
     cleanup_bigstr_file();
 }
 
-// update() fetches the row's PRIOR version but never checked state.scan_error: a failed
-// big-string read recorded an EMPTY string as the prior version instead of surfacing the error.
-TEST_CASE("big_strings: update surfaces a failed pre-image read instead of recording ''") {
-    cleanup_bigstr_file();
-    bigstr_env_t env;
-    tstorage::single_file_block_manager_t block_manager(env.buffer_manager, env.fs, bigstr_db_path());
-    REQUIRE_FALSE(block_manager.create_new_database().has_error());
-
-    const std::string big(5000, 'u');
-
-    auto column = column_data_t::create_column(&env.resource,
-                                               block_manager,
-                                               0,
-                                               0,
-                                               complex_logical_type{logical_type::STRING_LITERAL});
-    column_append_state append_state;
-    REQUIRE_FALSE(column->initialize_append(append_state).has_error());
-
-    auto types = string_column_types(&env.resource);
-    data_chunk_t input(&env.resource, types, 1);
-    input.set_cardinality(1);
-    input.set_value(0, 0, std::string_view{big});
-    REQUIRE_FALSE(column->append(append_state, input.data[0], 1).has_error());
-    REQUIRE(append_state.current != nullptr);
-
-    overwrite_only_overflow_marker(env, *append_state.current, tstorage::MAXIMUM_BLOCK + 424242);
-
-    vector_t update_vector(&env.resource, logical_type::STRING_LITERAL, 1);
-    update_vector.set_value(0, logical_value_t(&env.resource, std::string("replacement")));
-    int64_t row_ids[1] = {0};
-
-    auto update_r = column->update(/*column_index=*/0, update_vector, row_ids, /*update_count=*/1);
-    REQUIRE(update_r.has_error());
-    REQUIRE(update_r.error().type == core::error_code_t::data_corruption);
-}
 
 // A duplicated overflow id in the PERSISTED list is corruption: register_block answers false on
 // a duplicate, but the reload constructor used to drop that answer on the floor.

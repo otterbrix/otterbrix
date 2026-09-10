@@ -63,9 +63,6 @@ namespace components::table {
         if (statistics_.min_value().is_null() || statistics_.max_value().is_null()) {
             return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
         }
-        if (has_update_segment()) {
-            return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
-        }
         // Pruning needs a constant filter's (column, op, constant); a filter graph doesn't expose one.
         return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
     }
@@ -104,15 +101,10 @@ namespace components::table {
         return type_;
     }
 
-    bool column_data_t::has_update_segment() const { return updates_.get(); }
-
     scan_vector_type
     column_data_t::get_vector_scan_type(column_scan_state& state, uint64_t scan_count, vector::vector_t& result) {
         if (result.get_vector_type() != vector::vector_type::FLAT) {
             return scan_vector_type::SCAN_ENTIRE_VECTOR;
-        }
-        if (has_update_segment()) {
-            return scan_vector_type::SCAN_FLAT_VECTOR;
         }
         if (!state.current) {
             return scan_vector_type::SCAN_FLAT_VECTOR;
@@ -151,34 +143,23 @@ namespace components::table {
 
     uint64_t column_data_t::scan(uint64_t vector_index, column_scan_state& state, vector::vector_t& result) {
         auto target_count = vector_count(vector_index);
-        return scan(vector_index, state, result, target_count);
+        return scan(state, result, target_count);
     }
 
-    uint64_t column_data_t::scan_committed(uint64_t vector_index,
-                                           column_scan_state& state,
-                                           vector::vector_t& result,
-                                           bool allow_updates) {
+    uint64_t
+    column_data_t::scan_committed(uint64_t vector_index, column_scan_state& state, vector::vector_t& result) {
         auto target_count = vector_count(vector_index);
-        return scan_committed(vector_index, state, result, allow_updates, target_count);
+        return scan_committed(state, result, target_count);
     }
 
-    uint64_t column_data_t::scan(uint64_t vector_index,
-                                 column_scan_state& state,
-                                 vector::vector_t& result,
-                                 uint64_t scan_count) {
-        return scan_vector<false, true>(vector_index, state, result, scan_count);
+    uint64_t column_data_t::scan(column_scan_state& state, vector::vector_t& result, uint64_t scan_count) {
+        auto scan_type = get_vector_scan_type(state, scan_count, result);
+        return scan_vector(state, result, scan_count, scan_type);
     }
 
-    uint64_t column_data_t::scan_committed(uint64_t vector_index,
-                                           column_scan_state& state,
-                                           vector::vector_t& result,
-                                           bool allow_updates,
-                                           uint64_t scan_count) {
-        if (allow_updates) {
-            return scan_vector<true, true>(vector_index, state, result, scan_count);
-        } else {
-            return scan_vector<true, false>(vector_index, state, result, scan_count);
-        }
+    uint64_t column_data_t::scan_committed(column_scan_state& state, vector::vector_t& result, uint64_t scan_count) {
+        // The segments hold committed data only, so a committed scan reads exactly what scan() reads.
+        return column_data_t::scan(state, result, scan_count);
     }
 
     // Deliberately no scan_committed_range: it read through a scan_state whose scan_error nobody checked.
@@ -187,23 +168,7 @@ namespace components::table {
         if (count == 0) {
             return 0;
         }
-        return scan_count_with_updates(state, result, count);
-    }
-
-    uint64_t
-    column_data_t::scan_count_with_updates(column_scan_state& state, vector::vector_t& result, uint64_t count) {
-        if (count == 0) {
-            return 0;
-        }
-        // Capture result_offset/row_index before scanning: scan_vector advances both.
-        const uint64_t result_offset = state.result_offset;
-        const int64_t range_start = state.row_index - start_;
-        auto scanned = scan_vector(state, result, count, scan_vector_type::SCAN_FLAT_VECTOR);
-        if (updates_ && scanned > 0) {
-            result.flatten(result_offset + scanned);
-            updates_->fetch_committed_range(range_start, scanned, result, result_offset);
-        }
-        return scanned;
+        return scan_vector(state, result, count, scan_vector_type::SCAN_FLAT_VECTOR);
     }
 
     void column_data_t::select(uint64_t vector_index,
@@ -219,9 +184,8 @@ namespace components::table {
                                          column_scan_state& state,
                                          vector::vector_t& result,
                                          vector::indexing_vector_t& indexing,
-                                         uint64_t s_count,
-                                         bool allow_updates) {
-        scan_committed(vector_index, state, result, allow_updates);
+                                         uint64_t s_count) {
+        scan_committed(vector_index, state, result);
         result.slice(indexing, s_count);
     }
 
@@ -238,9 +202,8 @@ namespace components::table {
                                               column_scan_state& state,
                                               vector::vector_t& result,
                                               vector::indexing_vector_t& indexing,
-                                              uint64_t count,
-                                              bool allow_updates) {
-        scan_committed(vector_index, state, result, allow_updates);
+                                              uint64_t count) {
+        scan_committed(vector_index, state, result);
         result.slice(indexing, count);
     }
 
@@ -399,33 +362,9 @@ namespace components::table {
         }
 
         segment->fetch_row(state, row_id, result, result_idx);
-
-        fetch_update_row(row_id, result, result_idx);
     }
 
-    core::result_wrapper_t<bool> column_data_t::update(uint64_t column_index,
-                                                       vector::vector_t& update_vector,
-                                                       int64_t* row_ids,
-                                                       uint64_t update_count) {
-        vector::vector_t base_vector(resource_, type_, count_);
-        column_scan_state state;
-        auto fetch_count = fetch(state, row_ids[0], base_vector);
-        // Pre-image is prior version for update_internal; unread on failure, rollback would materialise "" silently.
-        if (state.has_error()) {
-            return state.scan_error;
-        }
 
-        base_vector.flatten(fetch_count);
-        return update_internal(column_index, update_vector, row_ids, update_count, base_vector);
-    }
-
-    core::result_wrapper_t<bool> column_data_t::update_column(const std::vector<uint64_t>& column_path,
-                                                              vector::vector_t& update_vector,
-                                                              int64_t* row_ids,
-                                                              uint64_t update_count,
-                                                              uint64_t) {
-        return column_data_t::update(column_path[0], update_vector, row_ids, update_count);
-    }
 
     void column_data_t::get_column_segment_info(uint64_t row_group_index,
                                                 std::vector<uint64_t> col_path,
@@ -451,7 +390,6 @@ namespace components::table {
             column_info.segment_idx = segment_idx;
             column_info.segment_start = segment->start;
             column_info.segment_count = segment->count;
-            column_info.has_updates = has_update_segment();
             const bool disk_backed = segment->block && segment->block->is_reloadable();
             column_info.segment_type = disk_backed ? "PERSISTENT" : "TRANSIENT";
             column_info.block_id = disk_backed ? static_cast<uint32_t>(segment->block_id()) : 0;
@@ -785,63 +723,6 @@ namespace components::table {
         }
         state.internal_index = state.row_index;
         return initial_remaining - remaining;
-    }
-
-    template<bool SCAN_COMMITTED, bool ALLOW_UPDATES>
-    uint64_t column_data_t::scan_vector(uint64_t vector_index,
-                                        column_scan_state& state,
-                                        vector::vector_t& result,
-                                        uint64_t target_scan) {
-        auto scan_type = get_vector_scan_type(state, target_scan, result);
-        auto scan_count = scan_vector(state, result, target_scan, scan_type);
-        if (scan_type != scan_vector_type::SCAN_ENTIRE_VECTOR) {
-            auto update_index = vector_index - static_cast<uint64_t>(start_) / vector::DEFAULT_VECTOR_CAPACITY;
-            fetch_updates(state, update_index, result, state.result_offset, scan_count, ALLOW_UPDATES, SCAN_COMMITTED);
-        }
-        return scan_count;
-    }
-
-    void column_data_t::fetch_updates(column_scan_state& state,
-                                      uint64_t vector_index,
-                                      vector::vector_t& result,
-                                      uint64_t result_offset,
-                                      uint64_t scan_count,
-                                      bool allow_updates,
-                                      bool scan_committed) {
-        if (!updates_) {
-            return;
-        }
-        if (!allow_updates) {
-            // A snapshot with no update overlay was requested, but this column carries one (caller: create_index_scan).
-            state.scan_error = core::error_t(
-                core::error_code_t::index_create_fail,
-                std::pmr::string("index build scan: the column has outstanding updates", resource_));
-            return;
-        }
-        result.flatten(scan_count);
-        if (scan_committed) {
-            updates_->fetch_committed(vector_index, result_offset, result);
-        } else {
-            updates_->fetch_updates(vector_index, result_offset, result);
-        }
-    }
-
-    void column_data_t::fetch_update_row(int64_t row_id, vector::vector_t& result, uint64_t result_idx) {
-        if (!updates_) {
-            return;
-        }
-        updates_->fetch_row(row_id, result, result_idx);
-    }
-
-    core::result_wrapper_t<bool> column_data_t::update_internal(uint64_t column_index,
-                                                                vector::vector_t& update_vector,
-                                                                int64_t* row_ids,
-                                                                uint64_t update_count,
-                                                                vector::vector_t& base_vector) {
-        if (!updates_) {
-            updates_ = std::make_unique<update_segment_t>(*this);
-        }
-        return updates_->update(column_index, update_vector, row_ids, update_count, base_vector);
     }
 
     uint64_t column_data_t::vector_count(uint64_t vector_index) const {

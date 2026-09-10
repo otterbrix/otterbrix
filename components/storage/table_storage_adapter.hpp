@@ -221,37 +221,11 @@ namespace components::storage {
             return start_row;
         }
 
-        // Recover-then-report: a value here means its materializing INSERT was already refused upstream.
-        [[nodiscard]] core::error_t update(vector::vector_t& row_ids, vector::data_chunk_t& data) override {
-            core::error_t lost = trim_unmaterialized_payload_for_replay(data);
-            const auto requested = data.size();
-            auto update_state = table_.initialize_update({});
-            auto upd_r = table_.update(*update_state, row_ids, data);
-            if (upd_r.has_error()) {
-                return core::error_on(resource_, upd_r.error());
-            }
-            // {0, applied-count}, since data_table_t::update filters row ids at or past MAX_ROW_ID.
-            const uint64_t applied = upd_r.value().second;
-            if (applied != requested) {
-                std::pmr::string what{"replay update applied ", resource_};
-                what.append(std::to_string(applied).c_str());
-                what.append(" of ");
-                what.append(std::to_string(requested).c_str());
-                what.append(" journalled row update(s); the rest named rows this storage cannot hold");
-                if (lost.contains_error()) {
-                    what.append("; additionally: ");
-                    what.append(lost.what.c_str());
-                }
-                return core::error_t{core::error_code_t::io_error, std::move(what)};
-            }
-            return lost;
-        }
-
-        [[nodiscard]] core::result_wrapper_t<std::pair<int64_t, uint64_t>>
+        [[nodiscard]] core::result_wrapper_t<appended_range_t>
         update(vector::vector_t& row_ids, vector::data_chunk_t& data, table::transaction_data txn) override {
             auto count = static_cast<uint64_t>(data.size());
             if (count == 0)
-                return std::pair<int64_t, uint64_t>{0, 0};
+                return appended_range_t{0, 0};
 
             if (auto trimmed = trim_unmaterialized_payload(data); trimmed.contains_error()) {
                 return trimmed;
@@ -262,32 +236,28 @@ namespace components::storage {
             // both the old and the new row.
             if (auto deleted = table_.delete_rows(*delete_state, row_ids, count, txn.transaction_id);
                 deleted.has_error()) {
-                return deleted.convert_error<std::pair<int64_t, uint64_t>>();
+                return deleted.convert_error<appended_range_t>();
             }
 
             table::table_append_state append_state(resource_);
             auto lock_r = table_.append_lock(append_state);
             if (lock_r.has_error()) {
-                return lock_r.convert_error<std::pair<int64_t, uint64_t>>();
+                return lock_r.convert_error<appended_range_t>();
             }
             auto init_r = table_.initialize_append(append_state);
             if (init_r.has_error()) {
-                return init_r.convert_error<std::pair<int64_t, uint64_t>>();
+                return init_r.convert_error<appended_range_t>();
             }
             auto start_row = static_cast<int64_t>(append_state.current_row);
             auto app_r = table_.append(data, append_state);
             if (app_r.has_error()) {
-                return app_r.convert_error<std::pair<int64_t, uint64_t>>();
+                return app_r.convert_error<appended_range_t>();
             }
             table_.finalize_append(append_state, txn);
 
-            return std::pair<int64_t, uint64_t>{start_row, count};
+            return appended_range_t{start_row, count};
         }
 
-        core::result_wrapper_t<uint64_t> delete_rows(vector::vector_t& row_ids, uint64_t count) override {
-            auto delete_state = table_.initialize_delete({});
-            return table_.delete_rows(*delete_state, row_ids, count, 0);
-        }
 
         core::result_wrapper_t<uint64_t>
         delete_rows(vector::vector_t& row_ids, uint64_t count, uint64_t txn_id) override {
@@ -355,52 +325,6 @@ namespace components::storage {
         }
 
         // Replay-side mirror of the trim above: columns are dropped unconditionally; the answer names what was lost.
-        [[nodiscard]] core::error_t trim_unmaterialized_payload_for_replay(vector::data_chunk_t& data) const {
-            const size_t physical = table_.column_count();
-            if (data.column_count() <= physical) {
-                return core::error_t::no_error();
-            }
-            const auto& declared = unmaterialized_columns();
-            std::pmr::string lost_columns{resource_};
-            for (size_t i = physical; i < data.column_count(); i++) {
-                const size_t published_idx = i - physical;
-                const auto* published =
-                    published_idx < declared.size() ? &declared[published_idx].default_value_opt() : nullptr;
-                for (uint64_t row = 0; row < data.size(); row++) {
-                    if (data.is_null(i, row)) {
-                        continue;
-                    }
-                    if (published != nullptr && published->has_value() && data.data[i].value(row) == **published) {
-                        continue;
-                    }
-                    if (!lost_columns.empty()) {
-                        lost_columns.append(", ");
-                    }
-                    lost_columns.append("'");
-                    // The chunk's alias is the WAL column name; the declared list may lag a failed upstream replay.
-                    const size_t declared_idx = i - physical;
-                    if (data.data[i].type().has_alias()) {
-                        lost_columns.append(data.data[i].type().alias().c_str());
-                    } else if (declared_idx < declared.size()) {
-                        lost_columns.append(declared[declared_idx].name().c_str());
-                    } else {
-                        lost_columns.append("?");
-                    }
-                    lost_columns.append("'");
-                    break;
-                }
-            }
-            data.data.erase(data.data.begin() + static_cast<std::ptrdiff_t>(physical), data.data.end());
-            if (lost_columns.empty()) {
-                return core::error_t::no_error();
-            }
-            std::pmr::string what{"replay update restored the row's materialized columns, but the journalled "
-                                  "value(s) for unmaterialized column(s) ",
-                                  resource_};
-            what.append(lost_columns.c_str());
-            what.append(" were dropped — the column's materialising INSERT did not replay");
-            return core::error_t{core::error_code_t::unimplemented_yet, std::move(what)};
-        }
 
         // Also publishes the dropped ordinals so the pushed-down predicate answers them the same as the projection.
         std::vector<table::storage_index_t> begin_read(const std::vector<size_t>* projected_cols) const {

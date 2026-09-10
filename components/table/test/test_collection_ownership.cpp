@@ -75,7 +75,7 @@ namespace {
         REQUIRE_FALSE(table.append_lock(state).has_error());
         REQUIRE_FALSE(table.initialize_append(state).has_error());
         REQUIRE_FALSE(table.append(chunk, state).has_error());
-        table.finalize_append(state, transaction_data{0, 0});
+        table.finalize_append(state, transaction_data::committed());
     }
 
     void fill(data_table_t& table, ownership_env_t& env) {

@@ -564,7 +564,7 @@ namespace components::operators {
                 if (update_result.has_error()) {
                     co_return dml_detail::flush_outcome_t{update_result.error()};
                 }
-                auto [range_start, total_count] = update_result.value();
+                auto appended = update_result.value();
 
                 // UPDATE applies to storage first, then writes its own WAL record — unlike INSERT's
                 // WAL-first storage_append.
@@ -595,7 +595,7 @@ namespace components::operators {
                                                                   std::move(idx_old),
                                                                   std::move(idx_new),
                                                                   std::move(idx_row_ids),
-                                                                  range_start);
+                                                                  appended.start_row);
                     auto index_error = co_await std::move(ixf);
                     if (index_error.contains_error()) {
                         co_return dml_detail::flush_outcome_t{std::move(index_error), false, 0, 0};
@@ -603,10 +603,10 @@ namespace components::operators {
                 }
 
                 if (returning_.empty()) {
-                    affected_rows_ += total_count;
+                    affected_rows_ += appended.count;
                 }
 
-                co_return dml_detail::flush_outcome_t{core::error_t::no_error(), true, range_start, total_count};
+                co_return dml_detail::flush_outcome_t{core::error_t::no_error(), true, appended.start_row, appended.count};
             };
 
             auto outcome = co_await op(resource_);

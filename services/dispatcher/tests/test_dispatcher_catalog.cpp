@@ -133,7 +133,7 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
 
     resolve_namespace_result_t resolve_namespace(const std::string& name) {
         components::execution_context_t ctx{components::session::session_id_t{},
-                                            components::table::transaction_data{0, 0},
+                                            components::table::transaction_data::committed(),
                                             {}};
         auto [_, fut] = actor_zeta::otterbrix::send(manager_disk_->address(),
                                                     &manager_disk_t::resolve_namespace,
@@ -153,7 +153,7 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
 
     test_probe::probe_table_result_t resolve_table(components::catalog::oid_t ns_oid, const std::string& tname) {
         components::execution_context_t ctx{components::session::session_id_t{},
-                                            components::table::transaction_data{0, 0},
+                                            components::table::transaction_data::committed(),
                                             {}};
         auto adapter = probe_fx();
         return test_probe::probe_table(adapter, ctx, ns_oid, tname);
@@ -321,7 +321,7 @@ namespace {
                                      const std::string& conkey_text,
                                      const char* contype_text = nullptr) {
         components::execution_context_t ctx{components::session::session_id_t{},
-                                            components::table::transaction_data{0, 0},
+                                            components::table::transaction_data::committed(),
                                             {}};
         auto oids = test.disk_invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
         REQUIRE_FALSE(oids.empty());

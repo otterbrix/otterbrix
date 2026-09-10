@@ -101,13 +101,6 @@ namespace components::table {
 
         [[nodiscard]] core::result_wrapper_t<uint64_t>
         delete_rows(data_table_t& table, int64_t* ids, uint64_t count, uint64_t transaction_id);
-        // write_conflict or out_of_memory on failure.
-        [[nodiscard]] core::result_wrapper_t<bool>
-        update(int64_t* ids, const std::vector<uint64_t>& column_ids, vector::data_chunk_t& updates);
-        [[nodiscard]] core::result_wrapper_t<bool> update_column(vector::vector_t& row_ids,
-                                                                 const std::vector<uint64_t>& column_path,
-                                                                 vector::data_chunk_t& updates);
-
         std::vector<column_segment_info> get_column_segment_info();
 
         // Exclusively owned blocks only; data_table_t::compact frees them after swapping this collection out.

@@ -139,7 +139,7 @@ namespace services::index {
                                                          components::catalog::oid_t index_oid,
                                                          components::logical_plan::index_type type,
                                                          components::index::keys_base_storage_t keys,
-                                                         std::pmr::set<std::uint64_t> committed_commit_ids);
+                                                         std::pmr::set<std::uint64_t> commit_ids);
 
         void bootstrap_dropped_sync(components::catalog::oid_t oid, uint64_t delete_id);
 
@@ -374,7 +374,7 @@ namespace services::index {
         spawn_disk_agent(components::catalog::oid_t table_oid,
                          components::catalog::oid_t index_oid,
                          components::logical_plan::index_type type,
-                         std::pmr::set<std::uint64_t> committed_commit_ids);
+                         std::pmr::set<std::uint64_t> commit_ids);
 
         // Agents are matched by asking each one which table it serves, so there is no second map to disagree with.
         [[nodiscard]] detached_agents_t detach_table_agents(components::catalog::oid_t table_oid);

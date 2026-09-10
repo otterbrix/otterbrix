@@ -158,7 +158,8 @@ namespace components::operators {
                 if (append_result.has_error()) {
                     co_return dml_detail::flush_outcome_t{append_result.error()};
                 }
-                auto [start_row, count] = append_result.value();
+                auto appended = append_result.value();
+                uint64_t count = appended.count;
 
                 if (mirror_index && count > 0) {
 #ifdef DEV_MODE
@@ -169,7 +170,7 @@ namespace components::operators {
                                                                   exec_ctx,
                                                                   table_oid_,
                                                                   std::move(idx_chunks),
-                                                                  start_row,
+                                                                  static_cast<uint64_t>(appended.start_row),
                                                                   count);
                     auto index_error = co_await std::move(ixf);
                     if (index_error.contains_error()) {
@@ -184,7 +185,7 @@ namespace components::operators {
                     vector::vector_t row_ids(resource_, types::logical_type::BIGINT, count);
                     auto* ids = row_ids.data<int64_t>();
                     for (uint64_t i = 0; i < count; i++) {
-                        ids[i] = static_cast<int64_t>(start_row + i);
+                        ids[i] = appended.start_row + static_cast<int64_t>(i);
                     }
                     auto [_s, sf] = actor_zeta::otterbrix::send(ctx->disk_address,
                                                                 &services::disk::manager_disk_t::storage_fetch,
@@ -202,7 +203,7 @@ namespace components::operators {
                         // Must fail rather than return empty RETURNING cells; the range travels with the error.
                         co_return dml_detail::flush_outcome_t{segments_r.error(),
                                                               true,
-                                                              static_cast<int64_t>(start_row),
+                                                              appended.start_row,
                                                               count};
                     }
                     auto segments = std::move(segments_r.value());
@@ -219,7 +220,7 @@ namespace components::operators {
                         if (proj.has_error()) {
                             co_return dml_detail::flush_outcome_t{proj.error(),
                                                                   true,
-                                                                  static_cast<int64_t>(start_row),
+                                                                  appended.start_row,
                                                                   count};
                         }
                         returning_accum_.emplace_back(std::move(proj.value()));
@@ -228,7 +229,7 @@ namespace components::operators {
 
                 co_return dml_detail::flush_outcome_t{core::error_t::no_error(),
                                                       true,
-                                                      static_cast<int64_t>(start_row),
+                                                      appended.start_row,
                                                       count};
             };
 

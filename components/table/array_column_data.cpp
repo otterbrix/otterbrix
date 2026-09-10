@@ -59,33 +59,25 @@ namespace components::table {
         }
     }
 
-    uint64_t array_column_data_t::scan(uint64_t vector_index,
-                                       column_scan_state& state,
-                                       vector::vector_t& result,
-                                       uint64_t count) {
+    uint64_t array_column_data_t::scan(column_scan_state& state, vector::vector_t& result, uint64_t count) {
         size_t arr_size = array_size();
         // Scan the array-level validity into the result first (mirrors struct/scan_count);
         // without this a row stored as a whole-array NULL reads back as a non-null array.
         // Targets the parent's result base, not += element_count: that drifts by arr_size per
         // row and folds a multi-vector scan's NULL bits into one chunk.
         state.child_states[0].result_offset = state.result_offset;
-        validity.scan(vector_index, state.child_states[0], result, count);
+        validity.scan(state.child_states[0], result, count);
         size_t remaining_count = arr_size * count;
-        uint64_t remaining_vector_index = vector_index * arr_size;
         state.child_states[1].result_offset = state.result_offset * arr_size;
 
         while (remaining_count > 0) {
             if (remaining_count >= vector::DEFAULT_VECTOR_CAPACITY) {
-                auto result_count = child_column->scan(remaining_vector_index,
-                                                       state.child_states[1],
-                                                       result.entry(),
-                                                       vector::DEFAULT_VECTOR_CAPACITY);
+                auto result_count =
+                    child_column->scan(state.child_states[1], result.entry(), vector::DEFAULT_VECTOR_CAPACITY);
                 remaining_count -= result_count;
-                remaining_vector_index++;
                 state.child_states[1].result_offset += result_count;
             } else {
-                auto result_count =
-                    child_column->scan(remaining_vector_index, state.child_states[1], result.entry(), remaining_count);
+                auto result_count = child_column->scan(state.child_states[1], result.entry(), remaining_count);
                 remaining_count -= result_count;
                 state.child_states[1].result_offset += result_count;
                 break;
@@ -97,11 +89,7 @@ namespace components::table {
         return result_count;
     }
 
-    uint64_t array_column_data_t::scan_committed(uint64_t,
-                                                 column_scan_state& state,
-                                                 vector::vector_t& result,
-                                                 bool,
-                                                 uint64_t count) {
+    uint64_t array_column_data_t::scan_committed(column_scan_state& state, vector::vector_t& result, uint64_t count) {
         return scan_count(state, result, count);
     }
 
@@ -182,97 +170,14 @@ namespace components::table {
 
     uint64_t array_column_data_t::fetch(column_scan_state& state, int64_t, vector::vector_t&) {
         // Point fetch of a whole ARRAY cell is not implemented (an ARRAY node owns no segments;
-        // the base column_data_t::fetch would dereference an empty tree). Unreachable in
-        // practice: ARRAY overrides update/update_column, so column_data_t::update never calls
-        // this on `this`. Refusal rides state.scan_error rather than throwing.
+        // the base column_data_t::fetch would dereference an empty tree)
         state.scan_error =
             core::error_t(core::error_code_t::unimplemented_yet,
                           std::pmr::string("point fetch of a whole ARRAY cell is not implemented", resource_));
         return 0;
     }
 
-    core::result_wrapper_t<bool> array_column_data_t::update(uint64_t column_index,
-                                                             vector::vector_t& update_vector,
-                                                             int64_t* row_ids,
-                                                             uint64_t update_count) {
-        const int64_t arr_size = static_cast<int64_t>(array_size());
-        const uint64_t total = static_cast<uint64_t>(arr_size) * update_count;
-        std::pmr::vector<int64_t> sub_column_ids(resource_);
-        sub_column_ids.reserve(total);
 
-        // Element ids rebased like fetch_row/revert_append: start_ + (row - start_) * array_size
-        // + i. The old `row * array_size + i` only worked for row group 0 (start_ == 0).
-        for (auto it = row_ids; it != row_ids + update_count; ++it) {
-            for (int64_t i = 0; i < arr_size; i++) {
-                sub_column_ids.emplace_back(start_ + (*it - start_) * arr_size + i);
-            }
-        }
-
-        // Runs are split on real DEFAULT_VECTOR_CAPACITY window boundaries, not blind 1024-id
-        // chunking: update_segment_t::update addresses its vector by position within the call,
-        // so ids must be sliced to the window they belong to.
-        auto& child_vector = update_vector.entry();
-        const int64_t child_start = child_column->start();
-        const int64_t cap = static_cast<int64_t>(vector::DEFAULT_VECTOR_CAPACITY);
-        uint64_t pos = 0;
-        while (pos < total) {
-            const uint64_t run_start = pos;
-            const int64_t window = (sub_column_ids[pos] - child_start) / cap;
-            for (pos++; pos < total && (sub_column_ids[pos] - child_start) / cap == window; pos++) {
-            }
-            const uint64_t run = pos - run_start;
-            vector::vector_t window_slice(child_vector, run_start, run);
-            window_slice.flatten(run);
-            auto child = child_column->update(column_index, window_slice, sub_column_ids.data() + run_start, run);
-            if (child.has_error()) {
-                return child;
-            }
-        }
-        return true;
-    }
-
-    core::result_wrapper_t<bool> array_column_data_t::update_column(const std::vector<uint64_t>& column_path,
-                                                                    vector::vector_t& update_vector,
-                                                                    int64_t* row_ids,
-                                                                    uint64_t update_count,
-                                                                    uint64_t depth) {
-        const int64_t arr_size = static_cast<int64_t>(array_size());
-        const uint64_t total = static_cast<uint64_t>(arr_size) * update_count;
-        std::pmr::vector<int64_t> sub_column_ids(resource_);
-        sub_column_ids.reserve(total);
-
-        // Same rebase as update() above.
-        for (auto it = row_ids; it != row_ids + update_count; ++it) {
-            for (int64_t i = 0; i < arr_size; i++) {
-                sub_column_ids.emplace_back(start_ + (*it - start_) * arr_size + i);
-            }
-        }
-
-        // Same window-run walk as update() above; no trailing whole-range call, or the update
-        // would apply twice.
-        auto& child_vector = update_vector.entry();
-        const int64_t child_start = child_column->start();
-        const int64_t cap = static_cast<int64_t>(vector::DEFAULT_VECTOR_CAPACITY);
-        uint64_t pos = 0;
-        while (pos < total) {
-            const uint64_t run_start = pos;
-            const int64_t window = (sub_column_ids[pos] - child_start) / cap;
-            for (pos++; pos < total && (sub_column_ids[pos] - child_start) / cap == window; pos++) {
-            }
-            const uint64_t run = pos - run_start;
-            vector::vector_t window_slice(child_vector, run_start, run);
-            window_slice.flatten(run);
-            auto child = child_column->update_column(column_path,
-                                                     window_slice,
-                                                     sub_column_ids.data() + run_start,
-                                                     run,
-                                                     depth);
-            if (child.has_error()) {
-                return child;
-            }
-        }
-        return true;
-    }
 
     void array_column_data_t::fetch_row(column_fetch_state& state,
                                         int64_t row_id,

@@ -48,7 +48,6 @@ namespace services::dispatcher {
     // to pg_catalog_append_range_t / a table-oid set, so the operator's
     // storage_publish_* block consumes them unchanged.
     struct txn_commit_drain_t {
-        core::error_t refusal = core::error_t::no_error();
         uint64_t commit_id{0};
         components::table::transaction_data txn{0, 0};
         std::vector<components::pg_catalog_append_range_t> swap_appends{};
@@ -103,7 +102,6 @@ namespace services::dispatcher {
     // SAME storage_revert_deletes as base_delete_tables. Drained (not discarded)
     // precisely so the heap mark can be reverted — mirrors the base side.
     struct txn_abort_drain_t {
-        core::error_t refusal = core::error_t::no_error();
         components::table::transaction_data txn{0, 0};
         std::vector<components::pg_catalog_append_range_t> swap_appends{};
         // The USER-table ranges this txn appended, kept whole (not collapsed to oids like

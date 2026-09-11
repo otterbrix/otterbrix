@@ -35,6 +35,9 @@ namespace components::table {
         uint64_t max_row_group_;
     };
 
+    // marks blocks as free
+    void release_disk_blocks(storage::block_manager_t& block_manager, std::pmr::vector<uint64_t> block_ids);
+
     // A copy of this pointer taken before data_table_t::compact swaps in a rebuilt collection must
     // outlive the swap — block_manager_t::unregister_block's identity check depends on it
     // (test_root_reclaim, test_block_manager).
@@ -91,7 +94,8 @@ namespace components::table {
         [[nodiscard]] core::result_wrapper_t<bool> append(vector::data_chunk_t& chunk, table_append_state& state);
         void finalize_append(table_append_state& state, transaction_data txn);
         void commit_append(uint64_t commit_id, int64_t row_start, uint64_t count);
-        // Best-effort: every row group gets a chance to truncate before the first refusal is reported.
+        // Reverts only the table's tail: row groups past row_start go whole, the one holding it is truncated;
+        // any other range is refused.
         core::result_wrapper_t<bool> revert_append(int64_t row_start, uint64_t count);
         void commit_all_deletes(uint64_t txn_id, uint64_t commit_id);
         void revert_all_deletes(uint64_t txn_id);

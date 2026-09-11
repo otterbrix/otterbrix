@@ -21,6 +21,7 @@
 #include <list>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 
 #include <components/casts/cast_registry.hpp>
 #include <components/catalog/catalog_oids.hpp>
@@ -265,6 +266,8 @@ namespace services::dispatcher {
 
         components::table::transaction_manager_t txn_manager_;
         std::pmr::unordered_map<components::session::session_id_t, session_order_t> session_order_{resource_};
+        // Their transaction failed and was rolled back; only ROLLBACK or COMMIT is accepted until one ends it.
+        std::pmr::unordered_set<components::session::session_id_t> failed_sessions_{resource_};
         in_flight_entry_t* current_entry_{nullptr};
         components::casts::cast_registry_t cast_registry_;
         // global cached settings. updated on every set.

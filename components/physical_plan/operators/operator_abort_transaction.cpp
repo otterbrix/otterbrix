@@ -26,10 +26,6 @@ namespace components::operators {
                                             ctx->session,
                                             ctx->txn.transaction_id);
             drain = co_await std::move(drf);
-            if (drain.refusal.contains_error()) {
-                set_error(std::move(drain.refusal));
-                co_return;
-            }
         }
         const auto& txn_data = drain.txn;
 

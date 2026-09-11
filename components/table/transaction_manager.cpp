@@ -14,39 +14,14 @@ namespace components::table {
         return open_locked(session, scope);
     }
 
-    core::result_wrapper_t<transaction_t*> transaction_manager_t::resolve_transaction(session::session_id_t session,
-                                                                                      transaction_scope_t scope,
-                                                                                      transaction_control_t control) {
+    transaction_t& transaction_manager_t::resolve_transaction(session::session_id_t session, transaction_scope_t scope) {
         std::lock_guard guard(lock_);
         auto it = active_.find(session);
         if (it == active_.end()) {
-            return &open_locked(session, scope);
+            return open_locked(session, scope);
         }
-        auto& txn = *it->second;
-        if (txn.state() == transaction_state_t::failed) {
-            if (control == transaction_control_t::none) {
-                return core::error_t{core::error_code_t::transaction_finalized,
-                                     std::pmr::string{"the transaction failed; only ROLLBACK is accepted until it ends",
-                                                      resource_}};
-            }
-            // Its work was undone when it failed; ending it is all that is left.
-            txn.mark_aborted();
-            active_.erase(it);
-            if (control == transaction_control_t::commit) {
-                return core::error_t{core::error_code_t::transaction_finalized,
-                                     std::pmr::string{"the transaction failed and was rolled back; nothing was "
-                                                      "committed",
-                                                      resource_}};
-            }
-            return &open_locked(session, scope);
-        }
-        if (txn.scope() == transaction_scope_t::statement) {
-            return core::error_t{core::error_code_t::other_error,
-                                 std::pmr::string{"the session's transaction belongs to a statement that has not "
-                                                  "ended yet",
-                                                  resource_}};
-        }
-        return &txn;
+        assert(it->second->scope() == transaction_scope_t::until_commit);
+        return *it->second;
     }
 
     transaction_t& transaction_manager_t::open_locked(session::session_id_t session, transaction_scope_t scope) {
@@ -129,16 +104,6 @@ namespace components::table {
         active_.erase(it);
     }
 
-    void transaction_manager_t::fail(session::session_id_t session) {
-        std::lock_guard guard(lock_);
-        auto it = active_.find(session);
-        if (it == active_.end()) {
-            return;
-        }
-        it->second->mark_failed();
-        active_start_times_.erase(it->second->start_time());
-    }
-
     transaction_t* transaction_manager_t::find_transaction(session::session_id_t session) {
         std::lock_guard guard(lock_);
         auto it = active_.find(session);
@@ -162,9 +127,6 @@ namespace components::table {
             lowest = std::min(lowest, *in_flight_commits_.begin() - 1);
         }
         for (const auto& [session, txn] : active_) {
-            if (txn->state() == transaction_state_t::failed) {
-                continue;
-            }
             const auto data = txn->data();
             if (!data.in_flight_snapshot.empty()) {
                 // in_flight_snapshot is sorted ascending (copied from a std::set).
@@ -200,9 +162,6 @@ namespace components::table {
             watermark = std::min(watermark, *in_flight_commits_.begin() - 1);
         }
         for (const auto& [session, txn] : active_) {
-            if (txn->state() == transaction_state_t::failed) {
-                continue;
-            }
             const auto data = txn->data();
             watermark = std::min(watermark, data.snapshot_horizon);
             if (!data.in_flight_snapshot.empty()) {

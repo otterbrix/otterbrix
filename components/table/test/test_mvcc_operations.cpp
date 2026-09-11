@@ -158,6 +158,51 @@ TEST_CASE("components::table::mvcc::append_revert_invisible") {
     REQUIRE(count == 0);
 }
 
+TEST_CASE("components::table::mvcc::append_revert_across_row_groups") {
+    test_env env;
+    auto table = make_int_table(env);
+
+    const auto group_size = static_cast<double>(table->row_group_size());
+    const auto kept_rows = static_cast<uint64_t>(group_size * 1.3);
+    const auto reverted_rows = static_cast<uint64_t>(group_size * 2.6);
+    const uint64_t batch_rows = static_cast<uint64_t>(static_cast<double>(DEFAULT_VECTOR_CAPACITY) * 0.7);
+    const auto append_in_batches = [&](int64_t start, uint64_t count) {
+        for (uint64_t done = 0; done < count; done += batch_rows) {
+            append_rows(*table, env, start + static_cast<int64_t>(done), std::min(batch_rows, count - done));
+        }
+    };
+    const auto scan_all = [&]() {
+        std::vector<storage_index_t> column_ids;
+        column_ids.emplace_back(0);
+        table_scan_state scan_state(&env.resource);
+        table->initialize_scan(scan_state, column_ids);
+        auto types = table->copy_types();
+        auto result = data_chunk_t(&env.resource, types, DEFAULT_VECTOR_CAPACITY);
+        uint64_t total = 0;
+        while (true) {
+            table->scan(result, scan_state);
+            REQUIRE_FALSE(scan_state.table_state.has_error());
+            if (result.size() == 0) {
+                return total;
+            }
+            total += result.size();
+            result.reset();
+        }
+    };
+
+    append_in_batches(0, kept_rows);
+    append_in_batches(static_cast<int64_t>(kept_rows), reverted_rows);
+    // Not vacuous: the reverted rows fill more than one row group of their own.
+    REQUIRE(reverted_rows > table->row_group_size());
+
+    // Not the tail: truncating there would take the rows behind it down too.
+    REQUIRE(table->revert_append(0, kept_rows).has_error());
+
+    REQUIRE_FALSE(table->revert_append(static_cast<int64_t>(kept_rows), reverted_rows).has_error());
+    append_rows(*table, env, static_cast<int64_t>(kept_rows), 1);
+    REQUIRE(scan_all() == kept_rows + 1);
+}
+
 TEST_CASE("components::table::mvcc::append_without_txn_backward_compat") {
     test_env env;
     auto table = make_int_table(env);

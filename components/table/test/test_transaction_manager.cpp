@@ -253,68 +253,19 @@ TEST_CASE("components::table::transaction_manager::resolve_transaction_contract"
     using namespace components::session;
 
     transaction_manager_t mgr(std::pmr::new_delete_resource());
-    const auto plain = transaction_control_t::none;
-    const auto rollback = transaction_control_t::rollback;
-    const auto commit = transaction_control_t::commit;
 
     auto statement_session = session_id_t::generate_uid();
-    auto for_statement = mgr.resolve_transaction(statement_session, transaction_scope_t::statement, plain);
-    REQUIRE_FALSE(for_statement.has_error());
-    REQUIRE(for_statement.value()->scope() == transaction_scope_t::statement);
-    REQUIRE(mgr.resolve_transaction(statement_session, transaction_scope_t::statement, plain).has_error());
-    REQUIRE(mgr.resolve_transaction(statement_session, transaction_scope_t::until_commit, rollback).has_error());
+    auto& for_statement = mgr.resolve_transaction(statement_session, transaction_scope_t::statement);
+    REQUIRE(for_statement.scope() == transaction_scope_t::statement);
 
+    // An open transaction is joined, and keeps the scope it was opened with.
     auto open_session = session_id_t::generate_uid();
-    auto opened = mgr.resolve_transaction(open_session, transaction_scope_t::until_commit, plain);
-    REQUIRE_FALSE(opened.has_error());
-    auto* open_transaction = opened.value();
-    auto joined = mgr.resolve_transaction(open_session, transaction_scope_t::statement, plain);
-    REQUIRE_FALSE(joined.has_error());
-    REQUIRE(joined.value() == open_transaction);
-    REQUIRE(open_transaction->scope() == transaction_scope_t::until_commit);
-
-    mgr.fail(open_session);
-    REQUIRE(open_transaction->state() == transaction_state_t::failed);
-    REQUIRE(mgr.resolve_transaction(open_session, transaction_scope_t::statement, plain).has_error());
-
-    // A ROLLBACK ends the failed transaction and runs in one of its own.
-    const auto failed_id = open_transaction->transaction_id();
-    auto rolled_back = mgr.resolve_transaction(open_session, transaction_scope_t::statement, rollback);
-    REQUIRE_FALSE(rolled_back.has_error());
-    REQUIRE(rolled_back.value()->state() == transaction_state_t::active);
-    REQUIRE(rolled_back.value()->transaction_id() != failed_id);
-    mgr.abort(open_session);
-
-    // A COMMIT ends it too, reporting that nothing was committed.
-    REQUIRE_FALSE(mgr.resolve_transaction(open_session, transaction_scope_t::until_commit, plain).has_error());
-    mgr.fail(open_session);
-    REQUIRE(mgr.resolve_transaction(open_session, transaction_scope_t::statement, commit).has_error());
-    REQUIRE(mgr.find_transaction(open_session) == nullptr);
+    auto& opened = mgr.resolve_transaction(open_session, transaction_scope_t::until_commit);
+    auto& joined = mgr.resolve_transaction(open_session, transaction_scope_t::statement);
+    REQUIRE(&joined == &opened);
+    REQUIRE(opened.scope() == transaction_scope_t::until_commit);
 
     mgr.abort(statement_session);
+    mgr.abort(open_session);
     REQUIRE_FALSE(mgr.has_active_transactions());
-}
-
-TEST_CASE("components::table::transaction_manager::failed_transaction_holds_no_horizon") {
-    using namespace components::table;
-    using namespace components::session;
-
-    transaction_manager_t mgr(std::pmr::new_delete_resource());
-
-    auto failing = session_id_t::generate_uid();
-    mgr.begin_transaction(failing, transaction_scope_t::until_commit);
-
-    auto writer = session_id_t::generate_uid();
-    mgr.begin_transaction(writer, transaction_scope_t::statement);
-    const auto commit_id = mgr.commit(writer);
-    mgr.publish(commit_id);
-
-    // Not vacuous: while active, the older snapshot pins both horizons below the commit.
-    REQUIRE(mgr.compact_watermark() < commit_id);
-    const auto pinned_start_time = mgr.lowest_active_start_time();
-
-    mgr.fail(failing);
-    REQUIRE(mgr.compact_watermark() == commit_id);
-    REQUIRE(mgr.lowest_active_start_time() > pinned_start_time);
-    REQUIRE(mgr.find_transaction(failing) != nullptr);
 }

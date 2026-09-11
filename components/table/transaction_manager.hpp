@@ -3,7 +3,6 @@
 #include <atomic>
 #include <components/session/session.hpp>
 #include <components/table/transaction.hpp>
-#include <core/result_wrapper.hpp>
 #include <memory>
 #include <memory_resource>
 #include <mutex>
@@ -19,12 +18,10 @@ namespace components::table {
 
         transaction_t& begin_transaction(session::session_id_t session, transaction_scope_t scope);
 
-        core::result_wrapper_t<transaction_t*>
-        resolve_transaction(session::session_id_t session, transaction_scope_t scope, transaction_control_t control);
+        transaction_t& resolve_transaction(session::session_id_t session, transaction_scope_t scope);
 
         uint64_t commit(session::session_id_t session);
         void abort(session::session_id_t session);
-        void fail(session::session_id_t session);
 
         transaction_t* find_transaction(session::session_id_t session);
         bool has_active_transaction(session::session_id_t session) const;

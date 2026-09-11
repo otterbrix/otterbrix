@@ -446,6 +446,14 @@ namespace services::dispatcher {
             }
             return components::table::transaction_control_t::none;
         }
+
+        components::logical_plan::execution_plan_t make_rollback_plan(std::pmr::memory_resource* resource) {
+            return components::logical_plan::execution_plan_t{
+                resource,
+                components::logical_plan::make_node_transaction(resource,
+                                                                components::logical_plan::transaction_op::abort),
+                components::logical_plan::make_parameter_node(resource)};
+        }
     } // namespace
 
     manager_dispatcher_t::unique_future<components::cursor::cursor_t_ptr>
@@ -462,7 +470,11 @@ namespace services::dispatcher {
         const auto control = transaction_control_of(plan);
         co_await take_turn_(session, control);
         session_turn_t turn{this, session, control};
-        auto resolved = create_session_context(session, &plan);
+        // The failed transaction was rolled back when it failed; a COMMIT ends it as that ROLLBACK.
+        bool commits_failed =
+            control == components::table::transaction_control_t::commit && failed_sessions_.contains(session);
+        auto executed = commits_failed ? make_rollback_plan(resource()) : std::move(plan);
+        auto resolved = create_session_context(session, &executed);
         if (resolved.has_error()) {
             co_return components::cursor::make_cursor(resource(), resolved.error());
         }
@@ -473,7 +485,7 @@ namespace services::dispatcher {
         auto [needs_sched, future] = actor_zeta::otterbrix::send(executor_addresses_[pool_idx],
                                                                  &collection::executor::executor_t::execute_plan_full,
                                                                  session,
-                                                                 std::move(plan),
+                                                                 std::move(executed),
                                                                  std::move(session_ctx));
         if (needs_sched && executors_[pool_idx]) {
             scheduler_->enqueue(executors_[pool_idx].get());
@@ -502,6 +514,12 @@ namespace services::dispatcher {
               exec_result.cursor->is_success());
         if (exec_result.cursor && exec_result.cursor->is_error()) {
             co_await finish_failed_statement_(session, statement_txn_id);
+        } else if (commits_failed) {
+            exec_result.cursor = components::cursor::make_cursor(
+                resource(),
+                core::error_t{core::error_code_t::transaction_finalized,
+                              std::pmr::string{"the transaction failed and was rolled back; nothing was committed",
+                                               resource()}});
         }
         co_return std::move(exec_result.cursor);
     }
@@ -1057,17 +1075,21 @@ namespace services::dispatcher {
     core::result_wrapper_t<txn_session_context_t>
     manager_dispatcher_t::create_session_context(components::session::session_id_t session,
                                                  components::logical_plan::execution_plan_t* plan) {
+        if (failed_sessions_.contains(session)) {
+            if (transaction_control_of(*plan) == components::table::transaction_control_t::none) {
+                return core::error_t{
+                    core::error_code_t::transaction_finalized,
+                    std::pmr::string{"the transaction failed; only ROLLBACK is accepted until it ends", resource()}};
+            }
+            failed_sessions_.erase(session);
+        }
         const auto& settings = session_settings(session);
         const auto scope = settings.autocommit ? components::table::transaction_scope_t::statement
                                                : components::table::transaction_scope_t::until_commit;
-        auto resolved = txn_manager_.resolve_transaction(session, scope, transaction_control_of(*plan));
-        if (resolved.has_error()) {
-            return resolved.error();
-        }
-        auto* txn = resolved.value();
-        plan->commits_when_done = txn->scope() == components::table::transaction_scope_t::statement;
+        auto& txn = txn_manager_.resolve_transaction(session, scope);
+        plan->commits_when_done = txn.scope() == components::table::transaction_scope_t::statement;
         txn_session_context_t context;
-        context.txn = txn->data();
+        context.txn = txn.data();
         context.settings = settings;
         context.lowest_active_start_time = txn_manager_.lowest_active_start_time();
         trace(log_,
@@ -1082,7 +1104,7 @@ namespace services::dispatcher {
     manager_dispatcher_t::finish_failed_statement_(components::session::session_id_t session,
                                                    uint64_t transaction_id) {
         auto* txn = statement_transaction_(session, transaction_id);
-        if (txn == nullptr || txn->state() != components::table::transaction_state_t::active) {
+        if (txn == nullptr) {
             co_return;
         }
         if (txn->scope() == components::table::transaction_scope_t::statement) {
@@ -1090,23 +1112,20 @@ namespace services::dispatcher {
             try_trigger_cleanup_if_horizon_advanced();
             co_return;
         }
+        if (!failed_sessions_.insert(session).second) {
+            co_return;
+        }
         trace(log_,
               "manager_dispatcher_t::finish_failed_statement_: txn {} failed, session: {}",
               txn->transaction_id(),
               session.data());
-        txn_manager_.fail(session);
-        try_trigger_cleanup_if_horizon_advanced();
         co_await run_rollback_plan_(session, txn->data());
     }
 
     manager_dispatcher_t::unique_future<void>
     manager_dispatcher_t::run_rollback_plan_(components::session::session_id_t session,
                                              components::table::transaction_data txn) {
-        components::logical_plan::execution_plan_t plan{
-            resource(),
-            components::logical_plan::make_node_transaction(resource(),
-                                                            components::logical_plan::transaction_op::abort),
-            components::logical_plan::make_parameter_node(resource())};
+        auto plan = make_rollback_plan(resource());
         txn_session_context_t context;
         context.txn = txn;
         context.settings = session_settings(session);
@@ -1129,11 +1148,10 @@ namespace services::dispatcher {
     }
 
     components::table::transaction_t*
-    manager_dispatcher_t::statement_transaction_(components::session::session_id_t session, uint64_t transaction_id) {
+    manager_dispatcher_t::statement_transaction_(components::session::session_id_t session,
+                                                 [[maybe_unused]] uint64_t transaction_id) {
         auto* txn = txn_manager_.find_transaction(session);
-        if (txn == nullptr || txn->transaction_id() != transaction_id) {
-            return nullptr;
-        }
+        assert(txn == nullptr || txn->transaction_id() == transaction_id);
         return txn;
     }
 
@@ -1224,20 +1242,7 @@ namespace services::dispatcher {
         trace(log_, "manager_dispatcher_t::txn_commit_drain_msg, session: {}", session.data());
         txn_commit_drain_t out;
         auto* txn_t = statement_transaction_(session, transaction_id);
-        if (txn_t == nullptr) {
-            out.refusal = core::error_t{
-                core::error_code_t::transaction_inactive,
-                std::pmr::string{"COMMIT: its transaction ended before COMMIT reached it", resource()}};
-            co_return out;
-        }
-        if (txn_t->state() == components::table::transaction_state_t::failed) {
-            // A statement failed it while this COMMIT ran; its work is already undone.
-            txn_manager_.abort(session);
-            out.refusal = core::error_t{
-                core::error_code_t::transaction_finalized,
-                std::pmr::string{"the transaction failed and was rolled back; nothing was committed", resource()}};
-            co_return out;
-        }
+        assert(txn_t != nullptr);
         if (!txn_t->has_accumulated()) {
             // Empty COMMIT aborts instead of committing: it must not allocate a commit_id or advance the horizon.
             txn_manager_.abort(session);
@@ -1290,19 +1295,10 @@ namespace services::dispatcher {
     manager_dispatcher_t::unique_future<txn_abort_drain_t>
     manager_dispatcher_t::txn_abort_drain_msg(components::session::session_id_t session, uint64_t transaction_id) {
         trace(log_, "manager_dispatcher_t::txn_abort_drain_msg, session: {}", session.data());
-        txn_abort_drain_t out;
         auto* txn_t = statement_transaction_(session, transaction_id);
-        if (txn_t == nullptr) {
-            out.refusal = core::error_t{
-                core::error_code_t::transaction_inactive,
-                std::pmr::string{"ROLLBACK: its transaction ended before ROLLBACK reached it", resource()}};
-            co_return out;
-        }
-        out = drain_for_abort_(*txn_t);
-        // A failed transaction's work goes now; the transaction stays until its session ends it.
-        if (txn_t->state() != components::table::transaction_state_t::failed) {
-            txn_manager_.abort(session);
-        }
+        assert(txn_t != nullptr);
+        auto out = drain_for_abort_(*txn_t);
+        txn_manager_.abort(session);
         try_trigger_cleanup_if_horizon_advanced();
         co_return out;
     }
@@ -1333,13 +1329,6 @@ namespace services::dispatcher {
                                  "accumulated ranges cannot be parked",
                                  resource()}};
         }
-        if (txn_t->state() == components::table::transaction_state_t::failed) {
-            co_return core::error_t{
-                core::error_code_t::transaction_finalized,
-                std::pmr::string{"txn_accumulate_msg: the transaction failed while the statement ran, so its "
-                                 "ranges are not parked",
-                                 resource()}};
-        }
         for (const auto& app : payload.base_appends) {
             txn_t->accumulate_base_append(app);
         }
@@ -1364,9 +1353,8 @@ namespace services::dispatcher {
     manager_dispatcher_t::unique_future<void>
     manager_dispatcher_t::txn_abort_msg(components::session::session_id_t session, uint64_t transaction_id) {
         trace(log_, "manager_dispatcher_t::txn_abort_msg, session: {}", session.data());
-        if (statement_transaction_(session, transaction_id) == nullptr) {
-            co_return;
-        }
+        [[maybe_unused]] const auto* txn = statement_transaction_(session, transaction_id);
+        assert(txn != nullptr);
         txn_manager_.abort(session);
         try_trigger_cleanup_if_horizon_advanced();
         co_return;

@@ -27,8 +27,25 @@ namespace {
     std::size_t committed_rows(otterbrix::wrapper_dispatcher_t* dispatcher) {
         auto session = otterbrix::session_id_t();
         auto cursor = dispatcher->execute_sql(session, "SELECT id FROM TestDatabase.marks;");
+        INFO("SELECT error: " << (cursor->is_error() ? cursor->get_error().what : ""));
         REQUIRE(cursor->is_success());
         return cursor->size();
+    }
+
+    // Every id from 0 to count - 1 exactly once, and nothing else.
+    bool marks_hold_exactly(otterbrix::wrapper_dispatcher_t* dispatcher, std::size_t count) {
+        auto session = otterbrix::session_id_t();
+        auto cursor = dispatcher->execute_sql(session, "SELECT id FROM TestDatabase.marks ORDER BY id;");
+        REQUIRE(cursor->is_success());
+        if (cursor->size() != count) {
+            return false;
+        }
+        for (std::size_t row = 0; row < count; ++row) {
+            if (cursor->value(0, row).value<int64_t>() != static_cast<int64_t>(row)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     void create_table(otterbrix::wrapper_dispatcher_t* dispatcher) {
@@ -291,7 +308,7 @@ TEST_CASE("integration::cpp::autocommit::commit_ends_a_failed_transaction_and_re
     REQUIRE(committed_rows(dispatcher) == 1);
 }
 
-TEST_CASE("integration::cpp::autocommit::a_statement_failing_inside_begin_undoes_the_earlier_ones") {
+TEST_CASE("integration::cpp::autocommit::failed_statement_inside_transaction_undoes_whole_transaction") {
     auto config = test_create_config(integration_fixture_path("test_autocommit/failure_undoes_earlier"));
     test_clear_directory(config);
     test_spaces space(config);
@@ -305,21 +322,54 @@ TEST_CASE("integration::cpp::autocommit::a_statement_failing_inside_begin_undoes
     }
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "INSERT INTO TestDatabase.marks (id) VALUES (1), (2);")->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "INSERT INTO TestDatabase.marks (id) VALUES (1), (2), (3);")
+                    ->is_success());
+    }
+
+    // Each fails while executing, after it has already written.
+    std::string failing_statement;
+    SECTION("the failing statement is an INSERT") {
+        failing_statement = "INSERT INTO TestDatabase.marks (id) VALUES (-1);";
+    }
+    SECTION("the failing statement is an UPDATE") {
+        failing_statement = "UPDATE TestDatabase.marks SET id = id - 10 WHERE id = 2;";
+    }
+    SECTION("the failing statement is a DELETE") {
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.referrers (id bigint, mark_id bigint);")
+                        ->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher
+                        ->execute_sql(session,
+                                      "ALTER TABLE TestDatabase.referrers ADD CONSTRAINT fk_mark "
+                                      "FOREIGN KEY (mark_id) REFERENCES TestDatabase.marks (id) ON DELETE RESTRICT;")
+                        ->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "INSERT INTO TestDatabase.referrers (id, mark_id) VALUES (1, 3);")
+                        ->is_success());
+        }
+        failing_statement = "DELETE FROM TestDatabase.marks WHERE id >= 2;";
     }
 
     auto writer = otterbrix::session_id_t();
     REQUIRE(run(dispatcher, writer, "BEGIN;")->is_success());
     REQUIRE(run(dispatcher, writer, "DELETE FROM TestDatabase.marks WHERE id = 1;")->is_success());
     REQUIRE(run(dispatcher, writer, "INSERT INTO TestDatabase.marks (id) VALUES (5);")->is_success());
-    // Fails while executing, after its row was appended.
-    REQUIRE(run(dispatcher, writer, "INSERT INTO TestDatabase.marks (id) VALUES (-1);")->is_error());
+    REQUIRE(run(dispatcher, writer, failing_statement)->is_error());
     REQUIRE(run(dispatcher, writer, "ROLLBACK;")->is_success());
-    REQUIRE(committed_rows(dispatcher) == 2);
+    REQUIRE(committed_rows(dispatcher) == 3);
 
-    // A delete stamp the failed transaction left on row 1 would make this DELETE skip it.
+    // A delete stamp left behind would make these skip their row: row 1 carries the earlier DELETE's,
+    // row 2 the failed UPDATE's or DELETE's.
     auto cleaner = otterbrix::session_id_t();
     REQUIRE(run(dispatcher, cleaner, "DELETE FROM TestDatabase.marks WHERE id = 1;")->is_success());
+    REQUIRE(committed_rows(dispatcher) == 2);
+    REQUIRE(run(dispatcher, cleaner, "DELETE FROM TestDatabase.marks WHERE id = 2;")->is_success());
     REQUIRE(committed_rows(dispatcher) == 1);
 }
 
@@ -433,25 +483,89 @@ TEST_CASE("integration::cpp::autocommit::commit_waits_for_its_transactions_runni
     REQUIRE(committed_rows(dispatcher) == SOURCE_ROWS);
 }
 
-TEST_CASE("integration::cpp::autocommit::begin_with_transaction_modes_is_refused") {
-    auto config = test_create_config(integration_fixture_path("test_autocommit/begin_modes"));
+TEST_CASE("integration::cpp::autocommit::failed_statement_leaves_no_aftereffects") {
+    auto config = test_create_config(integration_fixture_path("test_autocommit/fails_partway"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     create_table(dispatcher);
+    create_source_table(dispatcher);
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher
+                    ->execute_sql(session, "ALTER TABLE TestDatabase.marks ADD CONSTRAINT below_limit CHECK (id < 3000);")
+                    ->is_success());
+    }
 
+    // Most source rows pass the check; the ones that do not must take the whole statement with them.
     auto session = otterbrix::session_id_t();
-    REQUIRE(run(dispatcher, session, "BEGIN READ ONLY;")->is_error());
-    REQUIRE(run(dispatcher, session, "BEGIN ISOLATION LEVEL SERIALIZABLE;")->is_error());
-    REQUIRE(run(dispatcher, session, "START TRANSACTION ISOLATION LEVEL READ COMMITTED;")->is_error());
+    REQUIRE(run(dispatcher, session, "INSERT INTO TestDatabase.marks (id) SELECT id FROM TestDatabase.source;")
+                ->is_error());
+    REQUIRE(committed_rows(dispatcher) == 0);
 
-    // No transaction was opened behind the refusals: this commits on its own.
     REQUIRE(run(dispatcher, session, "INSERT INTO TestDatabase.marks (id) VALUES (1);")->is_success());
     REQUIRE(committed_rows(dispatcher) == 1);
+}
 
-    REQUIRE(run(dispatcher, session, "BEGIN;")->is_success());
-    REQUIRE(run(dispatcher, session, "INSERT INTO TestDatabase.marks (id) VALUES (2);")->is_success());
-    REQUIRE(committed_rows(dispatcher) == 1);
-    REQUIRE(run(dispatcher, session, "COMMIT;")->is_success());
-    REQUIRE(committed_rows(dispatcher) == 2);
+TEST_CASE("integration::cpp::autocommit::failed_update_leaves_no_aftereffects") {
+    auto config = test_create_config(integration_fixture_path("test_autocommit/update_fails_partway"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    create_table(dispatcher);
+    create_source_table(dispatcher);
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher
+                    ->execute_sql(session, "ALTER TABLE TestDatabase.marks ADD CONSTRAINT below_limit CHECK (id < 4000);")
+                    ->is_success());
+    }
+    auto session = otterbrix::session_id_t();
+    REQUIRE(run(dispatcher, session, "INSERT INTO TestDatabase.marks (id) SELECT id FROM TestDatabase.source;")
+                ->is_success());
+
+    // Only the last rows break the check once shifted; every row the UPDATE already rewrote must come back.
+    REQUIRE(run(dispatcher, session, "UPDATE TestDatabase.marks SET id = id + 1000;")->is_error());
+    REQUIRE(marks_hold_exactly(dispatcher, SOURCE_ROWS));
+
+    // A delete stamp the failed UPDATE left on row 0 would make this DELETE skip it.
+    REQUIRE(run(dispatcher, session, "DELETE FROM TestDatabase.marks WHERE id = 0;")->is_success());
+    REQUIRE(committed_rows(dispatcher) == SOURCE_ROWS - 1);
+}
+
+TEST_CASE("integration::cpp::autocommit::failed_delete_leaves_no_aftereffects") {
+    auto config = test_create_config(integration_fixture_path("test_autocommit/delete_fails_partway"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    create_table(dispatcher);
+    create_source_table(dispatcher);
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.referrers (id bigint, mark_id bigint);")
+                    ->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher
+                    ->execute_sql(session,
+                                  "ALTER TABLE TestDatabase.referrers ADD CONSTRAINT fk_mark "
+                                  "FOREIGN KEY (mark_id) REFERENCES TestDatabase.marks (id) ON DELETE RESTRICT;")
+                    ->is_success());
+    }
+    auto session = otterbrix::session_id_t();
+    REQUIRE(run(dispatcher, session, "INSERT INTO TestDatabase.marks (id) SELECT id FROM TestDatabase.source;")
+                ->is_success());
+    REQUIRE(run(dispatcher,
+                session,
+                "INSERT INTO TestDatabase.referrers (id, mark_id) VALUES (1, " + std::to_string(SOURCE_ROWS - 1) + ");")
+                ->is_success());
+
+    // Only the last row is referenced; every row before it must stay too.
+    REQUIRE(run(dispatcher, session, "DELETE FROM TestDatabase.marks WHERE id >= 0;")->is_error());
+    REQUIRE(marks_hold_exactly(dispatcher, SOURCE_ROWS));
+
+    // A delete stamp the failed DELETE left on row 0 would make this one skip it.
+    REQUIRE(run(dispatcher, session, "DELETE FROM TestDatabase.marks WHERE id = 0;")->is_success());
+    REQUIRE(committed_rows(dispatcher) == SOURCE_ROWS - 1);
 }

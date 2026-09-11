@@ -1,7 +1,9 @@
 #include "collection.hpp"
 
+#include <components/table/storage/block_manager.hpp>
 #include <components/table/storage/partial_block_manager.hpp>
 #include <components/vector/data_chunk.hpp>
+#include <algorithm>
 #include <queue>
 
 #include "column_data.hpp"
@@ -356,29 +358,45 @@ namespace components::table {
         return row_group->delete_stamp(row_id);
     }
 
-    core::result_wrapper_t<bool> collection_t::revert_append(int64_t row_start, uint64_t count) {
-        core::error_t first_error = core::error_t::no_error();
-        for (auto& rg : row_groups_->segments()) {
-            auto rg_end = rg.start + static_cast<int64_t>(rg.count.load());
-            if (rg_end <= row_start)
+    void release_disk_blocks(storage::block_manager_t& block_manager, std::pmr::vector<uint64_t> block_ids) {
+        std::sort(block_ids.begin(), block_ids.end());
+        block_ids.erase(std::unique(block_ids.begin(), block_ids.end()), block_ids.end());
+        for (uint64_t block_id : block_ids) {
+            if (block_id >= block_manager.total_blocks()) {
+                block_manager.mark_as_free(block_id);
                 continue;
-            if (rg.start >= row_start + static_cast<int64_t>(count))
-                break;
-            auto local_start = static_cast<uint64_t>(std::max(int64_t{0}, row_start - rg.start));
-            auto reverted = rg.revert_append(local_start);
-            if (reverted.has_error() && !first_error.contains_error()) {
-                first_error = reverted.error();
             }
+            block_manager.mark_as_free(block_id);
+            block_manager.unregister_block(block_id);
         }
-        if (total_rows_.load() >= count) {
-            total_rows_ -= count;
-        } else {
-            total_rows_ = 0;
+    }
+
+    core::result_wrapper_t<bool> collection_t::revert_append(int64_t row_start, uint64_t count) {
+        if (row_start + static_cast<int64_t>(count) != row_start_ + static_cast<int64_t>(total_rows_.load())) {
+            return core::error_t(core::error_code_t::invalid_parameter,
+                                 std::pmr::string("table revert: the range is not the table's tail", resource_));
         }
-        if (first_error.contains_error()) {
-            return first_error;
+        if (count == 0) {
+            return true;
         }
-        return true;
+        auto l = row_groups_->lock();
+        uint64_t segment_index;
+        if (!row_groups_->try_segment_index(l, row_start, segment_index)) {
+            return core::error_t(core::error_code_t::data_corruption,
+                                 std::pmr::string("table revert: no row group brackets the revert row", resource_));
+        }
+        const auto& segments = row_groups_->reference_segments(l);
+        std::pmr::vector<uint64_t> released{resource_};
+        for (uint64_t later = segment_index + 1; later < segments.size(); ++later) {
+            segments[later].node->collect_disk_block_ids(released);
+        }
+        release_disk_blocks(block_manager_, std::move(released));
+        row_groups_->erase_segments(l, segment_index);
+
+        auto* row_group = row_groups_->segment_at(l, static_cast<int64_t>(segment_index));
+        row_group->next = nullptr;
+        total_rows_ = static_cast<uint64_t>(row_start - row_start_);
+        return row_group->revert_append(static_cast<uint64_t>(row_start - row_group->start));
     }
 
     void collection_t::merge_storage(collection_t& data) {

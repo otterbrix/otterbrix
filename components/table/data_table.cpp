@@ -239,24 +239,10 @@ namespace components::table {
         // Fresh blocks now, released outgoing ones -- compact must be followed by a checkpoint (its only caller).
         mark_modified();
 
-        // Each mark_as_free must pair with unregister_block(id): a handle left registered after its id
-        // is freed is an ABA hazard once a later holder's destructor sees a fresh handle at that id.
         if (old_collection) {
-            auto& block_manager = old_collection->block_manager();
             std::pmr::vector<uint64_t> reclaimable{resource_};
             old_collection->collect_disk_block_ids(reclaimable);
-            // Packing means the same id repeats; dedupe or unregister_block could race a reused id's fresh handle.
-            std::sort(reclaimable.begin(), reclaimable.end());
-            reclaimable.erase(std::unique(reclaimable.begin(), reclaimable.end()), reclaimable.end());
-            for (uint64_t block_id : reclaimable) {
-                // Disk-fed and unchecked: an id past the file's extent must `continue`, not assert.
-                if (block_id >= block_manager.total_blocks()) {
-                    block_manager.mark_as_free(block_id);
-                    continue;
-                }
-                block_manager.mark_as_free(block_id);
-                block_manager.unregister_block(block_id);
-            }
+            release_disk_blocks(old_collection->block_manager(), std::move(reclaimable));
         }
         // The swap may have renumbered row ids; every index answer stamped with the old epoch is refused from here on.
         ++compact_epoch_;

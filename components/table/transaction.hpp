@@ -32,7 +32,6 @@ namespace components::table {
     enum class transaction_state_t : uint8_t
     {
         active,
-        failed,
         committed,
         aborted
     };
@@ -74,7 +73,6 @@ namespace components::table {
         void set_commit_id(uint64_t id);
         void mark_committed();
         void mark_aborted();
-        void mark_failed();
 
         // Called by transaction_manager during begin_transaction, after capturing the snapshot under its lock.
         void set_snapshot(uint64_t horizon, std::pmr::vector<uint64_t> in_flight) {

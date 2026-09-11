@@ -36,10 +36,6 @@ namespace components::operators {
                                             ctx->session,
                                             ctx->txn.transaction_id);
             services::dispatcher::txn_commit_drain_t drain = co_await std::move(drf);
-            if (drain.refusal.contains_error()) {
-                set_error(std::move(drain.refusal));
-                co_return;
-            }
             txn_data = drain.txn;
             swap_appends = std::move(drain.swap_appends);
             swap_deletes = std::move(drain.swap_deletes);

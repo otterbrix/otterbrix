@@ -21,8 +21,6 @@ namespace components::table {
 
     void transaction_t::mark_aborted() { state_ = transaction_state_t::aborted; }
 
-    void transaction_t::mark_failed() { state_ = transaction_state_t::failed; }
-
     void transaction_t::add_append(int64_t row_start, uint64_t count) { appends_.push_back({row_start, count}); }
 
 } // namespace components::table

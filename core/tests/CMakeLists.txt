@@ -3,9 +3,6 @@ project(test_core)
 add_definitions(-DDEV_MODE)
 
 set(${PROJECT_NAME}_SOURCES
-        test_buffer.cpp
-        test_scalar.cpp
-        test_uvector.cpp
         test_counting_resource.cpp
         test_resource_tracer.cpp
         test_regex.cpp

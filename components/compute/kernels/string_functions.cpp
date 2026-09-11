@@ -358,20 +358,19 @@ namespace components::compute {
     // a uid is the registration order, so inserting here shifts everything registered after it.
     void register_string_functions(function_registry_t& r) {
         r.add_builtin(make_substring_func(r.resource(),
-                                                  "substring",
-                                                  "Returns substring",
-                                                  "SUBSTRING(s, start[, len]) — 1-based; out-of-range -> empty"));
+                                          "substring",
+                                          "Returns substring",
+                                          "SUBSTRING(s, start[, len]) — 1-based; out-of-range -> empty"));
         r.add_builtin(
             make_length_func(r.resource(), "length", "Returns byte length", "LENGTH(s) -> int64 (bytes, not chars)"));
         r.add_builtin(make_regexp_replace_func(r.resource(),
-                                                       "regexp_replace",
-                                                       "Regex substitution",
-                                                       "REGEXP_REPLACE(s, pattern, replacement)"));
-        r.add_builtin(
-            make_regexp_like_func(r.resource(),
-                                  "regexp_like",
-                                  "Regex match test",
-                                  "REGEXP_LIKE(s, pattern[, flags]) -> bool; 'i' = case-insensitive"));
+                                               "regexp_replace",
+                                               "Regex substitution",
+                                               "REGEXP_REPLACE(s, pattern, replacement)"));
+        r.add_builtin(make_regexp_like_func(r.resource(),
+                                            "regexp_like",
+                                            "Regex match test",
+                                            "REGEXP_LIKE(s, pattern[, flags]) -> bool; 'i' = case-insensitive"));
         r.add_builtin(make_case_fold_func(r.resource(),
                                           "upper",
                                           "Upper case",

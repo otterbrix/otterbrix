@@ -414,41 +414,33 @@ TEST_CASE("components::sql::aggregate_distinct_survives_having_and_nesting") {
     };
 
     SECTION("HAVING count(DISTINCT x) mints a DISTINCT aggregate") {
-        auto counts = counts_named(
-            calls_of("SELECT k FROM db.t GROUP BY k HAVING count(DISTINCT x) > 1;"),
-            "count");
+        auto counts = counts_named(calls_of("SELECT k FROM db.t GROUP BY k HAVING count(DISTINCT x) > 1;"), "count");
         REQUIRE(counts.size() == 1);
         REQUIRE(counts.front().distinct);
     }
 
     SECTION("HAVING count(DISTINCT x) does not bind to a projected count(x)") {
-        auto counts = counts_named(
-            calls_of("SELECT count(x) AS c FROM db.t GROUP BY k HAVING count(DISTINCT x) > 1;"),
-            "count");
+        auto counts =
+            counts_named(calls_of("SELECT count(x) AS c FROM db.t GROUP BY k HAVING count(DISTINCT x) > 1;"), "count");
         REQUIRE(counts.size() == 2);
         REQUIRE(counts[0].distinct != counts[1].distinct);
     }
 
     SECTION("HAVING count(x) does not bind to a projected count(DISTINCT x)") {
-        auto counts = counts_named(
-            calls_of("SELECT count(DISTINCT x) AS c FROM db.t GROUP BY k HAVING count(x) > 1;"),
-            "count");
+        auto counts =
+            counts_named(calls_of("SELECT count(DISTINCT x) AS c FROM db.t GROUP BY k HAVING count(x) > 1;"), "count");
         REQUIRE(counts.size() == 2);
         REQUIRE(counts[0].distinct != counts[1].distinct);
     }
 
     SECTION("HAVING count(x) still reuses a projected count(x)") {
-        auto counts = counts_named(
-            calls_of("SELECT count(x) AS c FROM db.t GROUP BY k HAVING count(x) > 1;"),
-            "count");
+        auto counts = counts_named(calls_of("SELECT count(x) AS c FROM db.t GROUP BY k HAVING count(x) > 1;"), "count");
         REQUIRE(counts.size() == 1);
         REQUIRE_FALSE(counts.front().distinct);
     }
 
     SECTION("an aggregate nested as a function argument keeps DISTINCT") {
-        auto counts = counts_named(
-            calls_of("SELECT abs(count(DISTINCT x)) FROM db.t GROUP BY k;"),
-            "count");
+        auto counts = counts_named(calls_of("SELECT abs(count(DISTINCT x)) FROM db.t GROUP BY k;"), "count");
         REQUIRE(counts.size() == 1);
         REQUIRE(counts.front().distinct);
     }

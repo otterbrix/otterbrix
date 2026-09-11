@@ -184,8 +184,7 @@ namespace core::b_plus_tree {
     size_t segment_tree_t::header_region_checksum_() const {
         const auto* region = reinterpret_cast<const char*>(header_) + sizeof(header_->header_checksum_);
         const size_t region_size = header_size - sizeof(header_->header_checksum_);
-        return static_cast<size_t>(
-            static_cast<uint32_t>(absl::ComputeCrc32c(absl::string_view(region, region_size))));
+        return static_cast<size_t>(static_cast<uint32_t>(absl::ComputeCrc32c(absl::string_view(region, region_size))));
     }
 
     bool segment_tree_t::append(data_ptr_t data, uint32_t size) { return append(item_data{data, size}); }
@@ -351,10 +350,9 @@ namespace core::b_plus_tree {
                         header_->unique_id_count_ -= !index_exists;
                         return false;
                     }
-                    if (!insert_segment_(append_node + 1,
-                                         node_t{std::move(split_result.first),
-                                                std::chrono::system_clock::now(),
-                                                true})) {
+                    if (!insert_segment_(
+                            append_node + 1,
+                            node_t{std::move(split_result.first), std::chrono::system_clock::now(), true})) {
                         header_->unique_id_count_ -= !index_exists;
                         return false;
                     }

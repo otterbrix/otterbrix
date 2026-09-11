@@ -39,7 +39,8 @@ namespace {
     // Removes any leftover from an earlier process that died holding this pid, then names the
     // file. Called from the member-init list, so the removal precedes the manager's open.
     const std::string& alter_column_sharing_fresh_db_path() {
-        static const std::string path = (std::remove(alter_column_sharing_db_path().c_str()), alter_column_sharing_db_path());
+        static const std::string path =
+            (std::remove(alter_column_sharing_db_path().c_str()), alter_column_sharing_db_path());
         return path;
     }
 

@@ -112,9 +112,8 @@ namespace components::operators {
         // placeholder columns and sets the target cardinality itself. row_ids are gathered
         // unconditionally: over a SINK the input's are zero-filled placeholders, so gathering them
         // reproduces exactly the zero sentinel the per-cell path left behind.
-        vector::data_chunk_t out_chunk = sparse
-                                             ? vector::data_chunk_t(resource, types, populated_cols, out_count)
-                                             : vector::data_chunk_t(resource, types, out_count);
+        vector::data_chunk_t out_chunk = sparse ? vector::data_chunk_t(resource, types, populated_cols, out_count)
+                                                : vector::data_chunk_t(resource, types, out_count);
         chunk.copy(out_chunk, sel, out_count);
         out.emplace_back(std::move(out_chunk));
         note_emitted();

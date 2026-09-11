@@ -1,8 +1,8 @@
 #include <catch2/catch_test_macros.hpp>
 
-#include <components/table/data_table.hpp>
 #include <components/table/base_statistics.hpp>
 #include <components/table/column_data.hpp>
+#include <components/table/data_table.hpp>
 #include <components/table/persistent_column_data.hpp>
 #include <components/table/storage/buffer_pool.hpp>
 #include <components/table/storage/metadata_manager.hpp>
@@ -57,9 +57,7 @@ namespace {
             const uint64_t batch = std::min<uint64_t>(count - offset, DEFAULT_VECTOR_CAPACITY);
             auto chunk = data_chunk_t(&env.resource, types, batch);
             for (uint64_t i = 0; i < batch; i++) {
-                chunk.data[0].set_value(
-                    i,
-                    logical_value_t(&env.resource, start + static_cast<int64_t>(offset + i)));
+                chunk.data[0].set_value(i, logical_value_t(&env.resource, start + static_cast<int64_t>(offset + i)));
             }
             chunk.set_cardinality(batch);
             REQUIRE_FALSE(table.append(chunk, state).has_error());
@@ -173,11 +171,10 @@ TEST_CASE("components::table::a_list_update_of_a_missing_row_reports_not_throws"
         for (uint64_t i = 0; i < NUM_ROWS; i++) {
             std::vector<logical_value_t> elems;
             elems.emplace_back(&env.resource, static_cast<int64_t>(i));
-            chunk.set_value(0,
-                            i,
-                            logical_value_t::create_list(&env.resource,
-                                                         complex_logical_type(logical_type::BIGINT),
-                                                         elems));
+            chunk.set_value(
+                0,
+                i,
+                logical_value_t::create_list(&env.resource, complex_logical_type(logical_type::BIGINT), elems));
         }
         table_append_state state(&env.resource);
         REQUIRE_FALSE(table->append_lock(state).has_error());
@@ -193,10 +190,9 @@ TEST_CASE("components::table::a_list_update_of_a_missing_row_reports_not_throws"
     data_chunk_t updates(&env.resource, types, 1);
     std::vector<logical_value_t> elems;
     elems.emplace_back(&env.resource, int64_t(99));
-    updates.data[0].set_value(0,
-                              logical_value_t::create_list(&env.resource,
-                                                           complex_logical_type(logical_type::BIGINT),
-                                                           elems));
+    updates.data[0].set_value(
+        0,
+        logical_value_t::create_list(&env.resource, complex_logical_type(logical_type::BIGINT), elems));
     updates.set_cardinality(1);
 
     auto updated = table->update_column(row_ids, {0}, updates);
@@ -247,8 +243,11 @@ TEST_CASE("components::table::unload_of_a_spill_less_transient_refuses") {
 TEST_CASE("components::table::a_zero_count_with_rows_on_disk_is_corruption") {
     table_env env("count_mismatch");
 
-    auto column =
-        column_data_t::create_column(&env.resource, env.block_manager, 0, 0, complex_logical_type(logical_type::BIGINT));
+    auto column = column_data_t::create_column(&env.resource,
+                                               env.block_manager,
+                                               0,
+                                               0,
+                                               complex_logical_type(logical_type::BIGINT));
 
     auto make_pcd = [&](uint64_t seg_size) {
         persistent_column_data_t pcd(&env.resource);
@@ -351,8 +350,7 @@ TEST_CASE("components::table::a_failed_add_column_backfill_refuses_loudly") {
     // представимой on-disk формы, и append новой колонки обязан отказать
     // (write_string_memory: "string value ... exceeds the maximum storable string size").
     column_definition_t new_column("added", complex_logical_type(logical_type::STRING_LITERAL));
-    new_column.set_default_value(
-        logical_value_t(&env.resource, std::string(300 * 1024, 'x')));
+    new_column.set_default_value(logical_value_t(&env.resource, std::string(300 * 1024, 'x')));
     auto extended = std::make_unique<data_table_t>(*table, new_column);
 
     // Отказ защёлкнут и виден; родитель остался корнем (DDL не случился) и пишется.

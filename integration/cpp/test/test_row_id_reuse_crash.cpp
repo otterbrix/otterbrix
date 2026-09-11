@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -108,8 +108,7 @@ namespace {
     wal_sizes_t durable_wal_sizes(const std::filesystem::path& wal_dir) {
         wal_sizes_t sizes;
         std::error_code ec;
-        for (std::filesystem::recursive_directory_iterator it(wal_dir, ec), end; !ec && it != end;
-             it.increment(ec)) {
+        for (std::filesystem::recursive_directory_iterator it(wal_dir, ec), end; !ec && it != end; it.increment(ec)) {
             if (it->is_regular_file() && it->path().filename().string().rfind("wal_", 0) == 0) {
                 sizes.emplace(std::filesystem::relative(it->path(), wal_dir).string(),
                               std::filesystem::file_size(it->path()));
@@ -124,8 +123,7 @@ namespace {
     std::uintmax_t rewind_wal_to_last_fsync(const std::filesystem::path& wal_dir, const wal_sizes_t& durable) {
         std::vector<std::filesystem::path> segments;
         std::error_code ec;
-        for (std::filesystem::recursive_directory_iterator it(wal_dir, ec), end; !ec && it != end;
-             it.increment(ec)) {
+        for (std::filesystem::recursive_directory_iterator it(wal_dir, ec), end; !ec && it != end; it.increment(ec)) {
             if (it->is_regular_file() && it->path().filename().string().rfind("wal_", 0) == 0) {
                 segments.push_back(it->path());
             }

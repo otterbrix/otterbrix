@@ -201,8 +201,7 @@ TEST_CASE("services::disk::d4::load_storage_for_wal_replay_noop_when_loaded") {
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     auto rt_oid = test_create_table(fx, ns_oid, "lazy_t", std::move(cols));
 
-    REQUIRE_FALSE(fx.manager->load_storage_for_wal_replay_sync(rt_oid, well_known_oid::main_database)
-                      .contains_error());
+    REQUIRE_FALSE(fx.manager->load_storage_for_wal_replay_sync(rt_oid, well_known_oid::main_database).contains_error());
 }
 // A never-checkpointed .otbx loads as a legitimately empty table with its schema from the catalog;
 // the metadata reader instead fails it with "attempted to read past end of chain".
@@ -229,8 +228,7 @@ TEST_CASE("services::disk::d4::never_checkpointed_otbx_loads_as_empty_with_catal
     REQUIRE(std::filesystem::file_size(otbx) == components::table::storage::BLOCK_START);
 
     REQUIRE_FALSE(fx.manager->has_storage(rt_oid));
-    REQUIRE_FALSE(
-        fx.manager->load_storage_for_wal_replay_sync(rt_oid, well_known_oid::main_database).contains_error());
+    REQUIRE_FALSE(fx.manager->load_storage_for_wal_replay_sync(rt_oid, well_known_oid::main_database).contains_error());
     REQUIRE(fx.manager->has_storage(rt_oid));
     REQUIRE(std::filesystem::file_size(otbx) == components::table::storage::BLOCK_START);
 }

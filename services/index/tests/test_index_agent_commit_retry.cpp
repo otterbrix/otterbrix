@@ -63,8 +63,8 @@ namespace {
         return store_dir(root) / "bitcask.txn.log";
     }
 
-    std::vector<std::pair<logical_value_t, size_t>>
-    entries(std::pmr::memory_resource* resource, std::initializer_list<std::pair<int64_t, size_t>> rows) {
+    std::vector<std::pair<logical_value_t, size_t>> entries(std::pmr::memory_resource* resource,
+                                                            std::initializer_list<std::pair<int64_t, size_t>> rows) {
         std::vector<std::pair<logical_value_t, size_t>> values;
         for (const auto& [key, row_id] : rows) {
             values.emplace_back(logical_value_t(resource, key), row_id);
@@ -167,9 +167,8 @@ TEST_CASE("services::index::bitcask_index_agent_t keeps the staged bucket across
     auto heal = [&] { REQUIRE(std::filesystem::remove(txn_log_path(path))); };
 
     SECTION("a refused commit_inserts keeps the batch, and the retry publishes it") {
-        REQUIRE_FALSE(
-            ask<&index_agent_contract::stage_inserts>(agent, session, txn1, entries(&resource, {{42, 7}}))
-                .contains_error());
+        REQUIRE_FALSE(ask<&index_agent_contract::stage_inserts>(agent, session, txn1, entries(&resource, {{42, 7}}))
+                          .contains_error());
 
         sabotage();
         auto refused = ask<&index_agent_contract::commit_inserts>(agent, session, txn1, commit_id_of(txn1));
@@ -192,9 +191,8 @@ TEST_CASE("services::index::bitcask_index_agent_t keeps the staged bucket across
             ask<&index_agent_contract::commit_inserts>(agent, session, uint64_t{0}, uint64_t{0}).contains_error());
         REQUIRE(read(0) == std::vector<int64_t>{7});
 
-        REQUIRE_FALSE(
-            ask<&index_agent_contract::stage_deletes>(agent, session, txn2, entries(&resource, {{42, 7}}))
-                .contains_error());
+        REQUIRE_FALSE(ask<&index_agent_contract::stage_deletes>(agent, session, txn2, entries(&resource, {{42, 7}}))
+                          .contains_error());
 
         sabotage();
         auto refused = ask<&index_agent_contract::commit_deletes>(agent, session, txn2, commit_id_of(txn2));
@@ -240,12 +238,12 @@ TEST_CASE("services::index::bitcask_index_agent_t txn==0 publish keeps the bucke
         return sorted(std::move(answer.value()));
     };
 
-    REQUIRE_FALSE(ask<&index_agent_contract::stage_inserts>(
-                      agent,
-                      session,
-                      uint64_t{0},
-                      entries(&resource, {{42, 7}, {43, 8}, {44, 9}, {45, 10}, {46, 11}}))
-                      .contains_error());
+    REQUIRE_FALSE(
+        ask<&index_agent_contract::stage_inserts>(agent,
+                                                  session,
+                                                  uint64_t{0},
+                                                  entries(&resource, {{42, 7}, {43, 8}, {44, 9}, {45, 10}, {46, 11}}))
+            .contains_error());
     REQUIRE_FALSE(
         ask<&index_agent_contract::commit_inserts>(agent, session, uint64_t{0}, uint64_t{0}).contains_error());
     REQUIRE(read(0) == std::vector<int64_t>{7});

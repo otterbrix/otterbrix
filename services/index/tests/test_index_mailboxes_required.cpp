@@ -10,10 +10,14 @@ namespace {
     // Detects a bootstrap sync member — the shape where an address arrives by a separate
     // call after construction, leaving the manager with an empty address in between.
     template<typename T>
-    concept has_bootstrap_sync = requires { &T::sync; };
+    concept has_bootstrap_sync = requires {
+        &T::sync;
+    };
 
     template<typename T>
-    concept has_dispatcher_setter = requires(T& t, actor_zeta::address_t a) { t.set_manager_dispatcher_sync(a); };
+    concept has_dispatcher_setter = requires(T& t, actor_zeta::address_t a) {
+        t.set_manager_dispatcher_sync(a);
+    };
 
 } // namespace
 

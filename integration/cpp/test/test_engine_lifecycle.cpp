@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <integration/cpp/otterbrix.hpp>
 
@@ -66,7 +66,7 @@ namespace {
         otterbrix::otterbrix_ptr engine_;
     };
 
-}
+} // namespace
 
 TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount", "[engine-lifecycle]") {
     auto config = test_create_config(integration_fixture_path("test_engine_lifecycle/refcount"));
@@ -566,7 +566,7 @@ namespace {
         destruction_order_recorder_t wrapper_dispatcher_;
     };
 
-}
+} // namespace
 
 // Proves reverse-declaration destruction alone keeps schedulers outliving managers, no ordered reset needed.
 TEST_CASE("integration::cpp::test_engine_lifecycle::teardown_order_schedulers_outlive_managers",

@@ -11,8 +11,8 @@
 #include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
 #include <core/file/local_file_system.hpp>
-#include <limits>
 #include <cstdio>
+#include <limits>
 #include <string>
 #include <unistd.h>
 

@@ -110,10 +110,8 @@ TEST_CASE("services::disk::error::duplicate_namespace_name_refused_at_write") {
     auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
     auto writes = catalog::build_create_namespace_writes(&fx.resource, std::string("dup"), oids[0]);
     REQUIRE(writes.size() == 1);
-    auto second = fx.invoke(&manager_disk_t::append_pg_catalog_row,
-                            fx.ctx(),
-                            writes[0].table_oid,
-                            std::move(writes[0].row));
+    auto second =
+        fx.invoke(&manager_disk_t::append_pg_catalog_row, fx.ctx(), writes[0].table_oid, std::move(writes[0].row));
     REQUIRE(second.has_error());
     REQUIRE(second.error().type == core::error_code_t::database_already_exists);
 
@@ -211,14 +209,22 @@ TEST_CASE("services::disk::error::delete_rows_refusal_is_not_a_zero_count") {
 
     INFO("the delete happened: three marks set");
     {
-        auto r = fx.invoke(&manager_disk_t::storage_delete_rows, txn_ctx(), table_oid, ids_of(first_row, 3), std::uint64_t{3});
+        auto r = fx.invoke(&manager_disk_t::storage_delete_rows,
+                           txn_ctx(),
+                           table_oid,
+                           ids_of(first_row, 3),
+                           std::uint64_t{3});
         REQUIRE_FALSE(r.has_error());
         REQUIRE(r.value() == 3);
     }
 
     INFO("the same rows again: zero marks set, and that is a SUCCESS, not a refusal");
     {
-        auto r = fx.invoke(&manager_disk_t::storage_delete_rows, txn_ctx(), table_oid, ids_of(first_row, 3), std::uint64_t{3});
+        auto r = fx.invoke(&manager_disk_t::storage_delete_rows,
+                           txn_ctx(),
+                           table_oid,
+                           ids_of(first_row, 3),
+                           std::uint64_t{3});
         REQUIRE_FALSE(r.has_error());
         REQUIRE(r.value() == 0);
     }
@@ -774,8 +780,8 @@ TEST_CASE("services::disk::error::a_publish_or_revert_that_finds_no_storage_says
         ranges.push_back(components::pg_catalog_append_range_t{nowhere, 0, 3});
         // An unowned oid is reported through publish_revert_misses and skipped, not refused, so the
         // handler itself must still answer no_error -- which is what the next line counts on.
-        REQUIRE_FALSE(fx.invoke(&manager_disk_t::storage_revert_appends, txn_ctx(), std::move(ranges), false)
-                          .contains_error());
+        REQUIRE_FALSE(
+            fx.invoke(&manager_disk_t::storage_revert_appends, txn_ctx(), std::move(ranges), false).contains_error());
         REQUIRE(services::disk::publish_revert_misses() == 4);
     }
 

@@ -192,8 +192,7 @@ TEST_CASE("services::disk::mvcc::resolve_includes_uncommitted_deletes") {
     auto kept = fx.invoke(&manager_disk_t::resolve_namespace, fx.auto_ctx(), std::string("kept_ns"));
     REQUIRE_FALSE(kept.has_error());
     REQUIRE(kept.value().found);
-    auto dropped =
-        fx.invoke(&manager_disk_t::resolve_namespace, fx.auto_ctx(), std::string("dropped_ns"));
+    auto dropped = fx.invoke(&manager_disk_t::resolve_namespace, fx.auto_ctx(), std::string("dropped_ns"));
     REQUIRE_FALSE(dropped.has_error());
     REQUIRE(dropped.value().found);
 }
@@ -380,9 +379,8 @@ TEST_CASE("services::disk::mvcc::dynamic_schema_register_rollback_undoes") {
     REQUIRE(before.found);
     REQUIRE(before.columns.size() == 0);
 
-    REQUIRE_FALSE(
-        fx.invoke(&manager_disk_t::storage_revert_appends, fx.txn_ctx(txn1), std::move(pending_ranges), false)
-            .contains_error());
+    REQUIRE_FALSE(fx.invoke(&manager_disk_t::storage_revert_appends, fx.txn_ctx(txn1), std::move(pending_ranges), false)
+                      .contains_error());
 
     auto after_other = test_probe::probe_table(fx, fx.auto_ctx(), ns_oid, std::string("docs"));
     REQUIRE(after_other.found);
@@ -516,15 +514,12 @@ TEST_CASE("services::disk::mvcc::resolve_namespace_sees_its_own_uncommitted_row"
                                                    std::move(w.row)));
     }
     INFO("the creating transaction must see its own pg_namespace row");
-    auto own = fx.invoke(&manager_disk_t::resolve_namespace,
-                         fx.txn_ctx(uncommitted),
-                         std::string("ns_own_txn"));
+    auto own = fx.invoke(&manager_disk_t::resolve_namespace, fx.txn_ctx(uncommitted), std::string("ns_own_txn"));
     REQUIRE_FALSE(own.has_error());
     REQUIRE(own.value().found);
 
     INFO("other sessions still do not (case 2's half must keep holding)");
-    auto other =
-        fx.invoke(&manager_disk_t::resolve_namespace, fx.auto_ctx(), std::string("ns_own_txn"));
+    auto other = fx.invoke(&manager_disk_t::resolve_namespace, fx.auto_ctx(), std::string("ns_own_txn"));
     REQUIRE_FALSE(other.has_error());
     REQUIRE_FALSE(other.value().found);
 }

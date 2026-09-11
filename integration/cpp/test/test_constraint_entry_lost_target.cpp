@@ -4,8 +4,8 @@
 // unique_constraints/pk_columns at once -- exactly what "no constraints declared" looks like --
 // and silently drops a declared UNIQUE.
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -69,8 +69,7 @@ namespace {
         logical_plan::resolve_entry_t constraint_entry;
         constraint_entry.direction = logical_plan::resolve_direction::outgoing;
         constraint_entry.target = target;
-        plan.catalog_resolves.ensure(resource, logical_plan::resolve_kind::constraint)
-            .add(std::move(constraint_entry));
+        plan.catalog_resolves.ensure(resource, logical_plan::resolve_kind::constraint).add(std::move(constraint_entry));
 
         return d->execute_plan(otterbrix::session_id_t(), std::move(plan));
     }
@@ -114,19 +113,9 @@ TEST_CASE("integration::cpp::constraint_entry_lost_target::an_unnamed_target_doe
 
     seed(d);
 
-    auto first = insert_with_constraint_target(d,
-                                               "cur",
-                                               "t",
-                                               1,
-                                               100,
-                                               logical_plan::resolve_entry_t::no_target);
+    auto first = insert_with_constraint_target(d, "cur", "t", 1, 100, logical_plan::resolve_entry_t::no_target);
     INFO("first INSERT: " << (first->is_error() ? first->get_error().what : "accepted"));
-    auto dup = insert_with_constraint_target(d,
-                                             "cur",
-                                             "t",
-                                             2,
-                                             100,
-                                             logical_plan::resolve_entry_t::no_target);
+    auto dup = insert_with_constraint_target(d, "cur", "t", 2, 100, logical_plan::resolve_entry_t::no_target);
     INFO("duplicate-code INSERT: " << (dup->is_error() ? dup->get_error().what : "accepted"));
 
     auto stored = exec(d, "SELECT id FROM cur.t WHERE code = 100 ORDER BY id;");

@@ -109,10 +109,10 @@ namespace {
         second_read_fault_scope_t(const second_read_fault_scope_t&) = delete;
         second_read_fault_scope_t& operator=(const second_read_fault_scope_t&) = delete;
 
-        std::string marker;              // segment files matching this get the wrapper
-        uint64_t target_offset{0};       // the last data page's byte offset
-        uint64_t fail_from_nth{2};       // let the checksum pass through, refuse the re-read
-        uint64_t reads_at_offset{0};     // diagnostics: how many reads hit the offset
+        std::string marker;          // segment files matching this get the wrapper
+        uint64_t target_offset{0};   // the last data page's byte offset
+        uint64_t fail_from_nth{2};   // let the checksum pass through, refuse the re-read
+        uint64_t reads_at_offset{0}; // diagnostics: how many reads hit the offset
 
         std::unique_ptr<core::filesystem::file_handle_t>
         wrap(const std::filesystem::path& path, std::unique_ptr<core::filesystem::file_handle_t> inner) override {
@@ -182,9 +182,7 @@ namespace {
         // ASAN), mirroring production (agent_disk_t::storage_append_inner builds off resource()).
         // resource_ is declared FIRST so it outlives ~wal_env_t's teardown of manager_. Extracted
         // so a test can assert the ARENA of a REAL payload before it's moved into the message.
-        std::pmr::vector<data_chunk_t> make_insert_batch(size_t rows) {
-            return one_chunk(&resource_, rows);
-        }
+        std::pmr::vector<data_chunk_t> make_insert_batch(size_t rows) { return one_chunk(&resource_, rows); }
 
         auto send_insert(uint64_t txn_id, size_t rows, uint64_t row_start = 0) {
             auto [ns, fut] = actor_zeta::otterbrix::send(manager_->address(),

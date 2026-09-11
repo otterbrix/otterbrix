@@ -117,11 +117,11 @@ namespace components::operators {
                 // value in either is corrupt, not a variant to default — defaulting relkind to 'r' would quietly
                 // drop a 'g' table's GC forever.
                 if (pg_class_rows.is_null(0, i) || pg_class_rows.is_null(3, i)) {
-                    set_error(core::error_t{
-                        core::error_code_t::data_corruption,
-                        std::pmr::string{"VACUUM: a pg_class row carries a NULL oid or relkind — corrupt "
-                                         "catalog row; refusing to decide table maintenance over it",
-                                         resource_}});
+                    set_error(
+                        core::error_t{core::error_code_t::data_corruption,
+                                      std::pmr::string{"VACUUM: a pg_class row carries a NULL oid or relkind — corrupt "
+                                                       "catalog row; refusing to decide table maintenance over it",
+                                                       resource_}});
                     mark_failed();
                     co_return;
                 }

@@ -136,9 +136,9 @@ namespace otterbrix {
         , space(other.space) {}
 
     pyconnection_ptr py_connection_t::connect(const module_arena_ptr& arena,
-                                             const py::object& database_p,
-                                             bool read_only,
-                                             const py::dict& config_options) {
+                                              const py::object& database_p,
+                                              bool read_only,
+                                              const py::dict& config_options) {
         // Without an arena the refusals below can't put their message anywhere.
         // A throw, not an assert: NDEBUG deletes the assert, leaving a null dereference.
         if (!arena) {
@@ -305,7 +305,7 @@ namespace otterbrix {
         auto tableref = scan_t::replacement_object(space->dispatcher()->resource(), value, name);
 
         return std::make_unique<py_relation_t>(shared_from_this(),
-                                              relation_factory_t::create_df_relation(std::move(tableref)));
+                                               relation_factory_t::create_df_relation(std::move(tableref)));
     }
 
     std::unique_ptr<py_relation_t> py_connection_t::from_object(const py::object& value) {
@@ -316,7 +316,7 @@ namespace otterbrix {
         assert(tableref);
 
         return std::make_unique<py_relation_t>(shared_from_this(),
-                                              relation_factory_t::create_df_relation(std::move(tableref)));
+                                               relation_factory_t::create_df_relation(std::move(tableref)));
     }
 
 } // namespace otterbrix

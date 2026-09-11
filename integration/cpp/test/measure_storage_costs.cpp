@@ -14,8 +14,8 @@
 // mean something against a Debug baseline).
 // Run: ./measure_storage_costs [all|checkpoint|insert|index] [runs]
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <algorithm>
 #include <chrono>

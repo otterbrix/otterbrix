@@ -21,11 +21,10 @@ namespace {
         return std::string{cur.get_error().what.begin(), cur.get_error().what.end()};
     }
 
-    std::ptrdiff_t error_span(const cursor_t& cur) {
-        return cur.get_error().what.end() - cur.get_error().what.begin();
-    }
+    std::ptrdiff_t error_span(const cursor_t& cur) { return cur.get_error().what.end() - cur.get_error().what.begin(); }
 
-    constexpr std::string_view short_refusal = "ALTER TABLE: column \"nosuchcol\" does not exist on relation \"edb.t\".";
+    constexpr std::string_view short_refusal =
+        "ALTER TABLE: column \"nosuchcol\" does not exist on relation \"edb.t\".";
 
     // Past the 120-byte mark the allocator's stride between blocks is larger, so a by-value read comes apart by more.
     constexpr std::string_view long_refusal =
@@ -45,8 +44,7 @@ namespace {
     // the overload services/collection/executor.cpp's refusal sites take directly.
     cursor_t_ptr
     refuse_by_name(std::pmr::memory_resource* producer, std::pmr::memory_resource* owner, std::string_view message) {
-        core::error_t err{core::error_code_t::schema_error,
-                          std::pmr::string{message.begin(), message.end(), producer}};
+        core::error_t err{core::error_code_t::schema_error, std::pmr::string{message.begin(), message.end(), producer}};
         REQUIRE(err.what.get_allocator().resource() == producer);
         return make_cursor(owner, err);
     }

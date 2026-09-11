@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <filesystem>
@@ -137,8 +137,7 @@ namespace {
 // RED: the in-flight transaction's slots are not replayed, so every committed row lands kInFlight
 // slots lower than the id the index holds for it, and the index answers with the wrong row.
 TEST_CASE("integration::cpp::wal_replay_rowid_drift::an_in_flight_transaction_may_not_renumber_committed_rows") {
-    const std::filesystem::path crash_dir =
-        integration_fixture_path("test_wal_replay_rowid_drift/in_flight_crashed");
+    const std::filesystem::path crash_dir = integration_fixture_path("test_wal_replay_rowid_drift/in_flight_crashed");
     seed_and_crash(integration_fixture_path("test_wal_replay_rowid_drift/in_flight_orig"), crash_dir, "");
 
     auto crash_config = test_create_config(crash_dir);

@@ -7,8 +7,8 @@
 // or std::length_error, reproduced but not fixed here); each error is read exactly once below,
 // and the content checks stay since they are what caught the corruption.
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

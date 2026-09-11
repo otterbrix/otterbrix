@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -92,8 +92,8 @@ TEST_CASE("integration::cpp::checkpoint_rebuild_snapshot::a_commit_after_the_sta
         REQUIRE(pin->value(0, 0).value<uint64_t>() == static_cast<uint64_t>(kRows));
     }
 
-    REQUIRE(exec_fresh("INSERT INTO sdb.t (id, k) VALUES (" + std::to_string(kNewId) + ", " +
-                       std::to_string(kNewKey) + ");")
+    REQUIRE(exec_fresh("INSERT INTO sdb.t (id, k) VALUES (" + std::to_string(kNewId) + ", " + std::to_string(kNewKey) +
+                       ");")
                 ->is_success());
 
     INFO("before the round, BOTH routes answer B's row for a fresh session");

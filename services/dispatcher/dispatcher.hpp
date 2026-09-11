@@ -166,9 +166,9 @@ namespace services::dispatcher {
 
     private:
         // Member coroutine, not a lambda, so `this` supplies the frame memory_resource.
-        unique_future<void> unwind_udf_fanout_(
-            components::session::session_id_t session,
-            std::pmr::vector<std::pair<std::size_t, components::compute::function_uid>> registered);
+        unique_future<void>
+        unwind_udf_fanout_(components::session::session_id_t session,
+                           std::pmr::vector<std::pair<std::size_t, components::compute::function_uid>> registered);
 
         void try_trigger_cleanup_if_horizon_advanced() noexcept;
 

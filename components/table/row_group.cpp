@@ -276,8 +276,10 @@ namespace components::table {
 #ifdef DEV_MODE
                 g_predicate_row_fetches.fetch_add(1, std::memory_order_relaxed);
 #endif
-                get_column(column)
-                    .fetch_row(column_state, base_row + static_cast<int64_t>(row), rows.data[column], row);
+                get_column(column).fetch_row(column_state,
+                                             base_row + static_cast<int64_t>(row),
+                                             rows.data[column],
+                                             row);
                 if (fetch_state.absorb_error(column_state)) {
                     return fetch_state.fetch_error;
                 }
@@ -689,10 +691,9 @@ namespace components::table {
         auto ids = row_ids.data<int64_t>();
 
         if (column_path.empty() || column_path[0] >= columns_.size()) {
-            return core::error_t(
-                core::error_code_t::invalid_parameter,
-                std::pmr::string("row group update: the column path names no column of this row group",
-                                 collection_->resource()));
+            return core::error_t(core::error_code_t::invalid_parameter,
+                                 std::pmr::string("row group update: the column path names no column of this row group",
+                                                  collection_->resource()));
         }
         auto primary_column_idx = column_path[0];
         auto& col_data = get_column(primary_column_idx);
@@ -1008,13 +1009,9 @@ namespace components::table {
         return columns_[c] ? columns_[c]->use_count() : 0;
     }
 
-    const row_version_manager_t* row_group_t::version_manager_identity() const {
-        return owned_version_info_.get();
-    }
+    const row_version_manager_t* row_group_t::version_manager_identity() const { return owned_version_info_.get(); }
 
-    const row_version_manager_t* row_group_t::version_manager_published() const {
-        return version_info_.load();
-    }
+    const row_version_manager_t* row_group_t::version_manager_published() const { return version_info_.load(); }
 
     uint64_t row_group_t::version_manager_owner_count() const {
         return owned_version_info_ ? static_cast<uint64_t>(owned_version_info_->use_count()) : 0;

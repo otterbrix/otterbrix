@@ -56,8 +56,8 @@ namespace {
         return path;
     }
 
-    std::vector<std::pair<logical_value_t, size_t>>
-    entries(std::pmr::memory_resource* resource, std::initializer_list<std::pair<int64_t, size_t>> rows) {
+    std::vector<std::pair<logical_value_t, size_t>> entries(std::pmr::memory_resource* resource,
+                                                            std::initializer_list<std::pair<int64_t, size_t>> rows) {
         std::vector<std::pair<logical_value_t, size_t>> values;
         for (const auto& [key, row_id] : rows) {
             values.emplace_back(logical_value_t(resource, key), row_id);
@@ -130,27 +130,22 @@ TEST_CASE("services::index::btree_index_agent_t buffers a transaction's own writ
     const logical_value_t val42(&resource, int64_t{42});
 
     auto read = [&](uint64_t txn_id, compare_type compare) {
-        auto answer = ask<&index_agent_contract::read_rows>(agent,
-                                                            session,
-                                                            compare,
-                                                            logical_value_t(&resource, val42),
-                                                            txn_id);
+        auto answer =
+            ask<&index_agent_contract::read_rows>(agent, session, compare, logical_value_t(&resource, val42), txn_id);
         REQUIRE_FALSE(answer.has_error());
         return sorted(std::move(answer.value()));
     };
 
     SECTION("a transaction sees its own staged insert, and nobody else does") {
-        REQUIRE_FALSE(
-            ask<&index_agent_contract::stage_inserts>(agent, session, txn1, entries(&resource, {{42, 0}}))
-                .contains_error());
+        REQUIRE_FALSE(ask<&index_agent_contract::stage_inserts>(agent, session, txn1, entries(&resource, {{42, 0}}))
+                          .contains_error());
         CHECK(read(txn1, compare_type::eq) == std::vector<int64_t>{0});
         CHECK(read(txn2, compare_type::eq).empty());
     }
 
     SECTION("committing publishes the bucket into the tree, where everyone reads it") {
-        REQUIRE_FALSE(
-            ask<&index_agent_contract::stage_inserts>(agent, session, txn1, entries(&resource, {{42, 0}}))
-                .contains_error());
+        REQUIRE_FALSE(ask<&index_agent_contract::stage_inserts>(agent, session, txn1, entries(&resource, {{42, 0}}))
+                          .contains_error());
         REQUIRE_FALSE(
             ask<&index_agent_contract::commit_inserts>(agent, session, txn1, commit_id_of(txn1)).contains_error());
         CHECK(read(txn2, compare_type::eq) == std::vector<int64_t>{0});
@@ -158,9 +153,8 @@ TEST_CASE("services::index::btree_index_agent_t buffers a transaction's own writ
     }
 
     SECTION("aborting erases the bucket and touches nothing durable") {
-        REQUIRE_FALSE(
-            ask<&index_agent_contract::stage_inserts>(agent, session, txn1, entries(&resource, {{42, 0}}))
-                .contains_error());
+        REQUIRE_FALSE(ask<&index_agent_contract::stage_inserts>(agent, session, txn1, entries(&resource, {{42, 0}}))
+                          .contains_error());
         REQUIRE(read(txn1, compare_type::eq).size() == 1);
         REQUIRE_FALSE(ask<&index_agent_contract::revert_inserts>(agent, session, txn1).contains_error());
         CHECK(read(txn1, compare_type::eq).empty());
@@ -168,16 +162,14 @@ TEST_CASE("services::index::btree_index_agent_t buffers a transaction's own writ
     }
 
     SECTION("a staged delete hides a committed row from the transaction that staged it") {
-        REQUIRE_FALSE(
-            ask<&index_agent_contract::stage_inserts>(agent, session, txn1, entries(&resource, {{42, 7}}))
-                .contains_error());
+        REQUIRE_FALSE(ask<&index_agent_contract::stage_inserts>(agent, session, txn1, entries(&resource, {{42, 7}}))
+                          .contains_error());
         REQUIRE_FALSE(
             ask<&index_agent_contract::commit_inserts>(agent, session, txn1, commit_id_of(txn1)).contains_error());
         REQUIRE(read(txn2, compare_type::eq) == std::vector<int64_t>{7});
 
-        REQUIRE_FALSE(
-            ask<&index_agent_contract::stage_deletes>(agent, session, txn2, entries(&resource, {{42, 7}}))
-                .contains_error());
+        REQUIRE_FALSE(ask<&index_agent_contract::stage_deletes>(agent, session, txn2, entries(&resource, {{42, 7}}))
+                          .contains_error());
         INFO("the deleting transaction must stop seeing the row");
         CHECK(read(txn2, compare_type::eq).empty());
         INFO("and everyone else must still see it, because the delete is not committed");
@@ -189,24 +181,20 @@ TEST_CASE("services::index::btree_index_agent_t buffers a transaction's own writ
     }
 
     SECTION("a row inserted AND deleted by one transaction ends up absent") {
-        REQUIRE_FALSE(
-            ask<&index_agent_contract::stage_inserts>(agent, session, txn1, entries(&resource, {{42, 5}}))
-                .contains_error());
-        REQUIRE_FALSE(
-            ask<&index_agent_contract::stage_deletes>(agent, session, txn1, entries(&resource, {{42, 5}}))
-                .contains_error());
+        REQUIRE_FALSE(ask<&index_agent_contract::stage_inserts>(agent, session, txn1, entries(&resource, {{42, 5}}))
+                          .contains_error());
+        REQUIRE_FALSE(ask<&index_agent_contract::stage_deletes>(agent, session, txn1, entries(&resource, {{42, 5}}))
+                          .contains_error());
         CHECK(read(txn1, compare_type::eq).empty());
     }
 
     SECTION("clear() wipes the tree and the REBUILD's bucket, and nobody else's") {
-        REQUIRE_FALSE(
-            ask<&index_agent_contract::stage_inserts>(agent, session, txn1, entries(&resource, {{42, 1}}))
-                .contains_error());
+        REQUIRE_FALSE(ask<&index_agent_contract::stage_inserts>(agent, session, txn1, entries(&resource, {{42, 1}}))
+                          .contains_error());
         REQUIRE_FALSE(
             ask<&index_agent_contract::commit_inserts>(agent, session, txn1, commit_id_of(txn1)).contains_error());
-        REQUIRE_FALSE(
-            ask<&index_agent_contract::stage_inserts>(agent, session, txn2, entries(&resource, {{42, 2}}))
-                .contains_error());
+        REQUIRE_FALSE(ask<&index_agent_contract::stage_inserts>(agent, session, txn2, entries(&resource, {{42, 2}}))
+                          .contains_error());
         REQUIRE(read(txn2, compare_type::eq).size() == 2);
 
         REQUIRE_FALSE(ask<&index_agent_contract::clear>(agent, session).contains_error());
@@ -241,18 +229,13 @@ TEST_CASE("services::index::btree_index_agent_t answers every predicate over sta
 
     const auto session = session_id_t::generate_uid();
     const uint64_t txn = TRANSACTION_ID_START + 11;
-    REQUIRE_FALSE(ask<&index_agent_contract::stage_inserts>(agent,
-                                                            session,
-                                                            txn,
-                                                            entries(&resource, {{3, 30}, {5, 50}, {7, 70}}))
-                      .contains_error());
+    REQUIRE_FALSE(
+        ask<&index_agent_contract::stage_inserts>(agent, session, txn, entries(&resource, {{3, 30}, {5, 50}, {7, 70}}))
+            .contains_error());
 
     auto probe = [&](compare_type compare, int64_t key) {
-        auto answer = ask<&index_agent_contract::read_rows>(agent,
-                                                            session,
-                                                            compare,
-                                                            logical_value_t(&resource, key),
-                                                            txn);
+        auto answer =
+            ask<&index_agent_contract::read_rows>(agent, session, compare, logical_value_t(&resource, key), txn);
         REQUIRE_FALSE(answer.has_error());
         return sorted(std::move(answer.value()));
     };
@@ -301,9 +284,8 @@ TEST_CASE("services::index::bitcask_index_agent_t buffers a transaction's own wr
 
     SECTION("own staged insert, then commit, then a staged delete") {
         const logical_value_t val42(&resource, int64_t{42});
-        REQUIRE_FALSE(
-            ask<&index_agent_contract::stage_inserts>(agent, session, txn1, entries(&resource, {{42, 7}}))
-                .contains_error());
+        REQUIRE_FALSE(ask<&index_agent_contract::stage_inserts>(agent, session, txn1, entries(&resource, {{42, 7}}))
+                          .contains_error());
         CHECK(read(txn1, val42) == std::vector<int64_t>{7});
         CHECK(read(txn2, val42).empty());
 
@@ -311,9 +293,8 @@ TEST_CASE("services::index::bitcask_index_agent_t buffers a transaction's own wr
             ask<&index_agent_contract::commit_inserts>(agent, session, txn1, commit_id_of(txn1)).contains_error());
         CHECK(read(txn2, val42) == std::vector<int64_t>{7});
 
-        REQUIRE_FALSE(
-            ask<&index_agent_contract::stage_deletes>(agent, session, txn2, entries(&resource, {{42, 7}}))
-                .contains_error());
+        REQUIRE_FALSE(ask<&index_agent_contract::stage_deletes>(agent, session, txn2, entries(&resource, {{42, 7}}))
+                          .contains_error());
         CHECK(read(txn2, val42).empty());
         CHECK(read(TRANSACTION_ID_START + 3, val42) == std::vector<int64_t>{7});
 
@@ -324,9 +305,8 @@ TEST_CASE("services::index::bitcask_index_agent_t buffers a transaction's own wr
 
     SECTION("aborting erases the bucket") {
         const logical_value_t val77(&resource, int64_t{77});
-        REQUIRE_FALSE(
-            ask<&index_agent_contract::stage_inserts>(agent, session, txn1, entries(&resource, {{77, 9}}))
-                .contains_error());
+        REQUIRE_FALSE(ask<&index_agent_contract::stage_inserts>(agent, session, txn1, entries(&resource, {{77, 9}}))
+                          .contains_error());
         REQUIRE(read(txn1, val77).size() == 1);
         REQUIRE_FALSE(ask<&index_agent_contract::revert_inserts>(agent, session, txn1).contains_error());
         CHECK(read(txn1, val77).empty());
@@ -335,9 +315,8 @@ TEST_CASE("services::index::bitcask_index_agent_t buffers a transaction's own wr
     // A hashed key is normalized to BIGINT/UBIGINT before keying, in both the agent's encoder
     // and the store's key_bytes_for_hash -- checked here across both halves.
     SECTION("a SMALLINT probe matches a BIGINT-stored key, in the bucket and in the store") {
-        REQUIRE_FALSE(
-            ask<&index_agent_contract::stage_inserts>(agent, session, txn1, entries(&resource, {{4242, 1}}))
-                .contains_error());
+        REQUIRE_FALSE(ask<&index_agent_contract::stage_inserts>(agent, session, txn1, entries(&resource, {{4242, 1}}))
+                          .contains_error());
         const logical_value_t probe_small(&resource, int16_t{4242});
         INFO("the staged half must be found by a narrower probe");
         CHECK(read(txn1, probe_small) == std::vector<int64_t>{1});
@@ -353,11 +332,8 @@ TEST_CASE("services::index::bitcask_index_agent_t buffers a transaction's own wr
     // A range refusal must be a VALUE, not an empty result: an empty range is
     // indistinguishable from "no row carries this key".
     SECTION("a range predicate is refused, loudly") {
-        for (auto compare : {compare_type::ne,
-                             compare_type::lt,
-                             compare_type::lte,
-                             compare_type::gt,
-                             compare_type::gte}) {
+        for (auto compare :
+             {compare_type::ne, compare_type::lt, compare_type::lte, compare_type::gt, compare_type::gte}) {
             auto answer = ask<&index_agent_contract::read_rows>(agent,
                                                                 session,
                                                                 compare,
@@ -466,8 +442,9 @@ TEST_CASE("services::index::bitcask_index_agent_t hands back the store's refusal
         INFO("a read over a store whose rebuild refused is a refusal, not an empty answer");
         REQUIRE(after.has_error());
 
-        REQUIRE_FALSE(ask<&index_agent_contract::stage_inserts>(agent, session, uint64_t{0}, entries(&resource, {{42, 3}}))
-                          .contains_error());
+        REQUIRE_FALSE(
+            ask<&index_agent_contract::stage_inserts>(agent, session, uint64_t{0}, entries(&resource, {{42, 3}}))
+                .contains_error());
         REQUIRE(ask<&index_agent_contract::commit_inserts>(agent, session, uint64_t{0}, uint64_t{0}).contains_error());
     }
 
@@ -497,8 +474,8 @@ TEST_CASE("services::index::bitcask_index_agent_t reports a merge refusal in the
     auto resource = core::pmr::otterbrix_resource();
     auto log = initialization_logger("python", "/tmp/docker_logs/");
     const auto path = fresh_index_root("index_agent_merge_attribution");
-    const auto index_dir = path / std::to_string(static_cast<unsigned>(kTableOid)) /
-                           std::to_string(static_cast<unsigned>(kIndexOid));
+    const auto index_dir =
+        path / std::to_string(static_cast<unsigned>(kTableOid)) / std::to_string(static_cast<unsigned>(kIndexOid));
 
     auto agent_result = bitcask_index_agent_t::create(&resource,
                                                       path,
@@ -517,28 +494,26 @@ TEST_CASE("services::index::bitcask_index_agent_t reports a merge refusal in the
 
     // Round 1: enough records to rotate and arm a merge debt, paid while the directory
     // is still listable.
-    REQUIRE_FALSE(ask<&index_agent_contract::stage_inserts>(agent,
-                                                            session,
-                                                            txn1,
-                                                            entries(&resource, {{1, 1}, {2, 2}, {3, 3}, {4, 4}, {5, 5}}))
-                      .contains_error());
+    REQUIRE_FALSE(
+        ask<&index_agent_contract::stage_inserts>(agent,
+                                                  session,
+                                                  txn1,
+                                                  entries(&resource, {{1, 1}, {2, 2}, {3, 3}, {4, 4}, {5, 5}}))
+            .contains_error());
     REQUIRE_FALSE(
         ask<&index_agent_contract::commit_inserts>(agent, session, txn1, commit_id_of(txn1)).contains_error());
 
     // Directory becomes unlistable but stays writable/executable, so every round-2 write
     // still lands and only collect_segments can refuse.
-    std::filesystem::permissions(index_dir,
-                                 std::filesystem::perms::owner_write | std::filesystem::perms::owner_exec);
+    std::filesystem::permissions(index_dir, std::filesystem::perms::owner_write | std::filesystem::perms::owner_exec);
     struct restore_perms_t {
         std::filesystem::path dir;
         ~restore_perms_t() { std::filesystem::permissions(dir, std::filesystem::perms::owner_all); }
     } restore{index_dir};
 
-    REQUIRE_FALSE(ask<&index_agent_contract::stage_inserts>(agent,
-                                                            session,
-                                                            txn2,
-                                                            entries(&resource, {{6, 6}, {7, 7}, {8, 8}}))
-                      .contains_error());
+    REQUIRE_FALSE(
+        ask<&index_agent_contract::stage_inserts>(agent, session, txn2, entries(&resource, {{6, 6}, {7, 7}, {8, 8}}))
+            .contains_error());
     auto commit2 = ask<&index_agent_contract::commit_inserts>(agent, session, txn2, commit_id_of(txn2));
     INFO("the merge met the unlistable directory inside THIS commit; the reply must say so");
     REQUIRE(commit2.contains_error());

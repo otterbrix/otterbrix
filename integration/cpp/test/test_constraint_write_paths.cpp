@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/vector/indexing_vector.hpp>
@@ -15,7 +15,6 @@ namespace {
         return idx.value();
     }
 } // namespace
-
 
 // INSERT and UPDATE wire each constraint in separately, so every constraint here is tested on both paths.
 

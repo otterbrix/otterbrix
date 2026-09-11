@@ -6,8 +6,8 @@
 #include <components/expressions/sort_expression.hpp>
 #include <components/logical_plan/node_limit.hpp>
 #include <components/logical_plan/node_match.hpp>
-#include <integration/cpp/otterbrix.hpp>
 #include <cstdint>
+#include <integration/cpp/otterbrix.hpp>
 #include <memory>
 #include <scan/python_replacement_scan.hpp>
 #include <stdexcept>

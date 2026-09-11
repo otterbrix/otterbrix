@@ -58,15 +58,10 @@ namespace {
                                                         akey(plan_arena, "k", 1, side_t::left),
                                                         akey(plan_arena, "k2", 1, side_t::right)));
 
-        auto where = where_on_key
-                         ? make_compare_expression(plan_arena,
-                                                   compare_type::eq,
-                                                   akey(plan_arena, "k", 1, side_t::left),
-                                                   p5)
-                         : make_compare_expression(plan_arena,
-                                                   compare_type::eq,
-                                                   akey(plan_arena, "a", 0, side_t::left),
-                                                   p5);
+        auto where =
+            where_on_key
+                ? make_compare_expression(plan_arena, compare_type::eq, akey(plan_arena, "k", 1, side_t::left), p5)
+                : make_compare_expression(plan_arena, compare_type::eq, akey(plan_arena, "a", 0, side_t::left), p5);
 
         auto outer = make_node_aggregate(plan_arena, adb(), arel());
         outer->append_child(join);
@@ -131,9 +126,8 @@ TEST_CASE("components::planner::alter_default_coercion::value_cast_narrows_witho
     const components::types::logical_value_t written{&resource, static_cast<int64_t>(5000000000)};
     CHECK(written.type().type() == components::types::logical_type::BIGINT);
 
-    auto narrowed = written.cast_as(
-        components::types::complex_logical_type{components::types::logical_type::INTEGER},
-        no_session_tz);
+    auto narrowed = written.cast_as(components::types::complex_logical_type{components::types::logical_type::INTEGER},
+                                    no_session_tz);
 
     REQUIRE_FALSE(narrowed.has_error());
     CHECK(narrowed.value().type().type() == components::types::logical_type::INTEGER);

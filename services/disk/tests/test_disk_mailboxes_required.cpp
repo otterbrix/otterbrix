@@ -8,10 +8,14 @@ namespace {
 
     // Bootstrap sync: an address arriving via a post-construction call, not the constructor.
     template<typename T>
-    concept has_bootstrap_sync = requires { &T::sync; };
+    concept has_bootstrap_sync = requires {
+        &T::sync;
+    };
 
     template<typename T>
-    concept has_wal_setter = requires(T& t, actor_zeta::address_t a) { t.set_manager_wal_sync(a); };
+    concept has_wal_setter = requires(T& t, actor_zeta::address_t a) {
+        t.set_manager_wal_sync(a);
+    };
 
 } // namespace
 

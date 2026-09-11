@@ -35,7 +35,7 @@ namespace components::table {
         class buffer_handle_t;
         class block_handle_t;
         struct block_pointer_t;
-    }
+    } // namespace storage
 
     class column_segment_t;
     struct column_segment_state;
@@ -221,4 +221,4 @@ namespace components::table {
         std::string segment_info;
     };
 
-}
+} // namespace components::table

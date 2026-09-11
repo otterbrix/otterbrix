@@ -7,9 +7,9 @@
 #include <core/result_wrapper.hpp>
 
 #include <components/table/storage/metadata_manager.hpp>
-#include <components/table/storage/partial_block_manager.hpp>
 #include <components/table/storage/metadata_reader.hpp>
 #include <components/table/storage/metadata_writer.hpp>
+#include <components/table/storage/partial_block_manager.hpp>
 
 #include <cstdio>
 #include <cstring>

@@ -1,16 +1,14 @@
-#include <catch2/catch_test_macros.hpp>
 #include <absl/crc/crc32c.h>
-#include <cstddef>
-#include <cstring>
-#include <fcntl.h>
-#include <sys/resource.h>
-#include <unistd.h>
+#include <catch2/catch_test_macros.hpp>
 #include <charconv>
-#include <cstdlib>
 #include <components/index/logical_value_binary_codec.hpp>
 #include <components/table/test/fault_injection_file.hpp>
 #include <core/pmr.hpp>
 #include <core/result_wrapper.hpp>
+#include <cstddef>
+#include <cstdlib>
+#include <cstring>
+#include <fcntl.h>
 #include <fstream>
 #include <iomanip>
 #include <limits>
@@ -23,6 +21,8 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <sys/resource.h>
+#include <unistd.h>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -59,9 +59,9 @@ namespace {
     // Refuses unconditionally, so any call is a checked failure, not a silent wrong answer.
     auto loader_must_not_be_consulted(std::pmr::memory_resource* resource) {
         return [resource](uint32_t, uint64_t) -> core::result_wrapper_t<std::pmr::string> {
-            return core::error_t(core::error_code_t::io_error,
-                                 std::pmr::string{"the loader must not be consulted: every key in this case is inline",
-                                                  resource});
+            return core::error_t(
+                core::error_code_t::io_error,
+                std::pmr::string{"the loader must not be consulted: every key in this case is inline", resource});
         };
     }
 
@@ -183,8 +183,7 @@ namespace {
         uint64_t timestamp{0};
     };
     // Offset asserts, not just size: a size-only check would miss a field reordering.
-    static_assert(sizeof(crashed_record_header_t) == 24,
-                  "the stump must be the store's record header, byte for byte");
+    static_assert(sizeof(crashed_record_header_t) == 24, "the stump must be the store's record header, byte for byte");
     static_assert(offsetof(crashed_record_header_t, crc) == 0,
                   "the stump must be the store's record header, byte for byte");
     static_assert(offsetof(crashed_record_header_t, kind) == 4,
@@ -229,7 +228,6 @@ namespace {
                   "the stump must be the store's txn frame header, byte for byte");
     static_assert(offsetof(crashed_txn_frame_header_t, payload_size) == 32,
                   "the stump must be the store's txn frame header, byte for byte");
-
 
     void append_crashed_txn_frame_stump(const std::filesystem::path& log_path, uint64_t declared_payload) {
         crashed_txn_frame_header_t stump{};
@@ -316,8 +314,7 @@ namespace {
 
     bool directory_really_refuses_listing(const std::filesystem::path& directory) {
         std::error_code ec;
-        const bool listed =
-            std::filesystem::directory_iterator(directory, ec) != std::filesystem::directory_iterator();
+        const bool listed = std::filesystem::directory_iterator(directory, ec) != std::filesystem::directory_iterator();
         return static_cast<bool>(ec) || !listed;
     }
 
@@ -349,8 +346,7 @@ namespace {
         otterbrix_test::fault_plan_t plan;
 
         std::unique_ptr<core::filesystem::file_handle_t>
-        wrap(const std::filesystem::path& path,
-             std::unique_ptr<core::filesystem::file_handle_t> inner) override {
+        wrap(const std::filesystem::path& path, std::unique_ptr<core::filesystem::file_handle_t> inner) override {
             const auto name = path.string();
             if (!refuse_open_marker.empty() && name.find(refuse_open_marker) != std::string::npos) {
                 return nullptr;
@@ -1201,8 +1197,7 @@ TEST_CASE("services::index::bitcask_index_disk::find_refuses_when_a_long_keys_re
         const auto keydir_loader_refuses = [&](uint32_t, uint64_t) -> core::result_wrapper_t<std::pmr::string> {
             ++keydir_loader_calls;
             return core::error_t(core::error_code_t::io_error,
-                                 std::pmr::string{"the record carrying the whole key is unreadable",
-                                                  &resource});
+                                 std::pmr::string{"the record carrying the whole key is unreadable", &resource});
         };
         auto keydir_walk = index.hash_storage().get_all(encoded_long_key, keydir_loader_refuses);
         REQUIRE(keydir_walk.has_error());
@@ -1424,9 +1419,8 @@ TEST_CASE("services::index::bitcask_index_disk::recover_gate_refuses_a_reused_tx
         }
         wipe_all_but_txn_log(path);
 
-        auto index = make_test_index(path,
-                                     &resource,
-                                     committed_set(&resource, {committed_in_run_1, never_committed_in_run_2}));
+        auto index =
+            make_test_index(path, &resource, committed_set(&resource, {committed_in_run_1, never_committed_in_run_2}));
         const auto rows = rows_of(index.find(logical_value_t(&resource, 4242l)));
         INFO("a frame whose own commit marker DID land must still be replayed");
         REQUIRE(rows.size() == 1);
@@ -2057,8 +2051,7 @@ TEST_CASE("services::index::bitcask_index_disk::open_survives_a_keydir_entry_lef
         REQUIRE(index.force_flush().type == core::error_code_t::none);
     }
 
-    REQUIRE_FALSE(
-        std::filesystem::exists(bitcask_segment_path(path, bitcask_index_disk_t::regular_segment_id_start_)));
+    REQUIRE_FALSE(std::filesystem::exists(bitcask_segment_path(path, bitcask_index_disk_t::regular_segment_id_start_)));
     REQUIRE(std::filesystem::exists(bitcask_segment_path(path, 1)));
 
     std::filesystem::copy_file(keydir_backup, keydir_file, overwrite);
@@ -2339,7 +2332,6 @@ TEST_CASE("services::index::bitcask_index_disk::a_refused_keydir_reset_is_a_valu
     }
 }
 
-
 TEST_CASE("services::index::bitcask_index_disk::opening_over_a_read_only_directory_is_a_value_not_a_death") {
     auto resource = core::pmr::otterbrix_resource();
 
@@ -2360,7 +2352,8 @@ TEST_CASE("services::index::bitcask_index_disk::opening_over_a_read_only_directo
     }
 
     {
-        dir_permissions_guard_t read_only(path, std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec);
+        dir_permissions_guard_t read_only(path,
+                                          std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec);
         if (!directory_really_refuses_writes(path)) {
             WARN("the directory is still writable (running as root?), so the refusal cannot be staged");
             return;
@@ -2463,8 +2456,7 @@ TEST_CASE("services::index::bitcask_index_disk::clear_over_an_unlistable_directo
 
     {
         dir_permissions_guard_t unlistable(path,
-                                           std::filesystem::perms::owner_write |
-                                               std::filesystem::perms::owner_exec);
+                                           std::filesystem::perms::owner_write | std::filesystem::perms::owner_exec);
         if (!directory_really_refuses_listing(path)) {
             WARN("the directory is still listable (running as root?), so the refusal cannot be staged");
             return;
@@ -2506,7 +2498,8 @@ TEST_CASE("services::index::bitcask_index_disk::an_append_after_a_refused_rotati
     REQUIRE(index.force_flush().type == core::error_code_t::none);
 
     {
-        dir_permissions_guard_t read_only(path, std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec);
+        dir_permissions_guard_t read_only(path,
+                                          std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec);
         if (!directory_really_refuses_writes(path)) {
             WARN("the directory is still writable (running as root?), so the refusal cannot be staged");
             return;
@@ -2667,9 +2660,9 @@ TEST_CASE("services::index::bitcask_index_disk::a_record_whose_key_will_not_deco
 
         bytes[payload_offset] = std::byte{200};
 
-        absl::crc32c_t calc = absl::ComputeCrc32c(
-            absl::string_view(reinterpret_cast<const char*>(bytes.data()) + sizeof(header.crc),
-                              sizeof(header) - sizeof(header.crc)));
+        absl::crc32c_t calc =
+            absl::ComputeCrc32c(absl::string_view(reinterpret_cast<const char*>(bytes.data()) + sizeof(header.crc),
+                                                  sizeof(header) - sizeof(header.crc)));
         calc = absl::ExtendCrc32c(calc,
                                   absl::string_view(reinterpret_cast<const char*>(bytes.data()) + payload_offset,
                                                     static_cast<size_t>(header.payload_size)));
@@ -3005,8 +2998,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_record_whose_declared_payload_
     // Wrapping to exactly 0 defeats a naive "payload runs past the segment" bounds check.
     {
         crashed_record_header_t wrapping{};
-        wrapping.payload_size =
-            uint64_t{0} - (size_before + static_cast<uint64_t>(sizeof(crashed_record_header_t)));
+        wrapping.payload_size = uint64_t{0} - (size_before + static_cast<uint64_t>(sizeof(crashed_record_header_t)));
         std::ofstream output(segment, std::ios::binary | std::ios::app);
         REQUIRE(output.good());
         output.write(reinterpret_cast<const char*>(&wrapping), sizeof(wrapping));
@@ -3070,8 +3062,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_txn_frame_whose_declared_paylo
     const auto size_before = std::filesystem::file_size(log_path);
     {
         crashed_txn_frame_header_t wrapping{};
-        wrapping.payload_size =
-            uint64_t{0} - (size_before + static_cast<uint64_t>(sizeof(crashed_txn_frame_header_t)));
+        wrapping.payload_size = uint64_t{0} - (size_before + static_cast<uint64_t>(sizeof(crashed_txn_frame_header_t)));
         std::ofstream output(log_path, std::ios::binary | std::ios::app);
         REQUIRE(output.good());
         output.write(reinterpret_cast<const char*>(&wrapping), sizeof(wrapping));
@@ -3352,7 +3343,8 @@ TEST_CASE("services::index::bitcask_index_disk::a_find_on_the_active_segment_nee
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
-    auto index = bitcask_index_disk_t(path, &resource, test_flush_threshold, 10'000'000, std::pmr::set<std::uint64_t>{});
+    auto index =
+        bitcask_index_disk_t(path, &resource, test_flush_threshold, 10'000'000, std::pmr::set<std::uint64_t>{});
     index.insert(logical_value_t(&resource, 121l), 1210);
     index.insert(logical_value_t(&resource, 122l), 1220);
     REQUIRE(index.force_flush().type == core::error_code_t::none);

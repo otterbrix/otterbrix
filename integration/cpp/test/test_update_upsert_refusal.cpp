@@ -2,8 +2,8 @@
 // plain UPDATE reporting success with 0 rows. No SQL reaches this flag (no `upsert`/ON CONFLICT
 // in the grammar) — only the logical-plan API does, which is how this test drives it.
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/expressions/compare_expression.hpp>
@@ -23,8 +23,7 @@ using key = components::expressions::key_t;
 using id_par = core::parameter_id_t;
 
 TEST_CASE("integration::cpp::update_upsert::an_upsert_plan_is_refused_not_quietly_updated", "[upsert]") {
-    auto config =
-        test_create_config(integration_fixture_path("test_update_upsert_refusal/refused"));
+    auto config = test_create_config(integration_fixture_path("test_update_upsert_refusal/refused"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -64,9 +63,7 @@ TEST_CASE("integration::cpp::update_upsert::an_upsert_plan_is_refused_not_quietl
     params->add_parameter(id_par{1}, types::logical_value_t(dispatcher->resource(), int64_t(999)));
     params->add_parameter(id_par{2}, types::logical_value_t(dispatcher->resource(), int64_t(1000)));
 
-    auto cur = dispatcher->execute_plan(
-        session,
-        logical_plan::execution_plan_t{dispatcher->resource(), upd, params});
+    auto cur = dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), upd, params});
 
     INFO("an upsert plan must be refused: the engine implements no upsert, and executing "
          "the update half in silence delivers different semantics than the plan declares");

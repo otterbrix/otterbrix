@@ -523,11 +523,11 @@ TEST_CASE("components::vector::apply vector ops refuse string operands loudly") 
     auto resource = core::pmr::otterbrix_resource();
     using components::types::complex_logical_type;
     using components::types::logical_type;
+    using components::vector::vector_t;
     using components::vector::vector_ops::apply_binary_vector_op;
     using components::vector::vector_ops::apply_unary_vector_op;
     using components::vector::vector_ops::binary_vector_op;
     using components::vector::vector_ops::unary_vector_op;
-    using components::vector::vector_t;
 
     constexpr uint64_t count = 2;
     vector_t strings(&resource, complex_logical_type{logical_type::STRING_LITERAL}, count);

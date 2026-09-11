@@ -107,8 +107,7 @@ namespace {
         out.gate_reached = wait_flag(guard.gate.reached, std::chrono::seconds(30));
         if (out.gate_reached) {
             // Away from the reader's executor: it is parked on the seam and holds its mailbox.
-            const auto ddl_session = test_helpers::session_avoiding_executor(
-                test_helpers::executor_of(reader_session));
+            const auto ddl_session = test_helpers::session_avoiding_executor(test_helpers::executor_of(reader_session));
             auto ddl_cur = dispatcher->execute_sql(ddl_session, ddl_sql);
             out.ddl_ok = ddl_cur->is_success();
         }

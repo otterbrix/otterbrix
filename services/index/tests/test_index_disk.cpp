@@ -1,16 +1,16 @@
 #include <algorithm>
 #include <catch2/catch_test_macros.hpp>
-#include <fstream>
-#include <map>
 #include <components/expressions/forward.hpp>
+#include <components/index/logical_value_binary_codec.hpp>
+#include <core/b_plus_tree/b_plus_tree.hpp>
 #include <core/date/date_types.hpp>
 #include <core/pmr.hpp>
+#include <fstream>
+#include <map>
 #include <memory_resource>
 #include <services/index/bitcask_index_disk.hpp>
 #include <services/index/btree_index_disk.hpp>
 #include <services/index/btree_record_codec.hpp>
-#include <components/index/logical_value_binary_codec.hpp>
-#include <core/b_plus_tree/b_plus_tree.hpp>
 #include <vector>
 
 #include "index_fixture_path.hpp"
@@ -47,7 +47,8 @@ TEST_CASE("services::index::index_disk::string") {
     auto index = btree_index_disk_t(path, &resource);
 
     for (int i = 1; i <= 100; ++i) {
-        REQUIRE(index.insert(logical_value_t(&resource, padded_string(i)), static_cast<size_t>(i)).type == core::error_code_t::none);
+        REQUIRE(index.insert(logical_value_t(&resource, padded_string(i)), static_cast<size_t>(i)).type ==
+                core::error_code_t::none);
     }
 
     REQUIRE(index.find(logical_value_t(&resource, padded_string(1))).size() == 1);
@@ -80,7 +81,8 @@ TEST_CASE("services::index::index_disk::int32") {
     auto index = btree_index_disk_t(path, &resource);
 
     for (int i = 1; i <= 100; ++i) {
-        REQUIRE(index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i)).type == core::error_code_t::none);
+        REQUIRE(index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i)).type ==
+                core::error_code_t::none);
     }
 
     REQUIRE(index.find(logical_value_t(&resource, 1l)).size() == 1);
@@ -113,7 +115,8 @@ TEST_CASE("services::index::index_disk::uint32") {
     auto index = btree_index_disk_t(path, &resource);
 
     for (int i = 1; i <= 100; ++i) {
-        REQUIRE(index.insert(logical_value_t(&resource, uint64_t(i)), static_cast<size_t>(i)).type == core::error_code_t::none);
+        REQUIRE(index.insert(logical_value_t(&resource, uint64_t(i)), static_cast<size_t>(i)).type ==
+                core::error_code_t::none);
     }
 
     REQUIRE(index.find(logical_value_t(&resource, 1ul)).size() == 1);
@@ -146,7 +149,8 @@ TEST_CASE("services::index::index_disk::double") {
     auto index = btree_index_disk_t(path, &resource);
 
     for (int i = 1; i <= 100; ++i) {
-        REQUIRE(index.insert(logical_value_t(&resource, double(i)), static_cast<size_t>(i)).type == core::error_code_t::none);
+        REQUIRE(index.insert(logical_value_t(&resource, double(i)), static_cast<size_t>(i)).type ==
+                core::error_code_t::none);
     }
 
     REQUIRE(index.find(logical_value_t(&resource, 1.)).size() == 1);
@@ -180,7 +184,8 @@ TEST_CASE("services::index::index_disk::multi_values::int32") {
 
     for (int i = 1; i <= 100; ++i) {
         for (int j = 0; j < 10; ++j) {
-            REQUIRE(index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(1000 * j + i)).type == core::error_code_t::none);
+            REQUIRE(index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(1000 * j + i)).type ==
+                    core::error_code_t::none);
         }
     }
 
@@ -198,7 +203,8 @@ TEST_CASE("services::index::index_disk::multi_values::int32") {
 
     for (int i = 2; i <= 100; i += 2) {
         for (int j = 5; j < 10; ++j) {
-            REQUIRE(index.remove(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(1000 * j + i)).type == core::error_code_t::none);
+            REQUIRE(index.remove(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(1000 * j + i)).type ==
+                    core::error_code_t::none);
         }
     }
 
@@ -217,7 +223,8 @@ TEST_CASE("services::index::index_disk::persist_close_reopen") {
     {
         auto index = btree_index_disk_t(path, &resource);
         for (int i = 1; i <= 100; ++i) {
-            REQUIRE(index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i)).type == core::error_code_t::none);
+            REQUIRE(index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i)).type ==
+                    core::error_code_t::none);
         }
         REQUIRE(index.force_flush().type == core::error_code_t::none);
     }
@@ -248,7 +255,8 @@ TEST_CASE("services::index::index_disk::remove_flush_reload") {
     {
         auto index = btree_index_disk_t(path, &resource);
         for (int i = 1; i <= 100; ++i) {
-            REQUIRE(index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i)).type == core::error_code_t::none);
+            REQUIRE(index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i)).type ==
+                    core::error_code_t::none);
         }
         for (int i = 2; i <= 100; i += 2) {
             REQUIRE(index.remove(logical_value_t(&resource, int64_t(i))).type == core::error_code_t::none);
@@ -341,10 +349,12 @@ TEST_CASE("services::index::index_disk::date_keys") {
     auto index = btree_index_disk_t(path, &resource);
 
     for (int i = 1; i <= 100; i += 2) {
-        REQUIRE(index.insert(logical_value_t(&resource, date_t{days{i}}), static_cast<size_t>(i)).type == core::error_code_t::none);
+        REQUIRE(index.insert(logical_value_t(&resource, date_t{days{i}}), static_cast<size_t>(i)).type ==
+                core::error_code_t::none);
     }
     for (int i = 100; i >= 2; i -= 2) {
-        REQUIRE(index.insert(logical_value_t(&resource, date_t{days{i}}), static_cast<size_t>(i)).type == core::error_code_t::none);
+        REQUIRE(index.insert(logical_value_t(&resource, date_t{days{i}}), static_cast<size_t>(i)).type ==
+                core::error_code_t::none);
     }
 
     const auto key = [&](int i) { return logical_value_t(&resource, date_t{days{i}}); };
@@ -444,7 +454,8 @@ TEST_CASE("services::index::index_disk::write_path_never_uses_the_default_resour
     } guard{std::pmr::set_default_resource(std::pmr::null_memory_resource())};
 
     for (int i = 1; i <= 8; ++i) {
-        REQUIRE(index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i)).type == core::error_code_t::none);
+        REQUIRE(index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i)).type ==
+                core::error_code_t::none);
     }
     REQUIRE(index.insert(logical_value_t(&resource, int64_t(4)), size_t(400)).type ==
             core::error_code_t::none); // duplicate key
@@ -468,7 +479,8 @@ TEST_CASE("services::index::index_disk::ordered_reads_are_ascending") {
     auto index = btree_index_disk_t(path, &resource);
 
     for (int i = 1; i <= 100; ++i) {
-        REQUIRE(index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i)).type == core::error_code_t::none);
+        REQUIRE(index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i)).type ==
+                core::error_code_t::none);
     }
 
     const auto below = index.lower_bound(logical_value_t(&resource, int64_t(10)));
@@ -498,7 +510,8 @@ TEST_CASE("services::index::index_disk::null_key_is_refused") {
     const auto null_key = [&] { return logical_value_t(&resource, complex_logical_type{logical_type::NA}); };
 
     for (int i = 1; i <= 100; ++i) {
-        REQUIRE(index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i)).type == core::error_code_t::none);
+        REQUIRE(index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i)).type ==
+                core::error_code_t::none);
     }
     REQUIRE(index.insert(null_key(), size_t(999)).type == core::error_code_t::none);
     index.insert_bulk_unchecked(null_key(), size_t(998));
@@ -524,15 +537,15 @@ TEST_CASE("services::index::index_disk::scan_range_answers_every_comparison") {
     auto on_disk = btree_index_disk_t(path, &resource);
 
     const std::vector<std::pair<int64_t, int64_t>> rows = {{10, 1},
-                                                          {-5, 2},
-                                                          {0, 3},
-                                                          {10, 4}, // duplicate key
-                                                          {7, 5},
-                                                          {-5, 6},
-                                                          {42, 7},
-                                                          {3, 8},
-                                                          {10, 9},
-                                                          {-100, 10}};
+                                                           {-5, 2},
+                                                           {0, 3},
+                                                           {10, 4}, // duplicate key
+                                                           {7, 5},
+                                                           {-5, 6},
+                                                           {42, 7},
+                                                           {3, 8},
+                                                           {10, 9},
+                                                           {-100, 10}};
     for (const auto& [k, row] : rows) {
         components::types::logical_value_t v(&resource, k);
         REQUIRE(on_disk.insert(v, static_cast<size_t>(row)).type == core::error_code_t::none);
@@ -587,8 +600,8 @@ TEST_CASE("services::index::index_disk::scan_range_answers_every_comparison") {
         return out;
     };
 
-    for (int64_t probe : {int64_t(-101), int64_t(-100), int64_t(-5), int64_t(0), int64_t(4), int64_t(10),
-                          int64_t(42), int64_t(43)}) {
+    for (int64_t probe :
+         {int64_t(-101), int64_t(-100), int64_t(-5), int64_t(0), int64_t(4), int64_t(10), int64_t(42), int64_t(43)}) {
         components::types::logical_value_t v(&resource, probe);
         for (auto compare : {compare_type::eq,
                              compare_type::ne,
@@ -684,8 +697,8 @@ TEST_CASE("services::index::index_disk::a_corrupt_block_refuses_the_probe_instea
     {
         auto index = btree_index_disk_t(path, &resource);
         for (int i = 1; i <= 200; ++i) {
-            REQUIRE_FALSE(index.insert(logical_value_t(&resource, int64_t{i}), static_cast<size_t>(i))
-                              .contains_error());
+            REQUIRE_FALSE(
+                index.insert(logical_value_t(&resource, int64_t{i}), static_cast<size_t>(i)).contains_error());
         }
         REQUIRE_FALSE(index.force_flush().contains_error());
         REQUIRE(index.find(logical_value_t(&resource, int64_t{42})).size() == 1);
@@ -700,8 +713,7 @@ TEST_CASE("services::index::index_disk::a_corrupt_block_refuses_the_probe_instea
         }
         std::fstream file(entry.path(), std::ios::in | std::ios::out | std::ios::binary);
         REQUIRE(file.is_open());
-        const auto offset =
-            static_cast<std::streamoff>(core::b_plus_tree::segment_tree_t::header_size) + 128;
+        const auto offset = static_cast<std::streamoff>(core::b_plus_tree::segment_tree_t::header_size) + 128;
         file.seekg(offset);
         char byte = 0;
         REQUIRE(file.get(byte).good());
@@ -766,8 +778,7 @@ TEST_CASE("services::index::index_disk::the_tree_holds_no_descriptor_per_leaf_at
         REQUIRE(leaf_files >= 11);
 
         const auto descriptors_at_rest = open_descriptors();
-        INFO("a resting tree of " << leaf_files << " leaves held "
-                                  << (descriptors_at_rest - descriptors_before)
+        INFO("a resting tree of " << leaf_files << " leaves held " << (descriptors_at_rest - descriptors_before)
                                   << " new descriptors; the budget is not per leaf");
         REQUIRE(descriptors_at_rest < descriptors_before + 8);
 

@@ -94,11 +94,10 @@ namespace {
                 if (is_null_row(row)) {
                     chunk.set_value(0, i, logical_value_t{resource, nullptr});
                 } else {
-                    chunk.set_value(0,
-                                    i,
-                                    logical_value_t::create_decimal(resource,
-                                                                    decimal_type,
-                                                                    decimal_payload(row, width)));
+                    chunk.set_value(
+                        0,
+                        i,
+                        logical_value_t::create_decimal(resource, decimal_type, decimal_payload(row, width)));
                 }
             }
             table_append_state state(resource);
@@ -189,9 +188,7 @@ TEST_CASE("wide_decimal: NUMERIC(38,4) round-trips scan, compact and reopen elem
 }
 
 // One digit narrower and the column would take the INT64 arm that always existed; NUMERIC(19,0) is the exact seam.
-TEST_CASE("wide_decimal: NUMERIC(19,0) is the first width past int64 storage") {
-    run_wide_decimal_round_trip(19, 0);
-}
+TEST_CASE("wide_decimal: NUMERIC(19,0) is the first width past int64 storage") { run_wide_decimal_round_trip(19, 0); }
 
 // Every digit a fraction digit, so the payload is still a full-width 128-bit integer while the value is < 1.
 TEST_CASE("wide_decimal: NUMERIC(38,38) carries the maximum scale") { run_wide_decimal_round_trip(38, 38); }

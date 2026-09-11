@@ -38,9 +38,8 @@ namespace components::table {
     core::result_wrapper_t<uint64_t> list_column_data_t::fetch_list_offset(int64_t row_idx) {
         auto segment = data_.get_segment(row_idx);
         if (!segment) {
-            return core::error_t(
-                core::error_code_t::invalid_parameter,
-                std::pmr::string("list column: the row id names no offsets segment", resource_));
+            return core::error_t(core::error_code_t::invalid_parameter,
+                                 std::pmr::string("list column: the row id names no offsets segment", resource_));
         }
         column_fetch_state fetch_state;
         vector::vector_t result(resource_, type_, 1);
@@ -336,9 +335,9 @@ namespace components::table {
                 // In-place update writes each element over the one the row already owns, so it
                 // cannot move neighbours to make room. A length change is a real statement-level
                 // refusal (this path is WAL replay, so the length comes from a journal on disk).
-                return core::error_t(core::error_code_t::unimplemented_yet,
-                                     std::pmr::string("in-place LIST update cannot change a row's list length",
-                                                      resource_));
+                return core::error_t(
+                    core::error_code_t::unimplemented_yet,
+                    std::pmr::string("in-place LIST update cannot change a row's list length", resource_));
             }
             total += stored_length;
         }

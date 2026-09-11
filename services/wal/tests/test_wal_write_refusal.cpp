@@ -126,9 +126,7 @@ namespace {
             manager_.reset();
         }
 
-        std::pmr::vector<data_chunk_t> make_insert_batch(size_t rows) {
-            return one_chunk(&resource_, rows);
-        }
+        std::pmr::vector<data_chunk_t> make_insert_batch(size_t rows) { return one_chunk(&resource_, rows); }
 
         auto send_insert(uint64_t txn_id, size_t rows, uint64_t row_start = 0) {
             auto [ns, fut] = actor_zeta::otterbrix::send(manager_->address(),
@@ -177,7 +175,7 @@ namespace {
         std::unique_ptr<manager_wal_replicate_t, actor_zeta::pmr::deleter_t> manager_;
     };
 
-}
+} // namespace
 
 // A refused page write must not surface as a wal_id: the record is 500 rows (over PAGE_DATA_SIZE)
 // so append() flushes mid-record, the exact call whose bool answer must not be dropped.

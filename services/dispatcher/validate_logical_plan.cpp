@@ -16,12 +16,11 @@
 #include <components/catalog/table_id.hpp>
 #include <components/compute/function.hpp>
 #include <components/compute/kernel_signature.hpp>
-#include <components/index/logical_value_binary_codec.hpp>
-#include <components/types/type_spec_codec.hpp>
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/cast_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/expressions/sort_expression.hpp>
+#include <components/index/logical_value_binary_codec.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_alter_column.hpp>
 #include <components/logical_plan/node_alter_table.hpp>
@@ -50,6 +49,7 @@
 #include <components/logical_plan/node_select.hpp>
 #include <components/logical_plan/node_sort.hpp>
 #include <components/table/column_definition.hpp>
+#include <components/types/type_spec_codec.hpp>
 #include <list>
 #include <optional>
 #include <queue>
@@ -540,7 +540,7 @@ namespace services::dispatcher {
             return core::error_t::no_error();
         }
 
-    }
+    } // namespace impl
 
     core::error_t check_namespace_exists(std::pmr::memory_resource* resource,
                                          const catalog_resolves_t* resolves,
@@ -584,7 +584,7 @@ namespace services::dispatcher {
             }
             return core::error_t(core::error_code_t::sql_parse_error, std::move(msg));
         }
-    }
+    } // namespace
 
     core::error_t check_type_exists(std::pmr::memory_resource* resource,
                                     const catalog_resolves_t* resolves,
@@ -654,10 +654,10 @@ namespace services::dispatcher {
         std::pmr::vector<std::byte> spec(resource);
         auto encoded = components::types::encode_type_spec(type, spec);
         if (encoded.has_error()) {
-            return core::error_t(core::error_code_t::schema_error,
-                                 std::pmr::string{subject + " cannot be persisted: " +
-                                                      std::string(encoded.error().what.c_str()),
-                                                  resource});
+            return core::error_t(
+                core::error_code_t::schema_error,
+                std::pmr::string{subject + " cannot be persisted: " + std::string(encoded.error().what.c_str()),
+                                 resource});
         }
         return core::error_t::no_error();
     }
@@ -704,9 +704,8 @@ namespace services::dispatcher {
                 if (insert_target_relkind == 'g') {
                     for (auto& chunk : data_node->chunks()) {
                         auto& cols = chunk.data;
-                        const bool names_readable =
-                            written_column_list != nullptr &&
-                            written_column_list->key_translation().size() == cols.size();
+                        const bool names_readable = written_column_list != nullptr &&
+                                                    written_column_list->key_translation().size() == cols.size();
                         std::string dropped_names;
                         std::size_t dropped_count = 0;
                         for (std::size_t i = 0; i < cols.size(); ++i) {
@@ -1905,8 +1904,7 @@ namespace services::dispatcher {
                     // Unchecked, this crashes column_segment_t ("no segment storage for physical type 127").
                     if (is_computed) {
                         const auto& source_columns = incoming_schema.value();
-                        const bool written_names_align =
-                            insert_node->key_translation().size() == source_columns.size();
+                        const bool written_names_align = insert_node->key_translation().size() == source_columns.size();
                         for (size_t i = 0; i < source_columns.size(); i++) {
                             if (source_columns[i].type.type() != components::types::logical_type::NA) {
                                 continue;
@@ -1917,14 +1915,13 @@ namespace services::dispatcher {
                             } else if (source_columns[i].type.has_alias()) {
                                 column_name = std::string(source_columns[i].type.alias());
                             }
-                            std::string named = column_name.empty()
-                                                    ? std::string{}
-                                                    : std::string{" \""} + column_name + "\"";
+                            std::string named =
+                                column_name.empty() ? std::string{} : std::string{" \""} + column_name + "\"";
                             return core::error_t(
                                 core::error_code_t::schema_error,
                                 std::pmr::string{"insert_node: INSERT into dynamic-schema table '" +
-                                                     target_relname_ins + "': source column " +
-                                                     std::to_string(i + 1) + named +
+                                                     target_relname_ins + "': source column " + std::to_string(i + 1) +
+                                                     named +
                                                      " is NULL in every row, so there is no type to create the "
                                                      "column from",
                                                  resource});
@@ -2015,11 +2012,11 @@ namespace services::dispatcher {
                                             return key.as_string() == written_name;
                                         });
                                     if (key_it == keys.end()) {
-                                        return core::error_t(
-                                            core::error_code_t::schema_error,
-                                            std::pmr::string{"insert_node: VALUES column '" + written_name +
-                                                                 "' is not in the INSERT column list",
-                                                             resource});
+                                        return core::error_t(core::error_code_t::schema_error,
+                                                             std::pmr::string{"insert_node: VALUES column '" +
+                                                                                  written_name +
+                                                                                  "' is not in the INSERT column list",
+                                                                              resource});
                                     }
                                     key_pos = static_cast<size_t>(key_it - keys.begin());
                                 }
@@ -2290,21 +2287,18 @@ namespace services::dispatcher {
                 }
                 auto& keys = idx_node->keys();
                 // The encoders below have no error channel (abort in Debug, wrong rows under NDEBUG).
-                const bool ordered_index =
-                    idx_node->type() != components::logical_plan::index_type::hashed;
+                const bool ordered_index = idx_node->type() != components::logical_plan::index_type::hashed;
                 for (auto& key : keys) {
                     auto key_res = validation::validate_key(resource, key, &table_schema);
                     if (key_res.has_error()) {
                         return key_res.convert_error<named_schema>();
                     }
                     const auto& key_type = key_res.value().front().type;
-                    if (!components::index::codec::is_representable_index_key_type(key_type.type(),
-                                                                                   ordered_index)) {
+                    if (!components::index::codec::is_representable_index_key_type(key_type.type(), ordered_index)) {
                         std::string message = "CREATE INDEX: key '" + key.as_string() + "' has type " +
                                               describe_type(key_type) +
                                               ", which the index key encoders cannot represent";
-                        if (ordered_index &&
-                            key_type.type() == components::types::logical_type::DECIMAL) {
+                        if (ordered_index && key_type.type() == components::types::logical_type::DECIMAL) {
                             message += " in an ordered index (USING hash carries DECIMAL)";
                         }
                         return core::error_t{core::error_code_t::index_create_fail,

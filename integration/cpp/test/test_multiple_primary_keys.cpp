@@ -1,8 +1,8 @@
 // Declaration legs accept a second 'p' row in pg_constraint (unlike PostgreSQL); refusal happens
 // only at first USE (DML gather or FK bind), naming both constraints, and the doubled state stays repairable.
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

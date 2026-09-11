@@ -370,20 +370,20 @@ namespace services::dispatcher {
         if (new_lowest > last_broadcast_horizon_) {
             last_broadcast_horizon_ = new_lowest;
             auto sweep_broadcast = [&] {
-                    if (disk_has_dropped_) {
-                        auto disk_send_result =
-                            actor_zeta::otterbrix::send(disk_address_,
-                                                        &services::disk::manager_disk_t::on_horizon_advanced,
-                                                        new_lowest);
-                        pending_void_.emplace_back(std::move(disk_send_result.second));
-                    }
-                    if (index_has_dropped_ && index_address_ != actor_zeta::address_t::empty_address()) {
-                        auto index_send_result =
-                            actor_zeta::otterbrix::send(index_address_,
-                                                        &services::index::manager_index_t::on_horizon_advanced,
-                                                        new_lowest);
-                        pending_void_.emplace_back(std::move(index_send_result.second));
-                    }
+                if (disk_has_dropped_) {
+                    auto disk_send_result =
+                        actor_zeta::otterbrix::send(disk_address_,
+                                                    &services::disk::manager_disk_t::on_horizon_advanced,
+                                                    new_lowest);
+                    pending_void_.emplace_back(std::move(disk_send_result.second));
+                }
+                if (index_has_dropped_ && index_address_ != actor_zeta::address_t::empty_address()) {
+                    auto index_send_result =
+                        actor_zeta::otterbrix::send(index_address_,
+                                                    &services::index::manager_index_t::on_horizon_advanced,
+                                                    new_lowest);
+                    pending_void_.emplace_back(std::move(index_send_result.second));
+                }
             };
             sweep_broadcast();
         }
@@ -579,11 +579,10 @@ namespace services::dispatcher {
         std::pmr::vector<actor_zeta::unique_future<bool>> acks(resource());
         acks.reserve(registered.size());
         for (const auto& [idx, uid] : registered) {
-            auto [needs_sched, fut] = actor_zeta::otterbrix::send(
-                executor_addresses_[idx],
-                &collection::executor::executor_t::unregister_udf_uid,
-                session,
-                uid);
+            auto [needs_sched, fut] = actor_zeta::otterbrix::send(executor_addresses_[idx],
+                                                                  &collection::executor::executor_t::unregister_udf_uid,
+                                                                  session,
+                                                                  uid);
             if (needs_sched && executors_[idx]) {
                 scheduler_->enqueue(executors_[idx].get());
             }

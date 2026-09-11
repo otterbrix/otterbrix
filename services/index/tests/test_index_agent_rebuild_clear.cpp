@@ -113,9 +113,8 @@ namespace {
             REQUIRE_FALSE(
                 ask<&index_agent_contract::commit_inserts>(agent, session, uint64_t{0}, uint64_t{0}).contains_error());
 
-            REQUIRE_FALSE(
-                ask<&index_agent_contract::commit_inserts>(agent, session, writer, commit_id_of(writer))
-                    .contains_error());
+            REQUIRE_FALSE(ask<&index_agent_contract::commit_inserts>(agent, session, writer, commit_id_of(writer))
+                              .contains_error());
 
             // What this catches: a wiped bucket turning commit_inserts into a silent no-op.
             CHECK(read(42, onlooker) == std::vector<int64_t>{7});
@@ -142,9 +141,8 @@ namespace {
             REQUIRE_FALSE(
                 ask<&index_agent_contract::commit_inserts>(agent, session, uint64_t{0}, uint64_t{0}).contains_error());
 
-            REQUIRE_FALSE(
-                ask<&index_agent_contract::commit_deletes>(agent, session, writer, commit_id_of(writer))
-                    .contains_error());
+            REQUIRE_FALSE(ask<&index_agent_contract::commit_deletes>(agent, session, writer, commit_id_of(writer))
+                              .contains_error());
 
             // What this catches: the delete reported as landed while the row stays in the rebuilt index.
             CHECK(read(42, onlooker).empty());

@@ -24,7 +24,8 @@ namespace services::index {
     template<typename loader_t>
     concept hash_key_loader = requires(const loader_t& load_full_key, uint32_t log_file_id, uint64_t log_offset) {
         // std::pmr::string, not std::string: the key comes back from a store with its own resource.
-        { load_full_key(log_file_id, log_offset) } -> std::same_as<core::result_wrapper_t<std::pmr::string>>;
+        { load_full_key(log_file_id, log_offset) }
+        ->std::same_as<core::result_wrapper_t<std::pmr::string>>;
     };
 
     class disk_hash_table_t final {
@@ -58,14 +59,13 @@ namespace services::index {
 
         // Failure means the entry could not be placed, or an auto-rehash it tripped could not
         // finish; the table stays consistent either way (see split_one_bucket_unlocked).
-        [[nodiscard]] core::error_t
-        put(std::string_view key, int64_t value, uint32_t log_file_id, uint64_t log_offset);
+        [[nodiscard]] core::error_t put(std::string_view key, int64_t value, uint32_t log_file_id, uint64_t log_offset);
 
         // A page chain walk that cannot finish refuses rather than returning a partial row set —
         // a silent `break` would make "three rows" indistinguishable from a read failure mid-count.
         template<hash_key_loader loader_t>
-        [[nodiscard]] core::result_wrapper_t<std::vector<value_ref_t>>
-        get_all(std::string_view key, const loader_t& load_full_key) const {
+        [[nodiscard]] core::result_wrapper_t<std::vector<value_ref_t>> get_all(std::string_view key,
+                                                                               const loader_t& load_full_key) const {
             const uint32_t key_hash = hash_key(key);
             uint64_t page_id = bucket_primary_page_id(bucket_id_for_hash(key_hash));
             std::pmr::vector<value_ref_t> values(memory_resource_);
@@ -101,8 +101,8 @@ namespace services::index {
         }
 
         template<hash_key_loader loader_t>
-        [[nodiscard]] core::result_wrapper_t<std::optional<value_ref_t>>
-        get(std::string_view key, const loader_t& load_full_key) const {
+        [[nodiscard]] core::result_wrapper_t<std::optional<value_ref_t>> get(std::string_view key,
+                                                                             const loader_t& load_full_key) const {
             VALUE_OR_RETURN(auto all, get_all(key, load_full_key));
             if (all.empty()) {
                 return std::optional<value_ref_t>{};

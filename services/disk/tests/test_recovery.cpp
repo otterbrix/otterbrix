@@ -168,10 +168,8 @@ TEST_CASE("test_recovery_orphaned_uncommitted_ddl") {
         auto writes =
             components::catalog::build_create_namespace_writes(&fx.resource, std::string("orphaned_ns"), ns_oid);
         for (auto& w : writes)
-            disk_test_helpers::append_ok(fx.invoke(&manager_disk_t::append_pg_catalog_row,
-                                                   uncommitted_ctx,
-                                                   w.table_oid,
-                                                   std::move(w.row)));
+            disk_test_helpers::append_ok(
+                fx.invoke(&manager_disk_t::append_pg_catalog_row, uncommitted_ctx, w.table_oid, std::move(w.row)));
         // Intentionally omit storage_publish_commits — simulates crash before commit.
     }
 
@@ -180,8 +178,7 @@ TEST_CASE("test_recovery_orphaned_uncommitted_ddl") {
         REQUIRE_NOTHROW(fx.disk->bootstrap_system_tables_sync());
         REQUIRE_NOTHROW(fx.disk->restore_oid_generator_sync());
 
-        auto res =
-            fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("orphaned_ns"));
+        auto res = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("orphaned_ns"));
         REQUIRE_FALSE(res.has_error());
         REQUIRE_FALSE(res.value().found);
     }

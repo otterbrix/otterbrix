@@ -17,9 +17,9 @@ namespace {
 
     // create_decimal reports an out-of-window (width, scale) via core::error_t, not an
     // assert that vanishes under NDEBUG; every literal here is in-window.
-    components::types::complex_logical_type
-    make_decimal(uint8_t width, uint8_t scale, std::string alias = "") {
-        auto created = components::types::complex_logical_type::create_decimal(decimal_resource(), width, scale, std::move(alias));
+    components::types::complex_logical_type make_decimal(uint8_t width, uint8_t scale, std::string alias = "") {
+        auto created =
+            components::types::complex_logical_type::create_decimal(decimal_resource(), width, scale, std::move(alias));
         REQUIRE_FALSE(created.has_error());
         return std::move(created.value());
     }
@@ -96,10 +96,7 @@ TEST_CASE("operators::resolve_operator: bitwise operators are integer-only") {
     // The "same numeric type" rule that arithmetic uses must not reach these.
     REQUIRE_FALSE(resolve_operator(operator_code::bit_and, real, real).has_value());
     REQUIRE_FALSE(resolve_operator(operator_code::bit_or, boolean, boolean).has_value());
-    REQUIRE_FALSE(resolve_operator(operator_code::bit_xor,
-                                   make_decimal(10, 2),
-                                   make_decimal(10, 2))
-                      .has_value());
+    REQUIRE_FALSE(resolve_operator(operator_code::bit_xor, make_decimal(10, 2), make_decimal(10, 2)).has_value());
 
     auto inverted = resolve_operator(operator_code::bit_not, integer);
     REQUIRE(inverted.has_value());
@@ -132,14 +129,8 @@ TEST_CASE("operators::resolve_operator: comparisons return bool") {
     REQUIRE(strings->result.type() == logical_type::BOOLEAN);
 
     // Decimals compare only on equal parameters, same as arithmetic.
-    REQUIRE(resolve_operator(operator_code::equal,
-                             make_decimal(10, 2),
-                             make_decimal(10, 2))
-                .has_value());
-    REQUIRE_FALSE(resolve_operator(operator_code::equal,
-                                   make_decimal(10, 2),
-                                   make_decimal(10, 4))
-                      .has_value());
+    REQUIRE(resolve_operator(operator_code::equal, make_decimal(10, 2), make_decimal(10, 2)).has_value());
+    REQUIRE_FALSE(resolve_operator(operator_code::equal, make_decimal(10, 2), make_decimal(10, 4)).has_value());
 }
 
 TEST_CASE("operators::resolve_operator: logical operators take bool only") {

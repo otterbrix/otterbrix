@@ -54,9 +54,8 @@ namespace otterbrix_test {
             if (plan_.fail_writes_from != 0 && plan_.writes_seen >= plan_.fail_writes_from) {
                 return false;
             }
-            if (plan_.fail_writes_at_header_slots &&
-                (location == components::table::storage::SECTOR_SIZE ||
-                 location == 2 * components::table::storage::SECTOR_SIZE)) {
+            if (plan_.fail_writes_at_header_slots && (location == components::table::storage::SECTOR_SIZE ||
+                                                      location == 2 * components::table::storage::SECTOR_SIZE)) {
                 plan_.header_writes_failed++;
                 return false;
             }

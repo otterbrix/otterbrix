@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -120,7 +120,7 @@ namespace {
         REQUIRE(cur->is_success());
     }
 
-}
+} // namespace
 
 TEST_CASE("integration::cpp::test_alter_drop_column_reclaim::disk_drop_column_returns_blocks") {
     auto config = test_create_config(integration_fixture_path("test_alter_drop_column_reclaim/disk_drop"));
@@ -310,8 +310,7 @@ TEST_CASE("integration::cpp::test_alter_drop_column_reclaim::crash_before_checkp
 
     // The table now holds more rows than `before` did, yet its durable root must name fewer data
     // blocks (b is 40 * 8 B per row against a's 8 B); on the unfixed build the root grows instead.
-    INFO("root data blocks before=" << before.report.root_data.size() << " after="
-                                    << after.report.root_data.size());
+    INFO("root data blocks before=" << before.report.root_data.size() << " after=" << after.report.root_data.size());
     CHECK(after.report.root_data.size() < before.report.root_data.size());
 
     std::set<uint64_t> gone;

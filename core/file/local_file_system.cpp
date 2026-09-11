@@ -5,7 +5,8 @@
 // when checked with Win32 types supplied. A loud refusal beats code that only
 // pretends to work.
 #ifdef PLATFORM_WINDOWS
-#error "core/file/local_file_system.cpp has no Windows implementation. The POSIX arm is the only one this tree builds or tests; a Windows port has to be written and given a CI job, not resurrected from the dead arm that used to sit here."
+#error                                                                                                                 \
+    "core/file/local_file_system.cpp has no Windows implementation. The POSIX arm is the only one this tree builds or tests; a Windows port has to be written and given a CI job, not resurrected from the dead arm that used to sit here."
 #endif
 
 #include "path_utils.hpp"
@@ -492,8 +493,7 @@ namespace core::filesystem {
         return true;
     }
 
-    bool
-    list_files(local_file_system_t& lfs, path_t directory, const list_files_callback_t& callback) {
+    bool list_files(local_file_system_t& lfs, path_t directory, const list_files_callback_t& callback) {
         if (!directory_exists(lfs, directory)) {
             return false;
         }

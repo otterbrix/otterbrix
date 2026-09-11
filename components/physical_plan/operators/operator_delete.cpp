@@ -404,9 +404,9 @@ namespace components::operators {
                         break;
                     }
                     auto [_g, gf] = actor_zeta::otterbrix::send(ctx->disk_address,
-                                                               &services::disk::manager_disk_t::storage_total_rows,
-                                                               ctx->session,
-                                                               table_oid_);
+                                                                &services::disk::manager_disk_t::storage_total_rows,
+                                                                ctx->session,
+                                                                table_oid_);
                     auto ping = co_await std::move(gf);
                     if (ping.has_error()) {
                         break;

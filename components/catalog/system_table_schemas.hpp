@@ -39,7 +39,6 @@ namespace components::catalog {
     // System tables are addressed by oid, never by name; nullptr means the OID isn't a system table.
     const system_table_def_t* find_system_table(oid_t relation_oid);
 
-
     // Round-trip helpers for pg_attribute.atttypspec / pg_type.typdefspec. `decode_type_spec` is
     // fail-loud: anything outside the encoder's exact grammar is a data_corruption error, never a
     // guessed type; only the empty spec and explicit "UNKNOWN(name)" are legitimate UNKNOWN answers.

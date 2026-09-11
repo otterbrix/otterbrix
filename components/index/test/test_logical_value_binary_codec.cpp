@@ -51,8 +51,7 @@ TEST_CASE("logical_value_binary_codec: roundtrip_supported_types") {
     values.emplace_back(&resource, core::date::time_t{core::date::microseconds{123456789}});
     values.emplace_back(&resource, core::date::timestamp_t{core::date::microseconds{7777777}});
     values.emplace_back(&resource, core::date::timestamptz_t{core::date::microseconds{-5555555}});
-    values.emplace_back(
-        logical_value_t::create_decimal(&resource, make_decimal(18, 2), 123456789));
+    values.emplace_back(logical_value_t::create_decimal(&resource, make_decimal(18, 2), 123456789));
     values.emplace_back(logical_value_t::create_decimal(&resource,
                                                         make_decimal(38, 8),
                                                         components::types::int128_t{1234567890123456789LL}));
@@ -168,8 +167,7 @@ TEST_CASE("logical_value_binary_codec: skip_logical_value") {
     values.emplace_back(&resource, 1.25f);
     values.emplace_back(&resource, 3.5);
     values.emplace_back(&resource, std::string("hello-codec"));
-    values.emplace_back(
-        logical_value_t::create_decimal(&resource, make_decimal(18, 2), 123456789));
+    values.emplace_back(logical_value_t::create_decimal(&resource, make_decimal(18, 2), 123456789));
     values.emplace_back(logical_value_t::create_decimal(&resource,
                                                         make_decimal(38, 8),
                                                         components::types::int128_t{1234567890123456789LL}));
@@ -375,7 +373,6 @@ TEST_CASE("logical_value_binary_codec: read_le_raw refuses a short record") {
     CHECK(v == 0);
     CHECK(pos == 0);
 }
-
 
 // A well-formed record must not be reported as corrupt: `ok` is only ever set to FALSE, so a
 // caller initialises it to true and one flag can cover a whole record of several values.

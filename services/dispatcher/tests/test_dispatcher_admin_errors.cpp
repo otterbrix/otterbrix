@@ -12,10 +12,10 @@
 #include <actor-zeta/spawn.hpp>
 #include <components/casts/cast_registry.hpp>
 #include <components/catalog/catalog_oids.hpp>
-#include <components/context/context.hpp>
 #include <components/catalog/ddl_metadata_builder.hpp>
 #include <components/catalog/oid_batch.hpp>
 #include <components/compute/function.hpp>
+#include <components/context/context.hpp>
 #include <components/session/session.hpp>
 #include <components/types/types.hpp>
 #include <core/executor.hpp>
@@ -118,11 +118,11 @@ struct admin_fixture : actor_zeta::actor::actor_mixin<admin_fixture> {
         , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource, scheduler_, scheduler_, disk_config_, log_))
         , wal_config_(disk_path)
         , manager_wal_(actor_zeta::spawn<manager_wal_replicate_t>(resource,
-                                                                   scheduler_,
-                                                                   wal_config_,
-                                                                   log_,
-                                                                   manager_disk_->address(),
-                                                                   components::pipeline::no_mailbox()))
+                                                                  scheduler_,
+                                                                  wal_config_,
+                                                                  log_,
+                                                                  manager_disk_->address(),
+                                                                  components::pipeline::no_mailbox()))
         // No index manager in this fixture — its absence is named, not defaulted away.
         , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(resource,
                                                                       scheduler_,

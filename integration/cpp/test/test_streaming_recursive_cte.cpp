@@ -1,8 +1,8 @@
 // Asserts a WITH RECURSIVE query streams end-to-end through execute_pipeline (fixpoint sub-plans
 // AND the outer plan), not just that it is correct -- see test_subqueries.cpp for correctness.
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <services/collection/executor.hpp>
 

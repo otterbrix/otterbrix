@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -111,9 +111,9 @@ TEST_CASE("integration::cpp::index_concurrent_merge::readers_and_writers_share_o
         // Three anchor rows under one key, not one: a reader that keeps only the last row
         // id per key would answer a singleton correctly and slip through.
         for (int i = 0; i < kAnchorRows; ++i) {
-            REQUIRE(exec("INSERT INTO cm.t (id, k) VALUES (" + std::to_string(i) + ", " +
-                         std::to_string(kAnchorKey) + ");")
-                        ->is_success());
+            REQUIRE(
+                exec("INSERT INTO cm.t (id, k) VALUES (" + std::to_string(i) + ", " + std::to_string(kAnchorKey) + ");")
+                    ->is_success());
         }
 
         const std::vector<int64_t> expected_anchor_ids{0, 1, 2};
@@ -185,8 +185,7 @@ TEST_CASE("integration::cpp::index_concurrent_merge::readers_and_writers_share_o
         INFO("an index scan that answered anything but the three anchor rows read a keydir "
              "or a segment set while a merge was rewriting it");
         CHECK(wrong_answers.load(std::memory_order_relaxed) == 0);
-        CHECK(reads_done.load(std::memory_order_relaxed) ==
-              static_cast<size_t>(kProbesPerReader) * kReaderThreads);
+        CHECK(reads_done.load(std::memory_order_relaxed) == static_cast<size_t>(kProbesPerReader) * kReaderThreads);
 
         // Read the layout before shutdown: shutdown runs a CHECKPOINT that repopulates every
         // index with one bulk load, which suppresses rotation — a post-shutdown directory

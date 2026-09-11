@@ -116,7 +116,9 @@ namespace {
         return table;
     }
 
-    uint64_t slot_offset(uint64_t iteration) { return (iteration % 2 == 1) ? tstorage::SECTOR_SIZE : 2 * tstorage::SECTOR_SIZE; }
+    uint64_t slot_offset(uint64_t iteration) {
+        return (iteration % 2 == 1) ? tstorage::SECTOR_SIZE : 2 * tstorage::SECTOR_SIZE;
+    }
 
     // Recomputes the checksum over the forged bytes, so the gate tests the field, not the checksum.
     void forge_active_header(const std::string& path, const tstorage::database_header_t& forged) {
@@ -174,11 +176,11 @@ TEST_CASE("accounting_bounds: releasing a block past the end of the file is refu
             ++free_listed_past_end;
         }
     }
-    WARN("[bounds gate 1] walker: durable_block_count=" << report.block_count << " chain="
-         << report.chain_blocks.size() << " durable_data=" << report.durable_data.size() << " registry="
-         << report.registry_live.size() << " freelist=" << report.free_list_content.size() << " unexplained="
-         << report.unexplained.size() << " overlap=" << report.reachable_free_overlap.size()
-         << " free_listed_past_end=" << free_listed_past_end);
+    WARN("[bounds gate 1] walker: durable_block_count="
+         << report.block_count << " chain=" << report.chain_blocks.size()
+         << " durable_data=" << report.durable_data.size() << " registry=" << report.registry_live.size()
+         << " freelist=" << report.free_list_content.size() << " unexplained=" << report.unexplained.size()
+         << " overlap=" << report.reachable_free_overlap.size() << " free_listed_past_end=" << free_listed_past_end);
     CHECK(free_listed_past_end == 0);
     CHECK(report.unexplained.empty());
     CHECK(report.reachable_free_overlap.empty());
@@ -188,8 +190,7 @@ TEST_CASE("accounting_bounds: releasing a block past the end of the file is refu
 
 // GATE 2: deserialize_free_list rejected only the transient domain, so a free list naming a
 // block past the file's own extent opened CLEANLY and armed the next allocation to write past EOF.
-TEST_CASE("accounting_bounds: a free list naming a block past the file's extent is refused at open",
-          "[bounds]") {
+TEST_CASE("accounting_bounds: a free list naming a block past the file's extent is refused at open", "[bounds]") {
     const auto path = bounds_db_path("freelist_past_end");
     remove_file(path);
 
@@ -310,8 +311,7 @@ TEST_CASE("accounting_bounds: a reservation that could not be made is reported",
 
 // GATE 6: serialize_free_list's registry-live term is fed disk ids with no extent check; on a
 // NON-compacting round nothing frees one, publishing an id the header's own block_count disavows.
-TEST_CASE("accounting_bounds: a checkpoint refuses to publish a free-list id its own header disavows",
-          "[bounds]") {
+TEST_CASE("accounting_bounds: a checkpoint refuses to publish a free-list id its own header disavows", "[bounds]") {
     const auto path = bounds_db_path("writer_vs_reader");
     remove_file(path);
 
@@ -329,8 +329,8 @@ TEST_CASE("accounting_bounds: a checkpoint refuses to publish a free-list id its
         REQUIRE(bm.registry_alive(bogus));
 
         const bool committed = checkpoint_round(bm, *table);
-        INFO("bogus id " << bogus << ", total_blocks " << bm.total_blocks() << ", committed "
-                         << committed << ", degraded " << bm.degraded());
+        INFO("bogus id " << bogus << ", total_blocks " << bm.total_blocks() << ", committed " << committed
+                         << ", degraded " << bm.degraded());
         REQUIRE(bogus >= bm.total_blocks());
         CHECK_FALSE(committed);
         CHECK(bm.degraded());
@@ -342,8 +342,7 @@ TEST_CASE("accounting_bounds: a checkpoint refuses to publish a free-list id its
     bounds_env_t env2;
     tstorage::single_file_block_manager_t bm2(env2.buffer_manager, env2.fs, path);
     auto reopened = bm2.load_existing_database();
-    INFO("reopen after the refused round: "
-         << (reopened.has_error() ? reopened.error().what.c_str() : "opened"));
+    INFO("reopen after the refused round: " << (reopened.has_error() ? reopened.error().what.c_str() : "opened"));
     CHECK_FALSE(reopened.has_error());
 
     remove_file(path);
@@ -359,7 +358,8 @@ TEST_CASE("components::table::column_segment::a_segment_larger_than_its_block_is
     tstorage::buffer_pool_t buffer_pool(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24);
     tstorage::standard_buffer_manager_t buffer_manager(&resource, fs, buffer_pool);
 
-    auto registered = buffer_manager.register_transient_memory(buffer_manager.block_size(), buffer_manager.block_size());
+    auto registered =
+        buffer_manager.register_transient_memory(buffer_manager.block_size(), buffer_manager.block_size());
     REQUIRE_FALSE(registered.has_error());
     auto& block = registered.value();
     REQUIRE(block != nullptr);
@@ -374,13 +374,8 @@ TEST_CASE("components::table::column_segment::a_segment_larger_than_its_block_is
         ::signal(SIGABRT, SIG_DFL);
         ::signal(SIGSEGV, SIG_DFL);
         ::signal(SIGBUS, SIG_DFL);
-        column_segment_t oversized(block,
-                                   complex_logical_type{logical_type::BIGINT},
-                                   0,
-                                   0,
-                                   tstorage::INVALID_BLOCK,
-                                   0,
-                                   limit + 1);
+        column_segment_t
+            oversized(block, complex_logical_type{logical_type::BIGINT}, 0, 0, tstorage::INVALID_BLOCK, 0, limit + 1);
         _exit(oversized.segment_size() == limit + 1 ? 42 : 43);
     }
     int status = 0;

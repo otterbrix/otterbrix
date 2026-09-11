@@ -43,8 +43,7 @@ TEST_CASE("components::planner::ddl_unresolved::create_index_on_a_missing_table_
 
 TEST_CASE("components::planner::ddl_unresolved::drop_index_on_a_missing_index_is_refused") {
     auto resource = core::pmr::otterbrix_resource();
-    auto node =
-        components::logical_plan::make_node_drop(&resource, components::logical_plan::drop_target_kind::index);
+    auto node = components::logical_plan::make_node_drop(&resource, components::logical_plan::drop_target_kind::index);
     node->set_dbname(std::string{"db"});
     node->set_relname(std::string{"t"});
     node->set_index_name(std::string{"no_such_index"});
@@ -63,8 +62,7 @@ TEST_CASE("components::planner::ddl_unresolved::drop_index_on_a_missing_index_is
 
 TEST_CASE("components::planner::ddl_unresolved::drop_index_if_exists_on_a_missing_index_is_a_noop_success") {
     auto resource = core::pmr::otterbrix_resource();
-    auto node =
-        components::logical_plan::make_node_drop(&resource, components::logical_plan::drop_target_kind::index);
+    auto node = components::logical_plan::make_node_drop(&resource, components::logical_plan::drop_target_kind::index);
     node->set_dbname(std::string{"db"});
     node->set_relname(std::string{"t"});
     node->set_index_name(std::string{"no_such_index"});

@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -249,7 +249,7 @@ TEST_CASE("integration::cpp::index_stale_after_compact::the_wal_auto_checkpoint_
         }
     }
     INFO("waited " << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() -
-                                                                           wait_started)
+                                                                            wait_started)
                           .count()
                    << " ms for the automatic round: table_checkpoints=" << services::disk::table_checkpoints()
                    << " index_repopulations=" << services::index::index_repopulations());

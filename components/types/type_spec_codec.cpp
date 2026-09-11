@@ -330,10 +330,11 @@ namespace components::types {
                     if (child.has_error()) {
                         return child;
                     }
-                    return complex_logical_type(
-                        logical_type::LIST,
-                        std::make_unique<list_logical_type_extension>(field_id, std::move(child.value()), required != 0),
-                        std::move(alias));
+                    return complex_logical_type(logical_type::LIST,
+                                                std::make_unique<list_logical_type_extension>(field_id,
+                                                                                              std::move(child.value()),
+                                                                                              required != 0),
+                                                std::move(alias));
                 }
                 case logical_type::ARRAY: {
                     const auto size = in.pod<uint64_t>();
@@ -432,7 +433,9 @@ namespace components::types {
                         entry.set_alias(label);
                         entries.push_back(std::move(entry));
                     }
-                    return complex_logical_type::create_enum(std::move(type_name), std::move(entries), std::move(alias));
+                    return complex_logical_type::create_enum(std::move(type_name),
+                                                             std::move(entries),
+                                                             std::move(alias));
                 }
                 case logical_type::VARIANT:
                     return complex_logical_type::create_variant(resource, std::move(alias));

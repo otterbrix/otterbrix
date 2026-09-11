@@ -14,7 +14,7 @@ namespace components::catalog {
     struct drop_step_t {
         oid_t classid{INVALID_OID}; // catalog table that owns objid
         oid_t objid{INVALID_OID};
-        char deptype{'n'};          // deptype of the pg_depend edge that drove this step
+        char deptype{'n'}; // deptype of the pg_depend edge that drove this step
     };
 
     // Result of a DROP plan, whether CASCADE or RESTRICT.

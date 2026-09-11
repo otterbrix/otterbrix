@@ -16,8 +16,8 @@
 //   * CASE WHEN referencing columns not in SELECT
 //   * Functions in WHERE (pruning should disable itself here — semantics preserved)
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

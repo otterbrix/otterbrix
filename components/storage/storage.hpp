@@ -116,7 +116,7 @@ namespace components::storage {
         // A count alone cannot separate "deleted nothing" from "stopped part-way": a row id that
         // names no row group is a refusal, and it travels here.
         [[nodiscard]] virtual core::result_wrapper_t<uint64_t> delete_rows(vector::vector_t& row_ids,
-                                                                          uint64_t count) = 0;
+                                                                           uint64_t count) = 0;
 
         [[nodiscard]] virtual core::result_wrapper_t<uint64_t>
         delete_rows(vector::vector_t& row_ids, uint64_t count, uint64_t /*txn_id*/) {

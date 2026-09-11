@@ -281,8 +281,7 @@ namespace components::operators {
         }
 
         // Mirrors the table DROP above: irreversible, so it waits for the pg_attribute tombstone to be durable.
-        if (commit_id_ > 0 && !column_releases.empty() &&
-            ctx->disk_address != actor_zeta::address_t::empty_address()) {
+        if (commit_id_ > 0 && !column_releases.empty() && ctx->disk_address != actor_zeta::address_t::empty_address()) {
             for (const auto& release : column_releases) {
                 auto [_rc, rcf] = actor_zeta::otterbrix::send(ctx->disk_address,
                                                               &services::disk::manager_disk_t::drop_storage_column,
@@ -304,8 +303,7 @@ namespace components::operators {
         }
 
         // Storage indexes columns BY NAME, so the copy must be renamed too or the next INSERT hits a stale name.
-        if (commit_id_ > 0 && !column_renames.empty() &&
-            ctx->disk_address != actor_zeta::address_t::empty_address()) {
+        if (commit_id_ > 0 && !column_renames.empty() && ctx->disk_address != actor_zeta::address_t::empty_address()) {
             for (const auto& rename : column_renames) {
                 auto [_rn, rnf] = actor_zeta::otterbrix::send(ctx->disk_address,
                                                               &services::disk::manager_disk_t::rename_storage_column,
@@ -354,9 +352,9 @@ namespace components::operators {
                     actor_zeta::otterbrix::send(ctx->disk_address,
                                                 &services::disk::manager_disk_t::maybe_cleanup_many,
                                                 components::execution_context_t{ctx->session,
-                                                                     txn_data,
-                                                                     ctx->execution_context.timezone_offset,
-                                                                     components::catalog::INVALID_OID},
+                                                                                txn_data,
+                                                                                ctx->execution_context.timezone_offset,
+                                                                                components::catalog::INVALID_OID},
                                                 std::move(safe_oids),
                                                 compact_watermark);
                 co_await std::move(mcf);

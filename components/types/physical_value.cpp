@@ -234,8 +234,7 @@ namespace components::types {
         // Non-numeric other side (STRING / NA already handled upstream / BOOL handled
         // upstream): stable type-order.
         auto numeric = [&](const physical_value& v) {
-            return is_integral_type(v.type_) || v.type_ == physical_type::INT128 ||
-                   v.type_ == physical_type::UINT128;
+            return is_integral_type(v.type_) || v.type_ == physical_type::INT128 || v.type_ == physical_type::UINT128;
         };
         if (!numeric(*this) || !numeric(other)) {
             return type_ < other.type_;

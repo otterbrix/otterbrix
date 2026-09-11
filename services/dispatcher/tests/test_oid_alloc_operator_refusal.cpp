@@ -14,8 +14,8 @@
 #include <actor-zeta/spawn.hpp>
 #include <components/casts/cast_registry.hpp>
 #include <components/catalog/catalog_oids.hpp>
-#include <components/context/context.hpp>
 #include <components/compute/function.hpp>
+#include <components/context/context.hpp>
 #include <components/session/session.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/transformer/transformer.hpp>
@@ -63,9 +63,7 @@ namespace {
     class oid_alloc_fault_scope_t final : public services::collection::executor::oid_alloc_interposer_t {
     public:
         oid_alloc_fault_scope_t() { services::collection::executor::dev_set_oid_alloc_interposer(this); }
-        ~oid_alloc_fault_scope_t() override {
-            services::collection::executor::dev_set_oid_alloc_interposer(nullptr);
-        }
+        ~oid_alloc_fault_scope_t() override { services::collection::executor::dev_set_oid_alloc_interposer(nullptr); }
 
         oid_alloc_fault_scope_t(const oid_alloc_fault_scope_t&) = delete;
         oid_alloc_fault_scope_t& operator=(const oid_alloc_fault_scope_t&) = delete;
@@ -147,11 +145,11 @@ struct oid_round_fixture : actor_zeta::actor::actor_mixin<oid_round_fixture> {
         , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource, scheduler_, scheduler_, disk_config_, log_))
         , wal_config_(disk_path)
         , manager_wal_(actor_zeta::spawn<manager_wal_replicate_t>(resource,
-                                                                   scheduler_,
-                                                                   wal_config_,
-                                                                   log_,
-                                                                   manager_disk_->address(),
-                                                                   components::pipeline::no_mailbox()))
+                                                                  scheduler_,
+                                                                  wal_config_,
+                                                                  log_,
+                                                                  manager_disk_->address(),
+                                                                  components::pipeline::no_mailbox()))
         , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(resource,
                                                                       scheduler_,
                                                                       log_,
@@ -227,8 +225,8 @@ struct oid_round_fixture : actor_zeta::actor::actor_mixin<oid_round_fixture> {
                                                        &manager_dispatcher_t::execute_plan,
                                                        session_id_t{},
                                                        std::move(view));
-        pending_future_ = std::make_unique<actor_zeta::unique_future<components::cursor::cursor_t_ptr>>(
-            std::move(future));
+        pending_future_ =
+            std::make_unique<actor_zeta::unique_future<components::cursor::cursor_t_ptr>>(std::move(future));
     }
 
     components::cursor::cursor_t_ptr take_result() {
@@ -450,7 +448,8 @@ TEST_CASE("services::dispatcher::oid_alloc_operator_refusal::register_cast_refus
 }
 
 // ALTER TABLE ADD COLUMN is the one of the three reachable from plain SQL: success, with no identity.
-TEST_CASE("services::dispatcher::oid_alloc_operator_refusal::alter_add_column_refuses_when_the_round_delivers_nothing") {
+TEST_CASE(
+    "services::dispatcher::oid_alloc_operator_refusal::alter_add_column_refuses_when_the_round_delivers_nothing") {
     components::compute::function_registry_t::reset_default();
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     oid_round_fixture test(mr.get(), oid_alloc_dir("alter_add_column"));

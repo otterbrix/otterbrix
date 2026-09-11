@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -79,8 +79,7 @@ namespace {
     // (manager_disk_t::system_dir_oid(), services/disk/manager_disk.hpp:405-408); these cases
     // create exactly one user table, so exactly one sidecar must answer.
     std::filesystem::path the_one_user_table_sidecar(const std::filesystem::path& db_root) {
-        const auto system_dir =
-            std::to_string(static_cast<unsigned>(services::disk::manager_disk_t::system_dir_oid()));
+        const auto system_dir = std::to_string(static_cast<unsigned>(services::disk::manager_disk_t::system_dir_oid()));
         std::vector<std::filesystem::path> found;
         for (const auto& ns : std::filesystem::directory_iterator(db_root)) {
             if (!ns.is_directory() || ns.path().filename().string() == system_dir) {
@@ -126,7 +125,8 @@ namespace {
 // Measured on this tree: the round right after the ROLLBACK reports deferred=1 rewritten=0 and
 // the sidecar wal id stops moving; the four rounds after it repeat that, each with a fresh
 // COMMITTED insert waiting to be written.
-TEST_CASE("integration::cpp::rollback_freezes_checkpoint::a_rolled_back_insert_may_not_lock_the_table_out_of_every_later_checkpoint") {
+TEST_CASE("integration::cpp::rollback_freezes_checkpoint::a_rolled_back_insert_may_not_lock_the_table_out_of_every_"
+          "later_checkpoint") {
     auto config = quiet_config(integration_fixture_path("test_rollback_freezes_checkpoint/rolled_back"));
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -151,8 +151,8 @@ TEST_CASE("integration::cpp::rollback_freezes_checkpoint::a_rolled_back_insert_m
     const auto control_rewritten = services::disk::checkpoint_entries_rewritten();
     const auto sidecar_after_control = read_sidecar_wal_id(sidecar);
 
-    INFO("CONTROL round: deferred=" << control_deferred << " rewritten=" << control_rewritten
-                                    << " sidecar " << sidecar_at_seed << " -> " << sidecar_after_control);
+    INFO("CONTROL round: deferred=" << control_deferred << " rewritten=" << control_rewritten << " sidecar "
+                                    << sidecar_at_seed << " -> " << sidecar_after_control);
     REQUIRE(control_rewritten >= 1);
     REQUIRE(control_deferred == 0);
     REQUIRE(sidecar_after_control > sidecar_at_seed);
@@ -212,14 +212,14 @@ TEST_CASE("integration::cpp::rollback_freezes_checkpoint::a_rolled_back_insert_m
     REQUIRE(deferrals_after_the_rollback == 0);
 
     INFO("the committed rows written after the rollback must still be readable");
-    REQUIRE(visible_rows(d) ==
-            static_cast<std::size_t>(kSeedRows + kBatchRows + kRoundsAfterTheRollback * kBatchRows));
+    REQUIRE(visible_rows(d) == static_cast<std::size_t>(kSeedRows + kBatchRows + kRoundsAfterTheRollback * kBatchRows));
 }
 
 // The control the case above cannot contain: the identical explicit transaction that COMMITS.
 // It must be green on this tree AND after the fix -- if it ever reddens, the case above is
 // accusing "an explicit transaction" or "a second batch of inserts", not ROLLBACK.
-TEST_CASE("integration::cpp::rollback_freezes_checkpoint::the_same_explicit_transaction_that_commits_keeps_the_table_checkpointable") {
+TEST_CASE("integration::cpp::rollback_freezes_checkpoint::the_same_explicit_transaction_that_commits_keeps_the_table_"
+          "checkpointable") {
     auto config = quiet_config(integration_fixture_path("test_rollback_freezes_checkpoint/committed"));
     test_spaces space(config);
     auto* d = space.dispatcher();

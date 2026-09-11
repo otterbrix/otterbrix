@@ -99,7 +99,8 @@ TEST_CASE("components::table::predicate::two_long_string_columns_in_one_predicat
         return key;
     };
     auto predicate = expr::make_compare_union_expression(&env.resource, expr::compare_type::union_and);
-    predicate->append_child(expr::make_compare_expression(&env.resource, expr::compare_type::gte, column_key(0), lo_id));
+    predicate->append_child(
+        expr::make_compare_expression(&env.resource, expr::compare_type::gte, column_key(0), lo_id));
     predicate->append_child(expr::make_compare_expression(&env.resource, expr::compare_type::lt, column_key(1), hi_id));
 
     auto built = expr::build_condition_graph(&env.resource, parameters, predicate.get(), table->copy_types());

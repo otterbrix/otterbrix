@@ -549,8 +549,7 @@ TEST_CASE("wal_binary::data_chunk_binary_second_level_nesting_roundtrip") {
             inner.emplace_back(&resource, static_cast<int64_t>(row * 1000 + i));
         }
         std::vector<logical_value_t> holder;
-        holder.push_back(
-            logical_value_t::create_list(&resource, complex_logical_type{logical_type::BIGINT}, inner));
+        holder.push_back(logical_value_t::create_list(&resource, complex_logical_type{logical_type::BIGINT}, inner));
         chunk.set_value(2, row, logical_value_t::create_struct(&resource, struct_of_list, holder));
     }
 
@@ -672,7 +671,7 @@ namespace {
         body.push_back(static_cast<char>(type));
         put_le32(body, static_cast<uint32_t>(kTestTableOid));
         put_le64(body, 0);
-        put_le64(body, payload.size());        // row_count (decode does not cross-check it)
+        put_le64(body, payload.size());                        // row_count (decode does not cross-check it)
         put_le32(body, static_cast<uint32_t>(payload.size())); // payload_size
         body.insert(body.end(), payload.begin(), payload.end());
 
@@ -684,7 +683,7 @@ namespace {
         return record;
     }
 
-}
+} // namespace
 
 TEST_CASE("wal_binary::a_delete_payload_that_is_not_whole_row_ids_is_corrupt") {
     core::pmr::otterbrix_resource resource;

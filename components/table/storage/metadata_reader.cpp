@@ -12,9 +12,8 @@ namespace components::table::storage {
         if (error_.contains_error()) {
             return;
         }
-        error_ = core::error_t(
-            core::error_code_t::data_corruption,
-            std::pmr::string{what, manager_.block_manager().buffer_manager.resource()});
+        error_ = core::error_t(core::error_code_t::data_corruption,
+                               std::pmr::string{what, manager_.block_manager().buffer_manager.resource()});
     }
 
     metadata_reader_t::metadata_reader_t(metadata_manager_t& manager, meta_block_pointer_t start)

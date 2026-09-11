@@ -21,11 +21,11 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
-#include <stdexcept>
 #include <iterator>
+#include <stdexcept>
 #include <string>
-#include <vector>
 #include <unistd.h>
+#include <vector>
 
 #include "../../../components/table/test/fault_injection_file.hpp"
 

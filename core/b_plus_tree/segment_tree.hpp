@@ -82,9 +82,9 @@ namespace core::b_plus_tree {
     enum class load_failure_t : uint8_t
     {
         none = 0,
-        data_corruption, // a block's stored checksum did not match the bytes that came back
-        io_error,        // the file would not hand the bytes over at all
-        out_of_memory,   // no memory for the block, even after evicting this leaf's residents
+        data_corruption,   // a block's stored checksum did not match the bytes that came back
+        io_error,          // the file would not hand the bytes over at all
+        out_of_memory,     // no memory for the block, even after evicting this leaf's residents
         capacity_exceeded, // metadata array full (max_segments); insert would overflow the header
     };
 
@@ -109,8 +109,8 @@ namespace core::b_plus_tree {
             return static_cast<load_failure_t>(state_.load(std::memory_order_acquire));
         }
         [[nodiscard]] load_failure_t take() noexcept {
-            return static_cast<load_failure_t>(state_.exchange(static_cast<uint8_t>(load_failure_t::none),
-                                                               std::memory_order_acq_rel));
+            return static_cast<load_failure_t>(
+                state_.exchange(static_cast<uint8_t>(load_failure_t::none), std::memory_order_acq_rel));
         }
         void clear() noexcept { state_.store(static_cast<uint8_t>(load_failure_t::none), std::memory_order_release); }
 

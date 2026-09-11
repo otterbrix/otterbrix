@@ -1,8 +1,8 @@
 // ALTER TABLE ADD COLUMN writes a pg_attribute row and stops; the physical column materializes only on the
 // first INSERT that carries it, so until then it reads as the column's DEFAULT (or NULL).
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -39,8 +39,8 @@ namespace {
             auto projected = run_ok(dispatcher, "SELECT extra FROM TestDatabase.t;");
             REQUIRE(projected->size() == rows);
             const auto& cell = projected->value(0, 0);
-            predicate = cell.is_null() ? std::string{"extra IS NULL"}
-                                       : "extra = " + std::to_string(cell.value<int64_t>());
+            predicate =
+                cell.is_null() ? std::string{"extra IS NULL"} : "extra = " + std::to_string(cell.value<int64_t>());
         }
         INFO("the projection leg answers: " << predicate);
         auto matched = run_ok(dispatcher, "SELECT a FROM TestDatabase.t WHERE " + predicate + ";");
@@ -272,8 +272,7 @@ TEST_CASE("integration::cpp::alter_add_column_unmaterialized::default_answers_th
 
 // The pg_attribute row survives a restart but the DEFAULT publication does not; the column comes back NULL.
 TEST_CASE("integration::cpp::alter_add_column_unmaterialized::default_survives_restart_before_first_insert") {
-    auto config =
-        test_create_config(integration_fixture_path("test_alter_add_column_unmaterialized/default_restart"));
+    auto config = test_create_config(integration_fixture_path("test_alter_add_column_unmaterialized/default_restart"));
     test_clear_directory(config);
     config.log.level = log_t::level::off;
 

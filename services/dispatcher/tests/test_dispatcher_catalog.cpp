@@ -61,11 +61,11 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
         , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource, scheduler_, scheduler_, disk_config_, log_))
         , wal_config_(disk_path)
         , manager_wal_(actor_zeta::spawn<manager_wal_replicate_t>(resource,
-                                                                   scheduler_,
-                                                                   wal_config_,
-                                                                   log_,
-                                                                   manager_disk_->address(),
-                                                                   components::pipeline::no_mailbox()))
+                                                                  scheduler_,
+                                                                  wal_config_,
+                                                                  log_,
+                                                                  manager_disk_->address(),
+                                                                  components::pipeline::no_mailbox()))
         , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(resource,
                                                                       scheduler_,
                                                                       log_,
@@ -135,10 +135,8 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
         components::execution_context_t ctx{components::session::session_id_t{},
                                             components::table::transaction_data{0, 0},
                                             {}};
-        auto [_, fut] = actor_zeta::otterbrix::send(manager_disk_->address(),
-                                                    &manager_disk_t::resolve_namespace,
-                                                    ctx,
-                                                    name);
+        auto [_, fut] =
+            actor_zeta::otterbrix::send(manager_disk_->address(), &manager_disk_t::resolve_namespace, ctx, name);
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
         while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
             scheduler_->run(1000);
@@ -350,7 +348,8 @@ namespace {
                                     std::string_view{contype_text});
                 }
             }
-            auto appended = test.disk_invoke(&manager_disk_t::append_pg_catalog_row, ctx, w.table_oid, std::move(w.row));
+            auto appended =
+                test.disk_invoke(&manager_disk_t::append_pg_catalog_row, ctx, w.table_oid, std::move(w.row));
             REQUIRE_FALSE(appended.has_error());
         }
         test.step();
@@ -528,8 +527,8 @@ TEST_CASE("services::dispatcher::null_source_column::insert_select_names_the_typ
     REQUIRE(run("CREATE TABLE nsc.reg (k bigint, v bigint);")->is_success());
     CHECK(run("INSERT INTO nsc.reg (k, v) SELECT a, NULL FROM nsc.src;")->is_success());
     REQUIRE(run("CREATE TABLE nsc.d4();")->is_success());
-    CHECK(run("INSERT INTO nsc.d4 (x, y) SELECT a, b FROM nsc.src UNION ALL SELECT a, NULL FROM nsc.src;")
-              ->is_success());
+    CHECK(
+        run("INSERT INTO nsc.d4 (x, y) SELECT a, b FROM nsc.src UNION ALL SELECT a, NULL FROM nsc.src;")->is_success());
     {
         auto unknown = run("INSERT INTO nsc.d4 (x, y) SELECT a, nosuchkey FROM nsc.src;");
         REQUIRE_FALSE(unknown->is_success());

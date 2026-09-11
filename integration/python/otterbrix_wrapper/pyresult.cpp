@@ -147,9 +147,7 @@ namespace otterbrix {
             .def("to_df", &py_result_t::fetch_df, "Fetch every remaining row as a pandas DataFrame")
             .def("close", &py_result_t::close, "Release the result batch")
             .def("is_closed", &py_result_t::is_closed, "Whether the result batch has been released")
-            .def("__len__",
-                 &py_result_t::size,
-                 "Rows the statement produced (SELECT) or wrote (INSERT/UPDATE/DELETE)");
+            .def("__len__", &py_result_t::size, "Rows the statement produced (SELECT) or wrote (INSERT/UPDATE/DELETE)");
     }
 
 } // namespace otterbrix

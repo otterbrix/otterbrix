@@ -1,15 +1,15 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "file_system.hpp"
-#include <components/log/log.hpp>
 #include <algorithm>
+#include <components/log/log.hpp>
 #include <csignal>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <string>
-#include <sys/stat.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 using namespace std;
@@ -18,8 +18,7 @@ using namespace core::filesystem;
 // Rooted under the system temp dir (not process CWD) and keyed by pid so concurrent runs
 // don't collide; create_directory() below is a bare mkdir(2), so the base must pre-exist.
 static path_t make_testing_directory() {
-    const auto base =
-        std::filesystem::temp_directory_path() / ("otterbrix_file_system_" + std::to_string(::getpid()));
+    const auto base = std::filesystem::temp_directory_path() / ("otterbrix_file_system_" + std::to_string(::getpid()));
     std::error_code ec;
     std::filesystem::create_directories(base, ec);
     return base / "filesystem_test";
@@ -239,8 +238,7 @@ TEST_CASE("core::file::filesystem::the_wrapper_forwards_to_its_backend") {
     REQUIRE(seek(fs, *handle, uint64_t{0}));
     REQUIRE(seek_position(fs, *handle) == 0);
     char echoed[sizeof(payload)] = {};
-    REQUIRE(read(fs, *handle, echoed, static_cast<int64_t>(sizeof(echoed))) ==
-            static_cast<int64_t>(sizeof(echoed)));
+    REQUIRE(read(fs, *handle, echoed, static_cast<int64_t>(sizeof(echoed))) == static_cast<int64_t>(sizeof(echoed)));
     REQUIRE(std::equal(std::begin(payload), std::end(payload), std::begin(echoed)));
 
     handle.reset();

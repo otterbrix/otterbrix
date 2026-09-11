@@ -24,13 +24,13 @@ namespace {
         return &arena;
     }
 
-    components::types::complex_logical_type
-    make_decimal(uint8_t width, uint8_t scale, std::string alias = "") {
-        auto created = components::types::complex_logical_type::create_decimal(decimal_resource(), width, scale, std::move(alias));
+    components::types::complex_logical_type make_decimal(uint8_t width, uint8_t scale, std::string alias = "") {
+        auto created =
+            components::types::complex_logical_type::create_decimal(decimal_resource(), width, scale, std::move(alias));
         REQUIRE_FALSE(created.has_error());
         return std::move(created.value());
     }
-}
+} // namespace
 
 namespace {
     // Search operates on complex_logical_type, since a bare logical_type can't carry decimal params.
@@ -55,7 +55,7 @@ namespace {
     common(const cast_registry_t& registry, const complex_logical_type& left, const complex_logical_type& right) {
         return registry.find_best_common_type(left, right);
     }
-}
+} // namespace
 
 TEST_CASE("default casts: registered numeric-tower entries") {
     cast_registry_t registry{std::pmr::get_default_resource()};
@@ -519,8 +519,8 @@ TEST_CASE("default casts: DECIMAL -> DECIMAL rescales, rounds half away, overflo
         REQUIRE_FALSE(to_tiny->fn.invoke(cast_kind::try_cast, source, &try_result, context, 3).contains_error());
         REQUIRE(try_result.get_value<int32_t>(0) == 123);
         REQUIRE(try_result.is_null(1));
-        REQUIRE(try_result.get_value<int32_t>(2) == static_cast<int32_t>(types::decimal_special::positive_infinity(
-                                                        types::physical_type::INT32)));
+        REQUIRE(try_result.get_value<int32_t>(2) ==
+                static_cast<int32_t>(types::decimal_special::positive_infinity(types::physical_type::INT32)));
     }
 }
 
@@ -530,9 +530,7 @@ TEST_CASE("default casts: two DECIMALs promote to their deduced supertype") {
     register_default_casts(registry);
 
     auto decimal_common = [&](uint8_t lw, uint8_t ls, uint8_t rw, uint8_t rs) {
-        return common(registry,
-                      make_decimal(lw, ls),
-                      make_decimal(rw, rs));
+        return common(registry, make_decimal(lw, ls), make_decimal(rw, rs));
     };
 
     // Two decimals promote to integer-digits=max, scale=max: dec(10,4)+dec(12,2) -> dec(14,4).
@@ -619,8 +617,8 @@ TEST_CASE("default casts: DECIMAL <-> string round-trips, rounds, handles specia
         REQUIRE(try_result.get_value<int64_t>(2) == -50);
         REQUIRE(try_result.is_null(3));
         REQUIRE(try_result.is_null(4));
-        REQUIRE(try_result.get_value<int64_t>(5) == static_cast<int64_t>(types::decimal_special::not_a_number(
-                                                        types::physical_type::INT64)));
+        REQUIRE(try_result.get_value<int64_t>(5) ==
+                static_cast<int64_t>(types::decimal_special::not_a_number(types::physical_type::INT64)));
     }
 
     {
@@ -996,8 +994,7 @@ TEST_CASE("composite_cast: build_cast composes STRUCT and ARRAY towers over regi
         REQUIRE(composite.has_value());
 
         vector::vector_t source{resource, list_i32};
-        source.set_value(0,
-                         std::pmr::vector<int32_t>{{1, -2, 2147483647}, resource});
+        source.set_value(0, std::pmr::vector<int32_t>{{1, -2, 2147483647}, resource});
         source.set_value(1, std::pmr::vector<int32_t>{{-2147483648}, resource});
         vector::vector_t result{resource, list_i64};
         REQUIRE_FALSE((*composite)(cast_kind::cast, source, &result, context, 2).contains_error());
@@ -1055,8 +1052,7 @@ TEST_CASE("composite_cast: build_cast composes STRUCT and ARRAY towers over regi
 
         vector::vector_t source{resource, array_list_i32};
         vector::vector_t& list_source = source.entry();
-        list_source.set_value(0,
-                              std::pmr::vector<int32_t>{{10, 20, 30}, resource});
+        list_source.set_value(0, std::pmr::vector<int32_t>{{10, 20, 30}, resource});
         list_source.set_value(1, std::pmr::vector<int32_t>{{40}, resource});
 
         vector::vector_t result{resource, array_list_i64};
@@ -1612,8 +1608,7 @@ TEST_CASE("cast_registry: level_of passes containers through and takes structs a
         const complex_logical_type map_i64_i64 = complex_logical_type::create_map(resource, i64, i64);
         const complex_logical_type map_str_i64 = complex_logical_type::create_map(resource, str, i64);
         REQUIRE(registry.level_of(map_i32_i32, map_i64_i64) == std::optional<level>{level::implicit});
-        REQUIRE(registry.level_of(map_i32_i32, map_str_i64) ==
-                std::optional<level>{level::assignment});
+        REQUIRE(registry.level_of(map_i32_i32, map_str_i64) == std::optional<level>{level::assignment});
     }
 
     {

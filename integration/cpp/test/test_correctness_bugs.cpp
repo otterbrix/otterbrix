@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/types/logical_value.hpp>
@@ -1664,7 +1664,8 @@ TEST_CASE("integration::cpp::correctness_bugs::expression_syntax_is_clause_indep
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::out_of_bounds_subscript_update_extends") {
-    auto config = test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/oob_subscript_update"));
+    auto config =
+        test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/oob_subscript_update"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1744,7 +1745,8 @@ TEST_CASE("integration::cpp::correctness_bugs::subscript_update_of_null_list_cel
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::list_equality_respects_length") {
-    auto config = test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/list_equality_length"));
+    auto config =
+        test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/list_equality_length"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1787,7 +1789,8 @@ TEST_CASE("integration::cpp::correctness_bugs::list_equality_respects_length") {
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::whole_array_update_over_null_row") {
-    auto config = test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/whole_array_over_null"));
+    auto config =
+        test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/whole_array_over_null"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 

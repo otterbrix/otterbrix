@@ -36,7 +36,7 @@ namespace components::table::storage {
         constexpr uint64_t header_slot_offset(uint64_t iteration) {
             return (iteration % 2 == 1) ? SECTOR_SIZE : (2 * SECTOR_SIZE);
         }
-    }
+    } // namespace
 
     single_file_block_manager_t::single_file_block_manager_t(buffer_manager_t& buffer_manager,
                                                              core::filesystem::local_file_system_t& fs,
@@ -95,10 +95,9 @@ namespace components::table::storage {
         main_header_t main_header;
         main_header.initialize();
         if (!handle_->write(&main_header, sizeof(main_header), 0)) {
-            return core::error_t(
-                core::error_code_t::io_error,
-                std::pmr::string{"Failed to write main header of new database file: " + path_,
-                                 buffer_manager.resource()});
+            return core::error_t(core::error_code_t::io_error,
+                                 std::pmr::string{"Failed to write main header of new database file: " + path_,
+                                                  buffer_manager.resource()});
         }
 
         database_header_t db_header{};
@@ -107,17 +106,15 @@ namespace components::table::storage {
         db_header.checksum = db_header.compute_checksum();
 
         if (!handle_->write(&db_header, sizeof(db_header), header_slot_offset(db_header.iteration))) {
-            return core::error_t(
-                core::error_code_t::io_error,
-                std::pmr::string{"Failed to write the initial database header of: " + path_,
-                                 buffer_manager.resource()});
+            return core::error_t(core::error_code_t::io_error,
+                                 std::pmr::string{"Failed to write the initial database header of: " + path_,
+                                                  buffer_manager.resource()});
         }
 
         if (!handle_->sync()) {
-            return core::error_t(
-                core::error_code_t::io_error,
-                std::pmr::string{"Failed to fsync the newly created database file: " + path_,
-                                 buffer_manager.resource()});
+            return core::error_t(core::error_code_t::io_error,
+                                 std::pmr::string{"Failed to fsync the newly created database file: " + path_,
+                                                  buffer_manager.resource()});
         }
 
         iteration_ = 0;
@@ -197,17 +194,17 @@ namespace components::table::storage {
                               sizeof(computed),
                               "0x%016llx",
                               static_cast<unsigned long long>(h.compute_checksum()));
-                return std::string(name) + ": claims iteration " + std::to_string(h.iteration) +
-                       ", checksum stored " + stored + " != computed " + computed + ", meta_block " +
-                       std::to_string(h.meta_block) + ", block_count " + std::to_string(h.block_count);
+                return std::string(name) + ": claims iteration " + std::to_string(h.iteration) + ", checksum stored " +
+                       stored + " != computed " + computed + ", meta_block " + std::to_string(h.meta_block) +
+                       ", block_count " + std::to_string(h.block_count);
             };
-            return core::error_t(
-                core::error_code_t::data_corruption,
-                std::pmr::string{"No recoverable root in " + path_ + ": neither database header slot is usable. " +
-                                     describe_slot("slot 1", header1_read, header1) + "; " +
-                                     describe_slot("slot 2", header2_read, header2) +
-                                     ". The file is left byte-identical for offline inspection.",
-                                 buffer_manager.resource()});
+            return core::error_t(core::error_code_t::data_corruption,
+                                 std::pmr::string{"No recoverable root in " + path_ +
+                                                      ": neither database header slot is usable. " +
+                                                      describe_slot("slot 1", header1_read, header1) + "; " +
+                                                      describe_slot("slot 2", header2_read, header2) +
+                                                      ". The file is left byte-identical for offline inspection.",
+                                                  buffer_manager.resource()});
         }
 
         const database_header_t& active =
@@ -276,10 +273,10 @@ namespace components::table::storage {
     single_file_block_manager_t::read_blocks(file_buffer_t& buffer, uint64_t start_block, uint64_t /*count*/) {
         auto location = block_location(start_block);
         if (!buffer.read(*handle_, location)) {
-            return core::error_t(core::error_code_t::io_error,
-                                 std::pmr::string{"Failed to batch-read blocks from " + std::to_string(start_block) +
-                                                      " of " + path_,
-                                                  buffer_manager.resource()});
+            return core::error_t(
+                core::error_code_t::io_error,
+                std::pmr::string{"Failed to batch-read blocks from " + std::to_string(start_block) + " of " + path_,
+                                 buffer_manager.resource()});
         }
         return true;
     }
@@ -370,10 +367,9 @@ namespace components::table::storage {
         // the domain limit.
         if (block_id >= max_block_) {
             latch_allocation_error(block_id,
-                                   block_id >= MAXIMUM_BLOCK
-                                       ? std::string("it is outside the addressable block domain")
-                                       : "the file holds " + std::to_string(max_block_) +
-                                             " blocks, so it is past the end of the file");
+                                   block_id >= MAXIMUM_BLOCK ? std::string("it is outside the addressable block domain")
+                                                             : "the file holds " + std::to_string(max_block_) +
+                                                                   " blocks, so it is past the end of the file");
             return;
         }
         used_blocks_.erase(block_id);
@@ -500,9 +496,7 @@ namespace components::table::storage {
         return static_cast<uint64_t>(released.size());
     }
 
-    void single_file_block_manager_t::mark_as_modified(uint64_t block_id) {
-        modified_blocks_.insert(block_id);
-    }
+    void single_file_block_manager_t::mark_as_modified(uint64_t block_id) { modified_blocks_.insert(block_id); }
 
     void single_file_block_manager_t::increase_block_ref_count(uint64_t /*block_id*/) {
         // ref counting not yet needed for single-file mode
@@ -529,9 +523,7 @@ namespace components::table::storage {
 
     uint64_t single_file_block_manager_t::total_blocks() { return max_block_; }
 
-    uint64_t single_file_block_manager_t::free_blocks() {
-        return reusable_.size() + pending_free_.size();
-    }
+    uint64_t single_file_block_manager_t::free_blocks() { return reusable_.size() + pending_free_.size(); }
 
     core::result_wrapper_t<bool> single_file_block_manager_t::checksum_and_write(file_buffer_t& buffer,
                                                                                  uint64_t block_id) {
@@ -676,9 +668,9 @@ namespace components::table::storage {
 
     core::result_wrapper_t<bool> single_file_block_manager_t::truncate() {
         if (!handle_) {
-            return core::error_t(core::error_code_t::io_error,
-                                 std::pmr::string{"truncate on a block manager with no open file: " + path_,
-                                                  buffer_manager.resource()});
+            return core::error_t(
+                core::error_code_t::io_error,
+                std::pmr::string{"truncate on a block manager with no open file: " + path_, buffer_manager.resource()});
         }
         // Precondition: max_block_ can sit below the durable header's block_count after a rollback.
         auto file_end = block_location(max_block_);
@@ -696,10 +688,10 @@ namespace components::table::storage {
         std::set<uint64_t> live_unnamed;
         for (uint64_t block_id : live_registry_ids()) {
             if (block_id >= max_block_) {
-                const std::string reason = block_id >= MAXIMUM_BLOCK
-                                               ? std::string("it is outside the addressable block domain")
-                                               : "the file holds " + std::to_string(max_block_) +
-                                                     " blocks, so it is past the end of the file";
+                const std::string reason =
+                    block_id >= MAXIMUM_BLOCK
+                        ? std::string("it is outside the addressable block domain")
+                        : "the file holds " + std::to_string(max_block_) + " blocks, so it is past the end of the file";
                 latch_allocation_error(block_id, reason);
                 return core::error_t(core::error_code_t::data_corruption,
                                      std::pmr::string{"Free list of " + path_ +
@@ -755,11 +747,11 @@ namespace components::table::storage {
         }
         for (uint64_t chain_block : chain) {
             if (std::binary_search(published.begin(), published.end(), chain_block)) {
-                return core::error_t(
-                    core::error_code_t::data_corruption,
-                    std::pmr::string{"Free list of " + path_ + " would publish block " + std::to_string(chain_block) +
-                                         ", which its own chain occupies",
-                                     buffer_manager.resource()});
+                return core::error_t(core::error_code_t::data_corruption,
+                                     std::pmr::string{"Free list of " + path_ + " would publish block " +
+                                                          std::to_string(chain_block) +
+                                                          ", which its own chain occupies",
+                                                      buffer_manager.resource()});
             }
         }
         return writer.get_block_pointer();

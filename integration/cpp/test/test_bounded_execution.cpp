@@ -1,7 +1,7 @@
 // Bounded-execution SELECT (HIDDEN): peak-RSS assertion is deferred pending per-batch fetch-next.
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
 
 using namespace components;

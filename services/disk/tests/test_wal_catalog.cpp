@@ -9,12 +9,12 @@
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/helpers.hpp>
 #include <components/catalog/session_catalog.hpp>
-#include <core/date/timezones.hpp>
 #include <components/context/execution_context.hpp>
 #include <components/log/log.hpp>
 #include <components/session/session.hpp>
 #include <components/table/column_definition.hpp>
 #include <components/types/types.hpp>
+#include <core/date/timezones.hpp>
 #include <core/non_thread_scheduler/scheduler_test.hpp>
 #include <core/pmr.hpp>
 #include <services/disk/manager_disk.hpp>
@@ -422,12 +422,7 @@ TEST_CASE("services::disk::wal_catalog::agent0_catalog_wal_ordering") {
 
         std::vector<components::pg_catalog_append_range_t> appends_local;
 
-        auto dep_row = catalog::build_pg_depend_row(&fx.resource,
-                                                    pg_index,
-                                                    dep_objid,
-                                                    pg_index,
-                                                    idx_oid,
-                                                    'n');
+        auto dep_row = catalog::build_pg_depend_row(&fx.resource, pg_index, dep_objid, pg_index, idx_oid, 'n');
         appends_local.push_back(disk_test_helpers::append_ok(
             fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_depend, std::move(dep_row))));
 

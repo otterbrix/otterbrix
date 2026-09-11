@@ -6,8 +6,8 @@
 // NOT PINNABLE: `SELECT CASE WHEN t #>> 'a.b' = 10 ... FROM t` segfaults on a NULL leaf row
 // (general 3VL bug) -- cannot live in a test binary.
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <set>
 #include <string>
@@ -942,4 +942,3 @@ TEST_CASE("integration::cpp::test_jsonb_support::bug_three_table_join_takes_left
     // correct: {10, 20} (the values of m). We get l's values instead.
     CHECK(i64_set(cur, "v") == std::set<int64_t>{100, 200});
 }
-

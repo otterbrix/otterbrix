@@ -1,8 +1,8 @@
 // Bounded DML sinks flush incrementally once buffered_rows() >= dml_flush_row_threshold; the default (0) disables
 // this, so no other test exercises the incremental path -- these do, via the DEV_MODE dml_flush_count() counter.
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <services/collection/executor.hpp>
 #include <sstream>

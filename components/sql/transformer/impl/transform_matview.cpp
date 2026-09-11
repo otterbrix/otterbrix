@@ -37,12 +37,9 @@ namespace components::sql::transform {
 
         // 1. Body SQL — stored in pg_rewrite.ev_action verbatim; must match what the user
         //    wrote (view_body_text.hpp).
-        VALUE_OR_RETURN(auto body_sql,
-                        view_body_text(resource_,
-                                       raw_sql_,
-                                       cs.query_location,
-                                       cs.query_end_location,
-                                       "CREATE MATERIALIZED VIEW"));
+        VALUE_OR_RETURN(
+            auto body_sql,
+            view_body_text(resource_, raw_sql_, cs.query_location, cs.query_end_location, "CREATE MATERIALIZED VIEW"));
 
         // 2. Body plan — transform_select returns the consumer aggregate (NOT
         // wrapped with catalog_resolve_*). We hoist the source resolves below

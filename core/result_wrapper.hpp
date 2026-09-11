@@ -142,7 +142,8 @@ namespace core {
 #if not defined(NDEBUG)
             , error_origin(other.error_origin)
 #endif
-        {}
+        {
+        }
 
         static error_t no_error() { return error_t(); }
 

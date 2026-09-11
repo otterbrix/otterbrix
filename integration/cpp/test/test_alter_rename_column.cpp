@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -197,11 +197,9 @@ TEST_CASE("integration::cpp::test_alter_rename_column::renamed_column_survives_r
 
     auto renamed = walk_offline(otbx, &resource);
     REQUIRE(renamed.report.ok);
-    INFO("durable columns after RENAME+CHECKPOINT: " << renamed.columns.size() << " ["
-                                                     << (renamed.columns.empty() ? std::string{} : renamed.columns[0])
-                                                     << ", "
-                                                     << (renamed.columns.size() < 2 ? std::string{} : renamed.columns[1])
-                                                     << "]");
+    INFO("durable columns after RENAME+CHECKPOINT: "
+         << renamed.columns.size() << " [" << (renamed.columns.empty() ? std::string{} : renamed.columns[0]) << ", "
+         << (renamed.columns.size() < 2 ? std::string{} : renamed.columns[1]) << "]");
     REQUIRE(renamed.columns.size() == 2);
     CHECK(renamed.columns[0] == "a");
     CHECK(renamed.columns[1] == "payload2");
@@ -214,9 +212,9 @@ TEST_CASE("integration::cpp::test_alter_rename_column::renamed_column_survives_r
 
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(
-                session,
-                "SELECT a, payload2[1], payload2[40] FROM TestDatabase.wide ORDER BY a;");
+            auto cur =
+                dispatcher->execute_sql(session,
+                                        "SELECT a, payload2[1], payload2[40] FROM TestDatabase.wide ORDER BY a;");
             INFO("error: " << (cur->is_error() ? cur->get_error().what : "none"));
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == TOTAL_ROWS);
@@ -225,8 +223,7 @@ TEST_CASE("integration::cpp::test_alter_rename_column::renamed_column_survives_r
                 INFO("row " << i);
                 REQUIRE(cur->value(0, i).value<int64_t>() == static_cast<int64_t>(i));
                 REQUIRE(cur->value(1, i).value<int64_t>() == static_cast<int64_t>(i * 100));
-                REQUIRE(cur->value(2, i).value<int64_t>() ==
-                        static_cast<int64_t>(i * 100 + ARRAY_LENGTH - 1));
+                REQUIRE(cur->value(2, i).value<int64_t>() == static_cast<int64_t>(i * 100 + ARRAY_LENGTH - 1));
             }
         }
 
@@ -243,8 +240,7 @@ TEST_CASE("integration::cpp::test_alter_rename_column::renamed_column_survives_r
     REQUIRE(after.report.ok);
     REQUIRE(after.columns.size() == 2);
     CHECK(after.columns[1] == "payload2");
-    INFO("root data blocks before=" << before.report.root_data.size()
-                                    << " renamed=" << renamed.report.root_data.size()
+    INFO("root data blocks before=" << before.report.root_data.size() << " renamed=" << renamed.report.root_data.size()
                                     << " after=" << after.report.root_data.size());
     CHECK(after.report.root_data.size() >= renamed.report.root_data.size());
     CHECK(after.report.reachable_free_overlap.empty());
@@ -317,9 +313,9 @@ TEST_CASE("integration::cpp::test_alter_rename_column::renamed_column_survives_a
 
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(
-                session,
-                "SELECT a, payload2[1], payload2[40] FROM TestDatabase.wide ORDER BY a;");
+            auto cur =
+                dispatcher->execute_sql(session,
+                                        "SELECT a, payload2[1], payload2[40] FROM TestDatabase.wide ORDER BY a;");
             INFO("error: " << (cur->is_error() ? cur->get_error().what : "none"));
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == TOTAL_ROWS);
@@ -328,8 +324,7 @@ TEST_CASE("integration::cpp::test_alter_rename_column::renamed_column_survives_a
                 INFO("row " << i);
                 REQUIRE(cur->value(0, i).value<int64_t>() == static_cast<int64_t>(i));
                 REQUIRE(cur->value(1, i).value<int64_t>() == static_cast<int64_t>(i * 100));
-                REQUIRE(cur->value(2, i).value<int64_t>() ==
-                        static_cast<int64_t>(i * 100 + ARRAY_LENGTH - 1));
+                REQUIRE(cur->value(2, i).value<int64_t>() == static_cast<int64_t>(i * 100 + ARRAY_LENGTH - 1));
             }
         }
 
@@ -348,8 +343,7 @@ TEST_CASE("integration::cpp::test_alter_rename_column::renamed_column_survives_a
     CHECK(after.columns[1] == "payload2");
 
     // A rename moves no bytes; a root that SHRANK is the signature of a surviving column dropped.
-    INFO("root data blocks crashed=" << crashed.report.root_data.size()
-                                     << " after=" << after.report.root_data.size());
+    INFO("root data blocks crashed=" << crashed.report.root_data.size() << " after=" << after.report.root_data.size());
     CHECK(after.report.root_data.size() >= crashed.report.root_data.size());
     CHECK(after.report.reachable_free_overlap.empty());
     CHECK(after.report.unexplained.empty());
@@ -412,9 +406,7 @@ TEST_CASE("integration::cpp::test_alter_rename_column::rename_and_unmaterialized
 
         {
             auto session = otterbrix::session_id_t();
-            auto cur =
-                dispatcher->execute_sql(session,
-                                        "SELECT a, payload2[1] FROM TestDatabase.wide ORDER BY a;");
+            auto cur = dispatcher->execute_sql(session, "SELECT a, payload2[1] FROM TestDatabase.wide ORDER BY a;");
             INFO("error: " << (cur->is_error() ? cur->get_error().what : "none"));
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == FIRST_ROWS);
@@ -439,8 +431,7 @@ TEST_CASE("integration::cpp::test_alter_rename_column::rename_and_unmaterialized
 
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                                               "SELECT a, extra FROM TestDatabase.wide ORDER BY a;");
+            auto cur = dispatcher->execute_sql(session, "SELECT a, extra FROM TestDatabase.wide ORDER BY a;");
             INFO("error: " << (cur->is_error() ? cur->get_error().what : "none"));
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == FIRST_ROWS + 1);

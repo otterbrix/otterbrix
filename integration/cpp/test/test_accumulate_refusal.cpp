@@ -2,8 +2,8 @@
 // an unchecked refusal there would let commit report success over an empty transaction. No SQL
 // route reaches it without an active txn, so these cases pin success <=> visible as an equality.
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -13,9 +13,8 @@ using namespace components::cursor;
 
 namespace {
 
-    cursor_t_ptr exec(otterbrix::wrapper_dispatcher_t* dispatcher,
-                      otterbrix::session_id_t& session,
-                      const std::string& sql) {
+    cursor_t_ptr
+    exec(otterbrix::wrapper_dispatcher_t* dispatcher, otterbrix::session_id_t& session, const std::string& sql) {
         return dispatcher->execute_sql(session, sql);
     }
 

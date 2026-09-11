@@ -262,8 +262,7 @@ namespace components::operators {
                 msg += " count(s) for ";
                 msg += std::to_string(spec_count);
                 msg += " spec(s) — the reply cannot be matched to the plan";
-                set_error(core::error_t{core::error_code_t::other_error,
-                                        std::pmr::string{std::move(msg), resource_}});
+                set_error(core::error_t{core::error_code_t::other_error, std::pmr::string{std::move(msg), resource_}});
                 co_return;
             }
             for (const auto& own : own_rows) {
@@ -276,8 +275,7 @@ namespace components::operators {
                 msg += std::to_string(static_cast<unsigned>(own.objid));
                 msg += ") has no catalog row to delete — the pg_depend graph names an object "
                        "the catalog does not hold";
-                set_error(
-                    core::error_t{core::error_code_t::other_error, std::pmr::string{std::move(msg), resource_}});
+                set_error(core::error_t{core::error_code_t::other_error, std::pmr::string{std::move(msg), resource_}});
                 co_return;
             }
         }

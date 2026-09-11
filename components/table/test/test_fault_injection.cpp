@@ -25,8 +25,7 @@ namespace tstorage = components::table::storage;
 namespace {
 
     std::string fault_db_path() {
-        static std::string path =
-            "/tmp/test_otterbrix_fault_injection_" + std::to_string(::getpid()) + ".otbx";
+        static std::string path = "/tmp/test_otterbrix_fault_injection_" + std::to_string(::getpid()) + ".otbx";
         return path;
     }
 
@@ -118,7 +117,9 @@ namespace {
 
     uint64_t scan_rows(data_table_t& table, uint64_t upper_bound) {
         uint64_t scanned = 0;
-        otterbrix_test::scan_table_segment(table, 0, upper_bound, [&](data_chunk_t& chunk) { scanned += chunk.size(); });
+        otterbrix_test::scan_table_segment(table, 0, upper_bound, [&](data_chunk_t& chunk) {
+            scanned += chunk.size();
+        });
         return scanned;
     }
 
@@ -200,8 +201,7 @@ TEST_CASE("fault_injection: crash_revert loses everything after the last fsync, 
         // crash_revert() rolls back to the last successful fsync (checkpoint A's) -- exactly what a kill loses.
         scope.last()->crash_revert();
 
-        std::filesystem::copy_file(fault_db_path(), copy_path,
-                                   std::filesystem::copy_options::overwrite_existing);
+        std::filesystem::copy_file(fault_db_path(), copy_path, std::filesystem::copy_options::overwrite_existing);
     }
     {
         fault_env_t env2;

@@ -222,7 +222,7 @@ namespace components::compute {
 
     core::result_wrapper_t<std::unique_ptr<detail::kernel_executor_t>>
     function::get_best_executor(std::pmr::memory_resource* resource,
-                               const std::pmr::vector<complex_logical_type>&) const {
+                                const std::pmr::vector<complex_logical_type>&) const {
         detail::kernel_executor_visitor vis(resource);
         accept_visitor(vis);
 
@@ -439,15 +439,14 @@ namespace components::compute {
             return; // already poisoned; the FIRST failure is the one reported
         }
         if (!function) {
-            poison_builtins_(
-                core::error_t(core::error_code_t::function_registry_error,
-                              std::pmr::string{"builtin registration handed a null function", resource_}));
+            poison_builtins_(core::error_t(core::error_code_t::function_registry_error,
+                                           std::pmr::string{"builtin registration handed a null function", resource_}));
             return;
         }
         const auto& name = function->name();
-        const auto* row = std::find_if(DEFAULT_FUNCTIONS.begin(),
-                                       DEFAULT_FUNCTIONS.end(),
-                                       [&](const auto& entry) { return entry.first == name; });
+        const auto* row = std::find_if(DEFAULT_FUNCTIONS.begin(), DEFAULT_FUNCTIONS.end(), [&](const auto& entry) {
+            return entry.first == name;
+        });
         if (row == DEFAULT_FUNCTIONS.end()) {
             std::pmr::string what{"builtin '", resource_};
             what += std::pmr::string{name, resource_};

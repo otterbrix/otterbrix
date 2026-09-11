@@ -9,8 +9,8 @@
 // row via node_insert (a SQL INSERT string through kafka_query crashes the
 // engine on this table)"). This test pins the exact scenario as a regression.
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/column_definition.hpp>
 #include <components/types/types.hpp>

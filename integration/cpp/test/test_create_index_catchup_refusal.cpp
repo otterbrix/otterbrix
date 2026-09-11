@@ -2,8 +2,8 @@
 // consulted, so an unopenable WAL segment does not touch it. The open refusal is produced by the WAL's own
 // DEV_MODE seam (services/wal/wal_page.hpp).
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

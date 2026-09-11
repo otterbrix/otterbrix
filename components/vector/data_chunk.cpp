@@ -149,9 +149,7 @@ namespace components::vector {
 
     // NA-typed vectors are CONSTANT, not FLAT, so skipping them here keeps the FLAT-destination
     // assert in copy() from aborting on `INSERT ... VALUES (..., NULL)`.
-    static bool is_null_typed(const vector_t& v) noexcept {
-        return v.type().type() == types::logical_type::NA;
-    }
+    static bool is_null_typed(const vector_t& v) noexcept { return v.type().type() == types::logical_type::NA; }
 
     uint64_t data_chunk_t::allocation_size() const {
         uint64_t total_size = 0;

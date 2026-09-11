@@ -68,9 +68,8 @@ TEST_CASE("components::sql::narrowing::window_functions_refused") {
         "SELECT array_agg(name ORDER BY number) FROM db.tbl;",
         R"_(aggregate ORDER BY / WITHIN GROUP is not supported yet: the ordering would have been dropped)_");
     // func_variadic is read by nobody, so f(VARIADIC arr) would quietly run as f(arr).
-    TEST_TRANSFORMER_ERROR(
-        "SELECT concat_ws(VARIADIC name) FROM db.tbl;",
-        R"_(VARIADIC is not supported yet: the argument would have been passed unexpanded)_");
+    TEST_TRANSFORMER_ERROR("SELECT concat_ws(VARIADIC name) FROM db.tbl;",
+                           R"_(VARIADIC is not supported yet: the argument would have been passed unexpanded)_");
 }
 
 TEST_CASE("components::sql::narrowing::select_shape_refused") {
@@ -95,9 +94,8 @@ TEST_CASE("components::sql::narrowing::duplicate_with_names_refused") {
     transform::transformer transformer(&resource);
 
     // A silent emplace no-op on the second `c` would run the query against the FIRST body.
-    TEST_TRANSFORMER_ERROR(
-        "WITH c AS (SELECT a FROM db.big), c AS (SELECT b FROM db.big) SELECT * FROM c;",
-        R"_(WITH query name "c" specified more than once)_");
+    TEST_TRANSFORMER_ERROR("WITH c AS (SELECT a FROM db.big), c AS (SELECT b FROM db.big) SELECT * FROM c;",
+                           R"_(WITH query name "c" specified more than once)_");
     // One flat registration map would resolve a shadowing inner WITH to whichever body registered FIRST.
     TEST_TRANSFORMER_ERROR(
         "WITH c AS (SELECT a FROM db.big) SELECT * FROM (WITH c AS (SELECT b FROM db.big) SELECT * FROM c) s;",
@@ -150,8 +148,7 @@ TEST_CASE("components::sql::narrowing::create_sequence_options_refused") {
     TEST_TRANSFORMER_ERROR(
         "CREATE SEQUENCE db.seq OWNED BY db.tbl.col;",
         R"_(CREATE SEQUENCE ... OWNED BY is not supported yet: the ownership dependency would have been dropped)_");
-    TEST_TRANSFORMER_ERROR("CREATE SEQUENCE db.seq RESTART;",
-                           R"_(RESTART is not supported in CREATE SEQUENCE)_");
+    TEST_TRANSFORMER_ERROR("CREATE SEQUENCE db.seq RESTART;", R"_(RESTART is not supported in CREATE SEQUENCE)_");
     TEST_TRANSFORMER_ERROR("CREATE SEQUENCE db.seq RESTART WITH 5;",
                            R"_(RESTART is not supported in CREATE SEQUENCE)_");
     TEST_TRANSFORMER_OK("CREATE SEQUENCE db.seq NO CYCLE;");
@@ -203,8 +200,8 @@ TEST_CASE("components::sql::narrowing::decimal_literal_exact") {
 
     // Chosen to exceed a double's precision, so the exact-decimal path is actually exercised.
     const int128_t ten_to_10 = int128_t{10000000000LL};
-    const int128_t scaled = int128_t{123456789} * ten_to_10 * ten_to_10 + int128_t{1234567890123456789LL} * 10 +
-                            int128_t{0};
+    const int128_t scaled =
+        int128_t{123456789} * ten_to_10 * ten_to_10 + int128_t{1234567890123456789LL} * 10 + int128_t{0};
     auto dec_type_res = complex_logical_type::create_decimal(&resource, 38, 20);
     REQUIRE(!dec_type_res.has_error());
     const auto expected = v::create_decimal(&resource, dec_type_res.value(), scaled);
@@ -227,9 +224,9 @@ TEST_CASE("components::sql::narrowing::decimal_literal_exact") {
                            R"_(numeric field overflow: 100 does not fit NUMERIC(2, 1))_");
 
     SECTION("INSERT VALUES carries the exact decimal") {
-        auto select = linitial(raw_parser(
-            &arena_resource,
-            "INSERT INTO db.tbl (d) VALUES (CAST('123456789.12345678901234567890' AS NUMERIC(38,20)));"));
+        auto select = linitial(
+            raw_parser(&arena_resource,
+                       "INSERT INTO db.tbl (d) VALUES (CAST('123456789.12345678901234567890' AS NUMERIC(38,20)));"));
         auto wrap = transformer.transform(transform::pg_cell_to_node_cast(select)).finalize();
         REQUIRE(!wrap.has_error());
         auto result = wrap.value();
@@ -463,8 +460,7 @@ TEST_CASE("components::sql::narrowing::subscript_read_by_tag") {
 
     // A subscript wider than int32 leaves the scanner as a T_Float; reading `ival` without the tag renders a pointer's bit pattern into the column path.
     SECTION("INSERT INTO db.tbl (arr[3000000000]) VALUES (5);") {
-        auto select =
-            linitial(raw_parser(&arena_resource, "INSERT INTO db.tbl (arr[3000000000]) VALUES (5);"));
+        auto select = linitial(raw_parser(&arena_resource, "INSERT INTO db.tbl (arr[3000000000]) VALUES (5);"));
         auto wrap = transformer.transform(transform::pg_cell_to_node_cast(select)).finalize();
         REQUIRE(!wrap.has_error());
         auto result = wrap.value();

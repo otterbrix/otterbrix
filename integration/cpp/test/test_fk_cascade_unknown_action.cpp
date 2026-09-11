@@ -4,8 +4,8 @@
 // Unreachable via SQL (both ALTER TABLE routes normalize del_action to one of five values),
 // so the test writes confdeltype directly through the production node/build path instead.
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -41,13 +41,13 @@ namespace {
                                                        const std::string& con_name,
                                                        char del_action) {
         auto* resource = d->resource();
-        auto node =
-            components::logical_plan::make_node_create_constraint(resource,
-                                                                  db,
-                                                                  child_rel,
-                                                                  core::constraint_name_t{con_name},
-                                                                  components::logical_plan::constraint_kind::foreign_key,
-                                                                  db);
+        auto node = components::logical_plan::make_node_create_constraint(
+            resource,
+            db,
+            child_rel,
+            core::constraint_name_t{con_name},
+            components::logical_plan::constraint_kind::foreign_key,
+            db);
         node->set_local_col_names({"pid"});
         node->set_ref_relname(parent_rel);
         node->set_ref_col_names({"id"});
@@ -137,13 +137,12 @@ TEST_CASE("integration::cpp::fk_cascade_unknown_action::an_unknown_action_does_n
     REQUIRE(children->is_success());
     const auto child_refs = column_i64(children, 0);
 
-    const bool parent_gone =
-        std::find(parent_ids.begin(), parent_ids.end(), int64_t{1}) == parent_ids.end();
+    const bool parent_gone = std::find(parent_ids.begin(), parent_ids.end(), int64_t{1}) == parent_ids.end();
     const bool child_still_points_at_it =
         std::find(child_refs.begin(), child_refs.end(), int64_t{1}) != child_refs.end();
 
-    INFO("parent rows left: " << parent_ids.size() << ", child rows still referencing id = 1: "
-                              << (child_still_points_at_it ? 1 : 0));
+    INFO("parent rows left: " << parent_ids.size()
+                              << ", child rows still referencing id = 1: " << (child_still_points_at_it ? 1 : 0));
     INFO("a cascade that cannot be evaluated must refuse, not report that nothing referenced the parent");
     const bool orphaned = del->is_success() && parent_gone && child_still_points_at_it;
     REQUIRE_FALSE(orphaned);

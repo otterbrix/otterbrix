@@ -97,12 +97,10 @@ namespace services::index {
         // Runs on the caller's thread, once, at the end of the write handler that incurred the debt.
         [[nodiscard]] core::error_t merge_pending_segments();
         void set_bulk_mode(bool enabled);
-        [[nodiscard]] core::error_t apply_txn_inserts(uint64_t txn_id,
-                                                      uint64_t commit_id,
-                                                      const std::vector<std::pair<value_t, size_t>>& values);
-        [[nodiscard]] core::error_t apply_txn_deletes(uint64_t txn_id,
-                                                      uint64_t commit_id,
-                                                      const std::vector<std::pair<value_t, size_t>>& values);
+        [[nodiscard]] core::error_t
+        apply_txn_inserts(uint64_t txn_id, uint64_t commit_id, const std::vector<std::pair<value_t, size_t>>& values);
+        [[nodiscard]] core::error_t
+        apply_txn_deletes(uint64_t txn_id, uint64_t commit_id, const std::vector<std::pair<value_t, size_t>>& values);
         void insert_bulk_unchecked(const value_t& key, size_t value);
         void remove_bulk_unchecked(const value_t& key, size_t row_id);
 
@@ -117,7 +115,7 @@ namespace services::index {
         };
 
         [[nodiscard]] core::result_wrapper_t<std::pmr::string> load_hash_key_at(uint32_t segment_id,
-                                                                               uint64_t value_offset) const;
+                                                                                uint64_t value_offset) const;
 
         [[nodiscard]] auto key_loader() const noexcept {
             return [this](uint32_t log_file_id, uint64_t log_offset) -> core::result_wrapper_t<std::pmr::string> {

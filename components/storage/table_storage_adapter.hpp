@@ -1,10 +1,10 @@
 #pragma once
 
 #include "storage.hpp"
-#include <cstdio>
 #include <components/table/data_table.hpp>
 #include <components/table/row_group.hpp>
 #include <components/table/table_state.hpp>
+#include <cstdio>
 
 namespace components::storage {
 
@@ -35,7 +35,6 @@ namespace components::storage {
         bool has_schema() const override { return !table_.columns().empty(); }
 
         void adopt_schema(const std::pmr::vector<types::complex_logical_type>& t) override { table_.adopt_schema(t); }
-
 
         uint64_t total_rows() const override { return table_.row_group()->total_rows(); }
 

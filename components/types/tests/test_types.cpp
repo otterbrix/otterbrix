@@ -1,12 +1,12 @@
 #include "operations_helper.hpp"
+#include <array>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <components/types/logical_value.hpp>
 #include <components/types/physical_value.hpp>
-#include <core/operations_helper.hpp>
 #include <core/counting_resource.hpp>
+#include <core/operations_helper.hpp>
 #include <core/pmr.hpp>
-#include <array>
 #include <cstddef>
 #include <memory_resource>
 #include <random>
@@ -30,13 +30,12 @@ namespace {
     }
 
     // Every literal these tests use is inside the window, so this asserts rather than propagates.
-    components::types::complex_logical_type
-    make_decimal(uint8_t width, uint8_t scale, std::string alias = "") {
+    components::types::complex_logical_type make_decimal(uint8_t width, uint8_t scale, std::string alias = "") {
         auto created = try_make_decimal(width, scale, std::move(alias));
         REQUIRE_FALSE(created.has_error());
         return std::move(created.value());
     }
-}
+} // namespace
 
 TEST_CASE("components::types::physical_value") {
     std::vector<physical_value> values;
@@ -290,8 +289,8 @@ TEST_CASE("components::types::logical_value::cast_to_decimal_answers_every_numer
         CHECK(ucasted.value().value<int64_t>() == 700);
 
         // 255 read as int8_t is -1, and -128 has no unsigned reading -- one arm can't cover both.
-        for (const auto& [source, scaled] : std::initializer_list<std::pair<int8_t, int64_t>>{{-128, -12800},
-                                                                                            {127, 12700}}) {
+        for (const auto& [source, scaled] :
+             std::initializer_list<std::pair<int8_t, int64_t>>{{-128, -12800}, {127, 12700}}) {
             auto edge = logical_value_t(&resource, source).cast_as(decimal_type, {});
             REQUIRE_FALSE(edge.has_error());
             CHECK(edge.value().value<int64_t>() == scaled);
@@ -565,9 +564,7 @@ TEST_CASE("components::types::complex_logical_type::create_decimal_reports_on_th
     // The refusal message is built and still live on the caller's arena after the result is moved --
     // error_t's copy assignment re-anchors onto the default resource, so a correct build can still fail.
     std::array<std::byte, 4096> storage{};
-    std::pmr::monotonic_buffer_resource stack_arena{storage.data(),
-                                                   storage.size(),
-                                                   std::pmr::null_memory_resource()};
+    std::pmr::monotonic_buffer_resource stack_arena{storage.data(), storage.size(), std::pmr::null_memory_resource()};
     core::pmr::counting_resource_t arena{&stack_arena};
 
     INFO("an out-of-window DECIMAL reports on the arena it was handed");

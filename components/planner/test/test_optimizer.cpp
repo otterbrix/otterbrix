@@ -48,14 +48,14 @@ namespace {
     services::dispatcher::validation::validation_context_t
     test_validation_context(std::pmr::memory_resource* resource) {
         static const components::graph_execution_context execution_context{};
-        static components::compute::function_registry_t& functions = [] () -> components::compute::function_registry_t& {
+        static components::compute::function_registry_t& functions = []() -> components::compute::function_registry_t& {
             static components::compute::function_registry_t f{std::pmr::new_delete_resource()};
             components::compute::register_default_functions(f);
             return f;
         }();
         return {resource, nullptr, *test_cast_registry(), functions, execution_context};
     }
-}
+} // namespace
 
 using namespace components::logical_plan;
 using namespace components::expressions;
@@ -945,7 +945,7 @@ namespace {
         }
         return false;
     }
-}
+} // namespace
 
 TEST_CASE("optimizer::pushdown_aggregate::scalar_mergeable_is_stamped") {
     auto resource = core::pmr::otterbrix_resource();
@@ -1083,7 +1083,7 @@ namespace {
         auto chunk = gen_data_chunk(/*size=*/1, /*start=*/0, types, r);
         return make_node_raw_data(r, std::move(chunk));
     }
-}
+} // namespace
 
 TEST_CASE("optimizer::promote_cross_join::comma_join_becomes_inner_hash") {
     auto resource = core::pmr::otterbrix_resource();
@@ -1235,7 +1235,7 @@ namespace {
         entry.table_md = std::move(md);
         resolves.ensure(r, components::logical_plan::resolve_kind::table).add(std::move(entry));
     }
-}
+} // namespace
 
 TEST_CASE("optimizer::column_pruning::plain_select_projects_single_column") {
     auto resource = core::pmr::otterbrix_resource();
@@ -1410,7 +1410,7 @@ namespace {
         REQUIRE_FALSE(validated.has_error());
         return outer;
     }
-}
+} // namespace
 
 TEST_CASE("optimizer::pushdown_filter::union_all_pushes_into_each_branch") {
     auto resource = core::pmr::otterbrix_resource();
@@ -1532,7 +1532,7 @@ namespace {
         agg->set_output_types(std::move(out));
         return agg;
     }
-}
+} // namespace
 
 TEST_CASE("optimizer::pushdown_filter::join_shared_column_name_buckets_by_side") {
     auto resource = core::pmr::otterbrix_resource();
@@ -1818,7 +1818,7 @@ namespace {
         auto out = components::planner::optimizer::drop_redundant_distinct(r, agg);
         return static_cast<node_aggregate_t*>(out.get())->is_distinct();
     }
-}
+} // namespace
 
 TEST_CASE("optimizer::drop_redundant_distinct::plain_keys_equal_projection") {
     auto resource = core::pmr::otterbrix_resource();
@@ -1946,7 +1946,7 @@ namespace { namespace eag {
         }
         return nullptr;
     }
-}}
+}} // namespace ::eag
 
 TEST_CASE("optimizer::eager_aggregation::min_is_pushed") {
     auto resource = core::pmr::otterbrix_resource();

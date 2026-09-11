@@ -236,13 +236,15 @@ namespace components::sql::transform {
                         } else {
                             // The column already holds values of a type this parameter cannot
                             // join; recreating the column would silently erase them.
-                            last_error_ = core::error_t(
-                                core::error_code_t::sql_parse_error,
-                                std::pmr::string{"Parameter $" + std::to_string(id) + " of an incompatible type "
-                                                     "routes to column '" +
-                                                     param.second + "': the values already written there cannot "
-                                                                    "be converted to it",
-                                                 resource_});
+                            last_error_ =
+                                core::error_t(core::error_code_t::sql_parse_error,
+                                              std::pmr::string{"Parameter $" + std::to_string(id) +
+                                                                   " of an incompatible type "
+                                                                   "routes to column '" +
+                                                                   param.second +
+                                                                   "': the values already written there cannot "
+                                                                   "be converted to it",
+                                                               resource_});
                             return *this;
                         }
                     }
@@ -270,12 +272,12 @@ namespace components::sql::transform {
                             return *this;
                         }
                         if (casted.value().is_null()) {
-                            last_error_ = core::error_t(
-                                core::error_code_t::sql_parse_error,
-                                std::pmr::string{"Parameter $" + std::to_string(id) +
-                                                     " cannot be converted to the type of column '" + param.second +
-                                                     "'",
-                                                 resource_});
+                            last_error_ =
+                                core::error_t(core::error_code_t::sql_parse_error,
+                                              std::pmr::string{"Parameter $" + std::to_string(id) +
+                                                                   " cannot be converted to the type of column '" +
+                                                                   param.second + "'",
+                                                               resource_});
                             return *this;
                         }
                         cell = casted.value();

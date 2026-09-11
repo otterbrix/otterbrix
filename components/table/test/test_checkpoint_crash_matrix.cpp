@@ -20,8 +20,8 @@
 #include <limits>
 #include <set>
 #include <string>
-#include <vector>
 #include <unistd.h>
+#include <vector>
 
 #include "block_reachability_walker.hpp"
 #include "fault_injection_file.hpp"
@@ -257,12 +257,22 @@ namespace {
         return out;
     }
 
-    enum class crash_kind_t { clean_writes, torn_write, sync_fail, before_header };
-    enum class survival_t { persisted, reverted };
+    enum class crash_kind_t
+    {
+        clean_writes,
+        torn_write,
+        sync_fail,
+        before_header
+    };
+    enum class survival_t
+    {
+        persisted,
+        reverted
+    };
 
     struct round_shape_t {
         uint64_t base_writes{0};
-        uint64_t round_writes{0};  // W: the header write is write W
+        uint64_t round_writes{0}; // W: the header write is write W
         uint64_t compact_end{0};
         uint64_t table_ckpt_end{0};
         uint64_t free_list_end{0};
@@ -458,17 +468,16 @@ namespace {
         const auto shape = measure_round(base_path, work_path, do_compact);
         const uint64_t W = shape.round_writes;
         WARN("[a7.4 " << family << "] root N iteration=" << shape.iter_before << " base_writes=" << shape.base_writes
-                      << " round: W=" << W << " writes (compact:1.." << shape.compact_end << ", table+meta:"
-                      << shape.compact_end + 1 << ".." << shape.table_ckpt_end << ", free-list:"
-                      << shape.table_ckpt_end + 1 << ".." << shape.free_list_end
+                      << " round: W=" << W << " writes (compact:1.." << shape.compact_end
+                      << ", table+meta:" << shape.compact_end + 1 << ".." << shape.table_ckpt_end
+                      << ", free-list:" << shape.table_ckpt_end + 1 << ".." << shape.free_list_end
                       << ", 1st fsync, header:" << W << ", 2nd fsync)");
 
         for (auto survival : {survival_t::persisted, survival_t::reverted}) {
             const char* sname = survival == survival_t::persisted ? "persisted" : "reverted";
             std::vector<std::string> outcomes;
             for (uint64_t k = 0; k <= W; ++k) {
-                auto cell =
-                    run_cell(base_path, work_path, do_compact, shape, crash_kind_t::clean_writes, survival, k);
+                auto cell = run_cell(base_path, work_path, do_compact, shape, crash_kind_t::clean_writes, survival, k);
                 const std::string label =
                     std::string("[a7.4 ") + family + "] clean/" + sname + " k=" + std::to_string(k);
                 {
@@ -486,8 +495,13 @@ namespace {
         {
             std::vector<std::string> outcomes;
             for (uint64_t k = 1; k <= W; ++k) {
-                auto cell =
-                    run_cell(base_path, work_path, do_compact, shape, crash_kind_t::torn_write, survival_t::persisted, k);
+                auto cell = run_cell(base_path,
+                                     work_path,
+                                     do_compact,
+                                     shape,
+                                     crash_kind_t::torn_write,
+                                     survival_t::persisted,
+                                     k);
                 const std::string label = std::string("[a7.4 ") + family + "] torn k=" + std::to_string(k);
                 {
                     INFO(label << " (stage=" << cell.trace.stage << ")");
@@ -527,8 +541,7 @@ namespace {
             std::string digest;
             for (auto survival : {survival_t::persisted, survival_t::reverted}) {
                 const char* sname = survival == survival_t::persisted ? "persisted" : "reverted";
-                auto cell =
-                    run_cell(base_path, work_path, do_compact, shape, crash_kind_t::before_header, survival, 0);
+                auto cell = run_cell(base_path, work_path, do_compact, shape, crash_kind_t::before_header, survival, 0);
                 const std::string label = std::string("[a7.4 ") + family + "] after-1st-fsync/" + sname;
                 {
                     INFO(label << " (stage=" << cell.trace.stage << ")");
@@ -548,19 +561,17 @@ namespace {
         remove_file(work_path);
     }
 
-}
+} // namespace
 
 TEST_CASE("crash_matrix: a COMPACTING checkpoint round recovers to root N or N+1 at every crash point", "[a7.4]") {
     // Only this family exercises that compaction never overwrites a block the durable root still reads.
     run_matrix(true, "compacting");
 }
 
-TEST_CASE("crash_matrix: a non-compacting checkpoint round recovers to root N or N+1 at every crash point",
-          "[a7.4]") {
+TEST_CASE("crash_matrix: a non-compacting checkpoint round recovers to root N or N+1 at every crash point", "[a7.4]") {
     // Root N's data blocks stay live and shared with the successor; the incremental round must not touch them.
     run_matrix(false, "noncompact");
 }
-
 
 // Regression: without publishing compact's write-through blocks in the free list, a committed
 // round leaked 8 blocks (2 MiB at 6k rows) that no root names, orphaned since reclaim only walks

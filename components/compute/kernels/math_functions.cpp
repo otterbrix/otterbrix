@@ -254,33 +254,33 @@ namespace components::compute {
         r.add_builtin(
             make_abs_func(r.resource(), "abs", "Absolute value", "ABS(x) -> the magnitude of x, in x's own type"));
         r.add_builtin(make_fixed_type_func(r.resource(),
-                                                   "pow",
-                                                   "Exponentiation",
-                                                   "POW(x, y) -> x raised to the power y",
-                                                   logical_type::DOUBLE,
-                                                   2,
-                                                   vector_pow));
+                                           "pow",
+                                           "Exponentiation",
+                                           "POW(x, y) -> x raised to the power y",
+                                           logical_type::DOUBLE,
+                                           2,
+                                           vector_pow));
         r.add_builtin(make_fixed_type_func(r.resource(),
-                                                   "sqrt",
-                                                   "Square root",
-                                                   "SQRT(x) -> the square root of x",
-                                                   logical_type::DOUBLE,
-                                                   1,
-                                                   vector_sqrt));
+                                           "sqrt",
+                                           "Square root",
+                                           "SQRT(x) -> the square root of x",
+                                           logical_type::DOUBLE,
+                                           1,
+                                           vector_sqrt));
         r.add_builtin(make_fixed_type_func(r.resource(),
-                                                   "cbrt",
-                                                   "Cube root",
-                                                   "CBRT(x) -> the cube root of x",
-                                                   logical_type::DOUBLE,
-                                                   1,
-                                                   vector_cbrt));
+                                           "cbrt",
+                                           "Cube root",
+                                           "CBRT(x) -> the cube root of x",
+                                           logical_type::DOUBLE,
+                                           1,
+                                           vector_cbrt));
         r.add_builtin(make_fixed_type_func(r.resource(),
-                                                   "factorial",
-                                                   "Factorial",
-                                                   "FACTORIAL(x) -> the product of the integers 1..x",
-                                                   logical_type::BIGINT,
-                                                   1,
-                                                   vector_factorial));
+                                           "factorial",
+                                           "Factorial",
+                                           "FACTORIAL(x) -> the product of the integers 1..x",
+                                           logical_type::BIGINT,
+                                           1,
+                                           vector_factorial));
     }
 
 } // namespace components::compute

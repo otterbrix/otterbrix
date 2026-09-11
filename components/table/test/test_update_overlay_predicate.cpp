@@ -23,13 +23,13 @@ using namespace components::table;
 namespace {
 
     std::string overlay_predicate_db_path() {
-        static std::string path = "/tmp/test_otterbrix_update_overlay_predicate_" + std::to_string(::getpid()) + ".otbx";
+        static std::string path =
+            "/tmp/test_otterbrix_update_overlay_predicate_" + std::to_string(::getpid()) + ".otbx";
         return path;
     }
 
     const std::string& overlay_predicate_fresh_db_path() {
-        static const std::string path =
-            (std::remove(overlay_predicate_db_path().c_str()), overlay_predicate_db_path());
+        static const std::string path = (std::remove(overlay_predicate_db_path().c_str()), overlay_predicate_db_path());
         return path;
     }
 

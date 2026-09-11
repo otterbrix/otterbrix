@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 #include <tuple>
 
 #include <catch2/catch_test_macros.hpp>
@@ -359,7 +359,7 @@ namespace {
         }
         return count;
     }
-}
+} // namespace
 
 TEST_CASE("name_resolution::column_ref::bare_column_stays_undefined") {
     auto result = probe("SELECT id FROM t;", "id");
@@ -1030,7 +1030,7 @@ namespace {
             return reference_slots_t{ref.uid, ref.db, ref.schema, ref.table, ref.field.as_string()};
         });
     }
-}
+} // namespace
 
 TEST_CASE("name_resolution::from_name::from_arities_fill_the_slots") {
     // The shorter forms drop the middle slots: two segments are db.relname, not schema.relname.

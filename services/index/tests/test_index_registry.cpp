@@ -25,9 +25,8 @@ namespace {
     }
 
     // The address is never dereferenced: every decision here is taken off the record's own fields.
-    index_record_t make_record(components::catalog::oid_t index_oid,
-                               components::index::keys_base_storage_t keys,
-                               index_type type) {
+    index_record_t
+    make_record(components::catalog::oid_t index_oid, components::index::keys_base_storage_t keys, index_type type) {
         return index_record_t{index_oid,
                               std::move(keys),
                               type,

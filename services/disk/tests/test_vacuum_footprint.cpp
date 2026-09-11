@@ -82,10 +82,7 @@ namespace {
         }
 
         void checkpoint(services::wal::id_t wal_id) {
-            invoke(&manager_disk_t::checkpoint_all,
-                   session_id_t{},
-                   wal_id,
-                   std::numeric_limits<uint64_t>::max());
+            invoke(&manager_disk_t::checkpoint_all, session_id_t{}, wal_id, std::numeric_limits<uint64_t>::max());
         }
 
         void vacuum() {

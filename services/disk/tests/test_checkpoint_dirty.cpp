@@ -265,7 +265,6 @@ TEST_CASE("services::disk::checkpoint_dirty::clean_table_still_reports_its_wal_f
     std::filesystem::remove_all(dir);
 }
 
-
 // A bare WAL-floor return couldn't tell a rewrite round from an all-deferred one (observed live as
 // truncation boundaries 31/55/55/135 with a truncation that deleted nothing); checkpoint_result_t now
 // carries per-round tallies, mirrored here by the DEV counters below.
@@ -300,10 +299,8 @@ TEST_CASE("services::disk::checkpoint_dirty::a_round_that_defers_everything_is_c
 
         services::disk::reset_checkpoint_entry_tallies();
         {
-            auto floor1 = fd.invoke(&manager_disk_t::checkpoint_all,
-                                    session_id_t{},
-                                    services::wal::id_t{10},
-                                    std::uint64_t{5});
+            auto floor1 =
+                fd.invoke(&manager_disk_t::checkpoint_all, session_id_t{}, services::wal::id_t{10}, std::uint64_t{5});
             REQUIRE(floor1 <= services::wal::id_t{10});
         }
         INFO("a low watermark must defer the stamped entries, and the deferral must be counted");

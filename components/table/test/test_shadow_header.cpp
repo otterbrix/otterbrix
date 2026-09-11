@@ -90,7 +90,9 @@ namespace {
 
     uint64_t scan_rows(data_table_t& table, uint64_t upper_bound) {
         uint64_t scanned = 0;
-        otterbrix_test::scan_table_segment(table, 0, upper_bound, [&](data_chunk_t& chunk) { scanned += chunk.size(); });
+        otterbrix_test::scan_table_segment(table, 0, upper_bound, [&](data_chunk_t& chunk) {
+            scanned += chunk.size();
+        });
         return scanned;
     }
 
@@ -109,9 +111,7 @@ namespace {
 
     // slot 0 lives at SECTOR_SIZE, slot 1 at 2 * SECTOR_SIZE (main header occupies [0, SECTOR_SIZE)).
 
-    uint64_t slot_offset(int slot) {
-        return slot == 0 ? tstorage::SECTOR_SIZE : 2 * tstorage::SECTOR_SIZE;
-    }
+    uint64_t slot_offset(int slot) { return slot == 0 ? tstorage::SECTOR_SIZE : 2 * tstorage::SECTOR_SIZE; }
 
     bool read_slot(const std::string& path, int slot, tstorage::database_header_t& out) {
         std::ifstream f(path, std::ios::binary);

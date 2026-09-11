@@ -209,9 +209,8 @@ namespace services::index {
         };
 
         core::error_t unreadable_record(std::pmr::memory_resource* resource) {
-            return core::error_t{
-                core::error_code_t::data_corruption,
-                std::pmr::string{"btree index: a stored record's key could not be decoded", resource}};
+            return core::error_t{core::error_code_t::data_corruption,
+                                 std::pmr::string{"btree index: a stored record's key could not be decoded", resource}};
         }
     } // namespace
 
@@ -277,9 +276,9 @@ namespace services::index {
                 ascending(probe, std::numeric_limits<btree_t::index_t>::max(), keep_all);
                 break;
             case compare_type::ne:
-                db_->full_scan(&res,
-                               read_row,
-                               readable([&probe](const auto& index, const auto&) { return index != probe; }));
+                db_->full_scan(&res, read_row, readable([&probe](const auto& index, const auto&) {
+                    return index != probe;
+                }));
                 break;
             default:
                 assert(false && "btree_index_disk_t::scan_range: predicate is not a value comparison");
@@ -305,10 +304,10 @@ namespace services::index {
         db_->load();
         reset_flush_state();
         if (!directory_removed) {
-            return core::error_t{core::error_code_t::index_create_fail,
-                                 std::pmr::string{"btree: the index directory " + path_.string() +
-                                                      " could not be removed for a clear",
-                                                  resource()}};
+            return core::error_t{
+                core::error_code_t::index_create_fail,
+                std::pmr::string{"btree: the index directory " + path_.string() + " could not be removed for a clear",
+                                 resource()}};
         }
         return core::error_t::no_error();
     }

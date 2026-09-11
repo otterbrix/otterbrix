@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -160,8 +160,7 @@ TEST_CASE("integration::cpp::test_s3_cleanup_scaling::contiguous_tombstones_recl
 // SCATTERED complement: every vector keeps some live and some tombstoned rows (any_deleted
 // set), so none collapses into the O(1) chunk_constant_info form and none can be dropped
 // whole -- the worst case for this reclaim, and the shape an OLTP update-by-key workload makes.
-TEST_CASE("integration::cpp::test_s3_cleanup_scaling::scattered_tombstones_reclaimed_at_checkpoint",
-          "[.][s3cleanup]") {
+TEST_CASE("integration::cpp::test_s3_cleanup_scaling::scattered_tombstones_reclaimed_at_checkpoint", "[.][s3cleanup]") {
     auto config = test_create_config(integration_fixture_path("test_s3/cleanup_scattered"));
     test_clear_directory(config);
     config.log.level = log_t::level::off;

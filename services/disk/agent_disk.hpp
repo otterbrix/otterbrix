@@ -222,9 +222,8 @@ namespace services::disk {
                                        components::table::transaction_data txn);
 
         // Lifts the compact() gate; idempotent (unknown id = no-op).
-        unique_future<void> storage_close_cursor_inner(session_id_t session,
-                                                       components::catalog::oid_t table_oid,
-                                                       uint64_t cursor_id);
+        unique_future<void>
+        storage_close_cursor_inner(session_id_t session, components::catalog::oid_t table_oid, uint64_t cursor_id);
 
         // Mints a position-less hold so checkpoint_inner defers compact(); released by storage_close_cursor_inner.
         unique_future<core::result_wrapper_t<uint64_t>>
@@ -318,7 +317,7 @@ namespace services::disk {
         //           materialized), so nothing physical to release;
         //   error = no materialized storage for the oid here (disk_contract.hpp).
         unique_future<core::result_wrapper_t<bool>> drop_storage_column_inner(components::catalog::oid_t table_oid,
-                                                                             std::string attname);
+                                                                              std::string attname);
 
         // Keeps the storage's cached name in step with the catalog's.
         //   true  = renamed;
@@ -409,20 +408,18 @@ namespace services::disk {
                 std::string name;
             };
             components::catalog::oid_t table_oid{components::catalog::INVALID_OID}; // gates compact() on this oid
-            components::storage::scan_position_t pos; // absolute resume position
-            std::unique_ptr<components::table::table_filter_t>
-                filter;                                    // owned; rebound per fetch
-            std::vector<std::size_t> projected_cols;       // empty == all columns
-            components::table::transaction_data txn{0, 0}; // MVCC snapshot for the whole scan
-            int64_t matched_limit{-1};                     // post-filter matched-row cap (-1 == unbounded)
-            uint64_t matched_emitted{0};                   // running matched rows handed out (enforces matched_limit)
+            components::storage::scan_position_t pos;                               // absolute resume position
+            std::unique_ptr<components::table::table_filter_t> filter;              // owned; rebound per fetch
+            std::vector<std::size_t> projected_cols;                                // empty == all columns
+            components::table::transaction_data txn{0, 0};                          // MVCC snapshot for the whole scan
+            int64_t matched_limit{-1};   // post-filter matched-row cap (-1 == unbounded)
+            uint64_t matched_emitted{0}; // running matched rows handed out (enforces matched_limit)
             // OPEN-time schema snapshot; projection/filter bind positionally against it, re-checked each fetch.
             std::vector<open_column_t> open_columns;
             std::vector<components::types::complex_logical_type> open_types;
         };
         std::pmr::unordered_map<uint64_t, active_scan_t> active_scans_;
         uint64_t next_scan_cursor_id_{1}; // (session, counter); 0 is the OPEN-request sentinel
-
 
         std::pmr::vector<dropped_storage_entry_t> dropped_storages_;
 

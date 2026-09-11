@@ -536,23 +536,23 @@ namespace components::compute {
     // WARNING: array size, names order and uid has to be the same as in DEFAULT_FUNCTIONS
     void register_default_functions(function_registry_t& r) {
         r.add_builtin(make_sum_func(r.resource(),
-                                            "sum",
-                                            "Add all numeric values",
-                                            "Results in a single number of the same type as input"));
+                                    "sum",
+                                    "Add all numeric values",
+                                    "Results in a single number of the same type as input"));
         r.add_builtin(make_min_func(r.resource(),
-                                            "min",
-                                            "Selects minimal value",
-                                            "Results in a single number of the same type as input"));
+                                    "min",
+                                    "Selects minimal value",
+                                    "Results in a single number of the same type as input"));
         r.add_builtin(make_max_func(r.resource(),
-                                            "max",
-                                            "Selects maximum value",
-                                            "Results in a single number of the same type as input"));
+                                    "max",
+                                    "Selects maximum value",
+                                    "Results in a single number of the same type as input"));
         r.add_builtin(
             make_count_func(r.resource(), "count", "Return data size", "Results in a single number of uint64"));
         r.add_builtin(make_avg_func(r.resource(),
-                                            "avg",
-                                            "Return data size",
-                                            "Results in a single number of the same type as input"));
+                                    "avg",
+                                    "Return data size",
+                                    "Results in a single number of the same type as input"));
         register_string_functions(r);
         register_expand_functions(r);
         register_math_functions(r);

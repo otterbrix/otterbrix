@@ -17,8 +17,8 @@
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/expressions/compare_expression.hpp>
-#include <components/logical_plan/node_create_index.hpp>
 #include <components/log/log.hpp>
+#include <components/logical_plan/node_create_index.hpp>
 #include <components/session/session.hpp>
 
 #include <cstdint>

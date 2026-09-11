@@ -4,6 +4,7 @@
 #include <components/casts/cast_registry.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/settings.hpp>
+#include <services/dispatcher/txn_messages.hpp>
 #include <components/compute/function.hpp>
 #include <components/context/pg_catalog_swap.hpp>
 #include <components/context/subplan_runner.hpp>
@@ -149,8 +150,10 @@ namespace services::collection::executor {
 
         // The per-query entry point (the dispatcher's only execute send); txn-state access rides
         // txn_*_msg to the dispatcher, the sole transaction_manager_t owner.
+        // The dispatcher resolves the transaction and hands it down: a statement never opens its own.
         unique_future<execute_result_t> execute_plan_full(components::session::session_id_t session,
-                                                          components::logical_plan::execution_plan_t plan);
+                                                          components::logical_plan::execution_plan_t plan,
+                                                          services::dispatcher::txn_session_context_t session_ctx);
 
         unique_future<std::unique_ptr<function_result_t>> register_udf(components::session::session_id_t session,
                                                                        components::compute::function_ptr function);

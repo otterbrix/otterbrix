@@ -63,7 +63,6 @@ namespace services::dispatcher {
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::register_cast>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::unregister_cast>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::set_explain_renderer>,
-            actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_begin_session_msg>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_mark_explicit_msg>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_commit_drain_msg>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_abort_drain_msg>,
@@ -314,10 +313,6 @@ namespace services::dispatcher {
                 co_await actor_zeta::dispatch(this, &manager_dispatcher_t::set_explain_renderer, msg);
                 break;
             }
-            case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_begin_session_msg>: {
-                co_await actor_zeta::dispatch(this, &manager_dispatcher_t::txn_begin_session_msg, msg);
-                break;
-            }
             case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_mark_explicit_msg>: {
                 co_await actor_zeta::dispatch(this, &manager_dispatcher_t::txn_mark_explicit_msg, msg);
                 break;
@@ -413,6 +408,12 @@ namespace services::dispatcher {
         co_return;
     }
 
+    void manager_dispatcher_t::cache_settings_sync(const components::catalog::session_catalog_t& settings) {
+        default_settings_ = settings;
+        trace(log_,
+              "manager_dispatcher_t::cache_settings_sync");
+    }
+
     void manager_dispatcher_t::seed_commit_clock_sync(uint64_t high_water) {
         // Restores BOTH halves of the commit clock: raising only the horizon left post-reopen
         // INSERTs reusing already-published commit-ids (symptom: SSB q1-1 returned 0 rows on reopen).
@@ -437,10 +438,13 @@ namespace services::dispatcher {
         assert(!executors_.empty());
         const std::size_t pool_idx = next_executor_index();
         trace(log_, "manager_dispatcher_t::execute_plan: routing to executor[{}]", pool_idx);
+        auto session_ctx = create_session_context(session);
+        plan.commits_when_done = !session_ctx.is_explicit && default_settings_.autocommit;
         auto [needs_sched, future] = actor_zeta::otterbrix::send(executor_addresses_[pool_idx],
                                                                  &collection::executor::executor_t::execute_plan_full,
                                                                  session,
-                                                                 std::move(plan));
+                                                                 std::move(plan),
+                                                                 std::move(session_ctx));
         if (needs_sched && executors_[pool_idx]) {
             scheduler_->enqueue(executors_[pool_idx].get());
         }
@@ -467,9 +471,8 @@ namespace services::dispatcher {
               "manager_dispatcher_t::execute_plan: result received, success: {}",
               exec_result.cursor->is_success());
         if (exec_result.cursor && exec_result.cursor->is_error()) {
-            // IMPLICIT txns only: left open, this would pin compact_watermark() forever; EXPLICIT ones stay
-            // alive on purpose, for the client's ROLLBACK to run the abort-drain cascade.
-            if (auto* txn = txn_manager_.find_transaction(session); txn != nullptr && !txn->is_explicit()) {
+            if (auto* txn = txn_manager_.find_transaction(session);
+                txn != nullptr && !txn->is_explicit() && default_settings_.autocommit) {
                 txn_manager_.abort(session);
                 try_trigger_cleanup_if_horizon_advanced();
             }
@@ -772,15 +775,19 @@ namespace services::dispatcher {
             boost::intrusive_ptr(new components::logical_plan::node_register_cast_t(resource(), source, target, entry));
         auto plan = make_cast_resolve_plan(resource(), leaf, source, target);
         const std::size_t pool_idx = next_executor_index();
+        auto session_ctx = create_session_context(session);
+        plan.commits_when_done = !session_ctx.is_explicit && default_settings_.autocommit;
         auto [needs_sched, fut] = actor_zeta::otterbrix::send(executor_addresses_[pool_idx],
                                                               &collection::executor::executor_t::execute_plan_full,
                                                               session,
-                                                              std::move(plan));
+                                                              std::move(plan),
+                                                              std::move(session_ctx));
         if (needs_sched && executors_[pool_idx]) {
             scheduler_->enqueue(executors_[pool_idx].get());
         }
         auto res = co_await std::move(fut);
-        if (auto* txn = txn_manager_.find_transaction(session); txn != nullptr && !txn->is_explicit()) {
+        if (auto* txn = txn_manager_.find_transaction(session);
+            txn != nullptr && !txn->is_explicit() && default_settings_.autocommit) {
             txn_manager_.abort(session);
             try_trigger_cleanup_if_horizon_advanced();
         }
@@ -890,15 +897,19 @@ namespace services::dispatcher {
             boost::intrusive_ptr(new components::logical_plan::node_unregister_cast_t(resource(), source, target));
         auto plan = make_cast_resolve_plan(resource(), leaf, source, target);
         const std::size_t pool_idx = next_executor_index();
+        auto session_ctx = create_session_context(session);
+        plan.commits_when_done = !session_ctx.is_explicit && default_settings_.autocommit;
         auto [needs_sched, fut] = actor_zeta::otterbrix::send(executor_addresses_[pool_idx],
                                                               &collection::executor::executor_t::execute_plan_full,
                                                               session,
-                                                              std::move(plan));
+                                                              std::move(plan),
+                                                              std::move(session_ctx));
         if (needs_sched && executors_[pool_idx]) {
             scheduler_->enqueue(executors_[pool_idx].get());
         }
         auto res = co_await std::move(fut);
-        if (auto* txn = txn_manager_.find_transaction(session); txn != nullptr && !txn->is_explicit()) {
+        if (auto* txn = txn_manager_.find_transaction(session);
+            txn != nullptr && !txn->is_explicit() && default_settings_.autocommit) {
             txn_manager_.abort(session);
             try_trigger_cleanup_if_horizon_advanced();
         }
@@ -1001,8 +1012,7 @@ namespace services::dispatcher {
         co_return core::error_t::no_error();
     }
 
-    manager_dispatcher_t::unique_future<txn_session_context_t>
-    manager_dispatcher_t::txn_begin_session_msg(components::session::session_id_t session) {
+    txn_session_context_t manager_dispatcher_t::create_session_context(components::session::session_id_t session) {
         auto& txn = txn_manager_.begin_transaction(session);
         txn_session_context_t out;
         out.txn = txn.data();
@@ -1010,11 +1020,11 @@ namespace services::dispatcher {
         out.is_explicit = txn.is_explicit();
         out.lowest_active_start_time = txn_manager_.lowest_active_start_time();
         trace(log_,
-              "manager_dispatcher_t::txn_begin_session_msg, session: {}, txn: {}, explicit: {}",
+              "manager_dispatcher_t::create_session_context, session: {}, txn: {}, explicit: {}",
               session.data(),
               out.txn.transaction_id,
               out.is_explicit);
-        co_return out;
+        return out;
     }
 
     manager_dispatcher_t::unique_future<void>

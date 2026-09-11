@@ -79,6 +79,8 @@ namespace components::logical_plan {
         // (see set_explain_renderer). 0 = the built-in postgres renderer (default). Set only from
         // the host C++ API, never SQL; rides the plan by value into the executor like `explain`.
         uint32_t explain_render_id{0};
+
+        bool commits_when_done{false};
     };
 
 } // namespace components::logical_plan

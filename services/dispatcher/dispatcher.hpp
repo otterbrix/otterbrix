@@ -97,6 +97,8 @@ namespace services::dispatcher {
         // Direct sync call, safe only because the scheduler has not started yet; idempotent.
         void seed_commit_clock_sync(uint64_t high_water);
 
+        void cache_settings_sync(const components::catalog::session_catalog_t& settings);
+
         // Sync twin of on_drop_resource_marked(), for use before scheduler.start. Idempotent.
         void set_disk_has_dropped_sync(bool value) noexcept { disk_has_dropped_ = value; }
         void set_index_has_dropped_sync(bool value) noexcept { index_has_dropped_ = value; }
@@ -123,9 +125,6 @@ namespace services::dispatcher {
 
         // txn-state mailbox service: the only way any other actor reads or mutates transaction state.
 
-        // Idempotently begins the session's txn, so one exists before any operator runs, BEGIN's
-        // own plan included.
-        unique_future<txn_session_context_t> txn_begin_session_msg(components::session::session_id_t session);
         // begin (idempotent) then mark_explicit — never a no-op on a missing txn.
         unique_future<void> txn_mark_explicit_msg(components::session::session_id_t session);
         // Drains every parked range, then commit() allocates the commit_id into in_flight_commits_.
@@ -152,7 +151,6 @@ namespace services::dispatcher {
                                                             &manager_dispatcher_t::register_cast,
                                                             &manager_dispatcher_t::unregister_cast,
                                                             &manager_dispatcher_t::set_explain_renderer,
-                                                            &manager_dispatcher_t::txn_begin_session_msg,
                                                             &manager_dispatcher_t::txn_mark_explicit_msg,
                                                             &manager_dispatcher_t::txn_commit_drain_msg,
                                                             &manager_dispatcher_t::txn_abort_drain_msg,
@@ -173,6 +171,8 @@ namespace services::dispatcher {
         void try_trigger_cleanup_if_horizon_advanced() noexcept;
 
         std::size_t next_executor_index() noexcept;
+
+        txn_session_context_t create_session_context(components::session::session_id_t session);
 
         std::pmr::memory_resource* resource_;
         actor_zeta::scheduler_raw scheduler_;

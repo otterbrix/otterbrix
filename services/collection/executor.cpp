@@ -382,7 +382,8 @@ namespace services::collection::executor {
 
     executor_t::unique_future<execute_result_t>
     executor_t::execute_plan_full(components::session::session_id_t session,
-                                  components::logical_plan::execution_plan_t plan) {
+                                  components::logical_plan::execution_plan_t plan,
+                                  services::dispatcher::txn_session_context_t session_ctx) {
         using node_type = components::logical_plan::node_type;
         using components::logical_plan::node_aggregate_t;
         using components::logical_plan::node_catalog_resolve_t;
@@ -415,7 +416,7 @@ namespace services::collection::executor {
                 sub_plan.explain = components::logical_plan::explain_type::analyze;
                 sub_plan.explain_capture_ir = true;
             }
-            auto sub_result = co_await execute_plan_full(session, std::move(sub_plan));
+            auto sub_result = co_await execute_plan_full(session, std::move(sub_plan), session_ctx);
             if (sub_result.cursor->is_error()) {
                 co_return execute_result_t{std::move(sub_result.cursor)};
             }
@@ -489,12 +490,6 @@ namespace services::collection::executor {
             plan.parameters->set_parameter(mapping.id, std::move(compacted.value()));
         }
 
-        // Move-construct, not default-construct+assign — the latter risks bad_alloc.
-        auto [_tb, tbf] =
-            actor_zeta::otterbrix::send(parent_address_,
-                                        &services::dispatcher::manager_dispatcher_t::txn_begin_session_msg,
-                                        session);
-        services::dispatcher::txn_session_context_t session_ctx = co_await std::move(tbf);
         components::table::transaction_data resolve_txn = session_ctx.txn;
         trace(log_,
               "executor::execute_plan_full: session txn {}, explicit: {}, session: {}",
@@ -1648,7 +1643,7 @@ namespace services::collection::executor {
                       resolve_txn.transaction_id,
                       payload.base_appends.size(),
                       payload.base_deletes.size(),
-                      session_ctx.is_explicit ? "publish deferred to COMMIT" : "implicit COMMIT follows");
+                      plan.commits_when_done ? "COMMIT follows" : "publish deferred to COMMIT");
                 if (!payload.empty()) {
                     auto [_ac, acf] =
                         actor_zeta::otterbrix::send(parent_address_,
@@ -1672,7 +1667,7 @@ namespace services::collection::executor {
                 exec_result.created_storage_oids.clear();
                 exec_result.created_indexes.clear();
 
-                if (!session_ctx.is_explicit && exec_result.cursor->is_success()) {
+                if (plan.commits_when_done && exec_result.cursor->is_success()) {
                     auto commit_result = co_await run_commit_pipeline_(session,
                                                                        resolve_txn,
                                                                        context_storage.execution_context,
@@ -1766,7 +1761,7 @@ namespace services::collection::executor {
                 co_await undo_create_index(this, create_index_table_oid, create_index_oid);
             }
 
-            if (!session_ctx.is_explicit && exec_result.cursor->is_success()) {
+            if (plan.commits_when_done && exec_result.cursor->is_success()) {
                 auto commit_result = co_await run_commit_pipeline_(session,
                                                                    resolve_txn,
                                                                    context_storage.execution_context,
@@ -1812,7 +1807,7 @@ namespace services::collection::executor {
 
         // Must release the resolve-scope txn here, or it pins lowest_active forever.
         const bool releases_resolve_txn = !needs_ddl_txn && !needs_dml_txn && !needs_commit_txn &&
-                                          !session_ctx.is_explicit && original_type != node_type::transaction_t;
+                                          plan.commits_when_done && original_type != node_type::transaction_t;
         if (releases_resolve_txn) {
             auto [_rl, rlf] = actor_zeta::otterbrix::send(parent_address_,
                                                           &services::dispatcher::manager_dispatcher_t::txn_abort_msg,

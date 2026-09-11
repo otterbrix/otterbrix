@@ -575,6 +575,8 @@ namespace otterbrix {
 
         disk.restore_oid_generator_sync();
 
+        manager_dispatcher_->cache_settings_sync(disk.stored_settings_sync());
+
         // Both commit-clock halves are raised together, from one frontier, so they never disagree.
         uint64_t reopen_frontier = disk.max_persisted_commit_id_sync();
         for (const auto& r : wal_records) {

@@ -181,6 +181,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_streaming_index_scan.cpp
         test_index_oid_selection.cpp
         test_streaming_join.cpp
+        test_autocommit.cpp
         test_streaming_ddl_leaf.cpp
         test_streaming_recursive_cte.cpp
         test_large_aggregate_dml.cpp

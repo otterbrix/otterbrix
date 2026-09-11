@@ -411,6 +411,10 @@ namespace services::disk {
         // Most recent value for `name` in pg_settings, empty only if no such row exists (else throws).
         std::string read_setting_sync(std::string_view name);
 
+        const components::catalog::session_catalog_t& stored_settings_sync() const noexcept {
+            return stored_catalog_;
+        }
+
         unique_future<core::result_wrapper_t<resolve_namespace_result_t>>
         resolve_namespace(execution_context_t ctx, std::string name);
 

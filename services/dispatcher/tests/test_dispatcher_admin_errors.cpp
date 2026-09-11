@@ -404,8 +404,7 @@ TEST_CASE("services::dispatcher::admin_errors::txn_accumulate_without_transactio
     REQUIRE(err.type == core::error_code_t::transaction_inactive);
 
     // Nothing was parked by the refusal: a transaction begun afterwards drains empty.
-    auto ctx = test.dispatcher_invoke(&manager_dispatcher_t::txn_begin_session_msg, orphan_session);
-    REQUIRE(ctx.txn.transaction_id != 0);
+    test.dispatcher_invoke(&manager_dispatcher_t::txn_mark_explicit_msg, orphan_session);
     auto drained = test.dispatcher_invoke(&manager_dispatcher_t::txn_commit_drain_msg, orphan_session);
     REQUIRE(drained.base_appends.empty());
     REQUIRE(drained.swap_appends.empty());
@@ -415,8 +414,7 @@ TEST_CASE("services::dispatcher::admin_errors::txn_accumulate_without_transactio
     // An active transaction still accepts the same payload — the refusal is about the
     // missing transaction, not about the payload.
     const session_id_t live_session{};
-    auto live_ctx = test.dispatcher_invoke(&manager_dispatcher_t::txn_begin_session_msg, live_session);
-    REQUIRE(live_ctx.txn.transaction_id != 0);
+    test.dispatcher_invoke(&manager_dispatcher_t::txn_mark_explicit_msg, live_session);
     auto ok = test.dispatcher_invoke(&manager_dispatcher_t::txn_accumulate_msg, live_session, payload);
     REQUIRE_FALSE(ok.contains_error());
     auto live_drain = test.dispatcher_invoke(&manager_dispatcher_t::txn_commit_drain_msg, live_session);

@@ -1,7 +1,6 @@
 #include "transaction_manager.hpp"
 
-#include <limits>
-#include <stdexcept>
+#include <algorithm>
 
 namespace components::table {
 
@@ -16,10 +15,7 @@ namespace components::table {
         }
         auto txn_id = next_transaction_id_.fetch_add(1);
         auto start_time = current_timestamp_.fetch_add(1);
-        // resource_ backs the per-txn pmr containers.
         auto txn = std::make_unique<transaction_t>(txn_id, start_time, session, resource_);
-        // Capture + cache the MVCC snapshot under lock_ so later data() reads
-        // need not re-lock the manager.
         auto horizon = published_horizon_.load(std::memory_order_relaxed);
         std::pmr::vector<uint64_t> in_flight(in_flight_commits_.begin(), in_flight_commits_.end(), resource_);
         txn->set_snapshot(horizon, std::move(in_flight));
@@ -41,30 +37,15 @@ namespace components::table {
         it->second->mark_committed();
         active_start_times_.erase(it->second->start_time());
         active_.erase(it);
-        // The commit_id is allocated here but not yet visible to snapshots: it
-        // becomes visible only when a matching publish(commit_id) runs at the
-        // end of the commit pipeline (after WAL fsync + storage_publish_*).
         in_flight_commits_.insert(commit_id);
         return commit_id;
     }
 
     void transaction_manager_t::restore_commit_clock(uint64_t frontier) {
-        // Bootstrap-time, single-threaded (schedulers not started): raise BOTH
-        // halves of the monotonic commit clock together from one durable frontier.
-        //   * current_timestamp_ → max(current, frontier + 1): the next
-        //     begin_transaction's start_time = fetch_add() therefore exceeds every
-        //     persisted added_at_commit_id AND every published commit-id, so
-        //     post-reopen INSERTs never reuse the durable band; resolve_table keeps
-        //     persisted columns visible and reader snapshots judge fresh rows
-        //     correctly.
-        //   * published_horizon_ → max(current, frontier): post-recovery snapshots
-        //     see the persisted commits as published.
-        // Raising them in lockstep preserves the invariant
-        // current_timestamp_ >= published_horizon_ + 1. Both reopen sites — WAL
-        // COMMIT-marker frontier and checkpointed pg_attribute frontier — funnel
-        // through here so they cannot disagree.
-        // frontier + 1 cannot overflow in practice (commit ids start at 1 and a
-        // realistic frontier is far below UINT64_MAX).
+        // Bootstrap-time, single-threaded: raises current_timestamp_ (-> frontier + 1) and
+        // published_horizon_ (-> frontier) together so post-reopen commits can't reuse the durable band.
+        // Both reopen sites -- the WAL COMMIT-marker frontier and the checkpointed pg_attribute frontier --
+        // funnel through here, so they cannot disagree.
         auto cur_ts = current_timestamp_.load(std::memory_order_relaxed);
         if (frontier + 1 > cur_ts) {
             current_timestamp_.store(frontier + 1, std::memory_order_relaxed);
@@ -78,16 +59,19 @@ namespace components::table {
     void transaction_manager_t::publish(uint64_t commit_id) {
         std::lock_guard guard(lock_);
         in_flight_commits_.erase(commit_id);
-        // Monotonic advance of published_horizon_ — multiple commits may publish
-        // out of allocation order; we keep the max ever published. Snapshots
-        // taken after the CAS see the new horizon.
+        // CAS loop: multiple commits may publish out of order; we keep the max ever published.
         auto current = published_horizon_.load(std::memory_order_relaxed);
         while (commit_id > current && !published_horizon_.compare_exchange_weak(current,
                                                                                 commit_id,
                                                                                 std::memory_order_release,
                                                                                 std::memory_order_relaxed)) {
-            // current updated by CAS on failure — retry
         }
+    }
+
+    void transaction_manager_t::discard(uint64_t commit_id) {
+        // No CAS: published_horizon_ must stay put -- nothing durable or reader-visible carries a discarded id.
+        std::lock_guard guard(lock_);
+        in_flight_commits_.erase(commit_id);
     }
 
     transaction_manager_t::snapshot_t transaction_manager_t::take_snapshot(std::pmr::memory_resource* resource) const {
@@ -126,10 +110,20 @@ namespace components::table {
 
     uint64_t transaction_manager_t::lowest_active_start_time() const {
         std::lock_guard guard(lock_);
-        if (active_start_times_.empty()) {
-            return current_timestamp_.load();
+        uint64_t lowest = active_start_times_.empty() ? current_timestamp_.load() : *active_start_times_.begin();
+        // Must honour the procarray, not just start times (feeds cleanup_versions -> chunk_info::cleanup):
+        // same two clamps as visible_to_all_locked() below, since both populations sit below the lowest start time.
+        if (!in_flight_commits_.empty()) {
+            lowest = std::min(lowest, *in_flight_commits_.begin() - 1);
         }
-        return *active_start_times_.begin();
+        for (const auto& [key, txn] : active_) {
+            const auto data = txn->data();
+            if (!data.in_flight_snapshot.empty()) {
+                // in_flight_snapshot is sorted ascending (copied from a std::set).
+                lowest = std::min(lowest, data.in_flight_snapshot.front() - 1);
+            }
+        }
+        return lowest;
     }
 
     bool transaction_manager_t::has_active_transactions() const {
@@ -139,44 +133,21 @@ namespace components::table {
 
     uint64_t transaction_manager_t::lowest_active_snapshot_horizon() const {
         std::lock_guard guard(lock_);
-        if (active_.empty()) {
-            // Empty active_ returns published_horizon_, NOT an in-flight
-            // commit id. A commit that ALLOCATED a commit_id but has not yet
-            // published sits in in_flight_commits_ (commit() inserts it; publish()
-            // erases it and only THEN bumps published_horizon_). With active_ empty
-            // this function therefore returns published_horizon_ < that pending
-            // commit_id. That cannot reclaim the pending txn's own tombstones early:
-            //   * the DROP-GC remap (operator_commit_transaction) stamps the
-            //     tombstones' dropped_at == commit_id and runs PRE-publish;
-            //   * the agents' sweep keeps a tombstone only while
-            //     dropped_at == commit_id < horizon;
-            //   * horizon only reaches commit_id AFTER this same txn's publish()
-            //     (which is co_awaited AFTER the remap).
-            // So during the pre-publish window horizon < commit_id, the sweep's
-            // strict `<` fails, and the txn's fresh tombstones survive until its
-            // own publish makes the rows visible. No early-reclaim race exists.
-            return published_horizon_.load(std::memory_order_acquire);
-        }
-        // Oldest commit-id horizon any live snapshot can still read below.
-        // Same value space as commit_id / published_horizon_ — used by the
-        // DROP-GC broadcast so the agents' `dropped_at_commit_id < horizon`
-        // sweep compares like with like.
-        uint64_t lowest = std::numeric_limits<uint64_t>::max();
-        for (const auto& [key, txn] : active_) {
-            const auto h = txn->data().snapshot_horizon;
-            if (h < lowest) {
-                lowest = h;
-            }
-        }
-        return lowest;
+        // The naive answer (published_horizon_ if active_ empty, else min snapshot_horizon) ignores
+        // in_flight_commits_, so it can miss a smaller commit-id still in flight after publish() advances past it.
+        return visible_to_all_locked();
     }
 
     uint64_t transaction_manager_t::compact_watermark() const {
         std::lock_guard guard(lock_);
+        return visible_to_all_locked();
+    }
+
+    // Monotone in the safe direction, which dispatcher.cpp's `new_lowest > last_broadcast_horizon_`
+    // gate relies on: each term (published_horizon_, min in-flight id, active txn floor) only rises.
+    uint64_t transaction_manager_t::visible_to_all_locked() const {
         uint64_t watermark = published_horizon_.load(std::memory_order_relaxed);
-        // Committed-but-unpublished ids: every snapshot taken from now on carries
-        // them in in_flight_snapshot, so nothing at/above the lowest one is
-        // visible-to-all yet. Ids start at 1, the -1 cannot underflow.
+        // Committed-but-unpublished ids stay invisible until the lowest one; ids start at 1, so -1 cannot underflow.
         if (!in_flight_commits_.empty()) {
             watermark = std::min(watermark, *in_flight_commits_.begin() - 1);
         }
@@ -184,7 +155,6 @@ namespace components::table {
             const auto data = txn->data();
             watermark = std::min(watermark, data.snapshot_horizon);
             if (!data.in_flight_snapshot.empty()) {
-                // in_flight_snapshot is sorted ascending (copied from a std::set).
                 watermark = std::min(watermark, data.in_flight_snapshot.front() - 1);
             }
         }

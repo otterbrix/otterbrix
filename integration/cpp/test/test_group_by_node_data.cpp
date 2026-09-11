@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
@@ -50,7 +51,7 @@ namespace {
                         chunk.set_value(c, r, static_cast<int32_t>(r + 1));
                         break;
                     case types::logical_type::DOUBLE:
-                        chunk.set_value(c, r, 100.5 * (r + 1));
+                        chunk.set_value(c, r, 100.5 * static_cast<double>(r + 1));
                         break;
                     default:
                         chunk.set_value(c, r, std::string_view{std::string("n_") + std::to_string(r)});
@@ -130,7 +131,7 @@ namespace {
 } // namespace
 
 TEST_CASE("group by over node_data: integer key (control, passes)") {
-    auto config = test_create_config("/tmp/otterbrix_group_by_node_data_int");
+    auto config = test_create_config(integration_fixture_path("otterbrix_group_by_node_data_int"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -166,7 +167,7 @@ TEST_CASE("group by over node_data: integer key (control, passes)") {
 }
 
 TEST_CASE("group by over node_data: string key (SIGSEGV before the fix)") {
-    auto config = test_create_config("/tmp/otterbrix_group_by_node_data_str");
+    auto config = test_create_config(integration_fixture_path("otterbrix_group_by_node_data_str"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();

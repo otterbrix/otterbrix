@@ -14,24 +14,28 @@ own PR when picked up.
 
 ---
 
-## 1. Wildcard `SELECT *` over view (composition on top of view)
+## 1. Wildcard `SELECT *` over view (composition on top of view) — DONE
 
-**Status:** scoped out of Phase A. First iteration handles `SELECT * FROM v` via full
-plan replacement; outer queries with extra projections, filters, or joins on top of v
-fall back to the unexpanded plan and currently error.
+**Status:** DONE. `components/planner/view_expansion.{hpp,cpp}`; the executor drives it
+(`services/collection/executor.cpp`), tests in
+`integration/cpp/test/test_view_expansion.cpp` and
+`components/planner/test/test_view_expansion.cpp`.
 
-**Blocker:** requires schema introspection during `rewrite_views_sync` — the sub-plan
-needs to be resolved enough that the outer aggregate's column references can be remapped
-through the view body. Current Phase A `expand_view_body` swaps the entire plan with
-the sub-plan, dropping the outer's projection/filter envelope.
+**Correction to what this entry used to claim:** it said composition on top of a view
+"falls back to the unexpanded plan and currently errors". It did not error. The whole
+logical plan was replaced by the view body (`plan.sub_queries.back() = std::move(...)`),
+so an outer WHERE / narrowed projection / aggregate / join was silently DROPPED and the
+unfiltered body came back as a successful answer — a wrong result, not a missing
+feature. Do not use this entry's old wording as evidence of past behaviour.
 
-**Sketch:** keep the outer aggregate, splice sub-plan as its source child, then re-run
-`column_pruning` after Phase 1.6 Pass 1 stamps the underlying table's columns. ~80 LOC
-in `services/dispatcher/dispatcher.cpp` plus a backpropagation step from the sub-plan's
-schema to the outer expressions.
-
-**When needed:** real SSB-style view-based catalog abstractions, anything beyond
-`SELECT * FROM v`.
+**What was done:** the body is SPLICED as `children()[0]` of the reference node (the
+shape an inlined CTE reference already has), the reference's name/oid/metadata are
+cleared so it stops being a source, `bind_catalog_data` no longer stamps a relkind='v'
+entry onto query nodes, and the body's bound parameters are re-registered under fresh
+ids (they used to collide with the outer query's, silently replacing the view's own
+constants). Nested views loop with one resolve round per level. No change was needed in
+the validator, the plan generator or the optimizer — the spliced shape is the CTE shape
+they already handle.
 
 ---
 
@@ -40,11 +44,20 @@ schema to the outer expressions.
 **Status of baseline matview:** SHIPPED in PR #496 second commit (CREATE MATERIALIZED
 VIEW creates a real `relkind='m'` table with pg_class + pg_attribute + pg_rewrite +
 pg_depend rows via the pipeline-canonical `operator_create_matview_t` composite
-physical operator). The matview behaves like an empty table after CREATE — equivalent
-to PostgreSQL's `WITH NO DATA` default. `SELECT * FROM mv` returns 0 rows via the
-standard scan pipeline (relkind='m' falls through to the regular scan path via
-`operator_resolve_table.cpp:306` else-branch). Body SQL is stored in pg_rewrite for
-REFRESH and inspection.
+physical operator). The matview is an empty table after CREATE. `SELECT * FROM mv`
+returns 0 rows via the standard scan pipeline (relkind='m' falls through to the regular
+scan path via `operator_resolve_table.cpp:306` else-branch). Body SQL is stored in
+pg_rewrite for REFRESH and inspection.
+
+**Correction:** "equivalent to PostgreSQL's `WITH NO DATA` default" was wrong twice
+over — PostgreSQL's default is `WITH DATA`, and the statement accepted the implicit form
+while silently producing an empty matview. Since nothing populates a matview at CREATE
+time and 2b below is not implemented either, the implicit form is now REFUSED at the
+transformer (`components/sql/transformer/impl/transform_matview.cpp`, reading
+`IntoClause::skipData` which the grammar already sets from `opt_with_data`). `WITH NO
+DATA` — written out — still creates the empty matview it names. The dead `body_op`
+parameter of `operator_create_matview_t`, silenced with `(void) body_op_;`, is gone with
+it. Implementing 2a/2b is what re-opens the implicit form.
 
 **What's deferred to this follow-up:**
 
@@ -61,6 +74,16 @@ loop in `services/collection/executor::execute_sub_plan_` uses the exact same ne
 pattern successfully, so the issue is subtle — likely a context_t lifetime / sender
 identity mismatch when an operator's await drives another operator's await without
 going through the executor's pool dispatch.
+
+**Re-checked 2026-09-01, and the estimate below is too low.** The third direction —
+lowering CREATE to `sequence_t(create, insert_t(body))` — also needs an insert node whose
+`column_bindings` / `fill_list` are stamped by validate + enrich. Both run BEFORE the
+planner, which is where the matview's oid is minted, and against a relation that does not
+exist yet, so there is nothing to bind by name. That is a new pipeline capability
+("insert into a relation created in the same statement"), not a flag. Note also that 2b
+is NOT implemented in any form: `planner.cpp`'s `case node_type::refresh_matview_t`
+returns the node unchanged with a TODO, so there is no `sequence_t(delete, insert)`
+lowering to reuse.
 
 **Investigation directions (~200 LOC):**
 1. Forward source table's `resolved_table_metadata_t` (from outer dispatcher_idx) to

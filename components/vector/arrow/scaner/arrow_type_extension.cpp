@@ -7,14 +7,14 @@ namespace components::vector::arrow {
 
     arrow_type_extension_t::arrow_type_extension_t(std::string extension_name,
                                                    std::string arrow_format,
-                                                   std::shared_ptr<arrow_type_extension_data_t> type)
+                                                   arrow_type_extension_data_ptr type)
         : extension_metadata_(std::move(extension_name), {}, {}, std::move(arrow_format))
         , type_extension_(std::move(type)) {}
 
     arrow_type_extension_t::arrow_type_extension_t(arrow_extension_metadata_t& extension_metadata,
                                                    std::unique_ptr<arrow_type> type)
         : extension_metadata_(extension_metadata) {
-        type_extension_ = std::make_shared<arrow_type_extension_data_t>(type->type());
+        type_extension_ = arrow_type_extension_data_ptr{new arrow_type_extension_data_t(type->type())};
     }
 
     arrow_extension_metadata_t::arrow_extension_metadata_t(std::string extension_name,
@@ -80,7 +80,7 @@ namespace components::vector::arrow {
     arrow_type_extension_t::arrow_type_extension_t(std::string vendor_name,
                                                    std::string type_name,
                                                    std::string arrow_format,
-                                                   std::shared_ptr<arrow_type_extension_data_t> type)
+                                                   arrow_type_extension_data_ptr type)
         : extension_metadata_(arrow_extension_metadata_t::ARROW_EXTENSION_NON_CANONICAL,
                               std::move(vendor_name),
                               std::move(type_name),
@@ -90,7 +90,7 @@ namespace components::vector::arrow {
     arrow_type_extension_t::arrow_type_extension_t(std::string extension_name,
                                                    populate_arrow_schema_t populate_arrow_schema,
                                                    get_type_t get_type,
-                                                   std::shared_ptr<arrow_type_extension_data_t> type)
+                                                   arrow_type_extension_data_ptr type)
         : populate_arrow_schema(populate_arrow_schema)
         , get_type(get_type)
         , extension_metadata_(std::move(extension_name), {}, {}, {})
@@ -100,7 +100,7 @@ namespace components::vector::arrow {
                                                    std::string type_name,
                                                    populate_arrow_schema_t populate_arrow_schema,
                                                    get_type_t get_type,
-                                                   std::shared_ptr<arrow_type_extension_data_t> type,
+                                                   arrow_type_extension_data_ptr type,
                                                    cast_arrow_unique_t arrow_to_unique,
                                                    cast_unique_arrow_t unique_to_arrow)
         : populate_arrow_schema(populate_arrow_schema)
@@ -126,7 +126,7 @@ namespace components::vector::arrow {
         return std::make_unique<arrow_type>(unique_type);
     }
 
-    std::shared_ptr<arrow_type_extension_data_t> arrow_type_extension_t::get_arrow_type_extension() const {
+    arrow_type_extension_data_ptr arrow_type_extension_t::get_arrow_type_extension() const {
         return type_extension_;
     }
 

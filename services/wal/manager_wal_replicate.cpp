@@ -2,9 +2,11 @@
 
 #include <algorithm>
 #include <cassert>
+#include <charconv>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
+#include <limits>
 #include <mutex>
 #include <thread>
 
@@ -12,19 +14,24 @@
 #include <core/executor.hpp>
 #include <services/wal/wal_page_reader.hpp>
 
-// Needed for the auto-checkpoint orchestration (run_auto_checkpoint): the WAL
-// manager drives flush_all_indexes on the index manager and checkpoint_all on
-// the disk manager (+ the compact-watermark fetch from the dispatcher).
-// wal_contract.hpp stays free of these to avoid the cycle
-// (manager_disk.hpp / manager_index.hpp pull only services/wal/base.hpp back).
+// Kept out of wal_contract.hpp to avoid an include cycle (these pull back only services/wal/base.hpp).
 #include <services/disk/manager_disk.hpp>
 #include <services/dispatcher/dispatcher.hpp>
+#include <services/index/index_rebuild_driver.hpp>
 #include <services/index/manager_index.hpp>
 
 namespace services::wal {
 
+#ifdef DEV_MODE
     namespace {
-        // Total rows across a chunk batch — used to skip writing an empty record.
+        std::atomic<uint64_t> g_auto_checkpoint_rounds{0};
+    } // namespace
+
+    uint64_t auto_checkpoint_rounds() noexcept { return g_auto_checkpoint_rounds.load(std::memory_order_relaxed); }
+    void reset_auto_checkpoint_rounds() noexcept { g_auto_checkpoint_rounds.store(0, std::memory_order_relaxed); }
+#endif
+
+    namespace {
         uint64_t batch_row_count(const std::pmr::vector<components::vector::data_chunk_t>& chunks) {
             uint64_t total = 0;
             for (const auto& chunk : chunks) {
@@ -34,57 +41,85 @@ namespace services::wal {
         }
     } // namespace
 
-    // -----------------------------------------------------------------------
-    // Constructor / Destructor
-    // -----------------------------------------------------------------------
-
     manager_wal_replicate_t::manager_wal_replicate_t(std::pmr::memory_resource* resource,
                                                      actor_zeta::scheduler_raw scheduler,
                                                      configuration::config_wal config,
-                                                     log_t& log)
+                                                     log_t& log,
+                                                     actor_zeta::address_t disk_address,
+                                                     actor_zeta::address_t index_address)
         : actor_zeta::actor::actor_mixin<manager_wal_replicate_t>()
         , resource_(resource)
         , scheduler_(scheduler)
         , config_(std::move(config))
         , log_(log.clone())
-        , enabled_(config_.on)
-        , manager_disk_(actor_zeta::address_t::empty_address())
+        , manager_disk_(std::move(disk_address))
         , manager_dispatcher_(actor_zeta::address_t::empty_address())
-        , manager_index_(actor_zeta::address_t::empty_address()) {
-        trace(log_, "manager_wal_replicate start, enabled={}", enabled_);
-        if (enabled_ && !config_.path.empty()) {
+        , manager_index_(std::move(index_address))
+        , recovery_error_(core::error_t::no_error()) {
+        trace(log_, "manager_wal_replicate start");
+        if (!config_.path.empty()) {
             std::filesystem::create_directories(config_.path);
-            // Discover existing database directories (named after database_oid).
-            // Recover global_id_, create workers.
             wal::id_t max_recovered_id = 0;
             for (const auto& entry : std::filesystem::directory_iterator(config_.path)) {
                 if (!entry.is_directory()) {
                     continue;
                 }
                 auto db_dir_name = entry.path().filename().string();
-                // Parse directory name as database_oid. Skip non-numeric directories
-                // (legacy / unrelated content).
+                // parse_database_dir_name, not std::stoul+catch (half-parses "9zz"->9), matches wal_reader_t's walk.
                 components::catalog::oid_t db_oid;
-                try {
-                    db_oid = static_cast<components::catalog::oid_t>(std::stoul(db_dir_name));
-                } catch (...) {
-                    trace(log_, "manager_wal_replicate: skip non-oid directory '{}'", db_dir_name);
+                if (!parse_database_dir_name(db_dir_name, db_oid)) {
+                    warn(log_,
+                         "manager_wal_replicate: '{}' under the WAL root is not a database oid directory , "
+                         "skipping it (the engine never writes this name)",
+                         db_dir_name);
                     continue;
                 }
                 trace(log_, "manager_wal_replicate: recovering database_oid={}", static_cast<unsigned>(db_oid));
 
-                // Scan segments to find max wal_id (via reader, no actor messaging).
+                bool has_wal_segment = false;
+
                 for (const auto& seg : std::filesystem::directory_iterator(entry.path())) {
                     if (!seg.is_regular_file()) {
                         continue;
                     }
-                    wal_page_reader_t reader(seg.path());
-                    auto records = reader.read_all_records(0);
-                    for (const auto& r : records) {
-                        if (r.is_valid() && r.id > max_recovered_id) {
-                            max_recovered_id = r.id;
-                        }
+                    // Same wal_ prefix as wal_worker_t::discover_segments/wal_reader_t, else a stray file could
+                    // poison the allocator.
+                    const auto seg_name = seg.path().filename().string();
+                    if (seg_name.size() < 4 || seg_name.compare(0, 4, "wal_") != 0) {
+                        continue;
                     }
+                    has_wal_segment = true;
+
+                    wal_page_reader_t reader(resource_, seg.path());
+                    if (!reader.is_open()) {
+                        // This scan sets global_id_; an unread segment's ids get reissued, so the refusal
+                        // latches every write/commit/truncate below.
+                        recovery_error_ = reader.open_error();
+                        error(log_,
+                              "manager_wal_replicate: segment '{}' could not be read at startup , the WAL "
+                              "REFUSES every write until it can be: {}",
+                              seg.path().filename().string(),
+                              recovery_error_.what);
+                        break;
+                    }
+
+                    // scan_pages(), not read_all_records(0), which stops at the first broken page (STOP-A) and
+                    // hides later ids.
+                    const auto scan = reader.scan_pages();
+                    if (scan.highest_page_end_lsn > max_recovered_id) {
+                        max_recovered_id = scan.highest_page_end_lsn;
+                    }
+                }
+                if (recovery_error_.contains_error()) {
+                    break;
+                }
+
+                if (!has_wal_segment) {
+                    trace(log_,
+                          "manager_wal_replicate: '{}' under the WAL root holds no wal segment — a storage "
+                          "namespace directory, not a database; no worker spawned",
+                          db_dir_name);
+                    continue;
                 }
 
                 get_or_create_worker(db_oid);
@@ -93,16 +128,12 @@ namespace services::wal {
         }
         trace(log_, "manager_wal_replicate finish");
 
-        // Start the event loop only after all WAL recovery above has completed,
-        // so the loop never races with the (single-threaded) recovery scan.
+        // The loop starts only after recovery above finishes, so it never races the single-threaded scan.
         loop_thread_ = std::thread([this] {
-            // in_flight lives on the loop thread for the whole loop lifetime and
-            // owns every in-flight message_ptr and behavior_t.
-            // this->resource() is qualified because the ctor param `resource` shadows the member fn.
+            // this->resource() is qualified since the ctor param `resource` shadows the member function.
             std::pmr::list<in_flight_entry_t> in_flight(this->resource());
 
             while (loop_running_.load(std::memory_order_acquire)) {
-                // Drain the lock-free inbox, re-wrapping each raw message* into a message_ptr.
                 actor_zeta::mailbox::message* raw = nullptr;
                 while (inbox_.pop(raw)) {
                     in_flight.emplace_back();
@@ -111,12 +142,9 @@ namespace services::wal {
 
                 bool made_progress = false;
 
-                // Unlike manager_dispatcher_t, all sends here are co_await'ed
-                // inline, so there are no pending_<T>_ containers / poll_pending step.
+                // Unlike manager_dispatcher_t, every send is co_await'ed inline: no pending_<T>_/poll_pending step.
 
-                // (a) Create a behavior for the next entry that needs one. pending_msg
-                //     STAYS in its slot: the coroutine holds a raw pointer to the
-                //     message across suspension points, so it must outlive the behavior.
+                // pending_msg stays in its slot: the coroutine holds a raw pointer to it across suspension points.
                 for (auto& e : in_flight) {
                     if (e.pending_msg && !e.behavior) {
                         e.behavior = behavior(e.pending_msg.get());
@@ -128,7 +156,6 @@ namespace services::wal {
                     continue;
                 }
 
-                // (b) Resume any behavior whose awaited result is ready.
                 {
                     actor_zeta::detail::coroutine_handle<> cont{};
                     for (auto& e : in_flight) {
@@ -148,8 +175,6 @@ namespace services::wal {
                     }
                 }
 
-                // (c) Erase one done entry per pass (destroying its behavior_t and
-                //     message_ptr on the loop thread). Done = behavior created AND completed.
                 for (auto it = in_flight.begin(); it != in_flight.end();) {
                     if (it->behavior && it->behavior.done()) {
                         it = in_flight.erase(it);
@@ -163,30 +188,20 @@ namespace services::wal {
                     continue;
                 }
 
-                // Reap completed fire-and-forget auto-checkpoint futures before
-                // idling. Cheap no-op when no checkpoint is in flight.
                 poll_auto_checkpoint_();
 
                 std::unique_lock<std::mutex> lock(mutex_);
-                // A suspended coroutine's future is completed on ANOTHER thread and
-                // notifies nobody — pump_cv_ is signalled from enqueue_impl alone — so
-                // readiness is discovered by this wait TIMING OUT. While work is in
-                // flight that expiry IS the per-hop latency, and a statement crosses
-                // ~20 hops. Idle is the opposite case: only a new message can arrive
-                // and that DOES notify, so the idle tick is left alone — shortening it
-                // burns CPU for nothing, lengthening it would expose the documented
-                // push-notify race to the first statement after a pause.
+                // pump_cv_ only notifies from enqueue_impl, so this timeout IS the per-hop latency while busy (~20
+                // hops/stmt); shortening it or the idle tick burns CPU or reopens the push-notify race.
                 pump_cv_.wait_for(lock,
                                   in_flight.empty() ? std::chrono::microseconds(100) : std::chrono::microseconds(5));
             }
-            // in_flight (and every message_ptr / behavior_t it owns) is destroyed
-            // here, on the loop thread — never on a sender thread.
+            // in_flight (and its message_ptr/behavior_t) is destroyed here, on the loop thread, never a sender thread.
         });
     }
 
     manager_wal_replicate_t::~manager_wal_replicate_t() {
         trace(log_, "delete manager_wal_replicate_t");
-        // Stop the loop and join before tearing down members.
         loop_running_.store(false, std::memory_order_release);
         {
             std::lock_guard<std::mutex> guard(mutex_);
@@ -195,17 +210,11 @@ namespace services::wal {
         if (loop_thread_.joinable()) {
             loop_thread_.join();
         }
-        // Drain messages that arrived after the final loop pass so their promise
-        // sides release cleanly.
         actor_zeta::mailbox::message* raw = nullptr;
         while (inbox_.pop(raw)) {
             actor_zeta::mailbox::message_ptr drained(raw);
         }
     }
-
-    // -----------------------------------------------------------------------
-    // Actor infrastructure
-    // -----------------------------------------------------------------------
 
     std::pmr::memory_resource* manager_wal_replicate_t::resource() const noexcept { return resource_; }
 
@@ -213,8 +222,6 @@ namespace services::wal {
 
     std::pair<bool, actor_zeta::detail::enqueue_result>
     manager_wal_replicate_t::enqueue_impl(actor_zeta::mailbox::message_ptr msg) {
-        // Senders only deliver: hand the raw message to the lock-free inbox and
-        // wake the loop. ALL processing runs on loop_thread_, never here.
         inbox_.push(msg.release());
         pump_cv_.notify_one();
         return {false, actor_zeta::detail::enqueue_result::success};
@@ -258,79 +265,17 @@ namespace services::wal {
                 co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::write_physical_add_column, msg);
                 break;
             }
-            case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::register_active_build>: {
-                co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::register_active_build, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::unregister_active_build>: {
-                co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::unregister_active_build, msg);
-                break;
-            }
             default:
                 break;
         }
     }
 
-    // -----------------------------------------------------------------------
-    // sync: receive disk and dispatcher addresses
-    // -----------------------------------------------------------------------
-
-    void manager_wal_replicate_t::sync(wal_sync_pack_t pack) {
-        manager_disk_ = std::move(pack.disk);
-        manager_dispatcher_ = std::move(pack.dispatcher);
-        manager_index_ = std::move(pack.index);
-        trace(log_, "manager_wal_replicate::sync done");
+    void manager_wal_replicate_t::set_manager_dispatcher_sync(actor_zeta::address_t address) {
+        manager_dispatcher_ = std::move(address);
+        trace(log_, "manager_wal_replicate::set_manager_dispatcher_sync done");
     }
-
-    // Retention guard: active CREATE INDEX build registration. Unlocked — see
-    // the single-threaded assumption documented on the declarations.
-
-    void manager_wal_replicate_t::register_active_build_sync(wal::id_t build_start_wal_position) {
-        active_build_start_positions_.emplace(build_start_wal_position);
-        trace(log_,
-              "manager_wal_replicate::register_active_build_sync wal_id={} active_builds={}",
-              build_start_wal_position,
-              active_build_start_positions_.size());
-    }
-
-    void manager_wal_replicate_t::unregister_active_build_sync(wal::id_t build_start_wal_position) {
-        auto erased = active_build_start_positions_.erase(build_start_wal_position);
-        // Invariant: every unregister matches a prior register; a mismatch is an
-        // operator_create_index lifecycle bug that would silently leak retention.
-        assert(erased == 1 && "unregister_active_build_sync called without matching register");
-        if (erased != 1) {
-            std::abort();
-        }
-        trace(log_,
-              "manager_wal_replicate::unregister_active_build_sync wal_id={} active_builds={}",
-              build_start_wal_position,
-              active_build_start_positions_.size());
-    }
-
-    // Mailbox twins of the _sync helpers (see declarations). The body runs on
-    // the manager's thread, so it may call the sync helper directly.
-
-    manager_wal_replicate_t::unique_future<void>
-    manager_wal_replicate_t::register_active_build(session_id_t /*session*/, wal::id_t build_start_wal_position) {
-        register_active_build_sync(build_start_wal_position);
-        co_return;
-    }
-
-    manager_wal_replicate_t::unique_future<void>
-    manager_wal_replicate_t::unregister_active_build(session_id_t /*session*/, wal::id_t build_start_wal_position) {
-        unregister_active_build_sync(build_start_wal_position);
-        co_return;
-    }
-
-    // -----------------------------------------------------------------------
-    // Global WAL ID
-    // -----------------------------------------------------------------------
 
     wal::id_t manager_wal_replicate_t::next_wal_id() { return ++global_id_; }
-
-    // -----------------------------------------------------------------------
-    // Worker management
-    // -----------------------------------------------------------------------
 
     wal_worker_t* manager_wal_replicate_t::get_or_create_worker(components::catalog::oid_t database_oid) {
         auto it = wal_actors_.find(database_oid);
@@ -345,47 +290,49 @@ namespace services::wal {
         return ptr;
     }
 
-    // -----------------------------------------------------------------------
-    // Contract: load
-    // -----------------------------------------------------------------------
-
-    manager_wal_replicate_t::unique_future<std::vector<record_t>> manager_wal_replicate_t::load(session_id_t session,
-                                                                                                wal::id_t wal_id) {
-        if (!enabled_) {
-            co_return std::vector<record_t>{};
+    manager_wal_replicate_t::unique_future<core::result_wrapper_t<std::vector<record_t>>>
+    manager_wal_replicate_t::load(session_id_t session, wal::id_t wal_id) {
+        if (recovery_error_.contains_error()) {
+            co_return core::result_wrapper_t<std::vector<record_t>>{recovery_error_};
         }
 
-        // Collect records from ALL workers, merge-sort by wal_id.
         std::vector<record_t> merged;
+        core::error_t first_refusal = core::error_t::no_error();
         for (auto& [db_oid, worker] : wal_actors_) {
             auto [needs_sched, fut] =
                 actor_zeta::otterbrix::send(worker->address(), &wal_worker_t::load, session, wal_id);
             if (needs_sched) {
                 scheduler_->enqueue(worker.get());
             }
+            // Every worker is drained before the first refusal, so no reply is left addressed to a finished frame.
             auto records = co_await std::move(fut);
+            if (records.has_error()) {
+                if (!first_refusal.contains_error()) {
+                    first_refusal = records.error();
+                }
+                continue;
+            }
             merged.insert(merged.end(),
-                          std::make_move_iterator(records.begin()),
-                          std::make_move_iterator(records.end()));
+                          std::make_move_iterator(records.value().begin()),
+                          std::make_move_iterator(records.value().end()));
+        }
+        if (first_refusal.contains_error()) {
+            co_return core::result_wrapper_t<std::vector<record_t>>{std::move(first_refusal)};
         }
 
         std::sort(merged.begin(), merged.end(), [](const record_t& a, const record_t& b) { return a.id < b.id; });
 
-        co_return std::move(merged);
+        co_return core::result_wrapper_t<std::vector<record_t>>{std::move(merged)};
     }
 
-    // -----------------------------------------------------------------------
-    // Contract: commit_txn
-    // -----------------------------------------------------------------------
-
-    manager_wal_replicate_t::unique_future<wal::id_t>
+    manager_wal_replicate_t::unique_future<core::result_wrapper_t<wal::id_t>>
     manager_wal_replicate_t::commit_txn(session_id_t session,
                                         uint64_t txn_id,
                                         wal_sync_mode sync_mode,
                                         components::catalog::oid_t database_oid,
                                         uint64_t commit_id) {
-        if (!enabled_) {
-            co_return wal::id_t{0};
+        if (recovery_error_.contains_error()) {
+            co_return core::result_wrapper_t<wal::id_t>{recovery_error_};
         }
 
         auto* worker = get_or_create_worker(database_oid);
@@ -401,51 +348,44 @@ namespace services::wal {
             scheduler_->enqueue(worker);
         }
         auto result = co_await std::move(fut);
-        // Storing the total WAL directory size here instead of the growth since the last
-        // checkpoint left the threshold tripped forever once crossed.
+        if (result.has_error()) {
+            // The commit marker isn't durable yet (missing from the journal, or under FULL not on the device);
+            // returning wal_id would be exactly the lie this channel prevents, so auto-checkpoint is skipped too.
+            co_return core::result_wrapper_t<wal::id_t>{result.error()};
+        }
         {
             const auto total = total_wal_bytes();
             auto base = wal_bytes_at_last_checkpoint_.load(std::memory_order_relaxed);
             if (total < base) {
-                // The directory shrank behind us — something truncated the WAL without going through
-                // the checkpoint that owns this window. Re-baseline instead of measuring against a
-                // size that no longer exists, which would under-report growth until the WAL climbed
-                // back past it. No live path does this today (test_ssb_load_scaling covers the
-                // explicit-checkpoint case), but the subtraction has to be defined for an input
-                // that can occur.
+                // Directory shrank outside this window; re-baseline avoids under-reporting (test_ssb_load_scaling).
                 wal_bytes_at_last_checkpoint_.store(total, std::memory_order_relaxed);
                 base = total;
             }
             wal_bytes_since_checkpoint_.store(total - base, std::memory_order_relaxed);
         }
 
-        // Auto-checkpoint trigger. needs_auto_checkpoint() compares WAL bytes
-        // written SINCE the last checkpoint (not total WAL size) against the
-        // configured auto_checkpoint_threshold_bytes. auto_checkpoint_in_flight_
-        // dedups: a burst of threshold-tripping commits must not stack concurrent
-        // checkpoints. We reset the byte counter HERE, at trigger time, so any
-        // commits racing in behind this one accumulate against a fresh window
-        // toward the NEXT checkpoint instead of re-tripping the same one.
-        //
-        // Fire-and-forget self-send: the checkpoint (index flush + storage
-        // checkpoint + WAL truncate) is heavy and must NOT extend the committer's
-        // commit_txn latency. The self-sent message lands in inbox_ and the loop
-        // runs run_auto_checkpoint as an independent in-flight entry after this
-        // coroutine returns its wal_id to the caller.
-        if (needs_auto_checkpoint() && !auto_checkpoint_in_flight_) {
-            auto_checkpoint_in_flight_ = true;
-            reset_auto_checkpoint_bytes();
-            auto [_ac, ac_fut] = actor_zeta::send(address(), &manager_wal_replicate_t::run_auto_checkpoint, session);
-            // needs_sched is always false: enqueue_impl only pushes to inbox_ and
-            // wakes the loop (no scheduler hop). Park the [[nodiscard]] future;
-            // the loop drains it once ready (poll_auto_checkpoint_).
-            pending_auto_checkpoint_.emplace_back(std::move(ac_fut));
-        }
-        co_return result;
+        // The byte counter resets here (trigger time), not at completion. This self-sends rather
+        // than routing through the pipeline so the checkpoint never sits on a committer's latency
+        // path (services/wal/wal_contract.hpp) -- a statement IS above this frame
+        // (operator_commit_transaction sends commit_txn and awaits it), so the refusal is logged
+        // and the round abandoned instead of travelling back up.
+        auto trigger_auto_checkpoint = [&] {
+                if (needs_auto_checkpoint() && !auto_checkpoint_in_flight_) {
+                    auto_checkpoint_in_flight_ = true;
+                    reset_auto_checkpoint_bytes();
+                    auto [_ac, ac_fut] =
+                        actor_zeta::otterbrix::send(address(), &manager_wal_replicate_t::run_auto_checkpoint, session);
+                    // needs_sched is always false (enqueue_impl just wakes the loop); the [[nodiscard]] future is
+                    // parked for poll_auto_checkpoint_.
+                    pending_auto_checkpoint_.emplace_back(std::move(ac_fut));
+                }
+        };
+        trigger_auto_checkpoint();
+        co_return core::result_wrapper_t<wal::id_t>{result.value()};
     }
 
     std::uintmax_t manager_wal_replicate_t::total_wal_bytes() const noexcept {
-        if (!enabled_ || config_.path.empty())
+        if (config_.path.empty())
             return 0;
         std::uintmax_t total = 0;
         std::error_code ec;
@@ -463,6 +403,10 @@ namespace services::wal {
                     ec.clear();
                     continue;
                 }
+                const auto seg_name = seg.path().filename().string();
+                if (seg_name.size() < 4 || seg_name.compare(0, 4, "wal_") != 0) {
+                    continue;
+                }
                 auto sz = std::filesystem::file_size(seg.path(), ec);
                 if (!ec)
                     total += sz;
@@ -472,30 +416,13 @@ namespace services::wal {
         return total;
     }
 
-    // -----------------------------------------------------------------------
-    // Contract: truncate_before
-    // -----------------------------------------------------------------------
-
-    manager_wal_replicate_t::unique_future<void> manager_wal_replicate_t::truncate_before(session_id_t session,
-                                                                                          wal::id_t checkpoint_wal_id) {
-        if (!enabled_) {
-            co_return;
+    manager_wal_replicate_t::unique_future<core::error_t>
+    manager_wal_replicate_t::truncate_before(session_id_t session, wal::id_t checkpoint_wal_id) {
+        if (recovery_error_.contains_error()) {
+            co_return recovery_error_;
         }
 
-        // Clamp to min(active_build_start_positions_) so an in-flight CREATE
-        // INDEX backfill catchup still finds its records. Empty => no clamp.
-        if (!active_build_start_positions_.empty()) {
-            auto earliest = *active_build_start_positions_.begin();
-            if (earliest < checkpoint_wal_id) {
-                trace(log_,
-                      "manager_wal_replicate::truncate_before clamped from {} to {} due to active build retention",
-                      checkpoint_wal_id,
-                      earliest);
-                checkpoint_wal_id = earliest;
-            }
-        }
-
-        // Send to ALL workers.
+        core::error_t first_refusal = core::error_t::no_error();
         for (auto& [db_oid, worker] : wal_actors_) {
             auto [needs_sched, fut] = actor_zeta::otterbrix::send(worker->address(),
                                                                   &wal_worker_t::truncate_before,
@@ -504,100 +431,112 @@ namespace services::wal {
             if (needs_sched) {
                 scheduler_->enqueue(worker.get());
             }
-            co_await std::move(fut);
+            if (auto worker_error = co_await std::move(fut);
+                worker_error.contains_error() && !first_refusal.contains_error()) {
+                first_refusal = worker_error;
+            }
         }
-        co_return;
+        co_return first_refusal;
     }
 
-    // -----------------------------------------------------------------------
-    // Contract: run_auto_checkpoint
-    //
-    // Self-orchestrated analogue of the CHECKPOINT statement operator
-    // (operator_checkpoint.cpp): flush indexes -> snapshot current wal id ->
-    // checkpoint_all storage -> truncate the WAL below the returned checkpoint id.
-    // Triggered fire-and-forget from commit_txn when WAL growth since the last
-    // checkpoint trips the threshold; auto_checkpoint_in_flight_ dedups so only
-    // one runs at a time.
-    //
-    // M1.1 interaction (INVARIANT). Truncation only removes WAL segments whose
-    // records sit AT OR BELOW the checkpoint wal id (everything those records
-    // describe is already durable in the storage checkpoint). The bitcask index
-    // txn-log frames are a SEPARATE durability channel: they are consumed eagerly
-    // at commit time and gated on the WAL committed-transaction set during
-    // recovery (M1.1). So the committed-set gate never needs COMMIT markers that
-    // live in a truncated segment — those segments only describe rows already
-    // folded into the checkpoint, never the txn-id provenance the index recover
-    // gate reads. Truncating here cannot strand an index frame's commit decision.
-    // -----------------------------------------------------------------------
-
+    // Mirrors CHECKPOINT (operator_checkpoint.cpp); truncation never touches the txn-id provenance the index recover
+    // gate reads. No second trigger: no statement above has an error channel, and compaction renumbers row ids.
     manager_wal_replicate_t::unique_future<void> manager_wal_replicate_t::run_auto_checkpoint(session_id_t session) {
-        // Always clear the in-flight guard on every exit path below so a future
-        // threshold trip can launch the next checkpoint. enabled_ is implied: the
-        // trigger only fires inside the enabled commit_txn path.
+        // Every exit below must call end_auto_checkpoint_round(); skipping it would suppress every later round.
 
-        // (a) Flush dirty index btrees first so a post-recovery rebuild starts
-        //     from a consistent on-disk index state (mirrors operator_checkpoint).
+        // flush_all_indexes arms the durable rebuild_marker_path_ guard, the only pre-rebuild report on index state.
         if (manager_index_ != actor_zeta::address_t::empty_address()) {
-            auto [_fi, fi_fut] =
-                actor_zeta::send(manager_index_, &services::index::manager_index_t::flush_all_indexes, session);
-            co_await std::move(fi_fut);
+            auto [_fi, fi_fut] = actor_zeta::otterbrix::send(manager_index_,
+                                                             &services::index::manager_index_t::flush_all_indexes,
+                                                             session);
+            // Logged, not propagated (nothing above this frame is a statement); the round stops here rather than
+            // dropping WAL segments that are the index's only remaining copy, and the guard releases for the next trip.
+            if (auto flush_error = co_await std::move(fi_fut); flush_error.contains_error()) {
+                error(log_,
+                      "manager_wal_replicate_t::run_auto_checkpoint: index flush did not reach the disk, "
+                      "the round is abandoned rather than truncating the WAL behind it: {}",
+                      flush_error.what);
+                end_auto_checkpoint_round();
+                co_return;
+            }
         }
 
-        // (b) No disk manager => no storage to checkpoint against. This is the
-        //     no-disk test topology, NOT a fallback: without a disk checkpoint
-        //     there is no safe truncation boundary, so we clear the guard and stop.
+        // No disk manager means the no-disk topology, not a fallback: no safe truncation boundary, so the round stops.
         if (manager_disk_ == actor_zeta::address_t::empty_address()) {
-            rebase_auto_checkpoint_window();
-            auto_checkpoint_in_flight_ = false;
+            end_auto_checkpoint_round();
             co_return;
         }
 
-        // Snapshot the current WAL id BEFORE the checkpoint so the per-table
-        // snapshot pins a known recovery boundary. global_id_ is the monotonic
-        // allocator behind next_wal_id(); its current value is the latest issued
-        // wal id — the local equivalent of the operator's current_wal_id round-trip.
         const wal::id_t wal_max_id = global_id_.load(std::memory_order_relaxed);
 
-        // Compact watermark for checkpoint_inner's MVCC-gated compact: the
-        // dispatcher's visible-to-all horizon. Monotone, so the value going
-        // stale across the mailbox hops only DEFERS a compact, never unsafely
-        // allows one. 0 when no dispatcher is wired (test topologies): compacts
-        // and the affected per-table checkpoints are then skipped this round.
+        // The compact watermark is the dispatcher's visible-to-all horizon; being monotone, mailbox-hop staleness only
+        // defers a compact, never allows one unsafely (0 with no dispatcher wired).
         uint64_t compact_watermark = 0;
         if (manager_dispatcher_ != actor_zeta::address_t::empty_address()) {
             auto [_wm, wm_fut] =
-                actor_zeta::send(manager_dispatcher_,
-                                 &services::dispatcher::manager_dispatcher_t::txn_compact_watermark_msg);
+                actor_zeta::otterbrix::send(manager_dispatcher_,
+                                            &services::dispatcher::manager_dispatcher_t::txn_compact_watermark_msg);
             compact_watermark = co_await std::move(wm_fut);
         }
 
-        // (c) checkpoint_all returns the wal id up to which storage is now durable.
-        auto [_cp, cp_fut] = actor_zeta::send(manager_disk_,
-                                              &services::disk::manager_disk_t::checkpoint_all,
-                                              session,
-                                              wal_max_id,
-                                              compact_watermark);
+        auto [_cp, cp_fut] = actor_zeta::otterbrix::send(manager_disk_,
+                                                         &services::disk::manager_disk_t::checkpoint_all,
+                                                         session,
+                                                         wal_max_id,
+                                                         compact_watermark);
         const wal::id_t checkpoint_wal_id = co_await std::move(cp_fut);
 
-        // (d) Truncate WAL below the checkpoint boundary. We are already on the WAL
-        //     actor, so invoke truncate_before's body directly (co_await the member
-        //     coroutine) instead of self-sending another message — the clamp to
-        //     active CREATE INDEX build retention runs inside it.
-        if (checkpoint_wal_id > wal::id_t{0}) {
-            co_await truncate_before(session, checkpoint_wal_id);
+        // A compact renumbers every surviving row, so skipping the rebuild leaves indexes silently wrong. Must precede
+        // the truncate below (test_checkpoint_rebuild_before_truncate): a refused rebuild leaves index state unknown,
+        // and truncation is irreversible. A persistent refusal grows the journal unbounded (deliberate); DROP INDEX on
+        // the offender is the way out (test_auto_checkpoint_rebuild_refusal).
+        if (manager_index_ != actor_zeta::address_t::empty_address()) {
+            auto rebuild_error = co_await services::index::repopulate_indexes_after_compaction(
+                resource(),
+                manager_disk_,
+                manager_index_,
+                session,
+                services::index::committed_rows_snapshot(),
+                core::date::timezone_offset_t{});
+            if (rebuild_error.contains_error()) {
+                error(log_,
+                      "manager_wal_replicate_t::run_auto_checkpoint: index rebuild after the compacting round "
+                      "failed, so some indexes may still name pre-compact row ids and which ones is unknown; "
+                      "the round is abandoned without truncating, because truncation is its irreversible step "
+                      "and a round that failed its last recoverable one must not take it: {}",
+                      rebuild_error.what);
+                end_auto_checkpoint_round();
+                co_return;
+            }
         }
 
-        // (e) Rebase the byte window on the post-truncate size and release the dedup guard. The
-        //     rebase must happen HERE rather than at trigger time: the truncate above is what
-        //     shrinks the directory, and a window based on the pre-truncate size would either
-        //     re-trip immediately or stay suppressed for a whole extra checkpoint's worth of WAL.
-        rebase_auto_checkpoint_window();
-        auto_checkpoint_in_flight_ = false;
+        if (checkpoint_wal_id > wal::id_t{0}) {
+            // Logged, not propagated (same reason as above); segments stay in place (the safe side), so the next round
+            // retries.
+            if (auto truncate_error = co_await truncate_before(session, checkpoint_wal_id);
+                truncate_error.contains_error()) {
+                error(log_,
+                      "manager_wal_replicate_t::run_auto_checkpoint: the WAL truncate was refused , the "
+                      "segments are left in place: {}",
+                      truncate_error.what);
+            }
+        }
+
+        // The rebase happens here, not at trigger time, since the truncate above shrinks the directory; the
+        // pre-truncate size would re-trip or stay suppressed too long.
+        end_auto_checkpoint_round();
         co_return;
     }
 
-    // Drop ready fire-and-forget auto-checkpoint futures (loop-thread only).
-    // Mirrors manager_dispatcher_t::poll_pending() for pending_void_.
+    void manager_wal_replicate_t::end_auto_checkpoint_round() noexcept {
+        rebase_auto_checkpoint_window();
+        auto_checkpoint_in_flight_ = false;
+#ifdef DEV_MODE
+        g_auto_checkpoint_rounds.fetch_add(1, std::memory_order_relaxed);
+#endif
+    }
+
+    // Loop-thread only; mirrors manager_dispatcher_t::poll_pending().
     void manager_wal_replicate_t::poll_auto_checkpoint_() {
         pending_auto_checkpoint_.erase(std::remove_if(pending_auto_checkpoint_.begin(),
                                                       pending_auto_checkpoint_.end(),
@@ -605,16 +544,8 @@ namespace services::wal {
                                        pending_auto_checkpoint_.end());
     }
 
-    // -----------------------------------------------------------------------
-    // Contract: current_wal_id
-    // -----------------------------------------------------------------------
-
     manager_wal_replicate_t::unique_future<wal::id_t> manager_wal_replicate_t::current_wal_id(session_id_t session) {
-        if (!enabled_) {
-            co_return wal::id_t{0};
-        }
 
-        // Take max across all workers.
         wal::id_t max_id = 0;
         for (auto& [db_oid, worker] : wal_actors_) {
             auto [needs_sched, fut] =
@@ -630,15 +561,8 @@ namespace services::wal {
         co_return max_id;
     }
 
-    // -----------------------------------------------------------------------
-    // Contract: write_physical_insert
-    //
-    // Callers pass `table_oid` directly. Worker keying uses `main_database`
-    // (single-worker for all WAL traffic). Once multi-database support arrives
-    // the routing key will move to per-table namespace_oid resolution.
-    // -----------------------------------------------------------------------
-
-    manager_wal_replicate_t::unique_future<wal::id_t>
+    // Worker keying uses database_oid as a single main_database today; table_oid isn't used for routing yet.
+    manager_wal_replicate_t::unique_future<core::result_wrapper_t<wal::id_t>>
     manager_wal_replicate_t::write_physical_insert(session_id_t session,
                                                    components::catalog::oid_t table_oid,
                                                    std::pmr::vector<components::vector::data_chunk_t> chunks,
@@ -646,11 +570,12 @@ namespace services::wal {
                                                    uint64_t row_count,
                                                    uint64_t txn_id,
                                                    components::catalog::oid_t database_oid) {
-        if (!enabled_) {
-            co_return wal::id_t{0};
-        }
+        // An empty batch is a legitimate no-op, not a refusal; refusals travel in result_wrapper_t.
         if (batch_row_count(chunks) == 0) {
-            co_return wal::id_t{0};
+            co_return core::result_wrapper_t<wal::id_t>{wal::id_t{0}};
+        }
+        if (recovery_error_.contains_error()) {
+            co_return core::result_wrapper_t<wal::id_t>{recovery_error_};
         }
 
         auto* worker = get_or_create_worker(database_oid);
@@ -668,22 +593,18 @@ namespace services::wal {
             scheduler_->enqueue(worker);
         }
         auto result = co_await std::move(fut);
-        co_return result;
+        co_return std::move(result);
     }
 
-    // -----------------------------------------------------------------------
-    // Contract: write_physical_delete
-    // -----------------------------------------------------------------------
-
-    manager_wal_replicate_t::unique_future<wal::id_t>
+    manager_wal_replicate_t::unique_future<core::result_wrapper_t<wal::id_t>>
     manager_wal_replicate_t::write_physical_delete(session_id_t session,
                                                    components::catalog::oid_t table_oid,
                                                    std::pmr::vector<int64_t> row_ids,
                                                    uint64_t count,
                                                    uint64_t txn_id,
                                                    components::catalog::oid_t database_oid) {
-        if (!enabled_) {
-            co_return wal::id_t{0};
+        if (recovery_error_.contains_error()) {
+            co_return core::result_wrapper_t<wal::id_t>{recovery_error_};
         }
 
         auto* worker = get_or_create_worker(database_oid);
@@ -700,14 +621,10 @@ namespace services::wal {
             scheduler_->enqueue(worker);
         }
         auto result = co_await std::move(fut);
-        co_return result;
+        co_return std::move(result);
     }
 
-    // -----------------------------------------------------------------------
-    // Contract: write_physical_update
-    // -----------------------------------------------------------------------
-
-    manager_wal_replicate_t::unique_future<wal::id_t>
+    manager_wal_replicate_t::unique_future<core::result_wrapper_t<wal::id_t>>
     manager_wal_replicate_t::write_physical_update(session_id_t session,
                                                    components::catalog::oid_t table_oid,
                                                    std::pmr::vector<int64_t> row_ids,
@@ -715,11 +632,11 @@ namespace services::wal {
                                                    uint64_t count,
                                                    uint64_t txn_id,
                                                    components::catalog::oid_t database_oid) {
-        if (!enabled_) {
-            co_return wal::id_t{0};
-        }
         if (batch_row_count(new_data) == 0) {
-            co_return wal::id_t{0};
+            co_return core::result_wrapper_t<wal::id_t>{wal::id_t{0}};
+        }
+        if (recovery_error_.contains_error()) {
+            co_return core::result_wrapper_t<wal::id_t>{recovery_error_};
         }
 
         auto* worker = get_or_create_worker(database_oid);
@@ -737,22 +654,18 @@ namespace services::wal {
             scheduler_->enqueue(worker);
         }
         auto result = co_await std::move(fut);
-        co_return result;
+        co_return std::move(result);
     }
 
-    // -----------------------------------------------------------------------
-    // Contract: write_physical_add_column
-    // -----------------------------------------------------------------------
-
-    manager_wal_replicate_t::unique_future<wal::id_t>
+    manager_wal_replicate_t::unique_future<core::result_wrapper_t<wal::id_t>>
     manager_wal_replicate_t::write_physical_add_column(session_id_t session,
                                                        components::catalog::oid_t table_oid,
                                                        std::unique_ptr<components::vector::data_chunk_t> schema_chunk,
                                                        uint64_t column_count,
                                                        uint64_t txn_id,
                                                        components::catalog::oid_t database_oid) {
-        if (!enabled_) {
-            co_return wal::id_t{0};
+        if (recovery_error_.contains_error()) {
+            co_return core::result_wrapper_t<wal::id_t>{recovery_error_};
         }
 
         auto* worker = get_or_create_worker(database_oid);
@@ -769,7 +682,7 @@ namespace services::wal {
             scheduler_->enqueue(worker);
         }
         auto result = co_await std::move(fut);
-        co_return result;
+        co_return std::move(result);
     }
 
 } // namespace services::wal

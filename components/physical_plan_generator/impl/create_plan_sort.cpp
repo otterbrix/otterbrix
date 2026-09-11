@@ -43,7 +43,7 @@ namespace services::planner::impl {
                 const auto& path = components::expressions::as_key(sort_expr->operand()).path();
                 if (path.empty()) {
                     // Defensive guard (validation resolves the path so this never fires): return
-                    // nullptr -> executor surfaces the error (rule 9: no throw on the operator-build path).
+                    // nullptr -> executor surfaces the error; the operator-build path never throws.
                     return nullptr;
                 }
                 sort->add(path, ord, nulls);

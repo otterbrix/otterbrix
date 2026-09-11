@@ -15,10 +15,10 @@
 #include <core/non_thread_scheduler/scheduler_test.hpp>
 #include <services/disk/manager_disk.hpp>
 #include <services/disk/tests/catalog_probe.hpp>
+#include <services/index/manager_index.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 
-// Differential test scaffold: same SQL fixture, drive dispatcher::execute_plan
-// and compare cursor + side effects (pg_catalog state, executor-side storage).
+// Same SQL fixture drives dispatcher::execute_plan; each case compares the cursor against pg_catalog state.
 
 using namespace services;
 using namespace services::wal;
@@ -30,21 +30,14 @@ using namespace components::types;
 
 namespace {
 
-    // A run that dies before its destructor — a failing REQUIRE, a crash, a kill, a timeout —
-    // leaves its disk directory behind. The fixture then boots the NEXT run's catalog from those
-    // files instead of creating a fresh one, so a later, unrelated run fails and looks like a
-    // regression. Clearing on the way IN as well as on the way OUT makes it idempotent. Placed in
-    // the member-initializer list so it runs BEFORE manager_disk_t is constructed over this path.
+    // Clears on both entry and exit, so a run that died before its destructor can't poison the next one's catalog.
     const std::string& scrubbed(const std::string& path) {
         std::error_code ec;
         std::filesystem::remove_all(path, ec);
         return path;
     }
 
-    // Mirrors test_dispatcher_catalog.cpp's actor-mixin wiring (manager_dispatcher
-    // + manager_wal + manager_disk on one scheduler_test_t). The name must stay
-    // distinct from that file's fixture: both TUs share one Catch2 target, so a
-    // collision would be an ODR clash.
+    // Mirrors test_dispatcher_catalog.cpp's actor wiring; the name must differ or a shared Catch2 target ODR-clashes.
     struct differential_fixture : actor_zeta::actor::actor_mixin<differential_fixture> {
         differential_fixture(std::pmr::memory_resource* resource, const std::string& disk_path)
             : actor_zeta::actor::actor_mixin<differential_fixture>()
@@ -52,33 +45,41 @@ namespace {
             , disk_path_(scrubbed(disk_path))
             , log_(initialization_logger("python", "/tmp/docker_logs/"))
             , scheduler_(new core::non_thread_scheduler::scheduler_test_t(1, 1))
-            , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(resource, scheduler_, log_))
             , disk_config_(disk_path)
             , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource, scheduler_, scheduler_, disk_config_, log_))
-            , wal_config_([&]() {
-                configuration::config_wal c;
-                c.on = false;
-                return c;
-            }())
-            , manager_wal_(actor_zeta::spawn<manager_wal_replicate_t>(resource, scheduler_, wal_config_, log_)) {
-            manager_dispatcher_->sync(
-                services::dispatcher::manager_dispatcher_t::sync_pack{manager_wal_->address(),
+            // A real index manager: with none wired, backfill used to report success without doing anything.
+            , manager_index_(actor_zeta::spawn<services::index::manager_index_t>(resource,
+                                                                                 scheduler_,
+                                                                                 log_,
+                                                                                 disk_config_.path,
+                                                                                 disk_config_.bitcask_flush_threshold,
+                                                                                 disk_config_.bitcask_segment_record_limit,
+                                                                                 disk_config_.btree_flush_threshold))
+            , wal_config_(disk_path)
+            , manager_wal_(actor_zeta::spawn<manager_wal_replicate_t>(resource,
+                                                                      scheduler_,
+                                                                      wal_config_,
+                                                                      log_,
                                                                       manager_disk_->address(),
-                                                                      actor_zeta::address_t::empty_address()});
-            manager_wal_->sync(services::wal::wal_sync_pack_t{actor_zeta::address_t(manager_disk_->address()),
-                                                              manager_dispatcher_->address(),
-                                                              actor_zeta::address_t::empty_address()});
-            manager_disk_->sync(services::disk::manager_disk_t::disk_sync_pack_t{manager_wal_->address()});
+                                                                      manager_index_->address()))
+            , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(resource,
+                                                                          scheduler_,
+                                                                          log_,
+                                                                          manager_wal_->address(),
+                                                                          manager_disk_->address(),
+                                                                          manager_index_->address())) {
+            manager_wal_->set_manager_dispatcher_sync(manager_dispatcher_->address());
+            manager_disk_->set_manager_wal_sync(manager_wal_->address());
+            manager_index_->set_manager_dispatcher_sync(manager_dispatcher_->address());
 
             manager_disk_->bootstrap_system_tables_sync();
         }
 
         ~differential_fixture() {
-            // Destroy managers (self-driving on internal threads) before the
-            // scheduler to avoid use-after-free, in reverse dependency order:
-            // dispatcher, then wal, then disk.
+            // Reverse dependency order: index before disk, since index holds disk's address for teardown.
             manager_dispatcher_.reset();
             manager_wal_.reset();
+            manager_index_.reset();
             manager_disk_.reset();
             scheduler_->stop();
             std::filesystem::remove_all(disk_path_);
@@ -89,7 +90,6 @@ namespace {
 
         void step() { scheduler_->run(10000); }
 
-        // Generic disk-actor invoke used by the catalog_probe adapter below.
         template<typename Fn, typename... Args>
         auto disk_invoke(Fn fn, Args&&... args) {
             auto [_, fut] = actor_zeta::otterbrix::send(manager_disk_->address(), fn, std::forward<Args>(args)...);
@@ -102,7 +102,6 @@ namespace {
             return std::move(fut).take_ready();
         }
 
-        // Adapter exposing the (resource, invoke) shape that test_probe helpers expect.
         struct probe_fixture {
             differential_fixture* self;
             std::pmr::memory_resource& resource;
@@ -114,10 +113,7 @@ namespace {
         probe_fixture probe_fx() { return probe_fixture{this, *resource_}; }
 
         cursor_t_ptr take_result() {
-            // A plan can span a multi-actor co_await chain (e.g. SET TIMEZONE:
-            // executor → dispatcher → disk → back). Each cross-actor co_await
-            // re-enters the scheduler, so one step() may not drain it. Pump until
-            // the future is ready or a 5s wall-clock deadline.
+            // A multi-actor co_await chain may not drain in one step(), so pump until ready or a 5s deadline.
             REQUIRE(pending_future_);
             const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
             while (!pending_future_->is_ready() && std::chrono::steady_clock::now() < deadline) {
@@ -139,29 +135,32 @@ namespace {
             auto [_, fut] = actor_zeta::otterbrix::send(manager_disk_->address(),
                                                         &manager_disk_t::resolve_namespace,
                                                         ctx,
-                                                        name,
-                                                        std::uint64_t{0});
+                                                        name);
             const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
             while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
                 scheduler_->run(1000);
                 std::this_thread::yield();
             }
             REQUIRE(fut.is_ready());
-            return std::move(fut).take_ready();
+            // The reader has its own error channel; a failed read must not be conflated with found=false.
+            auto r = std::move(fut).take_ready();
+            REQUIRE_FALSE(r.has_error());
+            return std::move(r.value());
         }
 
         test_probe::probe_table_result_t resolve_table(components::catalog::oid_t ns_oid, const std::string& tname) {
+            // probe_see_all_txn, not transaction_data{0, 0}: a start_time of 0 would hide every ALTER-added column.
             components::execution_context_t ctx{components::session::session_id_t{},
-                                                components::table::transaction_data{0, 0},
+                                                test_probe::probe_see_all_txn(),
                                                 {}};
             auto adapter = probe_fx();
             return test_probe::probe_table(adapter, ctx, ns_oid, tname);
         }
 
-        // Post a parsed logical plan to manager_dispatcher's execute_plan handler.
         void execute_sql(const std::string& query) {
             parser_arena_ = std::make_unique<std::pmr::monotonic_buffer_resource>(resource_);
             auto parse_result = linitial(raw_parser(parser_arena_.get(), query.c_str()));
+            // CREATE VIEW / CREATE MATERIALIZED VIEW slice their body verbatim out of this string.
             components::sql::transform::transformer local_transformer(resource_, query.c_str());
             auto _wrap =
                 local_transformer.transform(components::sql::transform::pg_cell_to_node_cast(parse_result)).finalize();
@@ -180,19 +179,19 @@ namespace {
         std::string disk_path_;
         log_t log_;
         core::non_thread_scheduler::scheduler_test_t* scheduler_{nullptr};
-        std::unique_ptr<manager_dispatcher_t, actor_zeta::pmr::deleter_t> manager_dispatcher_;
         configuration::config_disk disk_config_;
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager_disk_;
+        std::unique_ptr<services::index::manager_index_t, actor_zeta::pmr::deleter_t> manager_index_;
         configuration::config_wal wal_config_;
         std::unique_ptr<manager_wal_replicate_t, actor_zeta::pmr::deleter_t> manager_wal_;
+        // Declared after the managers: the dispatcher is spawned with their addresses.
+        std::unique_ptr<manager_dispatcher_t, actor_zeta::pmr::deleter_t> manager_dispatcher_;
         std::unique_ptr<std::pmr::monotonic_buffer_resource> parser_arena_;
         std::unique_ptr<actor_zeta::unique_future<cursor_t_ptr>> pending_future_;
     };
 
 } // namespace
 
-// SELECT pass-through differential. Fixture: CREATE DATABASE/TABLE/INSERT,
-// then SELECT. Assert SELECT cursor is successful and column shape matches.
 TEST_CASE("variant-e3 differential: SELECT pass-through") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_select");
@@ -216,14 +215,11 @@ TEST_CASE("variant-e3 differential: SELECT pass-through") {
     {
         auto cur = fx.take_result();
         REQUIRE(cur->is_success());
-        // SELECT must return success + at least one column type descriptor.
         REQUIRE(cur->type_data().size() >= 1);
     }
 }
 
-// CREATE TABLE through dispatcher → manager_disk pg_class row exists with
-// matching relkind / column shape. The columns-by-attname loop mirrors
-// test_dispatcher_catalog.cpp::schemeful_operations.
+// The columns-by-attname loop mirrors test_dispatcher_catalog.cpp::schemeful_operations.
 TEST_CASE("variant-e3 differential: CREATE TABLE basic") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_create");
@@ -254,9 +250,7 @@ TEST_CASE("variant-e3 differential: CREATE TABLE basic") {
     }
 }
 
-// INSERT static-shape rows then SELECT — verifies the data path: row
-// allocation, ETL into vector::data_chunk_t, cursor materialization. The
-// relkind='g' (computed-column adoption) variant is covered separately.
+// The relkind='g' (computed-column adoption) variant is covered separately below.
 TEST_CASE("variant-e3 differential: INSERT + SELECT round-trip") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_insert");
@@ -275,8 +269,6 @@ TEST_CASE("variant-e3 differential: INSERT + SELECT round-trip") {
         auto cur = fx.take_result();
         REQUIRE(cur->is_success());
 
-        // Catalog side-effect parity: pg_class row still exists with the
-        // declared shape after the INSERT path runs.
         auto rns = fx.resolve_namespace("ve3_ins");
         REQUIRE(rns.found);
         auto rt = fx.resolve_table(rns.oid, "kv");
@@ -292,10 +284,7 @@ TEST_CASE("variant-e3 differential: INSERT + SELECT round-trip") {
     }
 }
 
-// CREATE TABLE → CREATE INDEX. Indexes share the pg_class namespace with tables,
-// so resolve_table(index_name).relkind=='i' is the proxy: it can only succeed if
-// the pg_index entry, the pg_depend 'a' parent edge, and the index OID stamp were
-// all written.
+// resolve_table(index).relkind=='i' only succeeds if pg_index, the pg_depend edge, and the OID stamp were all written.
 TEST_CASE("variant-e3 differential: CREATE INDEX") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_index");
@@ -319,17 +308,13 @@ TEST_CASE("variant-e3 differential: CREATE INDEX") {
         auto rt = fx.resolve_table(rns.oid, "items");
         REQUIRE(rt.found);
         REQUIRE(rt.relkind == 'r');
-        // Index in pg_class with relkind='i' in the same namespace. resolve_table
-        // can only find it if the OID stamp + pg_depend 'a' edge were written too.
         auto ri = fx.resolve_table(rns.oid, "items_idx");
         REQUIRE(ri.found);
         REQUIRE(ri.relkind == 'i');
     }
 }
 
-// CREATE TABLE → DROP TABLE. After the drop, resolve_table by the same
-// (namespace_oid, name) must return found=false — the observable contract of
-// "pg_class delete_id set + dropped storage list".
+// found=false after the drop is the observable proxy for "pg_class delete_id set + dropped storage list".
 TEST_CASE("variant-e3 differential: DROP TABLE") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_drop");
@@ -352,9 +337,6 @@ TEST_CASE("variant-e3 differential: DROP TABLE") {
     {
         auto cur = fx.take_result();
         REQUIRE(cur->is_success());
-        // After DROP TABLE the pg_class row is tombstoned (delete_id stamped)
-        // and storages_ no longer publishes commits for it → resolve_table
-        // reports not found.
         auto rns = fx.resolve_namespace("ve3_drop");
         REQUIRE(rns.found);
         auto rt = fx.resolve_table(rns.oid, "victim");
@@ -362,10 +344,7 @@ TEST_CASE("variant-e3 differential: DROP TABLE") {
     }
 }
 
-// CREATE TABLE → ALTER TABLE ADD COLUMN. Requires a fresh pg_attribute row
-// with added_at_commit_id stamped. The columns vector returned by
-// resolve_table is reconstructed from pg_attribute, so observing the new
-// column name there transitively guarantees the row was inserted.
+// resolve_table rebuilds columns from pg_attribute, so seeing the new name there proves the row was inserted.
 TEST_CASE("variant-e3 differential: ALTER TABLE ADD COLUMN") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_alter");
@@ -381,7 +360,6 @@ TEST_CASE("variant-e3 differential: ALTER TABLE ADD COLUMN") {
         REQUIRE(rns.found);
         auto rt = fx.resolve_table(rns.oid, "items");
         REQUIRE(rt.found);
-        // Pre-ALTER baseline: only id+val.
         bool seen_extra_pre = false;
         for (const auto& col : rt.columns) {
             if (col.attname == "extra")
@@ -398,8 +376,6 @@ TEST_CASE("variant-e3 differential: ALTER TABLE ADD COLUMN") {
         REQUIRE(rns.found);
         auto rt = fx.resolve_table(rns.oid, "items");
         REQUIRE(rt.found);
-        // Post-ALTER: resolve_table now surfaces `extra` (rebuilt from the new
-        // pg_attribute row).
         bool seen_id = false, seen_val = false, seen_extra = false;
         for (const auto& col : rt.columns) {
             if (col.attname == "id")
@@ -415,11 +391,7 @@ TEST_CASE("variant-e3 differential: ALTER TABLE ADD COLUMN") {
     }
 }
 
-// CREATE TYPE <name> AS (<field> <type>, ...) registers a composite row in
-// pg_type plus a nested pg_attribute row per field. The user-facing
-// observation is a successful resolve_type under the default namespace
-// (well_known_oid::public_namespace). Composite types in this codebase are
-// registered without a database prefix.
+// Observed indirectly: the table below only accepts the type if pg_type + its nested rows were written.
 TEST_CASE("variant-e3 differential: CREATE TYPE STRUCT") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_type");
@@ -428,10 +400,6 @@ TEST_CASE("variant-e3 differential: CREATE TYPE STRUCT") {
     {
         auto cur = fx.take_result();
         REQUIRE(cur->is_success());
-        // Verified indirectly via the table below that uses the type: the
-        // column-spec parser resolves it through the catalog type-resolution path,
-        // which only succeeds if the pg_type row + its nested pg_attribute rows
-        // were written.
     }
 
     fx.execute_sql("CREATE DATABASE ve3_ty_db;");
@@ -441,8 +409,6 @@ TEST_CASE("variant-e3 differential: CREATE TYPE STRUCT") {
     {
         auto cur = fx.take_result();
         REQUIRE(cur->is_success());
-        // The parent table accepting the composite type is the proof CREATE TYPE
-        // registered it.
         auto rns = fx.resolve_namespace("ve3_ty_db");
         REQUIRE(rns.found);
         auto rt = fx.resolve_table(rns.oid, "pts");
@@ -457,11 +423,7 @@ TEST_CASE("variant-e3 differential: CREATE TYPE STRUCT") {
     }
 }
 
-// Empty CREATE TABLE → pg_class row stamped relkind='g' (computing/generated),
-// columns vector empty. The first INSERT adopts the column shape by
-// appending pg_computed_column rows via operator_computed_field_register_t —
-// resolve_table on the next txn surfaces those columns as if they had been
-// declared statically. Mirrors test_dispatcher_catalog.cpp::computed_operations.
+// First INSERT adopts columns via pg_computed_column rows; mirrors test_dispatcher_catalog.cpp::computed_operations.
 TEST_CASE("variant-e3 differential: INSERT relkind='g' computed-column adoption") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_computed");
@@ -469,7 +431,6 @@ TEST_CASE("variant-e3 differential: INSERT relkind='g' computed-column adoption"
     fx.execute_sql("CREATE DATABASE ve3_cg;");
     (void) fx.take_result();
 
-    // Empty column-list CREATE TABLE → relkind='g'.
     fx.execute_sql("CREATE TABLE ve3_cg.events();");
     {
         auto cur = fx.take_result();
@@ -486,8 +447,6 @@ TEST_CASE("variant-e3 differential: INSERT relkind='g' computed-column adoption"
     {
         auto cur = fx.take_result();
         REQUIRE(cur->is_success());
-        // Post-INSERT: pg_computed_column carries the adopted shape;
-        // resolve_table rebuilds the columns vector from those rows.
         auto rns = fx.resolve_namespace("ve3_cg");
         REQUIRE(rns.found);
         auto rt = fx.resolve_table(rns.oid, "events");
@@ -505,11 +464,7 @@ TEST_CASE("variant-e3 differential: INSERT relkind='g' computed-column adoption"
     }
 }
 
-// CREATE DATABASE → resolve_namespace.found=true → DROP DATABASE →
-// resolve_namespace.found=false. The externally observable contract of
-// "pg_database row tombstoned + namespace_oid removed from catalog cache".
-// CASCADE wipe of child pg_class rows is implicitly covered: after the
-// namespace is gone, no resolve_table call can succeed regardless of relkind.
+// CASCADE is implicit: once the namespace is gone, no resolve_table call can succeed regardless of relkind.
 TEST_CASE("variant-e3 differential: DROP DATABASE") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_drop_db");
@@ -526,16 +481,12 @@ TEST_CASE("variant-e3 differential: DROP DATABASE") {
     {
         auto cur = fx.take_result();
         REQUIRE(cur->is_success());
-        // pg_database tombstone — the namespace must not resolve after DROP.
         auto rns = fx.resolve_namespace("ve3_dropdb");
         REQUIRE(!rns.found);
     }
 }
 
-// CREATE TABLE → CREATE VIEW. A view lands a pg_class relkind='v' row plus a
-// pg_rewrite ev_action row carrying the body SQL. Proxy: resolve_table(view).
-// relkind=='v'. The pg_rewrite row isn't exposed by the probe_table result but
-// is required for SELECT-on-view expansion (covered e2e elsewhere).
+// Proxy: resolve_table(view).relkind=='v'; the pg_rewrite body itself is exercised e2e elsewhere.
 TEST_CASE("variant-e3 differential: CREATE VIEW") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_view");
@@ -565,11 +516,7 @@ TEST_CASE("variant-e3 differential: CREATE VIEW") {
     }
 }
 
-// ALTER TABLE ... ADD CONSTRAINT FOREIGN KEY (the only parser entry; it emits a
-// node_create_constraint_t) writes a pg_constraint contype='f' row + pg_depend
-// edges. manager_disk has no resolve_constraint API, so the proxy is FK
-// enforcement on INSERT: a valid reference is accepted and an orphan rejected,
-// which together can only happen if those rows were written.
+// No resolve_constraint API, so the proxy is enforcement: a valid FK reference is accepted, an orphan rejected.
 TEST_CASE("variant-e3 differential: CREATE CONSTRAINT FK") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_fk");
@@ -594,7 +541,6 @@ TEST_CASE("variant-e3 differential: CREATE CONSTRAINT FK") {
     {
         auto cur = fx.take_result();
         REQUIRE(cur->is_success());
-        // Both tables still resolvable — the constraint did no fanout damage.
         auto rns = fx.resolve_namespace("ve3_fk");
         REQUIRE(rns.found);
         auto rt_parent = fx.resolve_table(rns.oid, "departments");
@@ -611,15 +557,12 @@ TEST_CASE("variant-e3 differential: CREATE CONSTRAINT FK") {
         REQUIRE(cur->is_success());
     }
 
-    // Proxy for pg_constraint+pg_depend presence: a valid FK reference is
-    // accepted (only possible if the pg_constraint row was written) ...
     fx.execute_sql("INSERT INTO ve3_fk.employees (id, dept_id, name) VALUES (1, 1, 'Alice');");
     {
         auto cur = fx.take_result();
         REQUIRE(cur->is_success());
     }
 
-    // ... and an orphan reference is rejected by the same constraint.
     fx.execute_sql("INSERT INTO ve3_fk.employees (id, dept_id, name) VALUES (2, 99, 'Bob');");
     {
         auto cur = fx.take_result();
@@ -627,12 +570,7 @@ TEST_CASE("variant-e3 differential: CREATE CONSTRAINT FK") {
     }
 }
 
-// CREATE TABLE → CREATE MATERIALIZED VIEW mv AS SELECT ... FROM table. Unlike a
-// view, a matview lands a real physical heap plus a pg_class relkind='m' row and
-// a pg_rewrite ev_action row (WITH NO DATA default, so it is empty until
-// REFRESH). operator_create_matview_t lowers to a composite sequence that aborts
-// the whole CREATE if any step fails. Proxy: cursor success + resolve_table(mv)
-// relkind=='m' + parent still resolvable.
+// Implicit WITH DATA is refused rather than silently producing an empty matview (see test_view_expansion.cpp).
 TEST_CASE("variant-e3 differential: CREATE MATERIALIZED VIEW") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_matview");
@@ -652,14 +590,14 @@ TEST_CASE("variant-e3 differential: CREATE MATERIALIZED VIEW") {
         REQUIRE(cur->is_success());
     }
 
-    fx.execute_sql("CREATE MATERIALIZED VIEW ve3_mv.mv AS SELECT col_a FROM ve3_mv.t WHERE col_b > 10;");
+    fx.execute_sql(
+        "CREATE MATERIALIZED VIEW ve3_mv.mv AS SELECT col_a FROM ve3_mv.t WHERE col_b > 10 WITH NO DATA;");
     {
         auto cur = fx.take_result();
         REQUIRE(cur->is_success());
 
         auto rns = fx.resolve_namespace("ve3_mv");
         REQUIRE(rns.found);
-        // Parent still resolvable — no fanout damage from the matview create.
         auto rt = fx.resolve_table(rns.oid, "t");
         REQUIRE(rt.found);
         REQUIRE(rt.relkind == 'r');
@@ -669,10 +607,7 @@ TEST_CASE("variant-e3 differential: CREATE MATERIALIZED VIEW") {
     }
 }
 
-// ALTER TABLE ... ADD CONSTRAINT ... CHECK writes a pg_constraint contype='c'
-// row (vs 'f' for FK). Same proxy pattern as the FK test: a conforming INSERT is
-// accepted and a violating one rejected — neither can happen unless the
-// contype='c' row (with its parsed conexpr) drives operator_check_constraint.
+// Same proxy pattern as the FK test: a conforming INSERT is accepted, a violating one rejected.
 TEST_CASE("variant-e3 differential: CREATE CONSTRAINT CHECK") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_check");
@@ -690,7 +625,6 @@ TEST_CASE("variant-e3 differential: CREATE CONSTRAINT CHECK") {
     {
         auto cur = fx.take_result();
         REQUIRE(cur->is_success());
-        // Table still resolvable — the constraint did no fanout damage.
         auto rns = fx.resolve_namespace("ve3_chk");
         REQUIRE(rns.found);
         auto rt = fx.resolve_table(rns.oid, "items");
@@ -698,14 +632,12 @@ TEST_CASE("variant-e3 differential: CREATE CONSTRAINT CHECK") {
         REQUIRE(rt.relkind == 'r');
     }
 
-    // Proxy: a conforming row is accepted ...
     fx.execute_sql("INSERT INTO ve3_chk.items (id, age, name) VALUES (1, 25, 'alice');");
     {
         auto cur = fx.take_result();
         REQUIRE(cur->is_success());
     }
 
-    // ... and a violating row is rejected by the same CHECK constraint.
     fx.execute_sql("INSERT INTO ve3_chk.items (id, age, name) VALUES (2, -1, 'bad');");
     {
         auto cur = fx.take_result();
@@ -713,37 +645,29 @@ TEST_CASE("variant-e3 differential: CREATE CONSTRAINT CHECK") {
     }
 }
 
-// SET TIMEZONE appends a pg_settings row ('TimeZone', <tz>) and mutates the
-// actor's in-memory default_tz_cat_ (single-owner, no shared mutable state).
-// Proxy: cursor success, a second SET on the same fixture (re-entry must not
-// double-fail), and an unknown-TZ error exercising the validation path.
+// Proxy: cursor success, a same-actor re-entry not double-failing, and an unknown-TZ error hitting validation.
 TEST_CASE("variant-e3 differential: SET TIME ZONE") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_settz");
 
-    // Valid timezone succeeds (pg_settings append + default_tz_cat_ mutation).
     fx.execute_sql("SET TIMEZONE TO 'utc';");
     {
         auto cur = fx.take_result();
         REQUIRE(cur->is_success());
     }
 
-    // Re-entry on the same actor: default_tz_cat_ must accept an overwrite.
     fx.execute_sql("SET TIMEZONE TO 'UTC';");
     {
         auto cur = fx.take_result();
         REQUIRE(cur->is_success());
     }
 
-    // IANA timezone — exercises the canonical 'area/city' lookup path.
     fx.execute_sql("SET TIMEZONE TO 'america/new_york';");
     {
         auto cur = fx.take_result();
         REQUIRE(cur->is_success());
     }
 
-    // Unknown timezone: default_tz_cat_ rejects, no pg_settings append, cursor
-    // surfaces the error.
     fx.execute_sql("SET TIMEZONE TO 'not_a_real_timezone';");
     {
         auto cur = fx.take_result();

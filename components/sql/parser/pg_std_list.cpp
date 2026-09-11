@@ -2,8 +2,10 @@
 
 #include <stdexcept>
 
-// static instance requires a static allocator ref, but it is not suppose to allocate anythying
-std::unique_ptr<List> NIL_ = std::make_unique<List>(std::pmr::get_default_resource());
+// NIL is a process-wide sentinel that no mutator is ever supposed to write to (each one forks a
+// fresh PGList on the caller's resource on seeing NIL instead). null_memory_resource() makes a
+// forgotten NIL check fail loudly instead of quietly growing a shared global list.
+std::unique_ptr<List> NIL_ = std::make_unique<List>(std::pmr::null_memory_resource());
 
 PGList* lappend(std::pmr::memory_resource* resource, PGList* list, void* datum) {
     if (!list || list == NIL) {

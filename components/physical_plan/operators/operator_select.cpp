@@ -144,8 +144,11 @@ namespace components::operators {
             // Reaching here means the column is not a star, so `computes` was true and both the
             // graph and its output exist.
             const vector::vector_t& source_vec = computed->data[output_index];
-            vector::vector_t vec(resource, source_vec.type(), cap);
-            if ((*graph)->slot_is_bound_input((*graph)->output_slots()[output_index])) {
+            // A passthrough replaces buffer_/data_/validity_ wholesale a line later, so allocating
+            // them here would be a buffer that never sees a byte. The copied branch does need one.
+            const bool passthrough = (*graph)->slot_is_bound_input((*graph)->output_slots()[output_index]);
+            vector::vector_t vec(resource, source_vec.type(), /*create_data=*/!passthrough, /*zero_data=*/false, cap);
+            if (passthrough) {
                 // A column the query merely names IS the input column — the slot shares its
                 // buffer and no node writes it, so this stays the zero-copy passthrough it was.
                 vec.reference(source_vec);

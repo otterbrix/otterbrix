@@ -7,11 +7,13 @@
 #include <core/result_wrapper.hpp>
 
 #include <components/table/storage/metadata_manager.hpp>
+#include <components/table/storage/partial_block_manager.hpp>
 #include <components/table/storage/metadata_reader.hpp>
 #include <components/table/storage/metadata_writer.hpp>
 
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <unistd.h>
 
@@ -47,7 +49,6 @@ TEST_CASE("single_file_block_manager: write and read blocks") {
     std::vector<uint64_t> block_ids;
     std::vector<std::vector<std::byte>> original_data(NUM_BLOCKS);
 
-    // write blocks
     for (size_t i = 0; i < NUM_BLOCKS; i++) {
         uint64_t id = bm.free_block_id();
         block_ids.push_back(id);
@@ -57,20 +58,17 @@ TEST_CASE("single_file_block_manager: write and read blocks") {
         auto* data = blk->buffer();
         auto sz = blk->size();
 
-        // fill with pattern
         for (size_t j = 0; j < sz; j++) {
             data[j] = static_cast<std::byte>((i * 37 + j * 13) & 0xFF);
         }
 
-        // save original data for comparison
         original_data[i].assign(data, data + sz);
 
-        bm.write(*blk, id);
+        REQUIRE_FALSE(bm.write(*blk, id).has_error());
     }
 
     REQUIRE(bm.total_blocks() == NUM_BLOCKS);
 
-    // read blocks and compare
     for (size_t i = 0; i < NUM_BLOCKS; i++) {
         auto blk = std::make_unique<block_t>(env.resource.upstream_resource(),
                                              block_ids[i],
@@ -90,7 +88,6 @@ TEST_CASE("single_file_block_manager: create, close, load existing") {
 
     test_env_t env;
 
-    // create and write
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
         REQUIRE(!bm.create_new_database().has_error());
@@ -102,14 +99,13 @@ TEST_CASE("single_file_block_manager: create, close, load existing") {
         for (size_t j = 0; j < blk->size(); j++) {
             data[j] = static_cast<std::byte>(42);
         }
-        bm.write(*blk, id);
+        REQUIRE_FALSE(bm.write(*blk, id).has_error());
 
-        database_header_t header;
+        database_header_t header{};
         header.initialize();
-        bm.write_header(header);
+        REQUIRE_FALSE(bm.write_header(header).has_error());
     }
 
-    // load and read
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
         REQUIRE(!bm.load_existing_database().has_error());
@@ -137,7 +133,6 @@ TEST_CASE("single_file_block_manager: free list reuse") {
     single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
     REQUIRE(!bm.create_new_database().has_error());
 
-    // allocate 3 blocks
     uint64_t id0 = bm.free_block_id();
     uint64_t id1 = bm.free_block_id();
     uint64_t id2 = bm.free_block_id();
@@ -147,11 +142,22 @@ TEST_CASE("single_file_block_manager: free list reuse") {
     REQUIRE(id2 == 2);
     REQUIRE(bm.total_blocks() == 3);
 
-    // free block 1
     bm.mark_as_free(id1);
     REQUIRE(bm.free_blocks() == 1);
 
-    // next allocation should reuse block 1
+    // Released blocks may still be named by the durable root, so they stay quarantined until a header commits.
+    uint64_t during_flight = bm.free_block_id();
+    REQUIRE(during_flight != id1);
+    REQUIRE(during_flight == 3);
+    REQUIRE(bm.free_blocks() == 1); // withheld, not lost
+
+    auto free_ptr = bm.serialize_free_list();
+    REQUIRE_FALSE(free_ptr.has_error());
+    database_header_t promoting_header{};
+    promoting_header.initialize();
+    promoting_header.free_list = free_ptr.value().block_pointer;
+    REQUIRE_FALSE(bm.write_header(promoting_header).has_error());
+
     uint64_t id3 = bm.free_block_id();
     REQUIRE(id3 == id1);
     REQUIRE(bm.free_blocks() == 0);
@@ -181,38 +187,35 @@ TEST_CASE("single_file_block_manager: free list survives checkpoint/load") {
     test_env_t env;
     uint64_t free_blocks_after_serialize = 0;
 
-    // serialize_free_list() itself allocates metadata block(s) from the free list,
-    // so free_blocks() after serialize is not simply (freed count).
+    // serialize_free_list() itself allocates metadata blocks, so free_blocks() isn't simply the freed count.
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
         REQUIRE(!bm.create_new_database().has_error());
 
-        // Allocate 5 blocks (ids 0..4), write dummy data to each
         for (int i = 0; i < 5; i++) {
             uint64_t id = bm.free_block_id();
             auto blk =
                 std::make_unique<block_t>(env.resource.upstream_resource(), id, static_cast<uint64_t>(bm.block_size()));
             std::memset(blk->buffer(), static_cast<int>(i), blk->size());
-            bm.write(*blk, id);
+            REQUIRE_FALSE(bm.write(*blk, id).has_error());
         }
 
         REQUIRE(bm.total_blocks() == 5);
 
-        // Free blocks 1, 2, and 3
         bm.mark_as_free(1);
         bm.mark_as_free(2);
         bm.mark_as_free(3);
         REQUIRE(bm.free_blocks() == 3);
 
-        // Serialize free list (may consume some freed blocks for metadata)
         auto free_list_ptr = bm.serialize_free_list();
+        REQUIRE_FALSE(free_list_ptr.has_error());
         free_blocks_after_serialize = bm.free_blocks();
         REQUIRE(free_blocks_after_serialize > 0);
 
-        database_header_t header;
+        database_header_t header{};
         header.initialize();
-        header.free_list = free_list_ptr.block_pointer;
-        bm.write_header(header);
+        header.free_list = free_list_ptr.value().block_pointer;
+        REQUIRE_FALSE(bm.write_header(header).has_error());
     }
 
     {
@@ -221,7 +224,6 @@ TEST_CASE("single_file_block_manager: free list survives checkpoint/load") {
 
         REQUIRE(bm.free_blocks() == free_blocks_after_serialize);
 
-        // Allocate from free list — should reuse freed block IDs (not allocate new)
         uint64_t reused = bm.free_block_id();
         REQUIRE(reused < 5); // must be a previously freed block, not a new one
         REQUIRE(bm.free_blocks() == free_blocks_after_serialize - 1);
@@ -245,17 +247,18 @@ TEST_CASE("single_file_block_manager: empty free list persistence") {
             auto blk =
                 std::make_unique<block_t>(env.resource.upstream_resource(), id, static_cast<uint64_t>(bm.block_size()));
             std::memset(blk->buffer(), 0, blk->size());
-            bm.write(*blk, id);
+            REQUIRE_FALSE(bm.write(*blk, id).has_error());
         }
 
         REQUIRE(bm.total_blocks() == 3);
         REQUIRE(bm.free_blocks() == 0);
 
         auto free_list_ptr = bm.serialize_free_list();
-        database_header_t header;
+        REQUIRE_FALSE(free_list_ptr.has_error());
+        database_header_t header{};
         header.initialize();
-        header.free_list = free_list_ptr.block_pointer;
-        bm.write_header(header);
+        header.free_list = free_list_ptr.value().block_pointer;
+        REQUIRE_FALSE(bm.write_header(header).has_error());
     }
 
     {
@@ -263,7 +266,6 @@ TEST_CASE("single_file_block_manager: empty free list persistence") {
         REQUIRE(!bm.load_existing_database().has_error());
 
         REQUIRE(bm.free_blocks() == 0);
-        // Next alloc should give block 3 (next after 0,1,2)
         uint64_t next = bm.free_block_id();
         REQUIRE(next == 3);
     }
@@ -271,12 +273,7 @@ TEST_CASE("single_file_block_manager: empty free list persistence") {
     cleanup_test_file();
 }
 
-// ---------------------------------------------------------------------------
-// Error-VALUE regression tests: the converted paths return a
-// core::result_wrapper_t carrying core::error_code_t::{data_corruption,io_error}
-// instead of throwing. Each test drives the error branch, asserts the error
-// VALUE, and wraps the failing call in REQUIRE_NOTHROW.
-// ---------------------------------------------------------------------------
+// These paths return a result_wrapper_t carrying the error code instead of throwing.
 
 namespace {
     std::string corrupt_db_path(const char* tag) {
@@ -284,13 +281,6 @@ namespace {
     }
 } // namespace
 
-// Block checksum mismatch -> data_corruption.
-// single_file_block_manager_t::read() calls verify_checksum(), which compares the
-// first 8 bytes of the block (the checksum slot, written by checksum_and_write)
-// against the CRC32c of the payload that follows it. We write a known block, then
-// flip ONE payload byte directly in the .otbx so the stored checksum no longer
-// matches the recomputed CRC -> verify_checksum() returns false -> read() returns
-// error_code_t::data_corruption (NOT a throw/segfault).
 TEST_CASE("single_file_block_manager: corrupt block payload -> data_corruption (error value)") {
     using namespace components::table::storage;
     const std::string path = corrupt_db_path("checksum");
@@ -309,20 +299,21 @@ TEST_CASE("single_file_block_manager: corrupt block payload -> data_corruption (
         auto blk = std::make_unique<block_t>(env.resource.upstream_resource(),
                                              block_id,
                                              static_cast<uint64_t>(bm.block_size()));
-        auto* data = blk->buffer(); // payload region (internal_buffer_ + 8-byte checksum header)
+        auto* data = blk->buffer();
         for (size_t j = 0; j < blk->size(); j++) {
             data[j] = static_cast<std::byte>((j * 7 + 1) & 0xFF);
         }
-        bm.write(*blk, block_id); // checksum_and_write stores CRC in the 8-byte header slot
+        REQUIRE_FALSE(bm.write(*blk, block_id).has_error());
 
-        // On disk the block lives at BLOCK_START + block_id * block_allocation_size().
-        // Bytes [0,8) of that region are the checksum slot; the payload starts at +8.
-        // Corrupting a payload byte (not the slot) guarantees stored-checksum != recomputed.
+        // Without a committed header, load_existing_database refuses the reopen as an ambiguous crash state.
+        database_header_t header{};
+        header.initialize();
+        REQUIRE_FALSE(bm.write_header(header).has_error());
+
         payload_disk_offset = BLOCK_START + block_id * bm.block_allocation_size() + sizeof(uint64_t);
         original_byte = data[0];
     }
 
-    // Mutate one payload byte on disk so the persisted CRC no longer matches.
     {
         std::fstream f(path, std::ios::in | std::ios::out | std::ios::binary);
         REQUIRE(f.is_open());
@@ -330,17 +321,14 @@ TEST_CASE("single_file_block_manager: corrupt block payload -> data_corruption (
         char b = 0;
         f.read(&b, 1);
         REQUIRE(f.gcount() == 1);
-        b = static_cast<char>(b ^ 0xFF); // flip every bit of this payload byte
+        b = static_cast<char>(b ^ 0xFF);
         f.seekp(static_cast<std::streamoff>(payload_disk_offset));
         f.write(&b, 1);
         f.flush();
         REQUIRE(f.good());
-        // Sanity: we really changed a byte relative to the in-memory original.
         REQUIRE(static_cast<std::byte>(b) != original_byte);
     }
 
-    // Reopen and read the corrupted block back: read() must surface data_corruption
-    // as a VALUE, not throw, and must NOT report success.
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
         REQUIRE(!bm.load_existing_database().has_error());
@@ -357,16 +345,29 @@ TEST_CASE("single_file_block_manager: corrupt block payload -> data_corruption (
     std::remove(path.c_str());
 }
 
-// File open/header IO failure -> io_error.
-// load_existing_database() opens with FILE_CREATE (so a missing file is created
-// empty, not an open failure). Reading the main header from a zero-length file
-// makes the positional read return false -> io_error ("Failed to read main header").
+TEST_CASE("single_file_block_manager: load missing file -> io_error, nothing created") {
+    using namespace components::table::storage;
+    const std::string path = corrupt_db_path("missing");
+    std::remove(path.c_str());
+    REQUIRE_FALSE(std::filesystem::exists(path));
+
+    test_env_t env;
+    single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
+
+    core::result_wrapper_t<bool> result = false;
+    REQUIRE_NOTHROW(result = bm.load_existing_database());
+    REQUIRE(result.has_error());
+    REQUIRE(result.error().type == core::error_code_t::io_error);
+    // "Missing" is loudly distinct from "empty": named as such, and no 0-byte file appears.
+    REQUIRE(std::string(result.error().what.c_str()).find("does not exist") != std::string::npos);
+    REQUIRE_FALSE(std::filesystem::exists(path));
+}
+
 TEST_CASE("single_file_block_manager: load empty file -> io_error (error value)") {
     using namespace components::table::storage;
     const std::string path = corrupt_db_path("empty");
     std::remove(path.c_str());
 
-    // Create a zero-byte file so the header read hits EOF immediately.
     {
         std::ofstream f(path, std::ios::out | std::ios::binary | std::ios::trunc);
         REQUIRE(f.is_open());
@@ -384,10 +385,6 @@ TEST_CASE("single_file_block_manager: load empty file -> io_error (error value)"
     std::remove(path.c_str());
 }
 
-// Bad magic/header -> data_corruption.
-// Build a valid db, then overwrite the main_header magic (offset 0) with garbage.
-// The header read succeeds but main_header_t::validate() fails -> data_corruption
-// ("Invalid database file: bad magic or version"), surfaced as a VALUE.
 TEST_CASE("single_file_block_manager: load bad-magic header -> data_corruption (error value)") {
     using namespace components::table::storage;
     const std::string path = corrupt_db_path("badmagic");
@@ -397,16 +394,16 @@ TEST_CASE("single_file_block_manager: load bad-magic header -> data_corruption (
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
         REQUIRE(!bm.create_new_database().has_error());
-        database_header_t header;
+        database_header_t header{};
         header.initialize();
-        bm.write_header(header);
+        REQUIRE_FALSE(bm.write_header(header).has_error());
     }
 
-    // The main_header_t::magic is the first 4 bytes of the file (offset 0).
+    // main_header_t::magic is the first 4 bytes of the file (offset 0).
     {
         std::fstream f(path, std::ios::in | std::ios::out | std::ios::binary);
         REQUIRE(f.is_open());
-        uint32_t bad_magic = 0xDEADBEEF; // != main_header_t::MAGIC_NUMBER
+        uint32_t bad_magic = 0xDEADBEEF;
         REQUIRE(bad_magic != main_header_t::MAGIC_NUMBER);
         f.seekp(0);
         f.write(reinterpret_cast<const char*>(&bad_magic), sizeof(bad_magic));
@@ -425,33 +422,245 @@ TEST_CASE("single_file_block_manager: load bad-magic header -> data_corruption (
     std::remove(path.c_str());
 }
 
-// buffer_pool set_limit / standard_buffer_manager set_memory_limit success path.
-// set_limit() returns out_of_memory only when evict_blocks() cannot free enough
-// memory for the new limit. With no pinned/un-evictable blocks held in the pool,
-// eviction trivially succeeds (used_memory == 0), so the failure branch is not
-// reachable from a fresh pool in a unit test. Asserts only the SUCCESS path:
-// returns a non-error VALUE and does not throw.
+// set_limit() only fails when eviction can't free enough; an empty pool always succeeds.
 TEST_CASE("buffer_pool/standard_buffer_manager: set_memory_limit success returns non-error value") {
     using namespace components::table::storage;
     test_env_t env;
 
-    // Direct pool: lower the limit on an empty pool -> nothing to evict -> success.
     {
         core::result_wrapper_t<bool> r = false;
         REQUIRE_NOTHROW(r = env.buffer_pool.set_limit(uint64_t(1) << 20));
         REQUIRE_FALSE(r.has_error());
         REQUIRE(r.value() == true);
     }
-    // Raising the limit can never fail eviction either.
     {
         core::result_wrapper_t<bool> r = false;
         REQUIRE_NOTHROW(r = env.buffer_pool.set_limit(uint64_t(1) << 32));
         REQUIRE_FALSE(r.has_error());
     }
-    // Through the buffer manager facade (set_memory_limit delegates to set_limit).
     {
         core::result_wrapper_t<bool> r = false;
         REQUIRE_NOTHROW(r = env.buffer_manager.set_memory_limit(uint64_t(1) << 24));
         REQUIRE_FALSE(r.has_error());
     }
+}
+
+// The free list is disk bytes: a bare assert() here disappears under NDEBUG and could alias a live id.
+TEST_CASE("single_file_block_manager: a free list naming a LIVE block is refused, not asserted") {
+    using namespace components::table::storage;
+    const std::string path = corrupt_db_path("free_list_alias");
+    std::remove(path.c_str());
+
+    test_env_t env;
+    single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
+    REQUIRE(!bm.create_new_database().has_error());
+
+    uint64_t live_id = bm.free_block_id();
+    auto live_handle = bm.register_block(live_id);
+    REQUIRE(live_handle != nullptr);
+    REQUIRE(bm.free_blocks() == 0);
+
+    meta_block_pointer_t poisoned;
+    {
+        metadata_manager_t meta_mgr(bm);
+        metadata_writer_t writer(meta_mgr);
+        writer.write<uint64_t>(1);
+        writer.write<uint64_t>(live_id);
+        REQUIRE_FALSE(writer.flush().has_error());
+        poisoned = writer.get_block_pointer();
+    }
+    REQUIRE(!bm.deserialize_free_list(poisoned).has_error());
+    REQUIRE(bm.free_blocks() >= 1);
+
+    uint64_t issued = bm.free_block_id();
+    CHECK(issued != live_id);
+    REQUIRE(bm.has_allocation_error());
+    CHECK(bm.allocation_error().type == core::error_code_t::data_corruption);
+
+    // A checkpoint built on a free list known to be corrupt must not become the durable root.
+    database_header_t header{};
+    header.initialize();
+    auto committed = bm.write_header(header);
+    REQUIRE(committed.has_error());
+    CHECK(committed.error().type == core::error_code_t::data_corruption);
+
+    std::remove(path.c_str());
+}
+
+TEST_CASE("single_file_block_manager: a transient-domain id offered to mark_as_free is refused, not asserted") {
+    using namespace components::table::storage;
+    const std::string path = corrupt_db_path("free_transient_release");
+    std::remove(path.c_str());
+
+    test_env_t env;
+    single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
+    REQUIRE(!bm.create_new_database().has_error());
+
+    const uint64_t real_id = bm.free_block_id();
+    REQUIRE(real_id < MAXIMUM_BLOCK);
+    REQUIRE(bm.free_blocks() == 0);
+
+    // An id no writer of this format can emit, offered through the release path.
+    REQUIRE_NOTHROW(bm.mark_as_free(MAXIMUM_BLOCK + 7));
+
+    CHECK(bm.free_blocks() == 0);
+    CHECK(bm.dev_reusable_snapshot().count(MAXIMUM_BLOCK + 7) == 0);
+    CHECK(bm.dev_pending_free_snapshot().count(MAXIMUM_BLOCK + 7) == 0);
+
+    REQUIRE(bm.has_allocation_error());
+    CHECK(bm.allocation_error().type == core::error_code_t::data_corruption);
+
+    database_header_t header{};
+    header.initialize();
+    auto committed = bm.write_header(header);
+    REQUIRE(committed.has_error());
+    CHECK(committed.error().type == core::error_code_t::data_corruption);
+
+    std::remove(path.c_str());
+}
+
+TEST_CASE("single_file_block_manager: a free list naming a transient-domain id is data_corruption") {
+    using namespace components::table::storage;
+    const std::string path = corrupt_db_path("free_list_transient");
+    std::remove(path.c_str());
+
+    test_env_t env;
+    single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
+    REQUIRE(!bm.create_new_database().has_error());
+    uint64_t real_id = bm.free_block_id();
+    REQUIRE(real_id < MAXIMUM_BLOCK);
+
+    meta_block_pointer_t poisoned;
+    {
+        metadata_manager_t meta_mgr(bm);
+        metadata_writer_t writer(meta_mgr);
+        writer.write<uint64_t>(1);
+        writer.write<uint64_t>(MAXIMUM_BLOCK + 7);
+        REQUIRE_FALSE(writer.flush().has_error());
+        poisoned = writer.get_block_pointer();
+    }
+
+    auto loaded = bm.deserialize_free_list(poisoned);
+    REQUIRE(loaded.has_error());
+    CHECK(loaded.error().type == core::error_code_t::data_corruption);
+    CHECK(bm.free_blocks() == 0);
+
+    std::remove(path.c_str());
+}
+
+// block_size() is unsigned subtraction; any size <= DEFAULT_BLOCK_HEADER_SIZE wraps and reads run off the buffer.
+TEST_CASE("block_manager: a degenerate block allocation size is refused, not adopted") {
+    using namespace components::table::storage;
+    const std::string path = corrupt_db_path("alloc_size");
+    std::remove(path.c_str());
+
+    test_env_t env;
+    single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
+    REQUIRE(!bm.create_new_database().has_error());
+    const uint64_t good = bm.block_allocation_size();
+    REQUIRE(good == DEFAULT_BLOCK_ALLOC_SIZE);
+
+    // The value that wraps block_size().
+    auto tiny = bm.set_block_allocation_size(4);
+    REQUIRE(tiny.has_error());
+    CHECK(tiny.error().type == core::error_code_t::data_corruption);
+    CHECK(bm.block_allocation_size() == good);
+    CHECK(bm.block_size() == good - DEFAULT_BLOCK_HEADER_SIZE); // no unsigned wrap
+
+    // Zero: the header's own "unset" value, which must not be adopted either.
+    auto zero = bm.set_block_allocation_size(0);
+    REQUIRE(zero.has_error());
+    CHECK(bm.block_allocation_size() == good);
+
+    // A size the file layout cannot address sector-aligned.
+    auto unaligned = bm.set_block_allocation_size(DEFAULT_BLOCK_ALLOC_SIZE + 1);
+    REQUIRE(unaligned.has_error());
+    CHECK(bm.block_allocation_size() == good);
+
+    auto ok = bm.set_block_allocation_size(SECTOR_SIZE * 8);
+    REQUIRE_FALSE(ok.has_error());
+    CHECK(bm.block_allocation_size() == SECTOR_SIZE * 8);
+
+    std::remove(path.c_str());
+}
+
+TEST_CASE("block_manager: create_new_database refuses an unusable block allocation size") {
+    using namespace components::table::storage;
+    const std::string path = corrupt_db_path("alloc_size_create");
+    std::remove(path.c_str());
+
+    test_env_t env;
+    single_file_block_manager_t bm(env.buffer_manager, env.fs, path, 4);
+    auto created = bm.create_new_database();
+    REQUIRE(created.has_error());
+    CHECK(created.error().type == core::error_code_t::data_corruption);
+
+    std::remove(path.c_str());
+}
+
+// unregister_block must check identity: a freed id can get a fresh handle while a stale one for it is still alive.
+TEST_CASE("block_manager: a stale handle's destructor must not erase the live handle's slot") {
+    using namespace components::table::storage;
+    cleanup_test_file();
+
+    test_env_t env;
+    single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+    REQUIRE(!bm.create_new_database().has_error());
+
+    const uint64_t id = bm.free_block_id();
+
+    auto stale = bm.register_block(id);
+    REQUIRE(stale);
+    REQUIRE(bm.registry_alive(id));
+
+    // Release the id and drop the registry entry while `stale` is still alive.
+    bm.mark_as_free(id);
+    bm.unregister_block(id);
+    CHECK_FALSE(bm.registry_alive(id));
+
+    auto live = bm.register_block(id);
+    REQUIRE(live);
+    CHECK(live.get() != stale.get());
+    CHECK(bm.registry_alive(id));
+
+    stale.reset();
+
+    INFO("after the stale handle died, the live handle's registry entry must survive");
+    CHECK(bm.registry_alive(id));
+    // register_block must still dedup onto it, not mint a second handle for the same block.
+    auto again = bm.register_block(id);
+    CHECK(again.get() == live.get());
+
+    again.reset();
+    live.reset();
+    CHECK_FALSE(bm.registry_alive(id));
+
+    cleanup_test_file();
+}
+
+TEST_CASE("partial_block_manager: every packed segment offset is 8-byte aligned") {
+    using namespace components::table::storage;
+    cleanup_test_file();
+
+    test_env_t env;
+    single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+    REQUIRE(!bm.create_new_database().has_error());
+
+    partial_block_manager_t pbm(bm);
+
+    // Offsets are later dereferenced as the segment's own element type, so misalignment is UB.
+    auto first = pbm.get_block_allocation(4); // CONSTANT INT32 main segment
+    REQUIRE(first.offset_in_block % 8 == 0);
+    auto validity = pbm.get_block_allocation(128); // 1024-row validity bitmap
+    REQUIRE(validity.block_id == first.block_id);
+    REQUIRE(validity.offset_in_block % 8 == 0);
+
+    // Byte-granular sizes (RLE, dictionary, big-string) must still keep every placement aligned.
+    const uint64_t odd_sizes[] = {1, 3, 20, 7, 8, 9, 4096, 5, 133};
+    for (auto size : odd_sizes) {
+        auto alloc = pbm.get_block_allocation(size);
+        REQUIRE(alloc.offset_in_block % 8 == 0);
+    }
+
+    cleanup_test_file();
 }

@@ -35,6 +35,14 @@ namespace services::planner::impl {
         }
         auto limit = static_cast<components::logical_plan::node_limit_t*>(node_limit.get())->limit();
         auto table_oid = node->table_oid();
+        // The update target is always a NAMED table; a target the context cannot vouch
+        // for is a table that never resolved. Validation refuses this before plan
+        // generation; if that refusal is ever lost again, lowering anyway builds a sink
+        // with no table behind it — an UPDATE that changes nothing and reports SUCCESS.
+        // A null root surfaces as create_physical_plan_error instead.
+        if (!context.has_table_oid(table_oid)) {
+            return nullptr;
+        }
         if (!node_source) {
             auto plan = boost::intrusive_ptr(new components::operators::operator_update(context.resource,
                                                                                         context.log.clone(),
@@ -43,7 +51,13 @@ namespace services::planner::impl {
                                                                                         node_update->upsert(),
                                                                                         std::move(returning)));
             plan->set_table_has_indexes(node->table_has_indexes());
-            plan->set_children(create_plan_match(context, node_match, limit));
+            auto scan = create_plan_match(context, node_match, limit);
+            // A refused scan child must refuse the UPDATE: set_children would swallow
+            // the null into a childless-sink success-without-updating shape.
+            if (!scan) {
+                return nullptr;
+            }
+            plan->set_children(std::move(scan));
 
             return plan;
         }
@@ -59,13 +73,20 @@ namespace services::planner::impl {
                                                                                     node_match->expressions()[0],
                                                                                     limit.limit()));
         plan->set_table_has_indexes(node->table_has_indexes());
+        auto source_op =
+            create_plan(context, function_registry, node_source, components::logical_plan::limit_t::unlimit(), params);
+        // A refused FROM source must refuse the UPDATE: set_children would swallow the
+        // null and the semi-join would run against a missing side.
+        if (!source_op) {
+            return nullptr;
+        }
         plan->set_children(
             boost::intrusive_ptr(new components::operators::full_scan(context.resource,
                                                                       context.log.clone(),
                                                                       table_oid,
                                                                       nullptr,
                                                                       components::logical_plan::limit_t::unlimit())),
-            create_plan(context, function_registry, node_source, components::logical_plan::limit_t::unlimit(), params));
+            std::move(source_op));
         return plan;
     }
 

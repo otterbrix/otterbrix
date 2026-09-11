@@ -6,25 +6,25 @@
 #include <memory>
 
 #include <filesystem>
+#include <memory_resource>
 #include <string_view>
 
+#include <core/result_wrapper.hpp>
 #include <integration/cpp/otterbrix.hpp>
 
 namespace otterbrix {
 
-    // Minimal process-wide holder for the Python import cache plus a couple of
-    // engine-space helpers. The execution / expression / relation surface that
-    // used to live here has been folded directly into py_connection_t (which now
-    // inherits expression_factory_t + relation_factory_t and talks to
-    // space->dispatcher() itself). This type remains only because the static
-    // import_cache() entry point is referenced from many translation units
-    // (native/, arrow/, numpy/, pybind11/, import_cache/, framework detection).
+    // Process-wide holder for the Python import cache; py_connection_t owns the execution/expression/relation surface,
+    // but this type remains since import_cache() is referenced from many translation units.
     class connection_environment_t {
     public:
         static constexpr std::string_view DEFAULT_FOLDER = "default";
 
-        static boost::intrusive_ptr<otterbrix_t>
-        make_space(const std::filesystem::path& path = std::filesystem::current_path() / DEFAULT_FOLDER);
+        // Creates the database at `path` only if nothing is there, never erasing what it finds. `resource` only backs a
+        // refusal message; a successful open allocates nothing from it.
+        static core::result_wrapper_t<boost::intrusive_ptr<otterbrix_t>>
+        make_space(std::pmr::memory_resource* resource,
+                   const std::filesystem::path& path = std::filesystem::current_path() / DEFAULT_FOLDER);
 
         static void cleanup();
         static void throw_connection_exception();

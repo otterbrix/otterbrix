@@ -113,8 +113,15 @@ namespace otterbrix {
 
     private:
         core::parameter_id_t add_value(components::types::logical_value_t&& value);
+
+        // `space` must be declared before `values` (same rule as relation_factory_t): members
+        // destroy in reverse declaration order, and `values` holds logical_value_t built on
+        // space->dispatcher()->resource(). Declared after it once, and a string constant's
+        // pmr bytes were freed into an already-destroyed resource -- EXC_BAD_ACCESS, 10/10
+        // runs (integer constants store inline and survived, so it looked selective).
+        // Pinned by tests/test_constant_outlives_its_arena.py.
+        boost::intrusive_ptr<otterbrix_t> space;
         std::unordered_map<core::parameter_id_t, components::types::logical_value_t> values;
         uint64_t counter;
-        boost::intrusive_ptr<otterbrix_t> space;
     };
 } // namespace otterbrix

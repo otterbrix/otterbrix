@@ -1,0 +1,183 @@
+// row_group() hands out counted copies of the ONE collection_t data_table_t owns. Only address +
+// owner count can catch a copy that isn't the same object or isn't ref-counted -- a deep copy
+// would pass every other check, up to the use-after-free when compact() destroys the outgoing
+// collection while a stale holder still names it (test_root_reclaim.cpp and test_block_manager.cpp
+// are the behavioural half; no weak reference to a collection exists).
+
+#include <catch2/catch_test_macros.hpp>
+#include <components/table/collection.hpp>
+#include <components/table/data_table.hpp>
+#include <components/table/storage/buffer_pool.hpp>
+#include <components/table/storage/single_file_block_manager.hpp>
+#include <components/table/storage/standard_buffer_manager.hpp>
+#include <core/file/local_file_system.hpp>
+#include <limits>
+#include <cstdio>
+#include <string>
+#include <unistd.h>
+
+using namespace components::types;
+using namespace components::vector;
+using namespace components::table;
+
+namespace {
+
+    constexpr uint64_t WATERMARK = std::numeric_limits<uint64_t>::max();
+
+    constexpr uint64_t CHUNK_ROWS = 1000;
+    constexpr uint64_t CHUNKS = 3;
+    constexpr uint64_t TOTAL_ROWS = CHUNK_ROWS * CHUNKS;
+
+    std::string ownership_db_path() {
+        static std::string path = "/tmp/test_otterbrix_collection_ownership_" + std::to_string(::getpid()) + ".otbx";
+        return path;
+    }
+
+    struct ownership_env_t {
+        core::pmr::otterbrix_resource resource;
+        core::filesystem::local_file_system_t fs;
+        storage::buffer_pool_t buffer_pool;
+        storage::standard_buffer_manager_t buffer_manager;
+        storage::single_file_block_manager_t block_manager;
+
+        ownership_env_t()
+            : buffer_pool(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24)
+            , buffer_manager(&resource, fs, buffer_pool)
+            , block_manager(buffer_manager, fs, ownership_db_path()) {
+            std::remove(ownership_db_path().c_str());
+            REQUIRE_FALSE(block_manager.create_new_database().has_error());
+        }
+
+        ~ownership_env_t() { std::remove(ownership_db_path().c_str()); }
+    };
+
+    std::unique_ptr<data_table_t> make_table(ownership_env_t& env) {
+        std::vector<column_definition_t> columns;
+        columns.emplace_back("a", complex_logical_type(logical_type::BIGINT));
+        columns.emplace_back("b", complex_logical_type(logical_type::BIGINT));
+        return std::make_unique<data_table_t>(&env.resource,
+                                              env.block_manager,
+                                              std::move(columns),
+                                              "collection_ownership");
+    }
+
+    void append_rows(data_table_t& table, ownership_env_t& env, int64_t start, uint64_t count) {
+        auto types = table.copy_types();
+        auto chunk = data_chunk_t(&env.resource, types, count);
+        for (uint64_t i = 0; i < count; i++) {
+            const int64_t v = start + static_cast<int64_t>(i);
+            chunk.data[0].set_value(i, v);
+            chunk.data[1].set_value(i, -v);
+        }
+        chunk.set_cardinality(count);
+
+        table_append_state state(&env.resource);
+        REQUIRE_FALSE(table.append_lock(state).has_error());
+        REQUIRE_FALSE(table.initialize_append(state).has_error());
+        REQUIRE_FALSE(table.append(chunk, state).has_error());
+        table.finalize_append(state, transaction_data{0, 0});
+    }
+
+    void fill(data_table_t& table, ownership_env_t& env) {
+        for (uint64_t c = 0; c < CHUNKS; c++) {
+            append_rows(table, env, static_cast<int64_t>(c * CHUNK_ROWS), CHUNK_ROWS);
+        }
+    }
+
+} // namespace
+
+TEST_CASE("collection_ownership: row_group() hands back the collection the table OWNS") {
+    ownership_env_t env;
+    auto table = make_table(env);
+    fill(*table, env);
+
+    // The owning side, read off the member rather than through row_group().
+    const collection_t* owned = table->collection_identity();
+    REQUIRE(owned != nullptr);
+    REQUIRE(table->collection_owner_count() == 1);
+
+    {
+        auto held = table->row_group();
+        REQUIRE(held.get() == owned);
+        REQUIRE(table->collection_owner_count() == 2);
+
+        auto again = table->row_group();
+        REQUIRE(again.get() == owned);
+        REQUIRE(table->collection_owner_count() == 3);
+
+        REQUIRE(held->total_rows() == TOTAL_ROWS);
+    }
+
+    REQUIRE(table->collection_owner_count() == 1);
+    REQUIRE(table->collection_identity() == owned);
+}
+
+TEST_CASE("collection_ownership: a collection held across compact stays the OLD object, alive") {
+    ownership_env_t env;
+    auto table = make_table(env);
+    fill(*table, env);
+
+    // Mirrors the holder agent_disk_t::maybe_cleanup_inner deliberately scopes away from compact.
+    auto stale = table->row_group();
+    const collection_t* old_collection = stale.get();
+    REQUIRE(old_collection != nullptr);
+    REQUIRE(old_collection == table->collection_identity());
+    REQUIRE(table->collection_owner_count() == 2);
+
+    REQUIRE(table->compact(WATERMARK));
+
+    const collection_t* new_collection = table->collection_identity();
+    REQUIRE(new_collection != nullptr);
+    REQUIRE(new_collection != old_collection);
+    REQUIRE(table->collection_owner_count() == 1);
+    REQUIRE(table->row_group().get() == new_collection);
+
+    // compact frees the outgoing collection's BLOCKS, not the object itself, so its address survives here.
+    REQUIRE(stale.get() == old_collection);
+    REQUIRE(stale->use_count() == 1u);
+    REQUIRE(stale->total_rows() == TOTAL_ROWS);
+    REQUIRE(stale->committed_row_count() == TOTAL_ROWS);
+
+    REQUIRE(table->row_group()->total_rows() == TOTAL_ROWS);
+
+    stale.reset();
+    REQUIRE(table->collection_identity() == new_collection);
+    REQUIRE(table->collection_owner_count() == 1);
+    REQUIRE(table->row_group()->total_rows() == TOTAL_ROWS);
+}
+
+TEST_CASE("collection_ownership: an ALTER successor owns its OWN collection") {
+    ownership_env_t env;
+    auto table = make_table(env);
+    fill(*table, env);
+
+    const collection_t* parent_collection = table->collection_identity();
+    REQUIRE(parent_collection != nullptr);
+
+    SECTION("ADD COLUMN") {
+        column_definition_t added("c", complex_logical_type(logical_type::BIGINT));
+        data_table_t successor(*table, added);
+
+        // New collection; sharing is gated separately (test_alter_column_sharing, test_alter_version_sharing).
+        REQUIRE(successor.collection_identity() != nullptr);
+        REQUIRE(successor.collection_identity() != parent_collection);
+        REQUIRE(successor.collection_owner_count() == 1);
+        // The successor takes no reference to the parent: the parent stays solely owned.
+        REQUIRE(table->collection_identity() == parent_collection);
+        REQUIRE(table->collection_owner_count() == 1);
+        REQUIRE(successor.row_group().get() == successor.collection_identity());
+        REQUIRE(successor.row_group()->total_rows() == TOTAL_ROWS);
+    }
+
+    SECTION("DROP COLUMN") {
+        data_table_t successor(*table, uint64_t(0));
+
+        REQUIRE(successor.collection_identity() != nullptr);
+        REQUIRE(successor.collection_identity() != parent_collection);
+        REQUIRE(successor.collection_owner_count() == 1);
+        REQUIRE(table->collection_identity() == parent_collection);
+        REQUIRE(table->collection_owner_count() == 1);
+        REQUIRE(successor.row_group().get() == successor.collection_identity());
+        REQUIRE(successor.row_group()->total_rows() == TOTAL_ROWS);
+    }
+}

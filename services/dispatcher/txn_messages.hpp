@@ -106,6 +106,10 @@ namespace services::dispatcher {
     struct txn_abort_drain_t {
         components::table::transaction_data txn{0, 0};
         std::vector<components::pg_catalog_append_range_t> swap_appends{};
+        // The USER-table ranges this txn appended, kept whole (not collapsed to oids like
+        // base_append_tables): the abort operator hands them back so the rows physically go, which is
+        // what stops their never-committed stamps deferring every later checkpoint round.
+        std::vector<components::pg_catalog_append_range_t> base_appends{};
         std::set<components::catalog::oid_t> base_append_tables{};
         std::set<components::catalog::oid_t> base_delete_tables{};
         std::set<components::catalog::oid_t> pg_catalog_delete_tables{};

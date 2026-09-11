@@ -3,10 +3,10 @@
 #include "node.hpp"
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/results/ddl_result.hpp>
 #include <components/table/column_definition.hpp>
 
 #include <string>
-#include <variant>
 
 namespace components::logical_plan {
 
@@ -15,12 +15,22 @@ namespace components::logical_plan {
         add_column,
         drop_column,
         rename_column,
+        drop_constraint,
     };
 
     struct alter_table_subcommand_t {
         alter_table_kind kind{alter_table_kind::drop_column};
         std::string column_name;
         std::string new_column_name; // rename_column only
+        // drop_constraint only: enrich resolves constraint_name to constraint_oid;
+        // stays INVALID_OID for a missing name under IF EXISTS (planner skips the clause)
+        std::string constraint_name;
+        components::catalog::oid_t constraint_oid{components::catalog::INVALID_OID};
+        // drop_column only: IF EXISTS is the one form where a missing column is not an error
+        bool missing_ok{false};
+        // drop_column only: RESTRICT (default or written) or CASCADE; see
+        // operator_alter_column_drop_t, which refuses a dependent-blocked drop under restrict_
+        components::catalog::drop_behavior_t behavior{components::catalog::drop_behavior_t::restrict_};
         components::table::column_definition_t column;
         alter_table_subcommand_t()
             : column("", components::types::complex_logical_type{components::types::logical_type::UNKNOWN}) {}
@@ -43,6 +53,8 @@ namespace components::logical_plan {
         const components::table::column_definition_t& column() const { return subcommands_.front().column; }
 
         const std::vector<alter_table_subcommand_t>& subcommands() const noexcept { return subcommands_; }
+        // Mutable: enrich stamps constraint_oid onto drop_constraint subcommands.
+        std::vector<alter_table_subcommand_t>& subcommands() noexcept { return subcommands_; }
 
         char relkind() const noexcept { return relkind_; }
         void set_relkind(char rk) noexcept { relkind_ = rk; }

@@ -19,11 +19,11 @@ namespace components::compute {
 
 namespace components::pipeline {
 
-    // Forward-declared (NOT included): context_t holds only a raw, non-owning
-    // pointer to the runner, so an incomplete type suffices and we avoid the
-    // include cycle (subplan_runner.hpp -> operator_data.hpp; operator.hpp ->
-    // context.hpp). subplan_runner.hpp itself stays out of this header.
+    // Forward-declared to avoid an include cycle (subplan_runner.hpp -> operator_data.hpp -> ... -> context.hpp).
     struct subplan_runner_t;
+
+    // Spelled as a word so a call site that drives send-free operators, or runs with the WAL off, reads as a choice.
+    inline actor_zeta::address_t no_mailbox() { return actor_zeta::address_t::empty_address(); }
 
     class context_t {
     public:
@@ -34,107 +34,61 @@ namespace components::pipeline {
         const compute::function_registry_t* function_registry = nullptr;
         logical_plan::storage_parameters parameters;
 
-        actor_zeta::address_t disk_address{actor_zeta::address_t::empty_address()};
-        actor_zeta::address_t index_address{actor_zeta::address_t::empty_address()};
-        actor_zeta::address_t wal_address{actor_zeta::address_t::empty_address()};
+        // All three are live in any engine base_spaces builds. no_mailbox() here means a unit-test
+        // topology driving an operator without that manager -- never a production configuration.
+        actor_zeta::address_t disk_address;
+        actor_zeta::address_t index_address;
+        actor_zeta::address_t wal_address;
 
         table::transaction_data txn{0, 0};
         components::graph_execution_context execution_context{};
-        // VACUUM/MVCC GC threshold: snapshots older than this start_time are
-        // safe to drop. Populated by the executor from the session context
-        // (txn_begin_session_msg) before each operator invocation; consumed by
-        // operator_vacuum_t to gate cleanup_versions / cleanup_all_versions.
-        //
-        // NOTE: there is deliberately NO transaction_manager_t* here. The
-        // dispatcher is the sole txn-state owner; operators that need txn
-        // mutations (begin/commit/abort) send txn_*_msg messages to
-        // current_message_sender (the executor's parent — the dispatcher).
+        // VACUUM/MVCC threshold; no transaction_manager_t* here -- the dispatcher owns all txn state.
         uint64_t lowest_active_start_time{0};
 
-        // Sub-plan execution seam. The executor sets this to itself (it
-        // implements subplan_runner_t) right where it builds the context, before
-        // driving the plan. An operator that needs to run a child sub-plan
-        // through the SAME streaming executor calls runner->run_subplan(root,
-        // this). Non-owning raw pointer: the executor outlives every context it
-        // builds, and this is an INTRA-actor seam (the operator runs inside the
-        // executor actor's coroutine), not cross-actor shared state. nullptr when
-        // no executor is driving (e.g. a context built for a path that never runs
-        // operators); callers must null-check before use.
+        // Non-owning; nullptr when no executor is driving -- callers must null-check before run_subplan.
         subplan_runner_t* runner{nullptr};
 
-        // Aggregated by operators that touch pg_catalog. Drained by
-        // execute_sub_plan_ into result_tracking after pipeline runs.
         std::vector<pg_catalog_append_range_t> pg_catalog_appends;
         std::set<catalog::oid_t> pg_catalog_delete_tables;
 
-        // pg_attribute commit_id backfill markers.
-        // operator_alter_column_{add,drop,rename} push entries here;
-        // operator_commit_transaction drains them after commit_id allocation
-        // and patches the rows. Empty in implicit-txn / non-ALTER paths.
+        // ALTER COLUMN pushes entries here; drained and patched after commit_id allocation.
         std::vector<pg_attribute_commit_id_backfill_t> pg_attribute_commit_id_backfills;
 
-        // DML append/delete RANGE-LISTS. insert/update/delete/backfill record their
-        // MVCC swap-info here from inside await_async_and_resume; the executor's
-        // lift_dml_ranges drains them into the per-statement accumulators that feed
-        // txn_accumulate_msg. WAL physical writes happen in the operators; only the
-        // commit-side swap needs this back-channel. LISTS so a bounded DML sink
-        // can flush per-batch and record ONE range per flush; a single-flush op
-        // records exactly one. operator_fk_cascade_t (a DIFFERENT child table)
-        // pushes here too under the PARENT txn id, so COMMIT publishes and ABORT
-        // (revert_all_deletes(parent_txn_id) / storage_revert_appends) reverts
-        // parent + cascade child mutations as one atomic batch.
+        // MVCC swap-info back-channel; cascade children push here too, under the PARENT txn id.
         std::vector<table::dml_append_range_t> dml_appends;
         std::vector<table::dml_delete_range_t> dml_deletes;
-        // Executor-set flush control for bounded DML sinks. dml_flush_is_final:
-        // false before a MID-pump flush of a buffering DML sink, true before the final
-        // post-pump async-finalize drive (the DML emits its RETURNING / affected-count
-        // output_ + mark_executed ONLY on the true call). dml_has_parent_constraint:
-        // true when a constraint sink (fk_check / fk_cascade / check_constraint) sits
-        // ABOVE the DML in the chain -> the DML accumulates constraint_input_ across
-        // flushes; false -> it drops it (bounded memory). Defaults match the
-        // single-final-flush, no-parent-constraint case.
+        // dml_flush_is_final gates RETURNING/mark_executed; dml_has_parent_constraint gates constraint accumulation.
         bool dml_flush_is_final{true};
         bool dml_has_parent_constraint{false};
-        // EXPLAIN ANALYZE: when true, execute_pipeline records per-operator time/rows/loops into the
-        // operators it drives (zero clock sampling when false). Set in-place in execute_sub_plan_ and
-        // read via this ctx pointer only; the hand-written move ctor (context.cpp) does not copy it —
-        // harmless, a populated context_t is never move-constructed.
+        // When true, execute_pipeline records per-operator time/rows/loops (zero-cost when false).
         bool analyze{false};
-        // DROP back-channel: operator_dynamic_cascade_delete_t records each
-        // storage oid it dropped (alongside the mark_storage_dropped_many send). The
-        // executor lifts these into execute_result_t.dropped_storage_oids and
-        // ships them in the txn_accumulate payload so COMMIT's drain can drive
-        // the DROP-GC value-space remap off the ACTUAL drops (decoupled from
-        // whichever DDL mode lowered the statement). Plain std::vector matching
-        // the sibling cross-mailbox value fields above.
+        // Recorded by operator_dynamic_cascade_delete_t so COMMIT's drain runs GC off the ACTUAL drops.
         std::vector<catalog::oid_t> dropped_storage_oids;
-        // CREATE back-channel (mirror of dropped_storage_oids): the DDL operators
-        // that bring a storage / index into being record them here —
-        // operator_create_collection / operator_create_matview push the new
-        // storage oid into created_storage_oids, operator_create_index_backfill
-        // pushes {table_oid, name} into created_indexes. The executor lifts both
-        // into execute_result_t and ships them in the txn_accumulate payload so a
-        // CREATE inside an explicit txn is publishable at COMMIT and revertible at
-        // ABORT (ABORT drops the still-uncommitted storage / index). Plain
-        // std::vector matching the sibling cross-mailbox value fields above.
+        // Mirror of dropped_storage_oids for CREATE: publishable at COMMIT, revertible at ABORT.
         std::vector<catalog::oid_t> created_storage_oids;
         std::vector<components::table::created_index_t> created_indexes;
-        // Commit back-channel: operator_commit_transaction_t records the
-        // commit_id it drained (txn_commit_drain_msg reply) so the executor's
-        // tail can drive follow-ups that need it (the inline CREATE INDEX
-        // index commit). 0 = no commit ran in this pipeline.
+        // commit_id drained by operator_commit_transaction_t, for follow-ups like an inline CREATE INDEX commit.
         uint64_t committed_id{0};
 
-        explicit context_t(logical_plan::storage_parameters init_parameters);
-        context_t(context_t&& context) noexcept;
+        // By reference: a by-value parameter froze the default allocator into `parameters` (context.cpp).
+        context_t(const logical_plan::storage_parameters& init_parameters,
+                  actor_zeta::address_t disk,
+                  actor_zeta::address_t index,
+                  actor_zeta::address_t wal);
+        // Defaulted so every member moves; a hand-written ctor would drop whatever it forgets to list.
+        context_t(context_t&& context) noexcept = default;
         context_t(session::session_id_t session,
                   actor_zeta::address_t address,
                   actor_zeta::address_t sender,
                   const compute::function_registry_t* function_registry,
-                  logical_plan::storage_parameters init_parameters);
+                  const logical_plan::storage_parameters& init_parameters,
+                  actor_zeta::address_t disk,
+                  actor_zeta::address_t index,
+                  actor_zeta::address_t wal);
 
         const actor_zeta::address_t& address() const noexcept { return address_; }
 
+        // No producer left (manager_disk_t::flush is gone); accessors stay for drain sites outside this component.
         void add_pending_disk_future(disk_future_t&& future) { pending_disk_futures_.push_back(std::move(future)); }
 
         std::vector<disk_future_t> take_pending_disk_futures() { return std::move(pending_disk_futures_); }

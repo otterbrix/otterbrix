@@ -1,6 +1,8 @@
 #pragma once
 
 #include "arrow_type_info.hpp"
+#include <boost/smart_ptr/intrusive_ptr.hpp>
+#include <boost/smart_ptr/intrusive_ref_counter.hpp>
 #include <components/vector/arrow/arrow.hpp>
 #include <components/vector/arrow/arrow_wrapper.hpp>
 #include <components/vector/vector.hpp>
@@ -14,17 +16,22 @@ namespace components::vector::arrow {
 
     typedef void (*cast_unique_arrow_t)(vector_t& source, vector_t& result, size_t count);
 
+    // Intrusive refcount (arrow_wrapper.hpp), not std::shared_ptr: the ArrowArray is
+    // genuinely SHARED across several vectors at once, so intrusive_ptr, not unique_ptr, is the
+    // replacement. This holder keeps the array alive as long as the vector buffer points into it.
     class arrow_auxiliary_data_t : public vector_auxiliary_data_t {
     public:
-        explicit arrow_auxiliary_data_t(std::shared_ptr<arrow_array_wrapper_t> arrow_array_p)
+        explicit arrow_auxiliary_data_t(arrow_array_wrapper_ptr arrow_array_p)
             : vector_auxiliary_data_t(vector_auxiliary_type::ARROW)
             , arrow_array(std::move(arrow_array_p)) {}
         ~arrow_auxiliary_data_t() override = default;
 
-        std::shared_ptr<arrow_array_wrapper_t> arrow_array;
+        arrow_array_wrapper_ptr arrow_array;
     };
 
-    class arrow_type_extension_data_t {
+    // Intrusive refcount (std::shared_ptr is banned): single-owner in practice —
+    // arrow_type::extension_data and arrow_type_extension_t::type_extension_ hold it.
+    class arrow_type_extension_data_t : public boost::intrusive_ref_counter<arrow_type_extension_data_t> {
     public:
         explicit arrow_type_extension_data_t(const types::complex_logical_type& unique_type,
                                              const types::complex_logical_type& internal_type,
@@ -50,16 +57,16 @@ namespace components::vector::arrow {
         types::complex_logical_type internal_type_;
     };
 
+    using arrow_type_extension_data_ptr = boost::intrusive_ptr<arrow_type_extension_data_t>;
+
     class arrow_type {
     public:
         explicit arrow_type(types::complex_logical_type type, std::unique_ptr<arrow_type_info> type_info = nullptr)
             : type_(std::move(type))
             , type_info_(std::move(type_info)) {}
-        explicit arrow_type(std::string error_message_p, bool not_implemented = false)
-            : type_(types::logical_type::INVALID)
-            , type_info_(nullptr)
-            , error_message_(std::move(error_message_p))
-            , not_implemented_(not_implemented) {}
+        // No error-reporting constructor: unread error_message_/not_implemented_ members would
+        // just present as a plain INVALID type with no diagnostic. Refusals travel through
+        // core::result_wrapper_t via type_from_format / type_from_schema below.
 
         types::complex_logical_type type(bool use_dictionary = false) const;
 
@@ -79,15 +86,13 @@ namespace components::vector::arrow {
 
         arrow_array_physical_type get_physical_type() const;
 
-        std::shared_ptr<arrow_type_extension_data_t> extension_data;
+        arrow_type_extension_data_ptr extension_data;
 
     protected:
         types::complex_logical_type type_;
         std::unique_ptr<arrow_type> dictionary_type_;
         bool run_end_encoded_ = false;
         std::unique_ptr<arrow_type_info> type_info_;
-        std::string error_message_;
-        bool not_implemented_ = false;
     };
 
     core::result_wrapper_t<std::unique_ptr<arrow_type>> type_from_format(std::pmr::memory_resource* resource,
@@ -134,7 +139,7 @@ namespace components::vector::arrow {
     struct arrow_array_scan_state {
         explicit arrow_array_scan_state();
 
-        std::shared_ptr<arrow_array_wrapper_t> owned_data;
+        arrow_array_wrapper_ptr owned_data;
         std::unordered_map<size_t, std::unique_ptr<arrow_array_scan_state>> children;
         // Non-owning cache key: points into the parent ArrowArray (released via owned_data),
         // so it must NOT own/free it. Only compared in cache_outdated().

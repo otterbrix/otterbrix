@@ -13,8 +13,16 @@ namespace components::logical_plan {
         // node_t::hash() combines type_ + hash_impl(); fold kind_ (and the
         // per-kind OID payload) here so the drop variants land in distinct
         // buckets of any node-keyed container despite sharing node_type::drop_t.
+        //
+        // The statement's OWN fields fold in too: at plan time the OIDs alone are worthless
+        // (enrich hasn't stamped them yet), so `DROP TABLE a` vs `DROP TABLE b` would otherwise hash identically.
         hash_t hash_value{0};
         boost::hash_combine(hash_value, static_cast<uint8_t>(kind_));
+        boost::hash_combine(hash_value, dbname_);
+        boost::hash_combine(hash_value, relname_);
+        boost::hash_combine(hash_value, index_name_);
+        boost::hash_combine(hash_value, static_cast<uint8_t>(behavior_));
+        boost::hash_combine(hash_value, missing_ok_);
         switch (kind_) {
             case drop_target_kind::database:
                 boost::hash_combine(hash_value, static_cast<hash_t>(namespace_oid_));

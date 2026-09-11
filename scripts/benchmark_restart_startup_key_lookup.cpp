@@ -169,7 +169,6 @@ RestartMetrics run_restart_and_measure(
         runner.string(),
         "--file=lookup.sql",
         "--runs=" + std::to_string(runs),
-        "--disk",
         "--skip-load",
         "--out=" + out_csv.string(),
     };
@@ -228,7 +227,6 @@ double run_load_and_shutdown(const fs::path& runner, const fs::path& scenario_di
     std::vector<std::string> cmd{
         runner.string(),
         "--file=lookup.sql",
-        "--disk",
         "--load-only",
     };
     const auto wall_start = std::chrono::steady_clock::now();
@@ -306,7 +304,7 @@ int main(int argc, char** argv) {
 
         const std::string load_setup_sql =
             "-- @database " + db_name + "\n"
-            "CREATE TABLE kv (id INTEGER, payload STRING) WITH (storage = 'disk');\n"
+            "CREATE TABLE kv (id INTEGER, payload STRING) ;\n"
             "-- @load_csv " + csv_path.string() + " kv ,";
 
         create_benchmark_layout(no_index_dir, load_setup_sql);

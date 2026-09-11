@@ -2,6 +2,8 @@
 
 #include "constraint_util.hpp"
 
+#include <cstring>
+
 #include <components/base/collection_full_name.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/context/context.hpp>
@@ -19,12 +21,7 @@ namespace components::operators {
         , fk_(std::move(fk)) {}
 
     actor_zeta::unique_future<void> operator_fk_cascade_t::await_async_and_resume(pipeline::context_t* ctx) {
-        // Resolve the source here directly in await_async_and_resume. fk_cascade is the
-        // plan ROOT, so output_ becomes the DELETE result cursor — set it to the deleted
-        // (matched) rows (the cursor count equals the number of deleted parent rows
-        // regardless of cascade outcome). Multiple cascade ops STACK above one DELETE, so
-        // walk DOWN the left_ spine to the DELETE's constraint_input() snapshot of its
-        // matched OLD rows (single canonical source, R6). Empty => nothing to cascade.
+        // fk_cascade is the plan root; output_ is the DELETE's matched-parent-rows cursor (R6).
         const auto& source = constraint_detail::resolve_constraint_source(left_);
         output_ = source;
         if (!source || source->size() == 0) {
@@ -36,38 +33,89 @@ namespace components::operators {
 
         const auto& par_indices = fk_.parent_col_indices;
         const std::size_t absent = std::numeric_limits<std::size_t>::max();
-        // If indices weren't resolved at plan time, skip cascade.
-        for (auto idx : par_indices) {
-            if (idx == absent) {
-                mark_executed();
-                co_return;
-            }
-        }
-        if (par_indices.empty()) {
-            mark_executed();
+
+        if (par_indices.size() != fk_.child_col_names.size()) {
+            std::pmr::string what{"FK constraint: foreign key column count mismatch — ", resource_};
+            what.append(std::to_string(fk_.child_col_names.size()).c_str());
+            what.append(" referencing column(s) vs ");
+            what.append(std::to_string(par_indices.size()).c_str());
+            what.append(" referenced column(s)");
+            set_error(core::error_t{core::error_code_t::invalid_constraint, std::move(what)});
+            mark_failed();
             co_return;
         }
 
-        // Child key column names are the same for every row; hoist them once.
+        // `absent` means the key never resolved, not that it matched nothing.
+        for (std::size_t i = 0; i < par_indices.size(); ++i) {
+            if (par_indices[i] != absent) {
+                continue;
+            }
+            std::pmr::string what{"FK constraint: referenced column ", resource_};
+            if (i < fk_.parent_col_names.size()) {
+                what.append("\"");
+                what.append(fk_.parent_col_names[i].c_str());
+                what.append("\" ");
+            }
+            what.append("has no resolved position in the parent row — the ON DELETE action cannot be evaluated");
+            set_error(core::error_t{core::error_code_t::invalid_constraint, std::move(what)});
+            mark_failed();
+            co_return;
+        }
+        if (par_indices.empty()) {
+            set_error(core::error_t{
+                core::error_code_t::invalid_constraint,
+                std::pmr::string{"FK constraint: no referenced columns resolved — the ON DELETE action "
+                                 "cannot be evaluated",
+                                 resource_}});
+            mark_failed();
+            co_return;
+        }
+
+        if (fk_.del_action == 'd' &&
+            fk_.child_col_default_specs.size() < fk_.child_col_schema_indices.size()) {
+            std::pmr::string what{"FK constraint: ON DELETE SET DEFAULT has ", resource_};
+            what.append(std::to_string(fk_.child_col_default_specs.size()).c_str());
+            what.append(" default spec(s) for ");
+            what.append(std::to_string(fk_.child_col_schema_indices.size()).c_str());
+            what.append(" referencing column(s) — a column with no spec would silently be set to "
+                        "NULL instead of its default");
+            set_error(core::error_t{core::error_code_t::invalid_constraint, std::move(what)});
+            mark_failed();
+            co_return;
+        }
+
         std::pmr::vector<std::string> key_cols(resource_);
         key_cols.reserve(fk_.child_col_names.size());
         for (const auto& n : fk_.child_col_names) {
             key_cols.emplace_back(n);
         }
 
-        // Stage A: per input chunk (each <= DEFAULT_VECTOR_CAPACITY rows), build an OWNED keys-chunk
-        // and scan the child table; accumulate per_row_child_ids across all chunks.
-        // per_row_child_ids[row] = referencing child row_ids for that parent row (empty -> nothing
-        // references it). Gathering ALL streamed batches into one combined keys-chunk would overflow
-        // the chunk capacity (the source can stream many batches), so the scan is windowed per chunk;
-        // the cascade actions below aggregate the per-row results across ALL parent rows, so the
-        // per-chunk scan is value-equivalent to the old single combined scan. The keys-chunk is an
-        // OWNED copy (it crosses the mailbox; actors must not share buffers). The per-chunk scans are
-        // sequential co_awaits in this nested operator coroutine (driven by the executor) — no lost-wakeup.
+        // chunk.data[] doesn't bound-check, so this guards par_indices explicitly. The scan below runs under
+        // exec_ctx's transaction, so a child row this txn already deleted is filtered out.
+        auto refuse_narrow_parent = [&](std::size_t width, std::size_t pidx, std::size_t slot) {
+            std::pmr::string what{"FK constraint: the matched parent rows have ", resource_};
+            what.append(std::to_string(width).c_str());
+            what.append(" column(s), too few to hold referenced column ");
+            if (slot < fk_.parent_col_names.size()) {
+                what.append("\"");
+                what.append(fk_.parent_col_names[slot].c_str());
+                what.append("\" ");
+            }
+            what.append("at position ");
+            what.append(std::to_string(pidx).c_str());
+            what.append(" — the ON DELETE action cannot be evaluated");
+            set_error(core::error_t{core::error_code_t::invalid_constraint, std::move(what)});
+            mark_failed();
+        };
+
         std::pmr::vector<types::complex_logical_type> key_types(resource_);
         key_types.reserve(par_indices.size());
-        for (auto pidx : par_indices) {
-            key_types.push_back(in_chunks.front().data[pidx].type());
+        for (std::size_t j = 0; j < par_indices.size(); ++j) {
+            if (par_indices[j] >= in_chunks.front().column_count()) {
+                refuse_narrow_parent(in_chunks.front().column_count(), par_indices[j], j);
+                co_return;
+            }
+            key_types.push_back(in_chunks.front().data[par_indices[j]].type());
         }
         std::pmr::vector<std::pmr::vector<std::int64_t>> per_row_child_ids(resource_);
         for (const auto& chunk : in_chunks) {
@@ -76,26 +124,27 @@ namespace components::operators {
             }
             components::vector::data_chunk_t keys(resource_, key_types, chunk.size());
             for (std::size_t j = 0; j < par_indices.size(); ++j) {
+                if (par_indices[j] >= chunk.column_count()) {
+                    refuse_narrow_parent(chunk.column_count(), par_indices[j], j);
+                    co_return;
+                }
                 components::vector::vector_ops::copy(chunk.data[par_indices[j]], keys.data[j], chunk.size(), 0, 0);
             }
             keys.set_cardinality(chunk.size());
 
-            // Child key column names cross the mailbox per scan, so copy them each time.
             std::pmr::vector<std::string> col_names(resource_);
             col_names.reserve(key_cols.size());
             for (const auto& n : key_cols) {
                 col_names.emplace_back(n);
             }
-            auto [_s, sfut] = actor_zeta::send(ctx->disk_address,
-                                               &services::disk::manager_disk_t::scan_by_keys,
-                                               exec_ctx,
-                                               fk_.child_table_oid,
-                                               std::move(col_names),
-                                               std::move(keys));
+            auto [_s, sfut] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                          &services::disk::manager_disk_t::scan_by_keys,
+                                                          exec_ctx,
+                                                          fk_.child_table_oid,
+                                                          std::move(col_names),
+                                                          std::move(keys));
             auto chunk_child_ids_r = co_await std::move(sfut);
             if (chunk_child_ids_r.has_error()) {
-                // A failed child-key read is not a miss; treating it as one lets the
-                // operation proceed on data that was never read.
                 set_error(chunk_child_ids_r.error());
                 co_return;
             }
@@ -108,7 +157,6 @@ namespace components::operators {
         switch (fk_.del_action) {
             case 'a': // NO ACTION
             case 'r': // RESTRICT
-                // Any referencing child row blocks the parent delete.
                 for (const auto& child_ids : per_row_child_ids) {
                     if (!child_ids.empty()) {
                         set_error(core::error_t{
@@ -120,13 +168,8 @@ namespace components::operators {
                 }
                 break;
 
-            case 'c': { // CASCADE — delete child rows via storage_delete_rows
-                // Aggregate every referencing child row_id across all parent rows
-                // into one delete. The child delete is stamped with the PARENT txn
-                // id (exec_ctx) so it is part of the parent's transaction: the
-                // executor records the child table on the txn's delete channel, so
-                // COMMIT publishes the cascade delete and ROLLBACK reverts it
-                // (revert_all_deletes(parent_txn_id)) — all-or-nothing atomicity.
+            case 'c': { // CASCADE
+                // Stamped with the parent txn; CASCADE never reads a row back.
                 std::pmr::vector<int64_t> all_child_ids(resource_);
                 for (const auto& child_ids : per_row_child_ids) {
                     for (auto id : child_ids) {
@@ -140,16 +183,18 @@ namespace components::operators {
                 for (std::size_t i = 0; i < all_child_ids.size(); ++i) {
                     row_ids_vec.data<int64_t>()[i] = all_child_ids[i];
                 }
-                auto [_d, dfut] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::storage_delete_rows,
-                                                   exec_ctx,
-                                                   fk_.child_table_oid,
-                                                   std::move(row_ids_vec),
-                                                   static_cast<uint64_t>(all_child_ids.size()));
-                co_await std::move(dfut);
-                // Track the child delete on the parent txn so COMMIT publishes it
-                // and ABORT reverts it. txn_id 0 (direct-API / no active txn) needs
-                // no tracking: the delete is already visible-to-all and irreversible.
+                auto [_d, dfut] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                              &services::disk::manager_disk_t::storage_delete_rows,
+                                                              exec_ctx,
+                                                              fk_.child_table_oid,
+                                                              std::move(row_ids_vec),
+                                                              static_cast<uint64_t>(all_child_ids.size()));
+                auto deleted_r = co_await std::move(dfut);
+                if (deleted_r.has_error()) {
+                    set_error(deleted_r.error());
+                    mark_failed();
+                    co_return;
+                }
                 if (ctx->txn.transaction_id != 0) {
                     ctx->dml_deletes.push_back(
                         components::table::dml_delete_range_t{fk_.child_table_oid, ctx->txn.transaction_id});
@@ -158,16 +203,7 @@ namespace components::operators {
             }
             case 'n':   // SET NULL
             case 'd': { // SET DEFAULT
-                // Mirror the CASCADE branch's flattening: aggregate EVERY referencing
-                // child row_id across all parent rows into ONE set, then do a single
-                // fetch + single update against the SAME child_table_oid (one owning
-                // agent). The SET NULL / SET DEFAULT transform is uniform across rows
-                // — it keys off per-COLUMN child_col_schema_indices / per-COLUMN
-                // child_col_default_specs, never off the parent row — so a single
-                // combined update chunk is value-correct. Each child row_id stays
-                // paired with its fetched chunk position because storage_fetch returns
-                // rows positionally aligned with the requested row_ids, and
-                // storage_update applies data[i] to row_ids[i] positionally.
+                // Mirrors CASCADE, but paired back via chunk.row_ids since the reply isn't positional.
                 std::pmr::vector<int64_t> all_child_ids(resource_);
                 for (const auto& child_ids : per_row_child_ids) {
                     for (auto id : child_ids) {
@@ -177,41 +213,79 @@ namespace components::operators {
                 if (all_child_ids.empty())
                     break;
 
-                // Single fetch for the whole set.
                 components::vector::vector_t fetch_ids(resource_, types::logical_type::BIGINT, all_child_ids.size());
                 for (std::size_t i = 0; i < all_child_ids.size(); ++i) {
                     fetch_ids.data<int64_t>()[i] = all_child_ids[i];
                 }
-                auto [_f, ffut] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::storage_fetch,
-                                                   ctx->session,
-                                                   fk_.child_table_oid,
-                                                   std::move(fetch_ids),
-                                                   static_cast<uint64_t>(all_child_ids.size()),
-                                                   // No projection: which columns the cascade's consumers read is not
-                                                   // proven here, and an unproven narrowing reads back stubs silently.
-                                                   std::vector<size_t>{});
-                auto fetched = co_await std::move(ffut); // vector of ≤CAP chunks
+                auto [_f, ffut] =
+                    actor_zeta::otterbrix::send(ctx->disk_address,
+                                                &services::disk::manager_disk_t::storage_fetch,
+                                                ctx->session,
+                                                fk_.child_table_oid,
+                                                std::move(fetch_ids),
+                                                static_cast<uint64_t>(all_child_ids.size()),
+                                                std::vector<size_t>{},
+                                                ctx->txn,
+                                                components::table::fetch_visibility_t::SNAPSHOT,
+                                                /*limit=*/int64_t{-1},
+                                                services::disk::k_fetch_epoch_unchecked);
+                auto fetched_r = co_await std::move(ffut);
+                if (fetched_r.has_error()) {
+                    // Must abort — transforming empty cells on a failed read would corrupt rows.
+                    set_error(fetched_r.error());
+                    co_return;
+                }
+                auto fetched = std::move(fetched_r.value());
                 if (fetched.empty())
                     break;
 
                 const bool is_set_null = (fk_.del_action == 'n');
-                // Apply the uniform per-column transform to every fetched row in every chunk.
                 for (std::size_t ci = 0; ci < fk_.child_col_schema_indices.size(); ++ci) {
                     const auto schema_idx = fk_.child_col_schema_indices[ci];
-                    if (schema_idx == absent)
-                        continue;
-                    // SET DEFAULT: decode attdefspec once; NULL default → same as SET NULL.
+                    if (schema_idx == absent) {
+                        std::pmr::string what{"FK constraint: referencing column ", resource_};
+                        if (ci < fk_.child_col_names.size()) {
+                            what.append("\"");
+                            what.append(fk_.child_col_names[ci].c_str());
+                            what.append("\" ");
+                        }
+                        what.append(is_set_null ? "has no resolved position in the child table — it cannot be "
+                                                  "set to NULL"
+                                                : "has no resolved position in the child table — it cannot be "
+                                                  "set to its default");
+                        set_error(core::error_t{core::error_code_t::invalid_constraint, std::move(what)});
+                        mark_failed();
+                        co_return;
+                    }
                     std::optional<types::logical_value_t> default_val;
-                    if (!is_set_null) {
-                        const auto& spec =
-                            ci < fk_.child_col_default_specs.size() ? fk_.child_col_default_specs[ci] : std::string{};
-                        default_val =
-                            spec.empty() ? std::nullopt : components::catalog::decode_default_spec(resource_, spec);
+                    if (!is_set_null && ci < fk_.child_col_default_specs.size() &&
+                        !fk_.child_col_default_specs[ci].empty() && !fetched.empty() &&
+                        schema_idx < fetched.front().column_count()) {
+                        if (auto ec = components::catalog::decode_default_spec(resource_,
+                                                                               fetched.front().data[schema_idx].type(),
+                                                                               fk_.child_col_default_specs[ci],
+                                                                               default_val);
+                            ec.contains_error()) {
+                            // A default that fails to decode is catalog corruption, not a fallback to SET NULL.
+                            set_error(std::move(ec));
+                            mark_failed();
+                            co_return;
+                        }
+                        if (default_val.has_value() && default_val->is_null()) {
+                            default_val.reset();
+                        }
                     }
                     for (auto& chunk : fetched) {
-                        if (schema_idx >= chunk.column_count())
-                            continue;
+                        if (schema_idx >= chunk.column_count()) {
+                            std::pmr::string what{"FK constraint: the child row batch has ", resource_};
+                            what.append(std::to_string(chunk.column_count()).c_str());
+                            what.append(" column(s), too few to hold referencing column at position ");
+                            what.append(std::to_string(schema_idx).c_str());
+                            what.append(" — the ON DELETE action cannot be applied");
+                            set_error(core::error_t{core::error_code_t::invalid_constraint, std::move(what)});
+                            mark_failed();
+                            co_return;
+                        }
                         for (uint64_t r = 0; r < chunk.size(); ++r) {
                             if (!is_set_null && default_val.has_value()) {
                                 chunk.set_value(schema_idx, r, *default_val);
@@ -222,46 +296,30 @@ namespace components::operators {
                     }
                 }
 
-                // Single update for the whole set — one chunk per fetched chunk, with the
-                // flat all_child_ids sliced positionally to match each chunk's rows.
                 std::pmr::vector<components::vector::vector_t> upd_ids_batch(resource_);
                 std::pmr::vector<components::vector::data_chunk_t> upd_data_batch(resource_);
-                std::size_t id_base = 0;
                 for (auto& chunk : fetched) {
                     const uint64_t n = chunk.size();
-                    components::vector::vector_t ids(resource_, types::logical_type::BIGINT, n);
-                    for (uint64_t i = 0; i < n; ++i) {
-                        ids.data<int64_t>()[i] = all_child_ids[id_base + i];
+                    if (n == 0) {
+                        continue;
                     }
-                    id_base += n;
+                    components::vector::vector_t ids(resource_, types::logical_type::BIGINT, n);
+                    std::memcpy(ids.data(), chunk.row_ids.data(), n * sizeof(int64_t));
                     upd_ids_batch.emplace_back(std::move(ids));
                     upd_data_batch.emplace_back(std::move(chunk));
                 }
-                // Stamp the child update with the PARENT txn (exec_ctx) so the
-                // SET NULL / SET DEFAULT version write rides the parent's
-                // transaction: the executor tracks the child table on BOTH the
-                // append channel (the new versions) and the delete channel (the
-                // superseded old versions, marked deleted at parent_txn_id), so
-                // COMMIT publishes the child update and ROLLBACK reverts it.
-                auto [_u, ufut] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::storage_update,
-                                                   exec_ctx,
-                                                   fk_.child_table_oid,
-                                                   std::move(upd_ids_batch),
-                                                   std::move(upd_data_batch));
-                // The update reply carries any write_conflict / out_of_memory; surface it as a
-                // clean error cursor instead of silently dropping it.
+                auto [_u, ufut] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                              &services::disk::manager_disk_t::storage_update,
+                                                              exec_ctx,
+                                                              fk_.child_table_oid,
+                                                              std::move(upd_ids_batch),
+                                                              std::move(upd_data_batch));
                 auto update_result = co_await std::move(ufut);
                 if (update_result.has_error()) {
                     set_error(update_result.error());
                     mark_failed();
                     co_return;
                 }
-                // MVCC update = delete-old + append-new. Track BOTH on the parent
-                // txn (same shape as operator_update's dml_* swap-info), so COMMIT
-                // publishes the appended new versions and the delete tombstones, and
-                // ABORT reverts the appends (storage_revert_appends) and un-stamps
-                // the delete marks (revert_all_deletes(parent_txn_id)).
                 if (ctx->txn.transaction_id != 0) {
                     auto [upd_row_start, upd_row_count] = update_result.value();
                     if (upd_row_count > 0) {
@@ -273,8 +331,16 @@ namespace components::operators {
                 }
                 break;
             }
-            default:
-                break;
+            default: {
+                // Falling through would report SUCCESS with no cascade; confdeltype should be one of {a,r,c,n,d}.
+                std::pmr::string what{"FK constraint: ON DELETE action '", resource_};
+                what.append(std::pmr::string(1, fk_.del_action, resource_));
+                what.append("' in pg_constraint.confdeltype is not one of the actions this build can apply "
+                            "— the cascade cannot be evaluated");
+                set_error(core::error_t{core::error_code_t::invalid_constraint, std::move(what)});
+                mark_failed();
+                co_return;
+            }
         }
         mark_executed();
     }

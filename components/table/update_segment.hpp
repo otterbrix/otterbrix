@@ -33,7 +33,6 @@ namespace components::table {
         class block_handle_t;
     } // namespace storage
 
-    // Forward decl so header-template impl below can dispatch on set_membership_filter_t.
     class set_membership_filter_t;
 
     inline bool supports_regular_update(const types::complex_logical_type& type) {
@@ -104,15 +103,16 @@ namespace components::table {
         undo_buffer_entry_t* entry = nullptr;
         uint64_t position = 0;
 
-        undo_buffer_reference pin() const;
+        [[nodiscard]] core::result_wrapper_t<undo_buffer_reference> pin() const;
         bool is_set() const { return entry; }
     };
+
+    void report_unreachable_update_node(const char* where, const core::error_t& error);
 
     struct undo_buffer_allocator_t {
         explicit undo_buffer_allocator_t(storage::buffer_manager_t& buffer_manager)
             : buffer_manager(buffer_manager) {}
 
-        // Returns out_of_memory when fresh transaction memory cannot be reserved.
         [[nodiscard]] core::result_wrapper_t<undo_buffer_reference> allocate(uint64_t alloc_len);
 
         storage::buffer_manager_t& buffer_manager;
@@ -159,14 +159,17 @@ namespace components::table {
             callback(&current);
             auto update_ptr = current.next;
             while (update_ptr.is_set()) {
-                auto pin = update_ptr.pin();
-                auto& info = pin.update_info();
+                auto pinned = update_ptr.pin();
+                if (pinned.has_error()) {
+                    report_unreachable_update_node("update_info_t::update_for_transaction", pinned.error());
+                    return;
+                }
+                auto& info = pinned.value().update_info();
                 callback(&info);
                 update_ptr = info.next;
             }
         }
 
-        types::logical_value_t value(uint64_t index);
         bool has_prev() const;
         bool has_next() const;
         static uint64_t allocation_size(uint64_t type_size);
@@ -179,7 +182,6 @@ namespace components::table {
         explicit update_segment_t(column_data_t& column);
 
         bool has_updates() const;
-        bool has_uncommitted_updates(uint64_t vector_index);
         bool has_updates(uint64_t vector_index);
         bool has_updates(int64_t start_row_idx, int64_t end_row_idx);
 
@@ -189,14 +191,12 @@ namespace components::table {
                                    uint64_t count,
                                    vector::vector_t& result,
                                    uint64_t result_offset_base = 0);
-        // Returns write_conflict or out_of_memory; true on success.
         [[nodiscard]] core::result_wrapper_t<bool> update(uint64_t column_index,
                                                           vector::vector_t& update,
                                                           int64_t* ids,
                                                           uint64_t count,
                                                           vector::vector_t& base_data);
         void fetch_row(int64_t row_id, vector::vector_t& result, uint64_t result_idx);
-        bool row_is_updated(int64_t row_id);
 
         core::string_buffer_t& heap() noexcept;
 
@@ -299,7 +299,6 @@ namespace components::table {
         uint64_t type_size_;
         core::string_buffer_t heap_;
         column_data_t* column_data_;
-        // Single-owner: see the proof on data_table_t (components/table/data_table.hpp).
     };
 
     struct update_select_element_t {
@@ -648,7 +647,7 @@ namespace components::table {
         auto tuple_data = update_info.data<T>();
 
         for (uint64_t i = 0; i < update_info.N; i++) {
-            auto idx = indexing.get_index(i) + base_info.vector_index * vector::DEFAULT_VECTOR_CAPACITY;
+            auto idx = indexing.get_index(i);
             tuple_data[i] = update_select_element_t::operation<T>(update_info.segment, update_data[idx]);
         }
 
@@ -793,46 +792,41 @@ namespace components::table {
         memcpy(update_tuples, result_ids, result_offset * sizeof(uint32_t));
 
         result_offset = 0;
-        auto pick_new = [&](uint64_t id, uint64_t aidx, uint64_t) {
-            result_values[result_offset] = extractor(update_vector_data, aidx);
+        auto pick_new = [&](uint64_t id, uint64_t aidx) {
+            result_values[result_offset] =
+                update_select_element_t::operation<T>(base_info.segment, extractor(update_vector_data, aidx));
             result_ids[result_offset] = static_cast<uint32_t>(id);
             result_offset++;
         };
-        auto pick_old = [&](uint64_t id, uint64_t bidx, uint64_t) {
+        auto pick_old = [&](uint64_t id, uint64_t bidx) {
             result_values[result_offset] = base_info_data[bidx];
             result_ids[result_offset] = static_cast<uint32_t>(id);
             result_offset++;
         };
-        auto merge = [&](uint64_t id, uint64_t aidx, uint64_t, uint64_t count) { pick_new(id, aidx, count); };
         uint64_t aidx = 0, bidx = 0;
-        uint64_t counter = 0;
         while (aidx < count && bidx < base_info.N) {
             auto a_index = indexing.get_index(aidx);
             auto a_id = static_cast<uint64_t>(ids[a_index]) - base_id;
             auto b_id = base_info.tuples()[bidx];
             if (a_id == b_id) {
-                merge(a_id, a_index, bidx, counter);
+                pick_new(a_id, a_index);
                 aidx++;
                 bidx++;
-                counter++;
             } else if (a_id < b_id) {
-                pick_new(a_id, a_index, counter);
+                pick_new(a_id, a_index);
                 aidx++;
-                counter++;
             } else {
-                pick_old(b_id, bidx, counter);
+                pick_old(b_id, bidx);
                 bidx++;
-                counter++;
             }
         }
+        // `count` must not move in lockstep with aidx — it would overflow the 2048-entry stack arrays.
         for (; aidx < count; aidx++) {
             auto a_index = indexing.get_index(aidx);
-            pick_new(static_cast<uint64_t>(ids[a_index]) - base_id, a_index, count);
-            count++;
+            pick_new(static_cast<uint64_t>(ids[a_index]) - base_id, a_index);
         }
         for (; bidx < base_info.N; bidx++) {
-            pick_old(base_info.tuples()[bidx], bidx, count);
-            count++;
+            pick_old(base_info.tuples()[bidx], bidx);
         }
 
         base_info.N = static_cast<uint32_t>(result_offset);

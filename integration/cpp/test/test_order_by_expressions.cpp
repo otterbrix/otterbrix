@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/types/logical_value.hpp>
@@ -46,10 +47,8 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::order_by_expressions::unary_minus_evaluation") {
-    auto config = test_create_config("/tmp/test_order_by_expressions/unary_eval");
+    auto config = test_create_config(integration_fixture_path("test_order_by_expressions/unary_eval"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -89,10 +88,8 @@ TEST_CASE("integration::cpp::order_by_expressions::unary_minus_evaluation") {
 }
 
 TEST_CASE("integration::cpp::order_by_expressions::unary_minus") {
-    auto config = test_create_config("/tmp/test_order_by_expressions/unary_minus");
+    auto config = test_create_config(integration_fixture_path("test_order_by_expressions/unary_minus"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     setup(dispatcher);
@@ -176,10 +173,8 @@ TEST_CASE("integration::cpp::order_by_expressions::unary_minus") {
 }
 
 TEST_CASE("integration::cpp::order_by_expressions::unary_minus_double_column") {
-    auto config = test_create_config("/tmp/test_order_by_expressions/unary_double");
+    auto config = test_create_config(integration_fixture_path("test_order_by_expressions/unary_double"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -206,10 +201,8 @@ TEST_CASE("integration::cpp::order_by_expressions::unary_minus_double_column") {
 }
 
 TEST_CASE("integration::cpp::order_by_expressions::mixed_key_priority") {
-    auto config = test_create_config("/tmp/test_order_by_expressions/mixed_keys");
+    auto config = test_create_config(integration_fixture_path("test_order_by_expressions/mixed_keys"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     setup(dispatcher);
@@ -264,10 +257,8 @@ TEST_CASE("integration::cpp::order_by_expressions::mixed_key_priority") {
 }
 
 TEST_CASE("integration::cpp::order_by_expressions::mixed_key_priority_multichunk") {
-    auto config = test_create_config("/tmp/test_order_by_expressions/mixed_multichunk");
+    auto config = test_create_config(integration_fixture_path("test_order_by_expressions/mixed_multichunk"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -309,10 +300,8 @@ TEST_CASE("integration::cpp::order_by_expressions::mixed_key_priority_multichunk
 }
 
 TEST_CASE("integration::cpp::order_by_expressions::unary_minus_empty_table") {
-    auto config = test_create_config("/tmp/test_order_by_expressions/unary_empty");
+    auto config = test_create_config(integration_fixture_path("test_order_by_expressions/unary_empty"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -334,10 +323,8 @@ TEST_CASE("integration::cpp::order_by_expressions::unary_minus_empty_table") {
 }
 
 TEST_CASE("integration::cpp::order_by_expressions::unary_over_null_rows") {
-    auto config = test_create_config("/tmp/test_order_by_expressions/unary_null");
+    auto config = test_create_config(integration_fixture_path("test_order_by_expressions/unary_null"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -367,10 +354,8 @@ TEST_CASE("integration::cpp::order_by_expressions::unary_over_null_rows") {
 }
 
 TEST_CASE("integration::cpp::order_by_expressions::null_literal_arithmetic_keys") {
-    auto config = test_create_config("/tmp/test_order_by_expressions/null_literal_keys");
+    auto config = test_create_config(integration_fixture_path("test_order_by_expressions/null_literal_keys"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -410,10 +395,8 @@ TEST_CASE("integration::cpp::order_by_expressions::null_literal_arithmetic_keys"
 }
 
 TEST_CASE("integration::cpp::order_by_expressions::computed_key_over_group_output") {
-    auto config = test_create_config("/tmp/test_order_by_expressions/group_computed");
+    auto config = test_create_config(integration_fixture_path("test_order_by_expressions/group_computed"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     setup(dispatcher);
@@ -431,10 +414,8 @@ TEST_CASE("integration::cpp::order_by_expressions::computed_key_over_group_outpu
 }
 
 TEST_CASE("integration::cpp::order_by_expressions::computed_key_over_ungrouped_column_is_error") {
-    auto config = test_create_config("/tmp/test_order_by_expressions/group_computed_bad");
+    auto config = test_create_config(integration_fixture_path("test_order_by_expressions/group_computed_bad"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     setup(dispatcher);
@@ -447,10 +428,8 @@ TEST_CASE("integration::cpp::order_by_expressions::computed_key_over_ungrouped_c
 }
 
 TEST_CASE("integration::cpp::order_by_expressions::unary_minus_nulls_first") {
-    auto config = test_create_config("/tmp/test_order_by_expressions/unary_nulls_first");
+    auto config = test_create_config(integration_fixture_path("test_order_by_expressions/unary_nulls_first"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -480,10 +459,8 @@ TEST_CASE("integration::cpp::order_by_expressions::unary_minus_nulls_first") {
 }
 
 TEST_CASE("integration::cpp::order_by_expressions::computed_desc_nulls_placement") {
-    auto config = test_create_config("/tmp/test_order_by_expressions/computed_desc_nulls");
+    auto config = test_create_config(integration_fixture_path("test_order_by_expressions/computed_desc_nulls"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 

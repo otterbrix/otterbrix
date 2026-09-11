@@ -12,10 +12,13 @@
 #include <components/types/logical_value.hpp>
 #include <core/date/date_parse.hpp>
 
-#include <absl/strings/numbers.h>
-
+#include <algorithm>
 #include <atomic>
+#include <cctype>
+#include <cmath>
 #include <cstdlib>
+#include <limits>
+#include <string_view>
 
 namespace components::sql::transform {
     namespace {
@@ -45,8 +48,6 @@ namespace components::sql::transform {
             };
 
             if (!element.alias->empty()) {
-                // An alias replaces the relation name and takes no qualification
-                // of its own, so only a bare `alias.col` reaches it.
                 return ref.uid.empty() && ref.db.empty() && ref.schema.empty() && ref.table == *element.alias;
             }
             return slot_answers(ref.uid, element.name->uuid) && slot_answers(ref.db, element.name->dbname) &&
@@ -83,11 +84,11 @@ namespace components::sql::transform {
 
         enum class refusal_reason
         {
-            ambiguous,                // more than one element answered
-            no_such_name,             // no element carries that name at all
-            qualification_differs,    // an element has the relation name, written another way
-            hidden_by_alias,          // an element has the relation name but wears an alias
-            alias_is_not_qualifiable, // the name is an alias, and the reference qualified it
+            ambiguous,
+            no_such_name,
+            qualification_differs,
+            hidden_by_alias,
+            alias_is_not_qualifiable,
         };
 
         core::error_t refusal(std::pmr::memory_resource* resource,
@@ -122,39 +123,9 @@ namespace components::sql::transform {
             return core::error_t{core::error_code_t::table_not_exists, std::pmr::string{message, resource}};
         }
 
-        // float/double and int64/128 are stored as literals
-        core::result_wrapper_t<types::logical_value_t> numeric_token_value(std::pmr::memory_resource* resource,
-                                                                           const char* token) {
-            const std::string_view text{token};
-            if (text.find_first_of(".eE") == std::string_view::npos) {
-                int64_t as_bigint = 0;
-                if (absl::SimpleAtoi(text, &as_bigint)) {
-                    return types::logical_value_t(resource, as_bigint);
-                }
-                types::int128_t as_hugeint = 0;
-                if (absl::SimpleAtoi(text, &as_hugeint)) {
-                    return types::logical_value_t(resource, as_hugeint);
-                }
-                // Above the signed 128-bit range only an unsigned one is left; without it
-                // the top half of a uhugeint column could not be written at all.
-                types::uint128_t as_uhugeint = 0;
-                if (absl::SimpleAtoi(text, &as_uhugeint)) {
-                    return types::logical_value_t(resource, as_uhugeint);
-                }
-                return core::error_t(core::error_code_t::sql_parse_error,
-                                     std::pmr::string{"integer literal out of range: " + std::string(text), resource});
-            }
-            double as_double = 0.0;
-            if (!string_to_double(token, text.size(), as_double)) {
-                return core::error_t(core::error_code_t::sql_parse_error,
-                                     std::pmr::string{"invalid numeric literal: " + std::string(text), resource});
-            }
-            return types::logical_value_t(resource, as_double);
-        }
     } // namespace
 
     bool string_to_double(const char* buf, size_t len, double& result /*, char decimal_separator = '.'*/) {
-        // Skip leading spaces
         while (len > 0 && std::isspace(*buf)) {
             buf++;
             len--;
@@ -183,8 +154,39 @@ namespace components::sql::transform {
         return *endptr == '\0';
     }
 
-    std::pmr::string indices_to_str(std::pmr::memory_resource* resource, A_Indices* indices) {
-        return core::pmr::to_pmr_string(resource, pg_ptr_cast<A_Const>(indices->uidx)->val.val.ival);
+    core::result_wrapper_t<std::pmr::string> indices_to_str(std::pmr::memory_resource* resource, A_Indices* indices) {
+        if (indices->lidx) {
+            return core::error_t(core::error_code_t::sql_parse_error,
+                                 std::pmr::string{"an array slice subscript is not supported here", resource});
+        }
+        if (!indices->uidx || nodeTag(indices->uidx) != T_A_Const) {
+            return core::error_t(
+                core::error_code_t::sql_parse_error,
+                std::pmr::string{"an array subscript must be an integer literal, not a computed expression",
+                                 resource});
+        }
+        Value* val = &pg_ptr_cast<A_Const>(indices->uidx)->val;
+        // `ival`/`str` share a union slot; reading `ival` when the tag is T_Float renders a pointer's bits.
+        switch (nodeTag(val)) {
+            case T_Integer:
+                return core::pmr::to_pmr_string(resource, intVal(val));
+            case T_Float: {
+                const std::string_view text{strVal(val)};
+                const bool digits_only =
+                    !text.empty() && text.find_first_not_of("0123456789") == std::string_view::npos;
+                if (digits_only) {
+                    return std::pmr::string{text, resource};
+                }
+                std::pmr::string msg{"an array subscript must be an integer literal, got: ", resource};
+                msg += text;
+                return core::error_t(core::error_code_t::sql_parse_error, std::move(msg));
+            }
+            default: {
+                std::pmr::string msg{"an array subscript must be an integer literal, got ", resource};
+                msg += node_tag_to_string(nodeTag(val));
+                return core::error_t(core::error_code_t::sql_parse_error, std::move(msg));
+            }
+        }
     }
 
     bool name_collection_t::is_left_table(const std::string& name) const {
@@ -332,8 +334,6 @@ namespace components::sql::transform {
                                                  "both sides — write that COALESCE explicitly",
                                              resource}};
                     }
-                    // The other side is the padded one on an outer join, so the
-                    // value lives here; on an inner join the two are equal.
                     out.field.set_side(column->join == logical_plan::join_type::right ? expressions::side_t::right
                                                                                       : expressions::side_t::left);
                 }
@@ -360,7 +360,8 @@ namespace components::sql::transform {
         }
         for (const auto& step : indirection->indirection->lst) {
             if (nodeTag(step.data) == T_A_Indices) {
-                ref.field.storage().emplace_back(indices_to_str(resource, pg_ptr_cast<A_Indices>(step.data)));
+                VALUE_OR_RETURN(auto segment, indices_to_str(resource, pg_ptr_cast<A_Indices>(step.data)));
+                ref.field.storage().emplace_back(std::move(segment));
             } else if (nodeTag(step.data) == T_A_Star) {
                 ref.field.storage().emplace_back(std::pmr::string{"*", resource});
             } else {
@@ -526,10 +527,39 @@ namespace components::sql::transform {
         }
     }
 
+    core::error_t refuse_dropped_call_decorations(std::pmr::memory_resource* resource, const FuncCall& call) {
+        if (call.over) {
+            std::string name = "?";
+            if (call.funcname && !call.funcname->lst.empty() &&
+                nodeTag(call.funcname->lst.back().data) == T_String) {
+                name = strVal(call.funcname->lst.back().data);
+            }
+            return core::error_t(core::error_code_t::unimplemented_yet,
+                                 std::pmr::string{"window function OVER is not supported yet: " + name +
+                                                      "(...) would have been computed as a plain aggregate",
+                                                  resource});
+        }
+        if (call.func_variadic) {
+            return core::error_t(
+                core::error_code_t::unimplemented_yet,
+                std::pmr::string{"VARIADIC is not supported yet: the argument would have been passed unexpanded",
+                                 resource});
+        }
+        if (call.agg_within_group || (call.agg_order && !call.agg_order->lst.empty())) {
+            return core::error_t(
+                core::error_code_t::unimplemented_yet,
+                std::pmr::string{"aggregate ORDER BY / WITHIN GROUP is not supported yet: the ordering would "
+                                 "have been dropped",
+                                 resource});
+        }
+        return core::error_t::no_error();
+    }
+
     core::result_wrapper_t<types::complex_logical_type> get_type(std::pmr::memory_resource* resource, TypeName* type) {
         types::complex_logical_type column;
-        if (!type || !type->names) {
-            return column;
+        if (!type || !type->names || list_length(type->names) == 0) {
+            return core::error_t(core::error_code_t::sql_parse_error,
+                                 std::pmr::string{"cannot determine a type: the TypeName is absent", resource});
         }
         if (auto linint_name = strVal(linitial(type->names)); !std::strcmp(linint_name, "pg_catalog")) {
             const char* builtin_name = strVal(lsecond(type->names));
@@ -538,7 +568,6 @@ namespace components::sql::transform {
                 return core::error_t(core::error_code_t::sql_parse_error,
                                      std::pmr::string{"type '", resource} + builtin_name + "' is not supported");
             } else if (col == types::logical_type::STRING_LITERAL && list_length(type->typmods) > 0) {
-                // Engine has only unbounded strings, reject char/varchar(n) length rather than silently dropping it
                 return core::error_t(core::error_code_t::sql_parse_error,
                                      std::pmr::string{"string length modifier is not supported", resource});
             } else if (col != types::logical_type::DECIMAL) {
@@ -563,8 +592,22 @@ namespace components::sql::transform {
                         core::error_code_t::sql_parse_error,
                         std::pmr::string{"Incorrect width or scale for DECIMAL, must be integer", resource});
                 }
-                column = types::complex_logical_type::create_decimal(static_cast<uint8_t>(intVal(&width->val)),
-                                                                     static_cast<uint8_t>(intVal(&scale->val)));
+                // Range-check before narrowing: a bare static_cast<uint8_t> wraps NUMERIC(256,0) into a
+                // DECIMAL(0,0) the codec writes but can't read back.
+                const auto raw_width = intVal(&width->val);
+                const auto raw_scale = intVal(&scale->val);
+                if (raw_width < 0 || raw_scale < 0 || raw_width > types::DECIMAL_MAX_WIDTH ||
+                    raw_scale > types::DECIMAL_MAX_WIDTH) {
+                    return core::error_t(core::error_code_t::invalid_parameter,
+                                         std::pmr::string{"DECIMAL width must be between 1 and " +
+                                                              std::to_string(types::DECIMAL_MAX_WIDTH) +
+                                                              " and scale must not exceed width",
+                                                          resource});
+                }
+                VALUE_OR_RETURN(column,
+                                types::complex_logical_type::create_decimal(resource,
+                                                                            static_cast<uint8_t>(raw_width),
+                                                                            static_cast<uint8_t>(raw_scale)));
             }
         } else {
             types::logical_type t = get_logical_type(linint_name);
@@ -577,7 +620,6 @@ namespace components::sql::transform {
 
         if (list_length(type->arrayBounds)) {
             auto size = pg_ptr_assert_cast<Value>(linitial(type->arrayBounds), T_Integer);
-            // Variadic array, encoded as -1 by the grammar
             if (intVal(size) < 0) {
                 column = types::complex_logical_type::create_list(column);
             } else {
@@ -585,11 +627,8 @@ namespace components::sql::transform {
             }
         }
 
-        return std::move(column);
+        return column;
     }
-
-    template<typename Container>
-    void fill_with_types(Container& container, PGList& list) {}
 
     core::result_wrapper_t<std::pmr::vector<types::complex_logical_type>> get_types(std::pmr::memory_resource* resource,
                                                                                     PGList& list) {
@@ -610,29 +649,553 @@ namespace components::sql::transform {
         return types;
     }
 
+    namespace {
+
+        // Refuses at `limit` instead of wrapping past it — the wrap is the defect this file exists to remove.
+        integer_text_t accumulate_decimal(std::string_view digits, types::uint128_t limit, types::uint128_t& out) {
+            if (digits.empty()) {
+                return integer_text_t::not_an_integer;
+            }
+            const types::uint128_t limit_div10 = limit / 10;
+            const types::uint128_t limit_mod10 = limit % 10;
+            types::uint128_t acc{0};
+            for (const char c : digits) {
+                if (c < '0' || c > '9') {
+                    return integer_text_t::not_an_integer;
+                }
+                const types::uint128_t digit{static_cast<uint64_t>(c - '0')};
+                if (acc > limit_div10 || (acc == limit_div10 && digit > limit_mod10)) {
+                    return integer_text_t::out_of_range;
+                }
+                acc = acc * 10 + digit;
+            }
+            out = acc;
+            return integer_text_t::exact;
+        }
+
+    } // namespace
+
+    integer_text_t parse_exact_integer(std::string_view text, types::int128_t& out) {
+        bool negative = false;
+        if (!text.empty() && (text[0] == '+' || text[0] == '-')) {
+            negative = (text[0] == '-');
+            text.remove_prefix(1);
+        }
+        const types::uint128_t limit =
+            negative ? (types::uint128_t{1} << 127) : ((types::uint128_t{1} << 127) - types::uint128_t{1});
+        types::uint128_t acc{0};
+        if (const auto read = accumulate_decimal(text, limit, acc); read != integer_text_t::exact) {
+            return read;
+        }
+        out = static_cast<types::int128_t>(negative ? (~acc + types::uint128_t{1}) : acc);
+        return integer_text_t::exact;
+    }
+
+    integer_text_t parse_exact_unsigned_integer(std::string_view text, types::uint128_t& out) {
+        if (!text.empty() && text[0] == '+') {
+            text.remove_prefix(1);
+        }
+        if (!text.empty() && text[0] == '-') {
+            return integer_text_t::out_of_range;
+        }
+        return accumulate_decimal(text, ~types::uint128_t{0}, out);
+    }
+
+    core::result_wrapper_t<types::int128_t>
+    parse_exact_decimal(std::pmr::memory_resource* resource, std::string_view text, uint8_t width, uint8_t scale) {
+        auto malformed = [&]() {
+            std::pmr::string msg{"not a decimal number: ", resource};
+            msg.append(text.data(), text.size());
+            return core::error_t(core::error_code_t::sql_parse_error, std::move(msg));
+        };
+        auto overflow = [&]() {
+            std::pmr::string msg{"numeric field overflow: ", resource};
+            msg.append(text.data(), text.size());
+            msg += " does not fit NUMERIC(";
+            msg += std::to_string(width);
+            msg += ", ";
+            msg += std::to_string(scale);
+            msg += ")";
+            return core::error_t(core::error_code_t::invalid_parameter, std::move(msg));
+        };
+        // PostgreSQL trims whitespace and reads an exponent; a stray character is a refusal, never a partial read.
+        size_t begin = 0;
+        size_t end = text.size();
+        while (begin < end && std::isspace(static_cast<unsigned char>(text[begin]))) {
+            ++begin;
+        }
+        while (end > begin && std::isspace(static_cast<unsigned char>(text[end - 1]))) {
+            --end;
+        }
+        if (begin == end) {
+            return malformed();
+        }
+        bool negative = false;
+        if (text[begin] == '+' || text[begin] == '-') {
+            negative = (text[begin] == '-');
+            ++begin;
+        }
+        std::string_view digits = text.substr(begin, end - begin);
+        int64_t exponent = 0;
+        if (const size_t marker = digits.find_first_of("eE"); marker != std::string_view::npos) {
+            std::string_view exp_text = digits.substr(marker + 1);
+            digits = digits.substr(0, marker);
+            bool exp_negative = false;
+            if (!exp_text.empty() && (exp_text[0] == '+' || exp_text[0] == '-')) {
+                exp_negative = (exp_text[0] == '-');
+                exp_text.remove_prefix(1);
+            }
+            if (exp_text.empty() || exp_text.find_first_not_of("0123456789") != std::string_view::npos) {
+                return malformed();
+            }
+            constexpr int64_t exponent_saturate = int64_t{1} << 30;
+            int64_t magnitude = 0;
+            for (char c : exp_text) {
+                magnitude = magnitude * 10 + (c - '0');
+                if (magnitude >= exponent_saturate) {
+                    magnitude = exponent_saturate;
+                    break;
+                }
+            }
+            exponent = exp_negative ? -magnitude : magnitude;
+        }
+        const size_t dot = digits.find('.');
+        std::string_view int_part = (dot == std::string_view::npos) ? digits : digits.substr(0, dot);
+        std::string_view frac_part = (dot == std::string_view::npos) ? std::string_view{} : digits.substr(dot + 1);
+        if (int_part.empty() && frac_part.empty()) {
+            return malformed();
+        }
+        auto all_digits = [](std::string_view s) {
+            return s.find_first_not_of("0123456789") == std::string_view::npos;
+        };
+        if (!all_digits(int_part) || !all_digits(frac_part)) {
+            return malformed();
+        }
+        // `shifted` must outlive int_part/frac_part below — they become views borrowing from it.
+        std::pmr::string shifted{resource};
+        if (exponent != 0) {
+            const int64_t int_len = static_cast<int64_t>(int_part.size());
+            const int64_t frac_len = static_cast<int64_t>(frac_part.size());
+            const int64_t lo = -(static_cast<int64_t>(scale) + 1 + int_len);
+            const int64_t hi = static_cast<int64_t>(types::DECIMAL_MAX_WIDTH) + 1 + frac_len;
+            if (exponent < lo) {
+                exponent = lo;
+            } else if (exponent > hi) {
+                exponent = hi;
+            }
+            shifted.append(int_part.data(), int_part.size());
+            shifted.append(frac_part.data(), frac_part.size());
+            const int64_t point = int_len + exponent;
+            if (point <= 0) {
+                shifted.insert(size_t{0}, static_cast<size_t>(-point), '0');
+                int_part = std::string_view{};
+                frac_part = std::string_view{shifted};
+            } else if (static_cast<size_t>(point) >= shifted.size()) {
+                shifted.append(static_cast<size_t>(point) - shifted.size(), '0');
+                int_part = std::string_view{shifted};
+                frac_part = std::string_view{};
+            } else {
+                int_part = std::string_view{shifted}.substr(0, static_cast<size_t>(point));
+                frac_part = std::string_view{shifted}.substr(static_cast<size_t>(point));
+            }
+        }
+        types::uint128_t ceiling{1};
+        for (int i = 0; i < types::DECIMAL_MAX_WIDTH; ++i) {
+            ceiling *= 10;
+        }
+        types::uint128_t acc{0};
+        auto push_digit = [&](char c) -> bool {
+            const types::uint128_t digit{static_cast<uint64_t>(c - '0')};
+            if (acc > (ceiling - digit) / 10) {
+                return false;
+            }
+            acc = acc * 10 + digit;
+            return true;
+        };
+        for (char c : int_part) {
+            if (!push_digit(c)) {
+                return overflow();
+            }
+        }
+        // Half away from zero (PostgreSQL's rule); rounding may carry, so width is checked after.
+        for (size_t i = 0; i < scale; ++i) {
+            const char c = i < frac_part.size() ? frac_part[i] : '0';
+            if (!push_digit(c)) {
+                return overflow();
+            }
+        }
+        if (frac_part.size() > scale && frac_part[scale] >= '5') {
+            acc += 1;
+        }
+        types::uint128_t limit{1};
+        for (uint8_t i = 0; i < width; ++i) {
+            limit *= 10;
+        }
+        if (acc >= limit) {
+            return overflow();
+        }
+        return static_cast<types::int128_t>(negative ? (~acc + types::uint128_t{1}) : acc);
+    }
+
+    core::result_wrapper_t<types::logical_value_t> numeric_literal_value(std::pmr::memory_resource* resource,
+                                                                         Value* value) {
+        if (nodeTag(value) == T_Integer) {
+            return types::logical_value_t(resource, static_cast<int64_t>(intVal(value)));
+        }
+        if (nodeTag(value) != T_Float) {
+            return core::error_t(
+                core::error_code_t::sql_parse_error,
+                std::pmr::string{"not a numeric literal: " + node_tag_to_string(nodeTag(value)), resource});
+        }
+        const char* text = strVal(value);
+        types::int128_t exact{0};
+        switch (parse_exact_integer(text, exact)) {
+            case integer_text_t::exact:
+                if (exact >= types::int128_t{std::numeric_limits<int64_t>::min()} &&
+                    exact <= types::int128_t{std::numeric_limits<int64_t>::max()}) {
+                    return types::logical_value_t(resource, static_cast<int64_t>(exact));
+                }
+                return types::logical_value_t(resource, exact);
+            case integer_text_t::out_of_range: {
+                types::uint128_t unsigned_exact{0};
+                if (parse_exact_unsigned_integer(text, unsigned_exact) == integer_text_t::exact) {
+                    return types::logical_value_t(resource, unsigned_exact);
+                }
+                // PostgreSQL would widen to arbitrary-precision numeric; refuse instead of rounding to double.
+                return core::error_t(core::error_code_t::sql_parse_error,
+                                     std::pmr::string{"integer literal out of range: " + std::string(text), resource});
+            }
+            case integer_text_t::not_an_integer:
+                break;
+        }
+        // atof answers ±inf without reporting failure; string_to_double reports failure instead.
+        double parsed = 0.0;
+        const std::string_view digits{text};
+        if (!string_to_double(text, digits.size(), parsed)) {
+            return core::error_t(core::error_code_t::sql_parse_error,
+                                 std::pmr::string{"not a numeric literal: " + std::string(text), resource});
+        }
+        if (!std::isfinite(parsed)) {
+            return core::error_t(
+                core::error_code_t::sql_parse_error,
+                std::pmr::string{"numeric literal out of range: " + std::string(text) + " does not fit a double",
+                                 resource});
+        }
+        return types::logical_value_t(resource, parsed);
+    }
+
+    std::string_view fractional_literal_text(Node* node) {
+        if (!node || nodeTag(node) != T_A_Const) {
+            return {};
+        }
+        Value* value = &pg_ptr_cast<A_Const>(node)->val;
+        if (nodeTag(value) != T_Float) {
+            return {};
+        }
+        std::string_view text{strVal(value)};
+        types::int128_t ignored{0};
+        if (parse_exact_integer(text, ignored) != integer_text_t::not_an_integer) {
+            return {};
+        }
+        return text;
+    }
+
+    namespace {
+
+        std::string cast_target_name(types::logical_type t) {
+            using LT = types::logical_type;
+            switch (t) {
+                case LT::TINYINT:
+                    return "TINYINT";
+                case LT::SMALLINT:
+                    return "SMALLINT";
+                case LT::INTEGER:
+                    return "INTEGER";
+                case LT::BIGINT:
+                    return "BIGINT";
+                case LT::HUGEINT:
+                    return "HUGEINT";
+                case LT::UTINYINT:
+                    return "UTINYINT";
+                case LT::USMALLINT:
+                    return "USMALLINT";
+                case LT::UINTEGER:
+                    return "UINTEGER";
+                case LT::UBIGINT:
+                    return "UBIGINT";
+                case LT::UHUGEINT:
+                    return "UHUGEINT";
+                case LT::FLOAT:
+                    return "REAL";
+                case LT::DOUBLE:
+                    return "DOUBLE PRECISION";
+                case LT::DECIMAL:
+                    return "NUMERIC";
+                case LT::BOOLEAN:
+                    return "BOOLEAN";
+                case LT::UUID:
+                    return "UUID";
+                case LT::BLOB:
+                    return "BLOB";
+                case LT::BIT:
+                    return "BIT";
+                case LT::POINTER:
+                    return "POINTER";
+                case LT::DATE:
+                    return "DATE";
+                case LT::TIME:
+                    return "TIME";
+                case LT::TIME_TZ:
+                    return "TIMETZ";
+                case LT::TIMESTAMP:
+                    return "TIMESTAMP";
+                case LT::TIMESTAMP_TZ:
+                    return "TIMESTAMPTZ";
+                case LT::INTERVAL:
+                    return "INTERVAL";
+                case LT::STRING_LITERAL:
+                    return "TEXT";
+                default:
+                    return "type#" + std::to_string(static_cast<int>(t));
+            }
+        }
+
+        core::error_t
+        invalid_cast_input(std::pmr::memory_resource* resource, types::logical_type target, const std::string& text) {
+            return core::error_t(core::error_code_t::sql_parse_error,
+                                 std::pmr::string{"invalid input for a cast to " + cast_target_name(target) + ": " +
+                                                      text,
+                                                  resource});
+        }
+
+        core::error_t
+        cast_out_of_range(std::pmr::memory_resource* resource, types::logical_type target, const std::string& text) {
+            return core::error_t(core::error_code_t::sql_parse_error,
+                                 std::pmr::string{"value out of range for a cast to " + cast_target_name(target) +
+                                                      ": " + text,
+                                                  resource});
+        }
+
+        bool integer_target_bounds(types::logical_type t, types::int128_t& lo, types::int128_t& hi) {
+            using LT = types::logical_type;
+            switch (t) {
+                case LT::TINYINT:
+                    lo = std::numeric_limits<int8_t>::min();
+                    hi = std::numeric_limits<int8_t>::max();
+                    return true;
+                case LT::SMALLINT:
+                    lo = std::numeric_limits<int16_t>::min();
+                    hi = std::numeric_limits<int16_t>::max();
+                    return true;
+                case LT::INTEGER:
+                    lo = std::numeric_limits<int32_t>::min();
+                    hi = std::numeric_limits<int32_t>::max();
+                    return true;
+                case LT::BIGINT:
+                    lo = std::numeric_limits<int64_t>::min();
+                    hi = std::numeric_limits<int64_t>::max();
+                    return true;
+                case LT::HUGEINT: {
+                    const types::uint128_t max_u = (types::uint128_t{1} << 127) - types::uint128_t{1};
+                    hi = static_cast<types::int128_t>(max_u);
+                    lo = static_cast<types::int128_t>(~max_u);
+                    return true;
+                }
+                case LT::UTINYINT:
+                    lo = 0;
+                    hi = std::numeric_limits<uint8_t>::max();
+                    return true;
+                case LT::USMALLINT:
+                    lo = 0;
+                    hi = std::numeric_limits<uint16_t>::max();
+                    return true;
+                case LT::UINTEGER:
+                    lo = 0;
+                    hi = std::numeric_limits<uint32_t>::max();
+                    return true;
+                case LT::UBIGINT:
+                    lo = 0;
+                    hi = static_cast<types::int128_t>(std::numeric_limits<uint64_t>::max());
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        types::logical_value_t
+        make_integer_value(std::pmr::memory_resource* resource, types::logical_type t, types::int128_t v) {
+            using LT = types::logical_type;
+            switch (t) {
+                case LT::TINYINT:
+                    return types::logical_value_t(resource, static_cast<int8_t>(v));
+                case LT::SMALLINT:
+                    return types::logical_value_t(resource, static_cast<int16_t>(v));
+                case LT::INTEGER:
+                    return types::logical_value_t(resource, static_cast<int32_t>(v));
+                case LT::BIGINT:
+                    return types::logical_value_t(resource, static_cast<int64_t>(v));
+                case LT::UTINYINT:
+                    return types::logical_value_t(resource, static_cast<uint8_t>(v));
+                case LT::USMALLINT:
+                    return types::logical_value_t(resource, static_cast<uint16_t>(v));
+                case LT::UINTEGER:
+                    return types::logical_value_t(resource, static_cast<uint32_t>(v));
+                case LT::UBIGINT:
+                    return types::logical_value_t(resource, static_cast<uint64_t>(v));
+                case LT::HUGEINT:
+                default:
+                    return types::logical_value_t(resource, v);
+            }
+        }
+
+        std::string numeric_literal_text(Value* value) {
+            if (nodeTag(value) == T_Integer) {
+                return std::to_string(intVal(value));
+            }
+            return std::string{strVal(value)};
+        }
+
+        // `is_string_literal` distinguishes '1.5'::int (PostgreSQL refuses) from 1.5::int (rounds).
+        core::result_wrapper_t<types::logical_value_t>
+        cast_literal_text(std::pmr::memory_resource* resource,
+                          const types::complex_logical_type& target,
+                          const std::string& text,
+                          bool is_string_literal) {
+            using LT = types::logical_type;
+            const LT t = target.type();
+            types::int128_t lo{0};
+            types::int128_t hi{0};
+            if (integer_target_bounds(t, lo, hi)) {
+                types::int128_t exact{0};
+                switch (parse_exact_integer(text, exact)) {
+                    case integer_text_t::exact:
+                        break;
+                    case integer_text_t::out_of_range:
+                        return cast_out_of_range(resource, t, text);
+                    case integer_text_t::not_an_integer: {
+                        if (is_string_literal) {
+                            return invalid_cast_input(resource, t, "'" + text + "'");
+                        }
+                        auto rounded = parse_exact_decimal(resource, text, types::DECIMAL_MAX_WIDTH, 0);
+                        if (rounded.has_error()) {
+                            return invalid_cast_input(resource, t, text);
+                        }
+                        exact = rounded.value();
+                        break;
+                    }
+                }
+                if (exact < lo || exact > hi) {
+                    return cast_out_of_range(resource, t, text);
+                }
+                return make_integer_value(resource, t, exact);
+            }
+            switch (t) {
+                case LT::DOUBLE:
+                case LT::FLOAT: {
+                    double parsed = 0.0;
+                    if (!string_to_double(text.c_str(), text.size(), parsed)) {
+                        return invalid_cast_input(resource,
+                                                  t,
+                                                  is_string_literal ? "'" + text + "'" : text);
+                    }
+                    if (t == LT::DOUBLE) {
+                        return types::logical_value_t(resource, parsed);
+                    }
+                    return types::logical_value_t(resource, static_cast<float>(parsed));
+                }
+                case LT::DECIMAL: {
+                    const auto* ext =
+                        static_cast<const types::decimal_logical_type_extension*>(target.extension());
+                    VALUE_OR_RETURN(auto scaled, parse_exact_decimal(resource, text, ext->width(), ext->scale()));
+                    if (target.to_physical_type() == types::physical_type::INT64) {
+                        return types::logical_value_t::create_decimal(resource,
+                                                                      target,
+                                                                      static_cast<int64_t>(scaled));
+                    }
+                    return types::logical_value_t::create_decimal(resource, target, scaled);
+                }
+                case LT::BOOLEAN: {
+                    if (is_string_literal) {
+                        // PostgreSQL's boolean literal words; 't' is what the grammar emits for TRUE.
+                        std::string lowered(text);
+                        std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char c) {
+                            return static_cast<char>(std::tolower(c));
+                        });
+                        if (lowered == "t" || lowered == "true" || lowered == "y" || lowered == "yes" ||
+                            lowered == "on" || lowered == "1") {
+                            return types::logical_value_t(resource, true);
+                        }
+                        if (lowered == "f" || lowered == "false" || lowered == "n" || lowered == "no" ||
+                            lowered == "off" || lowered == "0") {
+                            return types::logical_value_t(resource, false);
+                        }
+                        return invalid_cast_input(resource, t, "'" + text + "'");
+                    }
+                    // PostgreSQL's int -> bool rule; a fractional literal has no boolean cast at all.
+                    types::int128_t exact{0};
+                    switch (parse_exact_integer(text, exact)) {
+                        case integer_text_t::exact:
+                            return types::logical_value_t(resource, exact != types::int128_t{0});
+                        case integer_text_t::out_of_range:
+                            return types::logical_value_t(resource, true);
+                        case integer_text_t::not_an_integer:
+                            return invalid_cast_input(resource, t, text);
+                    }
+                    return invalid_cast_input(resource, t, text);
+                }
+                case LT::STRING_LITERAL:
+                    return types::logical_value_t(resource, text);
+                default:
+                    return core::error_t(core::error_code_t::unimplemented_yet,
+                                         std::pmr::string{"a literal cast to " + cast_target_name(t) +
+                                                              " is not supported yet",
+                                                          resource});
+            }
+        }
+
+    } // namespace
+
     core::result_wrapper_t<types::logical_value_t> get_value(std::pmr::memory_resource* resource, Node* node) {
         switch (nodeTag(node)) {
             case T_TypeCast: {
                 auto cast = pg_ptr_cast<TypeCast>(node);
+                if (!cast->arg || nodeTag(cast->arg) != T_A_Const) {
+                    // Non-literal operands must be LOWERED (transform_expression), not folded here.
+                    return core::error_t(
+                        core::error_code_t::sql_parse_error,
+                        std::pmr::string{"a cast over a non-constant operand is not a constant value", resource});
+                }
                 auto constant = pg_ptr_cast<A_Const>(cast->arg);
+                if (constant->val.type == T_Null) {
+                    return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
+                }
+                VALUE_OR_RETURN(auto target_type, get_type(resource, cast->typeName));
                 if (constant->val.type != T_String) {
-                    // A NULL literal under a CAST (`NULL::T`) is a typed NULL. Reading ival/fval of a T_Null
-                    // node yields a garbage non-null value — return an untyped NA null instead; the value
-                    // stays NULL via the vector validity mask and the projection resolves a concrete column
-                    // type (PG unknown->text) downstream.
-                    if (constant->val.type == T_Null) {
-                        return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
+                    if (constant->val.type != T_Integer && constant->val.type != T_Float) {
+                        return core::error_t(
+                            core::error_code_t::sql_parse_error,
+                            std::pmr::string{"a literal cast over " + node_tag_to_string(constant->val.type) +
+                                                 " is not supported",
+                                             resource});
                     }
-                    // anything outside int32 range parses as T_Float and stored as lineral
-                    if (constant->val.type == T_Float) {
-                        return numeric_token_value(resource, strVal(&constant->val));
+                    if (target_type.type() == types::logical_type::UNKNOWN) {
+                        return numeric_literal_value(resource, &constant->val);
                     }
-                    return types::logical_value_t(resource, intVal(&constant->val));
+                    if (types::is_duration(target_type.type())) {
+                        return core::error_t(
+                            core::error_code_t::sql_parse_error,
+                            std::pmr::string{"a numeric literal cannot be cast to " +
+                                                 cast_target_name(target_type.type()),
+                                             resource});
+                    }
+                    return cast_literal_text(resource,
+                                             target_type,
+                                             numeric_literal_text(&constant->val),
+                                             /*is_string_literal=*/false);
                 }
                 std::string_view str = strVal(&constant->val);
-                auto type_res = get_type(resource, cast->typeName);
-                if (!type_res.has_error() && types::is_duration(type_res.value().type())) {
-                    switch (type_res.value().type()) {
+                if (types::is_duration(target_type.type())) {
+                    switch (target_type.type()) {
                         case types::logical_type::DATE:
                             if (auto parsed = core::date::parse_date(str)) {
                                 return types::logical_value_t(resource, *parsed);
@@ -676,13 +1239,14 @@ namespace components::sql::transform {
                                 core::error_code_t::sql_parse_error,
                                 std::pmr::string{"invalid INTERVAL literal: " + std::string(str), resource});
                         default:
-                            break;
+                            return core::error_t(core::error_code_t::sql_parse_error,
+                                                 std::pmr::string{"unsupported duration cast target", resource});
                     }
                 }
-                if (!type_res.has_error() && type_res.value().type() == types::logical_type::BOOLEAN) {
-                    return types::logical_value_t(resource, str == "t");
+                if (target_type.type() == types::logical_type::UNKNOWN) {
+                    return types::logical_value_t(resource, std::string(str));
                 }
-                return types::logical_value_t(resource, std::string(str));
+                return cast_literal_text(resource, target_type, std::string(str), /*is_string_literal=*/true);
             }
             case T_A_Const: {
                 auto* value = &(pg_ptr_cast<A_Const>(node)->val);
@@ -691,17 +1255,17 @@ namespace components::sql::transform {
                         std::string str = strVal(value);
                         return types::logical_value_t(resource, str);
                     }
-                    case T_Integer:
-                        return types::logical_value_t(resource, intVal(value));
-                    // anything outside int32 range parses as T_Float and stored as lineral
+                    case T_Integer: // fall-through
                     case T_Float:
-                        return numeric_token_value(resource, strVal(value));
+                        return numeric_literal_value(resource, value);
                     case T_Null:
                         return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
                     default:
-                        break;
+                        return core::error_t(
+                            core::error_code_t::sql_parse_error,
+                            std::pmr::string{"unsupported constant kind: " + node_tag_to_string(nodeTag(value)),
+                                             resource});
                 }
-                break;
             }
             case T_A_ArrayExpr: {
                 auto array = pg_ptr_cast<A_ArrayExpr>(node);
@@ -737,18 +1301,10 @@ namespace components::sql::transform {
             }
         }
         if (values.empty()) {
-            // Empty array literal (ARRAY[]): the element type is indeterminate at parse
-            // time. Use NA  as a placeholder; it is resolved against the target column's
-            // element type when the value is cast/reconciled on the INSERT path.
             return types::logical_value_t::create_array(resource,
                                                         types::complex_logical_type{types::logical_type::NA},
                                                         std::move(values));
         }
-        // The element type comes from the first NON-NULL element. A NULL element (logical_type NA)
-        // is a valid null slot compatible with any element type, so it is skipped both when inferring
-        // the element type and when checking element-type consistency. An all-NULL array leaves the
-        // element type indeterminate (UNKNOWN), resolved against the target column's element type
-        // when the value is cast/reconciled on the INSERT path.
         types::complex_logical_type element_type{types::logical_type::UNKNOWN};
         bool element_type_found = false;
         for (const auto& value : values) {
@@ -800,6 +1356,12 @@ namespace components::sql::transform {
             }
         }
 
+        if (left.value().type().type() == types::logical_type::DECIMAL ||
+            right.value().type().type() == types::logical_type::DECIMAL) {
+            return core::error_t(
+                core::error_code_t::unimplemented_yet,
+                std::pmr::string{"constant arithmetic over a DECIMAL literal is not supported yet", resource});
+        }
         if (op_str == "+")
             return types::logical_value_t::sum(left.value(), right.value());
         if (op_str == "-")
@@ -814,6 +1376,43 @@ namespace components::sql::transform {
             core::error_code_t::sql_parse_error,
             std::pmr::string{"Unknown arithmetic operator in constant expression: " + std::string(op_str), resource});
     }
+
+    components::catalog::drop_behavior_t drop_behavior_of(DropBehavior written) noexcept {
+        // No `default:` — a new grammar value must break this build, not fall into either form silently.
+        switch (written) {
+            case DROP_CASCADE:
+                return components::catalog::drop_behavior_t::cascade_;
+            case DROP_RESTRICT:
+                break;
+        }
+        return components::catalog::drop_behavior_t::restrict_;
+    }
+
+    namespace {
+
+        // DEFAULT is the one place this component knows the declared type, so a DECIMAL literal is
+        // parsed exactly against (width, scale) instead of typed DOUBLE (measured 2026-09-05:
+        // numeric(38,20) DEFAULT 0.12345678901234567890 became ...168, short by 722 at the 20th place).
+        // INSERT/UPDATE values still lose the digits this way; don't duplicate the fix here.
+        core::result_wrapper_t<types::logical_value_t> default_clause_value(
+            std::pmr::memory_resource* resource,
+            const types::complex_logical_type& declared,
+            Node* expr) {
+            if (declared.type() == types::logical_type::DECIMAL && declared.extension() != nullptr &&
+                nodeTag(expr) == T_A_Const) {
+                Value* value = &pg_ptr_cast<A_Const>(expr)->val;
+                const auto tag = nodeTag(value);
+                if (tag == T_Integer || tag == T_Float) {
+                    return cast_literal_text(resource,
+                                             declared,
+                                             numeric_literal_text(value),
+                                             /*is_string_literal=*/false);
+                }
+            }
+            return get_value(resource, expr);
+        }
+
+    } // namespace
 
     core::result_wrapper_t<std::vector<table::column_definition_t>>
     get_column_definitions(std::pmr::memory_resource* resource, PGList& table_elts) {
@@ -841,7 +1440,8 @@ namespace components::sql::transform {
                             break;
                         case CONSTR_DEFAULT:
                             if (constraint->raw_expr) {
-                                if (auto val = get_value(resource, constraint->raw_expr); val.has_error()) {
+                                if (auto val = default_clause_value(resource, type.value(), constraint->raw_expr);
+                                    val.has_error()) {
                                     return val.convert_error<std::vector<table::column_definition_t>>();
                                 } else {
                                     default_val = std::move(val.value());
@@ -858,7 +1458,7 @@ namespace components::sql::transform {
             }
 
             if (coldef->raw_default && !default_val) {
-                if (auto val = get_value(resource, coldef->raw_default); val.has_error()) {
+                if (auto val = default_clause_value(resource, type.value(), coldef->raw_default); val.has_error()) {
                     return val.convert_error<std::vector<table::column_definition_t>>();
                 } else {
                     default_val = std::move(val.value());
@@ -867,8 +1467,71 @@ namespace components::sql::transform {
 
             out.emplace_back(coldef->colname, std::move(type.value()), not_null, std::move(default_val));
         }
-        return std::move(out);
+        return out;
     }
+
+    namespace {
+        void decode_fk_reference(const Constraint* constraint, table::table_constraint_t& tc) {
+            if (constraint->pk_attrs) {
+                for (auto col : constraint->pk_attrs->lst) {
+                    tc.ref_columns.emplace_back(strVal(col.data));
+                }
+            }
+            if (constraint->pktable) {
+                if (constraint->pktable->catalogname) {
+                    tc.ref_database = constraint->pktable->catalogname;
+                } else if (constraint->pktable->schemaname) {
+                    tc.ref_database = constraint->pktable->schemaname;
+                }
+                if (constraint->pktable->relname) {
+                    tc.ref_collection = constraint->pktable->relname;
+                }
+            }
+            // PostgreSQL stores ' '/'\0' for unspecified MATCH/action; normalize so downstream never sees it.
+            if (constraint->fk_matchtype == 'f' || constraint->fk_matchtype == 'p' ||
+                constraint->fk_matchtype == 's') {
+                tc.fk_matchtype = constraint->fk_matchtype;
+            }
+            const auto da = constraint->fk_del_action;
+            if (da == 'a' || da == 'r' || da == 'c' || da == 'n' || da == 'd') {
+                tc.fk_del_action = da;
+            }
+            const auto ua = constraint->fk_upd_action;
+            if (ua == 'a' || ua == 'r' || ua == 'c' || ua == 'n' || ua == 'd') {
+                tc.fk_upd_action = ua;
+            }
+        }
+    } // namespace
+
+    namespace {
+
+        core::error_t refuse_exclusion_constraint(std::pmr::memory_resource* resource) {
+            return core::error_t(
+                core::error_code_t::unimplemented_yet,
+                std::pmr::string{"EXCLUDE constraints are not supported yet: the constraint would have been "
+                                 "silently dropped",
+                                 resource});
+        }
+
+        core::error_t refuse_constraint_attribute(std::pmr::memory_resource* resource, std::string_view spelling) {
+            std::pmr::string msg{"the ", resource};
+            msg.append(spelling.data(), spelling.size());
+            msg += " constraint attribute is not supported yet: it would have been silently dropped";
+            return core::error_t(core::error_code_t::unimplemented_yet, std::move(msg));
+        }
+
+        // DEFERRABLE / INITIALLY DEFERRED arrive as fields on the constraint node (processCASbits in gram.y).
+        core::error_t refuse_deferrability_fields(std::pmr::memory_resource* resource, const Constraint& constraint) {
+            if (constraint.initdeferred) {
+                return refuse_constraint_attribute(resource, "INITIALLY DEFERRED");
+            }
+            if (constraint.deferrable) {
+                return refuse_constraint_attribute(resource, "DEFERRABLE");
+            }
+            return core::error_t::no_error();
+        }
+
+    } // namespace
 
     core::result_wrapper_t<std::vector<table::table_constraint_t>>
     extract_table_constraints(std::pmr::memory_resource* resource, PGList& table_elts, const char* raw_sql) {
@@ -878,7 +1541,12 @@ namespace components::sql::transform {
                 continue;
             }
             auto constraint = pg_ptr_cast<Constraint>(data.data);
+            RETURN_IF_ERROR(refuse_deferrability_fields(resource, *constraint));
             table::table_constraint_t tc;
+            if (constraint->conname) {
+                tc.name = constraint->conname;
+            }
+            // No default: a `default: continue` would CREATE the table with an undecided constraint silently absent.
             switch (constraint->contype) {
                 case CONSTR_PRIMARY:
                     tc.type = table::table_constraint_type::PRIMARY_KEY;
@@ -893,48 +1561,11 @@ namespace components::sql::transform {
                             tc.columns.emplace_back(strVal(col.data));
                         }
                     }
-                    if (constraint->pk_attrs) {
-                        for (auto col : constraint->pk_attrs->lst) {
-                            tc.ref_columns.emplace_back(strVal(col.data));
-                        }
-                    }
-                    if (constraint->pktable) {
-                        if (constraint->pktable->catalogname) {
-                            tc.ref_database = constraint->pktable->catalogname;
-                        } else if (constraint->pktable->schemaname) {
-                            tc.ref_database = constraint->pktable->schemaname;
-                        }
-                        if (constraint->pktable->relname) {
-                            tc.ref_collection = constraint->pktable->relname;
-                        }
-                    }
-                    if (constraint->conname) {
-                        tc.name = constraint->conname;
-                    }
-                    // PostgreSQL stores ' ' / '\0' for unspecified MATCH/action; normalize to
-                    // SQL-standard defaults ('s' SIMPLE, 'a' NO ACTION) so downstream code never
-                    // sees an unexpected sentinel.
-                    if (constraint->fk_matchtype == 'f' || constraint->fk_matchtype == 'p' ||
-                        constraint->fk_matchtype == 's') {
-                        tc.fk_matchtype = constraint->fk_matchtype;
-                    }
-                    {
-                        auto da = constraint->fk_del_action;
-                        if (da == 'a' || da == 'r' || da == 'c' || da == 'n' || da == 'd') {
-                            tc.fk_del_action = da;
-                        }
-                        auto ua = constraint->fk_upd_action;
-                        if (ua == 'a' || ua == 'r' || ua == 'c' || ua == 'n' || ua == 'd') {
-                            tc.fk_upd_action = ua;
-                        }
-                    }
+                    decode_fk_reference(constraint, tc);
                     result.push_back(std::move(tc));
-                    continue; // skip the unique-keys-based code below
+                    continue;
                 case CONSTR_CHECK:
                     tc.type = table::table_constraint_type::CHECK;
-                    if (constraint->conname) {
-                        tc.name = constraint->conname;
-                    }
                     if (constraint->raw_expr) {
                         if (auto expr_res = slice_check_expression(resource, raw_sql, constraint->location);
                             expr_res.has_error()) {
@@ -945,7 +1576,20 @@ namespace components::sql::transform {
                     }
                     result.push_back(std::move(tc));
                     continue;
-                default:
+                case CONSTR_EXCLUSION:
+                    return refuse_exclusion_constraint(resource);
+                case CONSTR_NULL:
+                case CONSTR_NOTNULL:
+                case CONSTR_DEFAULT:
+                    return core::error_t(
+                        core::error_code_t::sql_parse_error,
+                        std::pmr::string{"a column property reached the table-constraint list", resource});
+                case CONSTR_ATTR_DEFERRABLE:
+                    return refuse_constraint_attribute(resource, "DEFERRABLE");
+                case CONSTR_ATTR_DEFERRED:
+                    return refuse_constraint_attribute(resource, "INITIALLY DEFERRED");
+                case CONSTR_ATTR_NOT_DEFERRABLE:
+                case CONSTR_ATTR_IMMEDIATE:
                     continue;
             }
             if (constraint->keys) {
@@ -958,18 +1602,79 @@ namespace components::sql::transform {
         return result;
     }
 
+    core::result_wrapper_t<std::vector<table::table_constraint_t>>
+    extract_column_constraints(std::pmr::memory_resource* resource, PGList& table_elts, const char* raw_sql) {
+        std::vector<table::table_constraint_t> result;
+        for (auto data : table_elts.lst) {
+            if (nodeTag(data.data) != T_ColumnDef) {
+                continue;
+            }
+            auto coldef = pg_ptr_cast<ColumnDef>(data.data);
+            if (!coldef->constraints || !coldef->colname) {
+                continue;
+            }
+            const std::string colname{coldef->colname};
+            for (auto cdata : coldef->constraints->lst) {
+                auto constraint = pg_ptr_cast<Constraint>(cdata.data);
+                RETURN_IF_ERROR(refuse_deferrability_fields(resource, *constraint));
+                table::table_constraint_t tc;
+                if (constraint->conname) {
+                    tc.name = constraint->conname;
+                }
+                switch (constraint->contype) {
+                    case CONSTR_PRIMARY:
+                        tc.type = table::table_constraint_type::PRIMARY_KEY;
+                        tc.columns.emplace_back(colname);
+                        break;
+                    case CONSTR_UNIQUE:
+                        tc.type = table::table_constraint_type::UNIQUE;
+                        tc.columns.emplace_back(colname);
+                        break;
+                    case CONSTR_FOREIGN:
+                        tc.type = table::table_constraint_type::FOREIGN_KEY;
+                        // The grammar leaves fk_attrs empty here; the decorated column is the referencing list.
+                        tc.columns.emplace_back(colname);
+                        decode_fk_reference(constraint, tc);
+                        break;
+                    case CONSTR_CHECK:
+                        tc.type = table::table_constraint_type::CHECK;
+                        if (constraint->raw_expr) {
+                            if (auto expr_res = slice_check_expression(resource, raw_sql, constraint->location);
+                                expr_res.has_error()) {
+                                return expr_res.convert_error<std::vector<table::table_constraint_t>>();
+                            } else {
+                                tc.check_expression = std::move(expr_res.value());
+                            }
+                        }
+                        break;
+                    case CONSTR_NULL:
+                    case CONSTR_NOTNULL:
+                    case CONSTR_DEFAULT:
+                        continue;
+                    case CONSTR_EXCLUSION:
+                        return refuse_exclusion_constraint(resource);
+                    case CONSTR_ATTR_DEFERRABLE:
+                        return refuse_constraint_attribute(resource, "DEFERRABLE");
+                    case CONSTR_ATTR_DEFERRED:
+                        return refuse_constraint_attribute(resource, "INITIALLY DEFERRED");
+                    case CONSTR_ATTR_NOT_DEFERRABLE:
+                    case CONSTR_ATTR_IMMEDIATE:
+                        continue;
+                }
+                result.push_back(std::move(tc));
+            }
+        }
+        return result;
+    }
+
     namespace {
-        // How far a lexical region starting at `text[at]` runs, or 0 when none starts there. A
-        // paren inside a string or a comment is not punctuation, so the scan below has to step
-        // over these whole rather than read them character by character.
+        // A paren inside a string or comment is not punctuation and must be skipped whole.
         std::size_t skip_region(std::string_view text, std::size_t at) {
             const auto rest = text.size() - at;
-            // -- to end of line
             if (rest >= 2 && text[at] == '-' && text[at + 1] == '-') {
                 const auto line_end = text.find('\n', at);
                 return (line_end == std::string_view::npos ? text.size() : line_end) - at;
             }
-            // /* ... */, which nests
             if (rest >= 2 && text[at] == '/' && text[at + 1] == '*') {
                 std::size_t cursor = at + 2;
                 int depth = 1;
@@ -986,7 +1691,6 @@ namespace components::sql::transform {
                 }
                 return (depth == 0 ? cursor : text.size()) - at;
             }
-            // $tag$ ... $tag$
             if (text[at] == '$') {
                 const auto tag_end = text.find('$', at + 1);
                 if (tag_end != std::string_view::npos) {
@@ -998,8 +1702,7 @@ namespace components::sql::transform {
                 }
                 return 0;
             }
-            // '...' and "...", where the quote is doubled to escape itself, and E'...' where a
-            // backslash escapes the next character.
+            // '...'/"..." double the quote to escape it; E'...' lets a backslash escape instead.
             std::size_t start = at;
             bool backslash_escapes = false;
             if ((text[at] == 'E' || text[at] == 'e') && at + 1 < text.size() && text[at + 1] == '\'') {
@@ -1052,8 +1755,6 @@ namespace components::sql::transform {
                                  resource}};
         }
 
-        // From the CHECK keyword to the '(' that opens it; only whitespace or a comment may sit
-        // between the two.
         std::size_t cursor = static_cast<std::size_t>(check_location);
         while (cursor < sql.size() && sql[cursor] != '(') {
             const auto region = skip_region(sql, cursor);
@@ -1065,7 +1766,6 @@ namespace components::sql::transform {
                 std::pmr::string{"CHECK constraint cannot be stored: no '(' follows the CHECK keyword", resource}};
         }
 
-        // The expression is everything up to the ')' that closes that '('.
         const std::size_t begin = cursor + 1;
         int depth = 1;
         cursor = begin;
@@ -1141,7 +1841,6 @@ namespace components::sql::transform {
                 break;
             }
             default:
-                // already carry their own names.
                 break;
         }
         return node;
@@ -1178,8 +1877,6 @@ namespace components::sql::transform {
                                         const std::string& dbname,
                                         const std::string& relname,
                                         constraint_resolve_kind with_constraints) {
-        // An empty dbname/relname means the caller has no target identity (e.g.
-        // parameter-only statements, schemaless DDL) — nothing to resolve.
         register_catalog_resolve_namespace(resource, resolves, dbname);
         if (relname.empty()) {
             return;
@@ -1195,9 +1892,10 @@ namespace components::sql::transform {
         }
         logical_plan::resolve_entry_t constraint_entry;
         constraint_entry.target = table_index;
-        constraint_entry.direction = (with_constraints == constraint_resolve_kind::outgoing)
-                                         ? logical_plan::resolve_direction::outgoing
-                                         : logical_plan::resolve_direction::referencing;
+        constraint_entry.direction = (with_constraints == constraint_resolve_kind::referencing)
+                                         ? logical_plan::resolve_direction::referencing
+                                         : logical_plan::resolve_direction::outgoing;
+        constraint_entry.names_only = (with_constraints == constraint_resolve_kind::names_only);
         resolves->ensure(resource, logical_plan::resolve_kind::constraint).add(std::move(constraint_entry));
     }
 

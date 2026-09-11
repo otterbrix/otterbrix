@@ -20,7 +20,6 @@ using namespace components::vector;
 
 namespace {
 
-    // The substring of `s` starting at the 1-based `start_1based`, clipped to the string.
     // SQL semantics: start <= 0 is clamped to 1 (begin); start > length => empty.
     inline std::string_view substring_from(std::string_view s, int64_t start_1based) {
         const int64_t start_idx = start_1based <= 0 ? 0 : start_1based - 1;
@@ -30,10 +29,7 @@ namespace {
         return s.substr(static_cast<size_t>(start_idx));
     }
 
-    // ------------------------------------------------------------------
-    // SUBSTRING(s, start)       — start is 1-based; out-of-range => empty
-    // SUBSTRING(s, start, len)  — both 1-based; len <= 0 => empty; clip to bounds
-    // ------------------------------------------------------------------
+    // SUBSTRING(s, start[, len]): both 1-based; start out-of-range or len <= 0 => empty; clipped to bounds.
     core::error_t vector_substring_2(kernel_context&, const data_chunk_t& inputs, vector_t& output) {
         const auto& strings = inputs.data[0];
         const auto* source = strings.data<std::string_view>();
@@ -73,9 +69,7 @@ namespace {
         return core::error_t::no_error();
     }
 
-    // ------------------------------------------------------------------
-    // LENGTH(s) — byte length (BIGINT). Not codepoint length.
-    // ------------------------------------------------------------------
+    // LENGTH(s) returns byte length (BIGINT), not codepoint length.
     core::error_t vector_length(kernel_context&, const data_chunk_t& inputs, vector_t& output) {
         const auto& strings = inputs.data.front();
         const auto* source = strings.data<std::string_view>();
@@ -119,10 +113,7 @@ namespace {
         return core::error_t::no_error();
     }
 
-    // ------------------------------------------------------------------
-    // REGEXP_REPLACE(s, pattern, replacement) — std::regex ECMAScript.
-    // Invalid pattern => kernel_error.
-    // ------------------------------------------------------------------
+    // REGEXP_REPLACE(s, pattern, replacement) uses std::regex ECMAScript; an invalid pattern is kernel_error.
 
     // Cached regex, because it is expensive and there is a good chance it would be reused
     // TODO: cache all encountered patterns, because alternating patterns will cause recompile for each row
@@ -153,7 +144,6 @@ namespace {
             }
             const auto pattern = patterns[row];
             try {
-                // Recompiled only when the pattern actually changes
                 if (state->pattern != pattern) {
                     state->compiled.assign(pattern.data(), pattern.size(), std::regex::ECMAScript);
                     state->pattern.assign(pattern.data(), pattern.size());
@@ -182,7 +172,7 @@ namespace {
     }
 
     // regexp_like(subject, pattern [, flags]) -> BOOL. PostgreSQL's spelling, and what SQL LIKE /
-    // ILIKE lower to: a match is a FUNCTION over two strings, not a comparison operator, so it
+    // ILIKE lower to: a match is a function over two strings, not a comparison operator, so it
     // builds a function node the execution graph can run like any other.
     //
     // Uses core::regex_t (RE2) rather than std::regex: it reports a bad pattern as an error instead
@@ -240,9 +230,7 @@ namespace {
         return core::error_t::no_error();
     }
 
-    // ------------------------------------------------------------------
-    // Makers (mirror make_sum_func style from aggregate.cpp).
-    // ------------------------------------------------------------------
+    // Mirrors make_sum_func style from aggregate.cpp.
     std::unique_ptr<vector_function> make_substring_func(std::pmr::memory_resource* resource,
                                                          const std::string& name,
                                                          const std::string& short_doc,
@@ -259,7 +247,11 @@ namespace {
             {parameter_type::exact(logical_type::STRING_LITERAL), parameter_type::exact(logical_type::BIGINT)},
             {output_type::fixed(logical_type::STRING_LITERAL)});
         vector_kernel k2(std::move(sig2), vector_substring_2);
-        (void) fn->add_kernel(resource, std::move(k2));
+        // Bound, not (void)-cast, which is banned: add_kernel only refuses on a full slot
+        // table or an arity mismatch, both compile-time constants at these registration sites, so
+        // the assert states a file invariant rather than screening runtime input.
+        [[maybe_unused]] const auto added_k2 = fn->add_kernel(resource, std::move(k2));
+        assert(!added_k2.contains_error() && "string kernel must fit the declared slots and arity");
 
         kernel_signature_t sig3(function_type_t::vector,
                                 {parameter_type::exact(logical_type::STRING_LITERAL),
@@ -267,7 +259,8 @@ namespace {
                                  parameter_type::exact(logical_type::BIGINT)},
                                 {output_type::fixed(logical_type::STRING_LITERAL)});
         vector_kernel k3(std::move(sig3), vector_substring_3);
-        (void) fn->add_kernel(resource, std::move(k3));
+        [[maybe_unused]] const auto added_k3 = fn->add_kernel(resource, std::move(k3));
+        assert(!added_k3.contains_error() && "string kernel must fit the declared slots and arity");
 
         return fn;
     }
@@ -284,7 +277,8 @@ namespace {
                                {parameter_type::exact(logical_type::STRING_LITERAL)},
                                {output_type::fixed(logical_type::BIGINT)});
         vector_kernel k(std::move(sig), vector_length);
-        (void) fn->add_kernel(resource, std::move(k));
+        [[maybe_unused]] const auto added_k = fn->add_kernel(resource, std::move(k));
+        assert(!added_k.contains_error() && "string kernel must fit the declared slots and arity");
 
         return fn;
     }
@@ -302,7 +296,8 @@ namespace {
                                {parameter_type::exact(logical_type::STRING_LITERAL)},
                                {output_type::fixed(logical_type::STRING_LITERAL)});
         vector_kernel k(std::move(sig), fold);
-        (void) fn->add_kernel(resource, std::move(k));
+        [[maybe_unused]] const auto added_k = fn->add_kernel(resource, std::move(k));
+        assert(!added_k.contains_error() && "string kernel must fit the declared slots and arity");
 
         return fn;
     }
@@ -321,7 +316,8 @@ namespace {
                                 parameter_type::exact(logical_type::STRING_LITERAL)},
                                {output_type::fixed(logical_type::STRING_LITERAL)});
         vector_kernel k(std::move(sig), vector_regexp_replace, init_regexp_replace);
-        (void) fn->add_kernel(resource, std::move(k));
+        [[maybe_unused]] const auto added_k = fn->add_kernel(resource, std::move(k));
+        assert(!added_k.contains_error() && "string kernel must fit the declared slots and arity");
 
         return fn;
     }
@@ -339,7 +335,8 @@ namespace {
             {parameter_type::exact(logical_type::STRING_LITERAL), parameter_type::exact(logical_type::STRING_LITERAL)},
             {output_type::fixed(logical_type::BOOLEAN)});
         vector_kernel k2(std::move(sig2), vector_regexp_like, init_regexp_like);
-        (void) fn->add_kernel(resource, std::move(k2));
+        [[maybe_unused]] const auto added_k2 = fn->add_kernel(resource, std::move(k2));
+        assert(!added_k2.contains_error() && "string kernel must fit the declared slots and arity");
 
         kernel_signature_t sig3(function_type_t::vector,
                                 {parameter_type::exact(logical_type::STRING_LITERAL),
@@ -347,7 +344,8 @@ namespace {
                                  parameter_type::exact(logical_type::STRING_LITERAL)},
                                 {output_type::fixed(logical_type::BOOLEAN)});
         vector_kernel k3(std::move(sig3), vector_regexp_like, init_regexp_like);
-        (void) fn->add_kernel(resource, std::move(k3));
+        [[maybe_unused]] const auto added_k3 = fn->add_kernel(resource, std::move(k3));
+        assert(!added_k3.contains_error() && "string kernel must fit the declared slots and arity");
 
         return fn;
     }
@@ -357,33 +355,33 @@ namespace {
 namespace components::compute {
 
     // WARNING: uids and signatures must mirror DEFAULT_FUNCTIONS entries 5..10 in function.hpp —
-    // a uid is the REGISTRATION ORDER, so inserting here shifts everything registered after it.
+    // a uid is the registration order, so inserting here shifts everything registered after it.
     void register_string_functions(function_registry_t& r) {
-        (void) r.add_function(make_substring_func(r.resource(),
+        r.add_builtin(make_substring_func(r.resource(),
                                                   "substring",
                                                   "Returns substring",
                                                   "SUBSTRING(s, start[, len]) — 1-based; out-of-range -> empty"));
-        (void) r.add_function(
+        r.add_builtin(
             make_length_func(r.resource(), "length", "Returns byte length", "LENGTH(s) -> int64 (bytes, not chars)"));
-        (void) r.add_function(make_regexp_replace_func(r.resource(),
+        r.add_builtin(make_regexp_replace_func(r.resource(),
                                                        "regexp_replace",
                                                        "Regex substitution",
                                                        "REGEXP_REPLACE(s, pattern, replacement)"));
-        (void) r.add_function(
+        r.add_builtin(
             make_regexp_like_func(r.resource(),
                                   "regexp_like",
                                   "Regex match test",
                                   "REGEXP_LIKE(s, pattern[, flags]) -> bool; 'i' = case-insensitive"));
-        (void) r.add_function(make_case_fold_func(r.resource(),
-                                                  "upper",
-                                                  "Upper case",
-                                                  "UPPER(s) -> text; folded per byte, per LC_CTYPE",
-                                                  vector_case_fold<true>));
-        (void) r.add_function(make_case_fold_func(r.resource(),
-                                                  "lower",
-                                                  "Lower case",
-                                                  "LOWER(s) -> text; folded per byte, per LC_CTYPE",
-                                                  vector_case_fold<false>));
+        r.add_builtin(make_case_fold_func(r.resource(),
+                                          "upper",
+                                          "Upper case",
+                                          "UPPER(s) -> text; folded per byte, per LC_CTYPE",
+                                          vector_case_fold<true>));
+        r.add_builtin(make_case_fold_func(r.resource(),
+                                          "lower",
+                                          "Lower case",
+                                          "LOWER(s) -> text; folded per byte, per LC_CTYPE",
+                                          vector_case_fold<false>));
     }
 
 } // namespace components::compute

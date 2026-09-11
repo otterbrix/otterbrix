@@ -73,16 +73,6 @@ namespace components::logical_plan {
         void set_unique_groups(std::vector<std::vector<std::string>> v) { unique_groups_ = std::move(v); }
         const std::vector<std::vector<std::string>>& unique_groups() const { return unique_groups_; }
 
-        // Decoded column DEFAULT values (name -> value) for the constraint operators
-        // (see node_insert_t::column_defaults). Stamped by enrich; forwarded onto the
-        // node_check_constraint_t wrapper by the planner.
-        void set_column_defaults(std::vector<std::pair<std::string, types::logical_value_t>> v) {
-            column_defaults_ = std::move(v);
-        }
-        const std::vector<std::pair<std::string, types::logical_value_t>>& column_defaults() const {
-            return column_defaults_;
-        }
-
     private:
         std::string dbname_;
         std::string relname_;
@@ -100,7 +90,6 @@ namespace components::logical_plan {
         parameter_node_ptr check_params_;
         std::vector<std::pair<std::string, uint64_t>> array_size_reqs_;               // (name, declared array size)
         std::vector<std::vector<std::string>> unique_groups_;                         // UNIQUE / PK column groups
-        std::vector<std::pair<std::string, types::logical_value_t>> column_defaults_; // decoded DEFAULTs
     };
 
     using node_update_ptr = boost::intrusive_ptr<node_update_t>;

@@ -8,44 +8,39 @@
 
 #include <components/configuration/configuration.hpp>
 #include <components/log/log.hpp>
+#include <core/result_wrapper.hpp>
+#include <memory_resource>
 #include <services/wal/base.hpp>
 #include <services/wal/record.hpp>
 
 namespace services::wal {
 
-    /// Standalone WAL reader for startup recovery.
-    ///
-    /// Used by base_spaces.cpp (and similar bootstrap code) to replay committed
-    /// WAL records across all databases without requiring the actor system to be
-    /// running. This is a non-actor utility class.
+    /// Standalone, non-actor WAL reader: used by base_spaces.cpp during startup recovery, before
+    /// the actor system is running.
     class wal_reader_t {
     public:
-        wal_reader_t(const configuration::config_wal& config, log_t& log);
+        /// resource backs the decoded records and every diagnostic below.
+        wal_reader_t(std::pmr::memory_resource* resource, const configuration::config_wal& config, log_t& log);
 
-        /// Read all committed records across all databases whose wal_id > after_wal_id.
+        /// Returns records from every database under config_.path, sorted by wal_id ascending. When
+        /// committed_out is non-null, it receives the COMMIT IDS of every durable COMMIT marker
+        /// scanned, for the bitcask index txn-log recover gate to discard frames whose WAL commit
+        /// marker never landed (index frames are fsync'd durable before the WAL marker). Commit ids,
+        /// not txn ids: txn ids recycle per-process (restart at TRANSACTION_ID_START), so an earlier
+        /// incarnation's COMMIT marker could vouch for a later transaction reusing the same id.
         ///
-        /// Scans config_.path for database subdirectories, reads all segment files
-        /// in each, applies the 2-pass committed-transaction filter, and returns
-        /// the merged result sorted by wal_id ascending.
-        ///
-        /// When committed_out is non-null, the union of committed transaction ids
-        /// across all scanned databases is written into it. The bitcask index
-        /// txn-log recover gate (M1.1) needs this set to discard frames of
-        /// transactions whose WAL commit marker never landed: index txn-log frames
-        /// are fsync'd durable BEFORE the WAL commit marker, so a crash inside that
-        /// window would otherwise resurrect uncommitted transactions' index
-        /// entries. The set is threaded out (not derived in the index layer) so it
-        /// stays byte-identical with the filter applied here.
-        std::vector<record_t> read_committed_records(id_t after_wal_id,
-                                                     std::set<std::uint64_t>* committed_out = nullptr);
+        /// REFUSES when a segment cannot be opened — an empty list would be indistinguishable from
+        /// "nothing to replay" (see base_spaces.cpp's caller for why that stops startup).
+        core::result_wrapper_t<std::vector<record_t>>
+        read_committed_records(id_t after_wal_id, std::set<std::uint64_t>* committed_out = nullptr);
 
     private:
-        /// Read all records from segment files in a single database directory.
-        /// committed_out, when non-null, receives this database's committed txn ids.
-        std::vector<record_t> read_database_segments(const std::filesystem::path& db_dir,
-                                                     id_t after_wal_id,
-                                                     std::set<std::uint64_t>* committed_out);
+        /// committed_out, when non-null, receives this database's committed COMMIT IDS.
+        core::result_wrapper_t<std::vector<record_t>> read_database_segments(const std::filesystem::path& db_dir,
+                                                                             id_t after_wal_id,
+                                                                             std::set<std::uint64_t>* committed_out);
 
+        std::pmr::memory_resource* resource_;
         configuration::config_wal config_;
         log_t log_;
     };

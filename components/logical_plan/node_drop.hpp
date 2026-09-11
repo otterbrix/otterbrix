@@ -20,29 +20,14 @@ namespace components::logical_plan {
         index
     };
 
-    // Flat DROP node carrying the target kind plus the role-named name and OID
-    // fields each variant uses.
-    //
-    // Field usage by kind:
-    //   dbname_ / relname_  — the user-typed target name; how enrich finds this
-    //                         node's entry among the plan's resolved tables
-    //   index_name_    — index only (the index is its own pg_class row, so DROP
-    //                    INDEX names two things: the parent table and the index)
-    //   namespace_oid_ — collection, database, index
-    //   type_oid_      — type
-    //   index_oid_     — index
-    //   table_oid()    — collection, view, sequence, macro, index (base field)
-    //   runtime_index_name_ — index only
-    // The OIDs are stamped by enrich_logical_plan from the plan's resolved
-    // catalog entries; they are INVALID_OID at parse time.
+    // index_name_ is index-only: the index has its own pg_class row (DROP INDEX names both the table and the index).
     class node_drop_t final : public node_t {
     public:
         node_drop_t(std::pmr::memory_resource* resource, drop_target_kind kind);
 
         drop_target_kind kind() const noexcept { return kind_; }
 
-        // Target name, as written. Kept on the node so enrich binds it to a
-        // resolved entry by name — no positional coupling to any other node.
+        // Kept as written so enrich binds by name, not positional coupling to another node.
         const std::string& dbname() const noexcept { return dbname_; }
         void set_dbname(std::string dbname) { dbname_ = std::move(dbname); }
         const std::string& relname() const noexcept { return relname_; }
@@ -50,27 +35,23 @@ namespace components::logical_plan {
         const std::string& index_name() const noexcept { return index_name_; }
         void set_index_name(std::string name) { index_name_ = std::move(name); }
 
-        // namespace_oid: collection / database / index
         components::catalog::oid_t namespace_oid() const noexcept { return namespace_oid_; }
         void set_namespace_oid(components::catalog::oid_t oid) noexcept { namespace_oid_ = oid; }
 
-        // type_oid: type
         components::catalog::oid_t type_oid() const noexcept { return type_oid_; }
         void set_type_oid(components::catalog::oid_t oid) noexcept { type_oid_ = oid; }
 
-        // index_oid: index
         components::catalog::oid_t index_oid() const noexcept { return index_oid_; }
         void set_index_oid(components::catalog::oid_t oid) noexcept { index_oid_ = oid; }
 
-        // Runtime label for the index actor dispatch (manager_index_t keys
-        // engine entries by (table_oid, name)). Stamped by enrich from the
-        // sibling catalog_resolve (kind=table) node; never user-typed via the ctor.
-        const std::string& runtime_index_name() const noexcept { return runtime_index_name_; }
-        void set_runtime_index_name(std::string name) { runtime_index_name_ = std::move(name); }
-
-        // No setter — DROP is always-CASCADE; RESTRICT/CASCADE is not wired
-        // from the parser, so behavior_ stays at its default.
+        // Copied from DropStmt.behavior at the wrap_one choke-point every DROP arm passes; DROP DATABASE has no such
+        // clause and is stamped cascade_ instead by its own transform.
         components::catalog::drop_behavior_t behavior() const noexcept { return behavior_; }
+        void set_behavior(components::catalog::drop_behavior_t b) noexcept { behavior_ = b; }
+
+        // Unresolved target refuses the statement unless set; defaults false so a programmatic plan gets the refusal.
+        bool missing_ok() const noexcept { return missing_ok_; }
+        void set_missing_ok(bool v) noexcept { missing_ok_ = v; }
 
     private:
         hash_t hash_impl() const override;
@@ -83,8 +64,8 @@ namespace components::logical_plan {
         components::catalog::oid_t namespace_oid_{components::catalog::INVALID_OID};
         components::catalog::oid_t type_oid_{components::catalog::INVALID_OID};
         components::catalog::oid_t index_oid_{components::catalog::INVALID_OID};
-        std::string runtime_index_name_;
-        components::catalog::drop_behavior_t behavior_{components::catalog::drop_behavior_t::cascade_};
+        components::catalog::drop_behavior_t behavior_{components::catalog::drop_behavior_t::restrict_};
+        bool missing_ok_{false};
     };
 
     using node_drop_ptr = boost::intrusive_ptr<node_drop_t>;

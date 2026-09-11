@@ -140,9 +140,8 @@ namespace components::table {
 
         row_group_append_state append_state;
         // Sequencing token, not a lock: data_table_t::append_lock() sets it and
-        // initialize_append refuses to run without it. It used to be a held mutex; the mutex
-        // is gone (a table is reachable from exactly one disk agent, see data_table.hpp), the
-        // ordering guarantee it also carried is not.
+        // initialize_append refuses to run without it. No mutex needed (one disk agent owns
+        // the table, see data_table.hpp), but the ordering guarantee a lock gave is still required.
         bool append_locked{false};
         int64_t row_start;
         int64_t current_row;

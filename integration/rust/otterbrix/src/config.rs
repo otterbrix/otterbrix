@@ -16,9 +16,6 @@ pub struct Config {
     pub(crate) wal_path: PathBuf,
     pub(crate) disk_path: PathBuf,
     pub(crate) main_path: PathBuf,
-    pub(crate) wal_on: bool,
-    pub(crate) disk_on: bool,
-    pub(crate) sync_to_disk: bool,
 }
 
 impl Config {
@@ -34,10 +31,8 @@ impl Config {
     /// | `disk_path`  | `<base_path>/disk`    |
     /// | `main_path`  | `<base_path>/main`    |
     ///
-    /// `wal_on`, `disk_on`, and `sync_to_disk` are all set to `false`. This
-    /// makes the configuration suitable for ephemeral databases (tests,
-    /// benchmarks, in-memory experiments) but **not** for production data.
-    /// For a durable configuration, use [`Config::builder`].
+    /// Every table is written to `disk_path` and every write is journalled to
+    /// `wal_path`: there is no mode in which either is skipped.
     pub fn new(base_path: impl AsRef<Path>) -> Self {
         let base = base_path.as_ref();
         Config {
@@ -46,9 +41,6 @@ impl Config {
             wal_path: base.join("wal"),
             disk_path: base.join("disk"),
             main_path: base.join("main"),
-            wal_on: false,
-            disk_on: false,
-            sync_to_disk: false,
         }
     }
 
@@ -75,37 +67,19 @@ impl Config {
 /// | `wal_path`     | `<cwd>/wal`                             |
 /// | `disk_path`    | `<cwd>/disk`                            |
 /// | `main_path`    | `<cwd>` (current directory)             |
-/// | `wal_on`       | `true`                                  |
-/// | `disk_on`      | `true`                                  |
-/// | `sync_to_disk` | `true`                                  |
 ///
 /// `<cwd>` is the process's current working directory at the moment
 /// [`build`](ConfigBuilder::build) is called.
-#[derive(Debug, Clone)]
+// Derived, not hand-written: every field's default IS its type's default now. The manual impl was
+// needed only while wal_on and sync_to_disk defaulted to true, and clippy::derivable_impls (denied
+// via -D warnings in scripts/check.sh) refuses to let it outlive them.
+#[derive(Debug, Clone, Default)]
 pub struct ConfigBuilder {
     level: i32,
     log_path: Option<PathBuf>,
     wal_path: Option<PathBuf>,
     disk_path: Option<PathBuf>,
     main_path: Option<PathBuf>,
-    wal_on: bool,
-    disk_on: bool,
-    sync_to_disk: bool,
-}
-
-impl Default for ConfigBuilder {
-    fn default() -> Self {
-        Self {
-            level: 0,
-            log_path: None,
-            wal_path: None,
-            disk_path: None,
-            main_path: None,
-            wal_on: true,
-            disk_on: true,
-            sync_to_disk: true,
-        }
-    }
 }
 
 impl ConfigBuilder {
@@ -122,8 +96,6 @@ impl ConfigBuilder {
     }
 
     /// Sets the directory for the write-ahead log.
-    ///
-    /// Has no effect when [`wal_on`](ConfigBuilder::wal_on) is `false`.
     pub fn wal_path(mut self, path: impl AsRef<Path>) -> Self {
         self.wal_path = Some(path.as_ref().to_path_buf());
         self
@@ -131,7 +103,7 @@ impl ConfigBuilder {
 
     /// Sets the directory for on-disk storage segments.
     ///
-    /// Has no effect when [`disk_on`](ConfigBuilder::disk_on) is `false`.
+    /// Always in effect: every table is written here.
     pub fn disk_path(mut self, path: impl AsRef<Path>) -> Self {
         self.disk_path = Some(path.as_ref().to_path_buf());
         self
@@ -140,24 +112,6 @@ impl ConfigBuilder {
     /// Sets the engine's main working directory.
     pub fn main_path(mut self, path: impl AsRef<Path>) -> Self {
         self.main_path = Some(path.as_ref().to_path_buf());
-        self
-    }
-
-    /// Enables or disables the write-ahead log.
-    pub fn wal_on(mut self, on: bool) -> Self {
-        self.wal_on = on;
-        self
-    }
-
-    /// Enables or disables on-disk storage segments.
-    pub fn disk_on(mut self, on: bool) -> Self {
-        self.disk_on = on;
-        self
-    }
-
-    /// Enables or disables synchronous flushes when writing to disk.
-    pub fn sync_to_disk(mut self, sync: bool) -> Self {
-        self.sync_to_disk = sync;
         self
     }
 
@@ -174,9 +128,6 @@ impl ConfigBuilder {
             wal_path: self.wal_path.unwrap_or_else(|| base.join("wal")),
             disk_path: self.disk_path.unwrap_or_else(|| base.join("disk")),
             main_path: self.main_path.unwrap_or_else(|| base.clone()),
-            wal_on: self.wal_on,
-            disk_on: self.disk_on,
-            sync_to_disk: self.sync_to_disk,
         }
     }
 }

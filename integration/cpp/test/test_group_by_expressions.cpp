@@ -64,7 +64,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::group_by_expressions::groups_by_the_computed_value") {
-    auto config = test_helpers::make_test_config("/tmp/group_by_expressions/groups");
+    auto config = test_helpers::make_test_config(integration_fixture_path("group_by_expressions/groups"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     seed_table(dispatcher);
@@ -88,7 +88,7 @@ TEST_CASE("integration::cpp::group_by_expressions::groups_by_the_computed_value"
 }
 
 TEST_CASE("integration::cpp::group_by_expressions::projects_the_key") {
-    auto config = test_helpers::make_test_config("/tmp/group_by_expressions/project");
+    auto config = test_helpers::make_test_config(integration_fixture_path("group_by_expressions/project"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     seed_table(dispatcher);
@@ -112,7 +112,7 @@ TEST_CASE("integration::cpp::group_by_expressions::projects_the_key") {
 }
 
 TEST_CASE("integration::cpp::group_by_expressions::case_expression_key") {
-    auto config = test_helpers::make_test_config("/tmp/group_by_expressions/case_expr");
+    auto config = test_helpers::make_test_config(integration_fixture_path("group_by_expressions/case_expr"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     seed_table(dispatcher);
@@ -131,7 +131,7 @@ TEST_CASE("integration::cpp::group_by_expressions::case_expression_key") {
 }
 
 TEST_CASE("integration::cpp::group_by_expressions::cast_key") {
-    auto config = test_helpers::make_test_config("/tmp/group_by_expressions/cast");
+    auto config = test_helpers::make_test_config(integration_fixture_path("group_by_expressions/cast"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     seed_table(dispatcher);
@@ -150,7 +150,7 @@ TEST_CASE("integration::cpp::group_by_expressions::cast_key") {
 }
 
 TEST_CASE("integration::cpp::group_by_expressions::function_key") {
-    auto config = test_helpers::make_test_config("/tmp/group_by_expressions/function");
+    auto config = test_helpers::make_test_config(integration_fixture_path("group_by_expressions/function"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     seed_table(dispatcher);
@@ -174,7 +174,7 @@ TEST_CASE("integration::cpp::group_by_expressions::function_key") {
 }
 
 TEST_CASE("integration::cpp::group_by_expressions::having_and_order_by_name_the_key") {
-    auto config = test_helpers::make_test_config("/tmp/group_by_expressions/above_group");
+    auto config = test_helpers::make_test_config(integration_fixture_path("group_by_expressions/above_group"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     seed_table(dispatcher);
@@ -191,7 +191,7 @@ TEST_CASE("integration::cpp::group_by_expressions::having_and_order_by_name_the_
 }
 
 TEST_CASE("integration::cpp::group_by_expressions::ordinal_addresses_the_select_list") {
-    auto config = test_helpers::make_test_config("/tmp/group_by_expressions/ordinal");
+    auto config = test_helpers::make_test_config(integration_fixture_path("group_by_expressions/ordinal"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     seed_table(dispatcher);
@@ -206,7 +206,7 @@ TEST_CASE("integration::cpp::group_by_expressions::ordinal_addresses_the_select_
 }
 
 TEST_CASE("integration::cpp::group_by_expressions::nested_and_null_keys") {
-    auto config = test_helpers::make_test_config("/tmp/group_by_expressions/nested");
+    auto config = test_helpers::make_test_config(integration_fixture_path("group_by_expressions/nested"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     REQUIRE(succeeds(dispatcher, "CREATE DATABASE g;"));
@@ -219,7 +219,7 @@ TEST_CASE("integration::cpp::group_by_expressions::nested_and_null_keys") {
 }
 
 TEST_CASE("integration::cpp::group_by_expressions::more_groups_than_one_chunk") {
-    auto config = test_helpers::make_test_config("/tmp/group_by_expressions/many");
+    auto config = test_helpers::make_test_config(integration_fixture_path("group_by_expressions/many"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     REQUIRE(succeeds(dispatcher, "CREATE DATABASE g;"));
@@ -244,7 +244,7 @@ TEST_CASE("integration::cpp::group_by_expressions::more_groups_than_one_chunk") 
 }
 
 TEST_CASE("integration::cpp::group_by_expressions::rejects") {
-    auto config = test_helpers::make_test_config("/tmp/group_by_expressions/rejects");
+    auto config = test_helpers::make_test_config(integration_fixture_path("group_by_expressions/rejects"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     seed_table(dispatcher);

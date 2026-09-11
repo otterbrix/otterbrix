@@ -25,21 +25,21 @@ namespace components::vector::arrow {
                                         std::unique_ptr<arrow_type> type);
         arrow_type_extension_t(std::string extension_name,
                                std::string arrow_format,
-                               std::shared_ptr<arrow_type_extension_data_t> type);
+                               arrow_type_extension_data_ptr type);
         arrow_type_extension_t(std::string vendor_name,
                                std::string type_name,
                                std::string arrow_format,
-                               std::shared_ptr<arrow_type_extension_data_t> type);
+                               arrow_type_extension_data_ptr type);
 
         arrow_type_extension_t(std::string extension_name,
                                populate_arrow_schema_t populate_arrow_schema,
                                get_type_t get_type,
-                               std::shared_ptr<arrow_type_extension_data_t> type);
+                               arrow_type_extension_data_ptr type);
         arrow_type_extension_t(std::string vendor_name,
                                std::string type_name,
                                populate_arrow_schema_t populate_arrow_schema,
                                get_type_t get_type,
-                               std::shared_ptr<arrow_type_extension_data_t> type,
+                               arrow_type_extension_data_ptr type,
                                cast_arrow_unique_t arrow_to_unique,
                                cast_unique_arrow_t unique_to_arrow);
 
@@ -48,7 +48,7 @@ namespace components::vector::arrow {
         std::unique_ptr<arrow_type> get_arrow_type(const ArrowSchema& schema,
                                                    const arrow_schema_metadata_t& schema_metadata) const;
 
-        std::shared_ptr<arrow_type_extension_data_t> get_arrow_type_extension() const;
+        arrow_type_extension_data_ptr get_arrow_type_extension() const;
 
         types::logical_type logical_type() const;
 
@@ -61,7 +61,7 @@ namespace components::vector::arrow {
 
     private:
         arrow_extension_metadata_t extension_metadata_;
-        std::shared_ptr<arrow_type_extension_data_t> type_extension_;
+        arrow_type_extension_data_ptr type_extension_;
     };
 
     struct arrow_type_extension_hash_t {

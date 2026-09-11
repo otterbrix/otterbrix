@@ -1,0 +1,162 @@
+#include "test_config.hpp"
+#include "integration_fixture_path.hpp"
+
+#include <catch2/catch_test_macros.hpp>
+#include <components/table/data_table.hpp>
+#include <string>
+
+// Insert cost must not depend on table size. storage_append_inner used to run a "dedup" stage
+// on any `_id` column: it scanned the WHOLE table per insert (measured 24.2x cost, 1k vs 100k
+// rows), silently dropped duplicate `_id`s while reporting success, and masked a
+// declared PRIMARY KEY on `_id` by filtering the duplicate before the constraint operator saw
+// it. The fix removes the stage — operator_unique_constraint_t is the only uniqueness check.
+
+using namespace test_helpers;
+
+namespace {
+    constexpr unsigned kSmallRows = 1'000;
+    constexpr unsigned kLargeRows = 100'000;
+    constexpr unsigned kFillBatch = 1'000;
+    constexpr unsigned kProbeRows = 100;
+
+    void fill_rows(otterbrix::wrapper_dispatcher_t* d,
+                   const std::string& table,
+                   const std::string& prefix,
+                   unsigned from,
+                   unsigned to) {
+        for (unsigned base = from; base < to; base += kFillBatch) {
+            const unsigned n = std::min(kFillBatch, to - base);
+            auto cur = seed_rows(d, table, "_id, v", n, [&](unsigned i) {
+                return "('" + prefix + std::to_string(base + i) + "', " + std::to_string(base + i) + ")";
+            });
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    // Rows streamed out of data_table_t::scan by ONE probe INSERT of kProbeRows rows.
+    uint64_t probe_scan_rows(otterbrix::wrapper_dispatcher_t* d, const std::string& table, const std::string& prefix) {
+        components::table::reset_table_scan_rows_streamed();
+        auto cur = seed_rows(d, table, "_id, v", kProbeRows, [&](unsigned i) {
+            return "('" + prefix + std::to_string(i) + "', " + std::to_string(i) + ")";
+        });
+        REQUIRE(cur->is_success());
+        return components::table::table_scan_rows_streamed();
+    }
+} // namespace
+
+// Rows an insert batch reads must not grow with rows already stored — counted work, not
+// wall-clock (Debug builds time badly).
+TEST_CASE("integration::cpp::test_insert_scaling::insert_scan_cost_does_not_grow_with_table_size") {
+    auto config = make_test_config(integration_fixture_path("test_insert_scaling/scan_cost"));
+    test_spaces space(config);
+    auto* d = space.dispatcher();
+
+    REQUIRE(exec(d, "CREATE DATABASE B0;")->is_success());
+    REQUIRE(exec(d, "CREATE TABLE B0.items (_id text, v bigint);")->is_success());
+
+    fill_rows(d, "B0.items", "small_", 0, kSmallRows);
+    const auto small_probe = probe_scan_rows(d, "B0.items", "probe_a_");
+
+    fill_rows(d, "B0.items", "big_", 0, kLargeRows - kSmallRows - kProbeRows);
+    const auto large_probe = probe_scan_rows(d, "B0.items", "probe_b_");
+
+    INFO("rows streamed by one " << kProbeRows << "-row INSERT into a ~" << kSmallRows << "-row table: "
+                                 << small_probe);
+    INFO("rows streamed by one " << kProbeRows << "-row INSERT into a ~" << kLargeRows << "-row table: "
+                                 << large_probe);
+    // Equal work within one probe batch of slack — the old dedup streamed the whole table
+    // here (small_probe ~1k vs large_probe ~100k), which no O(table) insert could satisfy.
+    REQUIRE(large_probe <= small_probe + kProbeRows);
+}
+
+// `_id` without a declared constraint is an ordinary column: a duplicate value is kept.
+TEST_CASE("integration::cpp::test_insert_scaling::duplicate_id_without_constraint_is_kept") {
+    auto config = make_test_config(integration_fixture_path("test_insert_scaling/no_constraint"));
+    test_spaces space(config);
+    auto* d = space.dispatcher();
+
+    REQUIRE(exec(d, "CREATE DATABASE B0;")->is_success());
+    REQUIRE(exec(d, "CREATE TABLE B0.docs (_id text, v bigint);")->is_success());
+    {
+        auto cur = exec(d, "INSERT INTO B0.docs (_id, v) VALUES ('k', 1);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+    }
+
+    INFO("the duplicate _id row is inserted and reported, not silently dropped");
+    {
+        auto cur = exec(d, "INSERT INTO B0.docs (_id, v) VALUES ('k', 2);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1); // the old dedup reported 0 affected rows here
+    }
+    {
+        auto cur = exec(d, "SELECT * FROM B0.docs WHERE _id = 'k';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2); // the old dedup left 1: the second row vanished
+    }
+}
+
+// A declared PRIMARY KEY on `_id` must reject the duplicate. (The old dedup dropped the row
+// before the append, so the constraint's existing-row scan never saw a duplicate.)
+TEST_CASE("integration::cpp::test_insert_scaling::duplicate_id_with_primary_key_fails_loud") {
+    auto config = make_test_config(integration_fixture_path("test_insert_scaling/pk"));
+    test_spaces space(config);
+    auto* d = space.dispatcher();
+
+    REQUIRE(exec(d, "CREATE DATABASE B0;")->is_success());
+    REQUIRE(exec(d, "CREATE TABLE B0.docs (_id text, v bigint);")->is_success());
+    REQUIRE(exec(d, "ALTER TABLE B0.docs ADD CONSTRAINT pk_docs_id PRIMARY KEY (_id);")->is_success());
+    REQUIRE(exec(d, "INSERT INTO B0.docs (_id, v) VALUES ('k', 1);")->is_success());
+
+    INFO("duplicate key against the existing row is REJECTED, not silently skipped");
+    {
+        auto cur = exec(d, "INSERT INTO B0.docs (_id, v) VALUES ('k', 2);");
+        REQUIRE(cur->is_error());
+    }
+    {
+        auto cur = exec(d, "SELECT * FROM B0.docs;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+    }
+
+    INFO("distinct key still accepted");
+    REQUIRE(exec(d, "INSERT INTO B0.docs (_id, v) VALUES ('m', 3);")->is_success());
+}
+
+// No in-process id set to rebuild: the constraint's existing-row check reads reloaded
+// storage, so close+reopen must reject the same duplicate.
+TEST_CASE("integration::cpp::test_insert_scaling::duplicate_id_rejection_survives_restart") {
+    auto config = make_test_config(integration_fixture_path("test_insert_scaling/restart"));
+
+    INFO("phase 1: table with PRIMARY KEY(_id), two rows, duplicate rejected");
+    {
+        test_spaces space(config);
+        auto* d = space.dispatcher();
+        REQUIRE(exec(d, "CREATE DATABASE B0;")->is_success());
+        REQUIRE(exec(d, "CREATE TABLE B0.docs (_id text, v bigint);")->is_success());
+        REQUIRE(exec(d, "ALTER TABLE B0.docs ADD CONSTRAINT pk_docs_id PRIMARY KEY (_id);")->is_success());
+        REQUIRE(exec(d, "INSERT INTO B0.docs (_id, v) VALUES ('a', 1), ('b', 2);")->is_success());
+        REQUIRE(exec(d, "INSERT INTO B0.docs (_id, v) VALUES ('a', 9);")->is_error());
+    }
+
+    INFO("phase 2: reopen — the SAME duplicate is rejected the SAME way");
+    {
+        test_spaces space(config);
+        auto* d = space.dispatcher();
+        {
+            auto cur = exec(d, "INSERT INTO B0.docs (_id, v) VALUES ('a', 9);");
+            REQUIRE(cur->is_error());
+        }
+        {
+            auto cur = exec(d, "SELECT * FROM B0.docs;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 2);
+        }
+        REQUIRE(exec(d, "INSERT INTO B0.docs (_id, v) VALUES ('c', 3);")->is_success());
+        {
+            auto cur = exec(d, "SELECT * FROM B0.docs;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 3);
+        }
+    }
+}

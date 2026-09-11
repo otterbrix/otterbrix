@@ -130,7 +130,7 @@ namespace components::operators {
                 vector::vector_t vec(resource_, source_vec.type(), chunk.size());
                 vector::vector_ops::copy(source_vec, vec, chunk.size(), 0, 0);
                 if (!keys_registered) {
-                    sorter_.add(chunk.data.size(), spec.order_, spec.null_order_);
+                    sorter_.add(resource_, chunk.data.size(), spec.order_, spec.null_order_);
                 }
                 chunk.data.emplace_back(std::move(vec));
             }

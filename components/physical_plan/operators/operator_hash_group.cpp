@@ -43,7 +43,9 @@ namespace components::operators {
 
     void operator_hash_group_t::add_value(const std::pmr::string& name,
                                           const types::complex_logical_type& result_type) {
-        values_.push_back({name, result_type});
+        // group_value_t isn't allocator-aware, so `{name, result_type}` would copy-construct the
+        // string onto the default resource instead of resource_ — must name the resource explicitly.
+        values_.push_back(group_value_t{std::pmr::string(name, resource_), result_type});
     }
 
     void operator_hash_group_t::add_output(const expressions::expression_ptr& output) { outputs_.push_back(output); }

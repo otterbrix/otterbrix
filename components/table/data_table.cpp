@@ -1,7 +1,9 @@
 #include "data_table.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <components/table/storage/partial_block_manager.hpp>
+#include <components/types/type_spec_codec.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <components/vector/vector_operations.hpp>
 #include <cstdlib>
@@ -11,6 +13,50 @@
 
 namespace components::table {
 
+#ifdef DEV_MODE
+    namespace {
+        std::atomic<uint64_t> g_table_scan_rows_streamed{0};
+    } // namespace
+    uint64_t table_scan_rows_streamed() noexcept { return g_table_scan_rows_streamed.load(std::memory_order_relaxed); }
+    void reset_table_scan_rows_streamed() noexcept {
+        g_table_scan_rows_streamed.store(0, std::memory_order_relaxed);
+    }
+#endif
+
+    namespace {
+        // The only place turning a row_group_pointer_t into ids, shared by the checkpoint writer and load_from_disk.
+        void collect_pointer_blocks(const storage::column_data_pointers_t& node,
+                                    std::pmr::vector<uint64_t>& out) {
+            for (const auto& segment : node.segments) {
+                out.push_back(segment.block_pointer.block_id);
+                for (uint64_t overflow : segment.overflow_blocks) {
+                    out.push_back(overflow);
+                }
+            }
+            for (const auto& child : node.children) {
+                collect_pointer_blocks(child, out);
+            }
+        }
+
+        void collect_root_blocks(const std::vector<storage::row_group_pointer_t>& row_groups,
+                                 std::pmr::vector<uint64_t>& out) {
+            for (const auto& rgp : row_groups) {
+                for (const auto& column : rgp.data_pointers) {
+                    collect_pointer_blocks(column, out);
+                }
+                // Delete bitmaps are part of the root too -- reclaiming one would drop committed deletes.
+                for (const auto& deletes : rgp.deletes_pointers) {
+                    out.push_back(deletes.block_pointer.block_id);
+                    for (uint64_t overflow : deletes.overflow_blocks) {
+                        out.push_back(overflow);
+                    }
+                }
+            }
+            std::sort(out.begin(), out.end());
+            out.erase(std::unique(out.begin(), out.end()), out.end());
+        }
+    } // namespace
+
     data_table_t::data_table_t(std::pmr::memory_resource* resource,
                                storage::block_manager_t& block_manager,
                                std::vector<column_definition_t> column_definitions,
@@ -19,25 +65,39 @@ namespace components::table {
         , column_definitions_(std::move(column_definitions))
         , is_root_(true)
         , name_(std::move(name)) {
-        this->row_groups_ = std::make_shared<collection_t>(resource_, block_manager, copy_types(), 0);
+        // Plain `new`, never the pmr resource: `delete` is the matching deallocation (ref count lives inside).
+        this->row_groups_ =
+            boost::intrusive_ptr<collection_t>(new collection_t(resource_, block_manager, copy_types(), 0));
     }
 
     data_table_t::data_table_t(data_table_t& parent, column_definition_t& new_column)
         : resource_(parent.resource_)
-        , is_root_(true) {
+        , is_root_(true)
+        , compact_epoch_(parent.compact_epoch_) {
         for (auto& column_def : parent.column_definitions_) {
             column_definitions_.emplace_back(column_def);
         }
         column_definitions_.emplace_back(new_column);
 
-        this->row_groups_ = parent.row_groups_->add_column(new_column);
+        auto extended = parent.row_groups_->add_column(new_column);
+        if (extended.has_error()) {
+            // A constructor can't return, so the backfill refusal latches: the parent stays root and
+            // shares its collection read-only.
+            construction_error_ = extended.error();
+            column_definitions_.pop_back();
+            this->row_groups_ = parent.row_groups_;
+            is_root_ = false;
+            return;
+        }
+        this->row_groups_ = std::move(extended.value());
 
         parent.is_root_ = false;
     }
 
     data_table_t::data_table_t(data_table_t& parent, uint64_t removed_column)
         : resource_(parent.resource_)
-        , is_root_(true) {
+        , is_root_(true)
+        , compact_epoch_(parent.compact_epoch_) {
         for (auto& column_def : parent.column_definitions_) {
             column_definitions_.emplace_back(column_def);
         }
@@ -57,20 +117,6 @@ namespace components::table {
         parent.is_root_ = false;
     }
 
-    data_table_t::data_table_t(data_table_t& parent,
-                               uint64_t changed_idx,
-                               const types::complex_logical_type& target_type,
-                               const std::vector<storage_index_t>&)
-        : resource_(parent.resource_)
-        , is_root_(true) {
-        for (auto& column_def : parent.column_definitions_) {
-            column_definitions_.emplace_back(column_def);
-        }
-
-        column_definitions_[changed_idx].type() = target_type;
-
-        parent.is_root_ = false;
-    }
 
     [[nodiscard]] std::pmr::vector<types::complex_logical_type> data_table_t::copy_types() const {
         std::pmr::vector<types::complex_logical_type> types(resource_);
@@ -83,6 +129,7 @@ namespace components::table {
 
     const std::vector<column_definition_t>& data_table_t::columns() const { return column_definitions_; }
 
+    // Adopted columns carry no pg_attribute.attoid: this only runs on a schema-less table (relkind='g').
     void data_table_t::adopt_schema(const std::pmr::vector<types::complex_logical_type>& types) {
         assert(column_definitions_.empty() && "adopt_schema can only be called on schema-less table");
         column_definitions_.reserve(types.size());
@@ -90,15 +137,7 @@ namespace components::table {
             column_definitions_.emplace_back(type.alias(), type);
         }
         row_groups_->adopt_types(std::pmr::vector<types::complex_logical_type>(types, resource_));
-    }
-
-    void data_table_t::overlay_not_null(const std::string& col_name) {
-        for (auto& col : column_definitions_) {
-            if (col.name() == col_name) {
-                col.set_not_null(true);
-                return;
-            }
-        }
+        mark_modified();
     }
 
     void data_table_t::initialize_scan(table_scan_state& state,
@@ -118,7 +157,12 @@ namespace components::table {
 
     uint64_t data_table_t::row_group_size() const { return row_groups_->row_group_size(); }
 
-    std::shared_ptr<collection_t> data_table_t::row_group() const { return row_groups_; }
+    // A counted copy, so it (and its registered block handles) stays alive after compact() swaps a new one in.
+    boost::intrusive_ptr<collection_t> data_table_t::row_group() const { return row_groups_; }
+
+    void data_table_t::collect_column_disk_block_ids(uint64_t column_index, std::pmr::vector<uint64_t>& out) const {
+        row_groups_->collect_column_disk_block_ids(column_index, out);
+    }
 
     uint64_t data_table_t::calculate_size() { return row_groups_->calculate_size(); }
 
@@ -127,47 +171,40 @@ namespace components::table {
     }
 
     bool data_table_t::compact(uint64_t compact_watermark) {
+        // Compacting a superseded ALTER parent would free blocks its successor references (proven unreachable).
+        assert(is_root_);
         auto total = row_groups_->total_rows();
         if (total == 0) {
             return true;
         }
 
-        // MVCC safety gate (all-or-nothing). The rebuild below scans with the
-        // txn-less "see all committed" view and re-stamps every surviving row
-        // with transaction_data{0,0} — it collapses the version history. That is
-        // only correct when EVERY stamp in the table is already visible to all
-        // current and future snapshots, i.e. no stamp is above the caller's
-        // watermark (transaction_manager_t::compact_watermark()):
-        //   * a pending txn id (>= TRANSACTION_ID_START) means an uncommitted or
-        //     committed-but-not-yet-storage-stamped write: the scan would drop
-        //     the row AND a later positional commit_append would target moved
-        //     rows — the mid-update "row vanishes" window;
-        //   * a committed id above the watermark means some active snapshot (or
-        //     one taken while that commit_id is still in in_flight_commits_)
-        //     must NOT see that insert / must STILL see that deleted row.
-        // The watermark only goes stale in the safe direction: ids above it stay
-        // above any earlier-computed value, so a watermark computed before this
-        // call (it rides actor messages) never green-lights an unsafe compact.
+        // A degraded block manager must not be rebuilt on top of: its latches never let write_header
+        // promote pending_free_, so this would extend the file by a fresh copy every round forever.
+        // Measured: +19 blocks per round on a 12k-row table after a single failed fsync.
+        if (row_groups_->block_manager().degraded()) {
+            return false;
+        }
+
+        // MVCC safety gate: the rebuild collapses version history, safe only below the caller's watermark.
         if (row_groups_->has_version_above(compact_watermark)) {
             return false;
         }
 
-        auto types = row_groups_->types();
-        auto new_collection = std::make_shared<collection_t>(
-            resource_,
-            row_groups_->block_manager(),
-            std::pmr::vector<types::complex_logical_type>(types.begin(), types.end(), resource_),
-            0);
+        // By reference: `auto` would copy this vector onto the default resource (its allocator doesn't propagate).
+        const auto& types = row_groups_->types();
+        auto new_collection = boost::intrusive_ptr<collection_t>(
+            new collection_t(resource_,
+                             row_groups_->block_manager(),
+                             std::pmr::vector<types::complex_logical_type>(types, resource_),
+                             0));
 
         {
             table_append_state append_state(resource_);
-            // compact is best-effort maintenance: an out_of_memory during the rebuild append
-            // leaves the original collection untouched and returns false.
+            // compact is best-effort: an out_of_memory here leaves the original collection untouched.
             if (new_collection->initialize_append(append_state).has_error()) {
                 return false;
             }
 
-            // Scan committed non-deleted rows from old collection
             std::vector<storage_index_t> column_ids;
             for (uint64_t i = 0; i < column_definitions_.size(); i++) {
                 column_ids.emplace_back(i);
@@ -180,6 +217,10 @@ namespace components::table {
             vector::data_chunk_t chunk(resource_, scan_types, vector::DEFAULT_VECTOR_CAPACITY);
             while (true) {
                 state.table_state.scan(chunk);
+                // A scan failure must not look like end-of-table: that would swap in a truncated collection.
+                if (state.table_state.has_error()) {
+                    return false;
+                }
                 if (chunk.size() == 0) {
                     break;
                 }
@@ -191,50 +232,43 @@ namespace components::table {
 
             new_collection->finalize_append(append_state, transaction_data{0, 0});
         }
-        // scan state and buffer handles destroyed before swapping collection
 
-        // Keep a reference to the outgoing collection so its disk blocks can be reclaimed AFTER the
-        // atomic swap. The swap itself (row_groups_ = move(new_collection)) is the MVCC all-or-nothing
-        // guard and stays intact; the old collection becomes unreferenced once `old_collection` drops.
         auto old_collection = row_groups_;
 
-        // Swap old collection with compacted one
         row_groups_ = std::move(new_collection);
+        // Fresh blocks now, released outgoing ones -- compact must be followed by a checkpoint (its only caller).
+        mark_modified();
 
-        // Return the OLD (now-replaced) collection's disk blocks to the block manager's free list so the
-        // NEXT compact reuses them instead of bumping total_blocks() unbounded. No-op for in-memory tables
-        // (no backing store). The new collection's write-through already allocated FRESH ids (free list was
-        // empty / disjoint), so the old ids it frees are not referenced by row_groups_. The persisted free
-        // list survives checkpoint, so reclaimed space is durable. mark_as_free under the block manager's
-        // allocation lock; no live segment references the freed blocks (the old collection is being torn down).
-        //
-        // Each mark_as_free MUST be paired with unregister_block(id): returning the id to the free list while a
-        // live block_handle for that id lingers in the block manager's blocks_ registry is an ABA hazard -- a
-        // later free_block_id()/register_block() that reuses the id would resurrect the STALE handle (pointing at
-        // OLD data) instead of creating a fresh one. unregister_block drops only the registry's weak_ptr entry;
-        // the old collection's segments still own the block_handle objects (dropped when old_collection releases),
-        // and their dtors call unregister_block again -- a harmless no-op erase on an already-removed id.
+        // Each mark_as_free must pair with unregister_block(id): a handle left registered after its id
+        // is freed is an ABA hazard once a later holder's destructor sees a fresh handle at that id.
         if (old_collection) {
             auto& block_manager = old_collection->block_manager();
-            if (!block_manager.in_memory()) {
-                std::pmr::vector<uint64_t> reclaimable{resource_};
-                old_collection->collect_disk_block_ids(reclaimable);
-                // collect_disk_block_ids reports one id PER reloadable segment; B2 packs many segments into a
-                // single shared block, so the SAME block id appears multiple times. mark_as_free /
-                // unregister_block must run ONCE per id (free_list_ is a set so a double mark_as_free is
-                // idempotent, but unregister_block twice could race a reused id's fresh handle), so dedupe.
-                std::sort(reclaimable.begin(), reclaimable.end());
-                reclaimable.erase(std::unique(reclaimable.begin(), reclaimable.end()), reclaimable.end());
-                for (uint64_t block_id : reclaimable) {
+            std::pmr::vector<uint64_t> reclaimable{resource_};
+            old_collection->collect_disk_block_ids(reclaimable);
+            // Packing means the same id repeats; dedupe or unregister_block could race a reused id's fresh handle.
+            std::sort(reclaimable.begin(), reclaimable.end());
+            reclaimable.erase(std::unique(reclaimable.begin(), reclaimable.end()), reclaimable.end());
+            for (uint64_t block_id : reclaimable) {
+                // Disk-fed and unchecked: an id past the file's extent must `continue`, not assert.
+                if (block_id >= block_manager.total_blocks()) {
                     block_manager.mark_as_free(block_id);
-                    block_manager.unregister_block(block_id);
+                    continue;
                 }
+                block_manager.mark_as_free(block_id);
+                block_manager.unregister_block(block_id);
             }
         }
+        // The swap may have renumbered row ids; every index answer stamped with the old epoch is refused from here on.
+        ++compact_epoch_;
         return true;
     }
 
-    void data_table_t::scan(vector::data_chunk_t& result, table_scan_state& state) { state.table_state.scan(result); }
+    void data_table_t::scan(vector::data_chunk_t& result, table_scan_state& state) {
+        state.table_state.scan(result);
+#ifdef DEV_MODE
+        g_table_scan_rows_streamed.fetch_add(result.size(), std::memory_order_relaxed);
+#endif
+    }
 
     void data_table_t::scan_batched(const std::pmr::vector<types::complex_logical_type>& types,
                                     const std::vector<size_t>* projected_cols,
@@ -255,18 +289,9 @@ namespace components::table {
             drained = true;
             return true;
         }
-        // Resume by ABSOLUTE row position against the CURRENT (post-checkpoint) segment tree, reading
-        // forward one vector at a time until a vector yields rows OR the scan drains. A filter / all-
-        // deleted vector produces 0 rows but still advances the position; the agent and source
-        // operator treat an empty batch as end-of-scan, so this loop must keep walking past those
-        // empty vectors here rather than handing back a premature empty batch (which would stop the
-        // scan before reaching a later group that does match). The walk is geometry-agnostic: each
-        // seek re-resolves next_row against the live tree and advances only within the resolved
-        // group's [start, start+count) bounds, never assuming a fixed row_group_size.
+        // Walks past empty/all-deleted vectors (the caller treats an empty batch as end-of-scan).
         while (next_row < max_row) {
-            // Transient scan state seeked to next_row, capped at max_row. initialize_scan_with_offset
-            // binds the filter and pins only ONE batch's segment(s); both release when `state`
-            // destructs at the end of each iteration — nothing pinned crosses the mailbox round-trip.
+            // Transient per-batch scan state: released when `state` destructs, so nothing pinned crosses the mailbox.
             table_scan_state state(resource_);
             initialize_scan_with_offset(state, column_ids, next_row, max_row);
             state.filter = filter;
@@ -274,9 +299,7 @@ namespace components::table {
             state.local_state.txn = txn;
             auto& css = state.table_state;
 
-            // Capture the seeked group's absolute end BEFORE the read so the advance stays within
-            // [start, start+count) of the group this seek resolved against the LIVE tree — never
-            // assuming a fixed row_group_size.
+            // Capture the seeked group's absolute end before the read, so the advance stays within its bounds.
             const row_group_t* seeked_group = css.row_group;
             const int64_t group_end =
                 seeked_group != nullptr
@@ -288,33 +311,22 @@ namespace components::table {
                 return css.scan_error;
             }
 
-            // Resume position = the absolute row just past the vector(s) next_batch consumed. Since
-            // initialize_scan_with_offset stamps vector_index in collection-absolute space (the same
-            // convention as the continuous scan), css.vector_index*CAP is the absolute next row — this
-            // correctly accounts for empty vectors next_batch skipped WITHIN the group, instead of a
-            // blind one-vector step that could re-read or skip rows. Clamp to the group end (next seek
-            // moves into the following group) and to max_row (drain).
+            // css.vector_index*CAP accounts for empty vectors skipped within the group, not a blind step.
             const int64_t prev_row = next_row;
             const int64_t scanned_to = static_cast<int64_t>(css.vector_index * vector::DEFAULT_VECTOR_CAPACITY);
             next_row = std::min({scanned_to, group_end, max_row});
 
-            // No segment resolved for this position, or the position did not move forward: the scan
-            // has run out of source rows. Drain.
             if (seeked_group == nullptr || next_row <= prev_row) {
                 drained = true;
                 return true;
             }
-            // Produced a batch: hand it back, leaving next_row positioned for the caller's next fetch.
             if (produced) {
                 if (next_row >= max_row) {
                     drained = true;
                 }
                 return true;
             }
-            // Empty vector (filtered / all-deleted) but the position advanced: keep walking forward
-            // within this call instead of returning an empty (would-be-drained) batch.
         }
-        // Reached max_row without producing further rows.
         drained = true;
         return true;
     }
@@ -325,15 +337,45 @@ namespace components::table {
 
     std::string data_table_t::table_name() const { return name_; }
 
-    void data_table_t::set_table_name(std::string new_name) { name_ = std::move(new_name); }
+    void data_table_t::set_table_name(std::string new_name) {
+        name_ = std::move(new_name);
+        mark_modified();
+    }
+
+    core::result_wrapper_t<bool> data_table_t::rename_column(const std::string& old_name, const std::string& new_name) {
+        // Collision check first, over the whole list, so a refusal changes nothing.
+        uint64_t idx = column_definitions_.size();
+        for (uint64_t i = 0; i < column_definitions_.size(); ++i) {
+            const auto& col_name = column_definitions_[i].name();
+            if (col_name == new_name) {
+                std::pmr::string msg{"data_table_t::rename_column: table '", resource_};
+                msg += std::pmr::string{name_, resource_};
+                msg += std::pmr::string{"' already has a column named '", resource_};
+                msg += std::pmr::string{new_name, resource_};
+                msg += std::pmr::string{"'", resource_};
+                return core::error_t{core::error_code_t::schema_error, std::move(msg)};
+            }
+            if (col_name == old_name) {
+                idx = i;
+            }
+        }
+        if (idx == column_definitions_.size()) {
+            return false; // not a column of this storage — see the contract on the declaration
+        }
+        column_definitions_[idx].set_name(new_name);
+        mark_modified();
+        return true;
+    }
 
     void data_table_t::fetch(vector::data_chunk_t& result,
                              const std::vector<storage_index_t>& column_ids,
                              const vector::vector_t& row_identifiers,
                              uint64_t fetch_count,
                              column_fetch_state& state,
-                             const std::vector<size_t>& projected_cols) {
-        row_groups_->fetch(result, column_ids, row_identifiers, fetch_count, state, projected_cols);
+                             const std::vector<size_t>& projected_cols,
+                             const transaction_data& txn,
+                             fetch_visibility_t visibility) {
+        row_groups_->fetch(result, column_ids, row_identifiers, fetch_count, state, projected_cols, txn, visibility);
     }
 
     std::unique_ptr<constraint_state> data_table_t::initialize_constraint_state(
@@ -343,9 +385,7 @@ namespace components::table {
 
     core::result_wrapper_t<bool> data_table_t::append_lock(table_append_state& state) {
         state.append_locked = true;
-        // Concurrent DDL altered the table (no longer root). Report a write_conflict up to the
-        // append boundary for a graceful txn abort, instead of aborting: under -fno-exceptions a
-        // throw inside an actor-zeta coroutine is silently swallowed.
+        // write_conflict, not a throw: under -fno-exceptions an actor-zeta coroutine throw is swallowed silently.
         if (!is_root_) {
             return core::error_t(core::error_code_t::write_conflict,
                                  std::pmr::string("Transaction conflict: adding entries to a table that has "
@@ -365,86 +405,46 @@ namespace components::table {
                 core::error_code_t::invalid_parameter,
                 std::pmr::string("data_table_t::append_lock must precede initialize_append", resource_));
         }
+        mark_modified();
         return row_groups_->initialize_append(state); // out_of_memory
     }
 
     core::result_wrapper_t<bool> data_table_t::append(vector::data_chunk_t& chunk, table_append_state& state) {
         assert(is_root_);
+        mark_modified();
         return row_groups_->append(chunk, state); // out_of_memory
     }
 
     void data_table_t::finalize_append(table_append_state& state, transaction_data txn) {
         row_groups_->finalize_append(state, txn);
+        mark_modified();
     }
 
     void data_table_t::commit_append(uint64_t commit_id, int64_t row_start, uint64_t count) {
         row_groups_->commit_append(commit_id, row_start, count);
+        mark_modified();
     }
 
-    void data_table_t::revert_append(int64_t row_start, uint64_t count) {
-        row_groups_->revert_append(row_start, count);
+    core::result_wrapper_t<bool> data_table_t::revert_append(int64_t row_start, uint64_t count) {
+        auto reverted = row_groups_->revert_append(row_start, count);
+        mark_modified();
+        return reverted;
     }
 
     void data_table_t::commit_all_deletes(uint64_t txn_id, uint64_t commit_id) {
         row_groups_->commit_all_deletes(txn_id, commit_id);
+        mark_modified();
     }
 
-    void data_table_t::revert_all_deletes(uint64_t txn_id) { row_groups_->revert_all_deletes(txn_id); }
-
-    void data_table_t::scan_table_segment(int64_t row_start,
-                                          uint64_t count,
-                                          const std::function<void(vector::data_chunk_t& chunk)>& function) {
-        if (count == 0) {
-            return;
-        }
-        int64_t end = row_start + static_cast<int64_t>(count);
-
-        std::vector<storage_index_t> column_ids;
-        std::pmr::vector<types::complex_logical_type> types(resource_);
-        for (uint64_t i = 0; i < this->column_definitions_.size(); i++) {
-            auto& col = this->column_definitions_[i];
-            column_ids.emplace_back(i);
-            types.push_back(col.type());
-        }
-        vector::data_chunk_t chunk(resource_, types);
-
-        create_index_scan_state state(resource_);
-
-        initialize_scan_with_offset(state, column_ids, row_start, row_start + static_cast<int64_t>(count));
-        // vector_index is stamped in collection-absolute space by initialize_scan_with_offset, so
-        // vector_index*CAP is already the vector-aligned absolute start row (do NOT re-add row_group
-        // start — that would double-count the group origin).
-        auto row_start_aligned = static_cast<int64_t>(state.table_state.vector_index * vector::DEFAULT_VECTOR_CAPACITY);
-
-        int64_t current_row = row_start_aligned;
-        while (current_row < end) {
-            state.table_state.scan_committed(chunk, table_scan_type::COMMITTED_ROWS);
-            if (chunk.size() == 0) {
-                break;
-            }
-            int64_t end_row = current_row + static_cast<int64_t>(chunk.size());
-            int64_t chunk_start = std::max(current_row, row_start);
-            int64_t chunk_end = std::min(end_row, end);
-            assert(chunk_start < chunk_end);
-            uint64_t chunk_count = static_cast<uint64_t>(chunk_end - chunk_start);
-            if (chunk_count != chunk.size()) {
-                assert(chunk_count <= chunk.size());
-                uint64_t start_in_chunk;
-                if (current_row >= row_start) {
-                    start_in_chunk = 0;
-                } else {
-                    start_in_chunk = static_cast<uint64_t>(row_start - current_row);
-                }
-                vector::indexing_vector_t indexing(resource_, start_in_chunk, chunk_count);
-                chunk.slice(indexing, chunk_count);
-            }
-            function(chunk);
-            chunk.reset();
-            current_row = end_row;
-        }
+    void data_table_t::revert_all_deletes(uint64_t txn_id) {
+        row_groups_->revert_all_deletes(txn_id);
+        mark_modified();
     }
 
-    void data_table_t::merge_storage(collection_t& data) { row_groups_->merge_storage(data); }
+    void data_table_t::merge_storage(collection_t& data) {
+        row_groups_->merge_storage(data);
+        mark_modified();
+    }
 
     std::unique_ptr<table_delete_state>
     data_table_t::initialize_delete(const std::vector<std::unique_ptr<bound_constraint_t>>& bound_constraints) {
@@ -460,15 +460,16 @@ namespace components::table {
         return result;
     }
 
-    uint64_t data_table_t::delete_rows(table_delete_state&,
-                                       vector::vector_t& row_identifiers,
-                                       uint64_t count,
-                                       uint64_t transaction_id) {
+    core::result_wrapper_t<uint64_t> data_table_t::delete_rows(table_delete_state&,
+                                                              vector::vector_t& row_identifiers,
+                                                              uint64_t count,
+                                                              uint64_t transaction_id) {
         assert(row_identifiers.type().type() == types::logical_type::BIGINT);
         if (count == 0) {
-            return 0;
+            return core::result_wrapper_t<uint64_t>{uint64_t{0}};
         }
 
+        mark_modified();
         row_identifiers.flatten(count);
         auto ids = row_identifiers.data<int64_t>();
 
@@ -487,9 +488,11 @@ namespace components::table {
             uint64_t current_count = pos - start;
 
             vector::vector_t offset_ids(row_identifiers, current_offset, pos);
-            delete_count += row_groups_->delete_rows(*this, ids + current_offset, current_count, transaction_id);
+            VALUE_OR_RETURN(auto deleted,
+                            row_groups_->delete_rows(*this, ids + current_offset, current_count, transaction_id));
+            delete_count += deleted;
         }
-        return delete_count;
+        return core::result_wrapper_t<uint64_t>{delete_count};
     }
 
     std::unique_ptr<table_update_state>
@@ -510,6 +513,13 @@ namespace components::table {
         if (count == 0) {
             return std::pair<int64_t, uint64_t>{0, 0};
         }
+
+        // Without this check the overlay would go into a collection the successor replaced, silently losing the write.
+        if (!is_root_) {
+            return core::error_t(core::error_code_t::write_conflict,
+                                 std::pmr::string("Transaction conflict: updating a table that has been altered!",
+                                                  resource_));
+        }
         vector::vector_t max_row_id_vec(resource_,
                                         types::logical_value_t(resource_, static_cast<int64_t>(MAX_ROW_ID)),
                                         count);
@@ -529,18 +539,17 @@ namespace components::table {
             row_ids_slice.slice(row_ids, sel_global_update, update_count);
             row_ids_slice.flatten(update_count);
 
-            // For now ids are fixed
             std::vector<uint64_t> column_ids;
             column_ids.reserve(column_count());
             for (size_t i = 0; i < column_count(); i++) {
                 column_ids.emplace_back(i);
             }
+            mark_modified();
             auto updated = row_groups_->update(row_ids_slice.data<int64_t>(), column_ids, updates_slice);
             if (updated.has_error()) {
-                return updated.convert_error<std::pair<int64_t, uint64_t>>(); // write_conflict / out_of_memory
+                return updated.convert_error<std::pair<int64_t, uint64_t>>();
             }
         }
-        // pair = {0, affected-row count}; the caller's update reply reads it.
         return std::pair<int64_t, uint64_t>{0, update_count};
     }
 
@@ -553,9 +562,6 @@ namespace components::table {
             return true;
         }
 
-        // Concurrent DDL altered the table (no longer root). Report write_conflict for a graceful
-        // txn abort instead of aborting: under -fno-exceptions a throw inside an actor-zeta
-        // coroutine is silently swallowed (UB).
         if (!is_root_) {
             return core::error_t(
                 core::error_code_t::write_conflict,
@@ -564,6 +570,7 @@ namespace components::table {
 
         updates.flatten();
         row_ids.flatten(updates.size());
+        mark_modified();
         return row_groups_->update_column(row_ids, column_path, updates);
     }
 
@@ -582,24 +589,41 @@ namespace components::table {
         }
         const auto& row_group_pointers = row_group_pointers_res.value();
 
-        // write table metadata
         writer.write_string(name_);
 
-        // write column definitions
+        // Full type spec, not a bare logical_type byte: a byte tag loses DECIMAL width/scale (UB-adjacent).
         writer.write<uint32_t>(static_cast<uint32_t>(column_definitions_.size()));
+        std::pmr::vector<std::byte> type_spec(resource_);
         for (const auto& col : column_definitions_) {
             writer.write_string(col.name());
-            writer.write<uint8_t>(static_cast<uint8_t>(col.type().type()));
+            type_spec.clear();
+            auto encoded = types::encode_type_spec(col.type(), type_spec);
+            if (encoded.has_error()) {
+                return encoded; // schema_error: this column type cannot be persisted
+            }
+            writer.write<uint32_t>(static_cast<uint32_t>(type_spec.size()));
+            writer.write_data(type_spec.data(), type_spec.size());
             writer.write<uint8_t>(col.is_not_null() ? 1 : 0);
+            // Identity (attoid), not name: a rename can race the catalog ahead of the next checkpoint.
+            writer.write<uint32_t>(col.attoid());
         }
 
-        // write row group count and pointers
         writer.write<uint32_t>(static_cast<uint32_t>(row_group_pointers.size()));
         for (const auto& rgp : row_group_pointers) {
             rgp.serialize(writer);
         }
 
-        writer.flush();
+        if (auto flush_r = writer.flush(); flush_r.has_error()) {
+            return flush_r;
+        }
+
+        // Earliest AND latest point to reclaim the superseded root: ids go to pending_free_, not reusable_.
+        std::pmr::vector<uint64_t> new_root_blocks(resource_);
+        collect_root_blocks(row_group_pointers, new_root_blocks);
+        auto reclaimed = row_groups_->block_manager().reclaim_superseded_root(new_root_blocks);
+        if (reclaimed.has_error()) {
+            return reclaimed.convert_error<bool>();
+        }
         return true;
     }
 
@@ -612,39 +636,76 @@ namespace components::table {
         auto col_count = reader.read<uint32_t>();
         std::vector<column_definition_t> columns;
         columns.reserve(col_count);
+        std::pmr::vector<std::byte> type_spec(resource);
         for (uint32_t i = 0; i < col_count; i++) {
             auto col_name = reader.read_string();
-            auto logical_type = static_cast<types::logical_type>(reader.read<uint8_t>());
+            auto spec_size = reader.read<uint32_t>();
+            if (reader.has_error()) {
+                return core::error_t(reader.error()); // bail before sizing a buffer off garbage
+            }
+            type_spec.resize(spec_size);
+            reader.read_data(type_spec.data(), spec_size);
             auto not_null = reader.read<uint8_t>() != 0;
-            types::complex_logical_type col_type(logical_type);
-            col_type.set_alias(col_name);
-            columns.emplace_back(col_name, std::move(col_type), not_null);
+            // 0 means the column never learned its attoid; not refused here (rearm_dropped_column_blocks_sync).
+            const auto attoid = reader.read<uint32_t>();
+            if (reader.has_error()) {
+                return core::error_t(reader.error());
+            }
+            // Aliases included: a separate set_alias on bare DECIMAL fabricates a GENERIC extension (UB).
+            auto col_type = types::decode_type_spec(resource, type_spec.data(), type_spec.size());
+            if (col_type.has_error()) {
+                return col_type.convert_error<std::unique_ptr<data_table_t>>(); // data_corruption
+            }
+            columns.emplace_back(std::move(col_name), std::move(col_type.value()), not_null);
+            columns.back().set_attoid(attoid);
         }
 
         auto table = std::make_unique<data_table_t>(resource, block_manager, std::move(columns), std::move(name));
 
         uint64_t total_loaded_rows = 0;
         auto rg_count = reader.read<uint32_t>();
+        // The loader defines what the durable root references, from the same stream the table is built from.
+        std::pmr::vector<uint64_t> durable_blocks(resource);
+        std::vector<storage::row_group_pointer_t> loaded_pointers;
+        loaded_pointers.reserve(rg_count);
         for (uint32_t i = 0; i < rg_count; i++) {
             auto pointer = storage::row_group_pointer_t::deserialize(reader);
 
-            // create a new row group and populate from disk pointer
             auto* rg = table->row_groups_->append_row_group(static_cast<int64_t>(pointer.row_start));
             if (rg) {
-                rg->create_from_pointer(pointer);
+                auto created = rg->create_from_pointer(pointer);
+                if (created.has_error()) {
+                    return created.convert_error<std::unique_ptr<data_table_t>>(); // data_corruption
+                }
                 total_loaded_rows += pointer.tuple_count;
             }
+            loaded_pointers.push_back(std::move(pointer));
         }
         table->row_groups_->set_total_rows(total_loaded_rows);
 
-        // Corrupt-stream check at the load boundary: if any read above ran past the end of the metadata
-        // chain, the reader recorded a sticky data_corruption error (reads became no-ops, so `table` may
-        // be partially built). Surface it instead of returning a half-loaded table.
+        // A read past the metadata chain's end leaves a sticky data_corruption error; surface it.
         if (reader.has_error()) {
             return core::error_t(reader.error());
         }
 
+        // Only now, with the stream proven whole -- a half-read pointer list would let reclaim free live blocks.
+        collect_root_blocks(loaded_pointers, durable_blocks);
+        block_manager.adopt_durable_root_data_blocks(durable_blocks);
+
+        // The one place modified-since-checkpoint clears outside a commit; else every restart rewrites every table.
+        table->clear_modified_since_checkpoint();
         return table;
     }
+
+#ifdef DEV_MODE
+    const collection_t* data_table_t::collection_identity() const {
+        // The owning side: row_group() must hand back exactly this object; a pre-swap holder still names the old one.
+        return row_groups_.get();
+    }
+
+    uint64_t data_table_t::collection_owner_count() const {
+        return row_groups_ ? static_cast<uint64_t>(row_groups_->use_count()) : 0;
+    }
+#endif
 
 } // namespace components::table

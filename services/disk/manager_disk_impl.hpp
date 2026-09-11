@@ -86,14 +86,9 @@ namespace services::disk {
             return local;
         }
 
-        // ---------------------------------------------------------------------------
-        // Catalog function aliases (used unqualified via "using namespace detail")
-        // ---------------------------------------------------------------------------
-
-        using components::catalog::decode_type_spec;
-        using components::catalog::encode_type_spec;
-        using components::catalog::logical_type_to_pg_name;
-        using components::catalog::oid_to_builtin_type;
+        // No `using components::catalog::{decode,encode}_type_spec / ...` here: components::types
+        // declares its own decode_type_spec/encode_type_spec, so an unqualified call would be
+        // ambiguous.
 
         // ---------------------------------------------------------------------------
         // pg_catalog system table OIDs (well-known) — internal aliases.
@@ -113,6 +108,7 @@ namespace services::disk {
         inline constexpr components::catalog::oid_t pg_rewrite_oid = wk::pg_rewrite_table;
         inline constexpr components::catalog::oid_t pg_cast_oid = wk::pg_cast_table;
         inline constexpr components::catalog::oid_t pg_computed_column_oid = wk::pg_computed_column_table;
+        inline constexpr components::catalog::oid_t pg_settings_oid = wk::pg_settings_table;
 
     } // namespace detail
 

@@ -21,12 +21,24 @@ namespace components::types {
         requires(core::IsBufferLike<T>) explicit physical_value(const T& value)
             : physical_value(value.data(), static_cast<uint32_t>(value.size())) {}
         explicit physical_value(const char* data, uint32_t size);
-        // all integral types
+        // all integral types, including the 16-byte absl int128 family
         template<typename T>
         requires(!core::IsBufferLike<T>) explicit physical_value(T value)
             : type_(physical_value::get_type_<T>()) {
-            std::memcpy(&data_, &value, sizeof(value));
+            if constexpr (sizeof(T) == 16) {
+                // absl::int128 is a CLASS with private words, so its halves come from its own
+                // API. Splitting it by memcpy assumed low-word-first and is what gcc refuses
+                // (-Wclass-memaccess); the bit pattern here is identical on any endianness.
+                const uint128_t bits = static_cast<uint128_t>(value);
+                data_ = absl::Uint128Low64(bits);
+                data_hi_ = absl::Uint128High64(bits);
+            } else {
+                std::memcpy(&data_, &value, sizeof(value));
+            }
         }
+
+        // No DECIMAL tag deliberately: its physical representation IS its storage integer
+        // (decimal_storage_for_width), which gives the scan's compare_rows<T> semantics for free.
 
         ~physical_value() = default;
 
@@ -48,6 +60,9 @@ namespace components::types {
         physical_type type() const noexcept;
 
     private:
+        // Recomputes both operand kinds from type_; the caller's lhs128/rhs128 only gate the call.
+        bool less_128_(const physical_value& other) const noexcept;
+
         std::nullptr_t value_(std::integral_constant<physical_type, physical_type::NA>) const noexcept;
         bool value_(std::integral_constant<physical_type, physical_type::BOOL>) const noexcept;
         uint8_t value_(std::integral_constant<physical_type, physical_type::UINT8>) const noexcept;
@@ -60,13 +75,15 @@ namespace components::types {
         int64_t value_(std::integral_constant<physical_type, physical_type::INT64>) const noexcept;
         float value_(std::integral_constant<physical_type, physical_type::FLOAT>) const noexcept;
         double value_(std::integral_constant<physical_type, physical_type::DOUBLE>) const noexcept;
+        int128_t value_(std::integral_constant<physical_type, physical_type::INT128>) const noexcept;
+        uint128_t value_(std::integral_constant<physical_type, physical_type::UINT128>) const noexcept;
         std::string_view value_(std::integral_constant<physical_type, physical_type::STRING>) const noexcept;
 
         template<typename T>
         static constexpr physical_type get_type_() {
             if constexpr (std::is_same_v<T, bool>)
                 return physical_type::BOOL;
-            if constexpr (std::is_same_v<T, uint8_t>)
+            else if constexpr (std::is_same_v<T, uint8_t>)
                 return physical_type::UINT8;
             else if constexpr (std::is_same_v<T, uint16_t>)
                 return physical_type::UINT16;
@@ -86,17 +103,26 @@ namespace components::types {
                 return physical_type::FLOAT;
             else if constexpr (std::is_same_v<T, double>)
                 return physical_type::DOUBLE;
-            //static_assert(false && "should be unreachable");
-            return physical_type::NA;
+            else if constexpr (std::is_same_v<T, int128_t>)
+                return physical_type::INT128;
+            else if constexpr (std::is_same_v<T, uint128_t>)
+                return physical_type::UINT128;
+            else
+                // Not a runtime fallback to NA: an unlisted payload type (`long` on LP64, an
+                // enum, a pointer) is a compile error instead of a silent NA-typed value.
+                static_assert(sizeof(T) == 0, "physical_value: unsupported payload type");
         }
 
         physical_type type_ = physical_type::NA;
         bool memory_ownership = false; // for now is always false
         uint32_t size_ = 0;            // only for pointers
-        uint64_t data_ = 0;            // buffer but allocated on a stack to make it trivially copyable
+        uint64_t data_ = 0;            // low word: pointer / all <=8-byte payloads
+        uint64_t data_hi_ = 0;         // high word of the 16-byte payloads (INT128/UINT128/DECIMAL)
     };
 
-    static_assert(sizeof(physical_value) == 16);
+    // 16 -> 24: sizeof is baked into core/b_plus_tree/block.hpp and segment_tree block_metadata;
+    // a disk-format break, allowed only because the format is pre-release (main_header_t::CURRENT_VERSION == 0).
+    static_assert(sizeof(physical_value) == 24);
     static_assert(alignof(physical_value) == 8);
     static_assert(std::is_trivially_copyable_v<physical_value>);
     static_assert(std::is_trivially_copy_assignable_v<physical_value>);

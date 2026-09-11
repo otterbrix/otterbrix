@@ -61,7 +61,7 @@ namespace {
 
 // A filter that matches no row.
 TEST_CASE("integration::cpp::empty_result_schema::scan_and_projection") {
-    auto config = test_helpers::make_test_config("/tmp/empty_result_schema/scan");
+    auto config = test_helpers::make_test_config(integration_fixture_path("empty_result_schema/scan"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     seed(dispatcher);
@@ -83,7 +83,7 @@ TEST_CASE("integration::cpp::empty_result_schema::scan_and_projection") {
 // An empty TABLE, with no filter at all — the scan drains on its first fetch instead of filtering
 // rows away, so every operator above it sees a zero-row batch it never had a populated one of.
 TEST_CASE("integration::cpp::empty_result_schema::empty_table") {
-    auto config = test_helpers::make_test_config("/tmp/empty_result_schema/empty_table");
+    auto config = test_helpers::make_test_config(integration_fixture_path("empty_result_schema/empty_table"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     seed(dispatcher);
@@ -97,7 +97,7 @@ TEST_CASE("integration::cpp::empty_result_schema::empty_table") {
 }
 
 TEST_CASE("integration::cpp::empty_result_schema::grouping") {
-    auto config = test_helpers::make_test_config("/tmp/empty_result_schema/grouping");
+    auto config = test_helpers::make_test_config(integration_fixture_path("empty_result_schema/grouping"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     seed(dispatcher);
@@ -120,7 +120,7 @@ TEST_CASE("integration::cpp::empty_result_schema::grouping") {
 }
 
 TEST_CASE("integration::cpp::empty_result_schema::joins_and_set_ops") {
-    auto config = test_helpers::make_test_config("/tmp/empty_result_schema/joins");
+    auto config = test_helpers::make_test_config(integration_fixture_path("empty_result_schema/joins"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     seed(dispatcher);
@@ -138,7 +138,7 @@ TEST_CASE("integration::cpp::empty_result_schema::joins_and_set_ops") {
 // RETURNING is a result set like any other. Every WHERE matches nothing, so the table is left
 // untouched and these are order-independent.
 TEST_CASE("integration::cpp::empty_result_schema::dml_returning") {
-    auto config = test_helpers::make_test_config("/tmp/empty_result_schema/returning");
+    auto config = test_helpers::make_test_config(integration_fixture_path("empty_result_schema/returning"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     seed(dispatcher);

@@ -5,6 +5,7 @@ set(SOURCE_${PROJECT_NAME}
         expression.cpp
         clone_expression.cpp
         expression_equivalence.cpp
+        remap_parameter_ids.cpp
         compare_expression.cpp
         aggregate_expression.cpp
         scalar_expression.cpp

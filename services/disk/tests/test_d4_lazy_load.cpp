@@ -17,14 +17,13 @@
 #include "catalog_probe.hpp"
 #include "disk_test_helpers.hpp"
 
+#include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <thread>
 #include <unistd.h>
 
-// Lazy-loading: after bootstrap only the 10 pg_catalog.* system tables are loaded,
-// user tables stay out of storages_ until explicitly accessed, and DDL on unloaded
-// user tables modifies only system catalog rows (pg_class / pg_attribute) without
-// requiring the user storage to be present.
+// After bootstrap only pg_catalog.* is loaded; user tables stay out of storages_ until accessed.
 
 using namespace services::disk;
 namespace catalog = components::catalog;
@@ -60,9 +59,8 @@ namespace {
             manager->bootstrap_system_tables_sync();
         }
         ~fixture() {
-            // Destroy the manager first: its dtor joins the internal loop thread,
-            // which may still enqueue children onto the scheduler. Only then is it
-            // safe to stop/delete the scheduler.
+            // manager must be destroyed before the scheduler: its dtor joins the loop thread,
+            // which may still enqueue children onto the scheduler.
             manager.reset();
             scheduler->stop();
             delete scheduler;
@@ -87,8 +85,6 @@ namespace {
 
 } // namespace
 
-// 1. After bootstrap all 10 pg_catalog.* tables are loaded into storages_.
-//    Doc test alias: test_user_table_not_in_storages_at_start (system-side half).
 TEST_CASE("services::disk::d4::all_system_tables_loaded_after_bootstrap") {
     fixture fx;
     REQUIRE(fx.manager->has_storage(well_known_oid::pg_database_table));
@@ -103,18 +99,12 @@ TEST_CASE("services::disk::d4::all_system_tables_loaded_after_bootstrap") {
     REQUIRE(fx.manager->has_storage(well_known_oid::pg_computed_column_table));
 }
 
-// 2. Before any user DDL, no user-table storage exists.
-//    Doc test alias: test_user_table_not_in_storages_at_start (user-side half).
 TEST_CASE("services::disk::d4::user_table_not_in_storages_at_start") {
     fixture fx;
-    // An unallocated user oid (FIRST_USER_OID would be the next allocated) — definitely not loaded.
+    // An unallocated user oid (FIRST_USER_OID would be the next allocated), so definitely not loaded.
     REQUIRE_FALSE(fx.manager->has_storage(catalog::oid_t{FIRST_USER_OID + 1000}));
 }
 
-// 3. CREATE TABLE only writes pg_class / pg_attribute rows. The user storage is
-//    NOT auto-instantiated — D4 leaves storage creation to the executor (or to the
-//    next resolve_table when an .otbx is present on disk).
-//    Doc test alias: test_append_user_table_to_pg_class.
 TEST_CASE("services::disk::d4::create_table_does_not_eager_load_storage") {
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "ns_d4a");
@@ -122,13 +112,9 @@ TEST_CASE("services::disk::d4::create_table_does_not_eager_load_storage") {
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     auto rt_oid = test_create_table(fx, ns_oid, "users", std::move(cols));
     REQUIRE(rt_oid >= FIRST_USER_OID);
-    // Storage is intentionally NOT in storages_: D4 = lazy. resolve_table is the
-    // entry point that promotes a disk-resident .otbx into storages_.
     REQUIRE_FALSE(fx.manager->has_storage(rt_oid));
 }
 
-// 4. resolve_table sees a freshly created user table in pg_class even when its storage
-//    is not loaded. Doc test alias: test_show_tables_from_pg_class.
 TEST_CASE("services::disk::d4::resolve_table_finds_unloaded_user_table") {
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "ns_d4b");
@@ -138,11 +124,8 @@ TEST_CASE("services::disk::d4::resolve_table_finds_unloaded_user_table") {
     auto resolved = test_probe::probe_table(fx, fx.ctx(), ns_oid, std::string("orders"));
     REQUIRE(resolved.found);
     REQUIRE(resolved.oid == rt_oid);
-    // resolve_table did not need storage to be present in storages_ to answer the lookup.
 }
 
-// 5. DROP TABLE on an unloaded user table mutates only pg_class / pg_attribute /
-//    pg_depend; no storage entry required. Doc test alias: test_drop_unloaded_table.
 TEST_CASE("services::disk::d4::drop_unloaded_table") {
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "ns_d4c");
@@ -151,14 +134,10 @@ TEST_CASE("services::disk::d4::drop_unloaded_table") {
     auto rt_oid = test_create_table(fx, ns_oid, "temp_t", std::move(cols));
     REQUIRE_FALSE(fx.manager->has_storage(rt_oid));
     test_drop_table(fx, rt_oid);
-    // After drop the table is no longer resolvable.
     auto resolved = test_probe::probe_table(fx, fx.ctx(), ns_oid, std::string("temp_t"));
     REQUIRE_FALSE(resolved.found);
 }
 
-// 6. test_add_column (pure pg_attribute write, no in-memory sync) on an
-//    unloaded user table leaves the storage map untouched. Doc test alias:
-//    test_alter_unloaded_table.
 TEST_CASE("services::disk::d4::alter_unloaded_table_add_column") {
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "ns_d4d");
@@ -170,17 +149,12 @@ TEST_CASE("services::disk::d4::alter_unloaded_table_add_column") {
         "name",
         components::types::complex_logical_type{components::types::logical_type::STRING_LITERAL});
     test_add_column(fx, rt_oid, std::move(new_col), 2);
-    // No user-storage materialisation as a side-effect of ALTER.
     REQUIRE_FALSE(fx.manager->has_storage(rt_oid));
-    // The new column shows up via resolve_table.
     auto resolved = test_probe::probe_table(fx, fx.ctx(), ns_oid, std::string("alter_me"));
     REQUIRE(resolved.found);
     REQUIRE(resolved.columns.size() == 2);
 }
 
-// 7. Multiple resolve_table calls for the same un-loaded user table do not flap the
-//    storages_ map: the storage stays absent (no eager promotion when there's no .otbx
-//    on disk). Doc test alias: test_second_select_uses_existing (negative form).
 TEST_CASE("services::disk::d4::repeated_resolve_does_not_create_storage") {
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "ns_d4e");
@@ -194,8 +168,6 @@ TEST_CASE("services::disk::d4::repeated_resolve_does_not_create_storage") {
     REQUIRE_FALSE(fx.manager->has_storage(rt_oid));
 }
 
-// 8. resolve_table walks pg_attribute filtered by attrelid and returns the attoids in
-//    attnum order. Doc test alias: test_scan_pg_attribute_by_relid.
 TEST_CASE("services::disk::d4::resolve_table_collects_columns_by_attrelid") {
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "ns_d4f");
@@ -208,30 +180,95 @@ TEST_CASE("services::disk::d4::resolve_table_collects_columns_by_attrelid") {
     REQUIRE(r.found);
     REQUIRE(r.oid == rt_oid);
     REQUIRE(r.columns.size() == 3);
-    // Attoids are unique (each column gets its own oid_gen.allocate()).
     REQUIRE(r.columns[0].attoid != r.columns[1].attoid);
     REQUIRE(r.columns[1].attoid != r.columns[2].attoid);
     REQUIRE(r.columns[0].attoid != r.columns[2].attoid);
 }
 
-// 9. peek_checkpoint_wal_id_from_disk returns 0 for unknown tables (§1.11).
 TEST_CASE("services::disk::d4::peek_checkpoint_wal_id_unknown_returns_zero") {
     fixture fx;
-    // A table that was never created has no sidecar: peek returns 0.
+    // "No sidecar" is the only state that still answers 0; one that exists but can't be read reports an error.
     auto v = fx.manager->peek_checkpoint_wal_id_from_disk(catalog::oid_t{FIRST_USER_OID + 9000},
                                                           well_known_oid::main_database);
-    REQUIRE(v == services::wal::id_t{0});
+    REQUIRE_FALSE(v.has_error());
+    REQUIRE(v.value() == services::wal::id_t{0});
 }
 
-// 10. load_storage_for_wal_replay_sync is a no-op for already-loaded storage (§1.11).
 TEST_CASE("services::disk::d4::load_storage_for_wal_replay_noop_when_loaded") {
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "ns_d4g");
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
-    // Create the table (writes pg_class/pg_attribute; does NOT load user storage).
     auto rt_oid = test_create_table(fx, ns_oid, "lazy_t", std::move(cols));
 
-    // Calling load_storage_for_wal_replay_sync on a table that has no .otbx must not crash.
-    REQUIRE_NOTHROW(fx.manager->load_storage_for_wal_replay_sync(rt_oid, well_known_oid::main_database));
+    REQUIRE_FALSE(fx.manager->load_storage_for_wal_replay_sync(rt_oid, well_known_oid::main_database)
+                      .contains_error());
+}
+// A never-checkpointed .otbx loads as a legitimately empty table with its schema from the catalog;
+// the metadata reader instead fails it with "attempted to read past end of chain".
+TEST_CASE("services::disk::d4::never_checkpointed_otbx_loads_as_empty_with_catalog_schema") {
+    fixture fx;
+    auto ns_oid = test_create_namespace(fx, "ns_a76a");
+    std::vector<components::table::column_definition_t> cols;
+    cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
+    auto rt_oid = test_create_table(fx, ns_oid, "young_t", std::move(cols));
+
+    const auto tbl_dir = std::filesystem::path(d4_dir()) /
+                         std::to_string(static_cast<unsigned>(well_known_oid::main_database)) /
+                         std::to_string(static_cast<unsigned>(rt_oid));
+    std::filesystem::create_directories(tbl_dir);
+    const auto otbx = tbl_dir / "table.otbx";
+    {
+        core::pmr::otterbrix_resource create_resource;
+        std::vector<components::table::column_definition_t> create_cols;
+        create_cols.emplace_back("id",
+                                 components::types::complex_logical_type{components::types::logical_type::BIGINT});
+        table_storage_t ts(&create_resource, std::move(create_cols), otbx);
+        REQUIRE_FALSE(ts.construction_failed());
+    }
+    REQUIRE(std::filesystem::file_size(otbx) == components::table::storage::BLOCK_START);
+
+    REQUIRE_FALSE(fx.manager->has_storage(rt_oid));
+    REQUIRE_FALSE(
+        fx.manager->load_storage_for_wal_replay_sync(rt_oid, well_known_oid::main_database).contains_error());
+    REQUIRE(fx.manager->has_storage(rt_oid));
+    REQUIRE(std::filesystem::file_size(otbx) == components::table::storage::BLOCK_START);
+}
+
+// A .wal_id sidecar next to a never-checkpointed .otbx means the file was rebuilt from under it;
+// the load must refuse rather than silently open it as empty and discard that checkpoint.
+TEST_CASE("services::disk::d4::young_otbx_with_checkpoint_sidecar_is_refused") {
+    fixture fx;
+    auto ns_oid = test_create_namespace(fx, "ns_a76b");
+    std::vector<components::table::column_definition_t> cols;
+    cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
+    auto rt_oid = test_create_table(fx, ns_oid, "contradicted_t", std::move(cols));
+
+    const auto tbl_dir = std::filesystem::path(d4_dir()) /
+                         std::to_string(static_cast<unsigned>(well_known_oid::main_database)) /
+                         std::to_string(static_cast<unsigned>(rt_oid));
+    std::filesystem::create_directories(tbl_dir);
+    const auto otbx = tbl_dir / "table.otbx";
+    {
+        core::pmr::otterbrix_resource create_resource;
+        std::vector<components::table::column_definition_t> create_cols;
+        create_cols.emplace_back("id",
+                                 components::types::complex_logical_type{components::types::logical_type::BIGINT});
+        table_storage_t ts(&create_resource, std::move(create_cols), otbx);
+        REQUIRE_FALSE(ts.construction_failed());
+    }
+    REQUIRE(std::filesystem::file_size(otbx) == components::table::storage::BLOCK_START);
+    {
+        std::ofstream sidecar(tbl_dir / "table.otbx.wal_id", std::ios::binary | std::ios::trunc);
+        REQUIRE(sidecar.is_open());
+        const uint64_t claimed = 5;
+        sidecar.write(reinterpret_cast<const char*>(&claimed), sizeof(claimed));
+        REQUIRE(sidecar.good());
+    }
+
+    // Must be visible, or replay treats it like a missing file and creates a fresh one over it.
+    REQUIRE(fx.manager->load_storage_for_wal_replay_sync(rt_oid, well_known_oid::main_database).contains_error());
+    REQUIRE_FALSE(fx.manager->has_storage(rt_oid));
+    REQUIRE(std::filesystem::file_size(otbx) == components::table::storage::BLOCK_START);
+    REQUIRE(std::filesystem::file_size(tbl_dir / "table.otbx.wal_id") == sizeof(uint64_t));
 }

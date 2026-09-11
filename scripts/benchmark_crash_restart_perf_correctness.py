@@ -42,6 +42,9 @@ from benchlib import run_process
 
 PAGE_SIZE = 4096
 INDEX_NAME = "idx_id_hash"
+# benchmark_runner puts every artefact under one named base dir
+# (benchmark/runner/benchmark_runner.cpp make_config), not bare ./wal.
+RUNNER_DATA_DIR = "otterbrix_benchmark_data"
 TABLE_NAME = "kv"
 
 
@@ -71,7 +74,7 @@ class RestartMetrics:
 def setup_sql(db_name: str) -> str:
     return (
         f"-- @database {db_name}\n"
-        f"CREATE TABLE {TABLE_NAME} (id INTEGER, payload STRING) WITH (storage = 'disk');\n"
+        f"CREATE TABLE {TABLE_NAME} (id INTEGER, payload STRING) ;\n"
         f"-- @load_csv data.csv {TABLE_NAME} ,\n"
         f"CREATE INDEX {INDEX_NAME} ON {db_name}.{TABLE_NAME} USING hash (id);\n"
     )
@@ -83,7 +86,7 @@ def baseline_lookup_sql(db_name: str, key: int) -> str:
 
 
 def run_load_only(runner: Path, cwd: Path, checkpoint_mb: int, show_output: bool) -> None:
-    cmd = runner_cmd(runner, "lookup.sql", disk=True, load_only=True, checkpoint_mb=checkpoint_mb)
+    cmd = runner_cmd(runner, "lookup.sql", load_only=True, checkpoint_mb=checkpoint_mb)
     try:
         run_process(cmd, cwd, suppress_output=not show_output)
     except subprocess.CalledProcessError as exc:
@@ -98,7 +101,7 @@ def run_restart_lookup(
     show_output: bool,
 ) -> RestartMetrics:
     out_csv = cwd / "restart_result.csv"
-    cmd = runner_cmd(runner, "lookup.sql", runs=runs, out_csv=out_csv, disk=True, skip_load=True)
+    cmd = runner_cmd(runner, "lookup.sql", runs=runs, out_csv=out_csv, skip_load=True)
     t0 = time.perf_counter()
     try:
         run_process(cmd, cwd, suppress_output=not show_output)
@@ -130,7 +133,6 @@ def run_forced_crash(
         str(runner),
         f"--file={sql_file}",
         f"--runs={runs}",
-        "--disk",
         "--skip-load",
     ]
     proc = subprocess.Popen(
@@ -157,7 +159,7 @@ def run_forced_crash(
 
 
 def find_hash_index_bin(root: Path) -> Path | None:
-    wal_root = root / "wal"
+    wal_root = root / RUNNER_DATA_DIR / "wal"
     if not wal_root.is_dir():
         return None
     matches = sorted(wal_root.rglob("hash_index.bin"))

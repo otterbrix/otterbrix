@@ -10,15 +10,12 @@
 
 namespace {
 
-    // RAII temp directory helper
     struct tmp_dir_t {
         std::filesystem::path path;
 
         explicit tmp_dir_t(const std::string& name)
             : path(std::filesystem::temp_directory_path() / name) {
-            // Clear on the way IN as well as on the way out. A run that dies before the destructor —
-            // a failing REQUIRE aborts, a crash, a kill — leaves this directory behind, and the next
-            // run would then start on top of the dead run's files instead of an empty directory.
+            // Clears on construction too: a crash or aborted REQUIRE can leave the directory from a dead run.
             std::error_code ec;
             std::filesystem::remove_all(path, ec);
             std::filesystem::create_directories(path);
@@ -37,8 +34,9 @@ namespace {
 
     using namespace services::wal;
 
-    // Helper to encode a COMMIT record into a binary buffer.
-    // Returns the encoded buffer and the wal_id assigned.
+    // wal_page_reader_t/writer_t require an explicit resource; std::pmr::get_default_resource() is forbidden here.
+    core::pmr::otterbrix_resource test_resource;
+
     struct encoded_record_info {
         std::vector<char> data;
         uint64_t wal_id;
@@ -46,7 +44,6 @@ namespace {
         wal_record_type type;
     };
 
-    // Helper: convert a buffer_t (std::pmr::string) to std::vector<char>.
     std::vector<char> buffer_to_vec(const buffer_t& buf) { return std::vector<char>(buf.begin(), buf.end()); }
 
     encoded_record_info encode_commit_rec(uint64_t wal_id, uint64_t txn_id, crc32_t last_crc) {
@@ -60,11 +57,9 @@ namespace {
         return info;
     }
 
-    // Encoders take table_oid (4 bytes). Tests pass a placeholder oid;
-    // production code uses pg_class.oid.
+    // table_oid is 4 bytes on the wire; this placeholder stands in for pg_class.oid in production.
     constexpr components::catalog::oid_t kTestTableOid = 16500;
 
-    // encode_insert/encode_update now take a chunk batch; wrap a single chunk (deep copy).
     std::pmr::vector<components::vector::data_chunk_t> to_chunk_batch(const components::vector::data_chunk_t& chunk) {
         std::pmr::vector<components::vector::data_chunk_t> batch(chunk.resource());
         components::vector::data_chunk_t copy(chunk.resource(), chunk.types(), chunk.size() == 0 ? 1 : chunk.size());
@@ -145,11 +140,9 @@ TEST_CASE("small_records_fill_page") {
     tmp_dir_t dir("test_wal_page_small_records");
     auto filepath = dir.file("wal_segment_0");
 
-    // The on-disk record layout for a COMMIT is 37 bytes: size 4 +
-    // last_crc 4 + wal_id 8 + txn_id 8 + record_type 1 + commit_id 8 + crc 4.
-    // 5 records × 37 bytes = 185 bytes total.
+    // A COMMIT record is 37 bytes on disk: size 4 + last_crc 4 + wal_id 8 + txn_id 8 + type 1 + commit_id 8 + crc 4.
     {
-        wal_page_writer_t writer(filepath, "testdb", 0);
+        wal_page_writer_t writer(&test_resource, filepath, "testdb", 0);
 
         crc32_t last_crc = 0;
         uint64_t first_wal_id = 1;
@@ -157,22 +150,21 @@ TEST_CASE("small_records_fill_page") {
 
         for (uint64_t i = first_wal_id; i <= last_wal_id; ++i) {
             auto rec = encode_commit_rec(i, /*txn_id=*/100 + i, last_crc);
-            writer.append(rec.data.data(), rec.data.size(), i);
-            // Extract the trailing CRC from the encoded data for chaining
+            REQUIRE_FALSE(writer.append(rec.data.data(), rec.data.size(), i).contains_error());
             last_crc = extract_crc(rec.data.data(), rec.data.size());
         }
-        writer.flush();
+        REQUIRE_FALSE(writer.flush().contains_error());
     }
 
     // Read back with page reader.
     {
-        wal_page_reader_t reader(filepath);
+        wal_page_reader_t reader(&test_resource, filepath);
 
-        // Page 0 is the file header. Page 1 is the first data page.
+        // Page 0 is the file header; page 1 is the first data page.
         auto header = reader.read_page_header(1);
 
         REQUIRE(header.num_records == 5);
-        // ~185 bytes (5 × 37); ranged because the exact size depends on encoding.
+        // A range, not an exact byte count: the exact size depends on encoding.
         REQUIRE(header.data_size >= 180);
         REQUIRE(header.data_size <= 200);
         REQUIRE(header.page_lsn == 1);
@@ -185,36 +177,30 @@ TEST_CASE("large_record_spanning") {
     auto filepath = dir.file("wal_segment_0");
     auto* resource = std::pmr::get_default_resource();
 
-    // Generate a large data_chunk with 500 rows -- should exceed PAGE_DATA_SIZE (4064 bytes).
+    // 500 rows is chosen to exceed PAGE_DATA_SIZE and force spanning across pages.
     auto chunk = gen_data_chunk(500, resource);
 
     {
-        wal_page_writer_t writer(filepath, "testdb", 0);
+        wal_page_writer_t writer(&test_resource, filepath, "testdb", 0);
 
         auto rec = encode_insert_rec(/*wal_id=*/1, /*txn_id=*/42, /*last_crc=*/0, kTestTableOid, chunk, 0, 500);
 
-        // Confirm the encoded record is larger than one page's data area.
         REQUIRE(rec.data.size() > PAGE_DATA_SIZE);
 
-        writer.append(rec.data.data(), rec.data.size(), 1);
-        writer.flush();
+        REQUIRE_FALSE(writer.append(rec.data.data(), rec.data.size(), 1).contains_error());
+        REQUIRE_FALSE(writer.flush().contains_error());
     }
 
-    // Read back and verify spanning.
     {
-        wal_page_reader_t reader(filepath);
+        wal_page_reader_t reader(&test_resource, filepath);
 
-        // The file should have: file_header (page 0) + at least 2 data pages.
         auto file_size = std::filesystem::file_size(filepath);
         auto total_pages = file_size / PAGE_SIZE;
-        REQUIRE(total_pages >= 3); // file header + at least 2 data pages
+        REQUIRE(total_pages >= 3);
 
-        // First data page should have PARTIAL flag set.
         auto header1 = reader.read_page_header(1);
         REQUIRE((header1.flags & PAGE_PARTIAL_CONT) != 0);
 
-        // Last data page of this record should have PARTIAL_END flag.
-        // Walk pages to find the one with PARTIAL_END.
         bool found_partial_end = false;
         for (uint64_t p = 2; p < total_pages; ++p) {
             auto h = reader.read_page_header(p);
@@ -238,7 +224,6 @@ TEST_CASE("read_back_all_records") {
         row_ids.push_back(i);
     }
 
-    // Write 20 mixed records.
     struct written_record {
         uint64_t wal_id;
         uint64_t txn_id;
@@ -247,7 +232,7 @@ TEST_CASE("read_back_all_records") {
     std::vector<written_record> written;
 
     {
-        wal_page_writer_t writer(filepath, "testdb", 0);
+        wal_page_writer_t writer(&test_resource, filepath, "testdb", 0);
         crc32_t last_crc = 0;
 
         for (uint64_t i = 1; i <= 20; ++i) {
@@ -274,17 +259,18 @@ TEST_CASE("read_back_all_records") {
                     break;
             }
 
-            writer.append(rec.data.data(), rec.data.size(), i);
+            REQUIRE_FALSE(writer.append(rec.data.data(), rec.data.size(), i).contains_error());
             last_crc = extract_crc(rec.data.data(), rec.data.size());
             written.push_back({i, txn_id, type});
         }
-        writer.flush();
+        REQUIRE_FALSE(writer.flush().contains_error());
     }
 
-    // Read all records back.
     {
-        wal_page_reader_t reader(filepath);
-        auto records = reader.read_all_records(0);
+        wal_page_reader_t reader(&test_resource, filepath);
+        auto records_result = reader.read_all_records(0);
+        REQUIRE_FALSE(records_result.has_error());
+        auto& records = records_result.value();
 
         REQUIRE(records.size() == 20);
 
@@ -296,80 +282,45 @@ TEST_CASE("read_back_all_records") {
     }
 }
 
-TEST_CASE("binary_search_by_lsn") {
-    tmp_dir_t dir("test_wal_page_binary_search");
-    auto filepath = dir.file("wal_segment_0");
-
-    // Write 100 COMMIT records with wal_ids 1..100.
-    {
-        wal_page_writer_t writer(filepath, "testdb", 0);
-        crc32_t last_crc = 0;
-
-        for (uint64_t i = 1; i <= 100; ++i) {
-            auto rec = encode_commit_rec(i, /*txn_id=*/1000 + i, last_crc);
-            writer.append(rec.data.data(), rec.data.size(), i);
-            last_crc = extract_crc(rec.data.data(), rec.data.size());
-        }
-        writer.flush();
-    }
-
-    // Seek to LSN 50.
-    {
-        wal_page_reader_t reader(filepath);
-        auto position = reader.seek_to_lsn(50);
-
-        // The position should point to a page whose page_lsn <= 50 and page_end_lsn >= 50.
-        auto header = reader.read_page_header(position.page_index);
-        REQUIRE(header.page_lsn <= 50);
-        REQUIRE(header.page_end_lsn >= 50);
-
-        // Read records from that position -- the first record with wal_id >= 50 should be found.
-        auto records = reader.read_all_records(49); // read records after wal_id 49
-        REQUIRE(!records.empty());
-        REQUIRE(records.front().id == 50);
-    }
-}
+// seek_to_lsn is gone: its binary search read headers via the unverified observer, so a failed read's zeroed
+// header could silently skew the answer -- same defect family read_verified_page_header exists to fix.
 
 TEST_CASE("page_checksum_corruption") {
     tmp_dir_t dir("test_wal_page_checksum_corrupt");
     auto filepath = dir.file("wal_segment_0");
 
-    // Write some records.
     {
-        wal_page_writer_t writer(filepath, "testdb", 0);
+        wal_page_writer_t writer(&test_resource, filepath, "testdb", 0);
         crc32_t last_crc = 0;
 
         for (uint64_t i = 1; i <= 10; ++i) {
             auto rec = encode_commit_rec(i, /*txn_id=*/300 + i, last_crc);
-            writer.append(rec.data.data(), rec.data.size(), i);
+            REQUIRE_FALSE(writer.append(rec.data.data(), rec.data.size(), i).contains_error());
             last_crc = extract_crc(rec.data.data(), rec.data.size());
         }
-        writer.flush();
+        REQUIRE_FALSE(writer.flush().contains_error());
     }
 
-    // Corrupt page 1 (first data page): flip a byte in the data area.
     {
         std::fstream file(filepath, std::ios::in | std::ios::out | std::ios::binary);
         REQUIRE(file.is_open());
 
-        // Page 1 starts at offset PAGE_SIZE (4096). Data area starts after page header (32 bytes).
+        // Page 1 starts at offset PAGE_SIZE; the data area begins right after the page header.
         uint64_t corrupt_offset = PAGE_SIZE + PAGE_HEADER_SIZE + 10;
         file.seekp(static_cast<std::streamoff>(corrupt_offset));
 
         char byte = 0;
         file.read(&byte, 1);
-        byte ^= static_cast<char>(0xFF); // flip all bits
+        byte ^= static_cast<char>(0xFF);
         file.seekp(static_cast<std::streamoff>(corrupt_offset));
         file.write(&byte, 1);
         file.flush();
     }
 
-    // Open with reader and verify corruption is detected.
     {
-        wal_page_reader_t reader(filepath);
+        wal_page_reader_t reader(&test_resource, filepath);
         [[maybe_unused]] auto header = reader.read_page_header(1);
 
-        // The page should be detected as corrupt (checksum mismatch).
         REQUIRE(reader.verify_page_checksum(1) == false);
     }
 }
@@ -378,29 +329,24 @@ TEST_CASE("crc_chain_across_pages") {
     tmp_dir_t dir("test_wal_page_crc_chain");
     auto filepath = dir.file("wal_segment_0");
 
-    // Write enough records to fill 3+ pages.
-    // Each COMMIT is 29 bytes, PAGE_DATA_SIZE is 4064.
-    // ~140 COMMITs per page, so 500 records should give us 3-4 pages.
     {
-        wal_page_writer_t writer(filepath, "testdb", 0);
+        wal_page_writer_t writer(&test_resource, filepath, "testdb", 0);
         crc32_t last_crc = 0;
 
         for (uint64_t i = 1; i <= 500; ++i) {
             auto rec = encode_commit_rec(i, /*txn_id=*/i * 10, last_crc);
-            writer.append(rec.data.data(), rec.data.size(), i);
+            REQUIRE_FALSE(writer.append(rec.data.data(), rec.data.size(), i).contains_error());
             last_crc = extract_crc(rec.data.data(), rec.data.size());
         }
-        writer.flush();
+        REQUIRE_FALSE(writer.flush().contains_error());
     }
 
-    // Verify we have at least 3 data pages.
     auto file_size = std::filesystem::file_size(filepath);
     auto total_pages = file_size / PAGE_SIZE;
-    REQUIRE(total_pages >= 4); // file header + 3+ data pages
+    REQUIRE(total_pages >= 4);
 
-    // Verify the chain is valid.
     {
-        wal_page_reader_t reader(filepath);
+        wal_page_reader_t reader(&test_resource, filepath);
         REQUIRE(reader.verify_chain() == true);
     }
 }
@@ -409,45 +355,36 @@ TEST_CASE("stop_at_corruption") {
     tmp_dir_t dir("test_wal_page_stop_corruption");
     auto filepath = dir.file("wal_segment_0");
 
-    // Write 50 records spanning multiple pages.
-    // Use slightly larger records to ensure multi-page usage.
-    // 50 COMMITs at 29 bytes = 1450 bytes -- that fits in one page.
-    // Use more records or larger records to span multiple pages.
-    // 500 COMMITs should span several pages.
     uint64_t total_records = 500;
 
     {
-        wal_page_writer_t writer(filepath, "testdb", 0);
+        wal_page_writer_t writer(&test_resource, filepath, "testdb", 0);
         crc32_t last_crc = 0;
 
         for (uint64_t i = 1; i <= total_records; ++i) {
             auto rec = encode_commit_rec(i, /*txn_id=*/i * 10, last_crc);
-            writer.append(rec.data.data(), rec.data.size(), i);
+            REQUIRE_FALSE(writer.append(rec.data.data(), rec.data.size(), i).contains_error());
             last_crc = extract_crc(rec.data.data(), rec.data.size());
         }
-        writer.flush();
+        REQUIRE_FALSE(writer.flush().contains_error());
     }
 
-    // Determine how many pages we have.
     auto file_size = std::filesystem::file_size(filepath);
     auto total_pages = file_size / PAGE_SIZE;
-    REQUIRE(total_pages >= 4); // file header + at least 3 data pages
+    REQUIRE(total_pages >= 4);
 
-    // Read page 1 header to find how many records are in the first data page.
     uint32_t records_in_first_page = 0;
     {
-        wal_page_reader_t reader(filepath);
+        wal_page_reader_t reader(&test_resource, filepath);
         auto header = reader.read_page_header(1);
         records_in_first_page = header.num_records;
     }
     REQUIRE(records_in_first_page > 0);
 
-    // Corrupt a page in the middle (page 2, the second data page).
     {
         std::fstream file(filepath, std::ios::in | std::ios::out | std::ios::binary);
         REQUIRE(file.is_open());
 
-        // Page 2 starts at offset 2 * PAGE_SIZE.
         uint64_t corrupt_offset = 2 * PAGE_SIZE + PAGE_HEADER_SIZE + 20;
         file.seekp(static_cast<std::streamoff>(corrupt_offset));
 
@@ -459,15 +396,14 @@ TEST_CASE("stop_at_corruption") {
         file.flush();
     }
 
-    // Read all records -- should stop at corruption (STOP-A behavior).
     {
-        wal_page_reader_t reader(filepath);
-        auto records = reader.read_all_records(0);
+        wal_page_reader_t reader(&test_resource, filepath);
+        auto records_result = reader.read_all_records(0);
+        REQUIRE_FALSE(records_result.has_error());
+        auto& records = records_result.value();
 
-        // Only records from page 1 (before the corrupted page 2) should be returned.
         REQUIRE(records.size() == records_in_first_page);
 
-        // Verify the returned records are the first N records.
         for (size_t i = 0; i < records.size(); ++i) {
             REQUIRE(records[i].id == static_cast<uint64_t>(i + 1));
         }
@@ -478,16 +414,16 @@ TEST_CASE("edge_empty_file") {
     tmp_dir_t dir("test_wal_page_empty_file");
     auto filepath = dir.file("wal_segment_0");
 
-    // Create writer, immediately flush with no records.
     {
-        wal_page_writer_t writer(filepath, "testdb", 0);
-        writer.flush();
+        wal_page_writer_t writer(&test_resource, filepath, "testdb", 0);
+        REQUIRE_FALSE(writer.flush().contains_error());
     }
 
-    // Reader should return 0 records.
     {
-        wal_page_reader_t reader(filepath);
-        auto records = reader.read_all_records(0);
+        wal_page_reader_t reader(&test_resource, filepath);
+        auto records_result = reader.read_all_records(0);
+        REQUIRE_FALSE(records_result.has_error());
+        auto& records = records_result.value();
         REQUIRE(records.empty());
     }
 }
@@ -496,18 +432,18 @@ TEST_CASE("edge_single_record") {
     tmp_dir_t dir("test_wal_page_single_record");
     auto filepath = dir.file("wal_segment_0");
 
-    // Write exactly one COMMIT record.
     {
-        wal_page_writer_t writer(filepath, "testdb", 0);
+        wal_page_writer_t writer(&test_resource, filepath, "testdb", 0);
         auto rec = encode_commit_rec(/*wal_id=*/1, /*txn_id=*/999, /*last_crc=*/0);
-        writer.append(rec.data.data(), rec.data.size(), 1);
-        writer.flush();
+        REQUIRE_FALSE(writer.append(rec.data.data(), rec.data.size(), 1).contains_error());
+        REQUIRE_FALSE(writer.flush().contains_error());
     }
 
-    // Read back, verify exactly 1 record.
     {
-        wal_page_reader_t reader(filepath);
-        auto records = reader.read_all_records(0);
+        wal_page_reader_t reader(&test_resource, filepath);
+        auto records_result = reader.read_all_records(0);
+        REQUIRE_FALSE(records_result.has_error());
+        auto& records = records_result.value();
         REQUIRE(records.size() == 1);
         REQUIRE(records[0].id == 1);
         REQUIRE(records[0].transaction_id == 999);
@@ -519,70 +455,36 @@ TEST_CASE("edge_exact_fit") {
     tmp_dir_t dir("test_wal_page_exact_fit");
     auto filepath = dir.file("wal_segment_0");
 
-    // Construct a record that is exactly PAGE_DATA_SIZE (4064) bytes.
-    // A COMMIT record is 29 bytes:
-    //   size:4 + last_crc:4 + wal_id:8 + txn_id:8 + record_type:1 + crc:4 = 29
-    // An INSERT record has a fixed header of:
-    //   size:4 + last_crc:4 + wal_id:8 + txn_id:8 + record_type:1 +
-    //   database_len:2 + collection_len:2 + row_start:8 + row_count:8 +
-    //   payload_size:4 + crc:4 = 53 bytes (without db/coll/payload strings)
-    // We need: db_name + coll_name + payload + 53 = PAGE_DATA_SIZE
-    // Use short db/coll names (e.g., 2 + 2 = 4 bytes for names).
-    // payload = PAGE_DATA_SIZE - 53 - 4 = 4007 bytes
-
-    // Build a synthetic binary record of exactly PAGE_DATA_SIZE bytes.
-    // We rely on wal_binary::encode_insert with a carefully sized data_chunk
-    // OR we construct the buffer manually.
-    //
-    // Strategy: create a data_chunk whose serialized payload results in
-    // an encoded record of exactly PAGE_DATA_SIZE bytes.
-    // Since exact sizing depends on column types and counts, we use
-    // wal_binary::encode_insert and iterate to find the right chunk size.
-    // For simplicity, encode with known-size data and pad accordingly.
-
     auto* resource = std::pmr::get_default_resource();
 
-    // First, figure out the overhead: encode a minimal INSERT record.
     auto minimal_chunk = gen_data_chunk(1, resource);
     auto minimal_rec = encode_insert_rec(1, 1, 0, kTestTableOid, minimal_chunk, 0, 1);
     [[maybe_unused]] size_t minimal_size = minimal_rec.data.size();
 
-    // We need a record of exactly PAGE_DATA_SIZE bytes.
-    // The difference is the payload size: we need to grow the data_chunk payload.
-    // Encode progressively larger chunks until we bracket the target, then pad.
-    // Since this is fragile, we test with a buffer approach instead:
-    // create a raw buffer of exactly PAGE_DATA_SIZE and write it through the page writer.
-
-    // Use a synthetic approach: create a buffer of exactly PAGE_DATA_SIZE bytes
-    // that looks like a valid encoded record. The key test is that the page writer
-    // places it in exactly one data page with no spanning.
+    // A synthetic PAGE_DATA_SIZE buffer stands in for a real encoded record; the point is that the
+    // writer places it in one page with no spanning.
     std::vector<char> exact_record(PAGE_DATA_SIZE, 0);
 
-    // Write a minimal valid header into the buffer so it can be decoded.
-    // For this edge-case test, we just need to verify the page writer behavior.
-    // Write the size field (first 4 bytes LE) = PAGE_DATA_SIZE - 8 (exclude size + trailing crc).
+    // Only size (offset 0, = PAGE_DATA_SIZE - 8) and wal_id (offset 8) are filled in -- enough to test
+    // placement, not full decoding.
     uint32_t payload_size = PAGE_DATA_SIZE - 8;
     std::memcpy(exact_record.data(), &payload_size, sizeof(payload_size));
 
-    // Fill in wal_id at offset 8 (after size:4 + last_crc:4).
     uint64_t wal_id = 1;
     std::memcpy(exact_record.data() + 8, &wal_id, sizeof(wal_id));
 
-    // Write through page writer.
     {
-        wal_page_writer_t writer(filepath, "testdb", 0);
-        writer.append(exact_record.data(), exact_record.size(), 1);
-        writer.flush();
+        wal_page_writer_t writer(&test_resource, filepath, "testdb", 0);
+        REQUIRE_FALSE(writer.append(exact_record.data(), exact_record.size(), 1).contains_error());
+        REQUIRE_FALSE(writer.flush().contains_error());
     }
 
-    // Verify it fits in exactly one data page (file = file_header + 1 data page).
     {
         auto file_size = std::filesystem::file_size(filepath);
         auto total_pages = file_size / PAGE_SIZE;
-        // Should be exactly 2 pages: file header (page 0) + one data page (page 1).
         REQUIRE(total_pages == 2);
 
-        wal_page_reader_t reader(filepath);
+        wal_page_reader_t reader(&test_resource, filepath);
         auto header = reader.read_page_header(1);
         REQUIRE(header.data_size == PAGE_DATA_SIZE);
         REQUIRE((header.flags & PAGE_PARTIAL_CONT) == 0);

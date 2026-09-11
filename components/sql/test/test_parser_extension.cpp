@@ -272,3 +272,50 @@ TEST_CASE("components::sql::two_extensions_transform_routing") {
         REQUIRE(result.has_error());
     }
 }
+
+namespace {
+    // Two ways an extension says "not mine": the shared NIL, or an empty list of its own.
+    bool quiet_was_called = false;
+
+    parse_extension_result_t quiet_parse(std::pmr::memory_resource*, const std::string&) {
+        quiet_was_called = true;
+        return NIL;
+    }
+
+    parse_extension_result_t own_empty_list_parse(std::pmr::memory_resource* resource, const std::string&) {
+        return new (resource->allocate(sizeof(List))) List{resource};
+    }
+} // namespace
+
+// Regression: an extension result must be judged by list_length(), not `!= NIL` (an extension's
+// own empty list passes that pointer test and swallows the core parser's syntax error); and text
+// the core grammar already accepted must never be offered to an extension.
+TEST_CASE("components::sql::empty_parse_is_not_a_failed_parse") {
+    std::pmr::monotonic_buffer_resource arena;
+
+    SECTION("an extension's own empty list is not a claim") {
+        parser_extension_registry_t registry;
+        REQUIRE_FALSE(registry.add(parser_extension_t{"own-empty", &own_empty_list_parse}).has_error());
+        CHECK_THROWS_AS(raw_parser(&arena, "SELECT FROM", registry), parser_exception_t);
+    }
+
+    SECTION("text the core parser accepted is never offered to an extension") {
+        parser_extension_registry_t registry;
+        REQUIRE_FALSE(registry.add(parser_extension_t{"quiet", &quiet_parse}).has_error());
+        for (const char* text : {"", "   ", "-- only a comment", "/* only a comment */", ";"}) {
+            quiet_was_called = false;
+            List* tree = raw_parser(&arena, text, registry);
+            CHECK(list_length(tree) == 0);
+            CHECK_FALSE(quiet_was_called);
+        }
+    }
+
+    SECTION("nothing to parse is an empty list, a failure is a throw") {
+        for (const char* text : {"", "   ", "-- only a comment", ";"}) {
+            // list_length(), not linitial(): linitial has no emptiness guard (pg_std_list.h:
+            // lfirst(list_head(l)) dereferences the end sentinel on an empty list).
+            CHECK(list_length(raw_parser(&arena, text)) == 0);
+        }
+        CHECK_THROWS_AS(raw_parser(&arena, "SELECT FROM"), parser_exception_t);
+    }
+}

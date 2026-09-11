@@ -16,41 +16,42 @@ using namespace components::expressions;
 namespace components::sql::transform {
 
     namespace {
-        // The aggregate a HAVING names may sit ANYWHERE inside a target-list entry — as the entry
-        // itself, under a CAST, inside a CASE arm, or as an operand of arithmetic — so matching it
-        // means descending the whole expression rather than inspecting its top node. A call matches
-        // on name AND arguments: two aggregates of the same name are different aggregates.
+        // Matches the DISTINCT flag too: ignoring it would bind `HAVING count(DISTINCT x)` to a plain count(x).
         const expressions::expression_i* find_call(const expressions::expression_i* expr,
                                                    const std::string& name,
                                                    const std::pmr::vector<expressions::param_storage>& args,
-                                                   bool args_comparable);
+                                                   bool args_comparable,
+                                                   bool distinct);
 
         const expressions::expression_i* find_call_in(const expressions::param_storage& param,
                                                       const std::string& name,
                                                       const std::pmr::vector<expressions::param_storage>& args,
-                                                      bool args_comparable) {
+                                                      bool args_comparable,
+                                                      bool distinct) {
             if (!std::holds_alternative<expressions::expression_ptr>(param)) {
                 return nullptr;
             }
             const auto& nested = std::get<expressions::expression_ptr>(param);
-            return nested ? find_call(nested.get(), name, args, args_comparable) : nullptr;
+            return nested ? find_call(nested.get(), name, args, args_comparable, distinct) : nullptr;
         }
 
         const expressions::expression_i* find_call(const expressions::expression_i* expr,
                                                    const std::string& name,
                                                    const std::pmr::vector<expressions::param_storage>& args,
-                                                   bool args_comparable) {
+                                                   bool args_comparable,
+                                                   bool distinct) {
             if (expr == nullptr) {
                 return nullptr;
             }
             switch (expr->group()) {
                 case expression_group::aggregate: {
                     const auto* agg = static_cast<const aggregate_expression_t*>(expr);
-                    if (agg->function_name() == name && (!args_comparable || agg->params() == args)) {
+                    if (agg->function_name() == name && agg->is_distinct() == distinct &&
+                        (!args_comparable || agg->params() == args)) {
                         return expr;
                     }
                     for (const auto& param : agg->params()) {
-                        if (const auto* found = find_call_in(param, name, args, args_comparable)) {
+                        if (const auto* found = find_call_in(param, name, args, args_comparable, distinct)) {
                             return found;
                         }
                     }
@@ -58,11 +59,12 @@ namespace components::sql::transform {
                 }
                 case expression_group::function: {
                     const auto* call = static_cast<const function_expression_t*>(expr);
-                    if (call->name() == name && (!args_comparable || call->args() == args)) {
+                    if (call->name() == name && call->is_distinct() == distinct &&
+                        (!args_comparable || call->args() == args)) {
                         return expr;
                     }
                     for (const auto& param : call->args()) {
-                        if (const auto* found = find_call_in(param, name, args, args_comparable)) {
+                        if (const auto* found = find_call_in(param, name, args, args_comparable, distinct)) {
                             return found;
                         }
                     }
@@ -72,10 +74,11 @@ namespace components::sql::transform {
                     return find_call_in(static_cast<const expressions::cast_expression_t*>(expr)->child(),
                                         name,
                                         args,
-                                        args_comparable);
+                                        args_comparable,
+                                        distinct);
                 case expression_group::scalar: {
                     for (const auto& param : static_cast<const scalar_expression_t*>(expr)->params()) {
-                        if (const auto* found = find_call_in(param, name, args, args_comparable)) {
+                        if (const auto* found = find_call_in(param, name, args, args_comparable, distinct)) {
                             return found;
                         }
                     }
@@ -83,14 +86,14 @@ namespace components::sql::transform {
                 }
                 case expression_group::compare: {
                     const auto* cmp = static_cast<const compare_expression_t*>(expr);
-                    if (const auto* found = find_call_in(cmp->left(), name, args, args_comparable)) {
+                    if (const auto* found = find_call_in(cmp->left(), name, args, args_comparable, distinct)) {
                         return found;
                     }
-                    if (const auto* found = find_call_in(cmp->right(), name, args, args_comparable)) {
+                    if (const auto* found = find_call_in(cmp->right(), name, args, args_comparable, distinct)) {
                         return found;
                     }
                     for (const auto& child : cmp->children()) {
-                        if (const auto* found = find_call(child.get(), name, args, args_comparable)) {
+                        if (const auto* found = find_call(child.get(), name, args, args_comparable, distinct)) {
                             return found;
                         }
                     }
@@ -103,10 +106,7 @@ namespace components::sql::transform {
     } // namespace
 
     namespace {
-        // Logical negation (complement) of a scalar comparison operator: eq<->ne, lt<->gte, gt<->lte.
-        // NOT distributes over an ANY/ALL membership by De Morgan only when the per-element comparison
-        // is itself flipped to its complement (see the AEXPR_NOT membership rewrite below). Returns
-        // compare_type::invalid for an operator with no scalar complement (regex handled separately).
+        // compare_type::invalid means no scalar complement exists (regex is handled separately).
         compare_type negate_scalar_compare(compare_type op) noexcept {
             switch (op) {
                 case compare_type::eq:
@@ -140,8 +140,6 @@ namespace components::sql::transform {
         return as_expression(std::move(operand));
     }
 
-    // A param_storage in expression position: an expression is already one, a key reads a
-    // field, anything else is a bound constant.
     expression_ptr transformer::as_expression(param_storage operand) {
         if (std::holds_alternative<expression_ptr>(operand)) {
             return std::get<expression_ptr>(operand);
@@ -236,7 +234,6 @@ namespace components::sql::transform {
         auto* params = context.plan->parameters.get();
         auto recurse = [&](Node* operand) { return transform_expression(operand, context); };
 
-        // `+x` is x: peel the identity layers so the stripped node takes its own arm.
         node = strip_unary_plus(node);
         if (!node) {
             return core::error_t(core::error_code_t::sql_parse_error,
@@ -246,7 +243,6 @@ namespace components::sql::transform {
         switch (nodeTag(node)) {
             case T_ColumnRef: {
                 auto* col_ref = pg_ptr_cast<ColumnRef>(node);
-                // `*` and `t.*` name a whole row
                 if (nodeTag(col_ref->fields->lst.back().data) == T_A_Star) {
                     if (col_ref->fields->lst.size() == 1) {
                         return param_storage{expression_ptr{make_scalar_expression(resource_,
@@ -255,7 +251,6 @@ namespace components::sql::transform {
                     }
                     VALUE_OR_RETURN(auto star_col, columnref_to_field(resource_, col_ref, names));
                     if (!star_col.table.empty()) {
-                        // Carry the qualifier so the validator expands it by result_alias.
                         std::pmr::vector<std::pmr::string> star_path{resource_};
                         star_path.emplace_back(std::pmr::string{star_col.table, resource_});
                         star_path.emplace_back(std::pmr::string{"*", resource_});
@@ -265,9 +260,6 @@ namespace components::sql::transform {
                                                                   expressions::key_t{std::move(star_path)})}};
                     }
                 }
-                // A correlated outer column lowers to the correlation parameter. Every
-                // consumer reads parameters live per row, so the lateral join's
-                // per-outer-row rebind is honoured wherever the column appears.
                 if (auto corr = try_lateral_correlate(col_ref, names)) {
                     if (context.aggregates != expression_placement_t::select) {
                         return *corr;
@@ -303,6 +295,12 @@ namespace components::sql::transform {
                 if (nodeTag(cast->arg) == T_ColumnRef) {
                     VALUE_OR_RETURN(auto target_type, get_type(resource_, cast->typeName));
                     VALUE_OR_RETURN(auto col, columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(cast->arg), names));
+                    if (context.cast_annotates_key && cast->variant_select) {
+                        auto variant = std::move(col.field);
+                        variant.set_cast_type(target_type);
+                        variant.set_variant_select(true);
+                        return variant;
+                    }
                     if (context.cast_annotates_key) {
                         note_cast_type(target_type);
                     }
@@ -362,8 +360,6 @@ namespace components::sql::transform {
                             return core::error_t(core::error_code_t::sql_parse_error,
                                                  std::pmr::string{"invalid arithmetics operand", resource_});
                         }
-                        // A one-legged `+` is the identity; a one-legged `-` is the real
-                        // unary operator, not a subtraction from an invented zero.
                         if (!sub->lexpr) {
                             if (stype == scalar_type::add) {
                                 return recurse(sub->rexpr);
@@ -400,6 +396,7 @@ namespace components::sql::transform {
             }
             case T_FuncCall: {
                 auto* func = pg_ptr_cast<FuncCall>(node);
+                RETURN_IF_ERROR(refuse_dropped_call_decorations(resource_, *func));
                 if (context.aggregates == expression_placement_t::call) {
                     VALUE_OR_RETURN(auto call, transform_a_expr_func(func, names, context.plan));
                     return param_storage{std::move(call)};
@@ -420,13 +417,14 @@ namespace components::sql::transform {
                 if (context.aggregates == expression_placement_t::select) {
                     auto call = make_function_expression(resource_, std::move(funcname), std::move(args));
                     call->set_star_argument(func->agg_star);
+                    call->set_distinct(func->agg_distinct);
                     return param_storage{expression_ptr{call}};
                 }
                 const bool args_comparable = std::none_of(args.begin(), args.end(), [](const param_storage& arg) {
                     return std::holds_alternative<expressions::expression_ptr>(arg);
                 });
                 for (const auto& expr : context.group->expressions()) {
-                    if (const auto* found = find_call(expr.get(), funcname, args, args_comparable)) {
+                    if (const auto* found = find_call(expr.get(), funcname, args, args_comparable, func->agg_distinct)) {
                         return found->key();
                     }
                 }
@@ -435,6 +433,7 @@ namespace components::sql::transform {
                 for (auto& arg : args) {
                     agg_expr->append_param(arg);
                 }
+                agg_expr->set_distinct(func->agg_distinct);
                 context.group->append_expression(agg_expr);
                 return expressions::key_t{resource_, alias};
             }
@@ -490,7 +489,6 @@ namespace components::sql::transform {
                         return param_id;
                     }
                     case EXISTS_SUBLINK: {
-                        // `col = EXISTS (SELECT ...)`: compare against the boolean result.
                         auto inner = transform_inner();
                         if (inner.has_error()) {
                             return inner.error();
@@ -500,7 +498,6 @@ namespace components::sql::transform {
                         return param_id;
                     }
                     case ARRAY_SUBLINK: {
-                        // ARRAY(SELECT ...) is not supported yet
                         if (!context.array_operand) {
                             return core::error_t(
                                 core::error_code_t::unimplemented_yet,
@@ -527,14 +524,9 @@ namespace components::sql::transform {
                 }
             }
             case T_NullTest: {
-                // Read here rather than through the predicate path so the operand keeps this
-                // context: an aggregate under an IS NULL binds to the group like any other.
                 VALUE_OR_RETURN(auto test, transform_null_test(pg_ptr_cast<NullTest>(node), context));
                 return param_storage{std::move(test)};
             }
-            // The sub-link forms yield a boolean, which is a value like any other.
-            // transform_predicate carries the only remaining dead-end for a node that is
-            // neither, so an unknown shape is still reported once, from one place.
             default: {
                 VALUE_OR_RETURN(auto predicate, transform_predicate(node, names, context.plan));
                 return param_storage{std::move(predicate)};
@@ -584,8 +576,6 @@ namespace components::sql::transform {
             VALUE_OR_RETURN(auto rhs, resolve_select_operand(node->rexpr, names, plan, group));
             expr->append_param(std::move(rhs));
         } else if (op_str == "+") {
-            // Unary plus in an expression slot: the identity, encoded as 0 + x (the SELECT
-            // field-clause strip handles the top-level `SELECT +x` form).
             auto zero_id = plan->parameters->add_parameter(types::logical_value_t(resource_, int64_t(0)));
             expr = make_scalar_expression(resource_,
                                           scalar_type::add,
@@ -594,7 +584,6 @@ namespace components::sql::transform {
             VALUE_OR_RETURN(auto rhs, resolve_select_operand(node->rexpr, names, plan, group));
             expr->append_param(std::move(rhs));
         } else {
-            // Unary minus: proper unary operator with single operand
             expr = make_scalar_expression(resource_,
                                           scalar_type::unary_minus,
                                           expressions::key_t{resource_, std::move(expr_name)});
@@ -617,20 +606,10 @@ namespace components::sql::transform {
             expression_context_t{names, plan, expression_placement_t::select, group, group_keys});
     }
 
-    // Render a jsonb operator's right-hand key/path operand into its textual form.
-    // The operand is always a literal: a bare string/number, a cast of one, or a
-    // ParamRef; a bare column reference (`t -> x`) contributes the column's *name*.
-    // The switch is exhaustive and never dereferences a node as the wrong type —
-    // every unhandled shape reports a clean parse error instead.
+    // The switch is exhaustive: every unhandled shape reports a parse error, never a wrong-type deref.
     core::result_wrapper_t<std::string> transformer::get_str_value(Node* node) {
         switch (nodeTag(node)) {
             case T_TypeCast:
-                // A cast key is just its underlying constant rendered as text:
-                // 'x'::text -> "x", 5::bigint -> "5", TRUE -> "t". Recurse so the
-                // operand's real node type drives the conversion. (This arm used to
-                // collapse EVERY cast to the boolean strings "true"/"false", which
-                // both mis-keyed 'x'::text and dereferenced a non-string cast
-                // argument's integer union member as a char* — a segfault.)
                 return get_str_value(pg_ptr_cast<TypeCast>(node)->arg);
             case T_A_Const: {
                 auto value = &(pg_ptr_cast<A_Const>(node)->val);
@@ -648,13 +627,9 @@ namespace components::sql::transform {
                     default:
                         break;
                 }
-                // No fall-through into the ColumnRef arm below: an unexpected
-                // constant kind is a clean error, not a wild reinterpret-cast.
                 break;
             }
             case T_ColumnRef:
-                // `t -> col`: the key is the column's own name (its identifier),
-                // not its per-row value. Kept for compatibility with that spelling.
                 return strVal(pg_ptr_cast<ColumnRef>(node)->fields->lst.back().data);
             case T_ParamRef:
                 return "$" + std::to_string(pg_ptr_cast<ParamRef>(node)->number);
@@ -670,14 +645,11 @@ namespace components::sql::transform {
             return false;
         }
         auto& lst = ref->fields->lst;
-        // Only a qualified reference (table.column) can name an outer relation; an
-        // unqualified column always resolves against the inner scope.
         if (lst.size() < 2 || nodeTag(lst.front().data) != T_String) {
             return false;
         }
         const std::string qualifier = strVal(lst.front().data);
-        // A qualifier the inner scope owns is an ordinary in-scope column, not a
-        // correlation (inner names shadow outer ones, matching SQL scoping).
+        // A qualifier the inner scope owns is an in-scope column, not a correlation (SQL scoping).
         if (inner_names.is_left_table(qualifier) || inner_names.is_right_table(qualifier)) {
             return false;
         }
@@ -689,8 +661,6 @@ namespace components::sql::transform {
         if (!references_lateral_outer(ref, inner_names)) {
             return std::nullopt;
         }
-        // Resolve against the OUTER scope so the key's path + side match how the
-        // lateral join operator locates the column in the outer row's chunk.
         auto outer_col_res = columnref_to_field(resource_, ref, *lateral_outer_names_);
         if (outer_col_res.has_error()) {
             return std::nullopt;
@@ -701,8 +671,6 @@ namespace components::sql::transform {
         if (auto it = lateral_correlation_map_.find(dedup_key); it != lateral_correlation_map_.end()) {
             return it->second;
         }
-        // Placeholder value: the lateral join operator rebinds the real outer value
-        // (with its true type) into this slot before each inner-sub-plan re-run.
         auto param_id = lateral_plan_->parameters->add_parameter(
             types::logical_value_t{resource_, types::complex_logical_type{types::logical_type::NA}});
         lateral_join_->add_correlation(param_id, outer_col.field);
@@ -712,7 +680,6 @@ namespace components::sql::transform {
 
     void transformer::note_cast_type(const types::complex_logical_type& target) {
         if (target.type() != types::logical_type::UNKNOWN) {
-            // a built-in target needs no catalog trip
             return;
         }
         const std::string& name = target.type_name();
@@ -769,8 +736,7 @@ namespace components::sql::transform {
                 };
                 auto append = [&expr, &lower](Node* node) -> core::error_t {
                     VALUE_OR_RETURN(auto child_res, lower(node));
-                    // An accepted-but-empty child (a sub-query form that lowers to nothing) has
-                    // no group() to read; skip it rather than null-deref below.
+                    // An accepted-but-empty child has no group() to read; skip it rather than null-deref below.
                     auto child_expr = std::move(child_res);
                     if (!child_expr) {
                         return core::error_t::no_error();
@@ -796,21 +762,17 @@ namespace components::sql::transform {
                 if (nodeTag(node) == T_A_Indirection) {
                     return transform_a_indirection(pg_ptr_cast<A_Indirection>(node), names, plan);
                 }
-                // The operator symbol is the LAST element of the name list — a schema-qualified operator
-                // (OPERATOR(pg_catalog.<>)) prepends the schema, so read .back(), not .front().
+                // A schema-qualified OPERATOR(pg_catalog.<>) prepends the schema, so read .back(), not .front().
                 if (!node->name || nodeTag(node->name->lst.back().data) != T_String) {
                     return core::error_t(core::error_code_t::sql_parse_error,
                                          std::pmr::string{"Unsupported expr in transform_a_exr", resource_});
                 }
                 auto op_str = std::string_view(strVal(node->name->lst.back().data));
 
-                // Check if this is arithmetic (+, -, *, /, %)
                 if (is_arithmetic_operator(op_str)) {
                     return transform_a_expr_arithmetic(node, names, plan);
                 }
 
-                // Check for LIKE / NOT LIKE
-                // LIKE ~~ / NOT LIKE !~~ / ILIKE ~~* / NOT ILIKE !~~*.
                 if (op_str == "~~" || op_str == "!~~" || op_str == "~~*" || op_str == "!~~*") {
                     column_ref_t key_left(resource_);
                     if (nodeTag(node->lexpr) == T_ColumnRef) {
@@ -827,28 +789,19 @@ namespace components::sql::transform {
                     }
                     VALUE_OR_RETURN(auto raw_val, get_value(resource_, node->rexpr));
                     if (raw_val.is_null()) {
-                        // `col [NOT] [I]LIKE NULL` is UNKNOWN for every row (three-valued logic,
-                        // and NOT UNKNOWN is still UNKNOWN) -> zero rows for BOTH the plain and
-                        // the negated form. all_false is the canonical no-rows predicate (the
-                        // scan short-circuits it); it must NOT be wrapped in union_not here —
-                        // that would turn match-nothing into match-everything.
+                        // Must not be wrapped in union_not, or match-nothing becomes match-everything.
                         return make_compare_expression(resource_, compare_type::all_false);
                     }
-                    // LIKE patterns are text-only. Reading a numeric/bool payload through
-                    // value<std::string_view>() below treats it as a std::string pointer and
-                    // crashes before the executor's regex operand guards can report an error.
                     if (!types::is_string(raw_val.type().type())) {
                         return core::error_t(core::error_code_t::sql_parse_error,
                                              std::pmr::string{"LIKE: right side must be a string", resource_});
                     }
                     auto pattern = std::string(raw_val.value<std::string_view>());
                     auto param_id = plan->parameters->add_parameter(types::logical_value_t(resource_, pattern));
-                    const bool icase = (op_str == "~~*" || op_str == "!~~*");  // ILIKE / NOT ILIKE
-                    const bool negate = (op_str == "!~~" || op_str == "!~~*"); // NOT LIKE / NOT ILIKE
+                    const bool icase = (op_str == "~~*" || op_str == "!~~*");
+                    const bool negate = (op_str == "!~~" || op_str == "!~~*");
 
-                    // Convert to regex function call. NOT [I]LIKE is the `n` flag rather than a
-                    // union_not: the match itself inverts, so a NULL subject stays UNKNOWN (the row
-                    // is dropped, as PostgreSQL does) without an is_not_null guard around it.
+                    // NOT [I]LIKE is the `n` flag rather than a union_not, so a NULL subject stays UNKNOWN.
                     std::string flags{"l"};
                     if (icase) {
                         flags += 'i';
@@ -863,7 +816,6 @@ namespace components::sql::transform {
                     return make_function_expression(resource_, "regexp_like", std::move(args));
                 }
 
-                // JSONB key existence: '?' / '?|' / '?&'. Desugars to IS NOT NULL.
                 if (op_str == "?" || op_str == "?|" || op_str == "?&") {
                     return transform_jsonb_exists(node, names, plan->parameters.get(), op_str);
                 }
@@ -874,9 +826,7 @@ namespace components::sql::transform {
                                          std::pmr::string{"invalid compare operand", resource_});
                 }
 
-                // Set when a comparison operand is an ARRAY(SELECT ...): such a compare must be marked
-                // unfoldable so it evaluates in-memory (length-aware array equality) and is never pushed to
-                // the storage constant_filter path (which does no length reconcile).
+                // Set when an operand is ARRAY(SELECT ...): must evaluate in-memory, never via pushdown.
                 bool array_operand = false;
                 expression_context_t operand_context{names, plan};
                 operand_context.cast_annotates_key = true;
@@ -887,8 +837,6 @@ namespace components::sql::transform {
                 VALUE_OR_RETURN(auto right, get_arg(node->rexpr));
                 auto cmp = make_compare_expression(resource_, comp_type, left, right);
                 if (array_operand) {
-                    // Route array equality to the in-memory operator_match (length-aware
-                    // logical_value_t::operator==), never the storage constant_filter pushdown.
                     cmp->make_unfoldable();
                 }
                 return cmp;
@@ -909,19 +857,11 @@ namespace components::sql::transform {
                         core::error_code_t::sql_parse_error,
                         std::pmr::string{"Unsupported expression: unknown expr type in transform_a_expr", resource_});
                 }
-                // An accepted-but-empty child has no group() to read; guard before the deref below.
                 if (!right) {
                     return core::error_t(core::error_code_t::sql_parse_error,
                                          std::pmr::string{"NOT operand lowered to an empty expression", resource_});
                 }
-                // De Morgan for a negated membership sub-query: `NOT (x op ANY S)` ≡ `x !op ALL S` and
-                // `NOT (x op ALL S)` ≡ `x !op ANY S` (!op = the scalar complement). This preserves the
-                // three-valued NULL semantics: a NULL element of S makes a non-matched outer row UNKNOWN
-                // under BOTH the membership and its negation, so the row is dropped either way — the
-                // classic `x NOT IN (SELECT ... containing a NULL)` correctly yields NO rows. A plain
-                // union_not over the boolean membership would instead see only "false" (NULLs already
-                // folded away) and flip it to true, wrongly keeping the row. Regex (LIKE/ILIKE) ANY/ALL
-                // keeps its own per-element negation (regex_negate) and is left to the union_not wrapper.
+                // De Morgan preserves 3-valued NULL semantics; a plain union_not would wrongly flip a NULL match.
                 if (right->group() == expression_group::compare) {
                     auto& membership = reinterpret_cast<compare_expression_ptr&>(right);
                     const auto ctype = membership->type();
@@ -946,8 +886,6 @@ namespace components::sql::transform {
                 return expr;
             }
             case AEXPR_IN: {
-                // col IN (1,2,3) → union_or(col=1, col=2, col=3)
-                // col NOT IN (1,2,3) → union_and(col<>1, col<>2, col<>3)
                 if (nodeTag(node->lexpr) != T_ColumnRef && nodeTag(node->lexpr) != T_A_Indirection) {
                     return core::error_t(
                         core::error_code_t::sql_parse_error,
@@ -990,8 +928,7 @@ namespace components::sql::transform {
                 return transform_sublink_expr(pg_ptr_cast<SubLink>(node), names, plan);
             }
             case T_TypeCast: {
-                // Boolean literal: TRUE/FALSE parse as TypeCast(A_Const{"t"|"f"}, bool)
-                // and reduce to the constant all_true / all_false predicate.
+                // TRUE/FALSE parse as TypeCast(A_Const{"t"|"f"}, bool); reduce to the constant predicate.
                 auto cast = pg_ptr_cast<TypeCast>(node);
                 if (cast->arg && nodeTag(cast->arg) == T_A_Const) {
                     auto constant = pg_ptr_cast<A_Const>(cast->arg);
@@ -1027,9 +964,8 @@ namespace components::sql::transform {
                 auto param_id1 = plan->parameters->add_parameter(types::logical_value_t{resource_, true});
                 auto param_id2 =
                     plan->parameters->add_parameter(types::logical_value_t{resource_, types::logical_type::NA});
-                // Transform before appending so nested sub_queries/sub_query_results come first.
-                // Save/restore the pending internal-aggregate stash so the inner epilogue's
-                // flush + clear does not steal this level's SELECT-list aggregates.
+                // Transform before appending so nested sub_queries come first; save/restore the pending-
+                // aggregate stash so the inner epilogue doesn't steal this level's own.
                 auto prev_pending = std::move(pending_internal_aggs_);
                 pending_internal_aggs_.clear();
                 auto sub_node = transform(*node->subselect, plan);
@@ -1053,13 +989,8 @@ namespace components::sql::transform {
                         std::pmr::string{"IN expression: left side must be a column reference", resource_});
                 }
                 VALUE_OR_RETURN(auto key, node_to_field(resource_, node->testexpr, names));
-                // Operator symbol is last (schema-qualified OPERATOR(schema.op) prepends the schema).
                 auto op_str = std::string_view(strVal(node->operName->lst.back().data));
-                // LIKE family: ~~ (LIKE), ~~* (ILIKE), !~~ (NOT LIKE), !~~* (NOT ILIKE) all map to a regex
-                // inner_op whose LIKE glob is converted per element at eval time (regex_like), matched
-                // case-insensitively for ILIKE (regex_icase), and negated per element before the any/all
-                // fold for NOT LIKE (regex_negate). Everything else (=, <>, <, ~~->regexp, ...) goes through
-                // get_compare_type; an unmapped operator is rejected (never silently `=`).
+                // An unmapped operator is rejected here, never silently treated as `=`.
                 compare_type inner_op;
                 bool re_like = false;
                 bool re_icase = false;
@@ -1079,9 +1010,6 @@ namespace components::sql::transform {
                 }
                 auto param_id =
                     plan->parameters->add_parameter(types::logical_value_t{resource_, types::logical_type::NA});
-                // Transform before appending so nested sub_queries/sub_query_results come first.
-                // Save/restore the pending internal-aggregate stash so the inner epilogue's
-                // flush + clear does not steal this level's SELECT-list aggregates.
                 auto prev_pending = std::move(pending_internal_aggs_);
                 pending_internal_aggs_.clear();
                 auto sub_node = transform(*node->subselect, plan);
@@ -1107,24 +1035,13 @@ namespace components::sql::transform {
                     }
                     expr->set_regex_flags(plan->parameters->add_parameter(types::logical_value_t(resource_, flags)));
                 }
-                // ANY/ALL pushes into the disk scan as a conjunction of per-element filters
-                // (transform_predicate: constant_filter for comparisons, regex_filter for LIKE/ILIKE). The
-                // sub-query array is bound once (the executor runs sub_queries before the main plan), so a
-                // once-built filter is correct for these non-correlated arrays. Comparisons, positive AND
-                // negated LIKE/ILIKE ANY|ALL all push down: NOT LIKE ALL -> conjunction_not, NOT LIKE ANY ->
-                // OR of per-element conjunction_not, both guarded by is_not_null (see transform_predicate).
                 return expr;
             }
             case EXPR_SUBLINK: {
-                // Scalar sub-query as a bare boolean predicate: `WHERE (SELECT flag ...)`. PostgreSQL
-                // supports this; it is EXISTS-shaped. Compact the sub-query to its single scalar value and
-                // compare it against true. (>1 row errors inside compact_to_single_value, as PostgreSQL does.)
+                // PostgreSQL allows this bare `WHERE (SELECT flag ...)`; >1 row errors, as PostgreSQL does.
                 auto param_true = plan->parameters->add_parameter(types::logical_value_t{resource_, true});
                 auto param_result =
                     plan->parameters->add_parameter(types::logical_value_t{resource_, types::logical_type::NA});
-                // Transform before appending so nested sub_queries/sub_query_results come first.
-                // Save/restore the pending internal-aggregate stash so the inner epilogue's
-                // flush + clear does not steal this level's SELECT-list aggregates.
                 auto prev_pending = std::move(pending_internal_aggs_);
                 pending_internal_aggs_.clear();
                 auto sub_node = transform(*node->subselect, plan);
@@ -1132,9 +1049,7 @@ namespace components::sql::transform {
                 if (sub_node.has_error()) {
                     return sub_node.error();
                 }
-                // boolean_required: WHERE's argument must be type boolean (PostgreSQL). The
-                // executor rejects a non-boolean static output type of this sub-query before
-                // binding, so `WHERE (SELECT 1)` errors instead of silently coercing to bool.
+                // boolean_required: PostgreSQL rejects `WHERE (SELECT 1)` rather than silently coercing.
                 plan->sub_query_results.emplace_back(&vector::compact_to_single_value,
                                                      param_result,
                                                      /*boolean_required=*/true);
@@ -1149,10 +1064,7 @@ namespace components::sql::transform {
             case INITPLAN_FUNC_SUBLINK:
                 break;
         }
-        // Unsupported / parser-unreachable sub-query form. In this fork the grammar never emits
-        // NOT_EXISTS/ROWCOMPARE/CTE/INITPLAN_FUNC (NOT EXISTS is AEXPR_NOT+EXISTS; WITH rides withClause);
-        // ARRAY(SELECT ...) as a predicate is meaningless (array != bool) and target-list ARRAY is a
-        // separate deferred feature.
+        // This fork's grammar never emits NOT_EXISTS/ROWCOMPARE/CTE/INITPLAN_FUNC here.
         return core::error_t(core::error_code_t::sql_parse_error,
                              std::pmr::string{"unsupported subquery expression in this context", resource_});
     }
@@ -1160,14 +1072,12 @@ namespace components::sql::transform {
     core::result_wrapper_t<expression_ptr> transformer::transform_a_expr_func(FuncCall* node,
                                                                               const name_collection_t& names,
                                                                               logical_plan::execution_plan_t* plan) {
+        RETURN_IF_ERROR(refuse_dropped_call_decorations(resource_, *node));
         auto* params = plan->parameters.get();
         std::string funcname = strVal(node->funcname->lst.front().data);
         std::pmr::vector<param_storage> args;
         args.reserve(node->args->lst.size());
-        // create_value_getter rejects keys whose side is still undefined at runtime.
-        // For unqualified column refs inside a function call in a non-JOIN query
-        // (no right table set), default the side to left so the predicate can read
-        // the value. Joins keep the original ambiguity-aware behaviour.
+        // create_value_getter rejects a still-undefined side, so default to left when there's no right table.
         const bool no_right_side = names.right_name.empty() && names.right_alias.empty();
         auto pin_side_to_left_if_unset = [no_right_side](expressions::key_t& field) {
             if (no_right_side && field.side() == expressions::side_t::undefined) {
@@ -1176,9 +1086,6 @@ namespace components::sql::transform {
         };
         for (const auto& arg : node->args->lst) {
             if (nodeTag(arg.data) == T_ColumnRef) {
-                // Correlated outer column as a function argument: lower to the
-                // correlation parameter (read live per row by the function predicate /
-                // projection evaluators, so the lateral per-outer-row rebind holds).
                 if (auto corr = try_lateral_correlate(pg_ptr_cast<ColumnRef>(arg.data), names)) {
                     args.emplace_back(*corr);
                     continue;
@@ -1207,7 +1114,9 @@ namespace components::sql::transform {
                 args.emplace_back(param);
             }
         }
-        return make_function_expression(resource_, std::move(funcname), std::move(args));
+        auto expr = make_function_expression(resource_, std::move(funcname), std::move(args));
+        expr->set_distinct(node->agg_distinct);
+        return expr;
     }
 
     core::result_wrapper_t<expression_ptr> transformer::transform_a_indirection(A_Indirection* node,
@@ -1240,7 +1149,7 @@ namespace components::sql::transform {
                 } else if (names.is_right_table(base_name)) {
                     side = expressions::side_t::right;
                 } else {
-                    segments.emplace_back(std::pmr::string{base_name.c_str(), resource_}); // column at root
+                    segments.emplace_back(std::pmr::string{base_name.c_str(), resource_});
                 }
             } else {
                 VALUE_OR_RETURN(auto cr, columnref_to_field(resource_, ref, names));
@@ -1269,8 +1178,6 @@ namespace components::sql::transform {
                                                   expressions::side_t& side) {
         auto op = std::string_view(strVal(node->name->lst.front().data));
 
-        // Left operand: either a deeper jsonb navigation step, or the base
-        // (table name / column) the whole chain is rooted at.
         Node* lexpr = node->lexpr;
         if (nodeTag(lexpr) == T_A_Expr) {
             auto* sub = pg_ptr_cast<A_Expr>(lexpr);
@@ -1285,16 +1192,14 @@ namespace components::sql::transform {
             return err;
         }
 
-        // Right operand: the key(s) this step navigates into.
         VALUE_OR_RETURN(auto key_res, get_str_value(node->rexpr));
         const std::string& key_str = key_res;
         if (jsonb_op_takes_path(op)) {
-            // '#>' / '#>>' / '#-' : a whole path. Accept PG array '{a,b}' or dotted 'a.b'.
+            // '#>' / '#>>' / '#-' accept a whole path: PG array '{a,b}' or dotted 'a.b'.
             for (auto& seg : jsonb_path::split_operand(key_str, resource_)) {
                 segments.emplace_back(std::move(seg));
             }
         } else {
-            // '->' / '->>' : a single key, taken verbatim (no splitting).
             segments.emplace_back(std::pmr::string{key_str.c_str(), resource_});
         }
         return core::error_t::no_error();
@@ -1331,16 +1236,12 @@ namespace components::sql::transform {
                                                                                      const name_collection_t& names) {
         auto op = std::string_view(strVal(node->name->lst.front().data));
         if (!jsonb_nav_returns_scalar(op)) {
-            // '->' / '#>' return jsonb (a sub-table) — only valid in a relation
-            // position (FROM/JOIN), not as a scalar in SELECT/WHERE.
             return core::error_t(core::error_code_t::sql_parse_error,
                                  std::pmr::string{"jsonb operator '" + std::string(op) +
                                                       "' returns a table and cannot be used as a scalar value; "
                                                       "terminate the chain with '->>' or '#>>'",
                                                   resource_});
         }
-        // The only difference from a prefix key is the scalar-vs-table guard above;
-        // the flattening itself is identical, so share it.
         return resolve_jsonb_prefix_key(node, names);
     }
 
@@ -1348,7 +1249,6 @@ namespace components::sql::transform {
                                                                                const name_collection_t& names,
                                                                                logical_plan::parameter_node_t* params,
                                                                                std::string_view op) {
-        // Left operand: document (table root) or a navigation prefix.
         std::pmr::vector<std::pmr::string> prefix(resource_);
         expressions::side_t side = expressions::side_t::undefined;
         Node* lexpr = node->lexpr;
@@ -1365,7 +1265,6 @@ namespace components::sql::transform {
             return err;
         }
 
-        // Right operand: a single key ('?') or a text array '{x,y}' ('?|','?&').
         VALUE_OR_RETURN(auto rhs_res, get_str_value(node->rexpr));
         const std::string& rhs = rhs_res;
         std::pmr::vector<std::pmr::string> keys(resource_);
@@ -1409,9 +1308,7 @@ namespace components::sql::transform {
             std::pmr::vector<std::pmr::string> segments(prefix);
             segments.emplace_back(k);
             expressions::key_t key(resource_, jsonb_path::flatten(segments, resource_), use_side);
-            // A jsonb existence test: a key that names no column is legally absent
-            // (yields false), and an intermediate object key is present if a child
-            // is — the validator resolves both, so it must not hard-error here.
+            // A key naming no column is legally absent (yields false), not a hard error.
             key.set_absent_ok(true);
             auto dummy = params->add_parameter(
                 types::logical_value_t(resource_, types::complex_logical_type{types::logical_type::NA}));
@@ -1450,17 +1347,12 @@ namespace components::sql::transform {
         auto func_call = pg_ptr_cast<FuncCall>(list->lst.front().data);
         std::string funcname = strVal(func_call->funcname->lst.front().data);
         std::pmr::vector<param_storage> args{resource_};
-        // func_call->args is null for a zero-argument call (e.g. `FROM foo()`); leave
-        // args empty and let validation reject the arity mismatch rather than deref it.
+        // func_call->args is null for a zero-argument call (e.g. `FROM foo()`); don't deref it.
         if (func_call->args) {
             args.reserve(func_call->args->lst.size());
             for (const auto& arg : func_call->args->lst) {
                 if (nodeTag(arg.data) == T_ColumnRef) {
-                    // Correlated outer reference: bind per outer row via a parameter.
                     VALUE_OR_RETURN(auto key, columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(arg.data), names));
-                    // Placeholder type only used to satisfy validation; the real value (with
-                    // its true type) is bound from the outer row at runtime. BIGINT keeps
-                    // integer-typed table functions like generate_series matchable.
                     auto param_id =
                         plan->parameters->add_parameter(types::logical_value_t{resource_, static_cast<int64_t>(0)});
                     node_join->add_correlation(param_id, key.field);
@@ -1508,12 +1400,8 @@ namespace components::sql::transform {
         for (auto& arg : node->args->lst) {
             auto when = pg_ptr_cast<CaseWhen>(arg.data);
 
-            // Condition
             if (node->arg) {
-                // Simple CASE: CASE col WHEN val THEN ... → generate equality: col = val.
-                // The operand must be a column reference — a blind pg_ptr_cast<ColumnRef> on any other
-                // node (e.g. a SubLink) reinterprets it and crashes; guard the tag first, mirroring
-                // transform_null_test.
+                // A blind pg_ptr_cast<ColumnRef> on any other node (e.g. SubLink) crashes; guard the tag first.
                 if (nodeTag(node->arg) != T_ColumnRef && nodeTag(node->arg) != T_A_Indirection) {
                     return core::error_t(core::error_code_t::sql_parse_error,
                                          std::pmr::string{"CASE operand must be a column reference", resource_});
@@ -1523,7 +1411,6 @@ namespace components::sql::transform {
                 auto cond = make_compare_expression(resource_, compare_type::eq, col_key.field, param);
                 expr->append_param(expression_ptr(cond));
             } else {
-                // Searched CASE: CASE WHEN condition THEN ... → boolean expression
                 auto cond_node = pg_ptr_cast<Node>(when->expr);
                 core::result_wrapper_t<expression_ptr> condition;
                 if (nodeTag(cond_node) == T_A_Expr) {
@@ -1531,7 +1418,6 @@ namespace components::sql::transform {
                 } else if (nodeTag(cond_node) == T_FuncCall) {
                     condition = transform_a_expr_func(pg_ptr_cast<FuncCall>(cond_node), names, plan);
                 } else if (nodeTag(cond_node) == T_NullTest) {
-                    // CASE WHEN col IS [NOT] NULL THEN ...
                     condition =
                         transform_null_test(pg_ptr_cast<NullTest>(cond_node), expression_context_t{names, plan});
                 } else {
@@ -1544,12 +1430,10 @@ namespace components::sql::transform {
                 expr->append_param(std::move(condition.value()));
             }
 
-            // Result: any value expression
             VALUE_OR_RETURN(auto result, resolve_select_operand(pg_ptr_cast<Node>(when->result), names, plan, group));
             expr->append_param(std::move(result));
         }
 
-        // Default (ELSE clause)
         if (node->defresult) {
             VALUE_OR_RETURN(auto def, resolve_select_operand(pg_ptr_cast<Node>(node->defresult), names, plan, group));
             expr->append_param(std::move(def));
@@ -1566,24 +1450,20 @@ namespace components::sql::transform {
         if (!agg_filter) {
             return args;
         }
-        // Wrap one aggregate argument `x` into `CASE WHEN p THEN x END`. The predicate is
-        // re-transformed per argument so each CASE owns an independent condition tree (constant
-        // folding mutates compare nodes in place, so a shared one would be unsafe); aggregates
-        // almost always take a single argument, so the duplication is immaterial.
+        // Re-transformed per argument: constant folding mutates compare nodes in place, so sharing one is unsafe.
         auto wrap = [&](param_storage result) -> core::result_wrapper_t<param_storage> {
             VALUE_OR_RETURN(auto cond, transform_predicate(agg_filter, names, plan));
             auto case_expr = make_scalar_expression(
                 resource_,
                 scalar_type::case_expr,
                 expressions::key_t{resource_, "__aggfilter_" + std::to_string(aggregate_counter_++)});
-            case_expr->append_param(cond);              // WHEN p
-            case_expr->append_param(std::move(result)); // THEN <arg>   (no ELSE -> NULL when p not TRUE)
+            case_expr->append_param(cond);
+            case_expr->append_param(std::move(result));
             return expressions::expression_ptr(case_expr);
         };
 
         if (args.empty()) {
-            // count(*) / a parameterless aggregate: count the rows where p by counting the non-NULL
-            // results of CASE WHEN p THEN 1 END.
+            // count(*) counts the rows where p by counting the non-NULL results of CASE WHEN p THEN 1 END.
             auto one = plan->parameters->add_parameter(static_cast<int64_t>(1));
             VALUE_OR_RETURN(auto wrapped, wrap(one));
             std::pmr::vector<param_storage> filtered(resource_);
@@ -1606,7 +1486,6 @@ namespace components::sql::transform {
         return core::error_t::no_error();
     }
 
-    // Resolve a HAVING operand: FuncCall → find matching aggregate alias in group
     core::result_wrapper_t<param_storage>
     transformer::resolve_having_operand(Node* node,
                                         const name_collection_t& names,
@@ -1624,23 +1503,14 @@ namespace components::sql::transform {
                                        const logical_plan::node_ptr& group,
                                        const std::pmr::vector<expression_ptr>* group_keys) {
         if (nodeTag(node) == T_TypeCast) {
-            // HAVING TRUE / FALSE — constant predicate, no aggregate involved.
             return transform_predicate(node, names, plan);
         }
         if (nodeTag(node) == T_SubLink) {
-            // A sub-query as a bare HAVING predicate — `HAVING (SELECT flag ...)`, and
-            // EXISTS / IN / ANY / ALL — is transformed exactly as in WHERE. For a bare
-            // EXPR_SUBLINK this yields the compact-to-single-value `== true` predicate with
-            // boolean_required set, so a non-boolean `HAVING (SELECT 1)` is rejected
-            // (PostgreSQL: argument of HAVING must be type boolean). A sub-query as a
-            // comparison OPERAND (`HAVING sum(x) > (SELECT ...)`) is a different path
-            // (resolve_having_operand) and stays untyped, since any type is legal there.
             return transform_sublink_expr(pg_ptr_cast<SubLink>(node), names, plan);
         }
         if (nodeTag(node) == T_A_Expr) {
             auto a_expr = pg_ptr_cast<A_Expr>(node);
             if (a_expr->kind == AEXPR_OP) {
-                // Operator symbol is last (schema-qualified OPERATOR(schema.op) prepends the schema).
                 auto op_str = std::string_view(strVal(a_expr->name->lst.back().data));
                 if (!is_arithmetic_operator(op_str)) {
                     auto comp_type = get_compare_type(op_str);
@@ -1675,13 +1545,11 @@ namespace components::sql::transform {
         auto param_id = params->add_parameter(
             types::logical_value_t(resource_, types::complex_logical_type{types::logical_type::NA}));
 
-        // A bare column keeps the fast validity-bitmap path in the predicate operator.
         if (nodeTag(node->arg) == T_ColumnRef || nodeTag(node->arg) == T_A_Indirection) {
             VALUE_OR_RETURN(auto key, node_to_field(resource_, pg_ptr_cast<Node>(node->arg), context.names));
             return make_compare_expression(resource_, cmp, key.field, param_id);
         }
 
-        // A computed argument — `(expr) IS NULL`
         VALUE_OR_RETURN(auto operand, transform_expression(pg_ptr_cast<Node>(node->arg), context));
         return make_compare_expression(resource_, cmp, operand, param_id);
     }
@@ -1729,8 +1597,7 @@ namespace components::sql::transform {
                 std::pmr::string{"CHECK constraint expression is not an expression: " + expr_text, resource_});
         }
 
-        // A CHECK names the columns of the one table it is attached to, so its references are
-        // unqualified and no table is needed to tell two sides apart.
+        // A CHECK's references are unqualified (its one table needs no name to tell sides apart).
         const name_collection_t names;
         check_expr_result out{nullptr, params ? params : logical_plan::make_parameter_node(resource_)};
         logical_plan::execution_plan_t plan{resource_, nullptr, out.params};

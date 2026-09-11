@@ -28,12 +28,11 @@ public:
 
 private:
     static configuration::config make_config(const benchmark_configuration_t& config) {
-        auto cfg = configuration::config::default_config();
+        // One named base dir via create_config -- not bare `current_path()/"disk"` and
+        // `.../"wal"`, which scatter both into whatever directory the runner was launched from.
+        auto cfg = configuration::config::create_config(std::filesystem::current_path() /
+                                                        "otterbrix_benchmark_data");
         cfg.log.level = log_t::level::off;
-        cfg.disk.on = config.disk_on;
-        cfg.wal.on = config.wal_on;
-        cfg.disk.path = std::filesystem::current_path() / "disk";
-        cfg.wal.path = std::filesystem::current_path() / "wal";
         return cfg;
     }
 };
@@ -273,7 +272,7 @@ void benchmark_runner_t::run(const benchmark_configuration_t& config) {
                 std::cerr << "Error loading group " << b->group() << ": " << e.what() << "\n";
             }
         }
-        checkpoint_if_disk(state, "after load-only");
+        checkpoint_now(state, "after load-only");
         std::cout << "Load-only complete. " << loaded_groups.size() << " groups loaded.\n";
         return;
     }
@@ -294,7 +293,7 @@ void benchmark_runner_t::run(const benchmark_configuration_t& config) {
                 loaded_groups.insert(b->group());
                 state.failed = false;
                 b->load(state);
-                checkpoint_if_disk(state, "after explain-load");
+                checkpoint_now(state, "after explain-load");
                 if (state.failed) {
                     std::cerr << "Error loading group " << b->group() << " (see stderr above)\n";
                     continue;
@@ -344,17 +343,13 @@ benchmark_result_t benchmark_runner_t::run_single(benchmark_t& bench, const benc
     }
 
     try {
-        // Fresh persisted state per benchmark. Every disk instance points at the
-        // same current_path()/"disk" (+ "/wal") — see benchmark_instance_t::make_config
-        // — so without a reset each load() re-runs CREATE TABLE IF NOT EXISTS and
-        // appends its @load_csv rows onto the previously persisted table, doubling
-        // row counts across benchmarks (60k -> 120k -> 180k ...). Clear the persisted
-        // dirs before opening the instance. Best-effort (error_code, no throw): a
-        // missing dir is not an error, and the fresh instance recreates them.
-        if (config.disk_on && !config.skip_load) {
+        // Fresh persisted state per benchmark: every instance points at the same base
+        // directory (benchmark_instance_t::make_config), so without a reset each load()
+        // reruns CREATE TABLE IF NOT EXISTS and appends onto the previous run's rows,
+        // doubling row counts across benchmarks (60k -> 120k -> 180k ...).
+        if (!config.skip_load) {
             std::error_code ec;
-            std::filesystem::remove_all(std::filesystem::current_path() / "disk", ec);
-            std::filesystem::remove_all(std::filesystem::current_path() / "wal", ec);
+            std::filesystem::remove_all(std::filesystem::current_path() / "otterbrix_benchmark_data", ec);
         }
 
         benchmark_instance_t instance(config);
@@ -373,7 +368,7 @@ benchmark_result_t benchmark_runner_t::run_single(benchmark_t& bench, const benc
         if (!config.skip_load) {
             bench.load(state);
             if (state.failed) { bail_on_fail(); return result; }
-            checkpoint_if_disk(state, "after load");
+            checkpoint_now(state, "after load");
             if (state.failed) { bail_on_fail(); return result; }
         }
 

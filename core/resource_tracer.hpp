@@ -7,7 +7,9 @@
 #include <mutex>
 #include <unordered_map>
 
-static size_t align_to(size_t size, size_t align) { return (size + (align - 1)) / align * align; }
+// static inline (not bare static): a bare static function in a header trips clang's
+// -Wunneeded-internal-declaration in every TU that includes core/pmr.hpp without using it.
+static inline size_t align_to(size_t size, size_t align) { return (size + (align - 1)) / align * align; }
 
 class resource_tracer_t final : public std::pmr::memory_resource {
 public:

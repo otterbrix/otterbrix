@@ -4,6 +4,7 @@ add_definitions(-DDEV_MODE)
 
 set( ${PROJECT_NAME}_SOURCES
         test_cursor.cpp
+        test_cursor_error_read.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

@@ -1,0 +1,61 @@
+// The hand-written move ctor moved 6 of context_t's ~25 members and silently dropped the rest —
+// including txn and the DML append/delete/oid back-channels the executor's commit/abort rides on
+// — so a moved context published and reverted nothing. Defaulted now: every member moves.
+
+#include <catch2/catch_test_macros.hpp>
+#include <core/pmr.hpp>
+
+#include <components/context/context.hpp>
+
+#include <utility>
+
+using namespace components;
+
+TEST_CASE("integration::cpp::pipeline_context::move_keeps_every_member", "[context_move]") {
+    auto resource = core::pmr::otterbrix_resource();
+    pipeline::context_t ctx(logical_plan::storage_parameters{&resource},
+                            pipeline::no_mailbox(),
+                            pipeline::no_mailbox(),
+                            pipeline::no_mailbox());
+
+    ctx.txn = table::transaction_data{7, 9};
+    ctx.lowest_active_start_time = 42;
+    ctx.committed_id = 77;
+    ctx.analyze = true;
+    ctx.dml_flush_is_final = false;
+    ctx.dml_has_parent_constraint = true;
+    ctx.dml_appends.push_back(table::dml_append_range_t{5, 10, 3});
+    ctx.dml_deletes.push_back(table::dml_delete_range_t{6, 11});
+    ctx.created_storage_oids.push_back(21);
+    ctx.dropped_storage_oids.push_back(22);
+    ctx.created_indexes.push_back(table::created_index_t{5, 31});
+    ctx.pg_catalog_delete_tables.insert(41);
+
+    pipeline::context_t moved(std::move(ctx));
+
+    CHECK(moved.txn.transaction_id == 7);
+    CHECK(moved.txn.start_time == 9);
+    CHECK(moved.lowest_active_start_time == 42);
+    CHECK(moved.committed_id == 77);
+    CHECK(moved.analyze);
+    CHECK_FALSE(moved.dml_flush_is_final);
+    CHECK(moved.dml_has_parent_constraint);
+
+    REQUIRE(moved.dml_appends.size() == 1);
+    CHECK(moved.dml_appends.front().table_oid == 5);
+    CHECK(moved.dml_appends.front().row_start == 10);
+    CHECK(moved.dml_appends.front().row_count == 3);
+
+    REQUIRE(moved.dml_deletes.size() == 1);
+    CHECK(moved.dml_deletes.front().table_oid == 6);
+    CHECK(moved.dml_deletes.front().txn_id == 11);
+
+    REQUIRE(moved.created_storage_oids.size() == 1);
+    CHECK(moved.created_storage_oids.front() == 21);
+    REQUIRE(moved.dropped_storage_oids.size() == 1);
+    CHECK(moved.dropped_storage_oids.front() == 22);
+    REQUIRE(moved.created_indexes.size() == 1);
+    CHECK(moved.created_indexes.front().table_oid == 5);
+    CHECK(moved.created_indexes.front().index_oid == 31);
+    CHECK(moved.pg_catalog_delete_tables.count(41) == 1);
+}

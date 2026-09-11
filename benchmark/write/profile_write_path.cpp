@@ -1,7 +1,6 @@
 // Write-path profiling driver: measures INSERT / UPDATE / DELETE throughput and
 // per-statement latency across the variable grid (interface, index, primary key,
 // table width, catalog size, log level).
-//
 // Talks to the engine ONLY through base_otterbrix_t::dispatcher() — execute_sql for
 // the SQL path and execute_plan for the logical_plan path. All chunks and plans are
 // built on dispatcher()->resource().
@@ -101,16 +100,14 @@ namespace {
 
     private:
         static configuration::config make_config(const options_t& o) {
-            auto cfg = configuration::config::default_config();
+            // One named base dir via create_config -- hand-assigning `current_path()/"disk"`
+            // and `.../"wal"` instead scatters both into whatever directory the profiler was
+            // launched from.
+            auto cfg = configuration::config::create_config(std::filesystem::current_path() /
+                                                            "otterbrix_write_profile_data");
             cfg.log.level = (o.log == "trace") ? log_t::level::trace : log_t::level::off;
-            // Disk and WAL are NOT optional here. An in-memory run measures a
-            // configuration nobody deploys, and it actively misleads: DELETE column
-            // pruning measured 3.6x in memory and exactly nothing on disk, because a
-            // different cost dominates there.
-            cfg.disk.on = true;
-            cfg.wal.on = true;
-            cfg.disk.path = std::filesystem::current_path() / "disk";
-            cfg.wal.path = std::filesystem::current_path() / "wal";
+            // The WAL is NOT optional here: a run without it misleads -- DELETE column
+            // pruning measured 3.6x without durable writes and exactly nothing with them.
             return cfg;
         }
     };
@@ -179,7 +176,7 @@ namespace {
         for (std::uint64_t c = 0; c < o.width; ++c) {
             ddl += ", v" + std::to_string(c) + " bigint";
         }
-        ddl += ") WITH (storage = 'disk');";
+        ddl += ") ;";
         if (!run_sql(dispatcher, ddl, nullptr)) {
             return false;
         }

@@ -28,8 +28,8 @@ namespace components::planner::optimizer {
     //
     // Advisory annotation only — logical semantics are unchanged; children may
     // over-read and correctness never depends on them honoring the cap. Returns the
-    // root, nodes annotated in place. Registered ungated (a local scan/sort hint,
-    // valid in in-memory mode too).
+    // root, nodes annotated in place. Registered ungated: a local scan/sort hint that
+    // needs no owning agent.
     logical_plan::node_ptr pushdown_limit(std::pmr::memory_resource* resource, logical_plan::node_ptr root);
 
 } // namespace components::planner::optimizer

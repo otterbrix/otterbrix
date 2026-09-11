@@ -13,12 +13,13 @@ namespace components::expressions {
 
     namespace {
 
-        // key_t / parameter_id_t are value types — a plain copy suffices (a key
-        // copy carries its own storage/path vectors). A nested expression operand
-        // is cloned recursively so the copy owns its whole subtree.
+        // key_t is rebuilt on `resource` (not a plain copy) so the clone doesn't stay bound to the source arena it's meant to outlive.
         param_storage clone_param(std::pmr::memory_resource* resource, const param_storage& param) {
             if (is_expr(param)) {
                 return param_storage{clone_expression(resource, as_expr(param))};
+            }
+            if (is_key(param)) {
+                return param_storage{key_t{as_key(param), resource}};
             }
             return param;
         }

@@ -1,3 +1,4 @@
+#include <cstdio>
 #include "column_definition.hpp"
 #include "table_state.hpp"
 
@@ -14,7 +15,7 @@ namespace components::table {
         // OVERLOADED: for a self-naming complex type (STRUCT / UNION) it holds the
         // TYPE's own name (e.g. "test_struct"), NOT the column name. So set the
         // column name only when the type does not already name itself; clobbering a
-        // struct's type-name with the column name loses it (test_table.cpp:255).
+        // struct's type-name with the column name loses it (test_table.cpp).
         // This is type-name preservation, not a fallback — the real fix is to stop
         // overloading one field for two names (otterbrix#583).
         types::complex_logical_type with_name_alias(types::complex_logical_type type, const std::string& name) {
@@ -88,12 +89,18 @@ namespace components::table {
     void column_definition_t::set_oid(uint64_t oid) { oid_ = oid; }
 
     void column_definition_t::set_attoid(std::uint32_t v) {
-        // attoid is immutable after first assignment — programmer-error precondition.
-        // Hot DDL/resolve path: drop the throw, assert in debug, no-op in release if
-        // someone tries to reassign with a different value.
-        assert((attoid_ == 0 || attoid_ == v) &&
-               "column_definition_t::set_attoid: attoid is immutable after assignment");
+        // attoid is immutable after first assignment; a re-stamp with a DIFFERENT value is
+        // refused (first stamp stays) and reported, same in every build. Not an assert
+        // like the sibling catalog::table_id::set_oid: these stamps come off DISK on the
+        // bootstrap/load paths, and aborting would make a database with disagreeing identity
+        // sources unopenable in the very build meant to debug it.
         if (attoid_ != 0 && attoid_ != v) {
+            std::fprintf(stderr,
+                         "components::table::column_definition_t::set_attoid: refusing to re-stamp column "
+                         "'%s' attoid %u with %u — two identity sources disagree\n",
+                         name_.c_str(),
+                         static_cast<unsigned>(attoid_),
+                         static_cast<unsigned>(v));
             return;
         }
         attoid_ = v;

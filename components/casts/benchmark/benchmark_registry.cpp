@@ -1,7 +1,9 @@
 #include <benchmark/benchmark.h>
 
 #include <components/casts/default_casts.hpp>
+#include <core/pmr.hpp>
 
+#include <cassert>
 #include <memory_resource>
 
 using namespace components;
@@ -11,9 +13,12 @@ using types::logical_type;
 
 namespace {
 
+    // Not std::pmr::get_default_resource(). `arena` must be declared
+    // before `registry`: static locals destruct in reverse order.
     cast_registry_t& default_registry() {
+        static core::pmr::otterbrix_resource arena;
         static cast_registry_t registry = [] {
-            cast_registry_t built{std::pmr::get_default_resource()};
+            cast_registry_t built{&arena};
             register_default_casts(built);
             return built;
         }();
@@ -46,7 +51,11 @@ namespace {
     // by evaluating that rule rather than reading a stored cost.
     void common_type_decimal_left(benchmark::State& state) {
         const cast_registry_t& registry = default_registry();
-        const complex_logical_type left = complex_logical_type::create_decimal(10, 2);
+        // DECIMAL(10,2) is in-window, so create_decimal cannot fail (see decimal_key() in
+        // default_casts.cpp); null_memory_resource is safe because the refusal path is unreachable.
+        auto left_result = complex_logical_type::create_decimal(std::pmr::null_memory_resource(), 10, 2);
+        assert(!left_result.has_error() && "benchmark: DECIMAL(10,2) is inside the DECIMAL window");
+        const complex_logical_type left = std::move(left_result.value());
         const complex_logical_type right{logical_type::BOOLEAN};
         for (auto _ : state) {
             benchmark::DoNotOptimize(registry.find_best_common_type(left, right));

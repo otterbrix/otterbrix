@@ -18,9 +18,8 @@
 namespace services::planner::impl {
 
     namespace {
-        // A catalog-write child is a node_insert_t targeting a pg_catalog table; its
-        // single node_data_t child carries the ready-made row. Harvest (table_oid,
-        // row) for folding into the specialized operator's catalog_write_t vector.
+        // Assumes insert_child is a node_insert_t into pg_catalog with a single node_data_t child
+        // holding the row (unchecked here).
         components::vector::data_chunk_t& catalog_write_row(const components::logical_plan::node_ptr& insert_child) {
             using namespace components::logical_plan;
             auto* ins = static_cast<node_insert_t*>(insert_child.get());
@@ -37,8 +36,6 @@ namespace services::planner::impl {
         using namespace components::logical_plan;
 
         // DDL create-table sequence: sequence_t(create_collection_t, catalog-write node_insert_t×N).
-        // Produce a single operator_create_collection_t that does storage creation,
-        // index registration, and all pg_catalog writes in one await_async_and_resume.
         if (!node->children().empty() && node->children().front()->type() == node_type::create_collection_t) {
             auto* cc = static_cast<node_create_collection_t*>(node->children().front().get());
             std::vector<components::operators::operator_create_collection_t::catalog_write_t> writes;
@@ -53,18 +50,13 @@ namespace services::planner::impl {
                                                                         cc->table_oid(),
                                                                         cc->namespace_oid(),
                                                                         cc->column_definitions(),
-                                                                        cc->is_disk_storage(),
                                                                         std::move(writes)));
         }
 
-        // DDL create-index sequence: sequence_t(catalog-write node_insert_t × N, create_index_t).
-        // Lower to two chained operators:
-        //   metadata_op  — writes pg_class/pg_index(indisvalid=false)/pg_depend rows
-        //   backfill_op  — registers/creates the engine entry, scans + insert_rows,
-        //                  flips pg_index.indisvalid → true
-        // metadata_op is wired as backfill_op's left child so the executor walks it
-        // first via the same left_/right_ traversal used by the multi-clause
-        // ALTER TABLE chain below.
+        // DDL create-index sequence: sequence_t(catalog-write node_insert_t × N, create_index_t) lowers to two
+        // chained operators — metadata_op (pg_class/pg_index(indisvalid=false)/pg_depend writes) wired as
+        // backfill_op's left child (registers the engine, scans + insert_rows, flips indisvalid) — so the
+        // executor walks metadata first via the same left_/right_ traversal the ALTER TABLE chain uses below.
         if (!node->children().empty() && node->children().back()->type() == node_type::create_index_t) {
             auto* ci = static_cast<node_create_index_t*>(node->children().back().get());
             std::vector<components::operators::operator_create_index_metadata_t::catalog_write_t> writes;
@@ -80,7 +72,6 @@ namespace services::planner::impl {
             auto backfill_op =
                 boost::intrusive_ptr(new components::operators::operator_create_index_backfill_t(context.resource,
                                                                                                  context.log.clone(),
-                                                                                                 ci->name(),
                                                                                                  ci->type(),
                                                                                                  ci->keys(),
                                                                                                  ci->table_oid(),
@@ -108,18 +99,14 @@ namespace services::planner::impl {
             return boost::intrusive_ptr(new components::operators::operator_drop_index_t(context.resource,
                                                                                          context.log.clone(),
                                                                                          di->table_oid(),
-                                                                                         di->runtime_index_name(),
+                                                                                         di->index_oid(),
                                                                                          std::move(deletes)));
         }
 
-        // ALTER TABLE: rewrite_alter_table emits sequence_t(alter_column_t × N)
-        // (op=add | rename, computed=false). Build the operators and chain them
-        // as left children (head = innermost step) so the executor walks the chain
-        // via left_/right_ traversal. A sequence wrapper carries no steps of its
-        // own, which would strand multi-clause ALTER TABLE statements after the
-        // first async step. Computed (relkind='g') alter_columns
-        // and op=drop are excluded — they ride other sequence shapes handled by the
-        // generic path.
+        // ALTER TABLE: chain rewrite_alter_table's sequence_t(alter_column_t × N) as left children (head =
+        // innermost step) so the executor walks it via left_/right_ traversal — a sequence wrapper carries no
+        // steps of its own and would strand a multi-clause ALTER after the first async step. Computed
+        // (relkind='g') and op=drop clauses are excluded; they ride the generic path below.
         auto is_chainable_alter = [](const node_ptr& child) {
             if (child->type() != node_type::alter_column_t) {
                 return false;
@@ -137,15 +124,20 @@ namespace services::planner::impl {
                     }
                 }
                 if (all_alter) {
-                    // Build the chain so children[0] (the first user-written clause)
-                    // ends up at the DEEPEST nesting level — executor runs left children
-                    // first (depth-first via left_/right_ traversal), so the deepest leaf
-                    // executes first. Walk children in reverse, set each as the left child of the
-                    // previous; the last-built operator (head) wraps everything and
-                    // becomes the root returned to the caller.
+                    // children[0] (first user-written clause) must end up at the deepest nesting level — the
+                    // executor runs left children first, so walk forward, wrapping the chain built so far as
+                    // the new operator's left child. A reverse walk would put children[0] at the root instead,
+                    // running a multi-clause ALTER's clauses back to front — user-visible, since two ADD
+                    // COLUMNs decide their attnum order by who runs first.
                     components::operators::operator_ptr head;
-                    for (auto it = node->children().rbegin(); it != node->children().rend(); ++it) {
-                        auto op = create_plan(context, function_registry, *it, {}, params);
+                    for (const auto& child : node->children()) {
+                        auto op = create_plan(context, function_registry, child, {}, params);
+                        if (!op) {
+                            // A child that fails to lower refuses the whole statement:
+                            // a null root maps to create_physical_plan_error in the
+                            // executor. Chaining past it would run a truncated ALTER.
+                            return {};
+                        }
                         if (head) {
                             // op wraps `head` (op runs after head's chain executes).
                             op->set_children(head, nullptr);
@@ -157,34 +149,25 @@ namespace services::planner::impl {
             }
         }
 
-        // Generic case (e.g. CREATE DATABASE/SEQUENCE/VIEW/MACRO/TYPE → sequence_t(catalog-write node_insert_t × N),
-        // INSERT-into-relkind='g' → sequence_t(insert, computed_field_register)):
-        // build a left-child chain so the executor can walk each child via
-        // left_/right_ traversal — operator_sequence_t carries no steps of its
-        // own (it is only the childless no-op fallback below), so a sequence
-        // wrapper would strand async children.
-        //
-        // Order: depth-first traversal runs LEFT first, then the operator's own work,
-        // so the DEEPEST-left operator executes first. To preserve children-in-
-        // declared-order semantics (child[0] runs before child[1], etc.), iterate
-        // FORWARD: first child becomes deepest left, last child becomes outer root.
-        // This is critical for INSERT-then-register semantics where register depends
-        // on insert having processed the chunk first.
+        // Generic case (CREATE DATABASE/SEQUENCE/VIEW/MACRO/TYPE, INSERT-into-relkind='g', etc.): chain
+        // children as left children so the executor walks each via left_/right_ traversal —
+        // operator_sequence_t carries no steps of its own. Iterate FORWARD (first child becomes deepest left,
+        // last becomes outer root) to preserve declared order: critical for INSERT-then-register, where
+        // register depends on insert having processed the chunk first.
         if (!node->children().empty()) {
             components::operators::operator_ptr head;
             for (const auto& child : node->children()) {
                 auto op = create_plan(context, function_registry, child, {}, params);
+                if (!op) {
+                    // Unchecked, the loop would silently drop a null first child (statement runs with a step
+                    // missing) or dereference a null later child via op->left() outright.
+                    return {};
+                }
                 if (head) {
-                    // op consumes left_ as its DATA source (e.g. operator_insert
-                    // reads left_->output() — the case for catalog-write node_insert_t
-                    // chains: CREATE TYPE/SEQUENCE/VIEW/MACRO/DATABASE/CONSTRAINT).
-                    // Clobbering left_ with the chain predecessor would drop the row
-                    // chunk. Attach the predecessor to the free right_ slot instead:
-                    // the executor still runs left (data leaf) → right (head) → self,
-                    // preserving child-declared order, and walks both slots via
-                    // left_/right_ traversal. When left_ is free (childless leaf, e.g. a
-                    // catalog-delete operator_delete or computed_field_register),
-                    // keep the left-chain shape.
+                    // op consumes left_ as its data source for catalog-write chains (e.g. operator_insert reads
+                    // left_->output()), so clobbering left_ with the chain predecessor would drop the row
+                    // chunk — attach the predecessor to the free right_ slot instead (executor still runs
+                    // left → right → self). When left_ is already free (a childless leaf), keep the left-chain shape.
                     if (op->left()) {
                         op->set_children(op->left(), head);
                     } else {

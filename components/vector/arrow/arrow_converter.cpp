@@ -326,7 +326,7 @@ namespace components::vector::arrow {
             auto arrow_type = arrow_types.at(i);
             auto array_physical_type = arrow_type->get_physical_type();
             auto array_state = std::make_unique<arrow_array_scan_state>();
-            array_state->owned_data = std::make_shared<arrow_array_wrapper_t>();
+            array_state->owned_data = arrow_array_wrapper_ptr(new arrow_array_wrapper_t());
             array_state->owned_data->arrow_array = *arrow_array;
             arrow_array->release = nullptr;
             switch (array_physical_type) {

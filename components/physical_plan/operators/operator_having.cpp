@@ -4,7 +4,7 @@ namespace components::operators {
 
     namespace {
         // Placeholder columns (produced by projected scans) have no buffer and no auxiliary; they
-        // must be skipped when reading values. operator_group output is dense, so this is defensive.
+        // must be skipped when reading values. operator_hash_group output is dense, so this is defensive.
         bool is_placeholder(const vector::vector_t& v) noexcept {
             return v.data() == nullptr && v.auxiliary() == nullptr;
         }
@@ -19,13 +19,13 @@ namespace components::operators {
     core::error_t
     operator_having_t::push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& out) {
         // Empty-batch guard: defensive symmetry with operator_match (and the schema'd-0-row source
-        // contract). operator_group does not actually hand HAVING a 0-row chunk in current code.
+        // contract). operator_hash_group does not actually hand HAVING a 0-row chunk in current code.
         if (input.size() == 0) {
             return core::error_t::no_error();
         }
 
         // Build + cache the predicate on the first batch. The group-output schema is stable across
-        // every finalize chunk (operator_group fixes out_types once), and resource_ (context.resource)
+        // every finalize chunk (operator_hash_group fixes out_types once), and resource_ (context.resource)
         // outlives them all, so the predicate's value-getter closures stay valid across all chunks.
         if (!stream_ready_) {
             stream_types_.clear();

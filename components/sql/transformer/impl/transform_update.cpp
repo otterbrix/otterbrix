@@ -58,7 +58,8 @@ namespace components::sql::transform {
                     for (const auto& val : res->indirection->lst) {
                         if (nodeTag(val.data) == T_A_Indices) {
                             auto indices = pg_ptr_cast<A_Indices>(val.data);
-                            path.emplace_back(indices_to_str(resource_, indices));
+                            VALUE_OR_RETURN(auto segment, indices_to_str(resource_, indices));
+                            path.emplace_back(std::move(segment));
                         } else {
                             path.emplace_back(pmrStrVal(val.data, resource_));
                         }

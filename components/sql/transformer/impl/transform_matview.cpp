@@ -1,3 +1,5 @@
+#include "view_body_text.hpp"
+
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/node_create_matview.hpp>
@@ -6,31 +8,7 @@
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 
-#include <algorithm>
-#include <cctype>
-
 namespace components::sql::transform {
-
-    namespace {
-        // CREATE MATERIALIZED VIEW mv AS SELECT … — extract body text from the
-        // raw SQL (after " AS "). Mirrors extract_view_query in transform_view.cpp.
-        // The body SQL is stored in pg_rewrite.ev_action so REFRESH can re-parse.
-        std::string extract_matview_body(const char* sql) {
-            std::string s(sql);
-            std::string upper(s);
-            std::transform(upper.begin(), upper.end(), upper.begin(), [](unsigned char c) { return std::toupper(c); });
-            auto pos = upper.find(" AS ");
-            if (pos == std::string::npos) {
-                return "SELECT *";
-            }
-            auto query = s.substr(pos + 4);
-            while (!query.empty() && (query.back() == ';' || query.back() == ' ' || query.back() == '\n' ||
-                                      query.back() == '\r' || query.back() == '\t')) {
-                query.pop_back();
-            }
-            return query.empty() ? "SELECT *" : query;
-        }
-    } // namespace
 
     core::result_wrapper_t<logical_plan::node_ptr>
     transformer::transform_create_matview(CreateTableAsStmt& cs, logical_plan::execution_plan_t* plan) {
@@ -43,8 +21,28 @@ namespace components::sql::transform {
                                  std::pmr::string{"CREATE MATERIALIZED VIEW missing target relation", resource_});
         }
 
-        // 1. Body SQL — for pg_rewrite.ev_action so REFRESH can re-parse later.
-        std::string body_sql = raw_sql_ ? extract_matview_body(raw_sql_) : std::string("SELECT *");
+        // WITH DATA (PostgreSQL's default) is refused: nothing here populates a matview at
+        // CREATE time and REFRESH is a no-op (planner.cpp: refresh_matview_t) — accepting it
+        // would silently report success with an empty matview forever. WITH NO DATA (skipData,
+        // gram.y CreateMatViewStmt: `$5->skipData = !($8)`) still works.
+        if (!cs.into->skipData) {
+            return core::error_t(
+                core::error_code_t::sql_parse_error,
+                std::pmr::string{"CREATE MATERIALIZED VIEW ... WITH DATA is not supported yet: the matview "
+                                 "cannot be populated at CREATE time and REFRESH MATERIALIZED VIEW is not "
+                                 "implemented, so the result would be a silently empty matview. Write "
+                                 "WITH NO DATA to create it empty on purpose.",
+                                 resource_});
+        }
+
+        // 1. Body SQL — stored in pg_rewrite.ev_action verbatim; must match what the user
+        //    wrote (view_body_text.hpp).
+        VALUE_OR_RETURN(auto body_sql,
+                        view_body_text(resource_,
+                                       raw_sql_,
+                                       cs.query_location,
+                                       cs.query_end_location,
+                                       "CREATE MATERIALIZED VIEW"));
 
         // 2. Body plan — transform_select returns the consumer aggregate (NOT
         // wrapped with catalog_resolve_*). We hoist the source resolves below

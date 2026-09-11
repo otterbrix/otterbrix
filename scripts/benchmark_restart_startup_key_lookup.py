@@ -86,7 +86,6 @@ def run_restart_startup_benchmark(
             db_name,
             csv_path,
             query_sql,
-            storage_disk=True,
         )
 
         results: dict[str, RestartMetrics] = {}

@@ -47,8 +47,9 @@ namespace components::operators {
 
     void operator_t::set_output(operator_data_ptr data) { output_ = std::move(data); }
 
-    void operator_t::set_error(const core::error_t& error) { error_ = error; }
-    void operator_t::set_error(core::error_t&& error) { error_ = std::move(error); }
+    // `error_ = error` would leave the message on the default resource, and
+    // `error_ = std::move(error)` would leave it in the producer's arena — this rebuilds on resource_ instead.
+    void operator_t::set_error(const core::error_t& error) { error_ = core::error_on(resource_, error); }
     bool operator_t::has_error() const noexcept { return error_.contains_error(); }
     const core::error_t& operator_t::get_error() const noexcept { return error_; }
 
@@ -68,6 +69,11 @@ namespace components::operators {
     operator_t::source_next(pipeline::context_t* /*ctx*/) {
         co_return core::error_t(core::error_code_t::physical_plan_error,
                                 std::pmr::string{"operator is not a pipeline source", resource_});
+    }
+
+    actor_zeta::unique_future<void> operator_t::release_cursor(pipeline::context_t* /*ctx*/) {
+        // Default: this operator owns no storage cursor, so there is nothing to release.
+        co_return;
     }
 
     core::error_t

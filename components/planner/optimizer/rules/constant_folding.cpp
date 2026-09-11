@@ -3,8 +3,7 @@
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/forward.hpp>
-#include <components/vector/arithmetic.hpp>
-#include <components/vector/vector.hpp>
+#include <core/arithmetic_op.hpp>
 
 namespace components::planner::optimizer {
 
@@ -12,8 +11,8 @@ namespace components::planner::optimizer {
 
         using namespace components::expressions;
         using namespace components::logical_plan;
-        using namespace components::vector;
         using namespace components::types;
+        using components::vector::arithmetic_op;
 
         // Map scalar_type to arithmetic_op. Returns false if not an arithmetic op.
         bool to_arithmetic_op(scalar_type st, arithmetic_op& out) {
@@ -47,10 +46,12 @@ namespace components::planner::optimizer {
                    std::holds_alternative<core::parameter_id_t>(expr.params()[1]);
         }
 
-        // Try to fold a scalar arithmetic expression with constant params.
-        // On success, replaces the expression's params with a single parameter_id_t
-        // that holds the computed result (reusing left_id slot).
-        bool
+        // Try to fold a scalar arithmetic expression with constant params. On success, replaces the
+        // expression's params with a single parameter_id_t that holds the computed result (reusing left_id).
+        //
+        // Channel: `true` = folded, `false` = not foldable (non-arithmetic op, non-constant params, NULL
+        // operand), error = both sides constant but the arithmetic refused them (unsupported operand types).
+        core::result_wrapper_t<bool>
         try_fold_scalar(std::pmr::memory_resource* resource, scalar_expression_t& expr, parameter_node_t* parameters) {
             arithmetic_op op;
             if (!to_arithmetic_op(expr.type(), op)) {
@@ -71,21 +72,36 @@ namespace components::planner::optimizer {
                 return false;
             }
 
-            // TODO: this is even worse than using logical_value_t...
-            // TODO(L4): skipped — the only non-throwing alternatives are this 1-element-vector
-            // boxing or a brand-new scalar arithmetic helper (a new abstraction, forbidden).
-            // logical_value_t::sum/subtract/... throw on unprocessable types, and this function
-            // returns bool (cannot propagate an error), so switching to them would add a throw.
-            // Create single-element vectors from the values
-            vector_t left_vec(resource, left_val, 1);
-            vector_t right_vec(resource, right_val, 1);
+            // No type guard here any more: logical_value_t's arithmetic used to dispatch on the LEFT
+            // type alone and read the right operand through the wrong getter, so a mixed pair had to
+            // be declined at plan time. It refuses mismatches itself now and answers DATE + INTERVAL
+            // properly; a refusal travels back through result_wrapper_t below, which leaves the
+            // expression to the runtime evaluator -- exactly what declining did.
 
-            auto result_vec = compute_binary_arithmetic(resource, op, left_vec, right_vec, 1);
-            auto result_val = result_vec.value(0);
+            auto result = [&]() -> core::result_wrapper_t<expr_value_t> {
+                switch (op) {
+                    case arithmetic_op::add:
+                        return expr_value_t::sum(left_val, right_val);
+                    case arithmetic_op::subtract:
+                        return expr_value_t::subtract(left_val, right_val);
+                    case arithmetic_op::multiply:
+                        return expr_value_t::mult(left_val, right_val);
+                    case arithmetic_op::divide:
+                        return expr_value_t::divide(left_val, right_val);
+                    case arithmetic_op::mod:
+                        return expr_value_t::modulus(left_val, right_val);
+                }
+                // Unreachable (to_arithmetic_op maps exactly these five); refusal, not a silent NA.
+                return core::error_t{core::error_code_t::arithmetics_failure,
+                                     std::pmr::string{"constant folding: unmapped arithmetic op", resource}};
+            }();
+            if (result.has_error()) {
+                return result.error();
+            }
 
             // Overwrite left_id's value with the computed result (reuse existing ID
             // to avoid issues with new IDs not surviving actor message copy chain)
-            parameters->set_parameter(left_id, std::move(result_val));
+            parameters->set_parameter(left_id, std::move(result.value()));
 
             // Replace params: single param = left_id
             expr.params().clear();
@@ -144,9 +160,9 @@ namespace components::planner::optimizer {
             auto [ok, result] = eval_compare(expr.type(), left_val, right_val);
             if (ok) {
                 expr.set_type(result ? compare_type::all_true : compare_type::all_false);
-            } else {
-                assert(false);
             }
+            // !ok: this comparison kind has no fold (regex / ANY / ALL / IS [NOT] NULL) — a skip, not an
+            // assert, since folding is only an optimization and the runtime evaluator answers it anyway.
         }
 
         // Check if a union expression's children are all folded to a specific type
@@ -214,7 +230,12 @@ namespace components::planner::optimizer {
                 fold_expression(resource, std::get<expression_ptr>(param), parameters);
                 try_promote_scalar(param);
             }
-            try_fold_scalar(resource, *scalar, parameters);
+            auto folded = try_fold_scalar(resource, *scalar, parameters);
+            if (folded.has_error()) {
+                // Arithmetic refused the operands; this pass has no path to the user (optimize()
+                // returns a plan, not a result), so leave the expression for the runtime evaluator.
+                return;
+            }
         }
 
         void
@@ -232,13 +253,9 @@ namespace components::planner::optimizer {
             }
             try_fold_compare(*comp, parameters);
             simplify_union(comp);
-            // NOT over a fully folded single child folds to the complementary
-            // constant: NOT(all_false) scans everything, NOT(all_true) is the
-            // short-circuited empty scan. Only the single-child form folds —
-            // multi-child union_not means NOT(child1 AND child2 ...) and keeps
-            // its children. Without this, `WHERE NOT (1=2)` survived folding
-            // into filter construction, whose all_false / key-shape guards
-            // were Release-erased asserts.
+            // NOT over a fully folded single child folds to the complementary constant (multi-child
+            // union_not means NOT(child1 AND child2 ...) and keeps its children). Without this,
+            // `WHERE NOT (1=2)` survived into filter construction, whose guards were Release-erased asserts.
             if (comp->type() == compare_type::union_not && comp->children().size() == 1 &&
                 comp->children().front()->group() == expression_group::compare) {
                 const auto child_type =

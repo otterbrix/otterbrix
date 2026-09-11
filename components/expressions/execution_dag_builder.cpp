@@ -102,7 +102,8 @@ namespace components::expressions {
                                                           std::to_string(input_types_.size()) + " columns",
                                                       resource()});
             }
-            if (key.has_cast_type()) {
+            // A variant-select key ('col ::? type') is not a cast: cast_type there is a disambiguation hint, already consumed.
+            if (key.has_cast_type() && !key.is_variant_select()) {
                 return core::error_t(
                     core::error_code_t::unimplemented_yet,
                     std::pmr::string{"execution graph builder: cast spelled on a column reference", resource()});
@@ -599,9 +600,10 @@ namespace components::expressions {
                      const std::pmr::vector<types::complex_logical_type>& input_types,
                      size_t right_offset) {
         if (graph == nullptr || expression == nullptr) {
+            // graph may be null here, so the resource comes from input_types instead.
             return core::error_t(
                 core::error_code_t::invalid_parameter,
-                std::pmr::string{"execution graph builder: nothing to build", std::pmr::get_default_resource()});
+                std::pmr::string{"execution graph builder: nothing to build", input_types.get_allocator().resource()});
         }
         builder_t builder(graph, parameters, input_types, right_offset);
         return builder.slot_of_expression(expression);

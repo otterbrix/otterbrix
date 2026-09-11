@@ -20,7 +20,6 @@ namespace components::casts {
             return type.extension_as<types::array_logical_type_extension>()->size();
         }
 
-        // There is one function for all variations
         [[nodiscard]] bool is_family_key(const types::complex_logical_type& type) noexcept {
             return type.type() == types::logical_type::DECIMAL || type.type() == types::logical_type::ENUM;
         }
@@ -32,10 +31,9 @@ namespace components::casts {
             return entry.promotes() && entry.has_fixed_cost && !is_family_key(target);
         }
 
-        // Lowest score a candidate could reach: a score takes the MAX of the two sides' precision
-        // loss, and its footprint is the candidate's own size. Taking the footprint from the
-        // candidate rather than the entry keeps this a true lower bound whatever footprint the
-        // entry happens to store, which is what lets the sorted walk stop early.
+        // Lowest score a candidate could reach: the max of both sides' precision loss, plus the
+        // candidate's own footprint (not the entry's) — using the candidate's keeps this a true
+        // lower bound regardless of what the entry stores, which is what lets the sorted walk stop early.
         [[nodiscard]] cast_cost score_lower_bound(const cast_cost& cost,
                                                   const types::complex_logical_type& candidate) noexcept {
             return cast_cost{.precision_loss = cost.precision_loss,
@@ -50,7 +48,6 @@ namespace components::casts {
         auto [source_iterator, _] = entries_.try_emplace(source, resource_);
         target_entries_t& targets = source_iterator->second;
 
-        // No two casts for the same (source, target).
         for (const auto& existing : targets) {
             if (same_cast_type(existing.first, target)) {
                 return core::error_t{core::error_code_t::already_exists,
@@ -117,7 +114,7 @@ namespace components::casts {
 
     std::optional<cast_info> cast_registry_t::lookup(const types::complex_logical_type& source,
                                                      const types::complex_logical_type& target) const {
-        // NULL comming from parser has to be converted to usable type
+        // NULL from the parser must be converted to a usable type.
         if (source.type() == types::logical_type::NA) {
             return cast_info{cast_type::implicit,
                              cast_cost{.precision_loss = 0, .footprint = static_cast<uint32_t>(target.size())}};
@@ -128,7 +125,6 @@ namespace components::casts {
         if (const complex_cast_entry* declared = find_complex_entry(source, target)) {
             return cast_info{declared->level, declared->cost};
         }
-        // If there is no direct cast, we might have to derive one (e.g. for a container)
         if (std::optional<cast_info> derived = derive(source, target)) {
             return derived;
         }
@@ -156,7 +152,6 @@ namespace components::casts {
             return cast_info{least_permissive(element->level, cast_type::assignment), no_cost};
         }
         if (source.type() == types::logical_type::MAP && target.type() == types::logical_type::MAP) {
-            // A map is a container over its key and value
             const auto* source_map = source.extension_as<types::map_logical_type_extension>();
             const auto* target_map = target.extension_as<types::map_logical_type_extension>();
             std::optional<cast_info> key = lookup(source_map->key(), target_map->key());
@@ -241,11 +236,9 @@ namespace components::casts {
     std::optional<cast_registry_t::common_type>
     cast_registry_t::find_best_common_type(const types::complex_logical_type& left,
                                            const types::complex_logical_type& right) const {
-        // Two decimals promote to their deduced supertype, by its own parameterized rule.
         if (left.type() == types::logical_type::DECIMAL && right.type() == types::logical_type::DECIMAL) {
             return common_decimal_type(left, right);
         }
-        // A container's common type is its element's
         if (std::optional<common_type> container = common_container_type(left, right)) {
             return container;
         }
@@ -273,8 +266,8 @@ namespace components::casts {
             }
         };
 
-        // Handle case, when one of the types does not have to be promoted. Done first so the
-        // walks below start with a bound already set.
+        // Handles the case where one type needs no promotion at all; done first so the walks
+        // below start with a bound already set.
         consider(left);
         consider(right);
 
@@ -285,7 +278,7 @@ namespace components::casts {
                 if (is_family_key(candidate)) {
                     continue;
                 }
-                // This entry IS what lookup(left, candidate) would find: the simple table is
+                // This entry is what lookup(left, candidate) would find: the simple table is
                 // keyed by source and searched first, and no pair is registered twice.
                 consider(candidate, cast_info{entry.level, entry.resolve_cost({left, candidate})});
             }
@@ -316,7 +309,6 @@ namespace components::casts {
             return std::nullopt;
         }
 
-        // Parameterized families settle by their own rule
         if (std::optional<types::complex_logical_type> constructed = constructed_common_candidate(inputs)) {
             return common_n_via(inputs, *constructed);
         }
@@ -473,7 +465,7 @@ namespace components::casts {
             if (!element.has_value()) {
                 return std::nullopt;
             }
-            // Two arrays of the SAME fixed length keep it; anything else has to widen to a list,
+            // Two arrays of the same fixed length keep it; anything else has to widen to a list,
             // because no fixed length can hold both.
             if (left.type() == types::logical_type::ARRAY && right.type() == types::logical_type::ARRAY &&
                 array_size(left) == array_size(right)) {
@@ -512,10 +504,15 @@ namespace components::casts {
                                                      right_decimal->width() - right_decimal->scale());
         uint32_t width = integer_digits + scale;
         if (width <= max_decimal_width) {
-            return common_via(
-                left,
-                right,
-                types::complex_logical_type::create_decimal(static_cast<uint8_t>(width), static_cast<uint8_t>(scale)));
+            // width >= scale >= 1 for in-window operands, so create_decimal cannot fail here;
+            // the error check below is defensive only.
+            auto deduced = types::complex_logical_type::create_decimal(resource_,
+                                                                       static_cast<uint8_t>(width),
+                                                                       static_cast<uint8_t>(scale));
+            if (deduced.has_error()) {
+                return std::nullopt;
+            }
+            return common_via(left, right, std::move(deduced.value()));
         }
         return common_via(left, right, types::complex_logical_type{types::logical_type::DOUBLE});
     }

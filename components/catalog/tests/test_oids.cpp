@@ -44,7 +44,6 @@ TEST_CASE("catalog::oid::well_known_distinct_and_stable") {
 }
 
 // 3. Sequential allocate() yields strictly increasing unique OIDs starting at FIRST_USER_OID.
-//
 TEST_CASE("test_oid_generation_uniqueness") {
     oid_generator gen;
     std::unordered_set<oid_t> seen;
@@ -126,15 +125,14 @@ TEST_CASE("test_column_oid_assignment") {
     REQUIRE(col.oid() == components::table::storage::INVALID_INDEX);
 }
 
-// 9. OIDs are immutable after first non-INVALID assignment: re-stamping the same value is
-//    idempotent, but assigning a different value raises std::logic_error. Covers Design Rule 1
-//    by the design rule "OIDs are immutable after assignment".
+// 9. Re-stamping the same OID is idempotent; a DIFFERENT value ABORTS table_id::set_oid in
+//    every build. The abort itself isn't exercised (a death test
+//    would take the binary with it) — only the idempotent path is. Contrast:
+//    column_definition_t::set_attoid (components/table/column_definition.cpp) REFUSES
+//    instead of aborting on the same disagreement, because its stamps can arrive FROM DISK
+//    on the load/bootstrap path, where aborting would make the database unopenable.
 TEST_CASE("test_oid_immutability") {
     core::pmr::otterbrix_resource resource;
-
-    // set_oid / set_attoid are programmer-error precondition guards: assert in
-    // debug, silent no-op in release. The original value MUST survive a stray
-    // reassignment attempt with a different value.
     SECTION("table_id::set_oid") {
         qualified_name_t cfn("main", "users");
         table_id tid(&resource, cfn);

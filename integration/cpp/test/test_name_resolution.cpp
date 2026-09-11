@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 #include <tuple>
 
 #include <catch2/catch_test_macros.hpp>
@@ -124,8 +125,7 @@ namespace {
         }
     }
 
-    // Catalog lookups ride on the plan, one node per kind, each carrying every target of
-    // that kind. A type names itself in type_name; every other kind uses relname.
+    // A type names itself in type_name; every other catalog-resolve kind uses relname.
     void collect_catalog_targets(const logical_plan::catalog_resolves_t& resolves, std::vector<std::string>& out) {
         const auto add = [&out](const logical_plan::node_catalog_resolve_ptr& node, const char* kind) {
             if (!node) {
@@ -186,7 +186,7 @@ namespace {
         std::string sql;
         std::string column;
         bool rejected{false};
-        std::string stage; // "parser" or "transformer" when rejected
+        std::string stage;
         core::error_code_t code{core::error_code_t::none};
         std::string message;
         std::vector<found_key_t> matches;
@@ -234,8 +234,7 @@ namespace {
         std::vector<found_key_t> keys;
         collect_keys(result.node_ptr(), keys);
         for (const auto& key : keys) {
-            // An empty name asks for every key, which is what the cases that
-            // watch the shape of a statement rather than one reference want.
+            // An empty name asks for every key, for cases that watch a statement's shape, not one reference.
             if (column.empty() || last_segment(key.path) == column) {
                 out.matches.push_back(key);
             }
@@ -313,15 +312,10 @@ namespace {
     struct database_t;
     components::cursor::cursor_t_ptr run_ok(database_t& db, const std::string& sql);
 
-    // A running engine, for the cases whose answer only exists past the
-    // transformer: which relation an unqualified name belongs to, and how many
-    // rows a join actually produces.
     struct database_t {
         explicit database_t(const std::string& path)
             : config(test_create_config(path)) {
             test_clear_directory(config);
-            config.disk.on = false;
-            config.wal.on = false;
             space = std::make_unique<test_spaces>(config);
         }
 
@@ -340,8 +334,6 @@ namespace {
         std::unique_ptr<test_spaces> space;
     };
 
-    // The statement and the engine's own words belong in the report: without
-    // them a failed expectation reads as a bare "false".
     components::cursor::cursor_t_ptr run_ok(database_t& db, const std::string& sql) {
         auto cursor = db.run(sql);
         INFO("query: " << sql);
@@ -357,8 +349,7 @@ namespace {
         return cursor->get_error();
     }
 
-    // How many rows carry a value in the first column. A merged column reading
-    // the padded copy of an outer join shows up here and nowhere else.
+    // A merged column reading the padded copy of an outer join shows up here as fewer values.
     size_t rows_with_a_value(const components::cursor::cursor_t_ptr& cursor) {
         size_t count = 0;
         for (uint64_t row = 0; row < cursor->size(); ++row) {
@@ -368,7 +359,7 @@ namespace {
         }
         return count;
     }
-} // namespace
+}
 
 TEST_CASE("name_resolution::column_ref::bare_column_stays_undefined") {
     auto result = probe("SELECT id FROM t;", "id");
@@ -381,8 +372,6 @@ TEST_CASE("name_resolution::column_ref::relname_qualifier") {
 }
 
 TEST_CASE("name_resolution::qualification::empty_element_slot_is_not_wildcard") {
-    // The reference fills `db`, the element leaves it empty — that is
-    // a mismatch, not a wildcard.
     auto result = probe("SELECT d.t.id FROM t;", "id");
     require_rejected(result, core::error_code_t::table_not_exists);
 }
@@ -403,7 +392,6 @@ TEST_CASE("name_resolution::qualification::wrong_db_is_rejected") {
 }
 
 TEST_CASE("name_resolution::qualification::schema_filled_in_reference_only") {
-    // The reference fills `schema`, the two-part element does not.
     auto result = probe("SELECT d.s.t.id FROM d.t;", "id");
     require_rejected(result, core::error_code_t::table_not_exists);
 }
@@ -414,21 +402,16 @@ TEST_CASE("name_resolution::qualification::three_part_from_answers_bare_relname"
 }
 
 TEST_CASE("name_resolution::qualification::skip_middle_slot") {
-    // skipping `schema` is allowed, the filled slots match.
     auto result = probe("SELECT d.t.id FROM d.s.t;", "id");
     require_resolved(result, side_t::left, "t");
 }
 
 TEST_CASE("name_resolution::qualification::schema_alone_does_not_qualify") {
-    // `s` lands in the `db` slot, where the element has `d`. This is
-    // the form a PostgreSQL user writes first, so the message has to show
-    // how the element is spelled in FROM.
     auto result = probe("SELECT s.t.id FROM d.s.t;", "id");
     require_rejected(result, core::error_code_t::table_not_exists);
 }
 
 TEST_CASE("name_resolution::qualification::schema_alone_does_not_qualify_under_uid") {
-    // The same trap one slot deeper.
     auto result = probe("SELECT s.t.id FROM u.d.s.t;", "id");
     require_rejected(result, core::error_code_t::table_not_exists);
 }
@@ -444,13 +427,11 @@ TEST_CASE("name_resolution::column_ref::four_part_reference_under_uid_element") 
 }
 
 TEST_CASE("name_resolution::column_ref::five_part_column_reference") {
-    // the longest legal column form.
     auto result = probe("SELECT u.d.s.t.id FROM u.d.s.t;", "id");
     require_resolved(result, side_t::left, "t");
 }
 
 TEST_CASE("name_resolution::column_ref::six_part_column_reference_rejected") {
-    // Over five segments there is no shape to read the reference as.
     auto result = probe("SELECT u.d.s.t.x.id FROM u.d.s.t;", "id");
     INFO(describe(result));
     REQUIRE(result.rejected);
@@ -462,9 +443,6 @@ TEST_CASE("name_resolution::from_name::five_part_from_reference_rejected") {
 }
 
 TEST_CASE("name_resolution::type_name::alter_type_keeps_its_database") {
-    // The two-part name of a TYPE statement is `db.type`, same as everywhere
-    // else. This used to hold only because a promotion copied the schema slot
-    // into the database one after the fact.
     auto result = transform_only("ALTER TYPE shop.addr_t ADD ATTRIBUTE zip TEXT;");
     INFO(describe(result));
     REQUIRE_FALSE(result.rejected);
@@ -473,8 +451,6 @@ TEST_CASE("name_resolution::type_name::alter_type_keeps_its_database") {
 }
 
 TEST_CASE("name_resolution::type_name::unqualified_alter_type_has_no_database") {
-    // The other side of the rule: with nothing to put in the database slot, the
-    // statement must not acquire one out of thin air.
     auto result = transform_only("ALTER TYPE addr_t ADD ATTRIBUTE zip TEXT;");
     INFO(describe(result));
     REQUIRE_FALSE(result.rejected);
@@ -488,15 +464,11 @@ TEST_CASE("name_resolution::type_name::type_name_over_three_parts_rejected") {
 }
 
 TEST_CASE("name_resolution::ambiguity::bare_relname_across_databases") {
-    // CROSS JOIN so the only reference in the query is the one under
-    // test: an ON clause would carry the same ambiguity and muddy the reading.
     auto result = probe("SELECT t.id FROM d1.t CROSS JOIN d2.t;", "id");
     require_rejected(result, core::error_code_t::ambiguous_name);
 }
 
 TEST_CASE("name_resolution::ambiguity::skipped_slot_made_it_ambiguous") {
-    // Skipping `schema` is legal, but here it makes two elements
-    // answer — which is a refusal rather than a guess.
     auto result = probe("SELECT d.t.id FROM d.s1.t CROSS JOIN d.s2.t;", "id");
     require_rejected(result, core::error_code_t::ambiguous_name);
 }
@@ -507,7 +479,6 @@ TEST_CASE("name_resolution::ambiguity::database_qualifier_picks_a_side") {
 }
 
 TEST_CASE("name_resolution::ambiguity::database_qualifier_picks_the_right_side") {
-    // The mirror of the row above: the same query has to reach the other side.
     auto result = probe("SELECT d2.t.id FROM d1.t CROSS JOIN d2.t;", "id");
     require_resolved(result, side_t::right, "t");
 }
@@ -538,16 +509,12 @@ TEST_CASE("name_resolution::from_element::subquery_alias_answers") {
 }
 
 TEST_CASE("name_resolution::from_element::subquery_alias_cannot_be_qualified") {
-    // Every slot of a subquery element is empty, so a filled slot in
-    // the reference cannot match.
     auto result = probe("SELECT d.s.c FROM (SELECT * FROM d.inner_t) s;", "c");
     require_rejected(result, core::error_code_t::table_not_exists);
 }
 
 TEST_CASE("name_resolution::from_element::subquery_without_alias_rejected") {
-    // The grammar already refuses this (gram.y:12668), inherited
-    // from PostgreSQL, so the case guards a rule that holds rather than
-    // reporting one that is missing.
+    // The grammar already refuses this (gram.y:12668), inherited from PostgreSQL.
     auto result = probe("SELECT c FROM (SELECT * FROM d.inner_t);", "c");
     require_rejected_by_parser(result);
 }
@@ -585,7 +552,6 @@ TEST_CASE("name_resolution::from_element::subquery_on_the_right_of_a_composite_l
 }
 
 TEST_CASE("name_resolution::from_element::table_function_on_the_right_of_a_composite_left") {
-    // The same missing-copy question for the remaining element kind.
     auto result = transform_only("SELECT a.jk FROM d.a a JOIN d.b b ON a.jk = b.jk "
                                  "JOIN generate_series(1, 3) g ON a.jk = g.g;");
     INFO(describe(result));
@@ -605,8 +571,6 @@ TEST_CASE("name_resolution::field_access::around_an_unqualified_column") {
 }
 
 TEST_CASE("name_resolution::field_access::around_a_qualified_column") {
-    // The PostgreSQL-idiomatic spelling: one pair of parentheses, then the field
-    // chain continues without more.
     auto result = probe("SELECT (t.custom_type).f3.f1 FROM d.t;", "f1");
     require_resolved_path(result, side_t::left, "t", "custom_type/f3/f1");
 }
@@ -617,9 +581,7 @@ TEST_CASE("name_resolution::field_access::nested_pairs_reach_the_same_field") {
 }
 
 TEST_CASE("name_resolution::field_access::same_field_from_a_predicate") {
-    // WHERE reads the reference through a different code path than the select
-    // list does. Both have to arrive at the same key, or a predicate and a
-    // projection over one field would disagree about which field it is.
+    // WHERE reads the reference through a different code path than the select list does.
     auto result = probe("SELECT id FROM d.t WHERE (t.custom_type).f3.f1 = 1;", "f1");
     require_resolved_path(result, side_t::left, "t", "custom_type/f3/f1");
 }
@@ -662,21 +624,16 @@ TEST_CASE("name_resolution::order_and_group::group_by_resolves_through_the_alias
 }
 
 TEST_CASE("name_resolution::message::message_names_the_reference") {
-    // Nothing in FROM carries that name.
     auto result = probe("SELECT nosuch.id FROM shop.orders;", "id");
     require_rejected_saying(result, core::error_code_t::table_not_exists, "nosuch");
 }
 
 TEST_CASE("name_resolution::message::message_shows_how_the_element_is_spelled") {
-    // The element is there, the qualification is not the one written.
-    // Without its spelling in the message the user cannot see why a form that
-    // works in PostgreSQL fails here.
     auto result = probe("SELECT sales.orders.id FROM shop.sales.orders;", "id");
     require_rejected_saying(result, core::error_code_t::table_not_exists, "shop.sales.orders");
 }
 
 TEST_CASE("name_resolution::message::message_suggests_the_alias") {
-    // The name is there but an alias hides it.
     auto result = probe("SELECT orders.id FROM shop.orders AS placed;", "id");
     require_rejected_saying(result, core::error_code_t::table_not_exists, "placed");
 }
@@ -698,9 +655,7 @@ TEST_CASE("name_resolution::using::several_columns") {
 }
 
 TEST_CASE("name_resolution::using::left_join_keeps_its_type") {
-    // The nastier half of the defect: LEFT JOIN already produced join_type::left,
-    // so the cardinality looked plausible while every left row matched every
-    // right one.
+    // LEFT JOIN already produced join_type::left, so cardinality alone looked plausible even here.
     auto result = transform_only("SELECT a.v FROM d.a a LEFT JOIN d.b b USING (id);");
     INFO(describe(result));
     REQUIRE_FALSE(result.rejected);
@@ -709,8 +664,7 @@ TEST_CASE("name_resolution::using::left_join_keeps_its_type") {
 }
 
 TEST_CASE("name_resolution::using::composite_left_side") {
-    // Why the predicate is built by side and not by name: here the left side of
-    // the outer join is a join, and has no name to write.
+    // The predicate is built by side, not by name: the left side here is itself a join with no name.
     auto result = transform_only("SELECT a.v FROM d.a a JOIN d.b b ON a.jk = b.jk JOIN d.c c USING (id);");
     INFO(describe(result));
     REQUIRE_FALSE(result.rejected);
@@ -726,8 +680,7 @@ TEST_CASE("name_resolution::using::star_is_refused") {
 }
 
 TEST_CASE("name_resolution::using::natural_join_is_refused") {
-    // NATURAL needs the column lists of both sides, which the transformer does
-    // not have. Refusing beats the silent cross product it used to produce.
+    // NATURAL needs the column lists of both sides, which the transformer does not have.
     auto result = transform_only("SELECT a.v FROM d.a a NATURAL JOIN d.b b;");
     INFO(describe(result));
     REQUIRE(result.rejected);
@@ -743,8 +696,6 @@ TEST_CASE("name_resolution::using::plain_on_join_unchanged") {
 }
 
 TEST_CASE("name_resolution::using::cross_join_still_has_no_predicate") {
-    // The other side of the rule: with neither ON nor USING it really is a cross
-    // product, and must stay one.
     auto result = transform_only("SELECT a.v FROM d.a a CROSS JOIN d.b b;");
     INFO(describe(result));
     REQUIRE_FALSE(result.rejected);
@@ -753,10 +704,8 @@ TEST_CASE("name_resolution::using::cross_join_still_has_no_predicate") {
 }
 
 TEST_CASE("name_resolution::using::row_count_is_not_a_cross_product") {
-    auto config = test_create_config("/tmp/test_name_resolution/using");
+    auto config = test_create_config(integration_fixture_path("test_name_resolution/using"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -803,10 +752,6 @@ TEST_CASE("name_resolution::using::row_count_is_not_a_cross_product") {
             dispatcher->execute_sql(session, "SELECT a.av FROM ud.a a JOIN ud.b b USING (nosuch);")->is_success());
     }
     {
-        // Which copy the merged column stands for is only observable on an outer
-        // join: rows 1 and 2 have no match in b, so the right copy is padded and
-        // the merged `id` has to come from the left. Reading the padded copy
-        // would show up here as two empty ids.
         INFO("LEFT JOIN: the merged column is the left copy, so unmatched rows keep their id");
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "SELECT id FROM ud.a a LEFT JOIN ud.b b USING (id);");
@@ -843,7 +788,7 @@ TEST_CASE("name_resolution::duplicate_name::same_name_different_database_is_fine
 }
 
 TEST_CASE("name_resolution::validator::unqualified_column_is_placed_by_the_validator") {
-    database_t db("/tmp/test_name_resolution/validator_unqualified");
+    database_t db(integration_fixture_path("test_name_resolution/validator_unqualified"));
     db.seed({"CREATE DATABASE vd;",
              "CREATE TABLE vd.a (id INT, av INT);",
              "CREATE TABLE vd.b (id INT, bv INT);",
@@ -855,7 +800,7 @@ TEST_CASE("name_resolution::validator::unqualified_column_is_placed_by_the_valid
 }
 
 TEST_CASE("name_resolution::validator::one_relation_on_both_sides_is_not_ambiguous") {
-    database_t db("/tmp/test_name_resolution/validator_same_schema");
+    database_t db(integration_fixture_path("test_name_resolution/validator_same_schema"));
     db.seed({"CREATE DATABASE vd;",
              "CREATE TABLE vd.a (id INT, av INT);",
              "INSERT INTO vd.a (id, av) VALUES (1,10),(2,20);"});
@@ -865,7 +810,7 @@ TEST_CASE("name_resolution::validator::one_relation_on_both_sides_is_not_ambiguo
 }
 
 TEST_CASE("name_resolution::validator::qualified_reference_inside_a_derived_table") {
-    database_t db("/tmp/test_name_resolution/validator_derived");
+    database_t db(integration_fixture_path("test_name_resolution/validator_derived"));
     db.seed({"CREATE DATABASE vd;",
              "CREATE TABLE vd.inner_t (k INT, v INT);",
              "INSERT INTO vd.inner_t (k, v) VALUES (1,100),(2,200),(3,300);"});
@@ -875,7 +820,7 @@ TEST_CASE("name_resolution::validator::qualified_reference_inside_a_derived_tabl
 }
 
 TEST_CASE("name_resolution::validator::qualifier_inside_a_derived_join_still_selects") {
-    database_t db("/tmp/test_name_resolution/validator_derived_join");
+    database_t db(integration_fixture_path("test_name_resolution/validator_derived_join"));
     db.seed({"CREATE DATABASE vd;",
              "CREATE TABLE vd.a (id INT, av INT);",
              "CREATE TABLE vd.b (id INT, v INT);",
@@ -887,19 +832,18 @@ TEST_CASE("name_resolution::validator::qualifier_inside_a_derived_join_still_sel
 }
 
 TEST_CASE("name_resolution::validator::subquery_qualifier_does_not_reach_a_neighbour") {
-    database_t db("/tmp/test_name_resolution/validator_neighbour");
+    database_t db(integration_fixture_path("test_name_resolution/validator_neighbour"));
     db.seed({"CREATE DATABASE vd;",
              "CREATE TABLE vd.a (id INT, av INT);",
              "CREATE TABLE vd.b (id INT, bv INT);",
              "INSERT INTO vd.a (id, av) VALUES (1,10),(2,20);",
              "INSERT INTO vd.b (id, bv) VALUES (1,100),(2,200);"});
 
-    // `bv` belongs to b, not to the derived table s. Naming it through s must be refused.
     std::ignore = run_refused(db, "SELECT s.bv FROM (SELECT x.id, x.av FROM vd.a x) s JOIN vd.b b ON s.id = b.id;");
 }
 
 TEST_CASE("name_resolution::validator::table_function_alias_names_the_relation") {
-    database_t db("/tmp/test_name_resolution/table_function_alias");
+    database_t db(integration_fixture_path("test_name_resolution/table_function_alias"));
     db.seed({"CREATE DATABASE vd;"});
 
     auto cur = run_ok(db, "SELECT g.g FROM generate_series(1, 3) g;");
@@ -907,7 +851,7 @@ TEST_CASE("name_resolution::validator::table_function_alias_names_the_relation")
 }
 
 TEST_CASE("name_resolution::validator::table_function_shares_the_from_namespace") {
-    database_t db("/tmp/test_name_resolution/table_function_namespace");
+    database_t db(integration_fixture_path("test_name_resolution/table_function_namespace"));
     db.seed({"CREATE DATABASE vd;",
              "CREATE TABLE vd.g (id INT, w INT);",
              "INSERT INTO vd.g (id, w) VALUES (1,100);",
@@ -931,7 +875,7 @@ TEST_CASE("name_resolution::validator::table_function_shares_the_from_namespace"
 }
 
 TEST_CASE("name_resolution::using::merged_column_follows_the_join_type") {
-    database_t db("/tmp/test_name_resolution/using_outer");
+    database_t db(integration_fixture_path("test_name_resolution/using_outer"));
     db.seed({"CREATE DATABASE ud;",
              "CREATE TABLE ud.a (id INT, av INT);",
              "CREATE TABLE ud.b (id INT, bv INT);",
@@ -957,7 +901,7 @@ TEST_CASE("name_resolution::using::merged_column_follows_the_join_type") {
 }
 
 TEST_CASE("name_resolution::validator::ambiguous_column_says_it_is_ambiguous") {
-    database_t db("/tmp/test_name_resolution/validator_ambiguous");
+    database_t db(integration_fixture_path("test_name_resolution/validator_ambiguous"));
     db.seed({"CREATE DATABASE vd;",
              "CREATE TABLE vd.a (id INT, av INT);",
              "CREATE TABLE vd.b (id INT, bv INT);",
@@ -991,7 +935,7 @@ TEST_CASE("name_resolution::quoted::quoted_relname_in_a_mixed_name") {
 }
 
 TEST_CASE("name_resolution::quoted::quoted_column_keeps_its_case") {
-    database_t db("/tmp/test_name_resolution/quoted_column");
+    database_t db(integration_fixture_path("test_name_resolution/quoted_column"));
     db.seed({"CREATE DATABASE vd;",
              "CREATE TABLE vd.q (\"Id\" INT, v INT);",
              "INSERT INTO vd.q (\"Id\", v) VALUES (1,10);"});
@@ -1007,7 +951,7 @@ TEST_CASE("name_resolution::quoted::quoted_column_keeps_its_case") {
 }
 
 TEST_CASE("name_resolution::quoted::unquoted_column_is_folded") {
-    database_t db("/tmp/test_name_resolution/unquoted_column");
+    database_t db(integration_fixture_path("test_name_resolution/unquoted_column"));
     db.seed({"CREATE DATABASE vd;", "CREATE TABLE vd.u (Id INT, v INT);", "INSERT INTO vd.u (Id, v) VALUES (1,10);"});
     {
         INFO("declared unquoted, so every unquoted spelling reaches it");
@@ -1022,7 +966,7 @@ TEST_CASE("name_resolution::quoted::unquoted_column_is_folded") {
 }
 
 TEST_CASE("name_resolution::regression::chained_join_reads_the_middle_table") {
-    database_t db("/tmp/test_name_resolution/chain");
+    database_t db(integration_fixture_path("test_name_resolution/chain"));
     db.seed({"CREATE DATABASE cd;",
              "CREATE TABLE cd.l (jk INT, v INT);",
              "CREATE TABLE cd.m (jk INT, v INT);",
@@ -1037,7 +981,7 @@ TEST_CASE("name_resolution::regression::chained_join_reads_the_middle_table") {
 }
 
 TEST_CASE("name_resolution::regression::cross_database_join_is_not_a_cross_product") {
-    database_t db("/tmp/test_name_resolution/cross_db");
+    database_t db(integration_fixture_path("test_name_resolution/cross_db"));
     db.seed({"CREATE DATABASE d1;",
              "CREATE DATABASE d2;",
              "CREATE TABLE d1.t (jk INT, v INT);",
@@ -1062,7 +1006,6 @@ namespace {
         return read(sql::transform::pg_ptr_cast<SelectStmt>(&node), &resource);
     }
 
-    // The slots a FROM name landed in, straight off the RangeVar.
     sql::transform::qualified_name from_slots(const std::string& sql) {
         return with_parsed(sql, [](SelectStmt* select, std::pmr::memory_resource*) {
             auto* item = sql::transform::pg_ptr_cast<Node>(select->fromClause->lst.front().data);
@@ -1074,9 +1017,6 @@ namespace {
         std::string uid, db, schema, table, column;
     };
 
-    // The slots a column reference landed in. `names` carries one fully spelled
-    // out element so that every arity of the lower table resolves against it and
-    // the parse is what the case observes, not the match.
     reference_slots_t reference_slots(const std::string& sql) {
         sql::transform::name_collection_t names;
         names.left_name = sql::transform::qualified_name{"d", "t", "s", "u"};
@@ -1090,12 +1030,10 @@ namespace {
             return reference_slots_t{ref.uid, ref.db, ref.schema, ref.table, ref.field.as_string()};
         });
     }
-} // namespace
+}
 
 TEST_CASE("name_resolution::from_name::from_arities_fill_the_slots") {
-    // A FROM name. The shorter forms drop the MIDDLE slots: two
-    // segments are db.relname, not schema.relname — the deviation from PG that
-    // the whole of matching is shaped around.
+    // The shorter forms drop the middle slots: two segments are db.relname, not schema.relname.
     {
         auto name = from_slots("SELECT 1 FROM t;");
         CHECK(name.relname == "t");
@@ -1127,9 +1065,8 @@ TEST_CASE("name_resolution::from_name::from_arities_fill_the_slots") {
 }
 
 TEST_CASE("name_resolution::column_ref::column_arities_fill_the_slots") {
-    // A column reference. Not a suffix of the FROM table: three segments are
-    // db.table.col, skipping `schema`, while three segments in FROM are
-    // db.schema.relname. Only the count from the right is shared.
+    // Not a suffix of the FROM table: three segments are db.table.col, skipping schema, while
+    // three segments in FROM are db.schema.relname -- only the count from the right is shared.
     {
         auto ref = reference_slots("SELECT col FROM u.d.s.t;");
         CHECK(ref.column == "col");

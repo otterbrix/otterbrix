@@ -8,6 +8,7 @@
 #include <cassert>
 #include <cstdint>
 #include <limits>
+#include <memory_resource>
 #include <string_view>
 #include <type_traits>
 
@@ -17,8 +18,7 @@ namespace components::casts {
 
         using types::complex_logical_type;
 
-        // Bits of a value this type can represent exactly:
-        // a floating type's mantissa (float 24, double 53)
+        // Bits of a value this type can represent exactly (a floating type's mantissa: float 24, double 53).
         template<typename T>
         constexpr uint32_t significant_bits() {
             if constexpr (std::is_floating_point_v<T>) {
@@ -28,8 +28,7 @@ namespace components::casts {
             }
         }
 
-        // precision_loss ordinal (assigned, not measured);
-        // 0 if the conversion is exact
+        // precision_loss is an assigned ordinal for cost comparison, not a measured quantity; 0 means exact.
         template<typename Source, typename Target>
         constexpr uint32_t numeric_precision_loss() {
             constexpr uint32_t source_bits = significant_bits<Source>();
@@ -37,7 +36,6 @@ namespace components::casts {
             return source_bits > target_bits ? source_bits - target_bits : 0;
         }
 
-        // Source/Target are the C++ storage types; their logical_type is derived
         template<typename Source, typename Target>
         void add_numeric(cast_registry_t& registry) {
             complex_logical_type source{types::to_logical_type<Source>()};
@@ -50,7 +48,6 @@ namespace components::casts {
             assert(!error.contains_error() && "duplicate default cast registration");
         }
 
-        // Single function to register all integer widening conversions
         template<typename First, typename... Rest>
         void add_widening_tower(cast_registry_t& registry) {
             (add_numeric<First, Rest>(registry), ...);
@@ -81,7 +78,6 @@ namespace components::casts {
             assert(!error.contains_error() && "duplicate default cast registration");
         }
 
-        // Registers the given floating type -> every listed integer type.
         template<typename Floating, typename... Integers>
         void add_floating_to_integers(cast_registry_t& registry) {
             (add_floating_to_integer<Floating, Integers>(registry), ...);
@@ -142,7 +138,6 @@ namespace components::casts {
             }
         }
 
-        // Registers every ordered pair among the listed integer types as a narrowing
         template<typename Source, typename... Integers>
         void add_integer_narrowing_from(cast_registry_t& registry) {
             (add_integer_narrowing<Source, Integers>(registry), ...);
@@ -158,13 +153,16 @@ namespace components::casts {
             return complex_logical_type{types::to_logical_type<std::string_view>()};
         }
 
-        // A placeholder DECIMAL used only as the registry key
-        // Actual resolution will depend on a given width and scale
-        [[nodiscard]] complex_logical_type decimal_key() { return complex_logical_type::create_decimal(18, 0); }
+        // A placeholder DECIMAL used only as the registry key; (18, 0) is in-window so create_decimal cannot fail,
+        // so null_memory_resource is safe -- the refusal path is the only allocation, and it's unreachable here.
+        [[nodiscard]] complex_logical_type decimal_key() {
+            auto created = complex_logical_type::create_decimal(std::pmr::null_memory_resource(), 18, 0);
+            assert(!created.has_error() && "decimal_key: DECIMAL(18,0) is inside the window");
+            return std::move(created.value());
+        }
 
-        // Likewise a placeholder ENUM: identity collapses the labels, so this one key stands for
-        // every enum CREATE TYPE will ever make. The cast reads the labels off the TARGET vector's
-        // own type at run time, which is why one body serves them all.
+        // Likewise a placeholder ENUM: one key stands for every enum CREATE TYPE will make, since the cast reads
+        // the labels off the TARGET vector's own type at run time.
         [[nodiscard]] complex_logical_type enum_key() {
             return complex_logical_type::create_enum("", std::vector<types::logical_value_t>{});
         }
@@ -229,15 +227,13 @@ namespace components::casts {
             assert(!from_error.contains_error() && "duplicate default cast registration");
         }
 
-        // Registers DECIMAL <-> each listed integer type (both directions).
         template<typename... Integers>
         void add_decimal_integers(cast_registry_t& registry) {
             (add_decimal_integer<Integers>(registry), ...);
         }
 
-        // STRING -> ENUM. ASSIGNMENT, not implicit: a string becomes an enum where a column says so
-        // (INSERT/UPDATE), never on its own in an arbitrary expression. try_cast writes NULL for a
-        // string that names no label of the target enum; cast errors on it.
+        // ASSIGNMENT, not implicit: a string becomes an enum where a column says so, never in an arbitrary
+        // expression. try_cast writes NULL for a string naming no label of the target enum; cast errors on it.
         void add_string_enum(cast_registry_t& registry) {
             cast_entry to_enum{cast_function_t{&kernels::string_to_enum_cast, &kernels::string_to_enum_try_cast},
                                cast_type::assignment,
@@ -360,8 +356,7 @@ namespace components::casts {
 
         template<typename Numeric>
         void add_numeric_to_bool(cast_registry_t& registry) {
-            // Only integer -> bool, matching PostgreSQL (it has no float/numeric -> boolean cast);
-            // a floating -> bool would also be a float != 0 comparison, tripping -Wfloat-equal.
+            // Only integer -> bool, matching PostgreSQL; a floating -> bool would trip -Wfloat-equal (float != 0).
             if constexpr (!std::is_floating_point_v<Numeric>) {
                 complex_logical_type source{types::to_logical_type<Numeric>()};
                 complex_logical_type target{types::to_logical_type<bool>()};
@@ -420,17 +415,14 @@ namespace components::casts {
     } // namespace
 
     void register_default_casts(cast_registry_t& registry) {
-        // Integer widening towers
         add_widening_tower<int8_t, int16_t, int32_t, int64_t, types::int128_t>(registry);
         add_widening_tower<uint8_t, uint16_t, uint32_t, uint64_t, types::uint128_t>(registry);
 
-        // Cross-signedness lossless widening
         add_unsigned_to_wider_signed<uint8_t, int16_t, int32_t, int64_t, types::int128_t>(registry);
         add_unsigned_to_wider_signed<uint16_t, int32_t, int64_t, types::int128_t>(registry);
         add_unsigned_to_wider_signed<uint32_t, int64_t, types::int128_t>(registry);
         add_unsigned_to_wider_signed<uint64_t, types::int128_t>(registry);
 
-        // remaining integer -> integer
         add_all_integer_narrowing<int8_t,
                                   int16_t,
                                   int32_t,
@@ -442,14 +434,11 @@ namespace components::casts {
                                   uint64_t,
                                   types::uint128_t>(registry);
 
-        // float -> double (lossless).
         add_numeric<float, double>(registry);
 
-        // double -> float. Narrowing, so assignment level: the target keeps far fewer mantissa
-        // bits, and a magnitude outside its range is a range error rather than a rounding.
+        // double -> float: a magnitude outside the target's range is a range error, not a rounding.
         add_floating_narrowing<double, float>(registry);
 
-        // Every integer -> floating (infallible; precision_loss computed per pair).
         add_integers_to_floating<double,
                                  int8_t,
                                  int16_t,
@@ -473,7 +462,6 @@ namespace components::casts {
                                  uint64_t,
                                  types::uint128_t>(registry);
 
-        // Every floating -> integer
         add_floating_to_integers<double,
                                  int8_t,
                                  int16_t,
@@ -497,7 +485,6 @@ namespace components::casts {
                                  uint64_t,
                                  types::uint128_t>(registry);
 
-        // string <-> number
         add_string_conversions<int8_t,
                                int16_t,
                                int32_t,
@@ -511,7 +498,6 @@ namespace components::casts {
                                float,
                                double>(registry);
 
-        // DECIMAL <-> floating and DECIMAL <-> integer
         add_decimal_floating<float>(registry);
         add_decimal_floating<double>(registry);
         add_decimal_to_decimal(registry);
@@ -527,7 +513,6 @@ namespace components::casts {
                              uint64_t,
                              types::uint128_t>(registry);
 
-        // Date/time casts
         namespace cd = core::date;
 
         add_datetime_widening<cd::date_t, cd::timestamp_t>(registry);
@@ -543,7 +528,6 @@ namespace components::casts {
         add_datetime_narrowing<cd::timestamptz_t, cd::timetz_t>(registry);
         add_datetime_narrowing<cd::timetz_t, cd::time_t>(registry);
 
-        // STRING -> each date/time (parse) and each date/time -> STRING (format).
         add_string_to_datetime<cd::date_t>(registry);
         add_string_to_datetime<cd::time_t>(registry);
         add_string_to_datetime<cd::timetz_t>(registry);
@@ -557,8 +541,6 @@ namespace components::casts {
         add_datetime_to_string<cd::timestamptz_t>(registry);
         add_datetime_to_string<cd::interval_t>(registry);
 
-        // BOOLEAN <-> numeric
-        // BOOLEAN <-> string
         add_bool_numeric_conversions<int8_t,
                                      int16_t,
                                      int32_t,

@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/types/logical_value.hpp>
@@ -35,10 +36,8 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::correctness_bugs::array_int_slot_width") {
-    auto config = test_create_config("/tmp/test_correctness_bugs/array_int_slot_width");
+    auto config = test_create_config(integration_fixture_path("test_correctness_bugs/array_int_slot_width"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -89,10 +88,9 @@ TEST_CASE("integration::cpp::correctness_bugs::array_int_slot_width") {
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::unsupported_boolean_text_arithmetic") {
-    auto config = test_create_config("/tmp/test_correctness_bugs/unsupported_boolean_text_arithmetic");
+    auto config =
+        test_create_config(integration_fixture_path("test_correctness_bugs/unsupported_boolean_text_arithmetic"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -125,7 +123,6 @@ TEST_CASE("integration::cpp::correctness_bugs::unsupported_boolean_text_arithmet
         REQUIRE(cur->get_error().type == core::error_code_t::arithmetics_failure);
     }
 
-    // Invalid expressions must not corrupt the engine process or session state.
     {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "SELECT b, s FROM t.bad_arith;");
@@ -137,10 +134,8 @@ TEST_CASE("integration::cpp::correctness_bugs::unsupported_boolean_text_arithmet
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::alias_collision") {
-    auto config = test_create_config("/tmp/test_correctness_bugs/alias_collision");
+    auto config = test_create_config(integration_fixture_path("test_correctness_bugs/alias_collision"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -187,10 +182,8 @@ TEST_CASE("integration::cpp::correctness_bugs::alias_collision") {
 
 TEST_CASE("integration::cpp::correctness_bugs::star_prefix") {
     SECTION("table-qualified star") {
-        auto config = test_create_config("/tmp/test_correctness_bugs/star_prefix_table");
+        auto config = test_create_config(integration_fixture_path("test_correctness_bugs/star_prefix_table"));
         test_clear_directory(config);
-        config.disk.on = false;
-        config.wal.on = false;
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -236,10 +229,8 @@ TEST_CASE("integration::cpp::correctness_bugs::star_prefix") {
     }
 
     SECTION("struct field wildcard (out of scope, must error)") {
-        auto config = test_create_config("/tmp/test_correctness_bugs/star_prefix_struct");
+        auto config = test_create_config(integration_fixture_path("test_correctness_bugs/star_prefix_struct"));
         test_clear_directory(config);
-        config.disk.on = false;
-        config.wal.on = false;
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -271,10 +262,8 @@ TEST_CASE("integration::cpp::correctness_bugs::star_prefix") {
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::count_case_no_else") {
-    auto config = test_create_config("/tmp/test_correctness_bugs/count_case_no_else");
+    auto config = test_create_config(integration_fixture_path("test_correctness_bugs/count_case_no_else"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -317,10 +306,8 @@ TEST_CASE("integration::cpp::correctness_bugs::count_case_no_else") {
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::min_max_avg_case_no_else") {
-    auto config = test_create_config("/tmp/test_correctness_bugs/min_max_avg_case_no_else");
+    auto config = test_create_config(integration_fixture_path("test_correctness_bugs/min_max_avg_case_no_else"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -379,8 +366,7 @@ TEST_CASE("integration::cpp::correctness_bugs::min_max_avg_case_no_else") {
         INFO("baseline MIN(CASE ELSE) error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        // The CASE result type is the common type across its branches: the ELSE literal 999999 is a
-        // BIGINT, so THEN score (INT) widens to BIGINT (issue #571 #2 — a wider branch is not truncated).
+        // CASE's common type across branches widens THEN score (INT) to BIGINT via ELSE 999999 (issue #571 #2).
         auto v = cur->value(0, 0);
         if (v.type().type() == components::types::logical_type::BIGINT) {
             REQUIRE(v.value<int64_t>() == 72);
@@ -390,16 +376,10 @@ TEST_CASE("integration::cpp::correctness_bugs::min_max_avg_case_no_else") {
     }
 }
 
-// A CASE-WHEN whose condition compares a NULL column value used to hit
-// evaluate_row_condition's type-mismatch cast branch (the NULL resolves to an
-// NA-typed value), where cast_as previously threw std::logic_error -> SIGABRT.
-// Now cast_as returns an error and the condition is guarded: a NULL operand makes
-// the comparison UNKNOWN, so the row falls through to ELSE. The query must succeed.
+// A NULL CASE-WHEN condition is UNKNOWN, not a crash: cast_as errors, so the row falls to ELSE.
 TEST_CASE("integration::cpp::correctness_bugs::case_condition_null_operand") {
-    auto config = test_create_config("/tmp/test_correctness_bugs/case_condition_null_operand");
+    auto config = test_create_config(integration_fixture_path("test_correctness_bugs/case_condition_null_operand"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -413,32 +393,27 @@ TEST_CASE("integration::cpp::correctness_bugs::case_condition_null_operand") {
     }
     {
         auto session = otterbrix::session_id_t();
-        // id=2 has a NULL score -> its CASE condition operand is NULL.
         REQUIRE(dispatcher->execute_sql(session, "INSERT INTO t.z (id, score) VALUES (1, 72), (2, NULL), (3, 50);")
                     ->is_success());
     }
 
     {
         auto session = otterbrix::session_id_t();
-        // `score = 72` for the NULL row is UNKNOWN -> ELSE branch. Before the fix this
-        // aborted the process; now it succeeds and returns the ELSE value.
         auto cur =
             dispatcher->execute_sql(session,
                                     "SELECT id, CASE WHEN score = 72 THEN 1 ELSE 0 END AS hit FROM t.z ORDER BY id;");
         INFO("CASE null-operand error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->value(1, 0).value<int32_t>() == 1); // id=1: 72 = 72 -> 1
-        REQUIRE(cur->value(1, 1).value<int32_t>() == 0); // id=2: NULL = 72 -> UNKNOWN -> ELSE 0
-        REQUIRE(cur->value(1, 2).value<int32_t>() == 0); // id=3: 50 = 72 -> 0
+        REQUIRE(cur->value(1, 0).value<int32_t>() == 1);
+        REQUIRE(cur->value(1, 1).value<int32_t>() == 0);
+        REQUIRE(cur->value(1, 2).value<int32_t>() == 0);
     }
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::enum_scan_predicate") {
-    auto config = test_create_config("/tmp/test_correctness_bugs/enum_scan_predicate");
+    auto config = test_create_config(integration_fixture_path("test_correctness_bugs/enum_scan_predicate"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -505,22 +480,11 @@ TEST_CASE("integration::cpp::correctness_bugs::enum_scan_predicate") {
     }
 }
 
-// A constraint (CHECK / FK) that errors AFTER the DML operator already appended its
-// rows, in AUTOCOMMIT, must leave NO physical trace: the appended (uncommitted) rows
-// must be REVERTED, not lingered. Mechanism of the bug being guarded against: the
-// insert's await_async_and_resume does the WAL-first storage_append and records the
-// append range on the pipeline context; the constraint operator above it (driven
-// bottom-up, AFTER the insert) then errors. If the executor's error path skips lifting
-// the recorded append range into the result, the autocommit abort tail has nothing to
-// revert and the bad row physically lingers (txn_abort alone does not scrub it). These
-// tests assert the row is ABSENT after the violation — including the deterministic
-// "re-insert the same id succeeds" probe, which is RED if a uniqueness-free physical
-// row still sits in the table.
+// Constraint checks run AFTER the insert's WAL-first append; a failed autocommit must revert it or the row lingers.
 TEST_CASE("integration::cpp::correctness_bugs::check_violation_autocommit_no_linger") {
-    auto config = test_create_config("/tmp/test_correctness_bugs/check_violation_autocommit_no_linger");
+    auto config =
+        test_create_config(integration_fixture_path("test_correctness_bugs/check_violation_autocommit_no_linger"));
     test_clear_directory(config);
-    config.disk.on = true;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -530,8 +494,6 @@ TEST_CASE("integration::cpp::correctness_bugs::check_violation_autocommit_no_lin
     }
     {
         auto session = otterbrix::session_id_t();
-        // age is bigint so the CHECK constant compares same-type (mirrors the
-        // existing streaming_dml::check_constraint test).
         REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE t.acc (id bigint, age bigint);")->is_success());
     }
     {
@@ -540,8 +502,6 @@ TEST_CASE("integration::cpp::correctness_bugs::check_violation_autocommit_no_lin
                     ->is_success());
     }
 
-    // AUTOCOMMIT INSERT that violates the CHECK (age = -5 fails age > 0). The
-    // statement MUST error.
     {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "INSERT INTO t.acc (id, age) VALUES (1, -5);");
@@ -549,8 +509,6 @@ TEST_CASE("integration::cpp::correctness_bugs::check_violation_autocommit_no_lin
         REQUIRE(cur->is_error());
     }
 
-    // The bad row must be ABSENT: it was physically appended before the CHECK ran,
-    // and the autocommit abort must have reverted that append.
     {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "SELECT COUNT(id) AS c FROM t.acc;");
@@ -567,9 +525,7 @@ TEST_CASE("integration::cpp::correctness_bugs::check_violation_autocommit_no_lin
         REQUIRE(cur->size() == 0);
     }
 
-    // Deterministic physical-leak probe: a VALID re-insert of the SAME id must
-    // succeed and the table must then hold EXACTLY ONE row. If the reverted append
-    // had lingered, a full scan / COUNT here would observe the stale row too.
+    // Re-inserting the SAME id proves no leak: a lingering appended row would leave the count at 2, not 1.
     {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "INSERT INTO t.acc (id, age) VALUES (1, 42);");
@@ -585,10 +541,9 @@ TEST_CASE("integration::cpp::correctness_bugs::check_violation_autocommit_no_lin
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::fk_violation_autocommit_no_linger") {
-    auto config = test_create_config("/tmp/test_correctness_bugs/fk_violation_autocommit_no_linger");
+    auto config =
+        test_create_config(integration_fixture_path("test_correctness_bugs/fk_violation_autocommit_no_linger"));
     test_clear_directory(config);
-    config.disk.on = true;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -612,13 +567,11 @@ TEST_CASE("integration::cpp::correctness_bugs::fk_violation_autocommit_no_linger
                                   "FOREIGN KEY (parent_id) REFERENCES t.parent (id);")
                     ->is_success());
     }
-    // One parent row (id == 1) exists; a child referencing id == 99 has no parent.
     {
         auto session = otterbrix::session_id_t();
         REQUIRE(dispatcher->execute_sql(session, "INSERT INTO t.parent (id, name) VALUES (1, 'p1');")->is_success());
     }
 
-    // AUTOCOMMIT INSERT into the child referencing a missing parent: MUST error.
     {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "INSERT INTO t.child (id, parent_id) VALUES (7, 99);");
@@ -626,7 +579,6 @@ TEST_CASE("integration::cpp::correctness_bugs::fk_violation_autocommit_no_linger
         REQUIRE(cur->is_error());
     }
 
-    // The child row must be ABSENT (the append must have been reverted on abort).
     {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "SELECT COUNT(id) AS c FROM t.child;");
@@ -643,9 +595,7 @@ TEST_CASE("integration::cpp::correctness_bugs::fk_violation_autocommit_no_linger
         REQUIRE(cur->size() == 0);
     }
 
-    // Deterministic probe: a VALID insert referencing the existing parent succeeds
-    // and the child table then holds exactly one row (the stale FK-violating row,
-    // had it lingered, would push the count to 2).
+    // A valid insert referencing the parent proves no leak: a lingering row would push the count to 2, not 1.
     {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "INSERT INTO t.child (id, parent_id) VALUES (8, 1);");
@@ -660,23 +610,11 @@ TEST_CASE("integration::cpp::correctness_bugs::fk_violation_autocommit_no_linger
     }
 }
 
-// Deterministic RED/GREEN probe of the PHYSICAL revert. The black-box tests above
-// assert the externally-visible "row absent" contract, but MVCC permanently masks the
-// leaked row from every SQL read (its insert_id stays >= TRANSACTION_ID_START — a
-// pending-txn id that is never lowered to a commit_id and is never reused), so they
-// pass even with the leak present. This test observes the FIX MECHANISM directly via
-// the DEV_MODE executor counter dml_appends_reverted(): a CHECK/FK violation in
-// autocommit appends a row BEFORE the constraint fails, and the executor's failed-
-// statement abort path MUST lift that recorded append range and physically revert it
-// (storage_revert_appends → row_group_t::revert_append truncates the slot back). Before
-// the fix the error path breaks BEFORE the dml_appends lift, so the counter does not
-// move and the physical slot lingers — this assertion is RED. After the fix it bumps by
-// exactly one per leaked range.
+// MVCC masks a leaked append from SQL reads; this observes the revert via the DEV_MODE counter dml_appends_reverted().
 TEST_CASE("integration::cpp::correctness_bugs::check_violation_autocommit_reverts_physical_append") {
-    auto config = test_create_config("/tmp/test_correctness_bugs/check_violation_reverts_physical_append");
+    auto config =
+        test_create_config(integration_fixture_path("test_correctness_bugs/check_violation_reverts_physical_append"));
     test_clear_directory(config);
-    config.disk.on = true;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -703,24 +641,14 @@ TEST_CASE("integration::cpp::correctness_bugs::check_violation_autocommit_revert
     }
     const auto reverts_after = services::collection::executor::dml_appends_reverted();
 
-    // The physically-appended (then constraint-rejected) row's base append range
-    // must have been reverted on the abort path. RED before the fix (counter unchanged
-    // because the error path skipped the dml_appends lift).
     INFO("dml_appends_reverted before=" << reverts_before << " after=" << reverts_after);
     REQUIRE(reverts_after == reverts_before + 1);
 }
 
-// Issue #551: the physical revert of a CHECK-rejected INSERT truncated the segment's
-// row count but left the string dictionary size untouched. String offsets are stored
-// as the CUMULATIVE dictionary size at append time and scan derives each length as
-// offset[row] - offset[row-1], so the next accepted row's offset still included the
-// rejected row's payload — its string came back concatenated with the rejected one
-// ('clean' + 'REJECTED' = 'cleanREJECTED').
+// Issue #551: revert truncated the row count but left the dictionary size, leaking the rejected payload into offsets.
 TEST_CASE("integration::cpp::correctness_bugs::check_violation_revert_does_not_leak_string_payload") {
-    auto config = test_create_config("/tmp/test_correctness_bugs/check_violation_string_leak");
+    auto config = test_create_config(integration_fixture_path("test_correctness_bugs/check_violation_string_leak"));
     test_clear_directory(config);
-    config.disk.on = true;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -760,16 +688,11 @@ TEST_CASE("integration::cpp::correctness_bugs::check_violation_revert_does_not_l
     }
 }
 
-// Mid-segment variants of the #551 revert: the segment is NOT empty after the revert,
-// so the dictionary size must be rolled back to the LAST KEPT row's offset (not zero).
-// The kept row being a plain string exercises the positive cumulative offset; the kept
-// row being NULL exercises the offset-copy path (a NULL append copies the previous
-// row's offset, which must still be treated as the dictionary usage to keep).
+// Mid-segment #551: revert rolls dictionary size back to the last KEPT offset, not zero (NULL copies the prior offset).
 TEST_CASE("integration::cpp::correctness_bugs::check_violation_revert_mid_segment_keeps_prior_strings") {
-    auto config = test_create_config("/tmp/test_correctness_bugs/check_violation_string_leak_mid_segment");
+    auto config =
+        test_create_config(integration_fixture_path("test_correctness_bugs/check_violation_string_leak_mid_segment"));
     test_clear_directory(config);
-    config.disk.on = true;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -842,10 +765,9 @@ TEST_CASE("integration::cpp::correctness_bugs::check_violation_revert_mid_segmen
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::fk_violation_autocommit_reverts_physical_append") {
-    auto config = test_create_config("/tmp/test_correctness_bugs/fk_violation_reverts_physical_append");
+    auto config =
+        test_create_config(integration_fixture_path("test_correctness_bugs/fk_violation_reverts_physical_append"));
     test_clear_directory(config);
-    config.disk.on = true;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -887,17 +809,10 @@ TEST_CASE("integration::cpp::correctness_bugs::fk_violation_autocommit_reverts_p
     REQUIRE(reverts_after == reverts_before + 1);
 }
 
-// Issue #552: an FK-rejected DELETE stamps MVCC delete marks (deleter = the failed
-// statement's txn id) before the constraint check runs, and the autocommit failed-
-// statement path never un-stamped them (only explicit ROLLBACK did). The aborted txn
-// never commits so the row stays VISIBLE, but chunk_vector_info::delete_rows skips any
-// already-stamped slot — the next UPDATE's delete-half silently no-ops while its
-// append-half succeeds (duplicate row), and the row can never be deleted again.
+// Issue #552: a failed DELETE's MVCC stamp is never un-stamped on autocommit abort, leaving the row stuck.
 TEST_CASE("integration::cpp::correctness_bugs::fk_rejected_delete_leaves_row_updatable_and_deletable") {
-    auto config = test_create_config("/tmp/test_correctness_bugs/fk_rejected_delete_row_identity");
+    auto config = test_create_config(integration_fixture_path("test_correctness_bugs/fk_rejected_delete_row_identity"));
     test_clear_directory(config);
-    config.disk.on = true;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -949,7 +864,6 @@ TEST_CASE("integration::cpp::correctness_bugs::fk_rejected_delete_leaves_row_upd
         INFO("val: '" << cur->value(static_cast<uint64_t>(val_col), 0).value<std::string_view>() << "'");
         REQUIRE(cur->value(static_cast<uint64_t>(val_col), 0).value<std::string_view>() == "renamed");
     }
-    // The row must also still be deletable once the FK obstacle is removed.
     {
         auto session = otterbrix::session_id_t();
         REQUIRE(dispatcher->execute_sql(session, "DELETE FROM db.ch WHERE id = 10;")->is_success());
@@ -966,17 +880,10 @@ TEST_CASE("integration::cpp::correctness_bugs::fk_rejected_delete_leaves_row_upd
     }
 }
 
-// UPDATE variant of #552: a constraint-rejected UPDATE's delete-half stamps the same
-// MVCC delete marks (operator_update pushes the same dml_deletes tombstone), so the
-// failed-statement un-stamp must fire for it too — otherwise the next UPDATE
-// duplicates the row exactly as in the DELETE case. NOT NULL is the rejecting
-// constraint here: rewrite_update wires not_null_cols into the UPDATE plan (CHECK
-// expressions are a known gap on the UPDATE path and never reject).
+// UPDATE variant of #552; NOT NULL is used here since CHECK on the UPDATE path is a known gap that never rejects.
 TEST_CASE("integration::cpp::correctness_bugs::constraint_rejected_update_leaves_row_updatable") {
-    auto config = test_create_config("/tmp/test_correctness_bugs/rejected_update_row_identity");
+    auto config = test_create_config(integration_fixture_path("test_correctness_bugs/rejected_update_row_identity"));
     test_clear_directory(config);
-    config.disk.on = true;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1002,7 +909,6 @@ TEST_CASE("integration::cpp::correctness_bugs::constraint_rejected_update_leaves
     const auto reverts_after = services::collection::executor::dml_appends_reverted();
     INFO("dml_appends_reverted before=" << reverts_before << " after=" << reverts_after);
     REQUIRE(reverts_after == reverts_before + 1);
-    // The failed UPDATE must leave the table exactly as it was: one row (1, 'p1').
     {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "SELECT * FROM db.p;");
@@ -1043,17 +949,11 @@ TEST_CASE("integration::cpp::correctness_bugs::constraint_rejected_update_leaves
     }
 }
 
-// A scalar aggregate over a COLUMN argument (not count(*)) over an EMPTY table must
-// emit COUNT=0 (SUM/MIN/MAX/AVG=NULL), not crash. The global-aggregate empty path
-// (operator_group_t::empty_aggregate_result) drives the aggregator over a batch with
-// no chunks; operator_func_t::aggregate_batch_impl must not assert resolving the
-// column key against a 0-column chunk. This is the deterministic, single-threaded
-// reproduction of the integration::cpp::production::concurrent_read_write abort.
+// Repro of production::concurrent_read_write: a COLUMN aggregate (not count(*)) over an EMPTY table must be COUNT=0.
 TEST_CASE("integration::cpp::correctness_bugs::aggregate_column_arg_empty_table") {
-    auto config = test_create_config("/tmp/test_correctness_bugs/aggregate_column_arg_empty_table");
+    auto config =
+        test_create_config(integration_fixture_path("test_correctness_bugs/aggregate_column_arg_empty_table"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1082,10 +982,7 @@ TEST_CASE("integration::cpp::correctness_bugs::aggregate_column_arg_empty_table"
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         REQUIRE(cur->value(0, 0).is_null());
-        // Plan-time type resolution (variant 1): the empty SUM(bigint) result must be a
-        // typed BIGINT NULL, not the 0-byte logical_type::NA sentinel (which crashes
-        // downstream under gcc -O3). The type is config-invariant, so this also fails on
-        // clang before the fix.
+        // Empty SUM must return typed BIGINT NULL, not NA (crashes gcc -O3); config-invariant, holds on clang too.
         REQUIRE(cur->chunks().front().types()[0].type() == components::types::logical_type::BIGINT);
     }
 
@@ -1110,14 +1007,10 @@ TEST_CASE("integration::cpp::correctness_bugs::aggregate_column_arg_empty_table"
     }
 }
 
-// Projection (CASE / COALESCE / arithmetic) over an EMPTY table must yield 0 rows of a
-// correctly-typed column, not an untyped logical_type::NA column (which crashes under
-// gcc -O3, same class as the empty-aggregate bug). Type is config-invariant.
+// Projection over an EMPTY table must yield a typed 0-row column, not NA (same gcc -O3 crash class); config-invariant.
 TEST_CASE("integration::cpp::correctness_bugs::projection_over_empty_table") {
-    auto config = test_create_config("/tmp/test_correctness_bugs/projection_over_empty_table");
+    auto config = test_create_config(integration_fixture_path("test_correctness_bugs/projection_over_empty_table"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1136,8 +1029,6 @@ TEST_CASE("integration::cpp::correctness_bugs::projection_over_empty_table") {
         INFO(sql << " error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 0);
-        // Over empty input the projection must still expose its (one) typed column, not
-        // drop the schema (0 columns) or emit a 0-byte logical_type::NA column.
         REQUIRE(cur->column_count() == 1);
         REQUIRE(cur->chunks().front().types()[0].type() != components::types::logical_type::NA);
     };
@@ -1148,22 +1039,13 @@ TEST_CASE("integration::cpp::correctness_bugs::projection_over_empty_table") {
     SECTION("arithmetic over empty table keeps column type") {
         check_projection("SELECT value + value AS c FROM t.e;");
     }
-    // NOTE: `SELECT CASE WHEN ... END FROM <empty>` (searched-CASE, scalar_type::case_when)
-    // is routed through the node_group path, not node_select, so it is NOT covered by the
-    // no-group projection type resolution and still drops to 0 columns over empty input.
-    // Tracked as a follow-up (group-path case_when type resolution + operator) — its
-    // red-first test lands with that fix.
+    // NOTE: CASE over an empty table via the node_group path still drops to 0 columns; tracked as a follow-up.
 }
 
-// `col LIKE NULL` (and NOT LIKE / ILIKE / NOT ILIKE NULL) is UNKNOWN for every row in
-// PostgreSQL (three-valued logic; NOT UNKNOWN is still UNKNOWN) -> ZERO rows for BOTH the
-// plain and the negated form. The transformer used to feed the NULL pattern's (nullptr)
-// string storage straight into like_to_regex and crash the process at transform time.
+// LIKE/ILIKE (plain or NOT) against a NULL pattern are UNKNOWN for every row (PG three-valued logic) -> 0 rows.
 TEST_CASE("integration::cpp::correctness_bugs::like_null_pattern") {
-    auto config = test_create_config("/tmp/test_correctness_bugs/like_null_pattern");
+    auto config = test_create_config(integration_fixture_path("test_correctness_bugs/like_null_pattern"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1201,16 +1083,10 @@ TEST_CASE("integration::cpp::correctness_bugs::like_null_pattern") {
     }
 }
 
-// Scalar NOT LIKE / NOT ILIKE must DROP a NULL-subject row (PostgreSQL: `NULL NOT LIKE p`
-// is UNKNOWN). The bare union_not(regex) shape flipped the regex's NULL-subject FALSE into
-// TRUE and kept the row; the scalar negated form now carries the same is_not_null guard
-// the negated ANY/ALL forms already had (one canonical shape, disk pushdown included —
-// this test runs with disk on so the guarded filter goes through the storage scan).
+// NOT LIKE/NOT ILIKE drops a NULL-subject row (NULL NOT LIKE p is UNKNOWN); disk on exercises the pushdown guard too.
 TEST_CASE("integration::cpp::correctness_bugs::scalar_not_like_null_subject") {
-    auto config = test_create_config("/tmp/test_correctness_bugs/scalar_not_like_null_subject");
+    auto config = test_create_config(integration_fixture_path("test_correctness_bugs/scalar_not_like_null_subject"));
     test_clear_directory(config);
-    config.disk.on = true;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1246,20 +1122,12 @@ TEST_CASE("integration::cpp::correctness_bugs::scalar_not_like_null_subject") {
     }
 }
 
-// A DECIMAL operand coerced to the other side's integer type in a comparison must be DESCALED
-// (round, overflow -> NULL/unknown), never handed over as the raw scaled storage payload.
-// logical_value_t::cast_as's raw-numeric branch used to fire for a DECIMAL SOURCE too and
-// static_cast the scaled payload (NUMERIC(10,2) 3.00 -> 300; 100000.00 wraps int16 to -27008),
-// leaving the dedicated descaling DECIMAL->numeric branch unreachable. Every comparator funnels
-// through cast_as — simple_predicate's bidirectional coercion AND the pushed col-vs-col scan
-// filter — so `a < b` over (SMALLINT, NUMERIC) compared garbage on both storage modes. Values
-// are pinned, not counts: the wrong and the right row set both have 2 rows for `a < b`, and
-// 1 row for `a > b`.
+// A DECIMAL operand coerced to the other side's type must be DESCALED, not handed over raw (overflow -> NULL).
+// Values are pinned, not counts: both readings give 2 rows for a<b and 1 for a>b, so counts alone wouldn't catch this.
 TEST_CASE("integration::cpp::correctness_bugs::decimal_operand_comparison_descale") {
-    auto config = test_create_config("/tmp/test_correctness_bugs/decimal_operand_comparison_descale");
+    auto config =
+        test_create_config(integration_fixture_path("test_correctness_bugs/decimal_operand_comparison_descale"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1273,8 +1141,7 @@ TEST_CASE("integration::cpp::correctness_bugs::decimal_operand_comparison_descal
     REQUIRE(run("CREATE TABLE t.deccmp (a smallint, b numeric(10, 2));")->is_success());
     REQUIRE(run("INSERT INTO t.deccmp (a, b) VALUES (5, 3.00), (5, 100000.00), (40, 41.25);")->is_success());
 
-    // NUMERIC(10,2) is INT64-backed; the cursor exposes the scaled payload (value * 100),
-    // which pins WHICH physical row came back.
+    // NUMERIC(10,2) is INT64-backed; the cursor exposes the payload scaled by 100, identifying the physical row.
     constexpr int64_t payload_3_00 = 300;
     constexpr int64_t payload_41_25 = 4125;
     constexpr int64_t payload_100000_00 = 10000000;
@@ -1304,27 +1171,26 @@ TEST_CASE("integration::cpp::correctness_bugs::decimal_operand_comparison_descal
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::having_binds_aggregate_by_arguments") {
-    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/having_binds_by_args");
+    auto config =
+        test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/having_binds_by_args"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
     REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t (g bigint, v bigint);")->is_success());
-    // g=1: three rows, sum(g)=3, sum(v)=300.  g=10: one row, sum(g)=10, sum(v)=1.
-    // The two aggregates therefore disagree about which group passes the HAVING.
+    // Chosen so sum(g) and sum(v) disagree on which group passes the HAVING.
     REQUIRE(
         test_helpers::exec(dispatcher, "INSERT INTO db.t (g, v) VALUES (1,100),(1,100),(1,100),(10,1);")->is_success());
 
     auto cur = test_helpers::exec(dispatcher, "SELECT g, sum(v) FROM db.t GROUP BY g HAVING sum(g) > 5;");
     REQUIRE(cur->is_success());
-    // Matching a HAVING aggregate to a SELECT one by function name alone bound sum(g)
-    // to sum(v), which passes g=1 instead.
     REQUIRE(cur->size() == 1);
     CHECK(cur->value(0, 0).value<int64_t>() == 10);
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::having_aggregate_over_expression") {
-    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/having_over_expression");
+    auto config =
+        test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/having_over_expression"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1332,9 +1198,7 @@ TEST_CASE("integration::cpp::correctness_bugs::having_aggregate_over_expression"
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t (g bigint);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.t (g) VALUES (1),(1),(10);")->is_success());
 
-    // An expression argument must resolve to the aggregate SELECT already registered:
-    // built as a constant parameter instead, it never matched and a second, broken
-    // aggregate was registered for the same expression.
+    // A HAVING expression argument must resolve to the SELECT's already-registered aggregate, not register a new one.
     auto cur = test_helpers::exec(dispatcher, "SELECT g, SUM(g + 0) AS s FROM db.t GROUP BY g HAVING SUM(g + 0) > 5;");
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 1);
@@ -1342,7 +1206,7 @@ TEST_CASE("integration::cpp::correctness_bugs::having_aggregate_over_expression"
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::update_division_by_zero_errors") {
-    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/update_div_zero");
+    auto config = test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/update_div_zero"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1350,8 +1214,6 @@ TEST_CASE("integration::cpp::correctness_bugs::update_division_by_zero_errors") 
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t (x BIGINT);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.t (x) VALUES (10);")->is_success());
 
-    // UPDATE computed x/0 through the unguarded kernel and stored a silent NULL over
-    // the row; the guarded path errors and leaves the value alone.
     CHECK_FALSE(test_helpers::exec(dispatcher, "UPDATE db.t SET x = x / 0;")->is_success());
 
     auto cur = test_helpers::exec(dispatcher, "SELECT x FROM db.t;");
@@ -1362,7 +1224,8 @@ TEST_CASE("integration::cpp::correctness_bugs::update_division_by_zero_errors") 
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::field_selection_on_subquery_errors") {
-    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/field_select_subquery");
+    auto config =
+        test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/field_select_subquery"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1373,37 +1236,31 @@ TEST_CASE("integration::cpp::correctness_bugs::field_selection_on_subquery_error
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t (id BIGINT);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.t (id) VALUES (1);")->is_success());
 
-    // The indirection base is a SubLink, not a column reference. Casting it to
-    // A_Indirection anyway read garbage and crashed; an unsupported base is an error.
+    // The indirection base is a SubLink, not a column reference, so field selection on it is unsupported.
     auto cur = test_helpers::exec(dispatcher, "SELECT id FROM db.t WHERE ((SELECT r FROM db.u)).f = 1;");
     CHECK_FALSE(cur->is_success());
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::varchar_and_text_column_types") {
-    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/varchar_text_types");
+    auto config = test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/varchar_text_types"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
     REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
 
-    // varchar and text were unmapped builtins; the element type of varchar[] was built
-    // without an extension, and the type accessors dereferenced it.
     CHECK(test_helpers::exec(dispatcher, "CREATE TABLE db.a (v varchar);")->is_success());
     CHECK(test_helpers::exec(dispatcher, "CREATE TABLE db.c (v text);")->is_success());
     CHECK(test_helpers::exec(dispatcher, "CREATE TABLE db.d (v varchar[]);")->is_success());
-    // CHAR without VARYING arrives as bpchar, which the catalog already seeds as a string
-    // type. It stays rejected in a column definition, but now for the true reason: the
-    // grammar attaches the implicit length of char(1), and the engine has only unbounded
-    // strings. Accepting it would store more than one character where postgres stores one.
+    // CHAR arrives as bpchar with implicit length char(1); rejected since the engine only has unbounded strings.
     CHECK_FALSE(test_helpers::exec(dispatcher, "CREATE TABLE db.e (v char[]);")->is_success());
     CHECK_FALSE(test_helpers::exec(dispatcher, "CREATE TABLE db.f (v char);")->is_success());
     CHECK_FALSE(test_helpers::exec(dispatcher, "CREATE TABLE db.g (v char(5));")->is_success());
-    // A length modifier is not supported, and says so instead of resolving to something else.
+    // Length modifiers (e.g. varchar(5)) are unsupported and rejected, not silently resolved to something else.
     CHECK_FALSE(test_helpers::exec(dispatcher, "CREATE TABLE db.b (v varchar(5));")->is_success());
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::min_max_over_text") {
-    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/min_max_over_text");
+    auto config = test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/min_max_over_text"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1412,8 +1269,6 @@ TEST_CASE("integration::cpp::correctness_bugs::min_max_over_text") {
     REQUIRE(
         test_helpers::exec(dispatcher, "INSERT INTO db.s (t) VALUES ('banana'), ('apple'), ('cherry');")->is_success());
 
-    // The aggregate switch had no string branch and threw inside a noexcept coroutine,
-    // which surfaces as a SIGSEGV rather than as an error.
     auto mn = test_helpers::exec(dispatcher, "SELECT MIN(t) FROM db.s;");
     REQUIRE(mn->is_success());
     CHECK(mn->value(0, 0).value<std::string_view>() == "apple");
@@ -1422,12 +1277,12 @@ TEST_CASE("integration::cpp::correctness_bugs::min_max_over_text") {
     REQUIRE(mx->is_success());
     CHECK(mx->value(0, 0).value<std::string_view>() == "cherry");
 
-    // An aggregate that genuinely does not apply to strings is a returned error.
     CHECK_FALSE(test_helpers::exec(dispatcher, "SELECT SUM(t) FROM db.s;")->is_success());
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::array_subscript_in_expression") {
-    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/subscript_in_expression");
+    auto config =
+        test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/subscript_in_expression"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1435,8 +1290,6 @@ TEST_CASE("integration::cpp::correctness_bugs::array_subscript_in_expression") {
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t (v INT[3]);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.t (v) VALUES (ARRAY[10,20,30]);")->is_success());
 
-    // Resolving v[2] to the array's flat child dropped the element index, so the
-    // expression read element 0 of the row instead of element 2.
     auto cur = test_helpers::exec(dispatcher, "SELECT v[2] + 0 FROM db.t;");
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 1);
@@ -1444,15 +1297,13 @@ TEST_CASE("integration::cpp::correctness_bugs::array_subscript_in_expression") {
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::order_by_array_subscript") {
-    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/order_by_subscript");
+    auto config = test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/order_by_subscript"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
     REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t (id BIGINT, v INT[3]);")->is_success());
-    // Chosen so the two readings disagree: sorting on the real v[2] gives {30,10,20} and
-    // the order 2,3,1, while indexing the flat child by row number sees {10,30,0} -> 3,1,2.
-    // With v[1] both readings happen to agree, which is why that shape proves nothing.
+    // Data is chosen so real v[2] and row-number indexing disagree; v[1] would make them agree and prove nothing.
     REQUIRE(test_helpers::exec(dispatcher,
                                "INSERT INTO db.t (id, v) VALUES (1, ARRAY[10,30,0]), (2, ARRAY[20,10,0]), "
                                "(3, ARRAY[30,20,0]);")
@@ -1467,7 +1318,7 @@ TEST_CASE("integration::cpp::correctness_bugs::order_by_array_subscript") {
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::three_table_join_qualified_column") {
-    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/three_table_join");
+    auto config = test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/three_table_join"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1479,8 +1330,6 @@ TEST_CASE("integration::cpp::correctness_bugs::three_table_join_qualified_column
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.m (k, v) VALUES (1, 20);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.n (k, v) VALUES (1, 30);")->is_success());
 
-    // Three tables share the column name v across two JOIN sides, so a binary side plus
-    // the bare name cannot tell them apart: m.v used to resolve to the leftmost table's v.
     auto cur = test_helpers::exec(dispatcher, "SELECT m.v FROM db.l JOIN db.m ON l.k = m.k JOIN db.n ON m.k = n.k;");
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 1);
@@ -1488,7 +1337,7 @@ TEST_CASE("integration::cpp::correctness_bugs::three_table_join_qualified_column
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::cross_database_same_table_name_join") {
-    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/cross_database_join");
+    auto config = test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/cross_database_join"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1499,15 +1348,14 @@ TEST_CASE("integration::cpp::correctness_bugs::cross_database_same_table_name_jo
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db1.t (id, a) VALUES (1, 100), (2, 200);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db2.t (id, b) VALUES (1, 111), (3, 333);")->is_success());
 
-    // Both sides answer to the bare relname t, so both resolved LEFT and the ON became
-    // always-true, returning the 2x2 cartesian product instead of the single match.
     auto cur = test_helpers::exec(dispatcher, "SELECT * FROM db1.t JOIN db2.t ON db1.t.id = db2.t.id;");
     REQUIRE(cur->is_success());
     CHECK(cur->size() == 1);
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::is_null_on_array_subscript") {
-    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/is_null_on_subscript");
+    auto config =
+        test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/is_null_on_subscript"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1515,9 +1363,6 @@ TEST_CASE("integration::cpp::correctness_bugs::is_null_on_array_subscript") {
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t (id BIGINT, v INT[3]);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.t (id, v) VALUES (1, ARRAY[10,20,30]);")->is_success());
 
-    // The element has no vector of its own, so reading a validity bitmap for it answered
-    // for the flat child at this row number instead — and once at() stopped resolving
-    // subscripts, dereferenced null.
     auto present = test_helpers::exec(dispatcher, "SELECT id FROM db.t WHERE v[1] IS NULL;");
     REQUIRE(present->is_success());
     CHECK(present->size() == 0);
@@ -1528,7 +1373,7 @@ TEST_CASE("integration::cpp::correctness_bugs::is_null_on_array_subscript") {
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::update_modulo_by_zero_errors") {
-    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/update_mod_zero");
+    auto config = test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/update_mod_zero"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1536,7 +1381,6 @@ TEST_CASE("integration::cpp::correctness_bugs::update_modulo_by_zero_errors") {
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t (x BIGINT);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.t (x) VALUES (10);")->is_success());
 
-    // Same write path as division: the modulo kernel must not store a silent NULL either.
     CHECK_FALSE(test_helpers::exec(dispatcher, "UPDATE db.t SET x = x % 0;")->is_success());
 
     auto cur = test_helpers::exec(dispatcher, "SELECT x FROM db.t;");
@@ -1547,13 +1391,13 @@ TEST_CASE("integration::cpp::correctness_bugs::update_modulo_by_zero_errors") {
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::min_max_over_text_computing_table") {
-    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/min_max_text_computing");
+    auto config =
+        test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/min_max_text_computing"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
     REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
-    // A computing (schemaless) table reaches the same aggregate path with a type that is
-    // only known per row, which is the second shape the crash was reported on.
+    // A computing (schemaless) table reaches the same aggregate path, but its column type is known only per row.
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.s ();")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.s (t) VALUES ('banana'), ('apple');")->is_success());
 
@@ -1563,7 +1407,8 @@ TEST_CASE("integration::cpp::correctness_bugs::min_max_over_text_computing_table
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::aggregate_over_array_subscript") {
-    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/aggregate_over_subscript");
+    auto config =
+        test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/aggregate_over_subscript"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1574,9 +1419,6 @@ TEST_CASE("integration::cpp::correctness_bugs::aggregate_over_array_subscript") 
                                "(2, ARRAY[3,300,0]);")
                 ->is_success());
 
-    // The aggregate argument dispatch had no case for an indirection, so v[2] was read as
-    // a constant and the whole statement failed to parse. Reading the flat child by row
-    // number instead of the element would give 101 and 0.
     auto cur = test_helpers::exec(dispatcher, "SELECT g, sum(v[2]) FROM db.t GROUP BY g ORDER BY g ASC;");
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 2);
@@ -1585,7 +1427,7 @@ TEST_CASE("integration::cpp::correctness_bugs::aggregate_over_array_subscript") 
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::cross_signed_128bit_comparison") {
-    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/cross_signed_128");
+    auto config = test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/cross_signed_128"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1598,7 +1440,6 @@ TEST_CASE("integration::cpp::correctness_bugs::cross_signed_128bit_comparison") 
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.large (v) VALUES (170141183460469231731687303715884105728);")
                 ->is_success());
 
-    // A literal is signed, so this compares uhugeint against hugeint. The two meet at the signed type
     auto matched = test_helpers::exec(dispatcher, "SELECT v FROM db.small WHERE v = 5;");
     REQUIRE(matched->is_success());
     CHECK(matched->size() == 1);
@@ -1606,16 +1447,14 @@ TEST_CASE("integration::cpp::correctness_bugs::cross_signed_128bit_comparison") 
     REQUIRE(missed->is_success());
     CHECK(missed->size() == 0);
 
-    // implicitly cast to hugeint, but fails, because it is out of range
-    // casting to double will eliminate that problem, but with that comparisons will be non-strict
-    // so we pick integer type over floating point
+    // Double avoids the out-of-range failure but makes comparisons non-strict, so integer type wins.
     auto refused =
         test_helpers::exec(dispatcher, "SELECT v FROM db.large WHERE v = 170141183460469231731687303715884105727;");
     CHECK(refused->is_error());
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::nested_element_null_assignment") {
-    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/nested_element_null");
+    auto config = test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/nested_element_null"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1628,7 +1467,6 @@ TEST_CASE("integration::cpp::correctness_bugs::nested_element_null_assignment") 
         test_helpers::exec(dispatcher, "INSERT INTO db.t (id, arr, lst) VALUES (2, ARRAY[40,50,60], ARRAY[40,50,60]);")
             ->is_success());
 
-    // Reading one element of the array/list column of the row with the given id.
     auto element = [&](const char* column, size_t index, int64_t id) {
         auto cur =
             test_helpers::exec(dispatcher,
@@ -1638,7 +1476,6 @@ TEST_CASE("integration::cpp::correctness_bugs::nested_element_null_assignment") 
         return cur->value(0, 0).children()[index];
     };
 
-    // same behavior
     CHECK(test_helpers::exec(dispatcher, "UPDATE db.t SET arr[1] = NULL WHERE id = 1;")->is_success());
     CHECK(test_helpers::exec(dispatcher, "UPDATE db.t SET arr[2] = NULL::int4 WHERE id = 2;")->is_success());
     CHECK(test_helpers::exec(dispatcher, "UPDATE db.t SET lst[3] = CAST(NULL AS int4) WHERE id = 1;")->is_success());
@@ -1657,7 +1494,7 @@ TEST_CASE("integration::cpp::correctness_bugs::nested_element_null_assignment") 
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::operator_spelling_fixity") {
-    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/operator_fixity");
+    auto config = test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/operator_fixity"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1684,7 +1521,7 @@ TEST_CASE("integration::cpp::correctness_bugs::operator_spelling_fixity") {
     CHECK(assigned_value("x !") == 24);   // postfix factorial
     CHECK(assigned_value("!! x") == 24);  // prefix factorial
     CHECK(assigned_value("|/ x") == 2);   // prefix sqrt
-    CHECK(assigned_value("||/ x") == 2);  // prefix cbrt: 1.587 rounded on the store to BIGINT
+    CHECK(assigned_value("||/ x") == 2);  // prefix cbrt
     CHECK(assigned_value("@ x") == 4);    // prefix abs
     CHECK(assigned_value("x ^ 2") == 16); // infix pow
 
@@ -1699,7 +1536,8 @@ TEST_CASE("integration::cpp::correctness_bugs::operator_spelling_fixity") {
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::operator_spelling_is_its_function_call") {
-    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/operator_as_function");
+    auto config =
+        test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/operator_as_function"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1707,12 +1545,7 @@ TEST_CASE("integration::cpp::correctness_bugs::operator_spelling_is_its_function
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t (x BIGINT);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.t (x) VALUES (4);")->is_success());
 
-    // These operators are lowered to the function whose name they denote. Which
-    // expressions a clause admits is validation's business, so the transformer owes every
-    // clause the same lowering: the operator spelling and the written-out call have to be
-    // one expression in a SELECT target, in a predicate and in an UPDATE SET value alike.
-    // Each used to be reachable only from an UPDATE SET operand, because the operand
-    // resolvers each have their own T_A_Expr arm and only one of them knew this family.
+    // These operators lower to the function they denote, the same in a SELECT target, a predicate, or an UPDATE SET.
     auto projected_double = [&](const std::string& expr) {
         auto cur = test_helpers::exec(dispatcher, "SELECT " + expr + " FROM db.t;");
         REQUIRE(cur->is_success());
@@ -1732,30 +1565,23 @@ TEST_CASE("integration::cpp::correctness_bugs::operator_spelling_is_its_function
         REQUIRE(cur->is_success());
         return cur->size();
     };
-    // The two spellings are the same computation, so the doubles must come back
-    // bit-identical -- not merely close.
+    // The two spellings compute the same thing, so doubles must come back bit-identical, not merely close.
     auto same_double = [](double lhs, double rhs) { return std::memcmp(&lhs, &rhs, sizeof(double)) == 0; };
 
-    // Projected: same type (asserted above) and same value as the call.
     CHECK(same_double(projected_double("|/ x"), projected_double("sqrt(x)")));
     CHECK(same_double(projected_double("||/ x"), projected_double("cbrt(x)")));
     CHECK(same_double(projected_double("x ^ 2"), projected_double("pow(x, 2)")));
     CHECK(projected_bigint("@ x") == projected_bigint("abs(x)"));
     CHECK(projected_bigint("!! x") == projected_bigint("factorial(x)"));
     CHECK(projected_bigint("x !") == projected_bigint("factorial(x)"));
-    // Both factorial spellings are the same function, so they agree with each other too.
     CHECK(projected_bigint("!! x") == projected_bigint("x !"));
-    // An alias names the column just as it would on the written-out call.
     CHECK(same_double(projected_double("|/ x AS r"), projected_double("sqrt(x) AS r")));
 
-    // In a predicate, and nested inside arithmetic.
     CHECK(matched_rows("(|/ x) > 1") == matched_rows("sqrt(x) > 1"));
     CHECK(matched_rows("(!! x) > 20") == matched_rows("factorial(x) > 20"));
     CHECK(matched_rows("(x !) > 20") == matched_rows("factorial(x) > 20"));
     CHECK(same_double(projected_double("x + (|/ x)"), projected_double("x + sqrt(x)")));
 
-    // The fixity rejection is the same everywhere too -- a spelling that names no
-    // operator is refused in a projection and a predicate, not only in an UPDATE.
     CHECK(test_helpers::exec(dispatcher, "SELECT ! x FROM db.t;")->is_error());
     CHECK(test_helpers::exec(dispatcher, "SELECT x |/ FROM db.t;")->is_error());
     CHECK(test_helpers::exec(dispatcher, "SELECT x FROM db.t WHERE (! x) > 20;")->is_error());
@@ -1763,7 +1589,7 @@ TEST_CASE("integration::cpp::correctness_bugs::operator_spelling_is_its_function
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::expression_syntax_is_clause_independent") {
-    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/clause_independent");
+    auto config = test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/clause_independent"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1775,12 +1601,7 @@ TEST_CASE("integration::cpp::correctness_bugs::expression_syntax_is_clause_indep
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.u (k BIGINT);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.u (k) VALUES (7);")->is_success());
 
-    // Which expressions a clause admits is validation's job; the transformer owes every
-    // clause the same reading of the same syntax. There used to be one operand resolver
-    // per clause, each with its own switch over node tags, so a construct was supported
-    // exactly where someone had written its arm -- a sub-query worked in WHERE but not in
-    // an UPDATE SET value, a CASE in SELECT but not in WHERE, a subscript everywhere but
-    // HAVING. All four now go through one transform_expression.
+    // Which expressions a clause admits is validation's job; every clause parses via one shared transform_expression.
     CHECK(test_helpers::exec(dispatcher, "UPDATE db.t SET x = (SELECT max(k) FROM db.u);")->is_success());
     auto after_subquery_set = test_helpers::exec(dispatcher, "SELECT x FROM db.t;");
     REQUIRE(after_subquery_set->is_success());
@@ -1793,7 +1614,6 @@ TEST_CASE("integration::cpp::correctness_bugs::expression_syntax_is_clause_indep
     REQUIRE(after_case_set->size() == 1);
     CHECK(after_case_set->value(0, 0).value<int64_t>() == 9);
 
-    // CASE in a predicate, and a subscript under an aggregate in HAVING.
     auto case_predicate =
         test_helpers::exec(dispatcher, "SELECT g FROM db.t WHERE (CASE WHEN y > 1 THEN 1 ELSE 0 END) = 1;");
     REQUIRE(case_predicate->is_success());
@@ -1803,7 +1623,6 @@ TEST_CASE("integration::cpp::correctness_bugs::expression_syntax_is_clause_indep
     REQUIRE(having_subscript->is_success());
     CHECK(having_subscript->size() == 1);
 
-    // A scalar sub-query reads the same in a projection as in the SET value above.
     auto subquery_projection = test_helpers::exec(dispatcher, "SELECT (SELECT max(k) FROM db.u) FROM db.t;");
     REQUIRE(subquery_projection->is_success());
     REQUIRE(subquery_projection->size() == 1);

@@ -10,6 +10,20 @@
 
 namespace components::table {
 
+    void fill_published_default(vector::vector_t& target, const column_definition_t* published, uint64_t rows) {
+        if (rows == 0) {
+            return;
+        }
+        if (published == nullptr || !published->has_default_value() || published->default_value().is_null()) {
+            target.validity().set_all_invalid(rows);
+            return;
+        }
+        const auto& fill = published->default_value();
+        for (uint64_t row = 0; row < rows; row++) {
+            target.set_value(row, fill);
+        }
+    }
+
     row_group_segment_tree_t::row_group_segment_tree_t(collection_t& collection)
         : collection_(collection)
         , current_row_group_(0)
@@ -28,7 +42,7 @@ namespace components::table {
         , types_(std::move(types))
         , row_start_(row_start)
         , allocation_size_(0) {
-        row_groups_ = std::make_shared<row_group_segment_tree_t>(*this);
+        row_groups_ = std::make_unique<row_group_segment_tree_t>(*this);
     }
 
     uint64_t collection_t::total_rows() const { return total_rows_.load(); }
@@ -73,6 +87,8 @@ namespace components::table {
         return row_groups_->last_segment(l);
     }
 
+    collection_t::~collection_t() = default;
+
     row_group_t* collection_t::row_group(int64_t index) { return row_groups_->segment_at(index); }
 
     void collection_t::initialize_scan(collection_scan_state& state, const std::vector<storage_index_t>&) {
@@ -96,14 +112,25 @@ namespace components::table {
                                                    const std::vector<storage_index_t>&,
                                                    int64_t start_row,
                                                    int64_t end_row) {
-        auto row_group = row_groups_->get_segment(start_row);
-        assert(row_group);
         state.row_groups = row_groups_.get();
         state.max_row = end_row;
         state.initialize(types_);
+        auto row_group = row_groups_->get_segment(start_row);
+        if (!row_group) {
+            // No row group brackets this start row. Reported via scan_error, not
+            // thrown: data_table_t::compact and fetch_next_batch both check has_error() first.
+            state.scan_error =
+                core::error_t{core::error_code_t::data_corruption,
+                              std::pmr::string{"collection_t::initialize_scan_with_offset: no row group brackets "
+                                               "the requested start row",
+                                               resource_}};
+            return;
+        }
         uint64_t start_vector = static_cast<uint64_t>(start_row - row_group->start) / vector::DEFAULT_VECTOR_CAPACITY;
         if (!row_group->initialize_scan_with_offset(state, start_vector)) {
-            throw std::logic_error("Failed to initialize row group scan with offset");
+            // Empty or past the scan ceiling is a legitimate end-of-scan, not a failure:
+            // next_batch produces nothing and the fetch loop moves to the next group.
+            return;
         }
     }
 
@@ -125,9 +152,21 @@ namespace components::table {
                              const vector::vector_t& row_identifiers,
                              uint64_t fetch_count,
                              column_fetch_state& state,
-                             const std::vector<size_t>& projected_cols) {
+                             const std::vector<size_t>& projected_cols,
+                             const transaction_data& txn,
+                             fetch_visibility_t visibility) {
         auto row_ids = row_identifiers.data<int64_t>();
+        auto* produced_ids = result.row_ids.data<int64_t>();
         uint64_t count = 0;
+        // Only read by the DEV_MODE guard below; incremented unconditionally so it can't
+        // drift from the loop it describes.
+        [[maybe_unused]] uint64_t stamped = 0;
+#ifdef DEV_MODE
+        // Guards the whole call, not just row_ids: a request bigger than the chunk's capacity
+        // would overrun the columns too.
+        assert(fetch_count <= result.capacity() &&
+               "collection_t::fetch: the request is larger than the chunk it must fill");
+#endif
         for (uint64_t i = 0; i < fetch_count; i++) {
             auto row_id = row_ids[i];
             row_group_t* row_group;
@@ -135,17 +174,31 @@ namespace components::table {
                 uint64_t segment_index;
                 auto l = row_groups_->lock();
                 if (!row_groups_->try_segment_index(l, row_id, segment_index)) {
+                    // Names no row group: dropped from the answer. Stamps below name only
+                    // gathered rows, so the drop is visible, not masked.
                     continue;
                 }
                 row_group = row_groups_->segment_at(l, static_cast<int64_t>(segment_index));
+            }
+            // Asked before the gather so an invisible row costs no column read. row_id stays
+            // collection-absolute; row_version_manager_t::fetch rebases internally.
+            if (visibility == fetch_visibility_t::SNAPSHOT && !row_group->is_visible(txn, row_id)) {
+                continue;
             }
 #ifdef DEV_MODE
             note_gather_row_fetched();
 #endif
             row_group->fetch_row(state, column_ids, row_id, result, count, projected_cols);
+            produced_ids[count] = row_id;
+            stamped++;
             count++;
         }
         result.set_cardinality(count);
+#ifdef DEV_MODE
+        // Guards the pairing: exactly one stamp per gathered row. Consumers rely on this
+        // instead of positional row_ids == request.
+        assert(stamped == result.size() && "collection_t::fetch: stamped row_ids disagree with the cardinality");
+#endif
     }
 
     bool collection_t::is_empty() const {
@@ -176,6 +229,14 @@ namespace components::table {
     bool collection_t::is_empty(std::unique_lock<std::mutex>& l) const { return row_groups_->is_empty(l); }
 
     core::result_wrapper_t<bool> collection_t::initialize_append(table_append_state& state) {
+        // Type validated first: create_column's constructors cannot refuse a type they cannot
+        // represent, or an unnamed struct throws inside struct_column_data_t's ctor and hangs the
+        // statement across the disk agent's coroutine instead of failing cleanly.
+        for (const auto& type : types_) {
+            if (auto err = column_data_t::validate_column_type(type, resource_); err.contains_error()) {
+                return err;
+            }
+        }
         state.row_start = static_cast<int64_t>(total_rows_.load());
         state.current_row = state.row_start;
         state.total_append_count = 0;
@@ -228,10 +289,9 @@ namespace components::table {
             if (init.has_error()) {
                 return init; // out_of_memory
             }
-            // Write-through: the row group we just closed is now COMPLETE (its column segments are final
-            // and the append state has moved to the new row group). Re-point its managed segments to disk so the
-            // pool can evict+reload them -> bounded memory at any table size. No-op for in-memory tables; a
-            // write/alloc failure surfaces as io_error/out_of_memory, never a throw.
+            // Write-through: the row group we just closed is now complete (segments final, append state
+            // moved on), so re-pointing it to disk lets the pool evict+reload it -> bounded memory at any
+            // table size. A write/alloc failure surfaces as io_error/out_of_memory, never a throw.
             auto transitioned = current_row_group->transition_to_disk();
             if (transitioned.has_error()) {
                 return transitioned;
@@ -283,7 +343,21 @@ namespace components::table {
         }
     }
 
-    void collection_t::revert_append(int64_t row_start, uint64_t count) {
+    uint64_t collection_t::delete_stamp(int64_t row_id) {
+        row_group_t* row_group = nullptr;
+        {
+            uint64_t segment_index;
+            auto l = row_groups_->lock();
+            if (!row_groups_->try_segment_index(l, row_id, segment_index)) {
+                return NOT_DELETED_ID;
+            }
+            row_group = row_groups_->segment_at(l, static_cast<int64_t>(segment_index));
+        }
+        return row_group->delete_stamp(row_id);
+    }
+
+    core::result_wrapper_t<bool> collection_t::revert_append(int64_t row_start, uint64_t count) {
+        core::error_t first_error = core::error_t::no_error();
         for (auto& rg : row_groups_->segments()) {
             auto rg_end = rg.start + static_cast<int64_t>(rg.count.load());
             if (rg_end <= row_start)
@@ -291,13 +365,20 @@ namespace components::table {
             if (rg.start >= row_start + static_cast<int64_t>(count))
                 break;
             auto local_start = static_cast<uint64_t>(std::max(int64_t{0}, row_start - rg.start));
-            rg.revert_append(local_start);
+            auto reverted = rg.revert_append(local_start);
+            if (reverted.has_error() && !first_error.contains_error()) {
+                first_error = reverted.error();
+            }
         }
         if (total_rows_.load() >= count) {
             total_rows_ -= count;
         } else {
             total_rows_ = 0;
         }
+        if (first_error.contains_error()) {
+            return first_error;
+        }
+        return true;
     }
 
     void collection_t::merge_storage(collection_t& data) {
@@ -316,12 +397,21 @@ namespace components::table {
         total_rows_ += data.total_rows_.load();
     }
 
-    uint64_t collection_t::delete_rows(data_table_t& table, int64_t* ids, uint64_t count, uint64_t transaction_id) {
+    core::result_wrapper_t<uint64_t>
+    collection_t::delete_rows(data_table_t& table, int64_t* ids, uint64_t count, uint64_t transaction_id) {
         uint64_t delete_count = 0;
         uint64_t pos = 0;
         do {
             uint64_t start = pos;
             auto row_group = row_groups_->get_segment(ids[start]);
+            if (!row_group) {
+                // get_segment miss rides the channel this function now returns: a partial delete
+                // must not read back as a completed one -- the count alone cannot tell them apart
+                // (see the repeat-delete case in services/disk/tests/test_error_handling.cpp).
+                return core::error_t(
+                    core::error_code_t::invalid_parameter,
+                    std::pmr::string("table delete: a row id names no row group of this table", resource_));
+            }
             for (pos++; pos < count; pos++) {
                 assert(ids[pos] >= 0);
                 if (ids[pos] < row_group->start) {
@@ -342,6 +432,12 @@ namespace components::table {
         do {
             uint64_t start = pos;
             auto row_group = row_groups_->get_segment(ids[pos]);
+            if (!row_group) {
+                // get_segment miss rides the channel this function already returns.
+                return core::error_t(
+                    core::error_code_t::invalid_parameter,
+                    std::pmr::string("table update: a row id names no row group of this table", resource_));
+            }
             int64_t base_id = row_group->start +
                               (ids[pos] - row_group->start) / static_cast<int64_t>(vector::DEFAULT_VECTOR_CAPACITY *
                                                                                    vector::DEFAULT_VECTOR_CAPACITY);
@@ -371,6 +467,11 @@ namespace components::table {
         do {
             uint64_t start = pos;
             auto row_group = row_groups_->get_segment(row_ids.data<int64_t>()[pos]);
+            if (!row_group) {
+                return core::error_t(
+                    core::error_code_t::invalid_parameter,
+                    std::pmr::string("table update: a row id names no row group of this table", resource_));
+            }
             int64_t base_id = row_group->start + (row_ids.data<int64_t>()[pos] - row_group->start) /
                                                      static_cast<int64_t>(vector::DEFAULT_VECTOR_CAPACITY *
                                                                           vector::DEFAULT_VECTOR_CAPACITY);
@@ -385,7 +486,10 @@ namespace components::table {
                     break;
                 }
             }
-            auto updated = row_group->update(updates, row_ids.data<int64_t>(), start, pos - start, column_path);
+            // Deliberately update_column, not update: row_group_t::update treats its last arg
+            // as top-level column ordinals, so a depth-2 column_path would misindex as a second
+            // column. update_column walks the path into the column instead.
+            auto updated = row_group->update_column(updates, row_ids, column_path, start, pos - start);
             if (updated.has_error()) {
                 return updated;
             }
@@ -407,37 +511,56 @@ namespace components::table {
         }
     }
 
-    std::shared_ptr<collection_t> collection_t::add_column(column_definition_t& new_column) {
-        auto new_types = types_;
+    void collection_t::collect_column_disk_block_ids(uint64_t column_index, std::pmr::vector<uint64_t>& out) {
+        for (auto& row_group : row_groups_->segments()) {
+            row_group.collect_column_disk_block_ids(column_index, out);
+        }
+    }
+
+    core::result_wrapper_t<boost::intrusive_ptr<collection_t>>
+    collection_t::add_column(column_definition_t& new_column) {
+        // Named-resource copy: std::pmr::vector's plain copy ctor asks
+        // select_on_container_copy_construction, which for polymorphic_allocator is
+        // default-constructed — without this the successor's schema would land on the
+        // process-wide default resource instead of this one.
+        std::pmr::vector<types::complex_logical_type> new_types(types_, resource_);
         new_types.push_back(new_column.type());
-        auto result = std::make_shared<collection_t>(resource_,
-                                                     block_manager_,
-                                                     std::move(new_types),
-                                                     row_start_,
-                                                     total_rows_.load(),
-                                                     row_group_size_);
+        // Plain `new`, never the pmr resource: the intrusive ref count lives inside the
+        // object, so `delete` is the matching deallocation (no shared_ptr ever taken here).
+        auto result = boost::intrusive_ptr<collection_t>(new collection_t(resource_,
+                                                                          block_manager_,
+                                                                          std::move(new_types),
+                                                                          row_start_,
+                                                                          total_rows_.load(),
+                                                                          row_group_size_));
 
         vector::vector_t default_vector(resource_, new_column.type());
         for (auto& current_row_group : row_groups_->segments()) {
             auto new_row_group =
                 current_row_group.add_column(result.get(), new_column, new_column.default_value_opt(), default_vector);
+            if (new_row_group.has_error()) {
+                // The partially-built successor dies with `result`; the parent is untouched.
+                return new_row_group.convert_error<boost::intrusive_ptr<collection_t>>();
+            }
 
-            result->row_groups_->append_segment(std::move(new_row_group));
+            result->row_groups_->append_segment(std::move(new_row_group.value()));
         }
         return result;
     }
 
-    std::shared_ptr<collection_t> collection_t::remove_column(uint64_t col_idx) {
+    boost::intrusive_ptr<collection_t> collection_t::remove_column(uint64_t col_idx) {
         assert(col_idx < types_.size());
-        auto new_types = types_;
+        // Same allocator-extended copy as add_column above.
+        std::pmr::vector<types::complex_logical_type> new_types(types_, resource_);
         new_types.erase(new_types.begin() + static_cast<int64_t>(col_idx));
 
-        auto result = std::make_shared<collection_t>(resource_,
-                                                     block_manager_,
-                                                     std::move(new_types),
-                                                     row_start_,
-                                                     total_rows_.load(),
-                                                     row_group_size_);
+        // Same allocation note as add_column above.
+        auto result = boost::intrusive_ptr<collection_t>(new collection_t(resource_,
+                                                                          block_manager_,
+                                                                          std::move(new_types),
+                                                                          row_start_,
+                                                                          total_rows_.load(),
+                                                                          row_group_size_));
 
         for (auto& current_row_group : row_groups_->segments()) {
             auto new_row_group = current_row_group.remove_column(result.get(), col_idx);
@@ -460,7 +583,12 @@ namespace components::table {
             pointers.push_back(std::move(pointer.value()));
         }
 
-        partial_block_manager.flush_partial_blocks();
+        // Every column segment of the checkpoint reaches the file through here, so a
+        // dropped answer would let the failure surface two layers later with nothing to
+        // attribute it to.
+        if (auto flushed = partial_block_manager.flush_partial_blocks(); flushed.has_error()) {
+            return flushed.convert_error<std::vector<storage::row_group_pointer_t>>(); // io_error
+        }
         return pointers;
     }
 

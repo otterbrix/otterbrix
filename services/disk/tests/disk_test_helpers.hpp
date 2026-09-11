@@ -31,6 +31,16 @@ namespace disk_test_helpers {
         return std::move(r.value());
     }
 
+    // Unwrap a catalog-row append in a test. append_pg_catalog_row reports "the row could not
+    // be written" through the wrapper; swallowing that would let a test publish a commit range
+    // for a row that was never written, which is precisely the confusion the wrapper exists to
+    // end.
+    inline components::pg_catalog_append_range_t
+    append_ok(core::result_wrapper_t<components::pg_catalog_append_range_t> r) {
+        assert(!r.has_error() && "disk_test_helpers::append_ok: catalog row append failed");
+        return std::move(r.value());
+    }
+
     using namespace services::disk;
     namespace catalog = components::catalog;
     using session_id_t = components::session::session_id_t;
@@ -57,7 +67,7 @@ namespace disk_test_helpers {
                               Writes& writes,
                               std::vector<components::pg_catalog_append_range_t>& appends_out) {
         for (auto& w : writes) {
-            auto rng = fx.invoke(&manager_disk_t::append_pg_catalog_row, ctx, w.table_oid, std::move(w.row));
+            auto rng = append_ok(fx.invoke(&manager_disk_t::append_pg_catalog_row, ctx, w.table_oid, std::move(w.row)));
             appends_out.push_back(std::move(rng));
         }
     }
@@ -86,11 +96,13 @@ namespace disk_test_helpers {
         const catalog::oid_t table_oid = oids[0];
         catalog::oid_batch_t batch;
         batch.oids = std::move(oids);
+        // The builder stamps each allocated attoid back onto its column, so it needs a
+        // mutable list. The helper's callers pass a const view; give it one of its own.
+        std::vector<components::table::column_definition_t> stamped_cols(cols);
         auto writes = catalog::build_create_table_writes(&fx.resource,
                                                          std::string("public"),
                                                          name,
-                                                         cols,
-                                                         false,
+                                                         stamped_cols,
                                                          ns_oid,
                                                          batch,
                                                          relkind_char);
@@ -109,11 +121,11 @@ namespace disk_test_helpers {
         const catalog::oid_t table_oid = oids[0];
         catalog::oid_batch_t batch;
         batch.oids = std::move(oids);
+        std::vector<components::table::column_definition_t> no_columns;
         auto writes = catalog::build_create_table_writes(&fx.resource,
                                                          std::string("public"),
                                                          name,
-                                                         {},
-                                                         false,
+                                                         no_columns,
                                                          ns_oid,
                                                          batch,
                                                          catalog::relkind::computed);
@@ -131,15 +143,23 @@ namespace disk_test_helpers {
                                      catalog::oid_t ns_oid,
                                      catalog::oid_t table_oid,
                                      const std::string& index_name,
-                                     const std::vector<std::string>& col_names,
+                                     const std::vector<std::string>& /*col_names*/, // dropped from build_create_index_writes
                                      const std::vector<catalog::oid_t>& col_attoids) {
         auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
         const catalog::oid_t index_oid = oids[0];
         catalog::oid_batch_t batch;
         batch.oids = std::move(oids);
-        (void) col_names; // column_names dropped from build_create_index_writes
-        auto writes =
-            catalog::build_create_index_writes(&fx.resource, index_name, ns_oid, table_oid, index_oid, col_attoids);
+        auto writes_r = catalog::build_create_index_writes(&fx.resource,
+                                                           index_name,
+                                                           ns_oid,
+                                                           table_oid,
+                                                           index_oid,
+                                                           col_attoids,
+                                                           catalog::indtype::single);
+        // Same contract as read_ok/append_ok: no test here hands the builder an
+        // unstamped column, and swallowing the writer-side gate would publish nothing.
+        assert(!writes_r.has_error() && "disk_test_helpers::test_create_index: builder refused the write set");
+        auto writes = std::move(writes_r.value());
         std::vector<components::pg_catalog_append_range_t> appends_local;
         append_writes(fx, auto_ctx(), writes, appends_local);
         constexpr catalog::oid_t pg_index = catalog::well_known_oid::pg_index_table;
@@ -150,8 +170,9 @@ namespace disk_test_helpers {
                 indkey += ',';
             indkey += std::to_string(col_attoids[i]);
         }
-        auto valid_row = catalog::build_pg_index_row(&fx.resource, index_oid, table_oid, indkey, true);
-        auto rng = fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_index, std::move(valid_row));
+        auto valid_row =
+            catalog::build_pg_index_row(&fx.resource, index_oid, table_oid, indkey, true, catalog::indtype::single);
+        auto rng = append_ok(fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_index, std::move(valid_row)));
         appends_local.push_back(std::move(rng));
         std::set<catalog::oid_t> deletes_local{pg_index};
         fx.invoke(&manager_disk_t::storage_publish_commits, txn_ctx(), std::uint64_t{1000}, std::move(appends_local));
@@ -286,18 +307,22 @@ namespace disk_test_helpers {
                                           const std::string& check_expr = "") {
         auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
         const catalog::oid_t con_oid = oids[0];
-        auto writes = catalog::build_create_constraint_writes(&fx.resource,
-                                                              name,
-                                                              table_oid,
-                                                              con_oid,
-                                                              contype,
-                                                              ref_table_oid,
-                                                              fk_attoids,
-                                                              ref_attoids,
-                                                              fk_matchtype,
-                                                              fk_del_action,
-                                                              fk_upd_action,
-                                                              check_expr);
+        auto writes_r = catalog::build_create_constraint_writes(&fx.resource,
+                                                                name,
+                                                                table_oid,
+                                                                con_oid,
+                                                                contype,
+                                                                ref_table_oid,
+                                                                fk_attoids,
+                                                                ref_attoids,
+                                                                fk_matchtype,
+                                                                fk_del_action,
+                                                                fk_upd_action,
+                                                                check_expr);
+        // The builder refuses INVALID_OID attoids; every fixture here passes stamped lists,
+        // so a refusal is a broken test setup.
+        assert(!writes_r.has_error());
+        auto writes = std::move(writes_r.value());
         std::vector<components::pg_catalog_append_range_t> appends_local;
         append_writes(fx, auto_ctx(), writes, appends_local);
         fx.invoke(&manager_disk_t::storage_publish_commits,
@@ -402,7 +427,7 @@ namespace disk_test_helpers {
                                                          type_oid,
                                                          attversion,
                                                          std::int64_t{1});
-        auto rng = fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_cc, std::move(row));
+        auto rng = append_ok(fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_cc, std::move(row)));
         std::vector<components::pg_catalog_append_range_t> appends_local;
         appends_local.push_back(std::move(rng));
         fx.invoke(&manager_disk_t::storage_publish_commits,
@@ -474,7 +499,7 @@ namespace disk_test_helpers {
                                                          type_oid,
                                                          new_version,
                                                          /*attrefcount=*/std::int64_t{1});
-        auto rng = fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_cc, std::move(row));
+        auto rng = append_ok(fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_cc, std::move(row)));
         std::vector<components::pg_catalog_append_range_t> appends_local;
         appends_local.push_back(std::move(rng));
         fx.invoke(&manager_disk_t::storage_publish_commits,
@@ -545,7 +570,7 @@ namespace disk_test_helpers {
                                                          live_atttypid,
                                                          max_version + 1,
                                                          /*attrefcount=*/std::int64_t{0});
-        auto rng = fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_cc, std::move(row));
+        auto rng = append_ok(fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_cc, std::move(row)));
         std::vector<components::pg_catalog_append_range_t> appends_local;
         appends_local.push_back(std::move(rng));
         fx.invoke(&manager_disk_t::storage_publish_commits,
@@ -575,7 +600,7 @@ namespace disk_test_helpers {
                                                    false,
                                                    "",
                                                    "");
-        auto rng = fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_attr, std::move(row));
+        auto rng = append_ok(fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_attr, std::move(row)));
         std::vector<components::pg_catalog_append_range_t> appends_local;
         appends_local.push_back(std::move(rng));
         fx.invoke(&manager_disk_t::storage_publish_commits,

@@ -1,5 +1,7 @@
 #include <pybind11/pybind_wrapper.hpp>
 
+#include <module_arena.hpp>
+
 #include "sql/convert.hpp"
 #include "sql/spaces.hpp"
 #include "sql/wrapper_client.hpp"
@@ -8,6 +10,7 @@
 
 #include <otterbrix_wrapper/pyexpression.hpp>
 #include <otterbrix_wrapper/pyrelation.hpp>
+#include <otterbrix_wrapper/pyresult.hpp>
 #include <otterbrix_wrapper/pytype.hpp>
 #include <otterbrix_wrapper/type_creation.hpp>
 #include <otterbrix_wrapper/typing.hpp>
@@ -22,14 +25,33 @@ PYBIND11_DECLARE_HOLDER_TYPE(T, boost::intrusive_ptr<T>)
 using namespace otterbrix;
 
 PYBIND11_MODULE(OTTERBRIX_PYTHON_LIB_NAME, m) {
-    otterbrix_py_typing_t::initialize(m);
-    type_creation::initialize(m);
+    // Module's arena; the reasons for this shape are at module_arena_t
+    // (integration/python/module_arena.hpp). The capsule below holds the detach()'d pointer
+    // and readopts it (`add_ref = false`) on destruction, keeping the arena alive with the
+    // module dict -- but that alone isn't enough, since python objects built from the arena
+    // can outlive it; each holds its own reference (otterbrix_py_type_t::arena_), so the last
+    // owner, not the module, decides when the pool is released.
+    module_arena_ptr module_arena{new module_arena_t()};
+    m.add_object("__arena__",
+                 pybind11::capsule(module_arena_ptr(module_arena).detach(), [](void* raw) {
+                     module_arena_ptr released(static_cast<module_arena_t*>(raw), false);
+                 }));
+
+    otterbrix_py_typing_t::initialize(m, module_arena);
+    type_creation::initialize(m, module_arena);
     py_expression_t::initialize(m);
     py_relation_t::initialize(m);
+    // Must be registered: `OtterBrixPyConnection.execute` hands py_result_t back to Python,
+    // which can't hold an unregistered type.
+    py_result_t::initialize(m);
     py_connection_t::initialize(m);
 
+    // Lambda captures the arena by value: make_space's refusals return before the engine (and
+    // its own arena) exists, so the refusal message needs the module's arena to live on.
     m.def("connect",
-          &py_connection_t::connect,
+          [module_arena](const pybind11::object& database, bool read_only, const pybind11::dict& config) {
+              return py_connection_t::connect(module_arena, database, read_only, config);
+          },
           "Create a OtterBrix database instance. Can take a database file name to read/write persistent data and a "
           "read_only flag if no changes are desired",
           pybind11::arg("database") = "default",

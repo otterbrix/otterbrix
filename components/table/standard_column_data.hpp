@@ -34,7 +34,7 @@ namespace components::table {
         [[nodiscard]] core::result_wrapper_t<bool> initialize_append(column_append_state& state) override;
         [[nodiscard]] core::result_wrapper_t<bool>
         append_data(column_append_state& state, vector::unified_vector_format& uvf, uint64_t count) override;
-        void revert_append(int64_t start_row) override;
+        [[nodiscard]] core::result_wrapper_t<bool> revert_append(int64_t start_row) override;
         uint64_t fetch(column_scan_state& state, int64_t row_id, vector::vector_t& result) override;
         void
         fetch_row(column_fetch_state& state, int64_t row_id, vector::vector_t& result, uint64_t result_idx) override;
@@ -52,13 +52,21 @@ namespace components::table {
                                      std::vector<uint64_t> col_path,
                                      std::vector<column_segment_info>& result) override;
 
-        void initialize_column(const persistent_column_data_t& persistent_data) override;
+        [[nodiscard]] core::result_wrapper_t<bool>
+        initialize_column(const persistent_column_data_t& persistent_data) override;
 
         // Transition the main data segments AND the validity child's segments to disk (both packed via `pbm`).
         [[nodiscard]] core::result_wrapper_t<bool> transition_to_disk(storage::partial_block_manager_t& pbm) override;
 
         // Compact reclaim: collect the main column's blocks AND the validity child's blocks.
         void collect_disk_block_ids(std::pmr::vector<uint64_t>& out) const override;
+
+    private:
+        // NVI hook of checkpoint(): persist the validity bitmap as the (single) child column,
+        // so NULLs survive the checkpoint. See the convention note on column_data_t.
+        [[nodiscard]] core::result_wrapper_t<bool>
+        checkpoint_children(storage::partial_block_manager_t& partial_block_manager,
+                            persistent_column_data_t& persistent) override;
     };
 
 } // namespace components::table

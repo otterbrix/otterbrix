@@ -21,14 +21,14 @@
 #include "catalog_probe.hpp"
 #include "disk_test_helpers.hpp"
 
+#include "../../../components/table/test/fault_injection_file.hpp"
+
+#include <algorithm>
 #include <filesystem>
+#include <fstream>
 #include <limits>
 #include <thread>
 #include <unistd.h>
-
-// Disk-level persistence cases not covered by
-// integration/cpp/test/test_clean_break_startup.cpp (types, functions,
-// constraints, pg_class listing, OID survival, OID no-reuse-after-drop).
 
 using namespace services::disk;
 namespace catalog = components::catalog;
@@ -59,9 +59,8 @@ namespace {
             }())
             , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {}
         ~fresh_disk() {
-            // Destroy the manager first: its dtor joins the internal loop thread,
-            // which may still enqueue children onto the scheduler. Only then is it
-            // safe to stop/delete the scheduler.
+            // Destroy the manager before the scheduler: its dtor joins the loop thread, which may
+            // still enqueue children onto the scheduler.
             manager.reset();
             scheduler->stop();
             delete scheduler;
@@ -82,13 +81,11 @@ namespace {
             return std::move(future).take_ready();
         }
 
-        void checkpoint() {
+        void checkpoint(services::wal::id_t wal_id = services::wal::id_t{0}) {
             auto [_, cf] = actor_zeta::otterbrix::send(manager->address(),
                                                        &manager_disk_t::checkpoint_all,
                                                        session_id_t{},
-                                                       services::wal::id_t{0},
-                                                       // No concurrent snapshots in this fixture —
-                                                       // everything is visible-to-all, compact may run.
+                                                       wal_id,
                                                        std::numeric_limits<uint64_t>::max());
             for (int i = 0; i < 100000 && !cf.is_ready(); ++i) {
                 scheduler->run(1000);
@@ -100,8 +97,6 @@ namespace {
     };
 } // namespace
 
-// 1. test_type_persistence_across_restart: CREATE TYPE → checkpoint → restart →
-// resolve_type returns the same OID.
 TEST_CASE("services::disk::persistence::test_type_persistence_across_restart") {
     auto dir = persist_dir() + "/type";
     std::filesystem::remove_all(dir);
@@ -112,7 +107,6 @@ TEST_CASE("services::disk::persistence::test_type_persistence_across_restart") {
         fresh_disk fd(dir);
         fd.manager->bootstrap_system_tables_sync();
         ns_oid = test_create_namespace(fd, "type_ns");
-        // type_spec is opaque to the catalog — any non-empty string survives roundtrip.
         type_oid = test_create_type(fd, ns_oid, "money", "scale=2,precision=18");
         fd.checkpoint();
     }
@@ -127,8 +121,6 @@ TEST_CASE("services::disk::persistence::test_type_persistence_across_restart") {
     std::filesystem::remove_all(dir);
 }
 
-// 2. test_function_persistence: CREATE FUNCTION → checkpoint → restart → resolve_function
-// returns the same OID. Functions used to be in-memory only; now they live in pg_proc.
 TEST_CASE("services::disk::persistence::test_function_persistence") {
     auto dir = persist_dir() + "/func";
     std::filesystem::remove_all(dir);
@@ -139,7 +131,6 @@ TEST_CASE("services::disk::persistence::test_function_persistence") {
         fresh_disk fd(dir);
         fd.manager->bootstrap_system_tables_sync();
         ns_oid = test_create_namespace(fd, "fn_ns");
-        // pronargs=1, prouid=0 (placeholder UID), proargmatchers/prorettype as opaque text.
         fn_oid = test_create_function(fd, ns_oid, "incr", 1, 0, "BIGINT", "BIGINT");
         fd.checkpoint();
     }
@@ -154,9 +145,6 @@ TEST_CASE("services::disk::persistence::test_function_persistence") {
     std::filesystem::remove_all(dir);
 }
 
-// 3. test_constraint_persistence: CREATE CONSTRAINT (foreign key) → checkpoint →
-// restart → fk_constraints_for_table returns the constraint, with confrelid intact.
-// Earlier code stored only PRIMARY KEY columns; pg_constraint covers all kinds.
 TEST_CASE("services::disk::persistence::test_constraint_persistence") {
     auto dir = persist_dir() + "/constraint";
     std::filesystem::remove_all(dir);
@@ -179,8 +167,7 @@ TEST_CASE("services::disk::persistence::test_constraint_persistence") {
                                 components::types::complex_logical_type{components::types::logical_type::BIGINT});
         child_oid = test_create_table(fd, ns_oid, "child", std::move(child_cols));
 
-        // Resolve column attoids — needed by test_create_constraint (conkey/confkey are
-        // attoid CSVs).
+        // test_create_constraint's conkey/confkey are attoid CSVs.
         auto rrc = test_probe::probe_table(fd, fd.ctx(), ns_oid, std::string("child"));
         REQUIRE(rrc.found);
         REQUIRE_FALSE(rrc.columns.empty());
@@ -207,9 +194,7 @@ TEST_CASE("services::disk::persistence::test_constraint_persistence") {
         fresh_disk fd2(dir);
         fd2.manager->bootstrap_system_tables_sync();
         fd2.manager->restore_oid_generator_sync();
-        // Verify FK constraint persisted: resolve child table should still succeed
-        // (fk_constraints_for_table removed in Etap 5.1; field-level checks moved to
-        // catalog_view / planner layer). The constraint OID is preserved across restart.
+        // fk_constraints_for_table was removed; only the constraint OID is verified here.
         REQUIRE(fk_oid != INVALID_OID);
         REQUIRE(child_oid != INVALID_OID);
         REQUIRE(parent_oid != INVALID_OID);
@@ -217,9 +202,6 @@ TEST_CASE("services::disk::persistence::test_constraint_persistence") {
     std::filesystem::remove_all(dir);
 }
 
-// OIDs allocated to a table (and its columns) before checkpoint resolve to the
-// same OIDs after restart — the "OIDs are immutable after assignment" rule,
-// validated across a full disk round-trip.
 TEST_CASE("services::disk::persistence::test_oid_persistence") {
     auto dir = persist_dir() + "/oid_persist";
     std::filesystem::remove_all(dir);
@@ -263,11 +245,7 @@ TEST_CASE("services::disk::persistence::test_oid_persistence") {
     std::filesystem::remove_all(dir);
 }
 
-// A dropped OID is never handed out again. After restart,
-// restore_oid_generator_sync seeds the counter to max(persisted OIDs)+1; the
-// dropped table's siblings are still persisted, so the counter has already
-// advanced past the dropped OID and never recycles it. Gaps are acceptable,
-// reuse is not.
+// restore_oid_generator_sync seeds past all persisted OIDs — gaps are ok, reuse is not.
 TEST_CASE("services::disk::persistence::test_oid_no_reuse_after_drop") {
     auto dir = persist_dir() + "/oid_no_reuse";
     std::filesystem::remove_all(dir);
@@ -283,7 +261,6 @@ TEST_CASE("services::disk::persistence::test_oid_no_reuse_after_drop") {
         cols1.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
         dropped_oid = test_create_table(fd, ns_oid, "t_old", std::move(cols1));
 
-        // Same-process drop+create: no need for restart. Sanity check first.
         test_drop_table(fd, dropped_oid);
 
         std::vector<components::table::column_definition_t> cols2;
@@ -294,9 +271,6 @@ TEST_CASE("services::disk::persistence::test_oid_no_reuse_after_drop") {
         fd.checkpoint();
     }
     {
-        // Cross-restart: even after dropped row is gone, restore_oid_generator_sync
-        // must not let a fresh CREATE land on dropped_oid. The remaining live OIDs
-        // (namespace, t_new, columns) seed the high-water mark above dropped_oid.
         fresh_disk fd2(dir);
         fd2.manager->bootstrap_system_tables_sync();
         fd2.manager->restore_oid_generator_sync();
@@ -310,8 +284,6 @@ TEST_CASE("services::disk::persistence::test_oid_no_reuse_after_drop") {
     std::filesystem::remove_all(dir);
 }
 
-// 4. test_pg_class_lists_all_objects: every registered relation kind (regular,
-// computing, sequence, view, macro, index) shows up in pg_class after restart.
 TEST_CASE("services::disk::persistence::test_pg_class_lists_all_objects") {
     auto dir = persist_dir() + "/pg_class_all";
     std::filesystem::remove_all(dir);
@@ -372,10 +344,6 @@ TEST_CASE("services::disk::persistence::test_pg_class_lists_all_objects") {
     std::filesystem::remove_all(dir);
 }
 
-// 7. test_computing_table_persists_restart: a computing table plus its
-// pg_computed_column rows survive checkpoint and restart. relkind stays 'g',
-// pg_computed_column rows are reloaded, the table_computes() property holds
-// across the restart boundary.
 TEST_CASE("services::disk::persistence::test_computing_table_persists_restart") {
     auto dir = persist_dir() + "/computing_persist";
     std::filesystem::remove_all(dir);
@@ -387,8 +355,6 @@ TEST_CASE("services::disk::persistence::test_computing_table_persists_restart") 
         fd.manager->bootstrap_system_tables_sync();
         ns_oid = test_create_namespace(fd, "comp_ns");
         comp_oid = test_create_computing_table(fd, ns_oid, "agg");
-        // Append two distinct fields so the restart has something pg_computed_column
-        // must reload — the empty-table path is already covered by test_pg_class_lists_all_objects.
         test_computed_append_simple(fd, comp_oid, "count", components::catalog::well_known_oid::int64_type);
         test_computed_append_simple(fd, comp_oid, "total", components::catalog::well_known_oid::float64_type);
         fd.checkpoint();
@@ -401,16 +367,11 @@ TEST_CASE("services::disk::persistence::test_computing_table_persists_restart") 
         REQUIRE(rr.found);
         REQUIRE(rr.oid == comp_oid);
         REQUIRE(rr.relkind == components::catalog::relkind::computed);
-        // V4 resolve_table for relkind='g' fills `columns` from pg_computed_column
-        // (latest version per attname with refcount > 0). Two appends in fixture →
-        // two columns survive restart.
         REQUIRE(rr.columns.size() == 2);
     }
     std::filesystem::remove_all(dir);
 }
 
-// 8. test_sequence_persistence (spec §1.6 AC #1-3): CREATE SEQUENCE with explicit params →
-//    pg_sequence row written with correct values → checkpoint → restart → row survives.
 TEST_CASE("services::disk::persistence::test_sequence_persistence") {
     auto dir = persist_dir() + "/seq_persist";
     std::filesystem::remove_all(dir);
@@ -423,7 +384,6 @@ TEST_CASE("services::disk::persistence::test_sequence_persistence") {
         ns_oid = test_create_namespace(fd, "seq_ns");
         seq_oid = test_create_sequence(fd, ns_oid, "counter", 10, 2, 1, 1000, true);
         REQUIRE(seq_oid >= FIRST_USER_OID);
-        // AC #1: pg_sequence row written (field values verified at integration level).
         constexpr oid_t pg_seq = well_known_oid::pg_sequence_table;
         std::pmr::vector<std::uint64_t> sk1{&fd.resource};
         sk1.emplace_back(components::catalog::pg_sequence_col::seqrelid);
@@ -439,7 +399,6 @@ TEST_CASE("services::disk::persistence::test_sequence_persistence") {
         uint64_t seq_total = 0;
         for (auto& c : seq_batches) seq_total += c.size();
         REQUIRE(seq_total == 1);
-        // AC #2: DROP removes the pg_sequence row.
         test_drop_sequence(fd, seq_oid);
         std::pmr::vector<std::uint64_t> sk2{&fd.resource};
         sk2.emplace_back(components::catalog::pg_sequence_col::seqrelid);
@@ -455,12 +414,10 @@ TEST_CASE("services::disk::persistence::test_sequence_persistence") {
         uint64_t seq_total_after = 0;
         for (auto& c : seq_batches_after) seq_total_after += c.size();
         REQUIRE(seq_total_after == 0);
-        // Re-create for restart test.
         seq_oid = test_create_sequence(fd, ns_oid, "counter2", 5, 1, 1, 500, false);
         fd.checkpoint();
     }
     {
-        // AC #3: pg_sequence row still readable after restart.
         fresh_disk fd2(dir);
         fd2.manager->bootstrap_system_tables_sync();
         fd2.manager->restore_oid_generator_sync();
@@ -487,8 +444,6 @@ TEST_CASE("services::disk::persistence::test_sequence_persistence") {
     std::filesystem::remove_all(dir);
 }
 
-// 9. test_view_persistence (spec §1.7 AC #1, #4): CREATE VIEW with SQL body → pg_rewrite
-//    row written → checkpoint → restart → ev_action survives.
 TEST_CASE("services::disk::persistence::test_view_persistence") {
     auto dir = persist_dir() + "/view_persist";
     std::filesystem::remove_all(dir);
@@ -502,7 +457,6 @@ TEST_CASE("services::disk::persistence::test_view_persistence") {
         ns_oid = test_create_namespace(fd, "view_ns");
         view_oid = test_create_view(fd, ns_oid, "my_view", view_sql);
         REQUIRE(view_oid >= FIRST_USER_OID);
-        // AC #1: pg_rewrite row written with ev_class == view_oid.
         constexpr oid_t pg_rewrite_tbl = well_known_oid::pg_rewrite_table;
         std::pmr::vector<std::uint64_t> rk1{&fd.resource};
         rk1.emplace_back(components::catalog::pg_rewrite_col::ev_class);
@@ -518,7 +472,6 @@ TEST_CASE("services::disk::persistence::test_view_persistence") {
         uint64_t rewrite_total = 0;
         for (auto& c : rewrite_batches) rewrite_total += c.size();
         REQUIRE(rewrite_total == 1);
-        // AC #3: DROP removes the pg_rewrite row.
         test_drop_view(fd, view_oid);
         std::pmr::vector<std::uint64_t> rk2{&fd.resource};
         rk2.emplace_back(components::catalog::pg_rewrite_col::ev_class);
@@ -534,12 +487,10 @@ TEST_CASE("services::disk::persistence::test_view_persistence") {
         uint64_t rewrite_total_after = 0;
         for (auto& c : rewrite_batches_after) rewrite_total_after += c.size();
         REQUIRE(rewrite_total_after == 0);
-        // Re-create for restart test.
         view_oid = test_create_view(fd, ns_oid, "my_view2", view_sql);
         fd.checkpoint();
     }
     {
-        // AC #4: ev_action survives restart.
         fresh_disk fd2(dir);
         fd2.manager->bootstrap_system_tables_sync();
         fd2.manager->restore_oid_generator_sync();
@@ -566,8 +517,6 @@ TEST_CASE("services::disk::persistence::test_view_persistence") {
     std::filesystem::remove_all(dir);
 }
 
-// 10. test_macro_persistence (spec §1.7 AC #2, #4): CREATE MACRO with body → pg_rewrite
-//     row written → checkpoint → restart → ev_action survives.
 TEST_CASE("services::disk::persistence::test_macro_persistence") {
     auto dir = persist_dir() + "/macro_persist";
     std::filesystem::remove_all(dir);
@@ -625,8 +574,6 @@ TEST_CASE("services::disk::persistence::test_macro_persistence") {
     std::filesystem::remove_all(dir);
 }
 
-// 11. pg_constraint orphan after DROP TABLE (spec §1.5 AC #1, #3): CREATE TABLE with CHECK
-//     and FK → DROP TABLE → pg_constraint row count returns to baseline.
 TEST_CASE("services::disk::persistence::test_pg_constraint_orphan_after_drop_table") {
     auto dir = persist_dir() + "/constraint_orphan";
     std::filesystem::remove_all(dir);
@@ -644,7 +591,6 @@ TEST_CASE("services::disk::persistence::test_pg_constraint_orphan_after_drop_tab
         ccols.emplace_back("pid", components::types::complex_logical_type{components::types::logical_type::BIGINT});
         auto child_oid = test_create_table(fd, ns_oid, "child", std::move(ccols));
 
-        // Resolve attoids to wire the FK.
         auto pr = test_probe::probe_table(fd, fd.ctx(), ns_oid, std::string("parent"));
         auto cr = test_probe::probe_table(fd, fd.ctx(), ns_oid, std::string("child"));
         REQUIRE(pr.found);
@@ -652,7 +598,6 @@ TEST_CASE("services::disk::persistence::test_pg_constraint_orphan_after_drop_tab
         REQUIRE_FALSE(pr.columns.empty());
         REQUIRE_FALSE(cr.columns.empty());
 
-        // FK: child.pid → parent.id
         test_create_constraint(fd,
                                child_oid,
                                "fk_child_pid",
@@ -665,17 +610,11 @@ TEST_CASE("services::disk::persistence::test_pg_constraint_orphan_after_drop_tab
                                catalog::fk_action::no_action,
                                std::string{});
 
-        // fk_constraints_for_table removed in Etap 5.1; field-level FK checks moved to
-        // catalog_view / planner layer. Verify DROP TABLE CASCADE completes without error.
         test_drop_table(fd, child_oid);
     }
     std::filesystem::remove_all(dir);
 }
 
-// 12. OID uniqueness after restore (spec §1.4 acceptance criteria): restore_oid_generator_sync
-//     seeds above the highest OID in ALL system tables including pg_rewrite (which gets its own
-//     rule_oid per ddl_create_view). After restart, allocate() must be strictly greater than
-//     the highest OID the previous instance ever issued.
 TEST_CASE("services::disk::persistence::test_oid_no_collision_after_restore") {
     auto dir = persist_dir() + "/oid_restore";
     std::filesystem::remove_all(dir);
@@ -688,22 +627,16 @@ TEST_CASE("services::disk::persistence::test_oid_no_collision_after_restore") {
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
         test_create_table(fd, ns_oid, "t", std::move(cols));
-        // View allocates TWO OIDs: one for pg_class, one for pg_rewrite (rule_oid).
-        // The rule_oid is the highest; restore must pick it up from pg_rewrite col-0 scan.
         test_create_view(fd, ns_oid, "v");
-        // Capture the peak OID BEFORE checkpoint so we know what restore must beat.
-        // allocate_oids_batch(1) returns the next free OID, so peak == that - 1.
         auto probe = fd.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
         REQUIRE(probe.size() == 1);
-        pre_restart_peak = probe[0] - 1; // last issued OID
+        pre_restart_peak = probe[0] - 1;
         fd.checkpoint();
     }
     {
         fresh_disk fd2(dir);
         fd2.manager->bootstrap_system_tables_sync();
         fd2.manager->restore_oid_generator_sync();
-        // After restore the generator must be seeded at or above the pre-restart peak,
-        // so the next allocation is strictly greater than the last issued OID.
         auto next = fd2.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
         REQUIRE(next.size() == 1);
         REQUIRE(next[0] > pre_restart_peak);
@@ -711,7 +644,6 @@ TEST_CASE("services::disk::persistence::test_oid_no_collision_after_restore") {
     std::filesystem::remove_all(dir);
 }
 
-// 13. §1.8: CHECK constraint conexpr persists across checkpoint+restart.
 TEST_CASE("services::disk::persistence::test_check_constraint_persistence") {
     auto dir = persist_dir() + "/chk_persist";
     std::filesystem::remove_all(dir);
@@ -762,20 +694,13 @@ TEST_CASE("services::disk::persistence::test_check_constraint_persistence") {
     std::filesystem::remove_all(dir);
 }
 
-// Regression: MVCC commit-clock restore on reopen. A column persisted with a
-// non-zero added_at_commit_id (from a PRIOR session's clock) must stay visible
-// after reopen. Before the fix the reopened transaction_manager_t started its
-// clock at {1,0}, so every new txn's start_time fell below the persisted
-// added_at_commit_id and resolve_table judged all columns "added after my
-// snapshot" → "column not found". The fix re-seeds the clock from
-// max_persisted_commit_id_sync().
+// Regression: a column's added_at_commit_id is stamped by a prior session's clock, so reopen
+// must reseed the commit clock from max_persisted_commit_id_sync() — otherwise a fresh txn's
+// start_time can fall below it and resolve_table judges the column not yet added.
 TEST_CASE("services::disk::persistence::test_commit_clock_restored_across_restart") {
     auto dir = persist_dir() + "/commit_clock";
     std::filesystem::remove_all(dir);
     std::filesystem::create_directories(dir);
-    // A commit-id well above the reopened clock's fresh start (1) and above the
-    // attribute attnum/attoid value space — proves we read the commit-id column,
-    // not some other monotonic value.
     constexpr std::int64_t kPersistedCommitId = 5000;
     oid_t table_oid = INVALID_OID;
     oid_t col_attoid = INVALID_OID;
@@ -787,10 +712,6 @@ TEST_CASE("services::disk::persistence::test_commit_clock_restored_across_restar
         cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
         table_oid = test_create_table(fd, ns_oid, "cc_t", std::move(cols));
 
-        // Allocate an attoid for an ADD COLUMN-style row and stamp it with a high
-        // added_at_commit_id, mirroring what a committed ADD COLUMN at commit_id
-        // kPersistedCommitId would persist. Append it directly to pg_attribute and
-        // publish so it is durable in the checkpoint.
         auto attoids = fd.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
         col_attoid = attoids[0];
         constexpr oid_t pg_attr = well_known_oid::pg_attribute_table;
@@ -808,10 +729,10 @@ TEST_CASE("services::disk::persistence::test_commit_clock_restored_across_restar
                                                         /*added_at_commit_id*/ kPersistedCommitId,
                                                         /*dropped_at_commit_id*/ 0);
         std::vector<components::pg_catalog_append_range_t> appends;
-        auto rng = fd.invoke(&manager_disk_t::append_pg_catalog_row,
-                             disk_test_helpers::auto_ctx(),
-                             pg_attr,
-                             std::move(attr_row));
+        auto rng = disk_test_helpers::append_ok(fd.invoke(&manager_disk_t::append_pg_catalog_row,
+                                                          disk_test_helpers::auto_ctx(),
+                                                          pg_attr,
+                                                          std::move(attr_row)));
         appends.push_back(std::move(rng));
         fd.invoke(&manager_disk_t::storage_publish_commits,
                   disk_test_helpers::rebuild_ctx(),
@@ -824,15 +745,10 @@ TEST_CASE("services::disk::persistence::test_commit_clock_restored_across_restar
         fd2.manager->bootstrap_system_tables_sync();
         fd2.manager->restore_oid_generator_sync();
 
-        // (a) The new scan returns the persisted high commit-id.
         const auto max_cid = fd2.manager->max_persisted_commit_id_sync();
         REQUIRE(max_cid == static_cast<std::uint64_t>(kPersistedCommitId));
 
-        // (b) After seeding, a freshly-begun transaction's start_time is GREATER
-        // than the persisted added_at_commit_id, so resolve_table's visibility
-        // filter (added_at <= start_time) would accept the column.
         components::table::transaction_manager_t txn_mgr(&fd2.resource);
-        // Pre-seed: a fresh manager hands out start_time 1 — below the persisted id.
         {
             auto& pre = txn_mgr.begin_transaction(components::session::session_id_t::generate_uid());
             REQUIRE(pre.start_time() < static_cast<std::uint64_t>(kPersistedCommitId));
@@ -840,13 +756,153 @@ TEST_CASE("services::disk::persistence::test_commit_clock_restored_across_restar
         txn_mgr.seed_commit_clock(max_cid);
         auto& post = txn_mgr.begin_transaction(components::session::session_id_t::generate_uid());
         REQUIRE(post.start_time() > static_cast<std::uint64_t>(kPersistedCommitId));
-        // published_horizon_ is raised to (not above) the seed, so the persisted
-        // commit is treated as published.
         REQUIRE(txn_mgr.published_horizon() == max_cid);
 
-        // seed_commit_clock is idempotent / never lowers.
+        // seed_commit_clock never lowers published_horizon_ once raised.
         txn_mgr.seed_commit_clock(1);
         REQUIRE(txn_mgr.published_horizon() == max_cid);
     }
+    std::filesystem::remove_all(dir);
+}
+
+// checkpoint_inner writes the .wal_id sidecar only if the checkpoint succeeds; a dropped
+// write()/sync() failure in write_header could advance the sidecar past a root that never landed.
+namespace {
+
+    class one_table_fault_scope_t final
+        : public components::table::storage::single_file_block_manager_t::file_handle_interposer_t {
+    public:
+        one_table_fault_scope_t(otterbrix_test::fault_plan_t& plan, std::string path_marker)
+            : plan_(plan)
+            , marker_(std::move(path_marker)) {
+            components::table::storage::single_file_block_manager_t::dev_set_file_interposer(this);
+        }
+        ~one_table_fault_scope_t() override {
+            components::table::storage::single_file_block_manager_t::dev_set_file_interposer(nullptr);
+        }
+
+        std::unique_ptr<core::filesystem::file_handle_t>
+        wrap(std::unique_ptr<core::filesystem::file_handle_t> inner) override {
+            if (inner->path().string().find(marker_) == std::string::npos) {
+                return inner;
+            }
+            return std::make_unique<otterbrix_test::faulty_file_handle_t>(std::move(inner), plan_);
+        }
+
+    private:
+        otterbrix_test::fault_plan_t& plan_;
+        std::string marker_;
+    };
+
+    // The sidecar is a bare little-endian uint64 written via tmp+rename.
+    bool read_wal_id_sidecar(const std::filesystem::path& sidecar, uint64_t& out) {
+        std::ifstream f(sidecar, std::ios::binary);
+        if (!f) {
+            return false;
+        }
+        f.read(reinterpret_cast<char*>(&out), sizeof(out));
+        return static_cast<bool>(f);
+    }
+
+} // namespace
+
+TEST_CASE("services::disk::persistence::failed_checkpoint_does_not_advance_wal_id_sidecar") {
+    auto dir = persist_dir() + "/hdrfail";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+
+    constexpr auto ns_table_oid = static_cast<unsigned>(catalog::well_known_oid::pg_namespace_table);
+    constexpr auto db_oid = static_cast<unsigned>(catalog::well_known_oid::main_database);
+    const auto otbx =
+        std::filesystem::path(dir) / std::to_string(db_oid) / std::to_string(ns_table_oid) / "table.otbx";
+    const auto sidecar = std::filesystem::path(otbx.string() + ".wal_id");
+
+    otterbrix_test::fault_plan_t plan;
+    one_table_fault_scope_t scope(plan, "/" + std::to_string(ns_table_oid) + "/");
+
+    fresh_disk fd(dir);
+    fd.manager->bootstrap_system_tables_sync();
+    test_create_namespace(fd, "ns_one");
+    fd.checkpoint(services::wal::id_t{100});
+
+    REQUIRE(std::filesystem::exists(otbx));
+    uint64_t sidecar_after_good = 0;
+    REQUIRE(read_wal_id_sidecar(sidecar, sidecar_after_good));
+    REQUIRE(sidecar_after_good == 100);
+
+    test_create_namespace(fd, "ns_two");
+    plan.fail_after_writes = plan.writes_seen;
+    fd.checkpoint(services::wal::id_t{200});
+    plan.fail_after_writes = 0;
+
+    // Advancing the sidecar to 200 would authorise the WAL to forget rows this failed round
+    // never wrote; the durable root is still the one WAL position 100 describes.
+    uint64_t sidecar_after_failure = 0;
+    REQUIRE(read_wal_id_sidecar(sidecar, sidecar_after_failure));
+    CHECK(sidecar_after_failure == 100);
+
+    {
+        fresh_disk fd2(dir);
+        fd2.manager->bootstrap_system_tables_sync();
+        auto rr =
+            fd2.invoke(&manager_disk_t::resolve_namespace, fd2.ctx(), std::string("ns_one"));
+        REQUIRE_FALSE(rr.has_error());
+        CHECK(rr.value().found);
+    }
+
+    std::filesystem::remove_all(dir);
+}
+
+// The durable root lives INSIDE the .otbx as a two-slot shadow-paged header, with no external
+// whole-file backup: a failed round must leave the directory byte-for-byte as the committed one.
+TEST_CASE("services::disk::persistence::failed_checkpoint_leaves_no_backup_or_quarantine_files") {
+    auto dir = persist_dir() + "/nobackup";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+
+    constexpr auto ns_table_oid = static_cast<unsigned>(catalog::well_known_oid::pg_namespace_table);
+    constexpr auto db_oid = static_cast<unsigned>(catalog::well_known_oid::main_database);
+    const auto table_dir = std::filesystem::path(dir) / std::to_string(db_oid) / std::to_string(ns_table_oid);
+    const auto otbx = table_dir / "table.otbx";
+
+    otterbrix_test::fault_plan_t plan;
+    one_table_fault_scope_t scope(plan, "/" + std::to_string(ns_table_oid) + "/");
+
+    auto dir_listing = [&]() {
+        std::vector<std::string> names;
+        for (const auto& entry : std::filesystem::directory_iterator(table_dir)) {
+            names.push_back(entry.path().filename().string());
+        }
+        std::sort(names.begin(), names.end());
+        return names;
+    };
+
+    {
+        fresh_disk fd(dir);
+        fd.manager->bootstrap_system_tables_sync();
+        test_create_namespace(fd, "ns_one");
+        fd.checkpoint(services::wal::id_t{100});
+        REQUIRE(std::filesystem::exists(otbx));
+
+        const std::vector<std::string> committed_set{"table.otbx", "table.otbx.wal_id"};
+        REQUIRE(dir_listing() == committed_set);
+
+        test_create_namespace(fd, "ns_two");
+        plan.fail_after_writes = plan.writes_seen;
+        fd.checkpoint(services::wal::id_t{200});
+        plan.fail_after_writes = 0;
+
+        CHECK(dir_listing() == committed_set);
+    }
+
+    {
+        fresh_disk fd2(dir);
+        fd2.manager->bootstrap_system_tables_sync();
+        auto rr = fd2.invoke(&manager_disk_t::resolve_namespace, fd2.ctx(), std::string("ns_one"));
+        REQUIRE_FALSE(rr.has_error());
+        CHECK(rr.value().found);
+        CHECK(dir_listing() == std::vector<std::string>{"table.otbx", "table.otbx.wal_id"});
+    }
+
     std::filesystem::remove_all(dir);
 }

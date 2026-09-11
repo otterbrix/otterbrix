@@ -16,6 +16,8 @@
 #include <components/catalog/table_id.hpp>
 #include <components/compute/function.hpp>
 #include <components/compute/kernel_signature.hpp>
+#include <components/index/logical_value_binary_codec.hpp>
+#include <components/types/type_spec_codec.hpp>
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/cast_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
@@ -69,13 +71,6 @@ namespace services::dispatcher {
         return components::compute::create_mask(components::compute::function_type_t::vector);
     }
 
-    // Bind a table's CHECK predicates to the schema of the rows they will judge: column references
-    // become resolved paths, casts and function calls get their implementations.
-    //
-    // This runs after enrich rather than inside validate_schema, because enrich is where the
-    // predicates come into being — it parses them out of the catalog, and validate_schema has
-    // already been and gone by then. DDL proved each one sound against this table, so a refusal
-    // here means the stored form and the schema have drifted apart.
     namespace {
         template<typename Node>
         [[nodiscard]] core::error_t bind_predicates(const validation::validation_context_t& context,
@@ -88,15 +83,10 @@ namespace services::dispatcher {
             if (target == nullptr) {
                 return core::error_t::no_error();
             }
-            // A CHECK judges the STORED row, so it resolves against the table's own columns —
-            // not against whatever subset of them this statement happens to supply.
             named_schema stored_row_schema{context.resource};
             for (const auto& column : target->columns) {
                 stored_row_schema.emplace_back(type_from_t{target->name, column.type});
             }
-            // A predicate's constants are its own: enrich bound them into the map that came with
-            // it, not into the statement's. Resolving against the statement's map would look for
-            // ids that were never put there.
             const auto& predicate_parameters = node->check_params() ? node->check_params()->parameters() : parameters;
             const validation::expression_context_t predicate_context{context.resource,
                                                                      stored_row_schema,
@@ -141,11 +131,6 @@ namespace services::dispatcher {
 
     namespace impl {
 
-        // Rewrite an is_not_null / is_null predicate on a multi-type field into
-        // an OR / AND over its per-type-variant columns: the key "exists" iff ANY
-        // variant is non-null, and is null only if ALL variants are null. This is
-        // how jsonb '?'/'?|'/'?&' behave over multi-type fields. Other compare
-        // types on such a name stay ambiguous (use '::?type' to pick a variant).
         components::expressions::expression_ptr
         rewrite_multitype_null_checks(std::pmr::memory_resource* resource,
                                       const components::expressions::expression_ptr& expr,
@@ -179,14 +164,6 @@ namespace services::dispatcher {
                 }
             }
             if (variants.empty() && key.absent_ok()) {
-                // A jsonb existence key ('?'/'?|'/'?&') that matches no column
-                // exactly. Postgres 3VL, over the flattened representation:
-                //   - an INTERMEDIATE object key (a prefix of one or more stored
-                //     columns, e.g. 'a' with columns a/b, a/c) is PRESENT iff a
-                //     child is non-null -> OR/AND of the per-child null checks;
-                //   - a truly ABSENT key is present for no row -> constant false
-                //     (is_not_null) / true (is_null), so one missing key can never
-                //     poison a '?|' any-of that another key already satisfies.
                 const std::string prefix_slash = name + "/";
                 std::vector<components::expressions::key_t> children;
                 for (const auto& c : schema) {
@@ -207,7 +184,7 @@ namespace services::dispatcher {
                 return combined;
             }
             if (variants.size() <= 1) {
-                return expr; // single-type (or unknown) — leave as-is
+                return expr;
             }
             auto combined =
                 make_compare_union_expression(resource, is_nn ? compare_type::union_or : compare_type::union_and);
@@ -272,9 +249,7 @@ namespace services::dispatcher {
             } else if (std::holds_alternative<expression_ptr>(param)) {
                 auto& sub = std::get<expression_ptr>(param);
                 if (!sub) {
-                    // A null operand slot -- e.g. the unused right() of a unary IS NULL, or the
-                    // left()/right() sentinels of a union node whose operands live in children_.
-                    // Nothing to resolve, and dereferencing sub->group() below would crash.
+                    // A null operand slot (e.g. IS NULL's unused right()) would crash sub->group() below.
                     return type_paths{resource};
                 }
                 if (sub->group() == expression_group::scalar) {
@@ -286,10 +261,6 @@ namespace services::dispatcher {
                 } else if (sub->group() == expression_group::compare) {
                     auto* cmp = static_cast<compare_expression_t*>(sub.get());
                     if (cmp->is_union()) {
-                        // Union compares (AND/OR/NOT — e.g. from IN, or the union_and(is_not_null,
-                        // union_not(regex)) that NOT LIKE expands into) carry their operands as CHILDREN
-                        // and have no left/right, so recurse into each child instead of touching left/right
-                        // (which are null for a union and would be dereferenced blindly).
                         for (auto& child : cmp->children()) {
                             param_storage child_param{child};
                             auto res = resolve_key_path(resource, child_param, schema);
@@ -312,7 +283,6 @@ namespace services::dispatcher {
             return type_paths{resource};
         }
 
-        // Defined below; a CASE condition is validated exactly like a WHERE predicate.
         [[nodiscard]] core::result_wrapper_t<named_schema>
         validate_schema(const validation::validation_context_t& context,
                         compare_expression_t* expr,
@@ -371,7 +341,6 @@ namespace services::dispatcher {
                         const named_schema* schema_right = nullptr) {
             auto* resource = context.resource;
             if (node->expressions().empty()) {
-                // physical plan reinterprets this as default scan
                 const auto* tbl = node->table_metadata();
                 if (tbl && tbl->relkind != 'g') {
                     named_schema result(resource);
@@ -470,11 +439,6 @@ namespace services::dispatcher {
             return named_schema{resource};
         }
 
-        // Resolve key paths in a DML node's RETURNING projection expressions
-        // against the schema of the affected rows (the target table's columns).
-        // Mirrors the node_select resolution: get_field keys and arithmetic
-        // operands get their column paths stamped; star_expand with a table
-        // qualifier is validated to expand; bare '*' and constants need nothing.
         [[nodiscard]] core::error_t
         resolve_returning_columns(const validation::validation_context_t& context,
                                   std::pmr::vector<expression_ptr>* returning,
@@ -512,8 +476,6 @@ namespace services::dispatcher {
                                         ? scalar_expr->key()
                                         : std::get<components::expressions::key_t>(scalar_expr->params().front());
                         if (key.path().empty()) {
-                            // Side-aware: schema_left is the destination table, schema_right the
-                            // USING/FROM table (null when there is no join)
                             auto res = validate_key(resource, key, schema_left, schema_right);
                             if (res.has_error()) {
                                 return res.error();
@@ -523,12 +485,6 @@ namespace services::dispatcher {
                         break;
                     }
                     case scalar_type::star_expand: {
-                        // 'table.*' (qualified) expands, like SELECT, into one
-                        // get_field per matching column — resolved against the
-                        // destination, then (for a join) the USING/FROM table — each
-                        // carrying its resolved side so it reads the correct chunk.
-                        // Bare '*' keeps an empty key and stays a runtime star_expand
-                        // (the destination row passthrough).
                         auto& star_key = scalar_expr->key();
                         if (star_key.storage().empty() || star_key.storage().front() == "*") {
                             idx++;
@@ -565,7 +521,6 @@ namespace services::dispatcher {
                         idx++;
                         break;
                     default: {
-                        // RETURNING projects the affected rows one at a time.
                         auto resolve_error = resolve_scalar_output_type(
                             context,
                             scalar_expr,
@@ -585,9 +540,7 @@ namespace services::dispatcher {
             return core::error_t::no_error();
         }
 
-    } // namespace impl
-
-    // ---- Existence checks over the plan's resolved catalog entries ----
+    }
 
     core::error_t check_namespace_exists(std::pmr::memory_resource* resource,
                                          const catalog_resolves_t* resolves,
@@ -616,6 +569,23 @@ namespace services::dispatcher {
         return core::error_t::no_error();
     }
 
+    namespace {
+        core::error_t check_dml_target_not_catalog(std::pmr::memory_resource* resource,
+                                                   const components::logical_plan::node_t* node) {
+            if (!components::catalog::is_catalog_table(node->table_oid())) {
+                return core::error_t::no_error();
+            }
+            const auto* tbl = node->table_metadata();
+            std::pmr::string msg{"cannot modify system catalog", resource};
+            if (tbl && !tbl->name.empty()) {
+                msg += " \"";
+                msg.append(tbl->name.begin(), tbl->name.end());
+                msg += '"';
+            }
+            return core::error_t(core::error_code_t::sql_parse_error, std::move(msg));
+        }
+    }
+
     core::error_t check_type_exists(std::pmr::memory_resource* resource,
                                     const catalog_resolves_t* resolves,
                                     const std::string& alias,
@@ -637,10 +607,6 @@ namespace services::dispatcher {
     }
 
     namespace {
-        // Reverse-lookup: namespace_oid -> dbname. Linear scan over the small
-        // namespace entry list; only invoked when a node carries a valid
-        // table_oid and we need to populate table_dbnames for the UDT type
-        // probe in check_node. Returns empty string_view if not found.
         std::string_view dbname_for_ns_oid(const catalog_resolves_t* resolves, components::catalog::oid_t ns_oid) {
             if (!resolves || !resolves->namespaces) {
                 return {};
@@ -652,14 +618,25 @@ namespace services::dispatcher {
             }
             return {};
         }
-    } // namespace
+    }
 
     core::error_t convert_column_defaults(std::pmr::memory_resource* resource,
                                           const components::casts::cast_registry_t* cast_registry,
                                           const components::graph_execution_context& execution_context,
                                           std::vector<components::table::column_definition_t>& columns) {
+        // Shared with ALTER TABLE ADD COLUMN (services/collection/executor.cpp).
+        const auto gate_persistable = [&](const components::table::column_definition_t& column) {
+            std::string encoded;
+            return components::catalog::encode_default_spec(resource, column.default_value(), encoded);
+        };
         for (auto& column : columns) {
-            if (!column.has_default_value() || column.default_value().type() == column.type()) {
+            if (!column.has_default_value()) {
+                continue;
+            }
+            if (column.default_value().type() == column.type()) {
+                if (auto ec = gate_persistable(column); ec.contains_error()) {
+                    return ec;
+                }
                 continue;
             }
             const auto& written = column.default_value();
@@ -678,8 +655,30 @@ namespace services::dispatcher {
                 return error;
             }
             column.set_default_value(converted.value(0));
+            if (auto ec = gate_persistable(column); ec.contains_error()) {
+                return ec;
+            }
         }
         return core::error_t::no_error();
+    }
+
+    core::error_t gate_persistable_type(std::pmr::memory_resource* resource,
+                                        const std::string& subject,
+                                        const components::types::complex_logical_type& type) {
+        std::pmr::vector<std::byte> spec(resource);
+        auto encoded = components::types::encode_type_spec(type, spec);
+        if (encoded.has_error()) {
+            return core::error_t(core::error_code_t::schema_error,
+                                 std::pmr::string{subject + " cannot be persisted: " +
+                                                      std::string(encoded.error().what.c_str()),
+                                                  resource});
+        }
+        return core::error_t::no_error();
+    }
+
+    std::string insert_arity_disagreement(std::size_t written, std::size_t provided) {
+        return "insert_node: INSERT names " + std::to_string(written) + " columns but the source provides " +
+               std::to_string(provided);
     }
 
     core::error_t validate_types(std::pmr::memory_resource* resource,
@@ -691,19 +690,20 @@ namespace services::dispatcher {
         std::pmr::vector<complex_logical_type> encountered_types{resource};
         std::set<std::string> table_dbnames;
         core::error_t result = core::error_t::no_error();
-        // 'g' once the VALUES target is a schemaless computing table (see the
-        // NA-column drop after chunk reconciliation below).
         char insert_target_relkind = 0;
+        // Breadth-first walk visits INSERT before its data child, the only moment the two
+        // are still positionally 1:1 (see the NA-column drop below).
+        const node_insert_t* written_column_list = nullptr;
 
         auto check_node = [&](node_t* node) {
-            // Drop-nodes skip existence + type collection here.
-            // Their catalog_resolve_* children verify existence at parse time;
-            // CASCADE/RESTRICT is enforced by the cascade-delete operator downstream.
             switch (node->type()) {
                 case node_type::drop_t:
                     return true;
                 default:
                     break;
+            }
+            if (node->type() == node_type::insert_t) {
+                written_column_list = static_cast<const node_insert_t*>(node);
             }
             if (auto oid = node->table_oid(); oid != components::catalog::INVALID_OID) {
                 const auto* tbl = resolves ? resolves->table_md(oid) : nullptr;
@@ -722,11 +722,9 @@ namespace services::dispatcher {
                     }
                 }
             }
-            // pull/double-check check format from collection referenced by logical_plan and data stored inside node_data_t
             if (node->type() == node_type::data_t) {
                 auto* data_node = reinterpret_cast<node_data_t*>(node);
 
-                // Probe the plan's resolved type entries by dbname.
                 auto type_visible = [&](std::string_view name) {
                     if (!resolves) {
                         return false;
@@ -739,7 +737,6 @@ namespace services::dispatcher {
                            resolves->type_md(std::string_view{"pg_catalog"}, name);
                 };
 
-                // Raw data is a batch of ≤CAP chunks sharing one column shape; coerce each.
                 for (auto& chunk : data_node->chunks()) {
                     for (auto& column : chunk.data) {
                         auto it = std::find_if(encountered_types.begin(),
@@ -747,7 +744,6 @@ namespace services::dispatcher {
                                                [&column](const complex_logical_type& type) {
                                                    return type.alias() == column.type().alias();
                                                });
-                        // if this is a registered type, then conversion is required
                         bool ty_exists =
                             it != encountered_types.end() && type_visible(std::string_view(it->type_name()));
                         if (ty_exists) {
@@ -829,7 +825,6 @@ namespace services::dispatcher {
                                                           it->type_name(),
                                                           std::span<const std::string>())
                                             .contains_error()) {
-                                // if this is a registered type, then conversion is required
                                 if (it->type() == logical_type::STRUCT) {
                                     components::vector::vector_t new_column(resource, *it, chunk.capacity());
                                     for (size_t i = 0; i < chunk.size(); i++) {
@@ -870,25 +865,62 @@ namespace services::dispatcher {
                                     }
                                     column = std::move(new_column);
                                 } else {
-                                    assert(false &&
-                                           "missing type conversion in dispatcher_t::check_collections_format_");
+                                    // Not an assert: leaving `column` wrong-typed is a defined bad answer, not UB.
+                                    result = core::error_t(
+                                        core::error_code_t::schema_error,
+                                        std::pmr::string{"no conversion to column '" + it->alias() +
+                                                             "': incoming logical_type " +
+                                                             std::to_string(static_cast<int>(column.type().type())) +
+                                                             " cannot be stored as logical_type " +
+                                                             std::to_string(static_cast<int>(it->type())) +
+                                                             " — the value was not stored",
+                                                         resource});
+                                    return false;
                                 }
                             }
                         }
-                        // A column still typed NA after reconciliation carries no
-                        // storable type. On a schemaless computing table that is an
-                        // absent key (every row null), not a real column, and handing
-                        // an all-NA column to storage segfaults the append. A declared
-                        // table never reaches here NA — its columns are typed by the
-                        // schema — so drop such columns only for a computing target.
-                        if (insert_target_relkind == 'g') {
-                            auto& cols = chunk.data;
-                            cols.erase(std::remove_if(cols.begin(),
-                                                      cols.end(),
-                                                      [](const components::vector::vector_t& c) {
-                                                          return c.type().type() == logical_type::NA;
-                                                      }),
-                                       cols.end());
+                    }
+                    // Erase runs outside the per-column loop: erasing from a container a loop
+                    // ranges over invalidates its end.
+                    if (insert_target_relkind == 'g') {
+                        auto& cols = chunk.data;
+                        const bool names_readable =
+                            written_column_list != nullptr &&
+                            written_column_list->key_translation().size() == cols.size();
+                        std::string dropped_names;
+                        std::size_t dropped_count = 0;
+                        for (std::size_t i = 0; i < cols.size(); ++i) {
+                            if (cols[i].type().type() != logical_type::NA) {
+                                continue;
+                            }
+                            ++dropped_count;
+                            if (!names_readable) {
+                                continue;
+                            }
+                            if (!dropped_names.empty()) {
+                                dropped_names += ", ";
+                            }
+                            dropped_names += '"';
+                            dropped_names += written_column_list->key_translation()[i].as_string();
+                            dropped_names += '"';
+                        }
+                        cols.erase(std::remove_if(cols.begin(),
+                                                  cols.end(),
+                                                  [](const components::vector::vector_t& c) {
+                                                      return c.type().type() == logical_type::NA;
+                                                  }),
+                                   cols.end());
+                        if (dropped_count != 0 && names_readable) {
+                            result = core::error_t(
+                                core::error_code_t::schema_error,
+                                std::pmr::string{
+                                    insert_arity_disagreement(written_column_list->key_translation().size(),
+                                                              cols.size()) +
+                                        " — column" + (dropped_count > 1 ? "s " : " ") + dropped_names +
+                                        (dropped_count > 1 ? " are " : " is ") +
+                                        "NULL in every row, so there is no type to create the column from",
+                                    resource});
+                            return false;
                         }
                     }
                 }
@@ -914,8 +946,6 @@ namespace services::dispatcher {
         return core::error_t::no_error();
     }
 
-    // Renamed body of the public validate_schema. All node recursion calls the public
-    // wrapper below (which stamps), so every node's output schema is recorded.
     [[nodiscard]] static core::result_wrapper_t<named_schema>
     validate_schema_impl(const validation::validation_context_t& context,
                          node_t* node,
@@ -927,16 +957,6 @@ namespace services::dispatcher {
         named_schema result{resource};
 
         switch (node->type()) {
-            // Host-extension: a REGISTERED CATALOG TABLE lowered by a host operator.
-            //   - SINK (has a child): a federated WRITE (INSERT..SELECT into a
-            //     backend). Validate the child (the rows to write) so they are
-            //     typed; the statement returns an affected-count, so its output
-            //     schema is empty (NoData) — like a plain DML without RETURNING.
-            //   - SOURCE (leaf): typed exactly like any table — from the catalog by
-            //     its (db, rel), resolved into the plan-tree idx by the standard
-            //     catalog-resolve wrap. Surfacing the columns lets parents (JOIN /
-            //     GROUP BY / SELECT) type normally and the wrapper stamp output_types().
-            // An unregistered target/source (missing tbl_md) is a host bug.
             case node_type::extension_t: {
                 const auto* ext = static_cast<const components::logical_plan::node_extension_t*>(node);
                 if (!node->children().empty()) {
@@ -944,7 +964,7 @@ namespace services::dispatcher {
                     if (child.has_error()) {
                         return child;
                     }
-                    return result; // empty = affected-count / NoData
+                    return result;
                 }
                 const auto* tbl = node->table_metadata();
                 if (!tbl) {
@@ -961,10 +981,6 @@ namespace services::dispatcher {
                 }
                 return result;
             }
-            // SQL transaction-control leaf (BEGIN/COMMIT/ROLLBACK): no table
-            // schema to validate — empty schema, like an all-resolve sequence_t.
-            // Defensive mirror of the executor's validate break-group; without
-            // this the default arm below assert(false)s on the node type.
             case node_type::transaction_t:
                 break;
             case node_type::aggregate_t: {
@@ -979,9 +995,6 @@ namespace services::dispatcher {
                 named_schema table_schema(resource);
                 named_schema incoming_schema(resource);
                 const named_schema* source_schema = &incoming_schema;
-                // Set when the aggregate's direct source is a relkind='g' (computed) table scan: its
-                // transfer_scan reorders columns by chunk_position, so a validate-time schema index
-                // would not match the runtime scan index — DISTINCT ON is rejected on such tables (v1).
                 bool relkind_computed = false;
 
                 for (auto& child : node->children()) {
@@ -1009,12 +1022,7 @@ namespace services::dispatcher {
                     }
                 }
 
-                // Table-valued jsonb operators ('->'/'#>' expand, '-'/'#-' delete)
-                // are lowered to per-column get_field only on the non-GROUP-BY path.
-                // With a GROUP BY (or a bare aggregate, which also routes here) they
-                // are never expanded, so an un-expanded jsonb_expand/jsonb_delete would
-                // reach physical execution and crash. Reject them cleanly instead —
-                // expanding one row into several columns has no meaning under grouping.
+                // Table-valued jsonb operators expand only on the non-GROUP-BY path (else crash).
                 if (node_group && node_select) {
                     for (const auto& expr : node_select->expressions()) {
                         if (expr->group() != expression_group::scalar) {
@@ -1038,37 +1046,34 @@ namespace services::dispatcher {
                         incoming_schema = std::move(node_data_res.value());
                     }
                 } else if (auto* agg_node = static_cast<node_aggregate_t*>(node);
-                           !static_cast<const std::string&>(agg_node->dbname()).empty()) {
+                           !static_cast<const std::string&>(agg_node->relname()).empty()) {
                     const auto& agg_dbname_s = static_cast<const std::string&>(agg_node->dbname());
                     const auto& agg_relname_s = static_cast<const std::string&>(agg_node->relname());
                     const auto& visible_alias = node->result_alias().empty() ? agg_relname_s : node->result_alias();
-                    // there will be a scan
                     const auto* tbl = node->table_metadata();
                     if (tbl) {
                         relkind_computed = (tbl->relkind == 'g');
-                        // Both relkinds ('g' and non-'g') build the schema identically
-                        // here: same alias source (visible_alias) and same column loop.
                         for (const auto& column : tbl->columns) {
                             table_schema.emplace_back(type_from_t{visible_alias, column.type});
                         }
                     } else {
-                        // Distinguish missing database from missing collection
-                        // so callers (and tests) get the right error code.
-                        if (!resolves || resolves->namespace_oid(std::string_view(agg_dbname_s)) ==
-                                             components::catalog::INVALID_OID) {
+                        if (!agg_dbname_s.empty() &&
+                            (!resolves || resolves->namespace_oid(std::string_view(agg_dbname_s)) ==
+                                              components::catalog::INVALID_OID)) {
                             std::pmr::string msg{"database does not exist: ", resource};
                             msg.append(agg_dbname_s.begin(), agg_dbname_s.end());
                             return core::error_t(core::error_code_t::database_not_exists, std::move(msg));
                         }
                         std::pmr::string msg{"collection does not exist: ", resource};
-                        msg.append(agg_dbname_s.begin(), agg_dbname_s.end());
-                        msg += '.';
+                        if (!agg_dbname_s.empty()) {
+                            msg.append(agg_dbname_s.begin(), agg_dbname_s.end());
+                            msg += '.';
+                        }
                         msg.append(agg_relname_s.begin(), agg_relname_s.end());
                         return core::error_t(core::error_code_t::table_not_exists, std::move(msg));
                     }
                 }
                 if (table_schema.empty() && incoming_schema.empty()) {
-                    // Empty computing table — still need aggregate validation for function_uid
                 }
                 if (incoming_schema.empty()) {
                     incoming_schema = table_schema;
@@ -1098,8 +1103,6 @@ namespace services::dispatcher {
                         }
                     }
                     if (!grouped) {
-                        // Without an explicit GROUP BY, the query is grouped if some SELECT-list
-                        // expression reduces
                         bool reduces = false;
                         const validation::expression_context_t expression_context{
                             context.resource,
@@ -1117,8 +1120,6 @@ namespace services::dispatcher {
                             }
                             if (expr->group() == expression_group::scalar) {
                                 const auto scalar_kind = static_cast<scalar_expression_t*>(expr.get())->type();
-                                // Plain column references and '*' are grouping keys, bound where the
-                                // keys are collected rather than resolved as values here.
                                 if (scalar_kind == scalar_type::group_field || scalar_kind == scalar_type::get_field ||
                                     scalar_kind == scalar_type::star_expand) {
                                     continue;
@@ -1148,8 +1149,6 @@ namespace services::dispatcher {
                 }
 
                 if (node_match) {
-                    // Expand is_not_null/is_null on multi-type fields into OR/AND
-                    // over their variants (jsonb '?'/'?|'/'?&' over multi-type).
                     for (auto& e : node_match->expressions()) {
                         e = impl::rewrite_multitype_null_checks(resource, e, incoming_schema);
                     }
@@ -1166,9 +1165,6 @@ namespace services::dispatcher {
                             return res;
                         }
                     }
-                    // DISTINCT ON: resolve the ON keys against the pre-projection (incoming) schema —
-                    // the same column index the runtime distinct-below-select operator reads from the
-                    // transfer_scan. Outside the node_sort guard so a no-ORDER-BY DISTINCT ON resolves.
                     if (!aggregate_node->distinct_on_keys().empty()) {
                         if (relkind_computed) {
                             return core::error_t(core::error_code_t::unimplemented_yet,
@@ -1183,9 +1179,7 @@ namespace services::dispatcher {
                             }
                         }
                     }
-                    // Validate node_select expressions (no GROUP BY path)
                     if (node_select) {
-                        // Pre-expand UDT .* expressions into individual child fields
                         {
                             auto& exprs = node_select->expressions();
                             for (size_t expr_index = 0; expr_index < exprs.size();) {
@@ -1194,7 +1188,6 @@ namespace services::dispatcher {
                                     continue;
                                 }
                                 auto* scalar_expr = reinterpret_cast<scalar_expression_t*>(exprs[expr_index].get());
-                                // t.x.* — expand by result_alias against merged JOIN schema.
                                 if (scalar_expr->type() == scalar_type::star_expand &&
                                     !scalar_expr->key().storage().empty() &&
                                     scalar_expr->key().storage().front() != "*") {
@@ -1271,13 +1264,6 @@ namespace services::dispatcher {
                             }
                         }
 
-                        // Pre-expand table-valued jsonb operators (jsonb_expand '->'/'#>'
-                        // and jsonb_delete '-'/'#-') into individual get_field columns
-                        // against the resolved schema. On a computing table nested fields
-                        // are flattened to columns named by their slash-joined path, so:
-                        //   expand prefix P -> every column == P or under "P/", rerooted
-                        //                      (strip "P/"; a leaf == P keeps its last seg)
-                        //   delete prefix P -> every column NOT under P (kept as-is)
                         {
                             auto& exprs = node_select->expressions();
                             for (size_t ei = 0; ei < exprs.size();) {
@@ -1294,13 +1280,6 @@ namespace services::dispatcher {
                                 }
                                 const std::string prefix = se->key().as_string();
                                 const std::string prefix_slash = prefix + "/";
-                                // A jsonb operator 'base OP path' works on the columns of
-                                // ONE table — the base. In a join the two sides share
-                                // subtree names (both l and m may carry "d/e"), so the
-                                // base's side is what disambiguates: without it the loop
-                                // matched columns from both sides and every produced
-                                // get_field became ambiguous ("path not found"). The array
-                                // delete form keeps its side on the params, not key().
                                 components::expressions::side_t op_side = se->key().side();
                                 if (se->key().is_null()) {
                                     for (const auto& p : se->params()) {
@@ -1314,9 +1293,6 @@ namespace services::dispatcher {
                                     return op_side == side_t::undefined || sc.side == side_t::undefined ||
                                            sc.side == op_side;
                                 };
-                                // Delete may carry several prefixes: key() plus any
-                                // key_t params (the multi-key form `jsonb - text[]`).
-                                // A column survives only if it is under NONE of them.
                                 std::vector<std::string> del_prefixes;
                                 if (is_delete) {
                                     if (!se->key().is_null()) {
@@ -1337,7 +1313,6 @@ namespace services::dispatcher {
                                     }
                                     return false;
                                 };
-                                // (output_name, source_alias) pairs
                                 std::vector<std::pair<std::string, std::string>> cols;
                                 for (const auto& sc : incoming_schema) {
                                     if (!sc.type.has_alias() || !on_op_side(sc)) {
@@ -1354,12 +1329,6 @@ namespace services::dispatcher {
                                         cols.emplace_back(std::move(out), std::move(alias));
                                     }
                                 }
-                                // Expand names a specific object: a key matching no
-                                // column is a "path not found" error, the same as the
-                                // scalar form ('->>'/'#>>'), never a select item that
-                                // silently vanishes and hands the caller fewer columns.
-                                // (Delete-to-empty is legal — it yields the empty object
-                                // '{}' — so this guard is expand-only.)
                                 if (is_expand && cols.empty()) {
                                     return core::error_t(core::error_code_t::schema_error,
                                                          std::pmr::string{(std::string{"jsonb expand: path '"} +
@@ -1371,8 +1340,6 @@ namespace services::dispatcher {
                                 for (size_t j = 0; j < cols.size(); j++) {
                                     components::expressions::key_t out_key(resource, cols[j].first.c_str());
                                     components::expressions::key_t src_key(resource, cols[j].second.c_str());
-                                    // Carry the base's side so the shared subtree name
-                                    // resolves back to the side the operator named.
                                     src_key.set_side(op_side);
                                     exprs.insert(
                                         exprs.begin() + static_cast<ptrdiff_t>(ei + j),
@@ -1438,17 +1405,6 @@ namespace services::dispatcher {
                             return result;
                         }
                     } else {
-                        // "SELECT *" / "SELECT t.*" — emit every column, including
-                        // several same-name columns of different types (multi-type
-                        // fields on a computing table); the wildcard simply returns
-                        // them all (an EXPLICIT reference to such a name still errors
-                        // as ambiguous in find_types and must use type selection).
-                        // Duplicate names across JOIN'd tables are likewise legitimate
-                        // (PostgreSQL semantics) — including a self-join, where the
-                        // copies are distinguished by their join side. Reject only a
-                        // truly-identical column: same output alias AND same source
-                        // name AND same physical type AND same join side (multi-type
-                        // fields of one computing table all share one side).
                         struct column_key {
                             std::string result_alias;
                             std::string name;
@@ -1458,10 +1414,6 @@ namespace services::dispatcher {
                         };
                         std::set<column_key> seen_cols;
                         for (const auto& col : incoming_schema) {
-                            // A projected constant (e.g. `SELECT 1`) has no alias/extension;
-                            // complex_logical_type::alias() asserts on that, so guard it. An
-                            // alias-less column keys on the empty string, which is correct for
-                            // this duplicate-name check.
                             std::string col_alias =
                                 col.type.has_alias() ? std::string(col.type.alias()) : std::string{};
                             column_key key{col.result_alias, col_alias, col.type.type(), col.side};
@@ -1512,10 +1464,6 @@ namespace services::dispatcher {
                                     result_schema.push_back(col);
                                 }
                             } else {
-                                // Computed projection (CASE / COALESCE / arithmetic /
-                                // unary_minus / constant): resolve the real output type
-                                // against incoming_schema. Rule 6 — never the UNKNOWN
-                                // sentinel; an unresolvable type is a bind error.
                                 auto resolve_error = impl::resolve_scalar_output_type(
                                     context,
                                     scalar_expr,
@@ -1526,8 +1474,6 @@ namespace services::dispatcher {
                                 if (resolve_error.contains_error()) {
                                     return resolve_error;
                                 }
-                                // A bare NULL literal is a scalar constant whose bound value is NULL.
-                                // Mark the column so a UNION can reconcile it to the other branch's type.
                                 bool from_null = false;
                                 if (scalar_expr->type() == scalar_type::constant && !scalar_expr->params().empty() &&
                                     components::expressions::is_parameter(scalar_expr->params().front())) {
@@ -1548,7 +1494,6 @@ namespace services::dispatcher {
                     }
                     return incoming_schema;
                 } else {
-                    // Pre-expand UDT .* expressions into individual child fields
                     {
                         auto& exprs = node_group->expressions();
                         for (size_t expr_index = 0; expr_index < exprs.size();) {
@@ -1568,8 +1513,7 @@ namespace services::dispatcher {
                                 expr_index++;
                                 continue;
                             }
-                            // Copy key before find_types (which mutates it via set_path)
-                            // and before erase (which invalidates the reference)
+                            // Copy before find_types (mutates via set_path) and erase (invalidates it).
                             components::expressions::key_t k_copy(k_ref);
                             auto field = validation::find_types(resource, k_copy, incoming_schema);
                             if (field.has_error()) {
@@ -1583,7 +1527,6 @@ namespace services::dispatcher {
                                 for (size_t sub_field_index = 0; sub_field_index + 1 < k_copy.storage().size();
                                      sub_field_index++)
                                     new_key.storage().push_back(k_copy.storage()[sub_field_index]);
-                                // Append child field name so plan generator picks it up
                                 if (field_paths[j].type.has_alias()) {
                                     new_key.storage().push_back(
                                         std::pmr::string(field_paths[j].type.alias(), resource));
@@ -1596,7 +1539,6 @@ namespace services::dispatcher {
                         }
                     }
 
-                    // --- Helpers ---
                     auto is_case_or_arithmetic = [](scalar_type t) -> bool {
                         switch (t) {
                             case scalar_type::case_expr:
@@ -1618,9 +1560,6 @@ namespace services::dispatcher {
                         }
                     };
 
-                    // The GROUP BY keys, resolved first: whether a column reference is a grouping
-                    // key or a bare row value decides the cardinality of every expression that
-                    // reads it, so the key set is an input to the resolutions below.
                     std::pmr::vector<std::pmr::vector<size_t>> key_paths(resource);
                     for (const auto& expr : node_group->expressions()) {
                         if (expr->group() != expression_group::scalar) {
@@ -1637,9 +1576,6 @@ namespace services::dispatcher {
                         key_paths.emplace_back(scalar_expr->key().path().begin(), scalar_expr->key().path().end());
                     }
 
-                    // resolve_type/compute_type_entry have no return-channel for
-                    // errors (they return plain types); a missing parameter is
-                    // surfaced through this flag, checked after each call site.
                     core::error_t compute_type_error = core::error_t::no_error();
                     auto compute_type_entry =
                         [&](scalar_expression_t* scalar_expr,
@@ -1668,9 +1604,7 @@ namespace services::dispatcher {
                         return type_from_t{node->result_alias(), std::move(result_type)};
                     };
 
-                    // --- Resolve the projected expressions and classify cardinality ---
                     {
-                        // The target list of a grouped query:
                         const validation::expression_context_t projection_context{
                             context.resource,
                             incoming_schema,
@@ -1687,10 +1621,10 @@ namespace services::dispatcher {
                             if (expr->group() == expression_group::scalar) {
                                 const auto kind = static_cast<scalar_expression_t*>(expr.get())->type();
                                 if (kind == scalar_type::group_field) {
-                                    continue; // the key list itself, not a projected column
+                                    continue;
                                 }
                                 if (kind == scalar_type::star_expand) {
-                                    continue; // a structural marker, expanded by the node-level pass
+                                    continue;
                                 }
                             }
                             if (auto error = validation::resolve_expression(expr, projection_context);
@@ -1698,10 +1632,6 @@ namespace services::dispatcher {
                                 return error;
                             }
                             const auto projected = expr->cardinality();
-                            // A grouped query emits one row per group, so every projected
-                            // expression has to be one value per group: a grouping key, a
-                            // reduction, or a constant. Row cardinality at the top of one is a
-                            // bare non-key column.
                             if (projected == cardinality_t::row) {
                                 return core::error_t(core::error_code_t::sql_parse_error,
                                                      std::pmr::string{"column must appear in a GROUP BY clause or be "
@@ -1711,7 +1641,6 @@ namespace services::dispatcher {
                         }
                     }
 
-                    // --- Pass 1: classify + resolve + collect schemas ---
                     size_t select_end = node_group->expressions().size() - node_group->internal_aggregate_count;
                     named_schema key_schema(resource);
                     std::vector<size_t> post_agg_indices;
@@ -1722,7 +1651,6 @@ namespace services::dispatcher {
                         if (expr->group() == expression_group::scalar) {
                             auto* scalar_expr = reinterpret_cast<scalar_expression_t*>(expr.get());
                             if (scalar_expr->type() == scalar_type::get_field) {
-                                // get_field — existing code unchanged
                                 auto& key =
                                     scalar_expr->params().empty()
                                         ? scalar_expr->key()
@@ -1776,11 +1704,10 @@ namespace services::dispatcher {
                                 result.emplace_back(type_from_t{node->result_alias(), constant_type});
                                 key_schema.emplace_back(result.back());
                             } else if (is_case_or_arithmetic(scalar_expr->type())) {
-                                // Try resolve against incoming_schema
                                 auto res =
                                     impl::resolve_key_paths_in_group(resource, scalar_expr->params(), incoming_schema);
                                 if (res.has_error()) {
-                                    post_agg_indices.push_back(i); // defer to Pass 2
+                                    post_agg_indices.push_back(i);
                                 } else {
                                     auto entry = compute_type_entry(scalar_expr, incoming_schema, &key_paths);
                                     if (compute_type_error.contains_error()) {
@@ -1794,10 +1721,6 @@ namespace services::dispatcher {
                             auto* agg_expr = reinterpret_cast<aggregate_expression_t*>(expr.get());
                             bool is_internal = (i >= select_end);
 
-                            // Resolving the marker binds its argument keys, applies the signature's
-                            // argument casts and stamps uid / result / mergeable. A marker this
-                            // walk already built is left alone; a HAVING marker from the
-                            // transformer is resolved here for the first time.
                             const validation::expression_context_t aggregate_context{
                                 context.resource,
                                 incoming_schema,
@@ -1825,7 +1748,6 @@ namespace services::dispatcher {
                         }
                     }
 
-                    // --- Pass 2: build post_agg_schema + resolve deferred expressions ---
                     {
                         named_schema post_agg_schema(result);
 
@@ -1838,10 +1760,8 @@ namespace services::dispatcher {
                             if (res2.has_error()) {
                                 return res2.convert_error<named_schema>();
                             }
-                            scalar_expr->key().set_path({SIZE_MAX}); // Mark for planner
+                            scalar_expr->key().set_path({SIZE_MAX});
 
-                            // Post-aggregation every column of post_agg_schema is already one value
-                            // per group; the incoming key paths do not address that schema.
                             auto entry = compute_type_entry(scalar_expr, post_agg_schema, nullptr);
                             if (compute_type_error.contains_error()) {
                                 return compute_type_error;
@@ -1850,9 +1770,6 @@ namespace services::dispatcher {
                         }
                     }
 
-                    // Resolve node_select scalar expression key paths against the group output schema.
-                    // GROUP BY key columns are real columns addressable by name (key_schema).
-                    // Computed aggregate columns are internal artifacts — resolve positionally.
                     if (node_select) {
                         size_t agg_cursor = 0;
                         for (auto& expr : node_select->expressions()) {
@@ -1880,7 +1797,6 @@ namespace services::dispatcher {
                                 if (res.has_error()) {
                                     return res.convert_error<named_schema>();
                                 }
-                                // Post-aggregation: reductions are already projected into columns.
                                 auto resolve_error = impl::resolve_scalar_output_type(
                                     context,
                                     scalar_expr,
@@ -1906,24 +1822,19 @@ namespace services::dispatcher {
                     }
                 }
                 if (node_sort) {
-                    // Add hidden columns for sort keys not in the GROUP output
                     for (auto& sort_child : node_sort->expressions()) {
                         if (sort_child->group() != expression_group::sort) {
                             continue;
                         }
                         auto* sort_expr = static_cast<sort_expression_t*>(sort_child.get());
                         if (!components::expressions::is_key(sort_expr->operand())) {
-                            // Ordering by a computed value promotes no column of its own; its
-                            // operands are resolved against the GROUP output by validate_schema.
                             continue;
                         }
                         auto& skey = components::expressions::as_key(sort_expr->operand());
-                        // Try resolving in the GROUP result schema first
                         auto field_in_result = validation::find_types(resource, skey, result);
                         if (!field_in_result.has_error() && !field_in_result.value().empty()) {
-                            continue; // already in result
+                            continue;
                         }
-                        // Not in result — try incoming schema and add as hidden column
                         auto field = validation::find_types(resource, skey, incoming_schema);
                         if (!field.has_error() && !field.value().empty()) {
                             auto hidden_expr = make_scalar_expression(resource, scalar_type::get_field, skey);
@@ -1936,9 +1847,6 @@ namespace services::dispatcher {
                         return res;
                     }
                 }
-                // DISTINCT ON (grouped): resolve the ON keys against the group output (hidden-extended
-                // above), the layer the runtime distinct-below-select operator sees. Outside the
-                // node_sort guard so a no-ORDER-BY DISTINCT ON still resolves.
                 if (!aggregate_node->distinct_on_keys().empty()) {
                     for (auto& on_key : aggregate_node->distinct_on_keys()) {
                         auto r = validation::find_types(resource, on_key, result);
@@ -1947,9 +1855,6 @@ namespace services::dispatcher {
                         }
                     }
                 }
-                // HAVING is a first-class node_having_t child of the aggregate (its compare at
-                // expressions()[0]), validated against the group-output `result` schema (built above:
-                // GROUP keys + aggregate columns incl. hidden __having aggregates).
                 if (node_having && !node_having->expressions().empty()) {
                     auto& having = node_having->expressions()[0];
                     if (having->group() == expression_group::compare) {
@@ -1972,11 +1877,6 @@ namespace services::dispatcher {
                 break;
             }
             case node_type::function_t: {
-                // FROM-clause table function (e.g. generate_series). The argument
-                // input types come from the node's args: constants resolve through the
-                // parameter map; a column-ref argument is a correlated (LATERAL)
-                // reference, which needs an outer row and is handled by the LATERAL
-                // join path (not yet supported here).
                 auto* function_node = reinterpret_cast<node_function_t*>(node);
                 std::pmr::vector<complex_logical_type> function_input(resource);
                 function_input.reserve(function_node->args().size());
@@ -2021,11 +1921,6 @@ namespace services::dispatcher {
             }
             case node_type::join_t: {
                 const auto* join_node = static_cast<const node_join_t*>(node);
-                // A LATERAL reference can only appear on the right (inner) side of the
-                // join, so RIGHT/FULL JOIN LATERAL is ill-defined and PostgreSQL rejects
-                // it. The lateral join operator only honours LEFT-style NULL-extension;
-                // RIGHT/FULL would otherwise fall through to plain inner semantics and
-                // return a silently wrong answer. Reject it here instead.
                 if (join_node->is_lateral() &&
                     (join_node->type() == join_type::right || join_node->type() == join_type::full)) {
                     return core::error_t(
@@ -2038,13 +1933,6 @@ namespace services::dispatcher {
                 if (left_schema.has_error()) {
                     return left_schema;
                 }
-                // LATERAL: the inner (right) sub-plan may reference outer columns via
-                // correlation parameters (a WHERE compare or a projected column). Those
-                // parameters carry only a placeholder type from the transformer, so bind
-                // each one's TYPE here from the matching outer (left-schema) column before
-                // validating the inner plan — otherwise a projected correlated column has
-                // no concrete type. The lateral join operator rebinds the real value per
-                // outer row at execution; only the type matters for validation.
                 const storage_parameters* inner_parameters = &parameters;
                 storage_parameters lateral_parameters(resource);
                 if (join_node->is_lateral() && !join_node->correlations().empty()) {
@@ -2083,9 +1971,6 @@ namespace services::dispatcher {
                     return expr_res;
                 }
 
-                // Semi-/anti-join output is the LEFT (outer) schema ONLY — the right side
-                // contributes only existence (matched / not-matched), never columns. Every
-                // other join type merges both sides.
                 // TODO: merge using join type, because some join types allow duplicate names in result, while others do not
                 if (join_node->type() == join_type::semi || join_node->type() == join_type::anti) {
                     result = std::move(left_schema.value());
@@ -2096,12 +1981,13 @@ namespace services::dispatcher {
                 }
                 break;
             }
-            // For now next 3 nodes do not support returning clause:
             case node_type::insert_t: {
                 auto* insert_node = reinterpret_cast<node_insert_t*>(node);
+                if (auto guard = check_dml_target_not_catalog(resource, node); guard.contains_error()) {
+                    return guard;
+                }
                 const auto* tbl_ins = insert_node->table_metadata();
                 if (!tbl_ins) {
-                    // node_insert_t carries only the (unresolved) table oid, no names.
                     return core::error_t(core::error_code_t::table_not_exists,
                                          std::pmr::string{"INSERT target collection does not exist", resource});
                 }
@@ -2113,8 +1999,6 @@ namespace services::dispatcher {
                 } else {
                     named_schema table_schema(resource);
                     bool is_computed = false;
-                    // Insert node no longer carries relname; pull it
-                    // from the resolved table metadata (populated by Pass 1).
                     const std::string& target_relname_ins = tbl_ins ? tbl_ins->name : std::string{};
                     if (tbl_ins && tbl_ins->relkind != 'g') {
                         for (const auto& column : tbl_ins->columns) {
@@ -2128,9 +2012,6 @@ namespace services::dispatcher {
                             table_schema.emplace_back(type_from_t{target_relname_ins, column.type});
                         }
                     }
-                    // RETURNING references the target table's columns; the insert
-                    // operator reads the appended rows back from storage (full
-                    // table-ordered schema), so resolve the projection keys here.
                     if (!insert_node->returning().empty() && !table_schema.empty()) {
                         auto ret_err = impl::resolve_returning_columns(context,
                                                                        &insert_node->returning(),
@@ -2141,11 +2022,7 @@ namespace services::dispatcher {
                             return ret_err;
                         }
                     }
-                    // relkind='g' (dynamic-schema) tables accept INSERTs
-                    // whose shape differs from the catalog's currently-registered columns,
-                    // BUT only for simple types. Complex types (ARRAY/STRUCT/UNION/LIST)
-                    // crash the storage layer's adopt_schema path — those tests stay
-                    // rejected at validate to surface as a clean error instead of SIGSEGV.
+                    // ARRAY/STRUCT/UNION/LIST/MAP crash table_storage_t::adopt_schema (SIGSEGV).
                     auto is_simple_chunk = [&]() {
                         for (const auto& nt : incoming_schema.value()) {
                             const auto lt = nt.type.type();
@@ -2159,17 +2036,6 @@ namespace services::dispatcher {
                         }
                         return true;
                     };
-                    // Even on an empty relkind='g' schema we reject
-                    // complex-type INSERTs at validate, because the downstream
-                    // storage layer (table_storage_t::adopt_schema → row_group →
-                    // array_column_data_t) can't initialise an ARRAY/STRUCT/UNION/
-                    // LIST/MAP column without crashing (assert in
-                    // complex_logical_type::size() when UNKNOWN child appears,
-                    // and other edge cases). atttypspec now correctly preserves
-                    // the type in the catalog (catalog roundtrip works),
-                    // but the storage path is a separate scope — even VALUES
-                    // literal sources still SIGSEGV; lifting requires deeper
-                    // storage layer work.
                     if (is_computed && !is_simple_chunk()) {
                         return core::error_t(
                             core::error_code_t::schema_error,
@@ -2177,13 +2043,83 @@ namespace services::dispatcher {
                                              "are not yet supported on relkind='g' (dynamic-schema) tables",
                                              resource});
                     }
+                    // Unchecked, this crashes column_segment_t ("no segment storage for physical type 127").
+                    if (is_computed) {
+                        const auto& source_columns = incoming_schema.value();
+                        const bool written_names_align =
+                            insert_node->key_translation().size() == source_columns.size();
+                        for (size_t i = 0; i < source_columns.size(); i++) {
+                            if (source_columns[i].type.type() != components::types::logical_type::NA) {
+                                continue;
+                            }
+                            std::string column_name;
+                            if (written_names_align) {
+                                column_name = insert_node->key_translation()[i].as_string();
+                            } else if (source_columns[i].type.has_alias()) {
+                                column_name = std::string(source_columns[i].type.alias());
+                            }
+                            std::string named = column_name.empty()
+                                                    ? std::string{}
+                                                    : std::string{" \""} + column_name + "\"";
+                            return core::error_t(
+                                core::error_code_t::schema_error,
+                                std::pmr::string{"insert_node: INSERT into dynamic-schema table '" +
+                                                     target_relname_ins + "': source column " +
+                                                     std::to_string(i + 1) + named +
+                                                     " is NULL in every row, so there is no type to create the "
+                                                     "column from",
+                                                 resource});
+                        }
+                    }
+                    auto bind_computed_rename = [&]() -> core::error_t {
+                        if (insert_node->key_translation().empty()) {
+                            return core::error_t::no_error();
+                        }
+                        if (insert_node->key_translation().size() != incoming_schema.value().size()) {
+                            return core::error_t(
+                                core::error_code_t::schema_error,
+                                std::pmr::string{insert_arity_disagreement(insert_node->key_translation().size(),
+                                                                           incoming_schema.value().size()),
+                                                 resource});
+                        }
+                        components::logical_plan::insert_column_bindings_t bindings(insert_node->resource());
+                        bindings.reserve(incoming_schema.value().size());
+                        for (size_t i = 0; i < incoming_schema.value().size(); i++) {
+                            std::string target_name = insert_node->key_translation()[i].as_string();
+                            bindings.emplace_back(components::logical_plan::insert_column_binding_t{
+                                .target_index = i,
+                                .target_name = std::pmr::string{target_name.c_str(), insert_node->resource()},
+                                .target_type = incoming_schema.value()[i].type,
+                                .cast = {}});
+                        }
+                        insert_node->set_column_bindings(std::move(bindings));
+                        auto* source_child = node->children().front().get();
+                        if (source_child->has_output_types()) {
+                            auto renamed = source_child->output_types();
+                            const size_t bound = std::min(renamed.size(), insert_node->key_translation().size());
+                            for (size_t i = 0; i < bound; i++) {
+                                renamed[i].set_alias(insert_node->key_translation()[i].as_string());
+                            }
+                            source_child->set_output_types(std::move(renamed));
+                        }
+                        return core::error_t::no_error();
+                    };
                     if (table_schema.empty()) {
-                        // Schemaless table (no columns defined) or computing table with no
-                        // columns yet — accept any INSERT without column count validation.
+                        // Must stay relkind='r' (test_persistence::zero_column_regular_table_stays_regular).
+                        if (!is_computed) {
+                            return core::error_t(
+                                core::error_code_t::schema_error,
+                                std::pmr::string{"insert_node: table '" + target_relname_ins +
+                                                     "' has no columns; INSERT needs at least one column",
+                                                 resource});
+                        }
+                        if (auto rename_err = bind_computed_rename(); rename_err.contains_error()) {
+                            return rename_err;
+                        }
                     } else if (is_computed && is_simple_chunk()) {
-                        // Computing table with simple-typed INSERT: skip the static-shape
-                        // checks. operator_computed_field_register registers new attoids
-                        // for added/widened columns at execute time.
+                        if (auto rename_err = bind_computed_rename(); rename_err.contains_error()) {
+                            return rename_err;
+                        }
                     } else if (incoming_schema.value().size() > table_schema.size()) {
                         return core::error_t(core::error_code_t::schema_error,
                                              std::pmr::string{"insert_node: too many columns in INSERT", resource});
@@ -2194,37 +2130,50 @@ namespace services::dispatcher {
                                 core::error_code_t::schema_error,
                                 std::pmr::string{"insert_node: number of columns do not match", resource});
                         } else {
-                            // validate key
                             for (auto& key : insert_node->key_translation()) {
                                 auto key_res = validation::validate_key(resource, key, &table_schema);
                                 if (key_res.has_error()) {
                                     return key_res.convert_error<named_schema>();
                                 }
                             }
-                            // validate corresponding types
                             std::pmr::unordered_set<size_t> unchecked_columns(resource);
                             for (size_t i = 0; i < table_schema.size(); i++) {
                                 unchecked_columns.emplace(i);
                             }
 
+                            const bool source_is_raw_values = node->children().front()->type() == node_type::data_t;
                             components::logical_plan::insert_column_bindings_t bindings(insert_node->resource());
                             bindings.reserve(incoming_schema.value().size());
                             for (size_t i = 0; i < incoming_schema.value().size(); i++) {
                                 // TODO: support partial inserts into complex types
-                                // for now only first order is checked
+                                size_t key_pos = i;
+                                if (!insert_node->key_translation().empty() && source_is_raw_values &&
+                                    incoming_schema.value()[i].type.has_alias()) {
+                                    const std::string written_name{incoming_schema.value()[i].type.alias()};
+                                    const auto& keys = insert_node->key_translation();
+                                    auto key_it =
+                                        std::find_if(keys.begin(), keys.end(), [&written_name](const auto& key) {
+                                            return key.as_string() == written_name;
+                                        });
+                                    if (key_it == keys.end()) {
+                                        return core::error_t(
+                                            core::error_code_t::schema_error,
+                                            std::pmr::string{"insert_node: VALUES column '" + written_name +
+                                                                 "' is not in the INSERT column list",
+                                                             resource});
+                                    }
+                                    key_pos = static_cast<size_t>(key_it - keys.begin());
+                                }
                                 size_t index = insert_node->key_translation().empty()
                                                    ? i
-                                                   : insert_node->key_translation()[i].path().front();
+                                                   : insert_node->key_translation()[key_pos].path().front();
                                 const auto& corresponding_table_type = table_schema[index].type;
                                 unchecked_columns.erase(index);
                                 const auto& incoming_type = incoming_schema.value()[i].type;
 
-                                // The name the append routes on: the written key for an
-                                // explicit column list (it may address a nested field), the
-                                // catalog column name otherwise.
                                 std::string target_name = insert_node->key_translation().empty()
                                                               ? tbl_ins->columns[index].attname
-                                                              : insert_node->key_translation()[i].as_string();
+                                                              : insert_node->key_translation()[key_pos].as_string();
                                 components::logical_plan::insert_column_binding_t binding{
                                     .target_index = index,
                                     .target_name = std::pmr::string{target_name.c_str(), insert_node->resource()},
@@ -2251,15 +2200,12 @@ namespace services::dispatcher {
                             }
                             insert_node->set_column_bindings(std::move(bindings));
 
-                            // validate_static_nulls: for literal VALUES, reject null in NOT NULL cols
-                            if (node->children().front()->type() == node_type::data_t && tbl_ins) {
+                            if (source_is_raw_values && tbl_ins) {
                                 const auto* dat = reinterpret_cast<const node_data_t*>(node->children().front().get());
                                 const auto& chunk = dat->data_chunk();
                                 const auto& cat_cols = tbl_ins->columns;
                                 for (size_t ci = 0; ci < incoming_schema.value().size(); ++ci) {
-                                    size_t tbl_idx = insert_node->key_translation().empty()
-                                                         ? ci
-                                                         : insert_node->key_translation()[ci].path().front();
+                                    size_t tbl_idx = insert_node->column_bindings()[ci].target_index;
                                     if (tbl_idx >= cat_cols.size() || !cat_cols[tbl_idx].attnotnull)
                                         continue;
                                     for (std::uint64_t row = 0; row < chunk.size(); ++row) {
@@ -2297,6 +2243,9 @@ namespace services::dispatcher {
             }
             case node_type::delete_t:
             case node_type::update_t: {
+                if (auto guard = check_dml_target_not_catalog(resource, node); guard.contains_error()) {
+                    return guard;
+                }
                 node_match_t* node_match = nullptr;
                 node_t* node_data = nullptr;
                 for (const auto& child : node->children()) {
@@ -2309,11 +2258,7 @@ namespace services::dispatcher {
 
                 named_schema table_schema(resource);
                 named_schema incoming_schema(resource);
-                // The USING / FROM source, or null when the statement has only the target table.
                 const named_schema* source_schema = &incoming_schema;
-                // Update/delete nodes no longer carry relname; pull
-                // the target table name from the resolved metadata (populated
-                // by Pass 1 via the sibling resolve_table).
                 const auto* tbl_upd = node->table_metadata();
                 const std::string target_relname = tbl_upd ? tbl_upd->name : std::string{};
                 if (tbl_upd && tbl_upd->relkind != 'g') {
@@ -2323,12 +2268,6 @@ namespace services::dispatcher {
                                         column.type});
                     }
                 } else if (tbl_upd && tbl_upd->relkind == 'g') {
-                    // task #106: on dynamic-schema (relkind='g') tables, UPDATE may
-                    // only target columns that have already been registered in
-                    // pg_computed_column. tbl_upd->columns reflects the set of LIVE columns
-                    // for 'g' tables (resolve_table fills it from pg_computed_column). If the
-                    // SET clause references a column not in that set, reject explicitly with
-                    // a clear, actionable message.
                     //
                     // TODO(task #106): consider Mongo-style auto-registration of
                     // unknown SET targets on UPDATE (option (a) in the policy decision). That
@@ -2341,15 +2280,11 @@ namespace services::dispatcher {
                         }
                         auto* node_update = reinterpret_cast<node_update_t*>(node);
                         for (const auto& expr : node_update->updates()) {
-                            // The SET value's own key names the column it is assigned to.
                             if (!expr || expr->key().is_null()) {
                                 continue;
                             }
                             const auto& storage = expr->key().storage();
-                            // Top-level field is the column name; nested paths (a.b.c) still
-                            // require the head 'a' to be a registered column.
-                            // storage.at(0) is safe: key_t::is_null() == storage().empty(),
-                            // and the is_null() check above already skipped empty-key SETs.
+                            // storage.at(0) is safe: is_null() above already skipped empty-key SETs.
                             const std::string column_name(storage.at(0).data(), storage.at(0).size());
                             if (live_columns.find(column_name) == live_columns.end()) {
                                 return core::error_t{
@@ -2375,15 +2310,6 @@ namespace services::dispatcher {
                         std::pmr::string{"could not find table in update/delete validation", resource});
                 }
                 if (node_data) {
-                    // UPDATE ... FROM / DELETE ... USING: the source is a child sub-plan
-                    // (a table, a join tree, a — possibly LATERAL — derived table, a table
-                    // function, or raw VALUES). Schema it and use it as the RIGHT side of
-                    // the join predicate: target columns resolve LEFT (table_schema),
-                    // source columns RIGHT (this schema). The whole source is the right
-                    // relation, so stamp every column right regardless of any side it
-                    // carries from an internal join — otherwise a source column sharing a
-                    // name with a target column would resolve to the target index and read
-                    // OOB on the (differently shaped) source chunk at runtime.
                     auto source_res = validate_schema(context, node_data, parameters, cte_schemas);
                     if (source_res.has_error()) {
                         return source_res;
@@ -2417,7 +2343,6 @@ namespace services::dispatcher {
                         expr->key().set_side(side_t::left);
                         expr->key().set_path(target_res.value().front().path);
 
-                        // An assigned value is computed per affected row
                         const validation::expression_context_t assignment_context{
                             resource,
                             table_schema,
@@ -2432,10 +2357,8 @@ namespace services::dispatcher {
                             return error;
                         }
 
-                        // get type of where expression value will be placed
                         const auto& target_type = target_res.value().front().type;
 
-                        // Storing can call assignment cast
                         const auto& value_type = expr->result_type();
                         if (value_type.type() != logical_type::INVALID && value_type != target_type) {
                             auto cast = cast_registry->resolve(value_type,
@@ -2458,24 +2381,17 @@ namespace services::dispatcher {
                                                                               target_type,
                                                                               cast.value(),
                                                                               components::casts::cast_kind::cast);
-                            // An expression is addressed by the key, so propagating it to the top is important
                             conversion->key() = expr->key();
                             expr = components::expressions::expression_ptr{conversion.get()};
                         }
                     }
                 }
                 // TODO: check updates for update_t
-                // RETURNING references the target table's columns (the affected
-                // rows the operator projects from); resolve the projection keys.
                 {
                     auto* returning = node->type() == node_type::update_t
                                           ? &reinterpret_cast<node_update_t*>(node)->returning()
                                           : &reinterpret_cast<node_delete_t*>(node)->returning();
                     if (!returning->empty() && !table_schema.empty()) {
-                        // A RETURNING key naming a FROM/USING source column resolves
-                        // against the source schema (built above as incoming_schema, all
-                        // columns stamped right); target columns resolve against
-                        // table_schema. No source child -> resolve against the target only.
                         const bool has_join = node_data != nullptr && !incoming_schema.empty();
                         auto ret_err = impl::resolve_returning_columns(context,
                                                                        returning,
@@ -2491,21 +2407,18 @@ namespace services::dispatcher {
             }
             case node_type::create_index_t: {
                 auto* idx_node = static_cast<node_create_index_t*>(node);
+                if (components::catalog::is_catalog_table(idx_node->table_oid())) {
+                    return core::error_t(
+                        core::error_code_t::sql_parse_error,
+                        std::pmr::string{"cannot create an index on a system catalog table", resource});
+                }
                 const auto* tbl_idx = idx_node->table_metadata();
                 if (!tbl_idx) {
-                    // node_create_index_t carries only the index name, no table names.
                     return core::error_t(core::error_code_t::table_not_exists,
                                          std::pmr::string{"CREATE INDEX target collection does not exist", resource});
                 }
 
                 named_schema table_schema{resource};
-                // For relkind='g' we reject only when no columns are
-                // registered yet — once at least one INSERT has populated
-                // pg_computed_column, attoids are stable (register path
-                // mints fresh attoids only for new / type-evolved columns).
-                // Subsequent type evolution bumping attoids on an indexed
-                // column is the caller's responsibility (no automatic index
-                // rebuild today).
                 if (tbl_idx && tbl_idx->relkind == 'g' && tbl_idx->columns.empty()) {
                     return core::error_t{core::error_code_t::index_create_fail,
                                          "CREATE INDEX requires at least one column registered on the table; "
@@ -2517,10 +2430,26 @@ namespace services::dispatcher {
                     }
                 }
                 auto& keys = idx_node->keys();
+                // The encoders below have no error channel (abort in Debug, wrong rows under NDEBUG).
+                const bool ordered_index =
+                    idx_node->type() != components::logical_plan::index_type::hashed;
                 for (auto& key : keys) {
                     auto key_res = validation::validate_key(resource, key, &table_schema);
                     if (key_res.has_error()) {
                         return key_res.convert_error<named_schema>();
+                    }
+                    const auto& key_type = key_res.value().front().type;
+                    if (!components::index::codec::is_representable_index_key_type(key_type.type(),
+                                                                                   ordered_index)) {
+                        std::string message = "CREATE INDEX: key '" + key.as_string() + "' has type " +
+                                              describe_type(key_type) +
+                                              ", which the index key encoders cannot represent";
+                        if (ordered_index &&
+                            key_type.type() == components::types::logical_type::DECIMAL) {
+                            message += " in an ordered index (USING hash carries DECIMAL)";
+                        }
+                        return core::error_t{core::error_code_t::index_create_fail,
+                                             std::pmr::string{message.c_str(), resource}};
                     }
                 }
                 return named_schema{resource};
@@ -2528,8 +2457,6 @@ namespace services::dispatcher {
             case node_type::create_constraint_t: {
                 auto* constraint_node = static_cast<node_create_constraint_t*>(node);
                 if (constraint_node->kind() != constraint_kind::check) {
-                    // Key and foreign-key constraints name columns rather than carrying an
-                    // expression; enrich resolves those names to attoids.
                     break;
                 }
                 const auto* constrained = constraint_node->table_metadata();
@@ -2544,7 +2471,6 @@ namespace services::dispatcher {
                                          std::pmr::string{"CHECK constraint carries no expression", resource});
                 }
 
-                // The predicate sees exactly the constrained table's columns.
                 named_schema constraint_schema{resource};
                 for (const auto& column : constrained->columns) {
                     constraint_schema.emplace_back(type_from_t{constrained->name, column.type});
@@ -2557,15 +2483,12 @@ namespace services::dispatcher {
                                                                     context.function_registry,
                                                                     context.execution_context,
                                                                     check_expr_allowed_functions()};
-                // A CHECK is a condition, so it states the same requirement WHERE does.
                 constraint_context.required_type = components::types::complex_logical_type{logical_type::BOOLEAN};
                 bool saw_reduction = false;
                 if (auto error = validation::resolve_expression(expression, constraint_context, &saw_reduction);
                     error.contains_error()) {
                     return error;
                 }
-                // A CHECK is answered per row, so a call that folds many rows into one has no row
-                // to answer for.
                 if (saw_reduction) {
                     return core::error_t(
                         core::error_code_t::invalid_constraint,
@@ -2577,15 +2500,9 @@ namespace services::dispatcher {
                 return named_schema{resource};
             }
             case node_type::drop_t:
-                // nothing to check here (only DROP INDEX reaches validate_schema;
-                // the cascade drops short-circuit in validate_types' check_node)
                 break;
             case node_type::create_matview_t:
             case node_type::refresh_matview_t:
-                // Schema derivation happens in enrich (Step 1); the planner reads
-                // the stamped inferred_columns / source metadata. No per-clause
-                // schema validation needed at this layer — the body plan's source
-                // table was resolved and pasted onto the node before this runs.
                 break;
             case node_type::union_t: {
                 if (node->children().size() < 2 || !node->children()[0] || !node->children()[1]) {
@@ -2600,28 +2517,21 @@ namespace services::dispatcher {
                 if (right_res.has_error()) {
                     return right_res;
                 }
-                auto& left_schema = left_res.value(); // patched in place on a NULL-branch reconcile
+                auto& left_schema = left_res.value();
                 const auto& right_schema = right_res.value();
                 if (left_schema.size() != right_schema.size()) {
                     return core::error_t(
                         core::error_code_t::sql_parse_error,
                         std::pmr::string{"UNION operands must have the same number of columns", resource});
                 }
-                // A bare NULL literal branch carries from_null_literal on its schema column (set where the
-                // constant's type is resolved). PostgreSQL reconciles such a column to the other branch's
-                // type rather than erroring — adopt the concrete side; error only on a genuine mismatch.
                 for (size_t i = 0; i < left_schema.size(); ++i) {
                     if (left_schema[i].type.type() == right_schema[i].type.type()) {
                         continue;
                     }
                     if (right_schema[i].from_null_literal) {
-                        continue; // right branch is a NULL literal -> keep the left (concrete) type
+                        continue;
                     }
                     if (left_schema[i].from_null_literal) {
-                        // left branch is NULL -> adopt the right TYPE, but keep the left column's
-                        // output name: PostgreSQL takes a union's column names from the FIRST
-                        // SELECT. Copying the whole complex_logical_type would silently rename
-                        // the column to the right branch's alias and break outer references.
                         auto adopted = right_schema[i].type;
                         adopted.set_alias(left_schema[i].type.has_alias() ? left_schema[i].type.alias()
                                                                           : std::string{});
@@ -2635,11 +2545,6 @@ namespace services::dispatcher {
                 return left_res;
             }
             case node_type::sequence_t: {
-                // The SQL transformer wraps DML/DDL in
-                //   sequence_t(catalog_resolve_*…, consumer)
-                // The catalog resolve children are leaves that don't carry a
-                // schema, so we descend to the last non-catalog_resolve_* child
-                // — the real consumer (insert_t/update_t/aggregate_t/...).
                 auto is_catalog_resolve = [](node_type t) { return t == node_type::catalog_resolve_t; };
                 for (auto it = node->children().rbegin(); it != node->children().rend(); ++it) {
                     if (!*it)
@@ -2648,7 +2553,6 @@ namespace services::dispatcher {
                         return validate_schema(context, it->get(), parameters, cte_schemas);
                     }
                 }
-                // All children are catalog_resolve_* — no consumer, empty schema.
                 break;
             }
             case node_type::recursive_cte_t: {
@@ -2663,8 +2567,6 @@ namespace services::dispatcher {
                     return anchor_res;
                 }
 
-                // Publish the CTE column schema derived from the anchor result so
-                // node_cte_scan_t inside the recursive member can look it up.
                 if (!cte_schemas) {
                     return core::error_t(core::error_code_t::sql_parse_error,
                                          std::pmr::string{"recursive CTE reached without a CTE schema map", resource});
@@ -2677,14 +2579,11 @@ namespace services::dispatcher {
                     }
                     (*cte_schemas)[cte_node->cte_name()] = std::move(cte_cols);
                 }
-                // Validate recursive member — sets expression paths for SELECT/WHERE/JOIN ON.
-                // Errors here indicate a schema mismatch between anchor and recursive member.
                 auto recursive_res = validate_schema(context, node->children()[1].get(), parameters, cte_schemas);
                 if (recursive_res.has_error()) {
                     return recursive_res;
                 }
 
-                // Remap result_alias to the CTE's visible alias.
                 if (!node->result_alias().empty()) {
                     for (auto& entry : anchor_res.value()) {
                         entry.result_alias = node->result_alias();
@@ -2725,30 +2624,18 @@ namespace services::dispatcher {
         return result;
     }
 
-    // Public entry: resolve the node's output column types (data-INDEPENDENT — derived
-    // from the plan + catalog types, never from row data), then STAMP them onto the node
-    // so the physical-plan generator can build correctly-typed results over ZERO input
-    // rows (PostgreSQL TupleDesc model). Interposing at this boundary captures every
-    // return path of validate_schema_impl's switch and every recursive child call. Error
-    // or empty-schema (DDL/control) results leave the node unstamped, so consumers
-    // degrade to today's data-derived behavior rather than a hard failure.
+    // Resolves output column types and stamps them onto the node. Error/empty results leave
+    // it unstamped by design; every consumer must check has_output_types() before reading it.
     core::result_wrapper_t<named_schema> validate_schema(const validation::validation_context_t& context,
                                                          node_t* node,
                                                          const components::logical_plan::storage_parameters& parameters,
                                                          cte_schemas_t* cte_schemas) {
-        // Owned here so a caller that never mentions CTEs need not carry the map;
-        // recursion below always threads a non-null pointer.
         cte_schemas_t local_cte_schemas;
         if (cte_schemas == nullptr) {
             cte_schemas = &local_cte_schemas;
         }
         auto res = validate_schema_impl(context, node, parameters, cte_schemas);
         if (!res.has_error() && !res.value().empty()) {
-            // Carry the resolved column types (the codebase idiom for a column-type list
-            // is std::pmr::vector<complex_logical_type>). Keep each type's alias: it is the
-            // output column name, which operators stamp onto the result column type (e.g.
-            // a COUNT column named "count"); it matches the data-derived alias, so there is
-            // no divergence.
             std::pmr::vector<complex_logical_type> types{node->resource()};
             types.reserve(res.value().size());
             for (const auto& c : res.value()) {

@@ -12,8 +12,6 @@
 
 namespace core {
     // TODO: define specific value for each error to make documentation easier
-    // Fill free to add your error type to it
-    // It is advised against using 'other_error'
     enum class error_code_t : int32_t
     {
         other_error = -1,
@@ -66,6 +64,7 @@ namespace core {
         data_corruption, // block checksum mismatch on read (disk reload / spill read)
         io_error,        // file create/open/header/read/write failure
         write_conflict,  // MVCC write-write conflict
+        stale_index,     // index answered row ids minted before the table's last compact
     };
 
     struct [[nodiscard]] error_t {
@@ -100,6 +99,9 @@ namespace core {
                    "no error state of error_t can only be created using no_error() constructor");
         }
 
+        // Reconstructs rather than assigns: the destination's allocator may be null_memory_resource
+        // (no_error()), so copy must land on the default resource and move must keep the source's —
+        // an owner with its own resource rebuilds through error_on() below instead.
         error_t& operator=(const error_t& other) {
             type = other.type;
             reconstruct_string(other.what);
@@ -117,8 +119,30 @@ namespace core {
             return *this;
         }
 
+        // Defaulted, so member-wise: copy lands on the default resource, move keeps the source's
+        // allocator — a moved error_t outlives its arena only if the arena outlives it. Safe today:
+        // the short-lived arenas are base_otterbrix_t::resource (integration/cpp/base_spaces.hpp) and
+        // five monotonic_buffer_resource arenas (components/planner/view_expansion.cpp,
+        // components/sql/transformer/impl/transfrom_common.cpp, integration/cpp/wrapper_dispatcher.cpp x2,
+        // integration/python/arrow/arrow_scan_function.cpp); none let an error_t escape scope — recheck
+        // this list before adding a shorter-lived one.
         error_t(const error_t&) = default;
         error_t(error_t&&) noexcept = default;
+
+        // Allocator-extended copy: std::pmr::string's copy ctor can't inherit a resource
+        // (select_on_container_copy_construction defaults it for polymorphic_allocator), so this
+        // is the only way to name where the message lands; error_on() below calls it.
+        //
+        // The null check runs from the initializer, not the body: a message long enough to
+        // allocate does so during member-init, before the body would run, so a body-level check
+        // would miss exactly the input it exists for.
+        error_t(const error_t& other, std::pmr::memory_resource* resource)
+            : type(other.type)
+            , what(other.what, message_resource(resource))
+#if not defined(NDEBUG)
+            , error_origin(other.error_origin)
+#endif
+        {}
 
         static error_t no_error() { return error_t(); }
 
@@ -130,6 +154,13 @@ namespace core {
             // since we are using null_memory_resource, we have to explicitly change allocator on assignments
             , what(std::pmr::null_memory_resource()) {}
 
+        // Assert, not a refusal: error_t is the bottom of the error channel, with nothing to report
+        // a bad argument to. Gone under NDEBUG, where a null resource null-derefs inside std::pmr::string.
+        static std::pmr::memory_resource* message_resource(std::pmr::memory_resource* resource) noexcept {
+            assert(resource != nullptr && "an error message needs a resource to live on");
+            return resource;
+        }
+
         template<typename... Args>
         void reconstruct_string(Args&&... args) {
             what.~basic_string();
@@ -137,7 +168,17 @@ namespace core {
         }
     };
 
-    // has implicit constructors to simplify usage
+    // The one place that puts a foreign error_t's message on the owner's own arena: a plain
+    // copy lands on the default resource, a plain move keeps the producer's (see error_t's
+    // assignments). Wraps the allocator-extended copy constructor.
+    [[nodiscard]] inline error_t error_on(std::pmr::memory_resource* resource, const error_t& error) {
+        assert(resource != nullptr && "an error message needs a resource to live on");
+        if (!error.contains_error()) {
+            return error_t::no_error();
+        }
+        return error_t{error, resource};
+    }
+
     template<typename T>
     requires(!std::is_same_v<std::decay<T>, error_t> && !std::is_same_v<T, void>) class [[nodiscard]] result_wrapper_t {
     private:
@@ -150,6 +191,10 @@ namespace core {
             : value_(std::forward<Args>(args)...)
             , error_(error_t::no_error()) {}
 
+        // Can't call error_on() here: result_wrapper_t has no resource of its own, so the copy
+        // lands on the default resource and the move keeps the producer's — corrected at the first
+        // owner that does have one (cursor_t's error constructors, operator_t::set_error) through
+        // core::error_on.
         result_wrapper_t(const error_t& error)
             : error_(error) {}
         result_wrapper_t(error_t&& error)
@@ -173,7 +218,9 @@ namespace core {
 
         result_wrapper_t& operator=(result_wrapper_t&& other) noexcept requires(std::is_move_assignable_v<T>) {
             value_ = std::move(other.value_);
-            error_ = other.error_;
+            // Move, not copy: the `= default` NDEBUG branch below moves, and copying here
+            // instead would make debug and release disagree on where the message lives.
+            error_ = std::move(other.error_);
             error_checked_ = false;
             other.error_checked_ = true;
             return *this;
@@ -227,10 +274,9 @@ namespace core {
         }
 
     private:
-        // Value-initialized because the error-carrying constructors below leave it alone: without
-        // this, copying or moving a wrapper that holds an error reads an indeterminate value, which
-        // gcc reports as -Wmaybe-uninitialized and which is undefined behaviour regardless.
-        // Store_T is either a trivially-copyable T or std::optional<T>, so {} is always valid here.
+        // Value-initialized because the error-carrying constructors leave it alone: otherwise
+        // copying/moving a wrapper that holds an error reads an indeterminate value (gcc's
+        // -Wmaybe-uninitialized, and UB regardless). Store_T is T or std::optional<T>, so {} is always valid.
         Store_T value_{};
 #if not defined(NDEBUG)
         mutable bool error_checked_{false};

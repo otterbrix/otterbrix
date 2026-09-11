@@ -10,44 +10,22 @@ namespace components::operators {
 
     class transfer_scan final : public read_only_operator_t {
     public:
-        // Unified ctor: OID-routed (our PR direction) + index-based projection
-        // (main's column_pruning output). Empty projected_cols means
-        // "pass-through, read all columns".
-        //
-        // Column indices reference the canonical table schema. This is stable
-        // within a single query for both relkind='r' (regular) and relkind='g'
-        // (computed/dynamic-schema) tables — chunks are materialized from the
-        // table's shared `types_`, and tombstones are filtered at resolve time.
+        // Empty projected_cols means read all columns.
         transfer_scan(std::pmr::memory_resource* resource,
                       components::catalog::oid_t table_oid,
                       logical_plan::limit_t limit,
                       std::vector<size_t> projected_cols = {});
 
         const logical_plan::limit_t& limit() const { return limit_; }
-        // Storage-chunk column indices the scan projects (empty ⇒ all columns), so a downstream
-        // group/select sees the SAME projected column layout it expects.
         const std::vector<size_t>& projected_cols() const noexcept { return projected_cols_; }
 
-        // --- Push-based streaming pipeline source (PER-BATCH FETCH-NEXT, bounded) ---
-        // role()==source drives the streaming push/finalize pipeline. The FIRST source_next OPENs a
-        // position-only fetch-next cursor (storage_fetch_next_batch, cursor_id==0, no filter —
-        // transfer_scan is the unfiltered scan, offset+limit pushed as the head cap); each subsequent
-        // call ADVANCEs the same cursor and reads exactly ONE batch — zero pins survive a round-trip,
-        // so peak scan memory is one batch. The N sequential cross-actor awaits live in this nested
-        // operator coroutine (driven by execute_pipeline), not a behavior() handler — no lost-wakeup.
-        // A no-table sentinel scan (INVALID_OID, e.g. a no-FROM `SELECT 2+3`) is ALSO a
-        // source: source_next emits ONE synthetic single-row batch carrying one
-        // placeholder column (so it is not the 0-column drain sentinel), then drains.
-        // The downstream operator_select_t projects its constant/arithmetic columns over
-        // that one row — those columns ignore input columns, so the placeholder is inert —
-        // yielding exactly the single constants row the legacy virtual-row path produced.
-        // role() is therefore unconditionally source.
+        // Awaits live in this nested coroutine, not a behavior() handler, so N cross-actor awaits
+        // don't lost-wakeup; a no-table sentinel scan emits ONE placeholder row instead of draining empty.
         [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::source; }
         [[nodiscard]] actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
         source_next(pipeline::context_t* ctx) override;
 
-        // Rewind the per-batch fetch-next cursor so a re-driven sub-plan re-OPENs from the
-        // head of the stream (recursive-CTE recursive term, re-run per fixpoint iteration).
+        // Lets a re-driven sub-plan re-OPEN from the stream head (recursive-CTE fixpoint re-run).
         void reset_pipeline_state() noexcept override {
             opened_ = false;
             drained_ = false;
@@ -57,18 +35,19 @@ namespace components::operators {
             guard_types_.clear();
         }
 
+        // Same abandoned-cursor hazard as full_scan — see operator_t::release_cursor.
+        [[nodiscard]] actor_zeta::unique_future<void> release_cursor(pipeline::context_t* ctx) override;
+        [[nodiscard]] bool holds_open_cursor() const noexcept override { return cursor_id_ != 0 && !drained_; }
+
     private:
         void explain_impl(const explain_sink& s) const override {
             explain_begin(s, table_oid_);
             s.end();
         }
 
-        // Projected empty chunk (drained sentinel) carrying the table schema, so a downstream OUTER
-        // join can NULL-pad and a scalar aggregate can emit COUNT=0.
         vector::data_chunk_t make_drain_chunk(const std::pmr::vector<types::complex_logical_type>& types);
 
-        // Apply the drained empty-guard to one fetched batch. (OFFSET is applied by operator_limit
-        // above; every scan receives offset()==0, so there is no per-batch skip.)
+        // OFFSET is applied by operator_limit above; every scan receives offset()==0 here.
         actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
         emit_or_skip(pipeline::context_t* ctx, std::unique_ptr<vector::data_chunk_t> batch);
 
@@ -76,9 +55,6 @@ namespace components::operators {
         const logical_plan::limit_t limit_;
         std::vector<size_t> projected_cols_;
 
-        // Per-batch fetch-next cursor state (see full_scan.hpp for the field semantics; transfer_scan
-        // has no filter — the empty-guard schema comes from a lazy storage_types await on the
-        // drained-with-zero-rows path).
         bool opened_{false};
         bool drained_{false};
         bool emitted_any_{false};

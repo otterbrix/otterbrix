@@ -2,16 +2,19 @@
 #include <memory>
 
 #include <otterbrix_wrapper/pyrelation.hpp>
+#include <otterbrix_wrapper/pyresult.hpp>
 
 namespace otterbrix {
 
     void initialize_connection_methods(py::class_<py_connection_t, std::shared_ptr<py_connection_t>>& m) {
         m.def("cursor", &py_connection_t::cursor, "Create a duplicate of the current connection");
         // py_connection_t::execute is overloaded (py::object query / logical_plan node);
-        // bind the Python-facing string-query overload explicitly.
+        // bind the Python-facing string-query overload explicitly. It returns the
+        // rows (OtterBrixPyResult), not the connection -- see pyconnection.hpp.
         m.def("execute",
-              static_cast<pycursor_ptr (py_connection_t::*)(const py::object&)>(&py_connection_t::execute),
-              "Execute the given SQL statement",
+              static_cast<std::unique_ptr<py_result_t> (py_connection_t::*)(const py::object&)>(
+                  &py_connection_t::execute),
+              "Execute the given SQL statement and return its rows",
               py::arg("query"));
 
         m.def("from_df", &py_connection_t::from_df, "Create a relation object from the DataFrame in df", py::arg("df"));

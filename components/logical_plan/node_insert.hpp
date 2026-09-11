@@ -22,6 +22,31 @@ namespace components::logical_plan {
 
     using insert_column_bindings_t = std::pmr::vector<insert_column_binding_t>;
 
+    // A column the statement omitted. operator_insert materialises it into the chunk
+    // before the append, so storage, the WAL record and the constraint operators all
+    // see a full-width row from pg_attribute.attdefspec, not an absent column.
+    struct insert_fill_column_t {
+        std::pmr::string name;            // catalog column name — the append routes by it
+        types::complex_logical_type type; // the column's stored type
+        types::logical_value_t value;     // the DEFAULT, or a typed NULL when there is none
+    };
+
+    using insert_fill_list_t = std::pmr::vector<insert_fill_column_t>;
+
+    // A bare fractional literal in VALUES carries no declared target type, and the catalog is
+    // out of the transformer's reach, so the only value it can build is a double —
+    // 0.12345678901234567890 lands in the chunk as 0.12345678901234567737. These records keep
+    // the digits as written until the enrich pass, the first point that knows the column is
+    // DECIMAL and with what scale. `row` counts across the whole chunk batch; `column` is the
+    // position in the chunk, the same index column_bindings is ordered by.
+    struct insert_literal_digits_t {
+        uint64_t row{0};
+        uint64_t column{0};
+        std::pmr::string text;
+    };
+
+    using insert_literal_digits_list_t = std::pmr::vector<insert_literal_digits_t>;
+
     class node_insert_t final : public node_t {
     public:
         explicit node_insert_t(std::pmr::memory_resource* resource);
@@ -79,21 +104,19 @@ namespace components::logical_plan {
         void set_unique_groups(std::vector<std::vector<std::string>> v) { unique_groups_ = std::move(v); }
         const std::vector<std::vector<std::string>>& unique_groups() const { return unique_groups_; }
 
-        // Decoded column DEFAULT values (name -> value), stamped by the enrich pass
-        // from pg_attribute.attdefspec. A column omitted from the INSERT column list
-        // stores its DEFAULT (filled agent-side at storage_append), so the constraint
-        // operators must evaluate an ABSENT column AS its default — the planner
-        // forwards these onto the node_check_constraint_t wrapper.
-        void set_column_defaults(std::vector<std::pair<std::string, types::logical_value_t>> v) {
-            column_defaults_ = std::move(v);
-        }
-        const std::vector<std::pair<std::string, types::logical_value_t>>& column_defaults() const {
-            return column_defaults_;
-        }
+        // stamped by enrich; operator_insert materialises these in push()
+        void set_fill_list(insert_fill_list_t v) { fill_list_ = std::move(v); }
+        const insert_fill_list_t& fill_list() const { return fill_list_; }
 
         // One entry per incoming chunk column, in chunk order. Stamped by validate_schema.
         void set_column_bindings(insert_column_bindings_t v) { column_bindings_ = std::move(v); }
         const insert_column_bindings_t& column_bindings() const { return column_bindings_; }
+        insert_column_bindings_t& column_bindings() { return column_bindings_; }
+
+        // Digits of the bare fractional literals in VALUES, stamped by the transformer and
+        // spent by enrich once the target column's scale is known.
+        void set_literal_digits(insert_literal_digits_list_t v) { literal_digits_ = std::move(v); }
+        const insert_literal_digits_list_t& literal_digits() const { return literal_digits_; }
 
     private:
         hash_t hash_impl() const override;
@@ -110,9 +133,10 @@ namespace components::logical_plan {
         std::vector<std::pair<std::string, expressions::expression_ptr>> check_predicates_;
         parameter_node_ptr check_params_;
         std::vector<std::pair<std::string, uint64_t>> array_size_reqs_;               // (name, declared array size)
-        std::vector<std::vector<std::string>> unique_groups_;                         // UNIQUE / PK column groups
-        std::vector<std::pair<std::string, types::logical_value_t>> column_defaults_; // decoded DEFAULTs
+        std::vector<std::vector<std::string>> unique_groups_; // UNIQUE / PK column groups
         insert_column_bindings_t column_bindings_;
+        insert_fill_list_t fill_list_; // omitted columns + the value each is filled with
+        insert_literal_digits_list_t literal_digits_;
     };
 
     using node_insert_ptr = boost::intrusive_ptr<node_insert_t>;

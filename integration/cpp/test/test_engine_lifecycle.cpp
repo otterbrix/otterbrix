@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <integration/cpp/otterbrix.hpp>
 
@@ -9,16 +10,6 @@
 #include <string>
 #include <thread>
 #include <vector>
-
-// Engine lifecycle invariants:
-//
-// 1. With multiple owners of an intrusive_ptr<otterbrix_t>, no operation on
-//    the execute path may lose a reference — every owner must keep the engine
-//    alive on its own. The refcount cases pin use_count() after each operation.
-//
-// 2. The buffer pool eviction queue must survive concurrent unpin pressure:
-//    add_to_eviction_queue from client/scan threads racing against
-//    try_dequeue_with_lock/purge on the disk manager threads.
 
 static const database_name_t lifecycle_database_name = "lifecycledb";
 static const collection_name_t lifecycle_collection_one = "lifecycle_col_one";
@@ -38,9 +29,6 @@ namespace {
         return columns;
     }
 
-    // Embedder-style wrapper: holds the engine by value as an extra owner and
-    // funnels every operation through the dispatcher with a fresh session per
-    // call.
     class lifecycle_wrapper_t final {
     public:
         explicit lifecycle_wrapper_t(otterbrix::otterbrix_ptr engine)
@@ -78,10 +66,10 @@ namespace {
         otterbrix::otterbrix_ptr engine_;
     };
 
-} // namespace
+}
 
 TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount", "[engine-lifecycle]") {
-    auto config = test_create_config("/tmp/test_engine_lifecycle/refcount");
+    auto config = test_create_config(integration_fixture_path("test_engine_lifecycle/refcount"));
     test_clear_directory(config);
     components::compute::function_registry_t::reset_default();
 
@@ -167,10 +155,8 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount", "[engin
 }
 
 TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount_client_thread", "[engine-lifecycle]") {
-    // Same sequence, but driven from a non-actor client thread. Catch2 REQUIRE
-    // is unsafe off the main thread, so results are snapshotted and checked
-    // after join.
-    auto config = test_create_config("/tmp/test_engine_lifecycle/refcount_thread");
+    // Catch2 REQUIRE is unsafe off the main thread, so results are snapshotted and checked after join.
+    auto config = test_create_config(integration_fixture_path("test_engine_lifecycle/refcount_thread"));
     test_clear_directory(config);
     components::compute::function_registry_t::reset_default();
 
@@ -256,10 +242,7 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount_client_th
 }
 
 TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount_wrapper_style", "[engine-lifecycle]") {
-    // A wrapper owning a by-value copy of the engine (third owner while alive)
-    // must keep it alive while a non-actor client thread issues SQL through it,
-    // including per-table LIMIT 0 schema probes.
-    auto config = test_create_config("/tmp/test_engine_lifecycle/refcount_wrapper");
+    auto config = test_create_config(integration_fixture_path("test_engine_lifecycle/refcount_wrapper"));
     test_clear_directory(config);
     components::compute::function_registry_t::reset_default();
 
@@ -298,7 +281,6 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount_wrapper_s
                 ++op;
             }
             {
-                // Schema probe: LIMIT 0 per table.
                 auto cur = wrapper.execute_sql("SELECT * FROM " + lifecycle_database_name + "." +
                                                lifecycle_collection_one + " LIMIT 0;");
                 ok[op] = cur->is_success();
@@ -347,20 +329,11 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount_wrapper_s
 }
 
 TEST_CASE("integration::cpp::test_engine_lifecycle::concurrent_insert_scan_eviction", "[engine-lifecycle]") {
-    // Functional smoke under a plain build; under TSAN it drives concurrent
-    // unpin -> eviction_queue_t::add_to_eviction_queue from client/scan threads
-    // against try_dequeue_with_lock/purge on the disk manager threads. disk.on
-    // must stay true so appends/scans run through standard_buffer_manager_t.
-    auto config = test_create_config("/tmp/test_engine_lifecycle/eviction");
+    // Under TSAN, drives eviction_queue_t::add_to_eviction_queue against try_dequeue_with_lock/purge across threads.
+    auto config = test_create_config(integration_fixture_path("test_engine_lifecycle/eviction"));
     test_clear_directory(config);
-    // Aggressive auto-checkpointing keeps checkpoint_all running on the disk
-    // threads while scans pin/unpin checkpointed (persistent) blocks —
-    // exercising the unpin-vs-purge interleaving.
     config.wal.auto_checkpoint_threshold_bytes = 1024;
-    // pool_idx_for_oid reserves agent 0 for catalog oids and maps user tables
-    // to 1 + (oid % (agent - 1)); with the default agent = 2 every user table
-    // lands on one agent and all unpins serialize. 3 agents split the user
-    // tables by oid parity across two agents -> concurrent unpin.
+    // agent=3 (not the default 2) splits tables by oid parity across agents, forcing concurrent unpin.
     config.disk.agent = 3;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -372,11 +345,8 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::concurrent_insert_scan_evict
     constexpr int batch_size = 100;
     static const database_name_t eviction_database_name = "evictiondb";
 
-    // Duplicate session ids would be fatal here: begin_transaction is
-    // idempotent per session, so two operations sharing an id share one
-    // transaction and the first commit erases it under the other. Serialize
-    // only session CONSTRUCTION — dispatch and engine-side execution stay
-    // fully concurrent, which is the pressure this case exists to apply.
+    // Serializes only session construction: duplicate ids would collide because begin_transaction is
+    // idempotent per session.
     std::mutex session_mutex;
     auto make_session = [&session_mutex]() {
         std::lock_guard<std::mutex> guard(session_mutex);
@@ -388,8 +358,7 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::concurrent_insert_scan_evict
             return "null cursor";
         }
         if (cursor->is_error()) {
-            // Spell out the error code: some failures (e.g. table_not_exists)
-            // arrive with an empty what.
+            // Some failures (e.g. table_not_exists) arrive with an empty what, so the code is spelled out too.
             const auto error = cursor->get_error();
             return "error cursor: code " + std::to_string(static_cast<int>(error.type)) + ", what: '" +
                    std::string(error.what.begin(), error.what.end()) + "'";
@@ -409,9 +378,7 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::concurrent_insert_scan_evict
             REQUIRE(cur->is_success());
         }
         for (size_t id = 0; id < num_collections; ++id) {
-            // Wide tables: every extra column adds a segment per row group, so a
-            // single scan produces a burst of back-to-back pin/unpin (and thus
-            // eviction-queue push) calls on the owning disk agent.
+            // Extra columns add a segment per row group, so a scan bursts pin/unpin calls per agent.
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
                                                "CREATE TABLE " + eviction_database_name + ".eviction_col_" +
@@ -443,8 +410,7 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::concurrent_insert_scan_evict
 
     INFO("preload: several row groups per collection, checkpointed");
     {
-        // Multiple row groups (row group = 1024 rows) per table make each later
-        // full scan a long burst of segment pin/unpin calls.
+        // Row group = 1024 rows, so several groups per table make each scan a long pin/unpin burst.
         std::array<std::string, num_collections> failures{};
         std::vector<std::thread> threads;
         threads.reserve(num_collections);
@@ -479,8 +445,6 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::concurrent_insert_scan_evict
             const std::string table = eviction_database_name + ".eviction_col_" + std::to_string(collection);
             for (int iter = 0; iter < num_iterations; ++iter) {
                 if (id < num_collections && iter % 10 == 0) {
-                    // One writer per collection keeps WAL auto-checkpoints
-                    // running on the disk threads during the storm.
                     auto failure = insert_batch(collection, preload_batches + iter / 10);
                     if (!failure.empty()) {
                         failures[id] = "iter " + std::to_string(iter) + " insert: " + failure;
@@ -526,21 +490,12 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::concurrent_insert_scan_evict
     }
 }
 
-// Teardown leak gate for the boost::lockfree freelist nodes (eviction_queue_t::q
-// and the four manager inbox_{128} queues). Construct an engine (disk on) so the
-// system-table buffer pools are instantiated at bootstrap, add a user table with
-// rows and scan it (exercising the eviction queue), then destroy at scope exit.
-//
-// On Linux ASAN+LeakSanitizer (the CI gate) a clean teardown must report ZERO
-// leaked blocks — a destroyed queue frees every freelist node, so any residual
-// means an owner survived teardown. On macOS LSan does not run, so this also
-// serves as an ASan use-after-free smoke test that exercises the scheduler_disk_
-// teardown ordering (Edit 3).
+// Linux ASAN+LSan (CI) must show zero leaked freelist nodes after teardown; on macOS LSan
+// doesn't run, so this also smoke-tests the scheduler_disk_ teardown ordering under ASan.
 TEST_CASE("integration::cpp::test_engine_lifecycle::construct_destroy_clean_teardown",
           "[engine-lifecycle][leak-repro]") {
-    auto config = test_create_config("/tmp/test_engine_lifecycle/teardown_leak");
+    auto config = test_create_config(integration_fixture_path("test_engine_lifecycle/teardown_leak"));
     test_clear_directory(config);
-    config.disk.on = true;
     components::compute::function_registry_t::reset_default();
 
     {
@@ -556,25 +511,17 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::construct_destroy_clean_tear
                                   "(1, 10), (1, 20), (2, 30), (2, 40), (2, 50);")
                     ->is_success());
         REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "SELECT g, v FROM leakreprodb.t;")->is_success());
-    } // engine destroyed here; a clean teardown must free every boost freelist node
+    }
 
     SUCCEED("engine constructed, populated, and destroyed without an ASan/LSan error");
 }
 
-// Stress variant of the teardown gate: repeatedly construct and destroy the
-// engine so any intermittent teardown-ordering leak or use-after-free is
-// amplified under ASAN+LeakSanitizer. Each cycle instantiates the system-table
-// buffer pools plus a user table (more boost::lockfree eviction queues + the
-// four manager inbox queues), then tears the whole graph down. If Edit 3's
-// implicit teardown were unsound, N cycles make a stray freelist node or a
-// dangling scheduler far more likely to surface than a single construct/destroy.
 TEST_CASE("integration::cpp::test_engine_lifecycle::repeated_construct_destroy_no_leak",
           "[engine-lifecycle][leak-repro]") {
     constexpr int kCycles = 12;
     for (int i = 0; i < kCycles; ++i) {
-        auto config = test_create_config("/tmp/test_engine_lifecycle/stress_" + std::to_string(i));
+        auto config = test_create_config(integration_fixture_path("test_engine_lifecycle/stress_" + std::to_string(i)));
         test_clear_directory(config);
-        config.disk.on = true;
         components::compute::function_registry_t::reset_default();
 
         auto inst = otterbrix::make_otterbrix(config);
@@ -585,28 +532,19 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::repeated_construct_destroy_n
         REQUIRE(
             dispatcher->execute_sql(otterbrix::session_id_t(), "INSERT INTO stressdb.t (g, v) VALUES (1, 10), (2, 20);")
                 ->is_success());
-        // inst destroyed at the end of the iteration.
     }
     SUCCEED("engine survived repeated construct/destroy cycles without an ASan/LSan error");
 }
 
 namespace {
 
-    // Records the order in which subobjects are destroyed. Each recorder appends
-    // its name to a shared log from its destructor, so the log ends up in
-    // reverse-construction (= reverse-declaration) order.
     struct destruction_order_recorder_t {
         std::vector<std::string>* log;
         std::string name;
         ~destruction_order_recorder_t() { log->push_back(name); }
     };
 
-    // Mirrors the data-member layout of base_otterbrix_t AFTER Edit 3: the three
-    // schedulers are declared BEFORE the managers, and manager_dispatcher_ is the
-    // first manager (so it is destroyed last among the managers). C++ destroys
-    // members in reverse declaration order, so this model makes the teardown
-    // ordering Edit 3 establishes observable and assertable. Kept in lockstep
-    // with integration/cpp/base_spaces.hpp:73-80.
+    // Mirrors base_otterbrix_t's member order; keep in lockstep with integration/cpp/base_spaces.hpp.
     struct base_spaces_layout_model_t {
         explicit base_spaces_layout_model_t(std::vector<std::string>* log)
             : scheduler_{log, "scheduler"}
@@ -628,15 +566,9 @@ namespace {
         destruction_order_recorder_t wrapper_dispatcher_;
     };
 
-} // namespace
+}
 
-// Proves the destruction-order invariant Edit 3 establishes (and that the
-// dropped Edit 2 is unnecessary): under implicit reverse-declaration
-// destruction, all three schedulers are destroyed AFTER every manager
-// (manager_disk_ holds a raw pointer to scheduler_disk_), and the dispatcher —
-// the cyclic-graph sink every manager holds an address to — is destroyed LAST
-// among the managers. This is the exact ordering guarantee that makes the
-// implicit teardown safe without an explicit ordered reset.
+// Proves reverse-declaration destruction alone keeps schedulers outliving managers, no ordered reset needed.
 TEST_CASE("integration::cpp::test_engine_lifecycle::teardown_order_schedulers_outlive_managers",
           "[engine-lifecycle][leak-repro]") {
     std::vector<std::string> order;

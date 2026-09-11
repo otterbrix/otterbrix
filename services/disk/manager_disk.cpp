@@ -18,12 +18,6 @@ namespace services::disk {
     using namespace core::filesystem;
     namespace catalog = components::catalog;
 
-    // ---- behavior/implements sync check ----
-    // Ensures behavior() handles every method registered in dispatch_traits.
-    // When adding a new method:
-    //   1. Add it to implements<> in manager_disk.hpp
-    //   2. Add a case to the behavior() switch
-    //   3. Add the corresponding msg_id to kBehaviorHandledIds below
     namespace {
         template<typename MethodList>
         struct behavior_expected_ids_t;
@@ -37,21 +31,17 @@ namespace services::disk {
         constexpr auto kImplementedIds = behavior_expected_ids_t<manager_disk_t::dispatch_traits::methods>::value;
 
         constexpr std::array kBehaviorHandledIds{
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::flush>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::checkpoint_all>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::vacuum_all>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::maybe_cleanup_many>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::create_storage>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::create_storage_with_columns>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::create_storage_disk>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::drop_storage_many>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_types>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_total_rows>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_scan>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_fetch_next_batch>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_close_cursor>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_reduce>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_fetch>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_scan_segment>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_append>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_update>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_delete_rows>,
@@ -72,10 +62,14 @@ namespace services::disk {
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::read_chunks_by_key>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::read_chunks_by_keys>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::compact_relkind_g_storage>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::drop_storage_column>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::rename_storage_column>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::on_horizon_advanced>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::mark_storage_dropped_many>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_dropped_committed>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_drop_aborted>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_open_scan_hold>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_compact_epoch>,
         };
 
         constexpr bool behavior_covers_all_implements() noexcept {
@@ -100,67 +94,59 @@ namespace services::disk {
                       "add a case to behavior() AND an entry to kBehaviorHandledIds");
     } // namespace
 
-    // ---- table_storage_t implementations ----
-
-    table_storage_t::table_storage_t(std::pmr::memory_resource* resource)
-        : mode_(storage_mode_t::IN_MEMORY)
-        , buffer_pool_(resource, uint64_t(1) << 32, false, uint64_t(1) << 24)
-        , buffer_manager_(resource, fs_, buffer_pool_)
-        , block_manager_(std::make_unique<components::table::storage::in_memory_block_manager_t>(
-              buffer_manager_,
-              components::table::storage::DEFAULT_BLOCK_ALLOC_SIZE))
-        , table_(std::make_unique<components::table::data_table_t>(
-              resource,
-              *block_manager_,
-              std::vector<components::table::column_definition_t>{})) {}
-
-    table_storage_t::table_storage_t(std::pmr::memory_resource* resource,
-                                     std::vector<components::table::column_definition_t> columns)
-        : mode_(storage_mode_t::IN_MEMORY)
-        , buffer_pool_(resource, uint64_t(1) << 32, false, uint64_t(1) << 24)
-        , buffer_manager_(resource, fs_, buffer_pool_)
-        , block_manager_(std::make_unique<components::table::storage::in_memory_block_manager_t>(
-              buffer_manager_,
-              components::table::storage::DEFAULT_BLOCK_ALLOC_SIZE))
-        , table_(std::make_unique<components::table::data_table_t>(resource, *block_manager_, std::move(columns))) {}
-
     table_storage_t::table_storage_t(std::pmr::memory_resource* resource,
                                      std::vector<components::table::column_definition_t> columns,
                                      const std::filesystem::path& otbx_path)
-        : mode_(storage_mode_t::DISK)
-        , buffer_pool_(resource, uint64_t(1) << 32, false, uint64_t(1) << 24)
-        , buffer_manager_(resource, fs_, buffer_pool_) {
+        : buffer_pool_(resource, uint64_t(1) << 32, false, uint64_t(1) << 24)
+        , buffer_manager_(resource, fs_, buffer_pool_)
+        , pending_released_blocks_(resource) {
         auto bm = std::make_unique<components::table::storage::single_file_block_manager_t>(buffer_manager_,
                                                                                             fs_,
                                                                                             otbx_path.string());
-        // create_new_database reports failure as io_error rather than throwing. This DISK ctor can run on
-        // the agent thread (via bootstrap_create_disk_inner_sync, noexcept), where a throw would
-        // std::terminate. Record the error and leave table_/block_manager_ null; the caller checks
-        // construction_failed().
         if (auto r = bm->create_new_database(); r.has_error()) {
-            construction_error_ = r.error();
+            // error_on, not a plain copy: a plain copy would leave the text on the wrong resource.
+            construction_error_ = core::error_on(resource, r.error());
             return;
         }
         block_manager_ = std::move(bm);
         table_ = std::make_unique<components::table::data_table_t>(resource, *block_manager_, std::move(columns));
     }
 
-    table_storage_t::table_storage_t(std::pmr::memory_resource* resource, const std::filesystem::path& otbx_path)
-        : mode_(storage_mode_t::DISK)
-        , buffer_pool_(resource, uint64_t(1) << 32, false, uint64_t(1) << 24)
-        , buffer_manager_(resource, fs_, buffer_pool_) {
+    table_storage_t::table_storage_t(std::pmr::memory_resource* resource,
+                                     const std::filesystem::path& otbx_path,
+                                     std::vector<components::table::column_definition_t> catalog_columns,
+                                     bool allow_schemaless)
+        : buffer_pool_(resource, uint64_t(1) << 32, false, uint64_t(1) << 24)
+        , buffer_manager_(resource, fs_, buffer_pool_)
+        , pending_released_blocks_(resource) {
         auto bm = std::make_unique<components::table::storage::single_file_block_manager_t>(buffer_manager_,
                                                                                             fs_,
                                                                                             otbx_path.string());
-        // load_existing_database + load_from_disk report io_error / data_corruption rather than throwing.
-        // This DISK ctor can run on the agent thread (bootstrap_disk_inner_sync is noexcept), where a throw
-        // would std::terminate. Record the error and leave table_/block_manager_ null; the caller checks
-        // construction_failed() and maps it onto .prev corrupt-recovery.
         if (auto r = bm->load_existing_database(); r.has_error()) {
-            construction_error_ = r.error();
+            construction_error_ = core::error_on(resource, r.error());
             return;
         }
         block_manager_ = std::move(bm);
+
+        // INVALID_INDEX means the file is provably never checkpointed; feeding it to the metadata
+        // reader would misread that as a read-past-end-of-chain corruption.
+        if (block_manager_->meta_block() == components::table::storage::INVALID_INDEX) {
+            if (catalog_columns.empty() && !allow_schemaless) {
+                construction_error_ = core::error_t(
+                    core::error_code_t::data_corruption,
+                    std::pmr::string{otbx_path.string() +
+                                         " has no checkpointed content (never checkpointed — legal), but the "
+                                         "catalog supplies no columns for it; refusing to fabricate a schema-less "
+                                         "table (the caller must defer the load until the catalog knows the table)",
+                                     resource});
+                return;
+            }
+            never_checkpointed_ = true;
+            table_ = std::make_unique<components::table::data_table_t>(resource,
+                                                                       *block_manager_,
+                                                                       std::move(catalog_columns));
+            return;
+        }
 
         components::table::storage::metadata_manager_t meta_mgr(*block_manager_);
         auto meta_block = block_manager_->meta_block();
@@ -169,58 +155,155 @@ namespace services::disk {
         components::table::storage::metadata_reader_t reader(meta_mgr, meta_ptr);
         auto loaded = components::table::data_table_t::load_from_disk(resource, *block_manager_, reader);
         if (loaded.has_error()) {
-            construction_error_ = loaded.error();
+            construction_error_ = core::error_on(resource, loaded.error());
             return;
         }
         table_ = std::move(loaded.value());
+#ifdef DEV_MODE
+        capture_clean_fingerprint();
+#endif
+    }
+
+#ifdef DEV_MODE
+    // Skips in-place UPDATE by design (data_table_t::update sets the modified flag itself); this net
+    // only catches a future mutating method that forgets to.
+    void table_storage_t::capture_clean_fingerprint() noexcept {
+        if (!table_) {
+            clean_fingerprint_ = clean_fingerprint_t{};
+            return;
+        }
+        auto collection = table_->row_group();
+        clean_fingerprint_.total_rows = collection->total_rows();
+        clean_fingerprint_.committed_rows = collection->committed_row_count();
+        clean_fingerprint_.column_count = table_->column_count();
+    }
+#endif
+
+    bool table_storage_t::needs_checkpoint() const noexcept {
+        if (!table_) {
+            return false;
+        }
+        if (!pending_released_blocks_.empty()) {
+            return true;
+        }
+        if (table_->modified_since_checkpoint()) {
+            return true;
+        }
+#ifdef DEV_MODE
+        auto collection = table_->row_group();
+        assert(collection->total_rows() == clean_fingerprint_.total_rows &&
+               "clean table holds a different number of rows than the durable root was written from — a "
+               "mutation path forgot to mark the table modified");
+        assert(collection->committed_row_count() == clean_fingerprint_.committed_rows &&
+               "clean table holds a different number of live rows than the durable root was written from — a "
+               "mutation path forgot to mark the table modified");
+        assert(table_->column_count() == clean_fingerprint_.column_count &&
+               "clean table has a different column count than the durable root was written from — a "
+               "mutation path forgot to mark the table modified");
+#endif
+        return false;
+    }
+
+    void table_storage_t::advance_wal_id_without_rewrite(wal::id_t new_wal_id) noexcept {
+        prev_checkpoint_wal_id_ = checkpoint_wal_id_;
+        checkpoint_wal_id_ = new_wal_id;
+        checkpoint_wal_id_known_ = true;
+    }
+
+    bool table_storage_t::has_pending_update_overlay() {
+        if (!table_) {
+            return false;
+        }
+        for (const auto& info : table_->get_column_segment_info()) {
+            if (info.has_updates) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool table_storage_t::has_versions_above(uint64_t watermark) const {
+        if (!table_) {
+            return false;
+        }
+        return table_->row_group()->has_version_above(watermark);
+    }
+
+    bool table_storage_t::storage_degraded() const noexcept {
+        if (!block_manager_) {
+            return false;
+        }
+        return block_manager_->degraded();
     }
 
     core::result_wrapper_t<bool> table_storage_t::checkpoint() {
-        if (mode_ != storage_mode_t::DISK) {
-            return true;
+        auto* disk_bm_check =
+            static_cast<components::table::storage::single_file_block_manager_t*>(block_manager_.get());
+        if (disk_bm_check->has_durability_error()) {
+            disk_bm_check->roll_back_uncommitted_round();
+            return core::error_t(disk_bm_check->durability_error());
+        }
+        if (disk_bm_check->has_allocation_error()) {
+            disk_bm_check->roll_back_uncommitted_round();
+            return core::error_t(disk_bm_check->allocation_error());
         }
 
         components::table::storage::metadata_manager_t meta_mgr(*block_manager_);
         components::table::storage::metadata_writer_t writer(meta_mgr);
-        // data_table_t::checkpoint reports out_of_memory on a column flush pin failure; abort the
-        // checkpoint BEFORE the header swap so a partial write never becomes the durable state, and
-        // surface the error.
+        // A failure before write_header leaves the durable root unchanged; roll back this round's own
+        // allocations rather than strand them (measured: ~655 KB/round leaked on a 7.8 MB table).
         auto cp_r = table_->checkpoint(writer);
         if (cp_r.has_error()) {
+            disk_bm_check->roll_back_uncommitted_round();
             return cp_r;
         }
-        writer.flush();
+        if (auto flush_r = writer.flush(); flush_r.has_error()) {
+            disk_bm_check->roll_back_uncommitted_round();
+            return flush_r;
+        }
 
         auto* disk_bm = static_cast<components::table::storage::single_file_block_manager_t*>(block_manager_.get());
-        // Set meta_block_ so write_header() persists it
         disk_bm->set_meta_block(writer.get_block_pointer().block_pointer);
-        // Serialize free list to metadata blocks
-        auto free_list_ptr = disk_bm->serialize_free_list();
-        // W-TORN spec: durability of metadata + data blocks BEFORE header swap.
-        // 1st fsync: ensure data/metadata blocks are on disk; without this, a crash after the
-        // header write but before fsync of data could leave a header pointing to non-durable blocks.
-        disk_bm->file_sync();
-        components::table::storage::database_header_t header;
+        // Must run exactly here, between the new root's pointer stream and the free-list serialize.
+        release_dropped_column_blocks();
+        auto free_list_r = disk_bm->serialize_free_list();
+        if (free_list_r.has_error()) {
+            disk_bm->roll_back_uncommitted_round();
+            return free_list_r.convert_error<bool>();
+        }
+        // W-TORN: this fsync makes metadata+data durable BEFORE the header swap, or a crash could
+        // leave the header pointing at non-durable blocks.
+        if (auto barrier_r = disk_bm->file_sync(); barrier_r.has_error()) {
+            disk_bm->roll_back_uncommitted_round();
+            return barrier_r;
+        }
+        components::table::storage::database_header_t header{};
         header.initialize();
-        header.free_list = free_list_ptr.block_pointer;
-        disk_bm->write_header(header);
-        // 2nd fsync: commit the new header — this is the atomic point of the checkpoint.
-        disk_bm->file_sync();
+        header.free_list = free_list_r.value().block_pointer;
+        // The atomic point: write_header writes+fsyncs the slot in one call -- its fsync IS the commit.
+        auto header_r = disk_bm->write_header(header);
+        if (header_r.has_error()) {
+            return header_r;
+        }
+        // Only here does the new root reach the device; every failure above must leave the entry dirty.
+        table_->clear_modified_since_checkpoint();
+#ifdef DEV_MODE
+        capture_clean_fingerprint();
+#endif
         return true;
     }
 
     core::result_wrapper_t<bool> table_storage_t::checkpoint(wal::id_t new_wal_id) {
-        if (mode_ != storage_mode_t::DISK) {
-            return true;
-        }
-        // First persist the data; on a checkpoint() error the wal_id fields stay unchanged and the
-        // error is surfaced so the caller skips this entry's seal.
         auto cp_r = checkpoint();
         if (cp_r.has_error()) {
+            // Retried next round, but must NOT compact first -- see last_checkpoint_failed().
+            last_checkpoint_failed_ = true;
             return cp_r;
         }
+        last_checkpoint_failed_ = false;
         prev_checkpoint_wal_id_ = checkpoint_wal_id_;
         checkpoint_wal_id_ = new_wal_id;
+        checkpoint_wal_id_known_ = true;
         return true;
     }
 
@@ -230,11 +313,6 @@ namespace services::disk {
     }
 
     bool table_storage_t::drop_column(const std::string& attname) {
-        // Physical column compaction. DISK is out of scope (would need segment
-        // rewrites + checkpoint coordination); IN_MEMORY only.
-        if (mode_ != storage_mode_t::IN_MEMORY) {
-            return false;
-        }
         if (!table_) {
             return false;
         }
@@ -251,14 +329,67 @@ namespace services::disk {
         if (!found) {
             return false;
         }
-        // The data_table_t(parent, removed_column) constructor performs the
-        // rebuild: column_definitions_ minus idx, row_groups_ rebuilt via
-        // collection_t::remove_column (per-segment column drop). All physical
-        // storage for the dropped column is released when the previous
-        // table_ unique_ptr goes away.
+        // Names the blocks before the rebuild drops the only record of them (release happens later).
+        if (block_manager_) {
+            table_->collect_column_disk_block_ids(idx, pending_released_blocks_);
+        }
         auto new_table = std::make_unique<components::table::data_table_t>(*table_, idx);
         table_ = std::move(new_table);
         return true;
+    }
+
+    core::result_wrapper_t<bool> table_storage_t::rename_column(const std::string& old_attname,
+                                                                const std::string& new_attname) {
+        if (!table_) {
+            // The caller's catalog rename is already committed, so this can't just answer "nothing to do".
+            std::pmr::string msg{"table_storage_t::rename_column: no loaded table for column '",
+                                 pending_released_blocks_.get_allocator().resource()};
+            msg += std::pmr::string{old_attname, pending_released_blocks_.get_allocator().resource()};
+            msg += std::pmr::string{"'", pending_released_blocks_.get_allocator().resource()};
+            return core::error_t{core::error_code_t::other_error, std::move(msg)};
+        }
+        return table_->rename_column(old_attname, new_attname);
+    }
+
+    // Deferred, not immediate: freeing a still-referenced block is worse than leaking it. Safe only
+    // once the drop's superseded collection is gone (row_group() hands out counted copies BY VALUE).
+    // Measured with the naming removed: 15 blocks (~3.75 MB on a 10k-row table) orphaned durably.
+    void table_storage_t::release_dropped_column_blocks() {
+        if (pending_released_blocks_.empty() || !block_manager_ || !table_) {
+            return;
+        }
+        auto& block_manager = *block_manager_;
+        // Same id can repeat (many segments pack into one block); dedup before the loop below.
+        std::sort(pending_released_blocks_.begin(), pending_released_blocks_.end());
+        pending_released_blocks_.erase(
+            std::unique(pending_released_blocks_.begin(), pending_released_blocks_.end()),
+            pending_released_blocks_.end());
+
+        // NOT held across the frees below -- a holder that outlives them keeps handles alive past reclaim.
+        std::pmr::vector<uint64_t> live(pending_released_blocks_.get_allocator().resource());
+        {
+            auto collection = table_->row_group();
+            collection->collect_disk_block_ids(live);
+        }
+        std::sort(live.begin(), live.end());
+        live.erase(std::unique(live.begin(), live.end()), live.end());
+
+        for (uint64_t block_id : pending_released_blocks_) {
+            if (block_id >= block_manager.total_blocks()) {
+                block_manager.mark_as_free(block_id); // refuses the id and latches the corruption
+                continue;
+            }
+            if (std::binary_search(live.begin(), live.end(), block_id)) {
+                continue; // still carries a surviving column's segment (block packing)
+            }
+            if (block_manager.registry_alive(block_id)) {
+                continue; // somebody still holds a handle for it
+            }
+            block_manager.mark_as_free(block_id);
+            // ABA break: unregister only after the free, so no expired slot can be revived.
+            block_manager.unregister_block(block_id);
+        }
+        pending_released_blocks_.clear();
     }
 
     manager_disk_t::manager_disk_t(std::pmr::memory_resource* resource,
@@ -277,9 +408,7 @@ namespace services::disk {
             create_directories(config_.path);
             create_agent(config.agent);
         }
-        // This thread OWNS all message processing. Senders only push into inbox_
-        // (lock-free) + notify pump_cv_; the loop-local in_flight list is private
-        // to this thread, so the three phases below run lock-free.
+        // This thread owns all message processing; senders only push into inbox_ and notify pump_cv_.
         loop_thread_ = std::thread([this] {
             // this->resource(): the ctor parameter `resource` shadows the member fn.
             std::pmr::list<in_flight_entry_t> in_flight(this->resource());
@@ -292,10 +421,7 @@ namespace services::disk {
                 bool progress = true;
                 while (progress) {
                     progress = false;
-                    // (a) Create a behavior for the first slot that still needs one.
-                    //     pending_msg STAYS in the slot: the coroutine holds a raw
-                    //     pointer to the message across suspensions, so the message
-                    //     must outlive the behavior. "needs one" marker = handle null.
+                    // pending_msg stays in the slot: the coroutine holds a raw pointer to it across suspensions.
                     for (auto& e : in_flight) {
                         if (e.pending_msg && !e.behavior) {
                             e.behavior = behavior(e.pending_msg.get());
@@ -306,7 +432,6 @@ namespace services::disk {
                     if (progress) {
                         continue;
                     }
-                    // (b) Resume one ready awaited continuation, if any.
                     {
                         actor_zeta::detail::coroutine_handle<> cont{};
                         for (auto& e : in_flight) {
@@ -326,8 +451,6 @@ namespace services::disk {
                             continue;
                         }
                     }
-                    // (c) Erase one done slot ("done" = handle non-null AND completed).
-                    //     behavior_t + message_ptr destruct on this thread.
                     for (auto it = in_flight.begin(); it != in_flight.end(); ++it) {
                         if (it->behavior && it->behavior.done()) {
                             in_flight.erase(it);
@@ -337,20 +460,12 @@ namespace services::disk {
                     }
                 }
                 std::unique_lock<std::mutex> lk(mutex_);
-                // A suspended coroutine's future is completed on ANOTHER thread and notifies
-                // nobody — pump_cv_ is signalled from enqueue_impl alone — so readiness is
-                // discovered by this wait TIMING OUT: while work is in flight that expiry IS the
-                // per-hop latency, and a statement crosses ~20 hops. Idle keeps the long tick:
-                // there only a new message can arrive, and that does notify.
+                // In flight this timeout IS the per-hop latency (a statement crosses ~20 hops), so it's short.
                 if (inbox_.empty())
                     pump_cv_.wait_for(lk,
                                       in_flight.empty() ? std::chrono::microseconds(100)
                                                         : std::chrono::microseconds(5));
-                // lock-free inbox trade: a push+notify may slip between empty() and
-                // wait_for — bounded by the wait timeout (staleness, not loss).
             }
-            // in_flight destructs on the loop thread — safe, no other thread ever
-            // touches the in-flight state.
         });
         trace(log_, "manager_disk finish");
     }
@@ -361,8 +476,6 @@ namespace services::disk {
         if (loop_thread_.joinable()) {
             loop_thread_.join();
         }
-        // Drain any messages delivered after the loop stopped: re-wrap each raw
-        // pointer into a message_ptr temporary so it is destroyed (not leaked).
         actor_zeta::mailbox::message* raw = nullptr;
         while (inbox_.pop(raw)) {
             actor_zeta::mailbox::message_ptr drained{raw};
@@ -370,21 +483,23 @@ namespace services::disk {
         trace(log_, "delete manager_disk_t");
     }
 
-    // Senders only deliver into inbox_ and wake the loop; loop_thread_ does all
-    // processing (see ctor).
     std::pair<bool, actor_zeta::detail::enqueue_result>
     manager_disk_t::enqueue_impl(actor_zeta::mailbox::message_ptr msg) {
-        inbox_.push(msg.release());
+        // push refuses only under real memory exhaustion; reclaim rather than leak and hang the sender.
+        auto* raw = msg.release();
+        if (!inbox_.push(raw)) {
+            actor_zeta::mailbox::message_ptr reclaimed{raw};
+            error(log_,
+                  "manager_disk_t::enqueue_impl: inbox push refused (allocation failure) — the message is "
+                  "dropped and its future completes as abandoned");
+            return {false, actor_zeta::detail::enqueue_result::queue_closed};
+        }
         pump_cv_.notify_one();
         return {false, actor_zeta::detail::enqueue_result::success};
     }
 
     actor_zeta::behavior_t manager_disk_t::behavior(actor_zeta::mailbox::message* msg) {
         switch (msg->command()) {
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::flush>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::flush, msg);
-                break;
-            }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::checkpoint_all>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::checkpoint_all, msg);
                 break;
@@ -397,15 +512,6 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::maybe_cleanup_many, msg);
                 break;
             }
-            // Storage management
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::create_storage>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::create_storage, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::create_storage_with_columns>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::create_storage_with_columns, msg);
-                break;
-            }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::create_storage_disk>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::create_storage_disk, msg);
                 break;
@@ -414,7 +520,6 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::drop_storage_many, msg);
                 break;
             }
-            // Storage queries
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_types>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::storage_types, msg);
                 break;
@@ -423,13 +528,20 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::storage_total_rows, msg);
                 break;
             }
-            // Storage data operations
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_scan>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_scan, msg);
-                break;
-            }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_fetch_next_batch>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::storage_fetch_next_batch, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_close_cursor>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_close_cursor, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_open_scan_hold>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_open_scan_hold, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_compact_epoch>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_compact_epoch, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_reduce>: {
@@ -438,10 +550,6 @@ namespace services::disk {
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_fetch>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::storage_fetch, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_scan_segment>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_scan_segment, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_append>: {
@@ -456,7 +564,6 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::storage_delete_rows, msg);
                 break;
             }
-            // MVCC commit/revert
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_publish_commits>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::storage_publish_commits, msg);
                 break;
@@ -473,7 +580,6 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::storage_revert_deletes, msg);
                 break;
             }
-            // resolve + invalidation pull
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::resolve_namespace>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::resolve_namespace, msg);
                 break;
@@ -526,6 +632,14 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::compact_relkind_g_storage, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::drop_storage_column>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::drop_storage_column, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::rename_storage_column>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::rename_storage_column, msg);
+                break;
+            }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::on_horizon_advanced>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::on_horizon_advanced, msg);
                 break;
@@ -547,6 +661,8 @@ namespace services::disk {
         }
     }
 
+    // Reached only from the dispatcher's horizon sweep, which does not route through the pipeline:
+    // the DROP it reclaims already did, and the horizon keeps this off files a snapshot may read.
     manager_disk_t::unique_future<void> manager_disk_t::on_horizon_advanced(uint64_t new_horizon) {
         trace(log_, "manager_disk::on_horizon_advanced , horizon : {}", new_horizon);
 
@@ -569,11 +685,7 @@ namespace services::disk {
     }
 
     void manager_disk_t::set_manager_dispatcher_sync(actor_zeta::address_t address) {
-        // Bootstrap-only (pre-scheduler-start), single-threaded — no locking.
-        manager_dispatcher_ = address;
-
-        // Fan the address (a mailbox handle, safe to copy) to every agent so each
-        // on_horizon_advanced_inner can ack on_subscriber_empty(DISK_KIND) itself.
+        // Bootstrap-only; the manager keeps no copy since only the agents send to the dispatcher.
         for (auto& agent_ptr : agents_) {
             agent_ptr->set_manager_dispatcher_sync(address);
         }
@@ -583,9 +695,7 @@ namespace services::disk {
                                                        uint64_t dropped_at_commit_id,
                                                        std::filesystem::path path,
                                                        std::pmr::vector<std::filesystem::path> sidecar_paths) {
-        // Bootstrap-only (base_spaces catalog scan rebuild); runtime DROP uses the
-        // mark_storage_dropped_many mailbox handler below. Forwards an independent
-        // deep-copy of path + sidecars into the owning agent's slice.
+        // Bootstrap-only (base_spaces catalog rebuild); runtime DROP uses mark_storage_dropped_many below.
         if (!agents_.empty()) {
             const auto idx = pool_idx_for_oid(oid, agents_.size());
             std::pmr::vector<std::filesystem::path> agent_sidecars{resource()};
@@ -604,17 +714,7 @@ namespace services::disk {
     manager_disk_t::mark_storage_dropped_many(session_id_t /*session*/,
                                               std::pmr::vector<components::catalog::oid_t> table_oids,
                                               uint64_t dropped_at_commit_id) {
-        // Partition oids per owning agent (pool_idx_for_oid), then fan out one
-        // mark_storage_dropped_many_inner per agent in PARALLEL (send all → await
-        // all) — N per-oid singular marks would cost N round-trips; here they cost
-        // one (at most num_agents parallel sends). The owning agent derives each
-        // .otbx path + sidecars from its OWN still-live slice and records the GC
-        // entry in mark_storage_dropped_many_inner — the manager no longer borrows
-        // the agent's storage_entry across the actor boundary. Every oid in one
-        // cascade shares the SAME dropped_at_commit_id (txn_id upper bound). Awaiting
-        // all keeps this handler ordered w.r.t. operator_dynamic_cascade_delete's
-        // subsequent drop_storage_many / cascade sends. Same partition-by-agent shape
-        // as drop_storage_many.
+        // Each agent derives its own path, so the manager never borrows agent state across the boundary.
         trace(log_,
               "manager_disk_t::mark_storage_dropped_many , oids : {} , commit_id : {}",
               table_oids.size(),
@@ -658,11 +758,7 @@ namespace services::disk {
 
     manager_disk_t::unique_future<void>
     manager_disk_t::storage_dropped_committed(session_id_t /*session*/, uint64_t txn_id, uint64_t commit_id) {
-        // DROP-GC value-space remap. We do not know which agent owns the dropped
-        // entry's oid here (the GC entry is keyed by oid, but the caller only has
-        // the txn_id placeholder), so fan out to EVERY agent and let each rewrite
-        // any of its own dropped_storages_ entries whose dropped_at_commit_id still
-        // equals the TXN-ID placeholder. Mirrors on_horizon_advanced's broadcast.
+        // Only the txn_id placeholder is known, not which agent owns the oid, so fan out to all.
         trace(log_, "manager_disk::storage_dropped_committed , txn_id : {} , commit_id : {}", txn_id, commit_id);
 
         std::pmr::vector<unique_future<void>> agent_futures{resource()};
@@ -685,12 +781,7 @@ namespace services::disk {
 
     manager_disk_t::unique_future<void> manager_disk_t::storage_drop_aborted(session_id_t /*session*/,
                                                                              uint64_t txn_id) {
-        // DROP-rollback un-mark — the abort mirror of storage_dropped_committed. The GC
-        // entry is keyed by oid but the caller only has the txn_id placeholder, so fan
-        // out to EVERY agent and let each ERASE any of its own dropped_storages_ entries
-        // whose dropped_at_commit_id still equals the TXN-ID placeholder. Erasing (not
-        // remapping) un-marks the DROP so the still-live .otbx is never reclaimed.
-        // Mirrors on_horizon_advanced's / storage_dropped_committed's broadcast.
+        // Abort mirror of storage_dropped_committed: ERASES (not remaps) so the .otbx is never reclaimed.
         trace(log_, "manager_disk::storage_drop_aborted , txn_id : {}", txn_id);
 
         std::pmr::vector<unique_future<void>> agent_futures{resource()};

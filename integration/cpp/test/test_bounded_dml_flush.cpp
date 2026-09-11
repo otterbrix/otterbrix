@@ -1,25 +1,8 @@
-// ============================================================================
-// Bounded / spillable DML sink — MID-PUMP FLUSH verification.
-//
-// The bounded DML sinks (insert / update / delete) flush INCREMENTALLY mid-pump
-// whenever a per-op buffered_rows() >= config.execution.dml_flush_row_threshold.
-// The default threshold is 0 == DISABLED (a single post-pump flush), so NO other
-// test exercises the incremental path. These tests
-// set a SMALL threshold on a dedicated spaces instance and drive multi-batch DML
-// so the sink flushes MORE THAN ONCE, then assert (via the DEV_MODE
-// executor::dml_flush_count() counter) that the mid-flush path actually ran AND
-// that results stay correct + atomic across flush boundaries.
-//
-// WHAT THESE TESTS ASSERT:
-//   (1) INSERT...SELECT over a multi-batch scan flushes >1 time and every row
-//       lands with values intact.
-//   (2) A multi-batch UPDATE (with and without RETURNING) flushes >1 time and the
-//       affected count / returned rows / persisted values are correct.
-//   (3) ATOMICITY: a statement that ERRORS after one or more mid-flushes reverts
-//       ALL rows — none are visible (the mid-flushed physical appends are lifted).
-// ============================================================================
+// Bounded DML sinks flush incrementally once buffered_rows() >= dml_flush_row_threshold; the default (0) disables
+// this, so no other test exercises the incremental path -- these do, via the DEV_MODE dml_flush_count() counter.
 
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <services/collection/executor.hpp>
 #include <sstream>
@@ -29,17 +12,13 @@ using namespace components::cursor;
 using namespace test_helpers;
 
 namespace {
-    // >> DEFAULT_VECTOR_CAPACITY (1024) so a SELECT scan emits several batches:
-    // with a small flush threshold the DML sink must flush once per batch, i.e.
-    // MANY times across the pump — the property under test.
+    // >> DEFAULT_VECTOR_CAPACITY (1024) so the scan emits several batches, each tripping a flush at the threshold.
     constexpr unsigned kRowCount = 3000;
 
-    // Small enough that any 1024-row scan batch immediately trips the mid-pump
-    // gate: one mid-flush per scan batch => strictly more than one flush.
+    // Small enough that any 1024-row batch trips the mid-pump gate at least once.
     constexpr uint64_t kFlushThreshold = 512;
 
-    // Seed `db.tbl(id bigint, grp int, val bigint)` with kRowCount rows via a
-    // single multi-row VALUES insert (id=i, grp=i%8, val=i*2).
+    // Seeds kRowCount rows via one multi-row VALUES insert: id=i, grp=i%8, val=i*2.
     void seed_source(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& fq_table) {
         auto cur = seed_rows(dispatcher, fq_table, "id, grp, val", kRowCount, [](unsigned i) {
             std::stringstream s;
@@ -52,11 +31,8 @@ namespace {
     }
 } // namespace
 
-// ---------------------------------------------------------------------------
-// (1) INSERT...SELECT mid-flushes >1 time and every row lands correctly.
-// ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::bounded_dml_flush::insert_select_mid_flushes") {
-    auto config = make_test_config("/tmp/test_bounded_dml_flush/insert_select");
+    auto config = make_test_config(integration_fixture_path("test_bounded_dml_flush/insert_select"));
     config.execution.dml_flush_row_threshold = kFlushThreshold;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -66,8 +42,6 @@ TEST_CASE("integration::cpp::bounded_dml_flush::insert_select_mid_flushes") {
     REQUIRE(exec(dispatcher, "CREATE TABLE FlushDb.dst (id bigint, grp int, val bigint);")->is_success());
     seed_source(dispatcher, "FlushDb.src");
 
-    // Drive the streaming INSERT...SELECT and measure the mid-flush delta ACROSS
-    // just this statement.
     const auto flushes_before = services::collection::executor::dml_flush_count();
     {
         auto cur = exec(dispatcher, "INSERT INTO FlushDb.dst (id, grp, val) SELECT id, grp, val FROM FlushDb.src;");
@@ -77,12 +51,9 @@ TEST_CASE("integration::cpp::bounded_dml_flush::insert_select_mid_flushes") {
     }
     const auto flushes_after = services::collection::executor::dml_flush_count();
 
-    // The mid-flush path RAN more than once (a scan of 3000 rows over 1024-row
-    // batches, threshold 512 => one mid-flush per batch). With threshold==0 this
-    // delta would be 0 (single post-pump flush) — proving the incremental path.
+    // With threshold==0 this delta would be 0 (a single post-pump flush); >1 here proves the incremental path ran.
     REQUIRE(flushes_after - flushes_before > 1);
 
-    // CORRECTNESS: every source row landed with values intact across the flushes.
     {
         auto cur = exec(dispatcher, "SELECT COUNT(id) AS c FROM FlushDb.dst;");
         REQUIRE(cur->is_success());
@@ -101,12 +72,8 @@ TEST_CASE("integration::cpp::bounded_dml_flush::insert_select_mid_flushes") {
     }
 }
 
-// ---------------------------------------------------------------------------
-// (2) Multi-batch UPDATE — WITHOUT and WITH RETURNING — is correct across the
-//     mid-flush boundaries (affected count, returned rows, persisted values).
-// ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::bounded_dml_flush::update_mid_flushes") {
-    auto config = make_test_config("/tmp/test_bounded_dml_flush/update");
+    auto config = make_test_config(integration_fixture_path("test_bounded_dml_flush/update"));
     config.execution.dml_flush_row_threshold = kFlushThreshold;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -115,19 +82,16 @@ TEST_CASE("integration::cpp::bounded_dml_flush::update_mid_flushes") {
     REQUIRE(exec(dispatcher, "CREATE TABLE FlushDb.t (id bigint, grp int, val bigint);")->is_success());
     seed_source(dispatcher, "FlushDb.t");
 
-    // UPDATE WITHOUT RETURNING over the full multi-batch scan: SET val = val + 1.
     const auto flushes_before = services::collection::executor::dml_flush_count();
     {
         auto cur = exec(dispatcher, "UPDATE FlushDb.t SET val = val + 1;");
         INFO("UPDATE error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
-        // Affected-row count: every row matched.
         REQUIRE(cur->size() == kRowCount);
     }
     const auto flushes_after = services::collection::executor::dml_flush_count();
     REQUIRE(flushes_after - flushes_before > 1);
 
-    // Every row got exactly +1: SUM(val) == original + kRowCount.
     {
         int64_t expected_sum = 0;
         for (unsigned i = 0; i < kRowCount; ++i) {
@@ -137,16 +101,12 @@ TEST_CASE("integration::cpp::bounded_dml_flush::update_mid_flushes") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->value(0, 0).value<int64_t>() == expected_sum);
     }
-    // Row count unchanged (UPDATE, not INSERT).
     {
         auto cur = exec(dispatcher, "SELECT COUNT(id) AS c FROM FlushDb.t;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->value(0, 0).value<uint64_t>() == static_cast<uint64_t>(kRowCount));
     }
 
-    // UPDATE WITH RETURNING over the full multi-batch scan: SET val = val + 10
-    // RETURNING id. The returned-row COUNT must equal the matched-row count, and
-    // the mid-flush path must have run again for THIS statement.
     const auto flushes_before2 = services::collection::executor::dml_flush_count();
     {
         auto cur = exec(dispatcher, "UPDATE FlushDb.t SET val = val + 10 RETURNING id;");
@@ -158,7 +118,6 @@ TEST_CASE("integration::cpp::bounded_dml_flush::update_mid_flushes") {
     const auto flushes_after2 = services::collection::executor::dml_flush_count();
     REQUIRE(flushes_after2 - flushes_before2 > 1);
 
-    // Persisted values reflect BOTH updates (+1 then +10 => +11 total).
     {
         int64_t expected_sum = 0;
         for (unsigned i = 0; i < kRowCount; ++i) {
@@ -170,13 +129,10 @@ TEST_CASE("integration::cpp::bounded_dml_flush::update_mid_flushes") {
     }
 }
 
-// ---------------------------------------------------------------------------
-// (3) ATOMICITY: a UNIQUE-constraint violation on a row that scans AFTER an
-//     already-flushed batch must revert EVERY mid-flushed append. None visible.
-// ---------------------------------------------------------------------------
+// A UNIQUE violation on a row scanned AFTER an already-flushed batch must revert every mid-flushed append.
 TEST_CASE("integration::cpp::bounded_dml_flush::error_after_mid_flush_reverts_all") {
     // disk ON: constraint enforcement + revert path exercised on disk.
-    auto config = make_test_config("/tmp/test_bounded_dml_flush/atomicity", /*disk_on=*/true);
+    auto config = make_test_config(integration_fixture_path("test_bounded_dml_flush/atomicity"));
     config.execution.dml_flush_row_threshold = kFlushThreshold;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -185,12 +141,9 @@ TEST_CASE("integration::cpp::bounded_dml_flush::error_after_mid_flush_reverts_al
     REQUIRE(exec(dispatcher, "CREATE TABLE FlushDb.src (id bigint, grp int, val bigint);")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE FlushDb.acc (id bigint, grp int, val bigint);")->is_success());
     REQUIRE(exec(dispatcher, "ALTER TABLE FlushDb.acc ADD CONSTRAINT uq_acc_id UNIQUE (id);")->is_success());
-    seed_source(dispatcher, "FlushDb.src"); // ids 0..kRowCount-1
+    seed_source(dispatcher, "FlushDb.src");
 
-    // Pre-seed acc with a SINGLE row whose id collides with a MID-RANGE source row
-    // (id = kRowCount/2). The INSERT...SELECT scans ids 0..kRowCount-1: the first
-    // batches (ids 0..~1023) flush cleanly BEFORE the colliding id is reached, so
-    // the collision surfaces only at the constraint finalize — after >=1 mid-flush.
+    // The collision id sits mid-range so several batches flush cleanly before the scan reaches it and fails.
     const int64_t collide_id = static_cast<int64_t>(kRowCount / 2);
     {
         std::stringstream q;
@@ -203,25 +156,19 @@ TEST_CASE("integration::cpp::bounded_dml_flush::error_after_mid_flush_reverts_al
         REQUIRE(cur->value(0, 0).value<uint64_t>() == 1u);
     }
 
-    // The failing statement: mid-flushes clean batches, then the UNIQUE check
-    // rejects the whole statement at finalize.
     const auto flushes_before = services::collection::executor::dml_flush_count();
     {
         auto cur = exec(dispatcher, "INSERT INTO FlushDb.acc (id, grp, val) SELECT id, grp, val FROM FlushDb.src;");
         REQUIRE(cur->is_error());
     }
     const auto flushes_after = services::collection::executor::dml_flush_count();
-    // The mid-flush path RAN before the error surfaced (>=1 clean flush).
     REQUIRE(flushes_after - flushes_before >= 1);
 
-    // ATOMICITY: none of the mid-flushed rows are visible — acc still holds only
-    // the single pre-seeded row.
     {
         auto cur = exec(dispatcher, "SELECT COUNT(id) AS c FROM FlushDb.acc;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->value(0, 0).value<uint64_t>() == 1u);
     }
-    // And the surviving row is the original seed, unchanged.
     {
         std::stringstream q;
         q << "SELECT val FROM FlushDb.acc WHERE id = " << collide_id << ";";
@@ -232,14 +179,10 @@ TEST_CASE("integration::cpp::bounded_dml_flush::error_after_mid_flush_reverts_al
     }
 }
 
-// ---------------------------------------------------------------------------
-// (4) A PRODUCING sourceless bottom (recursive-CTE fixpoint) feeding the INSERT
-//     sink pumps through the pumpable-ancestors branch — the mid-flush gate must
-//     fire there exactly as it does on the scan-source pump, or the sink buffers
-//     the ENTIRE produced row set and the configured memory bound is a no-op.
-// ---------------------------------------------------------------------------
+// A recursive-CTE fixpoint (a sourceless bottom) feeding INSERT must trip the same mid-flush gate as a scan source,
+// or the sink buffers the whole produced set and the configured memory bound becomes a no-op.
 TEST_CASE("integration::cpp::bounded_dml_flush::insert_from_recursive_cte_mid_flushes") {
-    auto config = make_test_config("/tmp/test_bounded_dml_flush/recursive_cte_insert");
+    auto config = make_test_config(integration_fixture_path("test_bounded_dml_flush/recursive_cte_insert"));
     config.execution.dml_flush_row_threshold = kFlushThreshold;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -265,11 +208,8 @@ TEST_CASE("integration::cpp::bounded_dml_flush::insert_from_recursive_cte_mid_fl
     }
     const auto flushes_after = services::collection::executor::dml_flush_count();
 
-    // The produced rows crossed the threshold mid-pump, so at least one
-    // incremental flush ran BEFORE the finalize.
     REQUIRE(flushes_after > flushes_before);
 
-    // And the fixpoint result landed intact.
     {
         auto cur = exec(dispatcher, "SELECT COUNT(n) AS c FROM FlushDb.dst;");
         REQUIRE(cur->is_success());
@@ -278,14 +218,10 @@ TEST_CASE("integration::cpp::bounded_dml_flush::insert_from_recursive_cte_mid_fl
     }
 }
 
-// ---------------------------------------------------------------------------
-// DELETE ... USING ... LIMIT n stops at EXACTLY n matched rows ACROSS mid-pump
-// flushes. The bound is enforced by the persistent matched_total_ counter, NOT
-// by the per-flush-cleared modified_ buffer — a flush-derived count would
-// under-count and over-delete.
-// ---------------------------------------------------------------------------
+// DELETE...USING...LIMIT n must stop at exactly n across mid-pump flushes: the bound is the persistent matched_total_
+// counter, not the per-flush-cleared modified_ buffer (which would under-count and over-delete).
 TEST_CASE("integration::cpp::bounded_dml_flush::delete_using_limit_spans_flushes") {
-    auto config = make_test_config("/tmp/test_bounded_dml_flush/delete_using_limit");
+    auto config = make_test_config(integration_fixture_path("test_bounded_dml_flush/delete_using_limit"));
     config.execution.dml_flush_row_threshold = kFlushThreshold;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -293,8 +229,7 @@ TEST_CASE("integration::cpp::bounded_dml_flush::delete_using_limit_spans_flushes
     REQUIRE(exec(dispatcher, "CREATE DATABASE FlushDb;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE FlushDb.tgt (id bigint, k bigint);")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE FlushDb.src (k bigint);")->is_success());
-    // Every target row (k = id % 10) joins a src row (k in 0..9), so ALL kRowCount are
-    // eligible — the LIMIT is the only thing that stops the delete.
+    // Every target row joins a src row (k in 0..9), so all rows are eligible; only the LIMIT stops the delete.
     {
         auto cur = seed_rows(dispatcher, "FlushDb.tgt", "id, k", kRowCount, [](unsigned i) {
             std::stringstream s;
@@ -308,9 +243,7 @@ TEST_CASE("integration::cpp::bounded_dml_flush::delete_using_limit_spans_flushes
     REQUIRE(
         exec(dispatcher, "INSERT INTO FlushDb.src (k) VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9);")->is_success());
 
-    // n well ABOVE the flush threshold (512) and BELOW the total (kRowCount=3000): the
-    // sink mid-flushes at least once before the bound is reached, so matched_total_ must
-    // survive the flush (which clears modified_) for the bound to land at exactly n.
+    // kBound sits between the flush threshold and the total, so at least one mid-flush must survive before it lands.
     constexpr uint64_t kBound = 1500;
     const auto flushes_before = services::collection::executor::dml_flush_count();
     {
@@ -322,14 +255,11 @@ TEST_CASE("integration::cpp::bounded_dml_flush::delete_using_limit_spans_flushes
     }
     const auto flushes_after = services::collection::executor::dml_flush_count();
 
-    // EXACTLY n rows deleted: matched_total_ is counted at MATCH time (not derived from the
-    // per-flush modified_ buffer), so a flush that clears modified_ does not reset the bound.
     {
         auto cur = exec(dispatcher, "SELECT COUNT(id) AS c FROM FlushDb.tgt;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->value(0, 0).value<uint64_t>() == static_cast<uint64_t>(kRowCount) - kBound);
     }
-    // At least the post-pump flush ran (the USING/join sink runs the non-streaming path, so a
-    // single flush is expected; a streaming sink that mid-flushed would show more).
+    // USING/join runs the non-streaming path (a single flush expected), unlike the streaming sinks in the other tests.
     REQUIRE(flushes_after - flushes_before >= 1);
 }

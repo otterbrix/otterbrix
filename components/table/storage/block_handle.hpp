@@ -17,6 +17,7 @@ namespace components::table::storage {
     inline constexpr uint64_t INVALID_TEMP_SLOT = UINT64_MAX;
 
     class block_manager_t;
+    class buffer_manager_t;
     class buffer_pool_t;
     class buffer_handle_t;
 
@@ -36,7 +37,11 @@ namespace components::table::storage {
         COLUMN_DATA = 6,
         METADATA = 7,
         OVERFLOW_STRINGS = 8,
-        IN_MEMORY_TABLE = 9,
+        // Buffers with no file behind them — what register_transient_memory hands out and what
+        // column_segment_t's in-place grow allocates. The name is a leftover of a removed
+        // in-memory storage mode, whose tables it never accounted for anyway. Runtime
+        // accounting only: the value is never serialized.
+        TRANSIENT_TABLE = 9,
         ALLOCATOR = 10,
         EXTENSION = 11,
         TRANSACTION = 12,
@@ -76,8 +81,20 @@ namespace components::table::storage {
 
     class block_handle_t : public std::enable_shared_from_this<block_handle_t> {
     public:
+        // Disk-backed: the manager is the one that can read and write this block's file.
         block_handle_t(block_manager_t& block_manager, uint64_t block_id, memory_tag tag);
         block_handle_t(block_manager_t& block_manager,
+                       uint64_t block_id,
+                       memory_tag tag,
+                       std::unique_ptr<file_buffer_t> buffer,
+                       destroy_buffer_condition destroy_buffer_condition,
+                       uint64_t block_size,
+                       buffer_pool_reservation_t&& reservation);
+        // No file behind it: the buffer manager minted these bytes itself, so there is no block
+        // manager to name. Everything such a handle needs from one is the buffer manager and the
+        // block geometry, both carried here.
+        block_handle_t(buffer_manager_t& buffer_manager,
+                       uint64_t block_alloc_size,
                        uint64_t block_id,
                        memory_tag tag,
                        std::unique_ptr<file_buffer_t> buffer,
@@ -113,15 +130,13 @@ namespace components::table::storage {
         // Same condition load() uses.
         bool is_reloadable() const { return block_id_ < MAXIMUM_BLOCK; }
 
-        // Spill state. Deliberately SEPARATE from block_id_/is_reloadable(): that expression means
+        // Spill state, deliberately SEPARATE from block_id_/is_reloadable(): that expression means
         // four different things around the tree ("has a disk copy", "is shared/read-only", "already
-        // written through", "is a real .otbx id, free it on compact"), and widening it to cover
-        // temporary copies would silently flip all four. Worse, a temp id would then reach
+        // written through", "is a real .otbx id, free it on compact"), so widening it to cover
+        // temporary copies would silently flip all four. A temp id would also reach
         // single_file_block_manager_t::block_location, where (2^62 + N) * block_size overflows onto
-        // exactly real block N — corruption that reads back with a valid checksum.
-        //
-        // So a spilled block keeps its transient identity and gains a slot in the pool's scratch
-        // file instead.
+        // exactly real block N — corruption that reads back with a valid checksum. So a spilled block
+        // keeps its transient identity and gains a slot in the pool's scratch file instead.
         bool has_temp_copy() const { return temp_slot_ != INVALID_TEMP_SLOT; }
         // `bytes` is what was written to the scratch file (the whole allocation); `user_size` is
         // the logical size the buffer was created with. construct_manager_buffer() derives the
@@ -191,9 +206,19 @@ namespace components::table::storage {
 
         bool can_unload() const;
 
-        block_manager_t& block_manager;
+        buffer_manager_t& buffer_manager;
+
+        uint64_t block_allocation_size() const noexcept { return block_alloc_size_; }
+        uint64_t block_size() const noexcept { return block_alloc_size_ - DEFAULT_BLOCK_HEADER_SIZE; }
+
+        // Null exactly when there is no file behind this block. The file-facing paths below are
+        // gated on block_id_ < MAXIMUM_BLOCK, which is the stronger test: a disk manager can also
+        // hand out ids above it (see components/table/test/test_wave_table.cpp).
+        block_manager_t* file_manager() const noexcept { return file_manager_; }
 
     private:
+        block_manager_t* file_manager_;
+        uint64_t block_alloc_size_;
         std::mutex lock_;
         std::atomic<block_state> state_;
         std::atomic<int32_t> readers_;

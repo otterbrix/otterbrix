@@ -1,4 +1,5 @@
 #include "sort_expression.hpp"
+#include "compare_expression.hpp"
 #include <sstream>
 
 namespace components::expressions {
@@ -6,8 +7,8 @@ namespace components::expressions {
     template<class OStream>
     OStream& operator<<(OStream& stream, const sort_expression_t* sort) {
         // A column is spelled bare here, the way a sort key has always been rendered.
-        if (std::holds_alternative<key_t>(sort->operand())) {
-            stream << std::get<key_t>(sort->operand());
+        if (is_key(sort->operand())) {
+            stream << as_key(sort->operand());
         } else {
             stream << sort->operand();
         }
@@ -15,12 +16,24 @@ namespace components::expressions {
         return stream;
     }
 
+    namespace {
+
+        // Only the key_t case needs rebinding: parameter_id_t has no arena, and an expression pointer's arena was fixed where it was built.
+        param_storage operand_on(std::pmr::memory_resource* resource, const param_storage& operand) {
+            if (is_key(operand)) {
+                return param_storage{key_t{as_key(operand), resource}};
+            }
+            return operand;
+        }
+
+    } // namespace
+
     sort_expression_t::sort_expression_t(std::pmr::memory_resource* resource,
                                          const param_storage& operand,
                                          sort_order order,
                                          sort_null_order null_order)
         : expression_i(expression_group::sort, key_t{resource})
-        , operand_(operand)
+        , operand_(operand_on(resource, operand))
         , order_(order)
         , null_order_(null_order) {}
 

@@ -5,17 +5,15 @@
 #include "column_state.hpp"
 #include "segment_tree.hpp"
 #include "update_segment.hpp"
+#include <boost/smart_ptr/intrusive_ref_counter.hpp>
 #include <components/types/tri_bool.hpp>
 
 namespace components::table {
 
 #ifdef DEV_MODE
-    // Test-observable count of segment transitions performed while SOMEONE ELSE still holds a pin on
-    // the segment's block. The swap drops that block_handle_t, so an outstanding buffer_handle_t is
-    // left pointing at freed memory and unpins it when it is destroyed. Must stay at zero.
+    // Must stay zero: a live pin surviving a segment swap leaves a buffer_handle_t pointing at freed memory.
     uint64_t transitions_with_live_pin() noexcept;
-    // Total transitions performed, so a test can tell "no offending transition" apart from
-    // "no transition at all" — a zero-vs-zero comparison proves nothing.
+    // Denominator, so a test can tell "none happened" from "none needed a live pin".
     uint64_t segment_transitions() noexcept;
     void reset_transitions_with_live_pin() noexcept;
 #endif
@@ -35,16 +33,13 @@ namespace components::table {
         TRUE_OR_NULL = 3,
         FALSE_OR_NULL = 4
     };
-    // The storage-scan filter answers in SQL three-valued logic. filter_match_t is the table
-    // component's spelling of the shared types::tri_bool_t vocabulary (tri_bool.hpp), so the scan
-    // filter and the in-memory predicate evaluator share one definition of TRUE/FALSE/UNKNOWN and
-    // cannot drift. A value comparison against a NULL operand is UNKNOWN, not FALSE: the two differ
-    // under NOT, so collapsing UNKNOWN into FALSE would let NOT resurrect NULL rows.
+    // A comparison against NULL is UNKNOWN, not FALSE: collapsing it would let NOT resurrect NULL rows.
     using filter_match_t = types::tri_bool_t;
 
-    constexpr uint64_t MAX_ROW_ID = 1ULL << 55; // 2^55
+    constexpr uint64_t MAX_ROW_ID = 1ULL << 55;
 
-    class column_data_t {
+    // TOP-LEVEL columns only are refcount-shared; wrapping a nested (unique_ptr) child double-frees it.
+    class column_data_t : public boost::intrusive_ref_counter<column_data_t> {
         friend class column_segment_t;
         friend class column_data_checkpointer_t;
         friend class column_checkpoint_state_t;
@@ -69,7 +64,8 @@ namespace components::table {
         virtual void set_start(int64_t new_start);
         const types::complex_logical_type& root_type() const;
         const types::complex_logical_type& type() const { return type_; }
-        bool has_updates() const;
+        // True once the overlay object EXISTS, not once it changed a value; never clears.
+        bool has_update_segment() const;
         virtual scan_vector_type
         get_vector_scan_type(column_scan_state& state, uint64_t scan_count, vector::vector_t& result);
         virtual void initialize_scan(column_scan_state& state);
@@ -85,14 +81,7 @@ namespace components::table {
                                         bool allow_updates,
                                         uint64_t scan_count);
 
-        virtual void scan_committed_range(uint64_t row_group_start,
-                                          uint64_t offset_in_row_group,
-                                          uint64_t count,
-                                          vector::vector_t& result);
         virtual uint64_t scan_count(column_scan_state& state, vector::vector_t& result, uint64_t count);
-        // Like scan_count, but tolerates and applies committed updates over the scanned
-        // range (scan_count itself asserts no updates). Used by LIST/ARRAY parents whose
-        // child elements may carry in-place updates after a row was updated.
         uint64_t scan_count_with_updates(column_scan_state& state, vector::vector_t& result, uint64_t count);
 
         virtual void select(uint64_t vector_index,
@@ -120,21 +109,19 @@ namespace components::table {
 
         virtual void skip(column_scan_state& state, uint64_t count = vector::DEFAULT_VECTOR_CAPACITY);
 
-        // APPEND chain returns out_of_memory when a segment allocation / pin fails; true on success.
         [[nodiscard]] virtual core::result_wrapper_t<bool> initialize_append(column_append_state& state);
         [[nodiscard]] virtual core::result_wrapper_t<bool>
         append(column_append_state& state, vector::vector_t& vector, uint64_t count);
         [[nodiscard]] virtual core::result_wrapper_t<bool>
         append_data(column_append_state& state, vector::unified_vector_format& uvf, uint64_t count);
-        virtual void revert_append(int64_t start_row);
+        // `start_row` is COLLECTION-ABSOLUTE; a failed rollback pin must be REPORTED, not asserted away.
+        [[nodiscard]] virtual core::result_wrapper_t<bool> revert_append(int64_t start_row);
 
-        // `error` carries an out_of_memory error_t when a pin fails during the predicate check;
-        // on error the bool return is meaningless and the scan loop stops.
         virtual uint64_t fetch(column_scan_state& state, int64_t row_id, vector::vector_t& result);
         virtual void
         fetch_row(column_fetch_state& state, int64_t row_id, vector::vector_t& result, uint64_t result_idx);
 
-        // Update path returns write_conflict / out_of_memory; true on success.
+        // NOT write_conflict -- the update overlay carries no transaction stamp to conflict with.
         [[nodiscard]] virtual core::result_wrapper_t<bool>
         update(uint64_t column_index, vector::vector_t& update_vector, int64_t* row_ids, uint64_t update_count);
         [[nodiscard]] virtual core::result_wrapper_t<bool> update_column(const std::vector<uint64_t>& column_path,
@@ -146,6 +133,10 @@ namespace components::table {
         virtual void get_column_segment_info(uint64_t row_group_index,
                                              std::vector<uint64_t> col_path,
                                              std::vector<column_segment_info>& result);
+
+        // create_column's constructors can't state this: a throw there would hang the disk agent's mailbox.
+        [[nodiscard]] static core::error_t validate_column_type(const types::complex_logical_type& type,
+                                                                std::pmr::memory_resource* resource);
 
         static std::unique_ptr<column_data_t> create_column(std::pmr::memory_resource* resource,
                                                             storage::block_manager_t& block_manager,
@@ -160,49 +151,23 @@ namespace components::table {
         const base_statistics_t& statistics() const noexcept { return statistics_; }
         base_statistics_t& statistics() noexcept { return statistics_; }
 
-        // CHECKPOINT chain returns out_of_memory when pinning a segment buffer fails during flush;
-        // the persistent data on success.
+        // Hands the record to checkpoint_children (NVI hook below), validity FIRST.
         [[nodiscard]] core::result_wrapper_t<persistent_column_data_t>
         checkpoint(storage::partial_block_manager_t& partial_block_manager);
-        virtual void initialize_column(const persistent_column_data_t& persistent_data);
-        void initialize_column_validity(const persistent_column_data_t& persistent_data);
+        [[nodiscard]] virtual core::result_wrapper_t<bool>
+        initialize_column(const persistent_column_data_t& persistent_data);
 
-        // Write-through: re-point every COMPLETE managed (in-memory, non-reloadable) segment of this column
-        // to a disk-backed segment so the pool can evict+reload them (bounded memory). Called when a row
-        // group is closed (all its column segments are final). A no-op for in-memory tables and for
-        // non-fixed-size / compressed segments. Returns io_error/out_of_memory on failure; true on success.
-        // Sub-columns (validity / struct / list / array children) are handled by the subclass override.
-        //
-        // The re-pointed segments are PACKED into shared 256 KiB blocks via `pbm` (the same segment-packing
-        // allocator the checkpoint path uses) so narrow column segments no longer each consume a dedicated
-        // block. `pbm.write_to_block` only fills an in-memory block buffer; the CALLER owns `pbm` and MUST
-        // call `pbm.flush_partial_blocks()` before any concurrent scan/eviction of a re-pointed segment can
-        // occur (else a re-pointed live segment could load() an unflushed block -> data_corruption).
+        // Caller owns `pbm` and MUST flush_partial_blocks() before a re-pointed segment can be
+        // evicted or reloaded, or a live segment could load() an unflushed block.
         [[nodiscard]] virtual core::result_wrapper_t<bool> transition_to_disk(storage::partial_block_manager_t& pbm);
 
-        // Compact reclaim: append the ids of disk blocks EXCLUSIVELY owned by this column (and its
-        // sub-columns) to `out`, so the caller can mark them free once this collection is replaced by a
-        // compacted one. Mirrors the transition_to_disk recursion: the standard subclass also collects from
-        // its validity child; struct/list/array collect their own data_ blocks only (their children's
-        // payloads stay managed, matching base transition_to_disk).
+        // Mirrors checkpoint_children's recursion, not transition_to_disk's; skipping the override orphans blocks.
         virtual void collect_disk_block_ids(std::pmr::vector<uint64_t>& out) const;
 
     protected:
-        // Returns out_of_memory when the new segment's transient memory cannot be registered; true on success.
         [[nodiscard]] core::result_wrapper_t<bool> apend_transient_segment(std::unique_lock<std::mutex>& l,
                                                                            int64_t start_row);
 
-        // Write-through: a just-FILLED transient (managed, block_id >= MAXIMUM_BLOCK) segment at
-        // `segment_index` in data_ is written to the table's data file and re-pointed to a fresh disk-backed
-        // segment (block_id < MAXIMUM_BLOCK -> is_reloadable()==true), so the pool can evict+reload it ->
-        // bounded memory. A no-op for in-memory tables (no backing store) and for non-fixed-size / compressed
-        // segments (a raw block copy would not round-trip losslessly). Returns io_error/out_of_memory on a
-        // write/alloc failure; true on success or no-op. Caller MUST hold the tree lock `l`.
-        //
-        // The re-pointed segment is PACKED into a shared block via `pbm` (segment packing): small segments
-        // share a 256 KiB block at distinct offsets instead of each owning a dedicated block. `pbm.write_to_block`
-        // only fills an in-memory block buffer -- the CALLER (transition_to_disk's owner) MUST flush `pbm`
-        // before the re-pointed segment can be evicted/reloaded (flush-before-evict).
         [[nodiscard]] core::result_wrapper_t<bool> transition_segment_to_disk(std::unique_lock<std::mutex>& l,
                                                                               uint64_t segment_index,
                                                                               storage::partial_block_manager_t& pbm);
@@ -213,7 +178,9 @@ namespace components::table {
         uint64_t
         scan_vector(uint64_t vector_index, column_scan_state& state, vector::vector_t& result, uint64_t target_scan);
 
-        void fetch_updates(uint64_t vector_index,
+        // `state` lets allow_updates == false over a column that HAS updates report on state.scan_error.
+        void fetch_updates(column_scan_state& state,
+                           uint64_t vector_index,
                            vector::vector_t& result,
                            uint64_t result_offset,
                            uint64_t scan_count,
@@ -231,6 +198,14 @@ namespace components::table {
         int64_t start_;
         std::atomic<uint64_t> count_;
         storage::block_manager_t& block_manager_;
+
+    private:
+        // NVI hook of checkpoint(): child_columns[0] must always be VALIDITY, or reload loses every NULL.
+        [[nodiscard]] virtual core::result_wrapper_t<bool>
+        checkpoint_children(storage::partial_block_manager_t& partial_block_manager,
+                            persistent_column_data_t& persistent);
+
+    protected:
         uint64_t column_index_;
         types::complex_logical_type type_;
         column_data_t* parent_;

@@ -12,6 +12,11 @@ namespace components::sql::transform {
         switch (node.kind) {
             case TRANS_STMT_BEGIN:
             case TRANS_STMT_START:
+                // TODO: proper support in engine
+                if (node.options != nullptr && list_length(node.options) > 0) {
+                    return core::error_t(core::error_code_t::unimplemented_yet,
+                                         std::pmr::string{"transaction modes are not supported", resource_});
+                }
                 return logical_plan::make_node_transaction(resource_, logical_plan::transaction_op::begin);
             case TRANS_STMT_COMMIT:
                 return logical_plan::make_node_transaction(resource_, logical_plan::transaction_op::commit);

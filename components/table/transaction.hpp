@@ -29,12 +29,34 @@ namespace components::table {
         components::catalog::oid_t index_oid;
     };
 
+    enum class transaction_state_t : uint8_t
+    {
+        active,
+        failed,
+        committed,
+        aborted
+    };
+
+    enum class transaction_scope_t : uint8_t
+    {
+        statement,
+        until_commit
+    };
+
+    enum class transaction_control_t : uint8_t
+    {
+        none,
+        commit,
+        rollback
+    };
+
     class transaction_t {
     public:
         // resource is required, not defaulted, so allocations can't leak across the txn boundary via a global default.
         transaction_t(uint64_t transaction_id,
                       uint64_t start_time,
                       session::session_id_t session,
+                      transaction_scope_t scope,
                       std::pmr::memory_resource* resource);
 
         // Value-copy of the cached snapshot, so reads avoid re-locking; O(in-flight commits) to copy, typically <100.
@@ -46,13 +68,13 @@ namespace components::table {
         uint64_t commit_id() const { return commit_id_; }
         session::session_id_t session() const { return session_; }
 
-        bool is_active() const { return !committed_ && !aborted_; }
-        bool is_committed() const { return committed_; }
-        bool is_aborted() const { return aborted_; }
+        transaction_state_t state() const noexcept { return state_; }
+        transaction_scope_t scope() const noexcept { return scope_; }
 
         void set_commit_id(uint64_t id);
         void mark_committed();
         void mark_aborted();
+        void mark_failed();
 
         // Called by transaction_manager during begin_transaction, after capturing the snapshot under its lock.
         void set_snapshot(uint64_t horizon, std::pmr::vector<uint64_t> in_flight) {
@@ -60,9 +82,7 @@ namespace components::table {
             in_flight_snapshot_ = std::move(in_flight);
         }
 
-        // The executor's commit phase reads this to choose per-statement publish vs accumulate-until-COMMIT.
-        void mark_explicit() noexcept { is_explicit_ = true; }
-        bool is_explicit() const noexcept { return is_explicit_; }
+        void keep_until_commit() noexcept { scope_ = transaction_scope_t::until_commit; }
 
         void accumulate_base_append(dml_append_range_t range) { pending_base_appends_.push_back(range); }
         void accumulate_base_delete(dml_delete_range_t range) { pending_base_deletes_.push_back(range); }
@@ -146,9 +166,9 @@ namespace components::table {
         const std::vector<append_info>& appends() const { return appends_; }
 
         // THREADING INVARIANT: transaction_manager_t::lock_ guards only the session map, not this raw
-        // object; the executor worker and the dispatcher loop never touch it concurrently, because the
-        // dispatcher co_awaits the executor result first and wait_future serializes per session. A new
-        // cross-thread writer must route through a txn_*_msg mailbox handler instead.
+        // object. Only the dispatcher's loop touches it: statements of one transaction may run at once on
+        // different executors, so every change arrives as a txn_*_msg naming the transaction it was
+        // resolved against.
         std::vector<components::pg_catalog_append_range_t> pg_catalog_appends;
         std::set<components::catalog::oid_t> pg_catalog_delete_tables;
         // Drained by operator_commit_transaction_t at COMMIT.
@@ -159,9 +179,8 @@ namespace components::table {
         uint64_t transaction_id_;
         uint64_t start_time_;
         uint64_t commit_id_{0};
-        bool committed_{false};
-        bool aborted_{false};
-        bool is_explicit_{false};
+        transaction_state_t state_{transaction_state_t::active};
+        transaction_scope_t scope_;
         std::vector<append_info> appends_;
 
         // ProcArray cached snapshot: set once during begin_transaction, never mutated after.

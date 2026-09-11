@@ -129,7 +129,7 @@ TEST_CASE("components::table::mvcc::append_commit_visible") {
 
     transaction_manager_t mgr(&env.resource);
     auto session = components::session::session_id_t::generate_uid();
-    auto& txn = mgr.begin_transaction(session);
+    auto& txn = mgr.begin_transaction(session, transaction_scope_t::statement);
 
     append_rows_txn(*table, env, 0, 10, txn.data());
 
@@ -147,7 +147,7 @@ TEST_CASE("components::table::mvcc::append_revert_invisible") {
 
     transaction_manager_t mgr(&env.resource);
     auto session = components::session::session_id_t::generate_uid();
-    auto& txn = mgr.begin_transaction(session);
+    auto& txn = mgr.begin_transaction(session, transaction_scope_t::statement);
 
     append_rows_txn(*table, env, 0, 10, txn.data());
 
@@ -174,7 +174,7 @@ TEST_CASE("components::table::mvcc::cleanup_versions") {
 
     transaction_manager_t mgr(&env.resource);
     auto session = components::session::session_id_t::generate_uid();
-    auto& txn = mgr.begin_transaction(session);
+    auto& txn = mgr.begin_transaction(session, transaction_scope_t::statement);
 
     append_rows_txn(*table, env, 0, 10, txn.data());
     auto commit_id = mgr.commit(session);
@@ -195,14 +195,14 @@ TEST_CASE("components::table::mvcc::multiple_txn_appends") {
     transaction_manager_t mgr(&env.resource);
 
     auto s1 = components::session::session_id_t::generate_uid();
-    auto& txn1 = mgr.begin_transaction(s1);
+    auto& txn1 = mgr.begin_transaction(s1, transaction_scope_t::statement);
     append_rows_txn(*table, env, 0, 10, txn1.data());
     auto cid1 = mgr.commit(s1);
     mgr.publish(cid1);
     table->commit_append(cid1, 0, 10);
 
     auto s2 = components::session::session_id_t::generate_uid();
-    auto& txn2 = mgr.begin_transaction(s2);
+    auto& txn2 = mgr.begin_transaction(s2, transaction_scope_t::statement);
     append_rows_txn(*table, env, 10, 5, txn2.data());
     auto cid2 = mgr.commit(s2);
     mgr.publish(cid2);
@@ -221,7 +221,7 @@ TEST_CASE("components::table::mvcc::delete_rows_txn_commit_all_deletes") {
 
     transaction_manager_t mgr(&env.resource);
     auto session = components::session::session_id_t::generate_uid();
-    auto& txn = mgr.begin_transaction(session);
+    auto& txn = mgr.begin_transaction(session, transaction_scope_t::statement);
 
     std::pmr::vector<complex_logical_type> id_type(&env.resource);
     id_type.emplace_back(logical_type::BIGINT);
@@ -253,7 +253,7 @@ TEST_CASE("components::table::mvcc::delete_rows_txn_without_commit_visible") {
 
     transaction_manager_t mgr(&env.resource);
     auto session = components::session::session_id_t::generate_uid();
-    auto& txn = mgr.begin_transaction(session);
+    auto& txn = mgr.begin_transaction(session, transaction_scope_t::statement);
 
     std::pmr::vector<complex_logical_type> id_type(&env.resource);
     id_type.emplace_back(logical_type::BIGINT);
@@ -282,7 +282,7 @@ TEST_CASE("components::table::mvcc::cleanup_committed_deletes") {
 
     transaction_manager_t mgr(&env.resource);
     auto session = components::session::session_id_t::generate_uid();
-    auto& txn = mgr.begin_transaction(session);
+    auto& txn = mgr.begin_transaction(session, transaction_scope_t::statement);
 
     std::pmr::vector<complex_logical_type> id_type(&env.resource);
     id_type.emplace_back(logical_type::BIGINT);
@@ -317,7 +317,7 @@ TEST_CASE("components::table::mvcc::cleanup_partial_deletes") {
 
     transaction_manager_t mgr(&env.resource);
     auto session = components::session::session_id_t::generate_uid();
-    auto& txn = mgr.begin_transaction(session);
+    auto& txn = mgr.begin_transaction(session, transaction_scope_t::statement);
 
     std::pmr::vector<complex_logical_type> id_type(&env.resource);
     id_type.emplace_back(logical_type::BIGINT);
@@ -352,7 +352,7 @@ TEST_CASE("components::table::mvcc::compact_after_delete") {
 
     transaction_manager_t mgr(&env.resource);
     auto session = components::session::session_id_t::generate_uid();
-    auto& txn = mgr.begin_transaction(session);
+    auto& txn = mgr.begin_transaction(session, transaction_scope_t::statement);
 
     std::pmr::vector<complex_logical_type> id_type(&env.resource);
     id_type.emplace_back(logical_type::BIGINT);
@@ -386,11 +386,11 @@ TEST_CASE("components::table::mvcc::uncommitted_rows_invisible_to_other_txn") {
     transaction_manager_t mgr(&env.resource);
 
     auto s1 = components::session::session_id_t::generate_uid();
-    auto& txn1 = mgr.begin_transaction(s1);
+    auto& txn1 = mgr.begin_transaction(s1, transaction_scope_t::statement);
     append_rows_txn(*table, env, 0, 10, txn1.data());
 
     auto s2 = components::session::session_id_t::generate_uid();
-    auto& txn2 = mgr.begin_transaction(s2);
+    auto& txn2 = mgr.begin_transaction(s2, transaction_scope_t::statement);
     REQUIRE(scan_count_txn(*table, env, txn2.data()) == 0);
 
     auto commit_id = mgr.commit(s1);
@@ -398,7 +398,7 @@ TEST_CASE("components::table::mvcc::uncommitted_rows_invisible_to_other_txn") {
     table->commit_append(commit_id, 0, 10);
 
     auto s3 = components::session::session_id_t::generate_uid();
-    auto& txn3 = mgr.begin_transaction(s3);
+    auto& txn3 = mgr.begin_transaction(s3, transaction_scope_t::statement);
     REQUIRE(scan_count_txn(*table, env, txn3.data()) == 10);
 
     mgr.abort(s2);
@@ -415,7 +415,7 @@ TEST_CASE("components::table::mvcc::delete_not_visible_until_commit") {
     transaction_manager_t mgr(&env.resource);
 
     auto s1 = components::session::session_id_t::generate_uid();
-    auto& txn1 = mgr.begin_transaction(s1);
+    auto& txn1 = mgr.begin_transaction(s1, transaction_scope_t::statement);
 
     std::pmr::vector<complex_logical_type> id_type(&env.resource);
     id_type.emplace_back(logical_type::BIGINT);
@@ -430,7 +430,7 @@ TEST_CASE("components::table::mvcc::delete_not_visible_until_commit") {
     REQUIRE_FALSE(table->delete_rows(del_state, row_ids_chunk.data[0], 5, txn_id).has_error());
 
     auto s2 = components::session::session_id_t::generate_uid();
-    auto& txn2 = mgr.begin_transaction(s2);
+    auto& txn2 = mgr.begin_transaction(s2, transaction_scope_t::statement);
     REQUIRE(scan_count_txn(*table, env, txn2.data()) == 10);
     mgr.abort(s2);
 
@@ -439,7 +439,7 @@ TEST_CASE("components::table::mvcc::delete_not_visible_until_commit") {
     table->commit_all_deletes(txn_id, commit_id);
 
     auto s3 = components::session::session_id_t::generate_uid();
-    auto& txn3 = mgr.begin_transaction(s3);
+    auto& txn3 = mgr.begin_transaction(s3, transaction_scope_t::statement);
     REQUIRE(scan_count_txn(*table, env, txn3.data()) == 5);
     mgr.abort(s3);
 }
@@ -451,13 +451,13 @@ TEST_CASE("components::table::mvcc::txn_sees_own_writes") {
     transaction_manager_t mgr(&env.resource);
 
     auto s1 = components::session::session_id_t::generate_uid();
-    auto& txn1 = mgr.begin_transaction(s1);
+    auto& txn1 = mgr.begin_transaction(s1, transaction_scope_t::statement);
     append_rows_txn(*table, env, 0, 5, txn1.data());
 
     REQUIRE(scan_count_txn(*table, env, txn1.data()) == 5);
 
     auto s2 = components::session::session_id_t::generate_uid();
-    auto& txn2 = mgr.begin_transaction(s2);
+    auto& txn2 = mgr.begin_transaction(s2, transaction_scope_t::statement);
     REQUIRE(scan_count_txn(*table, env, txn2.data()) == 0);
 
     mgr.abort(s1);
@@ -519,18 +519,18 @@ TEST_CASE("components::table::mvcc::compact_preserves_old_snapshot_view") {
     transaction_manager_t mgr(&env.resource);
 
     auto s1 = components::session::session_id_t::generate_uid();
-    auto& txn1 = mgr.begin_transaction(s1);
+    auto& txn1 = mgr.begin_transaction(s1, transaction_scope_t::statement);
     append_rows_txn(*table, env, 0, 10, txn1.data());
     auto c1 = mgr.commit(s1);
     mgr.publish(c1);
     table->commit_append(c1, 0, 10);
 
     auto s2 = components::session::session_id_t::generate_uid();
-    auto& txn2 = mgr.begin_transaction(s2);
+    auto& txn2 = mgr.begin_transaction(s2, transaction_scope_t::statement);
     REQUIRE(scan_values_txn(*table, env, txn2.data()) == make_range(0, 9));
 
     auto s3 = components::session::session_id_t::generate_uid();
-    auto& txn3 = mgr.begin_transaction(s3);
+    auto& txn3 = mgr.begin_transaction(s3, transaction_scope_t::statement);
     auto txn3_id = txn3.data().transaction_id;
     delete_row0_txn(*table, env, txn3_id);
     append_rows_txn(*table, env, 100, 1, txn3.data()); // physical row 10
@@ -540,7 +540,7 @@ TEST_CASE("components::table::mvcc::compact_preserves_old_snapshot_view") {
     mgr.publish(c3);
 
     auto s4 = components::session::session_id_t::generate_uid();
-    auto& txn4 = mgr.begin_transaction(s4);
+    auto& txn4 = mgr.begin_transaction(s4, transaction_scope_t::statement);
     auto expected_new = make_range(1, 9);
     expected_new.insert(100);
     REQUIRE(scan_values_txn(*table, env, txn4.data()) == expected_new);
@@ -556,7 +556,7 @@ TEST_CASE("components::table::mvcc::compact_preserves_old_snapshot_view") {
     REQUIRE(table->compact(mgr.compact_watermark())); // every old snapshot gone; watermark reaches c3
     REQUIRE(table->row_group()->total_rows() == 10);
     auto s6 = components::session::session_id_t::generate_uid();
-    auto& txn6 = mgr.begin_transaction(s6);
+    auto& txn6 = mgr.begin_transaction(s6, transaction_scope_t::statement);
     REQUIRE(scan_values_txn(*table, env, txn6.data()) == expected_new);
     mgr.abort(s6);
 }
@@ -568,14 +568,14 @@ TEST_CASE("components::table::mvcc::compact_in_flight_commit_window") {
     transaction_manager_t mgr(&env.resource);
 
     auto s1 = components::session::session_id_t::generate_uid();
-    auto& txn1 = mgr.begin_transaction(s1);
+    auto& txn1 = mgr.begin_transaction(s1, transaction_scope_t::statement);
     append_rows_txn(*table, env, 0, 10, txn1.data());
     auto c1 = mgr.commit(s1);
     mgr.publish(c1);
     table->commit_append(c1, 0, 10);
 
     auto s3 = components::session::session_id_t::generate_uid();
-    auto& txn3 = mgr.begin_transaction(s3);
+    auto& txn3 = mgr.begin_transaction(s3, transaction_scope_t::statement);
     auto txn3_id = txn3.data().transaction_id;
     delete_row0_txn(*table, env, txn3_id);
     append_rows_txn(*table, env, 100, 1, txn3.data()); // physical row 10
@@ -584,7 +584,7 @@ TEST_CASE("components::table::mvcc::compact_in_flight_commit_window") {
     table->commit_all_deletes(txn3_id, c3);
 
     auto s4 = components::session::session_id_t::generate_uid();
-    auto& txn4 = mgr.begin_transaction(s4);
+    auto& txn4 = mgr.begin_transaction(s4, transaction_scope_t::statement);
     REQUIRE(scan_values_txn(*table, env, txn4.data()) == make_range(0, 9));
 
     REQUIRE_FALSE(table->compact(mgr.compact_watermark())); // c3 in flight, watermark sits below it
@@ -595,7 +595,7 @@ TEST_CASE("components::table::mvcc::compact_in_flight_commit_window") {
     mgr.publish(c3);
 
     auto s5 = components::session::session_id_t::generate_uid();
-    auto& txn5 = mgr.begin_transaction(s5);
+    auto& txn5 = mgr.begin_transaction(s5, transaction_scope_t::statement);
     auto expected_new = make_range(1, 9);
     expected_new.insert(100);
     REQUIRE(scan_values_txn(*table, env, txn5.data()) == expected_new);
@@ -606,7 +606,7 @@ TEST_CASE("components::table::mvcc::compact_in_flight_commit_window") {
     REQUIRE(table->compact(mgr.compact_watermark())); // window closed, snapshots gone
     REQUIRE(table->row_group()->total_rows() == 10);
     auto s6 = components::session::session_id_t::generate_uid();
-    auto& txn6 = mgr.begin_transaction(s6);
+    auto& txn6 = mgr.begin_transaction(s6, transaction_scope_t::statement);
     REQUIRE(scan_values_txn(*table, env, txn6.data()) == expected_new);
     mgr.abort(s6);
 }
@@ -816,11 +816,11 @@ TEST_CASE("components::table::mvcc::uncommitted_rows_invisible_in_second_row_gro
 
     transaction_manager_t mgr(&env.resource);
     auto session1 = components::session::session_id_t::generate_uid();
-    auto& txn1 = mgr.begin_transaction(session1);
+    auto& txn1 = mgr.begin_transaction(session1, transaction_scope_t::statement);
     append_rows_txn(*table, env, 1024, 10, txn1.data()); // lands in row group 1; NOT committed
 
     auto session2 = components::session::session_id_t::generate_uid();
-    auto& txn2 = mgr.begin_transaction(session2);
+    auto& txn2 = mgr.begin_transaction(session2, transaction_scope_t::statement);
     REQUIRE(scan_count_txn(*table, env, txn2.data()) == 1024);
 
     mgr.abort(session2);
@@ -839,7 +839,7 @@ TEST_CASE("components::table::mvcc::committed_row_count_after_delete_past_1024")
 
     transaction_manager_t mgr(&env.resource);
     auto session = components::session::session_id_t::generate_uid();
-    auto& txn = mgr.begin_transaction(session);
+    auto& txn = mgr.begin_transaction(session, transaction_scope_t::statement);
     auto txn_id = txn.data().transaction_id;
 
     auto del_state = table->initialize_delete({});
@@ -866,7 +866,7 @@ TEST_CASE("components::table::mvcc::compact_refused_while_delete_past_1024_pendi
 
     transaction_manager_t mgr(&env.resource);
     auto session = components::session::session_id_t::generate_uid();
-    auto& txn = mgr.begin_transaction(session);
+    auto& txn = mgr.begin_transaction(session, transaction_scope_t::statement);
     auto txn_id = txn.data().transaction_id;
 
     auto del_state = table->initialize_delete({});
@@ -1054,7 +1054,7 @@ namespace {
                                 int64_t first_row,
                                 uint64_t count) {
         auto session = components::session::session_id_t::generate_uid();
-        auto& txn = mgr.begin_transaction(session);
+        auto& txn = mgr.begin_transaction(session, transaction_scope_t::statement);
         auto txn_id = txn.data().transaction_id;
 
         auto row_ids = vector_t(&env.resource, complex_logical_type(logical_type::BIGINT), count);
@@ -1252,27 +1252,27 @@ TEST_CASE("components::table::mvcc::index_sweep_floor_in_publish_window") {
     transaction_manager_t mgr(&env.resource);
 
     auto s1 = components::session::session_id_t::generate_uid();
-    auto& txn1 = mgr.begin_transaction(s1);
+    auto& txn1 = mgr.begin_transaction(s1, transaction_scope_t::statement);
     append_rows_txn(*table, env, 0, 10, txn1.data());
     auto c1 = mgr.commit(s1);
     mgr.publish(c1);
     table->commit_append(c1, 0, 10);
 
     auto s_del = components::session::session_id_t::generate_uid();
-    auto& txn_del = mgr.begin_transaction(s_del);
+    auto& txn_del = mgr.begin_transaction(s_del, transaction_scope_t::statement);
     auto txn_del_id = txn_del.data().transaction_id;
     delete_row0_txn(*table, env, txn_del_id);
     auto c_del = mgr.commit(s_del); // stamped, but publish() has NOT run yet
     table->commit_all_deletes(txn_del_id, c_del);
 
     auto s_oth = components::session::session_id_t::generate_uid(); // larger id drags published_horizon_ past c_del
-    mgr.begin_transaction(s_oth);
+    mgr.begin_transaction(s_oth, transaction_scope_t::statement);
     auto c_oth = mgr.commit(s_oth);
     REQUIRE(c_oth > c_del);
     mgr.publish(c_oth);
 
     auto s_read = components::session::session_id_t::generate_uid(); // snapshot_horizon==c_oth, in_flight{c_del}
-    auto& reader = mgr.begin_transaction(s_read);
+    auto& reader = mgr.begin_transaction(s_read, transaction_scope_t::statement);
 
     REQUIRE(scan_values_txn(*table, env, reader.data()) == make_range(0, 9));
 
@@ -1282,7 +1282,7 @@ TEST_CASE("components::table::mvcc::index_sweep_floor_in_publish_window") {
     mgr.abort(s_read);
     mgr.publish(c_del);
     auto s_after = components::session::session_id_t::generate_uid();
-    auto& after = mgr.begin_transaction(s_after);
+    auto& after = mgr.begin_transaction(s_after, transaction_scope_t::statement);
     REQUIRE(scan_values_txn(*table, env, after.data()) == make_range(1, 9));
     mgr.abort(s_after);
     REQUIRE(c_del <= mgr.lowest_active_snapshot_horizon());
@@ -1297,19 +1297,19 @@ TEST_CASE("components::table::mvcc::orphaned_commit_blocks_compaction") {
     transaction_manager_t mgr(&env.resource);
 
     auto s1 = components::session::session_id_t::generate_uid();
-    auto& txn1 = mgr.begin_transaction(s1);
+    auto& txn1 = mgr.begin_transaction(s1, transaction_scope_t::statement);
     append_rows_txn(*table, env, 0, 10, txn1.data());
     auto c1 = mgr.commit(s1);
     mgr.publish(c1);
     table->commit_append(c1, 0, 10);
 
     auto s_lost = components::session::session_id_t::generate_uid(); // dies at an early exit
-    mgr.begin_transaction(s_lost);
+    mgr.begin_transaction(s_lost, transaction_scope_t::statement);
     const auto c_lost = mgr.commit(s_lost); // commit() already dropped it from active_
 
     // a REAL delete, after the orphan (else its id would sit below the pinned floor and compact would succeed wrongly)
     auto s_del = components::session::session_id_t::generate_uid();
-    auto& txn_del = mgr.begin_transaction(s_del);
+    auto& txn_del = mgr.begin_transaction(s_del, transaction_scope_t::statement);
     auto txn_del_id = txn_del.data().transaction_id;
     delete_row0_txn(*table, env, txn_del_id);
     const auto c_del = mgr.commit(s_del);
@@ -1320,7 +1320,7 @@ TEST_CASE("components::table::mvcc::orphaned_commit_blocks_compaction") {
     REQUIRE_FALSE(mgr.has_active_transactions());
 
     auto s_before = components::session::session_id_t::generate_uid();
-    auto& before = mgr.begin_transaction(s_before);
+    auto& before = mgr.begin_transaction(s_before, transaction_scope_t::statement);
     const auto expected = make_range(1, 9);
     REQUIRE(scan_values_txn(*table, env, before.data()) == expected);
     mgr.abort(s_before);
@@ -1338,7 +1338,7 @@ TEST_CASE("components::table::mvcc::orphaned_commit_blocks_compaction") {
     REQUIRE(table->row_group()->total_rows() == 9);
 
     auto s_after = components::session::session_id_t::generate_uid();
-    auto& after = mgr.begin_transaction(s_after);
+    auto& after = mgr.begin_transaction(s_after, transaction_scope_t::statement);
     REQUIRE(scan_values_txn(*table, env, after.data()) == expected);
     mgr.abort(s_after);
 }
@@ -1352,13 +1352,13 @@ TEST_CASE("components::table::mvcc::cleanup_must_not_publish_an_in_flight_commit
 
     // a FULL vector (cleanup_append only collapses full ones); commit without publish stays in-flight
     auto sw = components::session::session_id_t::generate_uid();
-    auto& wtxn = mgr.begin_transaction(sw);
+    auto& wtxn = mgr.begin_transaction(sw, transaction_scope_t::statement);
     append_rows_txn(*table, env, 0, 1024, wtxn.data());
     auto commit_id = mgr.commit(sw);
     table->commit_append(commit_id, 0, 1024);
 
     auto sr = components::session::session_id_t::generate_uid();
-    auto& rtxn = mgr.begin_transaction(sr);
+    auto& rtxn = mgr.begin_transaction(sr, transaction_scope_t::statement);
     REQUIRE(scan_count_txn(*table, env, rtxn.data()) == 0);
 
     table->cleanup_versions(mgr.lowest_active_start_time());
@@ -1377,13 +1377,13 @@ TEST_CASE("components::table::mvcc::cleanup_honours_a_readers_in_flight_snapshot
     transaction_manager_t mgr(&env.resource);
 
     auto sw = components::session::session_id_t::generate_uid();
-    auto& wtxn = mgr.begin_transaction(sw);
+    auto& wtxn = mgr.begin_transaction(sw, transaction_scope_t::statement);
     append_rows_txn(*table, env, 0, 1024, wtxn.data());
     auto commit_id = mgr.commit(sw);
     table->commit_append(commit_id, 0, 1024);
 
     auto sr = components::session::session_id_t::generate_uid();
-    auto& rtxn = mgr.begin_transaction(sr);
+    auto& rtxn = mgr.begin_transaction(sr, transaction_scope_t::statement);
     REQUIRE(scan_count_txn(*table, env, rtxn.data()) == 0);
 
     mgr.publish(commit_id);

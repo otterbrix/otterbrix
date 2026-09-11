@@ -750,11 +750,13 @@ TEST_CASE("services::disk::persistence::test_commit_clock_restored_across_restar
 
         components::table::transaction_manager_t txn_mgr(&fd2.resource);
         {
-            auto& pre = txn_mgr.begin_transaction(components::session::session_id_t::generate_uid());
+            auto& pre = txn_mgr.begin_transaction(components::session::session_id_t::generate_uid(),
+                                                  components::table::transaction_scope_t::statement);
             REQUIRE(pre.start_time() < static_cast<std::uint64_t>(kPersistedCommitId));
         }
         txn_mgr.seed_commit_clock(max_cid);
-        auto& post = txn_mgr.begin_transaction(components::session::session_id_t::generate_uid());
+        auto& post = txn_mgr.begin_transaction(components::session::session_id_t::generate_uid(),
+                                                  components::table::transaction_scope_t::statement);
         REQUIRE(post.start_time() > static_cast<std::uint64_t>(kPersistedCommitId));
         REQUIRE(txn_mgr.published_horizon() == max_cid);
 

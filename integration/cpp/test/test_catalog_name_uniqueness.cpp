@@ -75,8 +75,7 @@ TEST_CASE("catalog_name_uniqueness::create_table_from_two_txn_sessions") {
     auto commit_a = d->execute_sql(a, "COMMIT;");
     INFO("A COMMIT: " << status_of(commit_a));
     REQUIRE(commit_a->is_success());
-    // A failed DDL statement already aborts its own transaction, so B's COMMIT here closes
-    // nothing but must not crash.
+    // B's transaction failed with its CREATE, so this COMMIT is refused; it must not crash.
     auto commit_b = d->execute_sql(b, "COMMIT;");
     INFO("B COMMIT after refused CREATE: " << status_of(commit_b));
 

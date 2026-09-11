@@ -112,7 +112,7 @@ namespace {
                              transaction_manager_t& mgr,
                              uint64_t count) {
         auto session = components::session::session_id_t::generate_uid();
-        auto& txn = mgr.begin_transaction(session);
+        auto& txn = mgr.begin_transaction(session, transaction_scope_t::statement);
         std::pmr::vector<complex_logical_type> id_type(&env.resource);
         id_type.emplace_back(logical_type::BIGINT);
         const auto txn_id = txn.data().transaction_id;

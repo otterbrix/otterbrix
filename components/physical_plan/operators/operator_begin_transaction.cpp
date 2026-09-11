@@ -9,17 +9,19 @@ namespace components::operators {
         : read_write_operator_t(resource, std::move(log), operator_type::begin_transaction) {}
 
     actor_zeta::unique_future<void> operator_begin_transaction_t::await_async_and_resume(pipeline::context_t* ctx) {
-        // Ask the dispatcher (sole owner of transaction_manager_t) to mark the
-        // session's txn explicit. The handler does an idempotent begin_transaction
-        // THEN mark_explicit: if DML opened an implicit txn before BEGIN it is
-        // reused, and a stray BEGIN inside an open txn must not restart it
-        // (Postgres semantics).
+        // Ask the dispatcher (sole owner of transaction_manager_t) to keep the
+        // transaction this statement runs in open until COMMIT/ROLLBACK; a stray
+        // BEGIN inside an open txn must not restart it (Postgres semantics).
         if (ctx->current_message_sender != actor_zeta::address_t::empty_address()) {
             auto [_m, mf] =
                 actor_zeta::otterbrix::send(ctx->current_message_sender,
                                             &services::dispatcher::manager_dispatcher_t::txn_mark_explicit_msg,
-                                            ctx->session);
-            co_await std::move(mf);
+                                            ctx->session,
+                                            ctx->txn.transaction_id);
+            if (auto marked = co_await std::move(mf); marked.contains_error()) {
+                set_error(std::move(marked));
+                co_return;
+            }
         }
 
         // Leaf: no rows out.

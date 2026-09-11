@@ -492,9 +492,9 @@ namespace services::collection::executor {
 
         components::table::transaction_data resolve_txn = session_ctx.txn;
         trace(log_,
-              "executor::execute_plan_full: session txn {}, explicit: {}, session: {}",
+              "executor::execute_plan_full: session txn {}, ends with the statement: {}, session: {}",
               resolve_txn.transaction_id,
-              session_ctx.is_explicit,
+              plan.commits_when_done,
               session.data());
 
         const node_type original_type = [&] {
@@ -1611,11 +1611,6 @@ namespace services::collection::executor {
             }
             exec_result.pg_catalog_delete_tables.clear();
 
-            auto [_ab, abf] = actor_zeta::otterbrix::send(parent_address_,
-                                                          &services::dispatcher::manager_dispatcher_t::txn_abort_msg,
-                                                          session);
-            co_await std::move(abf);
-
             exec_result.dml_appends.clear();
             exec_result.dml_deletes.clear();
         };
@@ -1649,6 +1644,7 @@ namespace services::collection::executor {
                         actor_zeta::otterbrix::send(parent_address_,
                                                     &services::dispatcher::manager_dispatcher_t::txn_accumulate_msg,
                                                     session,
+                                                    resolve_txn.transaction_id,
                                                     std::move(payload));
                     // transaction_inactive means the ranges were parked NOWHERE — swallowing it fakes success.
                     auto accumulate_err = co_await std::move(acf);
@@ -1700,8 +1696,9 @@ namespace services::collection::executor {
                 !exec_result.pg_attribute_commit_id_backfills.empty() || !exec_result.dropped_storage_oids.empty() ||
                 !exec_result.created_storage_oids.empty() || !exec_result.created_indexes.empty()) {
                 services::dispatcher::txn_accumulate_payload_t payload;
-                payload.pg_catalog_appends = std::move(exec_result.pg_catalog_appends);
-                payload.pg_catalog_delete_tables = std::move(exec_result.pg_catalog_delete_tables);
+                // Copied, not moved
+                payload.pg_catalog_appends = exec_result.pg_catalog_appends;
+                payload.pg_catalog_delete_tables = exec_result.pg_catalog_delete_tables;
                 payload.backfills = std::move(exec_result.pg_attribute_commit_id_backfills);
                 payload.dropped_storage_oids = std::move(exec_result.dropped_storage_oids);
                 payload.created_storage_oids = std::move(exec_result.created_storage_oids);
@@ -1710,10 +1707,13 @@ namespace services::collection::executor {
                     actor_zeta::otterbrix::send(parent_address_,
                                                 &services::dispatcher::manager_dispatcher_t::txn_accumulate_msg,
                                                 session,
+                                                resolve_txn.transaction_id,
                                                 std::move(payload));
                 auto accumulate_err = co_await std::move(acf);
                 if (accumulate_err.contains_error()) {
                     exec_result.cursor = make_cursor(resource(), std::move(accumulate_err));
+                    co_await revert_failed_txn(this, exec_result);
+                    has_create_index_pg_index_range = false;
                 }
                 exec_result.pg_catalog_appends.clear();
                 exec_result.pg_catalog_delete_tables.clear();
@@ -1811,7 +1811,8 @@ namespace services::collection::executor {
         if (releases_resolve_txn) {
             auto [_rl, rlf] = actor_zeta::otterbrix::send(parent_address_,
                                                           &services::dispatcher::manager_dispatcher_t::txn_abort_msg,
-                                                          session);
+                                                          session,
+                                                          resolve_txn.transaction_id);
             co_await std::move(rlf);
         }
 

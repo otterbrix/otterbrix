@@ -157,9 +157,9 @@ TEST_CASE("components::table::fetch_visibility::uncommitted_delete_hides_only_fr
 
     transaction_manager_t mgr(&env.resource);
     auto deleter_session = components::session::session_id_t::generate_uid();
-    const auto deleter = mgr.begin_transaction(deleter_session).data();
+    const auto deleter = mgr.begin_transaction(deleter_session, transaction_scope_t::statement).data();
     auto reader_session = components::session::session_id_t::generate_uid();
-    const auto reader = mgr.begin_transaction(reader_session).data();
+    const auto reader = mgr.begin_transaction(reader_session, transaction_scope_t::statement).data();
 
     std::pmr::vector<int64_t> one(&env.resource);
     one.push_back(kProbe);
@@ -199,7 +199,7 @@ TEST_CASE("components::table::fetch_visibility::raw_still_reads_committed_delete
 
     transaction_manager_t mgr(&env.resource);
     auto session = components::session::session_id_t::generate_uid();
-    const auto txn_id = mgr.begin_transaction(session).data().transaction_id;
+    const auto txn_id = mgr.begin_transaction(session, transaction_scope_t::statement).data().transaction_id;
     delete_row(*table, env, kProbe, txn_id);
     const auto commit_id = mgr.commit(session);
     mgr.publish(commit_id);
@@ -236,7 +236,7 @@ TEST_CASE("components::table::fetch_visibility::the_answer_names_the_rows_it_car
 
     transaction_manager_t mgr(&env.resource);
     auto session = components::session::session_id_t::generate_uid();
-    const auto txn_id = mgr.begin_transaction(session).data().transaction_id;
+    const auto txn_id = mgr.begin_transaction(session, transaction_scope_t::statement).data().transaction_id;
     delete_row(*table, env, kProbe, txn_id);
     const auto commit_id = mgr.commit(session);
     mgr.publish(commit_id);

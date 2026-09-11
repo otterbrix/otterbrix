@@ -235,7 +235,7 @@ namespace {
     void delete_first_rows(data_table_t& table, nested_env_t& env, uint64_t delete_count) {
         transaction_manager_t mgr(&env.resource);
         auto session = components::session::session_id_t::generate_uid();
-        auto& txn = mgr.begin_transaction(session);
+        auto& txn = mgr.begin_transaction(session, transaction_scope_t::statement);
         auto txn_id = txn.data().transaction_id;
         std::pmr::vector<complex_logical_type> id_type(&env.resource);
         id_type.emplace_back(logical_type::BIGINT);

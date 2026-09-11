@@ -251,7 +251,7 @@ TEST_CASE("block_reachability: delete + compact + checkpoint accounts for freed 
         // Delete the first 6000 rows, commit + publish, compact, checkpoint.
         transaction_manager_t mgr(&env.resource);
         auto session = components::session::session_id_t::generate_uid();
-        auto& txn = mgr.begin_transaction(session);
+        auto& txn = mgr.begin_transaction(session, transaction_scope_t::statement);
         std::pmr::vector<complex_logical_type> id_type(&env.resource);
         id_type.emplace_back(logical_type::BIGINT);
         constexpr uint64_t DELETE_COUNT = 6000;

@@ -1,34 +1,70 @@
 #include "transaction_manager.hpp"
 
 #include <algorithm>
+#include <cassert>
 
 namespace components::table {
 
     transaction_manager_t::transaction_manager_t(std::pmr::memory_resource* resource)
         : resource_(resource) {}
 
-    transaction_t& transaction_manager_t::begin_transaction(session::session_id_t session) {
+    transaction_t& transaction_manager_t::begin_transaction(session::session_id_t session, transaction_scope_t scope) {
         std::lock_guard guard(lock_);
-        auto key = session.data();
-        if (active_.find(key) != active_.end()) {
-            return *active_[key];
+        assert(active_.find(session) == active_.end() && "begin_transaction opens; resolve_transaction joins");
+        return open_locked(session, scope);
+    }
+
+    core::result_wrapper_t<transaction_t*> transaction_manager_t::resolve_transaction(session::session_id_t session,
+                                                                                      transaction_scope_t scope,
+                                                                                      transaction_control_t control) {
+        std::lock_guard guard(lock_);
+        auto it = active_.find(session);
+        if (it == active_.end()) {
+            return &open_locked(session, scope);
         }
+        auto& txn = *it->second;
+        if (txn.state() == transaction_state_t::failed) {
+            if (control == transaction_control_t::none) {
+                return core::error_t{core::error_code_t::transaction_finalized,
+                                     std::pmr::string{"the transaction failed; only ROLLBACK is accepted until it ends",
+                                                      resource_}};
+            }
+            // Its work was undone when it failed; ending it is all that is left.
+            txn.mark_aborted();
+            active_.erase(it);
+            if (control == transaction_control_t::commit) {
+                return core::error_t{core::error_code_t::transaction_finalized,
+                                     std::pmr::string{"the transaction failed and was rolled back; nothing was "
+                                                      "committed",
+                                                      resource_}};
+            }
+            return &open_locked(session, scope);
+        }
+        if (txn.scope() == transaction_scope_t::statement) {
+            return core::error_t{core::error_code_t::other_error,
+                                 std::pmr::string{"the session's transaction belongs to a statement that has not "
+                                                  "ended yet",
+                                                  resource_}};
+        }
+        return &txn;
+    }
+
+    transaction_t& transaction_manager_t::open_locked(session::session_id_t session, transaction_scope_t scope) {
         auto txn_id = next_transaction_id_.fetch_add(1);
         auto start_time = current_timestamp_.fetch_add(1);
-        auto txn = std::make_unique<transaction_t>(txn_id, start_time, session, resource_);
+        auto txn = std::make_unique<transaction_t>(txn_id, start_time, session, scope, resource_);
         auto horizon = published_horizon_.load(std::memory_order_relaxed);
         std::pmr::vector<uint64_t> in_flight(in_flight_commits_.begin(), in_flight_commits_.end(), resource_);
         txn->set_snapshot(horizon, std::move(in_flight));
         auto& ref = *txn;
-        active_[key] = std::move(txn);
+        active_[session] = std::move(txn);
         active_start_times_.insert(start_time);
         return ref;
     }
 
     uint64_t transaction_manager_t::commit(session::session_id_t session) {
         std::lock_guard guard(lock_);
-        auto key = session.data();
-        auto it = active_.find(key);
+        auto it = active_.find(session);
         if (it == active_.end()) {
             return 0;
         }
@@ -84,8 +120,7 @@ namespace components::table {
 
     void transaction_manager_t::abort(session::session_id_t session) {
         std::lock_guard guard(lock_);
-        auto key = session.data();
-        auto it = active_.find(key);
+        auto it = active_.find(session);
         if (it == active_.end()) {
             return;
         }
@@ -94,9 +129,19 @@ namespace components::table {
         active_.erase(it);
     }
 
+    void transaction_manager_t::fail(session::session_id_t session) {
+        std::lock_guard guard(lock_);
+        auto it = active_.find(session);
+        if (it == active_.end()) {
+            return;
+        }
+        it->second->mark_failed();
+        active_start_times_.erase(it->second->start_time());
+    }
+
     transaction_t* transaction_manager_t::find_transaction(session::session_id_t session) {
         std::lock_guard guard(lock_);
-        auto it = active_.find(session.data());
+        auto it = active_.find(session);
         if (it == active_.end()) {
             return nullptr;
         }
@@ -105,7 +150,7 @@ namespace components::table {
 
     bool transaction_manager_t::has_active_transaction(session::session_id_t session) const {
         std::lock_guard guard(lock_);
-        return active_.find(session.data()) != active_.end();
+        return active_.find(session) != active_.end();
     }
 
     uint64_t transaction_manager_t::lowest_active_start_time() const {
@@ -116,7 +161,10 @@ namespace components::table {
         if (!in_flight_commits_.empty()) {
             lowest = std::min(lowest, *in_flight_commits_.begin() - 1);
         }
-        for (const auto& [key, txn] : active_) {
+        for (const auto& [session, txn] : active_) {
+            if (txn->state() == transaction_state_t::failed) {
+                continue;
+            }
             const auto data = txn->data();
             if (!data.in_flight_snapshot.empty()) {
                 // in_flight_snapshot is sorted ascending (copied from a std::set).
@@ -151,7 +199,10 @@ namespace components::table {
         if (!in_flight_commits_.empty()) {
             watermark = std::min(watermark, *in_flight_commits_.begin() - 1);
         }
-        for (const auto& [key, txn] : active_) {
+        for (const auto& [session, txn] : active_) {
+            if (txn->state() == transaction_state_t::failed) {
+                continue;
+            }
             const auto data = txn->data();
             watermark = std::min(watermark, data.snapshot_horizon);
             if (!data.in_flight_snapshot.empty()) {

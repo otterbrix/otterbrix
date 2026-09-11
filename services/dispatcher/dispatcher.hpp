@@ -20,6 +20,7 @@
 #include <core/executor.hpp>
 #include <list>
 #include <mutex>
+#include <unordered_map>
 
 #include <components/casts/cast_registry.hpp>
 #include <components/catalog/catalog_oids.hpp>
@@ -73,6 +74,7 @@ namespace services::dispatcher {
             uint32_t stale_ticks{0};
             // Crossing the threshold escalates the routine watchdog trace to a warning.
             uint32_t poke_rounds{0};
+            bool waiting{false};
         };
 
         // The two host-customization hooks default to Null Objects, never null.
@@ -125,15 +127,19 @@ namespace services::dispatcher {
 
         // txn-state mailbox service: the only way any other actor reads or mutates transaction state.
 
-        // begin (idempotent) then mark_explicit — never a no-op on a missing txn.
-        unique_future<void> txn_mark_explicit_msg(components::session::session_id_t session);
+        // Each names the transaction its statement was resolved against
+        unique_future<core::error_t> txn_mark_explicit_msg(components::session::session_id_t session,
+                                                           uint64_t transaction_id);
         // Drains every parked range, then commit() allocates the commit_id into in_flight_commits_.
-        unique_future<txn_commit_drain_t> txn_commit_drain_msg(components::session::session_id_t session);
-        unique_future<txn_abort_drain_t> txn_abort_drain_msg(components::session::session_id_t session);
+        unique_future<txn_commit_drain_t> txn_commit_drain_msg(components::session::session_id_t session,
+                                                               uint64_t transaction_id);
+        unique_future<txn_abort_drain_t> txn_abort_drain_msg(components::session::session_id_t session,
+                                                             uint64_t transaction_id);
         // Answers core::error_t, not void, so a no-active-transaction refusal isn't silently dropped.
         unique_future<core::error_t> txn_accumulate_msg(components::session::session_id_t session,
+                                                        uint64_t transaction_id,
                                                         txn_accumulate_payload_t payload);
-        unique_future<void> txn_abort_msg(components::session::session_id_t session);
+        unique_future<void> txn_abort_msg(components::session::session_id_t session, uint64_t transaction_id);
         // Returns the compact watermark data_table_t::compact() treats as its visible-to-all horizon.
         unique_future<uint64_t> txn_publish_msg(uint64_t commit_id);
         // The other end of txn_publish_msg, for commits that never reach it. The operator must be
@@ -172,7 +178,58 @@ namespace services::dispatcher {
 
         std::size_t next_executor_index() noexcept;
 
-        txn_session_context_t create_session_context(components::session::session_id_t session);
+        core::result_wrapper_t<txn_session_context_t>
+        create_session_context(components::session::session_id_t session,
+                               components::logical_plan::execution_plan_t* plan);
+
+        unique_future<void> finish_failed_statement_(components::session::session_id_t session,
+                                                     uint64_t transaction_id);
+        unique_future<void> run_rollback_plan_(components::session::session_id_t session,
+                                               components::table::transaction_data txn);
+
+        txn_abort_drain_t drain_for_abort_(components::table::transaction_t& txn);
+
+        components::table::transaction_t* statement_transaction_(components::session::session_id_t session,
+                                                                 uint64_t transaction_id);
+
+        struct waiting_statement_t {
+            components::table::transaction_control_t control;
+            actor_zeta::promise<void> admitted;
+        };
+        struct session_order_t {
+            explicit session_order_t(std::pmr::memory_resource* resource)
+                : waiting(resource) {}
+            std::size_t running{0};
+            bool closing{false};
+            // list for pointer stability
+            std::pmr::list<waiting_statement_t> waiting;
+        };
+
+        class session_turn_t {
+        public:
+            session_turn_t(manager_dispatcher_t* dispatcher,
+                           components::session::session_id_t session,
+                           components::table::transaction_control_t control)
+                : dispatcher_(dispatcher)
+                , session_(session)
+                , control_(control) {}
+            ~session_turn_t() { dispatcher_->end_turn_(session_, control_); }
+            session_turn_t(const session_turn_t&) = delete;
+            session_turn_t& operator=(const session_turn_t&) = delete;
+
+        private:
+            manager_dispatcher_t* dispatcher_;
+            components::session::session_id_t session_;
+            components::table::transaction_control_t control_;
+        };
+
+        unique_future<void> take_turn_(components::session::session_id_t session,
+                                       components::table::transaction_control_t control);
+        void end_turn_(components::session::session_id_t session, components::table::transaction_control_t control);
+        bool may_start_(components::session::session_id_t session,
+                        const session_order_t& order,
+                        components::table::transaction_control_t control);
+        void start_(session_order_t* order, components::table::transaction_control_t control);
 
         std::pmr::memory_resource* resource_;
         actor_zeta::scheduler_raw scheduler_;
@@ -207,6 +264,8 @@ namespace services::dispatcher {
         std::condition_variable pump_cv_;
 
         components::table::transaction_manager_t txn_manager_;
+        std::pmr::unordered_map<components::session::session_id_t, session_order_t> session_order_{resource_};
+        in_flight_entry_t* current_entry_{nullptr};
         components::casts::cast_registry_t cast_registry_;
         // global cached settings. updated on every set.
         // TODO: settings for the session

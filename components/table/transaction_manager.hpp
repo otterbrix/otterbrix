@@ -3,6 +3,7 @@
 #include <atomic>
 #include <components/session/session.hpp>
 #include <components/table/transaction.hpp>
+#include <core/result_wrapper.hpp>
 #include <memory>
 #include <memory_resource>
 #include <mutex>
@@ -16,9 +17,14 @@ namespace components::table {
         // resource backs in_flight_snapshot in every snapshot; required so a moved snapshot stays valid.
         explicit transaction_manager_t(std::pmr::memory_resource* resource);
 
-        transaction_t& begin_transaction(session::session_id_t session);
+        transaction_t& begin_transaction(session::session_id_t session, transaction_scope_t scope);
+
+        core::result_wrapper_t<transaction_t*>
+        resolve_transaction(session::session_id_t session, transaction_scope_t scope, transaction_control_t control);
+
         uint64_t commit(session::session_id_t session);
         void abort(session::session_id_t session);
+        void fail(session::session_id_t session);
 
         transaction_t* find_transaction(session::session_id_t session);
         bool has_active_transaction(session::session_id_t session) const;
@@ -62,6 +68,7 @@ namespace components::table {
     private:
         // Backs both public horizon readers; requires lock_ held by the caller (not recursive).
         uint64_t visible_to_all_locked() const;
+        transaction_t& open_locked(session::session_id_t session, transaction_scope_t scope);
 
         std::pmr::memory_resource* resource_;
         // NOT seeded from the journal, unlike the commit clock -- deliberate (cost a durability bug once):
@@ -69,7 +76,7 @@ namespace components::table {
         std::atomic<uint64_t> next_transaction_id_{TRANSACTION_ID_START};
         std::atomic<uint64_t> current_timestamp_{1};
         mutable std::mutex lock_;
-        std::unordered_map<uint64_t, std::unique_ptr<transaction_t>> active_;
+        std::unordered_map<session::session_id_t, std::unique_ptr<transaction_t>> active_;
         std::set<uint64_t> active_start_times_;
         // commit_ids allocated by commit() but not yet visible until publish(); snapshots must reject them.
         std::set<uint64_t> in_flight_commits_;

@@ -261,8 +261,8 @@ namespace services::wal {
                 co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::write_physical_update, msg);
                 break;
             }
-            case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::write_physical_add_column>: {
-                co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::write_physical_add_column, msg);
+            case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::write_physical_grow>: {
+                co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::write_physical_grow, msg);
                 break;
             }
             default:
@@ -657,31 +657,38 @@ namespace services::wal {
     }
 
     manager_wal_replicate_t::unique_future<core::result_wrapper_t<wal::id_t>>
-    manager_wal_replicate_t::write_physical_add_column(session_id_t session,
-                                                       components::catalog::oid_t table_oid,
-                                                       std::unique_ptr<components::vector::data_chunk_t> schema_chunk,
-                                                       uint64_t column_count,
-                                                       uint64_t txn_id,
-                                                       components::catalog::oid_t database_oid) {
+    manager_wal_replicate_t::write_physical_grow(session_id_t session,
+                                                 components::catalog::oid_t table_oid,
+                                                 std::unique_ptr<components::vector::data_chunk_t> schema_chunk,
+                                                 uint64_t column_count,
+                                                 std::pmr::vector<components::vector::data_chunk_t> chunks,
+                                                 uint64_t row_start,
+                                                 uint64_t row_count,
+                                                 uint64_t txn_id,
+                                                 components::catalog::oid_t database_oid) {
         if (recovery_error_.contains_error()) {
             co_return core::result_wrapper_t<wal::id_t>{recovery_error_};
         }
 
         auto* worker = get_or_create_worker(database_oid);
-        auto wal_id = next_wal_id();
+        const auto add_column_id = next_wal_id();
+        const auto insert_id = next_wal_id();
         auto [needs_sched, fut] = actor_zeta::otterbrix::send(worker->address(),
-                                                              &wal_worker_t::write_physical_add_column,
+                                                              &wal_worker_t::write_physical_grow,
                                                               session,
                                                               table_oid,
                                                               std::move(schema_chunk),
                                                               column_count,
+                                                              std::move(chunks),
+                                                              row_start,
+                                                              row_count,
                                                               txn_id,
-                                                              wal_id);
+                                                              add_column_id,
+                                                              insert_id);
         if (needs_sched) {
             scheduler_->enqueue(worker);
         }
         auto result = co_await std::move(fut);
         co_return std::move(result);
     }
-
 } // namespace services::wal

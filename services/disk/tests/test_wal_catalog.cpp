@@ -547,8 +547,7 @@ namespace {
     }
 } // namespace
 
-// The PHYSICAL_ADD_COLUMN write is awaited but drained only after the insert await -- same FIFO
-// WAL worker means it's already complete by then, keeping the handler's single suspension point.
+// write_physical_grow journals the PHYSICAL_ADD_COLUMN and the PHYSICAL_INSERT that needs it in one worker handler.
 TEST_CASE("services::disk::wal_catalog::a_growth_append_journals_the_add_column_ahead_of_the_insert") {
     auto dir = wal_cat_dir() + "/addcol_journaled";
     cleanup_dir(dir);

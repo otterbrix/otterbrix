@@ -103,8 +103,8 @@ namespace services::wal {
                 co_await actor_zeta::dispatch(this, &wal_worker_t::write_physical_update, msg);
                 break;
             }
-            case actor_zeta::msg_id<wal_worker_t, &wal_worker_t::write_physical_add_column>: {
-                co_await actor_zeta::dispatch(this, &wal_worker_t::write_physical_add_column, msg);
+            case actor_zeta::msg_id<wal_worker_t, &wal_worker_t::write_physical_grow>: {
+                co_await actor_zeta::dispatch(this, &wal_worker_t::write_physical_grow, msg);
                 break;
             }
             default:
@@ -284,6 +284,35 @@ namespace services::wal {
         last_crc_ = record_crc;
 
         co_return core::result_wrapper_t<wal::id_t>{wal_id};
+    }
+
+    wal_worker_t::unique_future<core::result_wrapper_t<wal::id_t>>
+    wal_worker_t::write_physical_grow(session_id_t session,
+                                      components::catalog::oid_t table_oid,
+                                      std::unique_ptr<components::vector::data_chunk_t> schema_chunk,
+                                      uint64_t column_count,
+                                      std::pmr::vector<components::vector::data_chunk_t> chunks,
+                                      uint64_t row_start,
+                                      uint64_t row_count,
+                                      uint64_t txn_id,
+                                      wal::id_t add_column_id,
+                                      wal::id_t insert_id) {
+        auto added = co_await write_physical_add_column(session,
+                                                        table_oid,
+                                                        std::move(schema_chunk),
+                                                        column_count,
+                                                        txn_id,
+                                                        add_column_id);
+        if (added.has_error()) {
+            co_return std::move(added);
+        }
+        co_return co_await write_physical_insert(session,
+                                                 table_oid,
+                                                 std::move(chunks),
+                                                 row_start,
+                                                 row_count,
+                                                 txn_id,
+                                                 insert_id);
     }
 
     wal_worker_t::unique_future<core::result_wrapper_t<wal::id_t>> wal_worker_t::commit_txn(session_id_t /*session*/,

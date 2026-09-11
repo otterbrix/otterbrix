@@ -44,6 +44,11 @@ namespace components::sort {
                  order order_ = order::ascending,
                  null_order null_order_ = null_order::last);
 
+        void clear() noexcept {
+            keys_.clear();
+            chunk_ = nullptr;
+        }
+
         void set_chunk(const vector::data_chunk_t& chunk);
 
         bool operator()(size_t row_a, size_t row_b) const {

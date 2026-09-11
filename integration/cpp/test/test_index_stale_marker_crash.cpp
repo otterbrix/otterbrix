@@ -34,9 +34,7 @@ namespace {
     constexpr int64_t kDeleteFrom = 1001;
     constexpr int64_t kDeleteTo = 2000;
 
-    std::string fixture_root() {
-        return integration_fixture_path("test_index_stale_marker_crash").string();
-    }
+    std::string fixture_root() { return integration_fixture_path("test_index_stale_marker_crash").string(); }
 
     std::string plan_text(const components::cursor::cursor_t_ptr& cur) {
         std::string out;
@@ -165,8 +163,7 @@ namespace {
     }
 
     std::filesystem::path user_table_sidecar(const std::filesystem::path& db_root) {
-        const auto system_dir =
-            std::to_string(static_cast<unsigned>(services::disk::manager_disk_t::system_dir_oid()));
+        const auto system_dir = std::to_string(static_cast<unsigned>(services::disk::manager_disk_t::system_dir_oid()));
         std::vector<std::filesystem::path> found;
         for (const auto& ns : std::filesystem::directory_iterator(db_root)) {
             if (!ns.is_directory() || ns.path().filename().string() == system_dir) {
@@ -223,8 +220,7 @@ TEST_CASE("integration::cpp::index_stale_marker_crash::a_restart_may_not_wire_an
 
         {
             const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
-            while (services::index::index_deferred_deletes() != 0 &&
-                   std::chrono::steady_clock::now() < deadline) {
+            while (services::index::index_deferred_deletes() != 0 && std::chrono::steady_clock::now() < deadline) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
             }
             INFO("the deferred-erase queue has to be empty before the fault goes in");
@@ -262,14 +258,13 @@ TEST_CASE("integration::cpp::index_stale_marker_crash::a_restart_may_not_wire_an
         {
             // Read-only: clear() lists the segments but every unlink is refused by the kernel.
             dir_permissions_guard_t no_writes(bitcask_dir,
-                                              std::filesystem::perms::owner_read |
-                                                  std::filesystem::perms::owner_exec);
+                                              std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec);
             INFO("the injection has to be real: a suite running as root would write anyway");
             REQUIRE(directory_really_refuses_writes(bitcask_dir));
 
             auto round_two = exec(d, "CHECKPOINT;");
-            round_two_reason = round_two->is_error() ? std::string{round_two->get_error().what.c_str()}
-                                                     : std::string{"SUCCESS"};
+            round_two_reason =
+                round_two->is_error() ? std::string{round_two->get_error().what.c_str()} : std::string{"SUCCESS"};
             INFO("a rebuild that could not clear the store is a refusal, and the statement reports it: "
                  << round_two_reason);
             REQUIRE(!round_two->is_success());
@@ -287,8 +282,7 @@ TEST_CASE("integration::cpp::index_stale_marker_crash::a_restart_may_not_wire_an
              << services::index::index_repopulations());
         REQUIRE(services::index::index_repopulations() > 0);
 
-        INFO("NOT VACUOUS (4): and that rebuild REFUSED, by the reason the store itself gave: "
-             << round_two_reason);
+        INFO("NOT VACUOUS (4): and that rebuild REFUSED, by the reason the store itself gave: " << round_two_reason);
         REQUIRE(round_two_reason.find("could not be removed by clear()") != std::string::npos);
 
         copy_dir_as_crash(config.main_path, crash_dir);

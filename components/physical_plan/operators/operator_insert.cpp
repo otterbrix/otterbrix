@@ -261,6 +261,33 @@ namespace components::operators {
                 set_output(nullptr);
             }
         } else {
+            if (returning_accum_.empty()) {
+                // Nothing inserted, but we still have to return correct columns
+                auto [_rt, rtf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                              &services::disk::manager_disk_t::storage_types,
+                                                              ctx->session,
+                                                              table_oid_);
+                auto returning_types = co_await std::move(rtf);
+                if (returning_types.has_error()) {
+                    set_error(returning_types.error());
+                    mark_failed();
+                    co_return;
+                }
+                vector::data_chunk_t empty(resource_, returning_types.value(), 0);
+                empty.set_cardinality(0);
+                auto proj = evaluate_projection(resource_,
+                                                returning_,
+                                                &empty,
+                                                ctx->parameters,
+                                                ctx->execution_context,
+                                                &returning_graph_);
+                if (proj.has_error()) {
+                    set_error(proj.error());
+                    mark_failed();
+                    co_return;
+                }
+                returning_accum_.emplace_back(std::move(proj.value()));
+            }
             set_output(make_operator_data(resource_, std::move(returning_accum_)));
         }
         mark_executed();

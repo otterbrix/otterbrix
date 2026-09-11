@@ -25,11 +25,12 @@ TEST_CASE("catalog::prorettype::a_custom_resolver_is_tagged_not_downgraded") {
 
 TEST_CASE("catalog::prorettype::introspectable_outputs_still_encode") {
     std::vector<output_type> outs;
-    outs.push_back(output_type::fixed(components::types::complex_logical_type{components::types::logical_type::BIGINT}));
+    outs.push_back(
+        output_type::fixed(components::types::complex_logical_type{components::types::logical_type::BIGINT}));
     outs.push_back(output_type::same_type_at(1));
 
-    const auto expected = std::string{"f:"} +
-                          std::to_string(static_cast<int>(components::types::logical_type::BIGINT)) + ",s:1";
+    const auto expected =
+        std::string{"f:"} + std::to_string(static_cast<int>(components::types::logical_type::BIGINT)) + ",s:1";
     REQUIRE(encode_prorettype(outs) == expected);
 }
 

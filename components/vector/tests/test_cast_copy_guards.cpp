@@ -141,7 +141,8 @@ TEST_CASE("vector_ops: cast_vector refuses an out-of-range value instead of trun
         small.set_null(1, true);
         small.set_value(2, int32_t{456});
 
-        auto casted = vector::vector_ops::cast_vector(&resource, small, complex_logical_type(logical_type::SMALLINT), 3);
+        auto casted =
+            vector::vector_ops::cast_vector(&resource, small, complex_logical_type(logical_type::SMALLINT), 3);
         REQUIRE_FALSE(casted.has_error());
         CHECK(casted.value().data<int16_t>()[0] == -1234);
         CHECK(casted.value().validity().row_is_valid(1) == false);
@@ -151,14 +152,16 @@ TEST_CASE("vector_ops: cast_vector refuses an out-of-range value instead of trun
     SECTION("negative into unsigned is a refusal") {
         vector::vector_t negative(&resource, complex_logical_type(logical_type::BIGINT), 4);
         negative.set_value(0, int64_t{-1});
-        auto casted = vector::vector_ops::cast_vector(&resource, negative, complex_logical_type(logical_type::UBIGINT), 1);
+        auto casted =
+            vector::vector_ops::cast_vector(&resource, negative, complex_logical_type(logical_type::UBIGINT), 1);
         REQUIRE(casted.has_error());
     }
 
     SECTION("double out of float range is a refusal, in-range converts") {
         vector::vector_t doubles(&resource, complex_logical_type(logical_type::DOUBLE), 4);
         doubles.set_value(0, double{1e300});
-        auto refused = vector::vector_ops::cast_vector(&resource, doubles, complex_logical_type(logical_type::FLOAT), 1);
+        auto refused =
+            vector::vector_ops::cast_vector(&resource, doubles, complex_logical_type(logical_type::FLOAT), 1);
         REQUIRE(refused.has_error());
 
         vector::vector_t fits(&resource, complex_logical_type(logical_type::DOUBLE), 4);
@@ -182,7 +185,8 @@ TEST_CASE("vector_ops: cast_vector string pairs answer through the channel") {
         src.set_null(1, true);
         src.set_value(2, std::string_view{"beta"});
 
-        auto out = vector::vector_ops::cast_vector(&resource, src, complex_logical_type(logical_type::STRING_LITERAL), 3);
+        auto out =
+            vector::vector_ops::cast_vector(&resource, src, complex_logical_type(logical_type::STRING_LITERAL), 3);
         REQUIRE_FALSE(out.has_error());
         CHECK(out.value().value(0).value<std::string_view>() == "alpha");
         CHECK(out.value().is_null(1));
@@ -192,7 +196,8 @@ TEST_CASE("vector_ops: cast_vector string pairs answer through the channel") {
     SECTION("numeric to string is a refusal, not an uninitialised vector") {
         vector::vector_t src(&resource, complex_logical_type(logical_type::BIGINT), 4);
         src.set_value(0, int64_t{7});
-        auto out = vector::vector_ops::cast_vector(&resource, src, complex_logical_type(logical_type::STRING_LITERAL), 1);
+        auto out =
+            vector::vector_ops::cast_vector(&resource, src, complex_logical_type(logical_type::STRING_LITERAL), 1);
         REQUIRE(out.has_error());
         CHECK(out.error().type == core::error_code_t::conversion_failure);
     }

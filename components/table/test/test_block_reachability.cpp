@@ -27,8 +27,7 @@ namespace tstorage = components::table::storage;
 namespace {
 
     std::string walker_db_path() {
-        static std::string path =
-            "/tmp/test_otterbrix_block_reachability_" + std::to_string(::getpid()) + ".otbx";
+        static std::string path = "/tmp/test_otterbrix_block_reachability_" + std::to_string(::getpid()) + ".otbx";
         return path;
     }
 
@@ -225,8 +224,7 @@ TEST_CASE("block_reachability: reopen, checkpoint twice without compact") {
             }
             // The safety condition: every unexplained block is attributable garbage.
             CHECK(holes.empty());
-            WARN("[walker] S2 round " + std::to_string(round) +
-                 " garbage=" + std::to_string(r.unexplained.size()) +
+            WARN("[walker] S2 round " + std::to_string(round) + " garbage=" + std::to_string(r.unexplained.size()) +
                  " issued_this_reopen=" + std::to_string(bm.dev_issued_ids().size()));
             absorb(known_prior, r);
         }
@@ -307,9 +305,12 @@ TEST_CASE("block_reachability: delete + compact + checkpoint accounts for freed 
             std::string s = "[walker] S3 OVERLAP needed∩freelist: ";
             for (auto id : r1.reachable_free_overlap) {
                 s += std::to_string(id) + "(";
-                if (r1.chain_blocks.count(id)) s += "chain";
-                if (r1.durable_data.count(id)) s += "+data";
-                if (r1.registry_live.count(id)) s += "+registry";
+                if (r1.chain_blocks.count(id))
+                    s += "chain";
+                if (r1.durable_data.count(id))
+                    s += "+data";
+                if (r1.registry_live.count(id))
+                    s += "+registry";
                 s += ") ";
             }
             WARN(s);
@@ -327,9 +328,8 @@ TEST_CASE("block_reachability: delete + compact + checkpoint accounts for freed 
                 unexplained_freed++;
             }
         }
-        WARN("[walker] S3 freed=" + std::to_string(bm.dev_freed_ids().size()) +
-             " unexplained_freed=" + std::to_string(unexplained_freed) +
-             " garbage=" + std::to_string(r1.unexplained.size()));
+        WARN("[walker] S3 freed=" + std::to_string(bm.dev_freed_ids().size()) + " unexplained_freed=" +
+             std::to_string(unexplained_freed) + " garbage=" + std::to_string(r1.unexplained.size()));
         CHECK(unexplained_freed == 0);
     }
     cleanup_walker_file();
@@ -362,9 +362,8 @@ TEST_CASE("block_reachability: pre-checkpoint write-through blocks live in the r
                 unexplained_issued++;
             }
         }
-        WARN("[walker] S4 issued=" + std::to_string(bm.dev_issued_ids().size()) +
-             " registry_live=" + std::to_string(registry_set.size()) +
-             " unexplained_issued=" + std::to_string(unexplained_issued));
+        WARN("[walker] S4 issued=" + std::to_string(bm.dev_issued_ids().size()) + " registry_live=" +
+             std::to_string(registry_set.size()) + " unexplained_issued=" + std::to_string(unexplained_issued));
         CHECK(unexplained_issued == 0);
     }
     cleanup_walker_file();

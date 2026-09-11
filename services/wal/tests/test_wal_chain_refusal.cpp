@@ -133,9 +133,7 @@ namespace {
         }
 
         // resource_ must be declared first so it outlives ~wal_env_t's teardown of manager_.
-        std::pmr::vector<data_chunk_t> make_insert_batch(size_t rows) {
-            return one_chunk(&resource_, rows);
-        }
+        std::pmr::vector<data_chunk_t> make_insert_batch(size_t rows) { return one_chunk(&resource_, rows); }
 
         auto send_insert(uint64_t txn_id, size_t rows, uint64_t row_start = 0) {
             auto [ns, fut] = actor_zeta::otterbrix::send(manager_->address(),
@@ -178,9 +176,7 @@ namespace {
             return std::move(fut);
         }
 
-        std::filesystem::path db_dir() const {
-            return config_.path / std::to_string(static_cast<unsigned>(kMainDb));
-        }
+        std::filesystem::path db_dir() const { return config_.path / std::to_string(static_cast<unsigned>(kMainDb)); }
 
         std::filesystem::path path_;
         core::pmr::otterbrix_resource resource_;
@@ -222,7 +218,7 @@ namespace {
         return nullptr;
     }
 
-}
+} // namespace
 
 TEST_CASE("wal::chain::a_refused_write_does_not_advance_the_crc_chain") {
     wal_fault_scope_t fault;

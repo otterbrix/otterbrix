@@ -366,8 +366,7 @@ namespace components::types {
         auto conversion_failure = [this, &type]() {
             std::string message = "cannot cast logical_type " + std::to_string(static_cast<int>(type_.type())) +
                                   " to logical_type " + std::to_string(static_cast<int>(type.type()));
-            return core::error_t{core::error_code_t::conversion_failure,
-                                 std::pmr::string{message.c_str(), resource_}};
+            return core::error_t{core::error_code_t::conversion_failure, std::pmr::string{message.c_str(), resource_}};
         };
         // A DECIMAL source stores value * 10^scale (NUMERIC(10,2) 3.00 -> 300 uncorrected); route it through
         // the descaling branch. BOOLEAN stays raw: payload truthiness equals value truthiness.
@@ -1109,9 +1108,8 @@ namespace components::types {
     constexpr auto place_holder_time_zone = core::date::timezone_offset_t{};
 
     namespace {
-        core::error_t unsupported_operands(std::string_view what,
-                                           const logical_value_t& value1,
-                                           const logical_value_t& value2) {
+        core::error_t
+        unsupported_operands(std::string_view what, const logical_value_t& value1, const logical_value_t& value2) {
             auto* r = value1.resource() ? value1.resource() : value2.resource();
             std::pmr::string message{r};
             message.append(what);
@@ -1150,7 +1148,7 @@ namespace components::types {
     } // namespace
 
     core::result_wrapper_t<logical_value_t> logical_value_t::sum(const logical_value_t& value1,
-                                                                const logical_value_t& value2) {
+                                                                 const logical_value_t& value2) {
         if (value1.is_null() || value2.is_null()) {
             auto* r = value1.resource() ? value1.resource() : value2.resource();
             return logical_value_t{r, complex_logical_type{logical_type::NA}};
@@ -1168,8 +1166,7 @@ namespace components::types {
 
         // Must never dispatch on the left type when the right differs: BIGINT+STRING would read the string's
         // heap pointer as an int64. A mismatch falls to the temporal combinations below, then to unsupported_operands.
-        const auto type =
-            value1.type().type() == value2.type().type() ? value1.type().type() : logical_type::INVALID;
+        const auto type = value1.type().type() == value2.type().type() ? value1.type().type() : logical_type::INVALID;
         switch (type) {
             case logical_type::BOOLEAN:
                 return op<std::plus<>>(value1, value2, &logical_value_t::value<bool>);
@@ -1264,7 +1261,7 @@ namespace components::types {
     }
 
     core::result_wrapper_t<logical_value_t> logical_value_t::subtract(const logical_value_t& value1,
-                                                                const logical_value_t& value2) {
+                                                                      const logical_value_t& value2) {
         if (value1.is_null() || value2.is_null()) {
             auto* r = value1.resource() ? value1.resource() : value2.resource();
             return logical_value_t{r, complex_logical_type{logical_type::NA}};
@@ -1280,8 +1277,7 @@ namespace components::types {
             return subtract(lhs, rhs);
         }
 
-        const auto type =
-            value1.type().type() == value2.type().type() ? value1.type().type() : logical_type::INVALID;
+        const auto type = value1.type().type() == value2.type().type() ? value1.type().type() : logical_type::INVALID;
         switch (type) {
             case logical_type::BOOLEAN:
                 return op<std::minus<>>(value1, value2, &logical_value_t::value<bool>);
@@ -1389,7 +1385,7 @@ namespace components::types {
     }
 
     core::result_wrapper_t<logical_value_t> logical_value_t::mult(const logical_value_t& value1,
-                                                                const logical_value_t& value2) {
+                                                                  const logical_value_t& value2) {
         if (value1.is_null() || value2.is_null()) {
             auto* r = value1.resource() ? value1.resource() : value2.resource();
             return logical_value_t{r, complex_logical_type{logical_type::NA}};
@@ -1405,8 +1401,7 @@ namespace components::types {
             return mult(lhs, rhs);
         }
 
-        const auto type =
-            value1.type().type() == value2.type().type() ? value1.type().type() : logical_type::INVALID;
+        const auto type = value1.type().type() == value2.type().type() ? value1.type().type() : logical_type::INVALID;
         switch (type) {
             case logical_type::BOOLEAN:
                 return op<std::multiplies<>>(value1, value2, &logical_value_t::value<bool>);
@@ -1483,7 +1478,7 @@ namespace components::types {
     }
 
     core::result_wrapper_t<logical_value_t> logical_value_t::divide(const logical_value_t& value1,
-                                                                const logical_value_t& value2) {
+                                                                    const logical_value_t& value2) {
         if (value1.is_null() || value2.is_null()) {
             auto* r = value1.resource() ? value1.resource() : value2.resource();
             return logical_value_t{r, complex_logical_type{logical_type::NA}};
@@ -1509,8 +1504,7 @@ namespace components::types {
             return divide(lhs, rhs);
         }
 
-        const auto type =
-            value1.type().type() == value2.type().type() ? value1.type().type() : logical_type::INVALID;
+        const auto type = value1.type().type() == value2.type().type() ? value1.type().type() : logical_type::INVALID;
         switch (type) {
             case logical_type::BOOLEAN:
                 return op<std::divides<>>(value1, value2, &logical_value_t::value<bool>);
@@ -1583,7 +1577,7 @@ namespace components::types {
     }
 
     core::result_wrapper_t<logical_value_t> logical_value_t::modulus(const logical_value_t& value1,
-                                                                const logical_value_t& value2) {
+                                                                     const logical_value_t& value2) {
         if (value1.is_null() || value2.is_null()) {
             auto* r = value1.resource() ? value1.resource() : value2.resource();
             return logical_value_t{r, complex_logical_type{logical_type::NA}};
@@ -1599,8 +1593,7 @@ namespace components::types {
             return modulus(lhs, rhs);
         }
 
-        const auto type =
-            value1.type().type() == value2.type().type() ? value1.type().type() : logical_type::INVALID;
+        const auto type = value1.type().type() == value2.type().type() ? value1.type().type() : logical_type::INVALID;
         switch (type) {
             case logical_type::BOOLEAN:
                 return op<std::modulus<>>(value1, value2, &logical_value_t::value<bool>);
@@ -1630,7 +1623,7 @@ namespace components::types {
     }
 
     core::result_wrapper_t<logical_value_t> logical_value_t::exponent(const logical_value_t& value1,
-                                                                const logical_value_t& value2) {
+                                                                      const logical_value_t& value2) {
         if (value1.is_null() || value2.is_null()) {
             auto* r = value1.resource() ? value1.resource() : value2.resource();
             return logical_value_t{r, complex_logical_type{logical_type::NA}};
@@ -1643,8 +1636,7 @@ namespace components::types {
             }
             return exponent(promoted.value().lhs, promoted.value().rhs);
         }
-        const auto type =
-            value1.type().type() == value2.type().type() ? value1.type().type() : logical_type::INVALID;
+        const auto type = value1.type().type() == value2.type().type() ? value1.type().type() : logical_type::INVALID;
         switch (type) {
             case logical_type::BOOLEAN:
                 return op<pow<>>(value1, value2, &logical_value_t::value<bool>);
@@ -1674,7 +1666,7 @@ namespace components::types {
     }
 
     core::result_wrapper_t<logical_value_t> logical_value_t::bit_and(const logical_value_t& value1,
-                                                                const logical_value_t& value2) {
+                                                                     const logical_value_t& value2) {
         if (value1.is_null() || value2.is_null()) {
             auto* r = value1.resource() ? value1.resource() : value2.resource();
             return logical_value_t{r, complex_logical_type{logical_type::NA}};
@@ -1687,8 +1679,7 @@ namespace components::types {
             }
             return bit_and(promoted.value().lhs, promoted.value().rhs);
         }
-        const auto type =
-            value1.type().type() == value2.type().type() ? value1.type().type() : logical_type::INVALID;
+        const auto type = value1.type().type() == value2.type().type() ? value1.type().type() : logical_type::INVALID;
         switch (type) {
             case logical_type::BOOLEAN:
                 return op<std::bit_and<>>(value1, value2, &logical_value_t::value<bool>);

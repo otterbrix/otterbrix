@@ -96,9 +96,8 @@ namespace {
         return keys;
     }
 
-    std::vector<std::pair<logical_value_t, size_t>> one_entry(std::pmr::memory_resource* resource,
-                                                              int64_t key,
-                                                              size_t row_id) {
+    std::vector<std::pair<logical_value_t, size_t>>
+    one_entry(std::pmr::memory_resource* resource, int64_t key, size_t row_id) {
         std::vector<std::pair<logical_value_t, size_t>> values;
         values.emplace_back(logical_value_t(resource, key), row_id);
         return values;
@@ -153,12 +152,10 @@ TEST_CASE("services::index::a committed delete reaches the store only once the h
     // index_deferred_deletes() is process-wide, so every check below is a difference against this binary's prior count.
     const auto deferred_before = services::index::index_deferred_deletes();
 
-    REQUIRE_FALSE(
-        ask<&index_agent_contract::stage_inserts>(agent, session, writer_txn, one_entry(&resource, 42, 7))
-            .contains_error());
-    REQUIRE_FALSE(
-        ask<&index_agent_contract::commit_inserts>(agent, session, writer_txn, commit_id_of(writer_txn))
-            .contains_error());
+    REQUIRE_FALSE(ask<&index_agent_contract::stage_inserts>(agent, session, writer_txn, one_entry(&resource, 42, 7))
+                      .contains_error());
+    REQUIRE_FALSE(ask<&index_agent_contract::commit_inserts>(agent, session, writer_txn, commit_id_of(writer_txn))
+                      .contains_error());
 
     const auto probe = [&](uint64_t txn_id) {
         auto answer = ask<&index_agent_contract::read_rows>(agent,
@@ -172,9 +169,8 @@ TEST_CASE("services::index::a committed delete reaches the store only once the h
     };
     REQUIRE(probe(onlooker_txn) == std::vector<int64_t>{7});
 
-    REQUIRE_FALSE(
-        ask<&index_agent_contract::stage_deletes>(agent, session, deleter_txn, one_entry(&resource, 42, 7))
-            .contains_error());
+    REQUIRE_FALSE(ask<&index_agent_contract::stage_deletes>(agent, session, deleter_txn, one_entry(&resource, 42, 7))
+                      .contains_error());
 
     std::pmr::vector<components::catalog::oid_t> oids(&resource);
     oids.emplace_back(kTableOid);
@@ -239,15 +235,12 @@ TEST_CASE("services::index::tearing an index down drops the erases it was still 
     const auto session = session_id_t::generate_uid();
     const uint64_t deleter_txn = TRANSACTION_ID_START + 5;
 
-    REQUIRE_FALSE(
-        ask<&index_agent_contract::stage_inserts>(agent, session, deleter_txn, one_entry(&resource, 11, 3))
-            .contains_error());
-    REQUIRE_FALSE(
-        ask<&index_agent_contract::commit_inserts>(agent, session, deleter_txn, commit_id_of(deleter_txn))
-            .contains_error());
-    REQUIRE_FALSE(
-        ask<&index_agent_contract::stage_deletes>(agent, session, deleter_txn, one_entry(&resource, 11, 3))
-            .contains_error());
+    REQUIRE_FALSE(ask<&index_agent_contract::stage_inserts>(agent, session, deleter_txn, one_entry(&resource, 11, 3))
+                      .contains_error());
+    REQUIRE_FALSE(ask<&index_agent_contract::commit_inserts>(agent, session, deleter_txn, commit_id_of(deleter_txn))
+                      .contains_error());
+    REQUIRE_FALSE(ask<&index_agent_contract::stage_deletes>(agent, session, deleter_txn, one_entry(&resource, 11, 3))
+                      .contains_error());
 
     const auto deferred_before = services::index::index_deferred_deletes();
     std::pmr::vector<components::catalog::oid_t> oids(&resource);

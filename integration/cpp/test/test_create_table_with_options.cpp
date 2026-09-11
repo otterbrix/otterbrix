@@ -2,8 +2,8 @@
 // only "storage" and silently `continue`d past every other name, so an unimplemented or misspelled option
 // was accepted instead of refused.
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

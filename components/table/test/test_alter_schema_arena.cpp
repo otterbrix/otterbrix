@@ -139,10 +139,10 @@ namespace {
     void require_schema_on_arena(const collection_t& successor, arena_probe_t& arena, size_t expected_columns) {
         const auto& types = successor.types();
         REQUIRE(types.size() == expected_columns);
-        INFO("arena=" << static_cast<const void*>(&arena) << " reported="
-                      << static_cast<const void*>(types.get_allocator().resource())
-                      << " buffer=" << static_cast<const void*>(types.data())
-                      << " live_blocks=" << arena.live_blocks() << " handed_out=" << arena.handed_out());
+        INFO("arena=" << static_cast<const void*>(&arena)
+                      << " reported=" << static_cast<const void*>(types.get_allocator().resource())
+                      << " buffer=" << static_cast<const void*>(types.data()) << " live_blocks=" << arena.live_blocks()
+                      << " handed_out=" << arena.handed_out());
         // The vector must REPORT the table's arena...
         REQUIRE(types.get_allocator().resource() == static_cast<std::pmr::memory_resource*>(&arena));
         // ...and its buffer must actually LIVE there.

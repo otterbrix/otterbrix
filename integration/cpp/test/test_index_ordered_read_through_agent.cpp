@@ -4,8 +4,8 @@
 // moved, since a facade could otherwise pass on row counts alone. Range predicates
 // (<, <=, >, >=) exercise a read message that used to be equality-only.
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <services/index/manager_index.hpp>
 

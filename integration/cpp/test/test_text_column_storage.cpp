@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <components/catalog/catalog_oids.hpp>
 
@@ -128,8 +128,7 @@ namespace {
             const int probes[] = {0, 1, rows / 2, rows - 1};
             for (const int id : probes) {
                 auto session = otterbrix::session_id_t();
-                auto cur =
-                    d->execute_sql(session, "SELECT payload FROM t.wide WHERE id = " + std::to_string(id) + ";");
+                auto cur = d->execute_sql(session, "SELECT payload FROM t.wide WHERE id = " + std::to_string(id) + ";");
                 INFO("readback of row " << id << " after reopen");
                 REQUIRE(cur->is_success());
                 REQUIRE(cur->size() == 1);
@@ -181,8 +180,8 @@ TEST_CASE("integration::cpp::test_text_column_storage::amplification_stays_bound
         REQUIRE(m.table_bytes > 0);
         const double amplification = static_cast<double>(m.table_bytes) / static_cast<double>(m.payload_bytes);
         WARN(c.name << ": payload " << (m.payload_bytes / 1024) << " KiB, table " << (m.table_bytes / 1024)
-                    << " KiB, amplification " << amplification << "x (whole fixture root "
-                    << (m.root_bytes / 1024) << " KiB)");
+                    << " KiB, amplification " << amplification << "x (whole fixture root " << (m.root_bytes / 1024)
+                    << " KiB)");
 
         CHECK(amplification < c.max_amplification);
     }

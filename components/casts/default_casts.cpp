@@ -292,7 +292,7 @@ namespace components::casts {
             complex_logical_type target{types::to_logical_type<Target>()};
             cast_entry entry{
                 cast_function_t{&kernels::string_to_number_cast<Target>, &kernels::string_to_number_try_cast<Target>},
-                cast_type::explicit_only,
+                cast_type::assignment,
                 /*convertable_inplace*/ false};
             [[maybe_unused]] auto error = registry.add(source, target, std::move(entry));
             assert(!error.contains_error() && "duplicate default cast registration");
@@ -314,7 +314,7 @@ namespace components::casts {
 
             cast_entry from_string{
                 cast_function_t{&kernels::string_to_decimal_cast, &kernels::string_to_decimal_try_cast},
-                cast_type::explicit_only,
+                cast_type::assignment,
                 /*convertable_inplace*/ false};
             [[maybe_unused]] auto from_error = registry.add(string, decimal_key(), std::move(from_string));
             assert(!from_error.contains_error() && "duplicate default cast registration");
@@ -348,7 +348,7 @@ namespace components::casts {
             complex_logical_type target{types::to_logical_type<To>()};
             cast_entry entry{
                 cast_function_t{&kernels::string_to_datetime_cast<To>, &kernels::string_to_datetime_try_cast<To>},
-                cast_type::explicit_only,
+                cast_type::assignment,
                 /*convertable_inplace*/ false};
             [[maybe_unused]] auto error = registry.add(source, target, std::move(entry));
             assert(!error.contains_error() && "duplicate default cast registration");
@@ -395,7 +395,7 @@ namespace components::casts {
             assert(!to_error.contains_error() && "duplicate default cast registration");
 
             cast_entry from_string{cast_function_t{&kernels::string_to_bool_cast, &kernels::string_to_bool_try_cast},
-                                   cast_type::explicit_only,
+                                   cast_type::assignment,
                                    /*convertable_inplace*/ false};
             [[maybe_unused]] auto from_error = registry.add(string, boolean, std::move(from_string));
             assert(!from_error.contains_error() && "duplicate default cast registration");

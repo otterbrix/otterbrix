@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <set>
 #include <string>
@@ -20,7 +20,6 @@ namespace {
 } // namespace
 
 // Each INSERT can add new (field_name, type) columns; a repeat name with a different type adds another column.
-
 
 TEST_CASE("integration::cpp::test_computed_schema::basic_insert_and_select") {
     auto config = test_create_config(cs_fixture_dir("basic"));

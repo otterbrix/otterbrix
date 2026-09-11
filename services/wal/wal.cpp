@@ -452,9 +452,9 @@ namespace services::wal {
                         core::error_code_t::io_error,
                         std::pmr::string{"wal cannot show the requested window whole: segment " +
                                              seg_path.filename().string() + " is broken at data page " +
-                                             std::to_string(scan.first_broken_page) +
-                                             " and hides the ids between " + std::to_string(answered_through) +
-                                             " and " + std::to_string(scan.first_verified_lsn_after_break),
+                                             std::to_string(scan.first_broken_page) + " and hides the ids between " +
+                                             std::to_string(answered_through) + " and " +
+                                             std::to_string(scan.first_verified_lsn_after_break),
                                          this->resource()}}};
                 }
 
@@ -560,7 +560,7 @@ namespace services::wal {
             }
         }
 
-        wal::id_t max_wal_id = 0;      // high-water mark over the files -- bounds the allocator
+        wal::id_t max_wal_id = 0;       // high-water mark over the files -- bounds the allocator
         wal::id_t last_readable_id = 0; // highest id that could actually be decoded
         crc32_t recovered_crc = 0;
         bool resume_segment_broken = false;

@@ -3,8 +3,8 @@
 // match(streaming)->full_scan(source) chain that streams one batch at a time. Tests check
 // streaming_pipeline_runs() bumps (stubbing role() back to none makes that RED).
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <services/collection/executor.hpp>
 

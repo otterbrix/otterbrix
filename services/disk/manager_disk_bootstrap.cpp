@@ -154,9 +154,8 @@ namespace services::disk {
                               std::string(def.name),
                               static_cast<unsigned>(tbl_oid),
                               err.what.c_str());
-                        throw std::runtime_error(
-                            "a pg_catalog system table could not be opened, refusing to start: " +
-                            std::string(err.what.c_str()));
+                        throw std::runtime_error("a pg_catalog system table could not be opened, refusing to start: " +
+                                                 std::string(err.what.c_str()));
                     }
                     // A crash before first-checkpoint leaves an empty file treated as fresh for the 5 builtin tables.
                     needs_seeding = has_builtin_seed_rows(tbl_oid) && rows_in_sync(tbl_oid) == 0;
@@ -279,8 +278,8 @@ namespace services::disk {
                         for (const auto& col : def.columns) {
                             ++attnum;
                             // Deterministic identity: a derived attoid never meets the oid generator.
-                            const auto attoid = static_cast<catalog::oid_t>(
-                                def.relation_oid * 100 + static_cast<catalog::oid_t>(attnum));
+                            const auto attoid = static_cast<catalog::oid_t>(def.relation_oid * 100 +
+                                                                            static_cast<catalog::oid_t>(attnum));
                             const auto atttypid = catalog::builtin_type_to_oid(col.type().type());
                             const std::string typspec = catalog::encode_type_spec(col.type());
                             auto row = make_row(resource(), att_def->columns, [&](data_chunk_t& chunk, auto*) {
@@ -615,12 +614,11 @@ namespace services::disk {
             }
             auto& cls_table = const_cast<collection_storage_entry_t*>(cls_entry)->table_storage.table();
             if (cls_table.column_count() < 4) {
-                return core::error_t(
-                    core::error_code_t::data_corruption,
-                    std::pmr::string{"rehydrate_missing_user_storages_sync: pg_class carries only " +
-                                         std::to_string(cls_table.column_count()) +
-                                         " columns and cannot be scanned for alive tables",
-                                     resource()});
+                return core::error_t(core::error_code_t::data_corruption,
+                                     std::pmr::string{"rehydrate_missing_user_storages_sync: pg_class carries only " +
+                                                          std::to_string(cls_table.column_count()) +
+                                                          " columns and cannot be scanned for alive tables",
+                                                      resource()});
             }
             if (cls_table.calculate_size() == 0) {
                 return std::size_t{0};
@@ -995,8 +993,7 @@ namespace services::disk {
                 for (uint64_t i = 0; i < chunk.size(); ++i) {
                     if (chunk.is_null(att::attrelid, i))
                         continue;
-                    const auto relid =
-                        static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(att::attrelid, i));
+                    const auto relid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(att::attrelid, i));
                     if (wanted.find(relid) == wanted.end())
                         continue;
                     if (!chunk.is_null(att::attisdropped, i) && chunk.get_value<bool>(att::attisdropped, i))
@@ -1181,13 +1178,12 @@ namespace services::disk {
         }
         auto& table = const_cast<collection_storage_entry_t*>(entry)->table_storage.table();
         if (table.column_count() < 4) {
-            return core::error_t(core::error_code_t::data_corruption,
-                                 std::pmr::string{"relkind_for_oid_sync: pg_class carries only " +
-                                                      std::to_string(table.column_count()) +
-                                                      " columns and cannot hold a relkind; the relkind of oid " +
-                                                      std::to_string(static_cast<unsigned>(table_oid)) +
-                                                      " is unknown, not 'regular'",
-                                                  resource()});
+            return core::error_t(
+                core::error_code_t::data_corruption,
+                std::pmr::string{"relkind_for_oid_sync: pg_class carries only " + std::to_string(table.column_count()) +
+                                     " columns and cannot hold a relkind; the relkind of oid " +
+                                     std::to_string(static_cast<unsigned>(table_oid)) + " is unknown, not 'regular'",
+                                 resource()});
         }
         if (table.calculate_size() == 0) {
             return result;
@@ -1303,7 +1299,7 @@ namespace services::disk {
         {
             core::pmr::otterbrix_resource scan_resource;
             std::vector<components::table::storage_index_t> col_indices;
-            col_indices.emplace_back(static_cast<int64_t>(0));  // indexrelid/indrelid/indkey/indisvalid/indtype
+            col_indices.emplace_back(static_cast<int64_t>(0)); // indexrelid/indrelid/indkey/indisvalid/indtype
             col_indices.emplace_back(static_cast<int64_t>(1));
             col_indices.emplace_back(static_cast<int64_t>(2));
             col_indices.emplace_back(static_cast<int64_t>(3));
@@ -1337,9 +1333,9 @@ namespace services::disk {
                               "(indexrelid={}, indrelid={}) has NULL indtype — catalog is corrupt, refusing to start",
                               static_cast<unsigned>(row.oid),
                               static_cast<unsigned>(row.table_oid));
-                        throw std::runtime_error("pg_index row (indexrelid=" +
-                                                 std::to_string(static_cast<unsigned>(row.oid)) +
-                                                 ") has NULL indtype — catalog is corrupt, refusing to start");
+                        throw std::runtime_error(
+                            "pg_index row (indexrelid=" + std::to_string(static_cast<unsigned>(row.oid)) +
+                            ") has NULL indtype — catalog is corrupt, refusing to start");
                     }
                     const auto indtype_v = chunk.get_value<std::string_view>(4, i);
                     row.type = indtype_v.size() == 1
@@ -1353,11 +1349,10 @@ namespace services::disk {
                               static_cast<unsigned>(row.oid),
                               static_cast<unsigned>(row.table_oid),
                               std::string(indtype_v.data(), indtype_v.size()));
-                        throw std::runtime_error("pg_index row (indexrelid=" +
-                                                 std::to_string(static_cast<unsigned>(row.oid)) +
-                                                 ") has unknown indtype '" +
-                                                 std::string(indtype_v.data(), indtype_v.size()) +
-                                                 "' — catalog is corrupt, refusing to start");
+                        throw std::runtime_error(
+                            "pg_index row (indexrelid=" + std::to_string(static_cast<unsigned>(row.oid)) +
+                            ") has unknown indtype '" + std::string(indtype_v.data(), indtype_v.size()) +
+                            "' — catalog is corrupt, refusing to start");
                     }
                     std::pmr::string raw_indkey{resource_};
                     if (!chunk.is_null(2, i)) {
@@ -1489,7 +1484,7 @@ namespace services::disk {
         }
         core::pmr::otterbrix_resource scan_resource;
         std::vector<components::table::storage_index_t> col_indices;
-        col_indices.emplace_back(static_cast<int64_t>(0));  // pg_class.oid, then pg_class.relnamespace
+        col_indices.emplace_back(static_cast<int64_t>(0)); // pg_class.oid, then pg_class.relnamespace
         col_indices.emplace_back(static_cast<int64_t>(2));
 
         // create_index_scan is used since it exposes table_scan_type; plain scan APIs omit tombstones.
@@ -1570,7 +1565,7 @@ namespace services::disk {
         }
         core::pmr::otterbrix_resource scan_resource;
         std::vector<components::table::storage_index_t> col_indices;
-        col_indices.emplace_back(static_cast<int64_t>(0));  // name column, then setting column
+        col_indices.emplace_back(static_cast<int64_t>(0)); // name column, then setting column
         col_indices.emplace_back(static_cast<int64_t>(1));
         components::table::table_scan_state scan_state(&scan_resource);
         table.initialize_scan(scan_state, col_indices);

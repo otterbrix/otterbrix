@@ -262,11 +262,8 @@ namespace components::table {
             const uint64_t run = pos - run_start;
             vector::vector_t window_slice(child_vector, run_start, run);
             window_slice.flatten(run);
-            auto child = child_column->update_column(column_path,
-                                                     window_slice,
-                                                     sub_column_ids.data() + run_start,
-                                                     run,
-                                                     depth);
+            auto child =
+                child_column->update_column(column_path, window_slice, sub_column_ids.data() + run_start, run, depth);
             if (child.has_error()) {
                 return child;
             }

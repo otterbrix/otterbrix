@@ -1,8 +1,8 @@
 #include <catch2/catch_test_macros.hpp>
 
-#include <components/table/data_table.hpp>
 #include <components/table/base_statistics.hpp>
 #include <components/table/column_data.hpp>
+#include <components/table/data_table.hpp>
 #include <components/table/persistent_column_data.hpp>
 #include <components/table/storage/buffer_pool.hpp>
 #include <components/table/storage/metadata_manager.hpp>
@@ -23,13 +23,13 @@ using namespace components::table;
 
 namespace {
 
-    std::string wave_db_path(const std::string& name) {
-        std::string path = "/tmp/test_otterbrix_wave_table_" + name + "_" + std::to_string(::getpid()) + ".otbx";
+    std::string table_db_path(const std::string& name) {
+        std::string path = "/tmp/test_otterbrix_table_error_paths_" + name + "_" + std::to_string(::getpid()) + ".otbx";
         std::remove(path.c_str());
         return path;
     }
 
-    struct wave_env {
+    struct table_env {
         core::pmr::otterbrix_resource resource;
         core::filesystem::local_file_system_t fs;
         storage::buffer_pool_t buffer_pool;
@@ -37,18 +37,18 @@ namespace {
         std::string path;
         storage::single_file_block_manager_t block_manager;
 
-        explicit wave_env(const std::string& name)
+        explicit table_env(const std::string& name)
             : buffer_pool(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24)
             , buffer_manager(&resource, fs, buffer_pool)
-            , path(wave_db_path(name))
+            , path(table_db_path(name))
             , block_manager(buffer_manager, fs, path) {
             REQUIRE_FALSE(block_manager.create_new_database().has_error());
         }
 
-        ~wave_env() { std::remove(path.c_str()); }
+        ~table_env() { std::remove(path.c_str()); }
     };
 
-    void append_bigint_rows(data_table_t& table, wave_env& env, int64_t start, uint64_t count) {
+    void append_bigint_rows(data_table_t& table, table_env& env, int64_t start, uint64_t count) {
         auto types = table.copy_types();
         table_append_state state(&env.resource);
         REQUIRE_FALSE(table.append_lock(state).has_error());
@@ -57,9 +57,7 @@ namespace {
             const uint64_t batch = std::min<uint64_t>(count - offset, DEFAULT_VECTOR_CAPACITY);
             auto chunk = data_chunk_t(&env.resource, types, batch);
             for (uint64_t i = 0; i < batch; i++) {
-                chunk.data[0].set_value(
-                    i,
-                    logical_value_t(&env.resource, start + static_cast<int64_t>(offset + i)));
+                chunk.data[0].set_value(i, logical_value_t(&env.resource, start + static_cast<int64_t>(offset + i)));
             }
             chunk.set_cardinality(batch);
             REQUIRE_FALSE(table.append(chunk, state).has_error());
@@ -72,8 +70,8 @@ namespace {
 // До фикса collection_t::update_column звал row_group_t::update, который читал column_path
 // как список колонок ВЕРХНЕГО уровня: путь {0,2} читался как «колонка 2» и лез в
 // updates.data[1], которого нет. Без фикса: SIGABRT на type mismatch либо чтение за границей.
-TEST_CASE("components::table::wave::update_column_descends_into_a_struct_field") {
-    wave_env env("struct_update");
+TEST_CASE("components::table::update_column_descends_into_a_struct_field") {
+    table_env env("struct_update");
 
     std::pmr::vector<complex_logical_type> fields(&env.resource);
     fields.emplace_back(logical_type::BIGINT, "a");
@@ -137,8 +135,8 @@ TEST_CASE("components::table::wave::update_column_descends_into_a_struct_field")
 // Прежде segment_tree_t::segment_index() бросал std::runtime_error на несуществующий row id, и
 // data_table_t::update мог довести этот throw до продовой корутины (пустой unhandled_exception
 // -> зависание вместо ошибки). Без фикса: непойманный runtime_error валит тест.
-TEST_CASE("components::table::wave::an_out_of_range_row_id_is_an_error_not_a_throw") {
-    wave_env env("row_out_of_range");
+TEST_CASE("components::table::an_out_of_range_row_id_is_an_error_not_a_throw") {
+    table_env env("row_out_of_range");
     std::vector<column_definition_t> columns;
     columns.emplace_back("value", complex_logical_type(logical_type::BIGINT));
     auto table = std::make_unique<data_table_t>(&env.resource, env.block_manager, std::move(columns), "t");
@@ -158,8 +156,8 @@ TEST_CASE("components::table::wave::an_out_of_range_row_id_is_an_error_not_a_thr
 
 // Тот же разрыв через LIST-ногу: fetch_list_offset получил собственный канал ошибки вместо
 // throw, отказ едет по result_wrapper через gather_child_update -> update -> collection -> data_table.
-TEST_CASE("components::table::wave::a_list_update_of_a_missing_row_reports_not_throws") {
-    wave_env env("list_row_out_of_range");
+TEST_CASE("components::table::a_list_update_of_a_missing_row_reports_not_throws") {
+    table_env env("list_row_out_of_range");
     auto list_type = complex_logical_type::create_list(logical_type::BIGINT);
     std::vector<column_definition_t> columns;
     columns.emplace_back("l", list_type);
@@ -173,11 +171,10 @@ TEST_CASE("components::table::wave::a_list_update_of_a_missing_row_reports_not_t
         for (uint64_t i = 0; i < NUM_ROWS; i++) {
             std::vector<logical_value_t> elems;
             elems.emplace_back(&env.resource, static_cast<int64_t>(i));
-            chunk.set_value(0,
-                            i,
-                            logical_value_t::create_list(&env.resource,
-                                                         complex_logical_type(logical_type::BIGINT),
-                                                         elems));
+            chunk.set_value(
+                0,
+                i,
+                logical_value_t::create_list(&env.resource, complex_logical_type(logical_type::BIGINT), elems));
         }
         table_append_state state(&env.resource);
         REQUIRE_FALSE(table->append_lock(state).has_error());
@@ -193,10 +190,9 @@ TEST_CASE("components::table::wave::a_list_update_of_a_missing_row_reports_not_t
     data_chunk_t updates(&env.resource, types, 1);
     std::vector<logical_value_t> elems;
     elems.emplace_back(&env.resource, int64_t(99));
-    updates.data[0].set_value(0,
-                              logical_value_t::create_list(&env.resource,
-                                                           complex_logical_type(logical_type::BIGINT),
-                                                           elems));
+    updates.data[0].set_value(
+        0,
+        logical_value_t::create_list(&env.resource, complex_logical_type(logical_type::BIGINT), elems));
     updates.set_cardinality(1);
 
     auto updated = table->update_column(row_ids, {0}, updates);
@@ -206,8 +202,8 @@ TEST_CASE("components::table::wave::a_list_update_of_a_missing_row_reports_not_t
 // block_handle_t::load() отвечал ПУСТЫМ buffer_handle_t без ошибки для блока, который
 // загрузить нечем (UNLOADED, без temp-копии, block_id >= MAXIMUM_BLOCK), а
 // standard_buffer_manager_t::pin затем разыменовывал нулевой буфер. Без фикса: SIGSEGV в pin.
-TEST_CASE("components::table::wave::pin_of_an_unloadable_block_reports_an_error") {
-    wave_env env("unloadable_pin");
+TEST_CASE("components::table::pin_of_an_unloadable_block_reports_an_error") {
+    table_env env("unloadable_pin");
     auto handle = std::make_shared<storage::block_handle_t>(env.block_manager,
                                                             storage::MAXIMUM_BLOCK + 7,
                                                             storage::memory_tag::BASE_TABLE);
@@ -217,8 +213,8 @@ TEST_CASE("components::table::wave::pin_of_an_unloadable_block_reports_an_error"
 
 // unload_and_take_block ассертит «байты либо на диске, либо в спилле», а под NDEBUG молча
 // выбрасывает буфер, которого больше нигде нет. Без фикса (Debug): SIGABRT на этом assert.
-TEST_CASE("components::table::wave::unload_of_a_spill_less_transient_refuses") {
-    wave_env env("unload_refusal");
+TEST_CASE("components::table::unload_of_a_spill_less_transient_refuses") {
+    table_env env("unload_refusal");
     auto allocated = env.buffer_manager.allocate(storage::memory_tag::BASE_TABLE, 4096, false);
     REQUIRE_FALSE(allocated.has_error());
     auto block = allocated.value().block_handle()->shared_from_this();
@@ -244,11 +240,14 @@ TEST_CASE("components::table::wave::unload_of_a_spill_less_transient_refuses") {
 // initialize_column молча реконструировал счётчик строк из суммы сегментов при персистентном
 // count == 0: два несогласных числа на диске примирялись тихо. Без фикса: успех с
 // реконструированным count() == 5 вместо data_corruption.
-TEST_CASE("components::table::wave::a_zero_count_with_rows_on_disk_is_corruption") {
-    wave_env env("count_mismatch");
+TEST_CASE("components::table::a_zero_count_with_rows_on_disk_is_corruption") {
+    table_env env("count_mismatch");
 
-    auto column =
-        column_data_t::create_column(&env.resource, env.block_manager, 0, 0, complex_logical_type(logical_type::BIGINT));
+    auto column = column_data_t::create_column(&env.resource,
+                                               env.block_manager,
+                                               0,
+                                               0,
+                                               complex_logical_type(logical_type::BIGINT));
 
     auto make_pcd = [&](uint64_t seg_size) {
         persistent_column_data_t pcd(&env.resource);
@@ -274,8 +273,8 @@ TEST_CASE("components::table::wave::a_zero_count_with_rows_on_disk_is_corruption
 
 // base_statistics_t::update не имел ветки HUGEINT/UHUGEINT/DECIMAL: широкая DECIMAL-колонка
 // получала только счётчики NULL, без min/max (has_stats() == false).
-TEST_CASE("components::table::wave::hugeint_and_decimal_columns_get_minmax_statistics") {
-    wave_env env("stats_wide");
+TEST_CASE("components::table::hugeint_and_decimal_columns_get_minmax_statistics") {
+    table_env env("stats_wide");
 
     SECTION("HUGEINT min/max") {
         base_statistics_t stats(&env.resource, logical_type::HUGEINT);
@@ -340,8 +339,8 @@ TEST_CASE("components::table::wave::hugeint_and_decimal_columns_get_minmax_stati
 // До фикса add_column гасил OOM бэкфилла ассертами (под NDEBUG наследник тихо получал
 // КОРОТКУЮ колонку при полном count); теперь ошибка едет по каналу (row_group.cpp) и
 // наследник громко отказывает в записи, родитель остаётся корнем.
-TEST_CASE("components::table::wave::a_failed_add_column_backfill_refuses_loudly") {
-    wave_env env("addcol_oom");
+TEST_CASE("components::table::a_failed_add_column_backfill_refuses_loudly") {
+    table_env env("addcol_oom");
     std::vector<column_definition_t> columns;
     columns.emplace_back("value", complex_logical_type(logical_type::BIGINT));
     auto table = std::make_unique<data_table_t>(&env.resource, env.block_manager, std::move(columns), "t");
@@ -351,8 +350,7 @@ TEST_CASE("components::table::wave::a_failed_add_column_backfill_refuses_loudly"
     // представимой on-disk формы, и append новой колонки обязан отказать
     // (write_string_memory: "string value ... exceeds the maximum storable string size").
     column_definition_t new_column("added", complex_logical_type(logical_type::STRING_LITERAL));
-    new_column.set_default_value(
-        logical_value_t(&env.resource, std::string(300 * 1024, 'x')));
+    new_column.set_default_value(logical_value_t(&env.resource, std::string(300 * 1024, 'x')));
     auto extended = std::make_unique<data_table_t>(*table, new_column);
 
     // Отказ защёлкнут и виден; родитель остался корнем (DDL не случился) и пишется.

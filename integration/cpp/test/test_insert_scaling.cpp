@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/data_table.hpp>
@@ -60,10 +60,10 @@ TEST_CASE("integration::cpp::test_insert_scaling::insert_scan_cost_does_not_grow
     fill_rows(d, "B0.items", "big_", 0, kLargeRows - kSmallRows - kProbeRows);
     const auto large_probe = probe_scan_rows(d, "B0.items", "probe_b_");
 
-    INFO("rows streamed by one " << kProbeRows << "-row INSERT into a ~" << kSmallRows << "-row table: "
-                                 << small_probe);
-    INFO("rows streamed by one " << kProbeRows << "-row INSERT into a ~" << kLargeRows << "-row table: "
-                                 << large_probe);
+    INFO("rows streamed by one " << kProbeRows << "-row INSERT into a ~" << kSmallRows
+                                 << "-row table: " << small_probe);
+    INFO("rows streamed by one " << kProbeRows << "-row INSERT into a ~" << kLargeRows
+                                 << "-row table: " << large_probe);
     // Equal work within one probe batch of slack — the old dedup streamed the whole table
     // here (small_probe ~1k vs large_probe ~100k), which no O(table) insert could satisfy.
     REQUIRE(large_probe <= small_probe + kProbeRows);

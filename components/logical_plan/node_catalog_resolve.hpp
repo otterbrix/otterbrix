@@ -161,8 +161,7 @@ namespace components::logical_plan {
         [[nodiscard]] const resolve_entry_t* constraints_for(components::catalog::oid_t table_oid,
                                                              resolve_direction direction) const noexcept;
         // Any outgoing entry (full or names_only); the DROP CONSTRAINT name->oid lookup
-        [[nodiscard]] const resolve_entry_t*
-        constraint_names_for(components::catalog::oid_t table_oid) const noexcept;
+        [[nodiscard]] const resolve_entry_t* constraint_names_for(components::catalog::oid_t table_oid) const noexcept;
     };
 
 } // namespace components::logical_plan

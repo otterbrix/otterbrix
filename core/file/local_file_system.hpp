@@ -64,17 +64,14 @@ namespace core::filesystem {
     class list_files_callback_t {
     public:
         template<typename callable_t,
-                 typename =
-                     std::enable_if_t<!std::is_same_v<std::decay_t<callable_t>, list_files_callback_t>>>
+                 typename = std::enable_if_t<!std::is_same_v<std::decay_t<callable_t>, list_files_callback_t>>>
         list_files_callback_t(const callable_t& callable) noexcept
             : callable_(std::addressof(callable))
             , invoke_(+[](const void* erased, const path_t& path, bool is_directory) {
-                  (*static_cast<const callable_t*>(erased))(path, is_directory);
-              }) {}
+                (*static_cast<const callable_t*>(erased))(path, is_directory);
+            }) {}
 
-        void operator()(const path_t& path, bool is_directory) const {
-            invoke_(callable_, path, is_directory);
-        }
+        void operator()(const path_t& path, bool is_directory) const { invoke_(callable_, path, is_directory); }
 
     private:
         const void* callable_;

@@ -48,13 +48,14 @@ namespace {
             , disk_config_(disk_path)
             , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource, scheduler_, scheduler_, disk_config_, log_))
             // A real index manager: with none wired, backfill used to report success without doing anything.
-            , manager_index_(actor_zeta::spawn<services::index::manager_index_t>(resource,
-                                                                                 scheduler_,
-                                                                                 log_,
-                                                                                 disk_config_.path,
-                                                                                 disk_config_.bitcask_flush_threshold,
-                                                                                 disk_config_.bitcask_segment_record_limit,
-                                                                                 disk_config_.btree_flush_threshold))
+            , manager_index_(
+                  actor_zeta::spawn<services::index::manager_index_t>(resource,
+                                                                      scheduler_,
+                                                                      log_,
+                                                                      disk_config_.path,
+                                                                      disk_config_.bitcask_flush_threshold,
+                                                                      disk_config_.bitcask_segment_record_limit,
+                                                                      disk_config_.btree_flush_threshold))
             , wal_config_(disk_path)
             , manager_wal_(actor_zeta::spawn<manager_wal_replicate_t>(resource,
                                                                       scheduler_,
@@ -132,10 +133,8 @@ namespace {
             components::execution_context_t ctx{components::session::session_id_t{},
                                                 components::table::transaction_data{0, 0},
                                                 {}};
-            auto [_, fut] = actor_zeta::otterbrix::send(manager_disk_->address(),
-                                                        &manager_disk_t::resolve_namespace,
-                                                        ctx,
-                                                        name);
+            auto [_, fut] =
+                actor_zeta::otterbrix::send(manager_disk_->address(), &manager_disk_t::resolve_namespace, ctx, name);
             const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
             while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
                 scheduler_->run(1000);
@@ -590,8 +589,7 @@ TEST_CASE("variant-e3 differential: CREATE MATERIALIZED VIEW") {
         REQUIRE(cur->is_success());
     }
 
-    fx.execute_sql(
-        "CREATE MATERIALIZED VIEW ve3_mv.mv AS SELECT col_a FROM ve3_mv.t WHERE col_b > 10 WITH NO DATA;");
+    fx.execute_sql("CREATE MATERIALIZED VIEW ve3_mv.mv AS SELECT col_a FROM ve3_mv.t WHERE col_b > 10 WITH NO DATA;");
     {
         auto cur = fx.take_result();
         REQUIRE(cur->is_success());

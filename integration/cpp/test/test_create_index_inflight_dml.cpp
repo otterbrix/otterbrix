@@ -1,8 +1,8 @@
 // Every row a reader can see through the table must be reachable through the index: the index tolerates a
 // superset of ids (the table's visibility check drops extras), but a missing id is an unrepairable defect.
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

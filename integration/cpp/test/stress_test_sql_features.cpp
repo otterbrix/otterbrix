@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 #include "types/operations_helper.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -9,7 +9,6 @@
 #include <random>
 #include <set>
 #include <string>
-
 
 TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_stress_1000_random_inserts") {
     // Stress-test relkind='g' (Mongo-style dynamic schema) at scale: 1000

@@ -4,9 +4,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <signal.h>
 #include <string>
 #include <string_view>
-#include <signal.h>
 #include <unistd.h>
 
 // Fixture root is pid-qualified: a shared /tmp directory gets wiped and recreated by each test
@@ -66,8 +66,7 @@ namespace integration_fixture_detail {
 
     // Component-wise, not string().starts_with(): that would match
     // ".../otterbrix_integration_123" against root ".../otterbrix_integration_12".
-    [[nodiscard]] inline bool path_is_within(const std::filesystem::path& path,
-                                             const std::filesystem::path& prefix) {
+    [[nodiscard]] inline bool path_is_within(const std::filesystem::path& path, const std::filesystem::path& prefix) {
         auto p = path.begin();
         const auto p_end = path.end();
         for (auto q = prefix.begin(), q_end = prefix.end(); q != q_end; ++q, ++p) {

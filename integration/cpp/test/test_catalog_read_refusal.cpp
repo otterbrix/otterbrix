@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -12,9 +12,9 @@
 #include <algorithm>
 #include <filesystem>
 #include <limits>
-#include <thread>
 #include <memory>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -134,9 +134,7 @@ namespace {
         services::disk::manager_disk_t* disk() noexcept { return manager_disk_.get(); }
     };
 
-    core::error_t probe_exec_unary(compute::kernel_context&,
-                                   const vector::data_chunk_t& in,
-                                   vector::vector_t& out) {
+    core::error_t probe_exec_unary(compute::kernel_context&, const vector::data_chunk_t& in, vector::vector_t& out) {
         const auto* source = in.data[0].data<int64_t>();
         auto* destination = out.data<int64_t>();
         for (uint64_t row = 0; row < in.size(); ++row) {
@@ -145,9 +143,7 @@ namespace {
         return core::error_t::no_error();
     }
 
-    core::error_t probe_exec_binary(compute::kernel_context&,
-                                    const vector::data_chunk_t& in,
-                                    vector::vector_t& out) {
+    core::error_t probe_exec_binary(compute::kernel_context&, const vector::data_chunk_t& in, vector::vector_t& out) {
         const auto* left = in.data[0].data<int64_t>();
         const auto* right = in.data[1].data<int64_t>();
         auto* destination = out.data<int64_t>();

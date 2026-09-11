@@ -155,7 +155,7 @@ namespace components::table {
         // nullptr past the materialized schema; fill_published_default reads that as all-NULL.
         const column_definition_t* published_column(size_t offset) const noexcept {
             return unmaterialized_ != nullptr && offset < unmaterialized_->size() ? &(*unmaterialized_)[offset]
-                                                                                 : nullptr;
+                                                                                  : nullptr;
         }
 
     private:

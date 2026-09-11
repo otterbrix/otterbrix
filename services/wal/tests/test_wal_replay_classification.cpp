@@ -119,7 +119,7 @@ namespace {
         std::unique_ptr<manager_wal_replicate_t, actor_zeta::pmr::deleter_t> manager_;
     };
 
-}
+} // namespace
 
 TEST_CASE("wal::classification::replay_skips_a_foreign_named_directory") {
     const auto path = base_path() / "foreign_replay";

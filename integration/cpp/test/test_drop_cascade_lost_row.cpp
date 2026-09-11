@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -61,8 +61,7 @@ namespace {
     }
 
     template<typename Key>
-    std::size_t
-    catalog_rows_with(lost_row_spaces_t& space, catalog::oid_t table_oid, std::uint64_t key_col, Key key) {
+    std::size_t catalog_rows_with(lost_row_spaces_t& space, catalog::oid_t table_oid, std::uint64_t key_col, Key key) {
         auto batches = catalog_chunks_with(space, table_oid, key_col, key);
         REQUIRE_FALSE(batches.has_error());
         std::size_t rows = 0;
@@ -152,15 +151,18 @@ TEST_CASE("integration::cpp::drop_cascade_lost_row::planned_step_without_a_catal
     REQUIRE(parent_oid != catalog::INVALID_OID);
 
     const catalog::oid_t ghost_oid = catalog::FIRST_USER_OID + 777777;
-    REQUIRE(catalog_rows_with(space, catalog::well_known_oid::pg_constraint_table, catalog::pg_constraint_col::oid, ghost_oid) ==
-            0);
+    REQUIRE(catalog_rows_with(space,
+                              catalog::well_known_oid::pg_constraint_table,
+                              catalog::pg_constraint_col::oid,
+                              ghost_oid) == 0);
     forge_depend_edge(space,
                       catalog::well_known_oid::pg_constraint_table,
                       ghost_oid,
                       catalog::well_known_oid::pg_class_table,
                       parent_oid);
-    REQUIRE(catalog_rows_with(space, catalog::well_known_oid::pg_depend_table, catalog::pg_depend_col::objid, ghost_oid) ==
-            1);
+    REQUIRE(
+        catalog_rows_with(space, catalog::well_known_oid::pg_depend_table, catalog::pg_depend_col::objid, ghost_oid) ==
+        1);
 
     // CASCADE is required since #638: bare DROP = RESTRICT, whose gate would refuse on the
     // forged edge before the walk could reach the ghost step this case is about.
@@ -201,8 +203,10 @@ TEST_CASE("integration::cpp::drop_cascade_lost_row::diamond_dependent_is_judged_
                              : std::string{"success"}));
     REQUIRE(cur->is_success());
 
-    REQUIRE(catalog_rows_with(space, catalog::well_known_oid::pg_constraint_table, catalog::pg_constraint_col::oid, fk_oid) ==
-            0);
+    REQUIRE(catalog_rows_with(space,
+                              catalog::well_known_oid::pg_constraint_table,
+                              catalog::pg_constraint_col::oid,
+                              fk_oid) == 0);
     REQUIRE(catalog_rows_with(space, catalog::well_known_oid::pg_class_table, catalog::pg_class_col::oid, parent_oid) ==
             0);
 }

@@ -162,8 +162,7 @@ namespace components::sql::transform {
         if (!indices->uidx || nodeTag(indices->uidx) != T_A_Const) {
             return core::error_t(
                 core::error_code_t::sql_parse_error,
-                std::pmr::string{"an array subscript must be an integer literal, not a computed expression",
-                                 resource});
+                std::pmr::string{"an array subscript must be an integer literal, not a computed expression", resource});
         }
         Value* val = &pg_ptr_cast<A_Const>(indices->uidx)->val;
         // `ival`/`str` share a union slot; reading `ival` when the tag is T_Float renders a pointer's bits.
@@ -530,8 +529,7 @@ namespace components::sql::transform {
     core::error_t refuse_dropped_call_decorations(std::pmr::memory_resource* resource, const FuncCall& call) {
         if (call.over) {
             std::string name = "?";
-            if (call.funcname && !call.funcname->lst.empty() &&
-                nodeTag(call.funcname->lst.back().data) == T_String) {
+            if (call.funcname && !call.funcname->lst.empty() && nodeTag(call.funcname->lst.back().data) == T_String) {
                 name = strVal(call.funcname->lst.back().data);
             }
             return core::error_t(core::error_code_t::unimplemented_yet,
@@ -962,18 +960,17 @@ namespace components::sql::transform {
 
         core::error_t
         invalid_cast_input(std::pmr::memory_resource* resource, types::logical_type target, const std::string& text) {
-            return core::error_t(core::error_code_t::sql_parse_error,
-                                 std::pmr::string{"invalid input for a cast to " + cast_target_name(target) + ": " +
-                                                      text,
-                                                  resource});
+            return core::error_t(
+                core::error_code_t::sql_parse_error,
+                std::pmr::string{"invalid input for a cast to " + cast_target_name(target) + ": " + text, resource});
         }
 
         core::error_t
         cast_out_of_range(std::pmr::memory_resource* resource, types::logical_type target, const std::string& text) {
-            return core::error_t(core::error_code_t::sql_parse_error,
-                                 std::pmr::string{"value out of range for a cast to " + cast_target_name(target) +
-                                                      ": " + text,
-                                                  resource});
+            return core::error_t(
+                core::error_code_t::sql_parse_error,
+                std::pmr::string{"value out of range for a cast to " + cast_target_name(target) + ": " + text,
+                                 resource});
         }
 
         bool integer_target_bounds(types::logical_type t, types::int128_t& lo, types::int128_t& hi) {
@@ -1056,11 +1053,10 @@ namespace components::sql::transform {
         }
 
         // `is_string_literal` distinguishes '1.5'::int (PostgreSQL refuses) from 1.5::int (rounds).
-        core::result_wrapper_t<types::logical_value_t>
-        cast_literal_text(std::pmr::memory_resource* resource,
-                          const types::complex_logical_type& target,
-                          const std::string& text,
-                          bool is_string_literal) {
+        core::result_wrapper_t<types::logical_value_t> cast_literal_text(std::pmr::memory_resource* resource,
+                                                                         const types::complex_logical_type& target,
+                                                                         const std::string& text,
+                                                                         bool is_string_literal) {
             using LT = types::logical_type;
             const LT t = target.type();
             types::int128_t lo{0};
@@ -1094,9 +1090,7 @@ namespace components::sql::transform {
                 case LT::FLOAT: {
                     double parsed = 0.0;
                     if (!string_to_double(text.c_str(), text.size(), parsed)) {
-                        return invalid_cast_input(resource,
-                                                  t,
-                                                  is_string_literal ? "'" + text + "'" : text);
+                        return invalid_cast_input(resource, t, is_string_literal ? "'" + text + "'" : text);
                     }
                     if (t == LT::DOUBLE) {
                         return types::logical_value_t(resource, parsed);
@@ -1104,13 +1098,10 @@ namespace components::sql::transform {
                     return types::logical_value_t(resource, static_cast<float>(parsed));
                 }
                 case LT::DECIMAL: {
-                    const auto* ext =
-                        static_cast<const types::decimal_logical_type_extension*>(target.extension());
+                    const auto* ext = static_cast<const types::decimal_logical_type_extension*>(target.extension());
                     VALUE_OR_RETURN(auto scaled, parse_exact_decimal(resource, text, ext->width(), ext->scale()));
                     if (target.to_physical_type() == types::physical_type::INT64) {
-                        return types::logical_value_t::create_decimal(resource,
-                                                                      target,
-                                                                      static_cast<int64_t>(scaled));
+                        return types::logical_value_t::create_decimal(resource, target, static_cast<int64_t>(scaled));
                     }
                     return types::logical_value_t::create_decimal(resource, target, scaled);
                 }
@@ -1146,10 +1137,10 @@ namespace components::sql::transform {
                 case LT::STRING_LITERAL:
                     return types::logical_value_t(resource, text);
                 default:
-                    return core::error_t(core::error_code_t::unimplemented_yet,
-                                         std::pmr::string{"a literal cast to " + cast_target_name(t) +
-                                                              " is not supported yet",
-                                                          resource});
+                    return core::error_t(
+                        core::error_code_t::unimplemented_yet,
+                        std::pmr::string{"a literal cast to " + cast_target_name(t) + " is not supported yet",
+                                         resource});
             }
         }
 
@@ -1172,21 +1163,20 @@ namespace components::sql::transform {
                 VALUE_OR_RETURN(auto target_type, get_type(resource, cast->typeName));
                 if (constant->val.type != T_String) {
                     if (constant->val.type != T_Integer && constant->val.type != T_Float) {
-                        return core::error_t(
-                            core::error_code_t::sql_parse_error,
-                            std::pmr::string{"a literal cast over " + node_tag_to_string(constant->val.type) +
-                                                 " is not supported",
-                                             resource});
+                        return core::error_t(core::error_code_t::sql_parse_error,
+                                             std::pmr::string{"a literal cast over " +
+                                                                  node_tag_to_string(constant->val.type) +
+                                                                  " is not supported",
+                                                              resource});
                     }
                     if (target_type.type() == types::logical_type::UNKNOWN) {
                         return numeric_literal_value(resource, &constant->val);
                     }
                     if (types::is_duration(target_type.type())) {
-                        return core::error_t(
-                            core::error_code_t::sql_parse_error,
-                            std::pmr::string{"a numeric literal cannot be cast to " +
-                                                 cast_target_name(target_type.type()),
-                                             resource});
+                        return core::error_t(core::error_code_t::sql_parse_error,
+                                             std::pmr::string{"a numeric literal cannot be cast to " +
+                                                                  cast_target_name(target_type.type()),
+                                                              resource});
                     }
                     return cast_literal_text(resource,
                                              target_type,
@@ -1348,6 +1338,14 @@ namespace components::sql::transform {
             return right;
         }
 
+        if (op_str == "/" || op_str == "%") {
+            const auto& divisor = right.value();
+            if (!divisor.is_null() && divisor == types::logical_value_t{resource, divisor.type()}) {
+                return core::error_t(core::error_code_t::invalid_parameter,
+                                     std::pmr::string{"division by zero", resource});
+            }
+        }
+
         if (left.value().type().type() == types::logical_type::DECIMAL ||
             right.value().type().type() == types::logical_type::DECIMAL) {
             return core::error_t(
@@ -1386,10 +1384,9 @@ namespace components::sql::transform {
         // parsed exactly against (width, scale) instead of typed DOUBLE (measured 2026-09-05:
         // numeric(38,20) DEFAULT 0.12345678901234567890 became ...168, short by 722 at the 20th place).
         // INSERT/UPDATE values still lose the digits this way; don't duplicate the fix here.
-        core::result_wrapper_t<types::logical_value_t> default_clause_value(
-            std::pmr::memory_resource* resource,
-            const types::complex_logical_type& declared,
-            Node* expr) {
+        core::result_wrapper_t<types::logical_value_t> default_clause_value(std::pmr::memory_resource* resource,
+                                                                            const types::complex_logical_type& declared,
+                                                                            Node* expr) {
             if (declared.type() == types::logical_type::DECIMAL && declared.extension() != nullptr &&
                 nodeTag(expr) == T_A_Const) {
                 Value* value = &pg_ptr_cast<A_Const>(expr)->val;
@@ -1480,8 +1477,7 @@ namespace components::sql::transform {
                 }
             }
             // PostgreSQL stores ' '/'\0' for unspecified MATCH/action; normalize so downstream never sees it.
-            if (constraint->fk_matchtype == 'f' || constraint->fk_matchtype == 'p' ||
-                constraint->fk_matchtype == 's') {
+            if (constraint->fk_matchtype == 'f' || constraint->fk_matchtype == 'p' || constraint->fk_matchtype == 's') {
                 tc.fk_matchtype = constraint->fk_matchtype;
             }
             const auto da = constraint->fk_del_action;

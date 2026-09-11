@@ -88,9 +88,7 @@ namespace {
         }
 
         components::execution_context_t ctx() {
-            return components::execution_context_t{session_id_t{},
-                                                   components::table::transaction_data{0, 0},
-                                                   {}};
+            return components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}};
         }
 
         void checkpoint(services::wal::id_t wal_id) {
@@ -318,8 +316,8 @@ TEST_CASE("services::disk::open::replayed_rows_with_nowhere_to_land_are_refused"
 
     const auto otbx = otbx_at(base, ns_oid, table_oid);
     std::filesystem::create_directories(otbx.parent_path());
-    REQUIRE_FALSE(fx.manager->create_storage_disk_sync(table_oid, ns_oid, cols, otbx, /*is_computed=*/false)
-                      .contains_error());
+    REQUIRE_FALSE(
+        fx.manager->create_storage_disk_sync(table_oid, ns_oid, cols, otbx, /*is_computed=*/false).contains_error());
     REQUIRE(fx.manager->has_storage(table_oid));
     components::vector::data_chunk_t empty(&fx.resource, types, 1);
     empty.set_cardinality(0);
@@ -368,8 +366,8 @@ TEST_CASE("services::disk::open::a_create_that_failed_is_not_reported_as_a_dupli
     }
     std::error_code rm_ec;
     std::filesystem::remove(otbx, rm_ec);
-    REQUIRE_FALSE(fx.manager->create_storage_disk_sync(table_oid, ns_oid, cols, otbx, /*is_computed=*/false)
-                      .contains_error());
+    REQUIRE_FALSE(
+        fx.manager->create_storage_disk_sync(table_oid, ns_oid, cols, otbx, /*is_computed=*/false).contains_error());
     REQUIRE(fx.manager->has_storage(table_oid));
 
     auto dup = fx.manager->create_storage_disk_sync(table_oid, ns_oid, cols, otbx, /*is_computed=*/false);
@@ -445,8 +443,10 @@ TEST_CASE("services::disk::open::rehydrate_states_the_divergence_it_cannot_close
         row.set_value(2, 0, static_cast<std::uint32_t>(ns_oid));
         row.set_value(3, 0, std::string_view("r"));
         row.set_value(4, 0, std::string_view("d"));
-        auto rng = append_ok(
-            fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), well_known_oid::pg_class_table, std::move(row)));
+        auto rng = append_ok(fx.invoke(&manager_disk_t::append_pg_catalog_row,
+                                       auto_ctx(),
+                                       well_known_oid::pg_class_table,
+                                       std::move(row)));
         std::vector<components::pg_catalog_append_range_t> appends{std::move(rng)};
         fx.invoke(&manager_disk_t::storage_publish_commits, rebuild_ctx(), std::uint64_t{1000}, std::move(appends));
     }
@@ -522,7 +522,6 @@ TEST_CASE("services::disk::open::an_unreadable_system_table_sidecar_is_not_a_bri
     cleanup_refusal_dir();
 }
 
-
 TEST_CASE("services::disk::open::rehydrate_does_not_create_over_a_file_that_did_not_load") {
     cleanup_refusal_dir();
     auto base = std::filesystem::path(refusal_dir());
@@ -573,7 +572,6 @@ TEST_CASE("services::disk::open::rehydrate_does_not_create_over_a_file_that_did_
 
     cleanup_refusal_dir();
 }
-
 
 TEST_CASE("services::disk::open::a_rehydrate_walk_that_could_not_run_says_so") {
     cleanup_refusal_dir();
@@ -668,7 +666,6 @@ TEST_CASE("services::disk::open::an_unreadable_relkind_does_not_open_a_document_
 
     cleanup_refusal_dir();
 }
-
 
 TEST_CASE("services::disk::open::a_refused_sidecar_publish_leaves_no_staging_file") {
     cleanup_refusal_dir();
@@ -1097,13 +1094,13 @@ TEST_CASE("services::disk::open::a_refused_journal_record_cancels_the_backfill_p
         configuration::config_wal wal_config(wal_dir);
 
         open_fixture fx(base);
-        auto wal_manager = actor_zeta::spawn<services::wal::manager_wal_replicate_t>(
-            &fx.resource,
-            fx.scheduler,
-            wal_config,
-            fx.log,
-            components::pipeline::no_mailbox(),
-            components::pipeline::no_mailbox());
+        auto wal_manager =
+            actor_zeta::spawn<services::wal::manager_wal_replicate_t>(&fx.resource,
+                                                                      fx.scheduler,
+                                                                      wal_config,
+                                                                      fx.log,
+                                                                      components::pipeline::no_mailbox(),
+                                                                      components::pipeline::no_mailbox());
         fx.manager->set_manager_wal_sync(wal_manager->address());
 
         fx.manager->bootstrap_system_tables_sync();
@@ -1124,13 +1121,13 @@ TEST_CASE("services::disk::open::a_refused_journal_record_cancels_the_backfill_p
         configuration::config_wal wal_config(wal_dir);
 
         open_fixture fx(base);
-        auto wal_manager = actor_zeta::spawn<services::wal::manager_wal_replicate_t>(
-            &fx.resource,
-            fx.scheduler,
-            wal_config,
-            fx.log,
-            components::pipeline::no_mailbox(),
-            components::pipeline::no_mailbox());
+        auto wal_manager =
+            actor_zeta::spawn<services::wal::manager_wal_replicate_t>(&fx.resource,
+                                                                      fx.scheduler,
+                                                                      wal_config,
+                                                                      fx.log,
+                                                                      components::pipeline::no_mailbox(),
+                                                                      components::pipeline::no_mailbox());
         fx.manager->set_manager_wal_sync(wal_manager->address());
 
         fx.manager->bootstrap_system_tables_sync();

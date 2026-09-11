@@ -36,7 +36,7 @@ set(${PROJECT_NAME}_SOURCES
         test_wide_decimal_storage.cpp
         test_update_merge.cpp
         test_block_accounting_bounds.cpp
-        test_wave_table.cpp
+        test_table_error_paths.cpp
         test_segment_tree_reinitialize.cpp
         test_storage_update_rollback.cpp
         test_update_overlay_predicate.cpp

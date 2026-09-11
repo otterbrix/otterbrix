@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <algorithm>
 #include <catch2/catch_test_macros.hpp>
@@ -644,7 +644,8 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_re
         }
         {
             auto s2 = otterbrix::session_id_t();
-            auto c2 = dispatcher->execute_sql(s2, "SELECT id, a::?bigint FROM TestDatabase.TestCollection ORDER BY id;");
+            auto c2 =
+                dispatcher->execute_sql(s2, "SELECT id, a::?bigint FROM TestDatabase.TestCollection ORDER BY id;");
             REQUIRE(c2->is_success());
             REQUIRE(c2->size() == 2);
             REQUIRE(c2->value(1, 0).value<int64_t>() == 10);
@@ -756,8 +757,7 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_cr
     auto config = test_create_config(integration_fixture_path("test_persistence/computed_variants_crash_src"));
     test_clear_directory(config);
 
-    const std::filesystem::path crash_dir =
-        integration_fixture_path("test_persistence/computed_variants_crash_copy");
+    const std::filesystem::path crash_dir = integration_fixture_path("test_persistence/computed_variants_crash_copy");
 
     INFO("phase 1: computed table, two type variants; copy the live directory (crash image)");
     {
@@ -964,8 +964,8 @@ TEST_CASE("integration::cpp::test_persistence::replay_synthesis_places_otbx_unde
             CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 2);
         }
 
-        REQUIRE(std::filesystem::exists(crash_config.disk.path / std::to_string(live_ns) /
-                                        std::to_string(live_tbl) / "table.otbx"));
+        REQUIRE(std::filesystem::exists(crash_config.disk.path / std::to_string(live_ns) / std::to_string(live_tbl) /
+                                        "table.otbx"));
         REQUIRE_FALSE(std::filesystem::exists(
             crash_config.disk.path /
             std::to_string(static_cast<unsigned>(components::catalog::well_known_oid::main_database)) /
@@ -1094,7 +1094,6 @@ TEST_CASE("integration::cpp::test_persistence::double_restart") {
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 99;", 1);
     }
 }
-
 
 TEST_CASE("integration::cpp::test_persistence::disk_checkpoint_basic") {
     auto config = test_create_config(integration_fixture_path("test_persistence/disk_basic"));
@@ -1293,7 +1292,6 @@ TEST_CASE("integration::cpp::test_persistence::disk_checkpoint_plus_wal") {
     }
 }
 
-
 TEST_CASE("integration::cpp::test_persistence::disk_partial_insert") {
     auto config = test_create_config(integration_fixture_path("test_persistence/disk_partial_insert"));
     test_clear_directory(config);
@@ -1310,10 +1308,9 @@ TEST_CASE("integration::cpp::test_persistence::disk_partial_insert") {
 
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(
-                session,
-                "CREATE TABLE TestDatabase.TestCollection "
-                "(name string, score bigint, tag string DEFAULT 'untagged') ;");
+            auto cur = dispatcher->execute_sql(session,
+                                               "CREATE TABLE TestDatabase.TestCollection "
+                                               "(name string, score bigint, tag string DEFAULT 'untagged') ;");
             REQUIRE(cur->is_success());
         }
 
@@ -1363,9 +1360,9 @@ TEST_CASE("integration::cpp::test_persistence::disk_partial_insert") {
         // Only a new partial INSERT proves the DEFAULT survived restart.
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(
-                session,
-                "INSERT INTO TestDatabase.TestCollection (name, score) VALUES ('frank', 400);");
+            auto cur =
+                dispatcher->execute_sql(session,
+                                        "INSERT INTO TestDatabase.TestCollection (name, score) VALUES ('frank', 400);");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
         }
@@ -1390,10 +1387,9 @@ TEST_CASE("integration::cpp::test_persistence::disk_not_null_default") {
 
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(
-                session,
-                "CREATE TABLE TestDatabase.TestCollection "
-                "(name string NOT NULL, status string NOT NULL DEFAULT 'pending') ;");
+            auto cur = dispatcher->execute_sql(session,
+                                               "CREATE TABLE TestDatabase.TestCollection "
+                                               "(name string NOT NULL, status string NOT NULL DEFAULT 'pending') ;");
             REQUIRE(cur->is_success());
         }
 
@@ -1475,9 +1471,9 @@ TEST_CASE("integration::cpp::test_persistence::default_check_constraint_agrees_a
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(
-                dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.TestCollection (id bigint, c int DEFAULT 5);")
-                    ->is_success());
+            REQUIRE(dispatcher
+                        ->execute_sql(session, "CREATE TABLE TestDatabase.TestCollection (id bigint, c int DEFAULT 5);")
+                        ->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -2447,8 +2443,8 @@ TEST_CASE("integration::cpp::test_persistence::disk_index_massive_checkpoint_cyc
 
 // bootstrap_indexes_sync must re-mint the engine and respawn the disk agent from pg_index alone.
 TEST_CASE("integration::cpp::test_persistence::index_recovery_phase4_catalog_driven_bootstrap") {
-    auto config = test_create_config(
-        integration_fixture_path("test_persistence/index_recovery_phase4_catalog_driven_bootstrap"));
+    auto config =
+        test_create_config(integration_fixture_path("test_persistence/index_recovery_phase4_catalog_driven_bootstrap"));
     test_clear_directory(config);
 
     INFO("phase 1: create users(id, email) + email index, insert 10 rows, dtor checkpoint");
@@ -2752,9 +2748,8 @@ TEST_CASE("integration::cpp::test_persistence::b1a_disk_is_default") {
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(
-                session,
-                "CREATE TABLE TestDatabase.B1aDefault (name string, count bigint);");
+            auto cur =
+                dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.B1aDefault (name string, count bigint);");
             REQUIRE(cur->is_success());
         }
 
@@ -2848,9 +2843,9 @@ TEST_CASE("integration::cpp::test_persistence::wal_truncate_restart_no_double_re
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(
-                session,
-                "CREATE TABLE TestDatabase.TruncCollection (name string, count bigint);");
+            auto cur =
+                dispatcher->execute_sql(session,
+                                        "CREATE TABLE TestDatabase.TruncCollection (name string, count bigint);");
             REQUIRE(cur->is_success());
         }
 
@@ -2886,8 +2881,7 @@ TEST_CASE("integration::cpp::test_persistence::wal_truncate_restart_no_double_re
         }
 
         segments_after_truncate = count_wal_segments();
-        INFO("segments before truncate: " << segments_before_truncate
-                                          << ", after: " << segments_after_truncate);
+        INFO("segments before truncate: " << segments_before_truncate << ", after: " << segments_after_truncate);
         REQUIRE(segments_after_truncate < segments_before_truncate);
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TruncCollection;", kBeforeCheckpoint + kAfterCheckpoint);

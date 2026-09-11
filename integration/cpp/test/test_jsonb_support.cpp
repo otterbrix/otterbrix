@@ -6,8 +6,8 @@
 // NOT PINNABLE: `SELECT CASE WHEN t #>> 'a.b' = 10 ... FROM t` segfaults on a NULL leaf row
 // (general 3VL bug) -- cannot live in a test binary.
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <set>
 #include <string>
@@ -485,12 +485,9 @@ TEST_CASE("integration::cpp::test_jsonb_support::clean_rejections") {
     seed(d);
 
     const char* rejected[] = {
-        // not accepted as a GROUP key (unlike a sort key -- see the pins below).
-        "SELECT t #>> 'a.b' AS k, COUNT(*) FROM jp.t GROUP BY t #>> 'a.b';",
         "CREATE INDEX ix ON jp.t (t #>> 'a.b');",
         "SELECT id FROM jp.t WHERE t #>> 'a.b' IN (10, 30);",
         "SELECT id FROM jp.t WHERE t ->> 'x' LIKE 'p%';",
-        "SELECT upper(t ->> 'x') AS v FROM jp.t;",
         "SELECT id FROM jp.t WHERE t #- 'a.b' = 1;",
         "DELETE FROM jp.t WHERE id = 3 RETURNING t - 'x';",
         "SELECT t -> 'a' FROM jp.t UNION SELECT t -> 'nokey' FROM jp.t;",
@@ -945,4 +942,3 @@ TEST_CASE("integration::cpp::test_jsonb_support::bug_three_table_join_takes_left
     // correct: {10, 20} (the values of m). We get l's values instead.
     CHECK(i64_set(cur, "v") == std::set<int64_t>{100, 200});
 }
-

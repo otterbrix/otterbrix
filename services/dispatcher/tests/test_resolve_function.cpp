@@ -19,9 +19,9 @@ namespace {
     // create_decimal reports an out-of-window (width, scale) through core::error_t now,
     // instead of an assert that vanished under NDEBUG. Every literal these tests use is
     // inside the window, so the helper checks the result and hands back the type.
-    components::types::complex_logical_type
-    make_decimal(uint8_t width, uint8_t scale, std::string alias = "") {
-        auto created = components::types::complex_logical_type::create_decimal(test_arena(), width, scale, std::move(alias));
+    components::types::complex_logical_type make_decimal(uint8_t width, uint8_t scale, std::string alias = "") {
+        auto created =
+            components::types::complex_logical_type::create_decimal(test_arena(), width, scale, std::move(alias));
         REQUIRE_FALSE(created.has_error());
         return std::move(created.value());
     }

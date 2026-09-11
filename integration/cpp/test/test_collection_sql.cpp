@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 #include <components/types/operations_helper.hpp>
 #include <core/operations_helper.hpp>
 

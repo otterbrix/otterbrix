@@ -15,7 +15,8 @@ namespace components::compute {
         : resource_(resource)
         , layout_(layout)
         , stride_(round_up(layout.size, layout.alignment))
-        , blocks_(resource) {}
+        , blocks_(resource)
+        , value_blocks_(resource) {}
 
     aggregate_state_arena_t::~aggregate_state_arena_t() { release(); }
 
@@ -24,8 +25,10 @@ namespace components::compute {
         , layout_(other.layout_)
         , stride_(other.stride_)
         , blocks_(std::move(other.blocks_))
+        , value_blocks_(std::move(other.value_blocks_))
         , count_(other.count_) {
         other.blocks_.clear();
+        other.value_blocks_.clear();
         other.count_ = 0;
     }
 
@@ -38,8 +41,10 @@ namespace components::compute {
         layout_ = other.layout_;
         stride_ = other.stride_;
         blocks_ = std::move(other.blocks_);
+        value_blocks_ = std::move(other.value_blocks_);
         count_ = other.count_;
         other.blocks_.clear();
+        other.value_blocks_.clear();
         other.count_ = 0;
         return *this;
     }
@@ -52,7 +57,10 @@ namespace components::compute {
                 blocks_.push_back(
                     static_cast<std::byte*>(resource_->allocate(stride_ * states_per_block, layout_.alignment)));
             }
-            layout_.construct(blocks_[block] + (count_ % states_per_block) * stride_, resource_);
+            if (keeps_values() && block == value_blocks_.size()) {
+                value_blocks_.emplace_back(resource_, layout_.argument_type, states_per_block);
+            }
+            layout_.construct(blocks_[block] + (count_ % states_per_block) * stride_, resource_, layout_.argument_type);
             count_++;
         }
     }
@@ -61,6 +69,7 @@ namespace components::compute {
         for (uint64_t group = 0; group < count_; group++) {
             layout_.destroy(blocks_[group / states_per_block] + (group % states_per_block) * stride_);
         }
+        value_blocks_.clear();
         count_ = 0;
     }
 

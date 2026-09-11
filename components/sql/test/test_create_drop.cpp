@@ -418,8 +418,8 @@ TEST_CASE("components::sql::create_index_access_method") {
     }
 
     SECTION("USING btree, and the omitted clause, still build a single index") {
-        for (const char* query : {"CREATE INDEX b_idx ON db.tbl USING btree (field);",
-                                  "CREATE INDEX d_idx ON db.tbl (field);"}) {
+        for (const char* query :
+             {"CREATE INDEX b_idx ON db.tbl USING btree (field);", "CREATE INDEX d_idx ON db.tbl (field);"}) {
             auto result = plan_of(query);
             REQUIRE_FALSE(result.has_error());
             auto node = result.value().sub_queries.back();
@@ -575,15 +575,11 @@ TEST_CASE("components::sql::drop_carries_missing_ok") {
     SECTION("DROP TABLE IF EXISTS carries missing_ok") {
         REQUIRE(transform_drop("DROP TABLE IF EXISTS db.t;")->missing_ok());
     }
-    SECTION("plain DROP TABLE stays loud") {
-        REQUIRE_FALSE(transform_drop("DROP TABLE db.t;")->missing_ok());
-    }
+    SECTION("plain DROP TABLE stays loud") { REQUIRE_FALSE(transform_drop("DROP TABLE db.t;")->missing_ok()); }
     SECTION("DROP INDEX IF EXISTS carries missing_ok") {
         REQUIRE(transform_drop("DROP INDEX IF EXISTS db.t.idx;")->missing_ok());
     }
-    SECTION("plain DROP INDEX stays loud") {
-        REQUIRE_FALSE(transform_drop("DROP INDEX db.t.idx;")->missing_ok());
-    }
+    SECTION("plain DROP INDEX stays loud") { REQUIRE_FALSE(transform_drop("DROP INDEX db.t.idx;")->missing_ok()); }
     SECTION("DROP VIEW IF EXISTS carries missing_ok") {
         REQUIRE(transform_drop("DROP VIEW IF EXISTS db.v;")->missing_ok());
     }
@@ -596,9 +592,7 @@ TEST_CASE("components::sql::drop_carries_missing_ok") {
     SECTION("DROP DATABASE IF EXISTS carries missing_ok (its own DropdbStmt flag)") {
         REQUIRE(transform_drop("DROP DATABASE IF EXISTS db;")->missing_ok());
     }
-    SECTION("plain DROP DATABASE stays loud") {
-        REQUIRE_FALSE(transform_drop("DROP DATABASE db;")->missing_ok());
-    }
+    SECTION("plain DROP DATABASE stays loud") { REQUIRE_FALSE(transform_drop("DROP DATABASE db;")->missing_ok()); }
 }
 
 // gram.y's opt_drop_behavior has three alternatives but two values: the empty one and a
@@ -619,18 +613,14 @@ TEST_CASE("components::sql::drop_carries_written_behavior") {
         return static_cast<node_drop_t*>(node.get())->behavior();
     };
 
-    SECTION("DROP TABLE CASCADE") {
-        REQUIRE(behavior_of("DROP TABLE db.t CASCADE;") == drop_behavior_t::cascade_);
-    }
+    SECTION("DROP TABLE CASCADE") { REQUIRE(behavior_of("DROP TABLE db.t CASCADE;") == drop_behavior_t::cascade_); }
     SECTION("bare DROP TABLE defaults to RESTRICT") {
         REQUIRE(behavior_of("DROP TABLE db.t;") == drop_behavior_t::restrict_);
     }
     SECTION("DROP TABLE RESTRICT is the same value as the bare form") {
         REQUIRE(behavior_of("DROP TABLE db.t RESTRICT;") == drop_behavior_t::restrict_);
     }
-    SECTION("DROP VIEW CASCADE") {
-        REQUIRE(behavior_of("DROP VIEW db.v CASCADE;") == drop_behavior_t::cascade_);
-    }
+    SECTION("DROP VIEW CASCADE") { REQUIRE(behavior_of("DROP VIEW db.v CASCADE;") == drop_behavior_t::cascade_); }
     SECTION("DROP SEQUENCE CASCADE") {
         REQUIRE(behavior_of("DROP SEQUENCE db.s CASCADE;") == drop_behavior_t::cascade_);
     }

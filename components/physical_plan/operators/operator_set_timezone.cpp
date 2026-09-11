@@ -35,11 +35,11 @@ namespace components::operators {
         // silently report success for a setting that won't survive the process. Costs nothing in
         // practice — no production topology omits the disk actor (base_spaces spawns it unconditionally).
         if (ctx->disk_address == actor_zeta::address_t::empty_address()) {
-            set_error(core::error_t{
-                core::error_code_t::physical_plan_error,
-                std::pmr::string{"set_timezone: no disk actor is wired — the pg_settings row cannot be "
-                                 "written, so the setting would not survive this process",
-                                 this->resource()}});
+            set_error(
+                core::error_t{core::error_code_t::physical_plan_error,
+                              std::pmr::string{"set_timezone: no disk actor is wired — the pg_settings row cannot be "
+                                               "written, so the setting would not survive this process",
+                                               this->resource()}});
             mark_failed();
             co_return;
         }
@@ -49,11 +49,11 @@ namespace components::operators {
         // pg_settings is a well-known compiled-in table; a registry that can't name it is the
         // same silent-success lie the empty-address branch above refuses to tell.
         if (settings_def == nullptr) {
-            set_error(core::error_t{
-                core::error_code_t::physical_plan_error,
-                std::pmr::string{"set_timezone: the pg_settings schema is missing from the system-table "
-                                 "registry — the setting cannot be persisted",
-                                 this->resource()}});
+            set_error(
+                core::error_t{core::error_code_t::physical_plan_error,
+                              std::pmr::string{"set_timezone: the pg_settings schema is missing from the system-table "
+                                               "registry — the setting cannot be persisted",
+                                               this->resource()}});
             mark_failed();
             co_return;
         }

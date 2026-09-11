@@ -61,23 +61,20 @@ namespace actor_zeta {
         template<auto MethodPtr,
                  typename... Args,
                  typename Interface = typename type_traits::callable_trait<decltype(MethodPtr)>::class_type>
-        requires detail::is_interface<Interface>
-        [[nodiscard]] inline auto send(actor::address_t target, Args&&... args)
+        requires detail::is_interface<Interface> [[nodiscard]] inline auto send(actor::address_t target, Args&&... args)
             -> detail::send_result_t<Interface,
                                      typename type_traits::callable_trait<decltype(MethodPtr)>::result_type> {
             using result_type = typename type_traits::callable_trait<decltype(MethodPtr)>::result_type;
             static_assert(type_traits::is_unique_future_v<result_type>, "Method must return unique_future<T>");
-            static_assert(
-                contract_declares_method<MethodPtr, typename Interface::dispatch_traits::methods>::value,
-                "send<&contract::method>(): the method is not in the contract's dispatch_traits list; "
-                "the message id would silently resolve to the contract's first method");
+            static_assert(contract_declares_method<MethodPtr, typename Interface::dispatch_traits::methods>::value,
+                          "send<&contract::method>(): the method is not in the contract's dispatch_traits list; "
+                          "the message id would silently resolve to the contract's first method");
 
             constexpr uint64_t action_id =
                 action_id_impl<Interface, MethodPtr, typename Interface::dispatch_traits::methods>::value;
 
-            return detail::dispatch_method_impl_address<Interface, MethodPtr, action_id>(
-                std::move(target),
-                std::forward<Args>(args)...);
+            return detail::dispatch_method_impl_address<Interface, MethodPtr, action_id>(std::move(target),
+                                                                                         std::forward<Args>(args)...);
         }
 
     } // namespace otterbrix

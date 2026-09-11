@@ -18,7 +18,7 @@ namespace components::catalog {
     } // namespace deptype
 
     struct dependency_t {
-        oid_t classid{0};  // catalog hosting dependent (e.g. pg_class.oid)
+        oid_t classid{0}; // catalog hosting dependent (e.g. pg_class.oid)
         oid_t objid{0};
         char deptype{'n'};
     };

@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/sql/transformer/utils.hpp>
@@ -16,7 +16,6 @@ namespace {
         return idx.value();
     }
 } // namespace
-
 
 // promote_column rebuilds a whole column, cell by cell through logical_value_t, whenever a later
 // row widens that column's type (the shape usually called quadratic promotion); a workload with
@@ -258,4 +257,59 @@ TEST_CASE("integration::cpp::test_insert_type_promotion::literal_outside_the_col
         CHECK(insert_into("p." + range.declared + "_over", range.declared, range.over_max)->is_error());
         CHECK(rows_in("p." + range.declared + "_over") == 0);
     }
+}
+
+TEST_CASE("integration::cpp::test_insert_type_promotion::string_literals_assign_to_typed_columns") {
+    auto config = test_create_config(integration_fixture_path("test_insert_type_promotion/string_literals"));
+    test_clear_directory(config);
+    config.log.level = log_t::level::off;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    auto exec = [&](const std::string& sql) {
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(exec("CREATE DATABASE sl;")->is_success());
+    REQUIRE(exec("CREATE TABLE sl.t (d date, n bigint, amount decimal(10,2), flag boolean);")->is_success());
+    REQUIRE(exec("INSERT INTO sl.t (d, n, amount, flag) VALUES ('2020-01-15', '42', '1.50', 'true');")->is_success());
+
+    auto stored = exec("SELECT n, flag FROM sl.t;");
+    REQUIRE(stored->is_success());
+    REQUIRE(stored->size() == 1);
+    REQUIRE(stored->value(0, 0).value<int64_t>() == 42);
+    REQUIRE(stored->value(1, 0).value<bool>());
+
+    // The date and the decimal kept their values, not merely a non-null cell.
+    auto matched = exec("SELECT n FROM sl.t WHERE d = '2020-01-15'::date AND amount = 1.50;");
+    REQUIRE(matched->is_success());
+    REQUIRE(matched->size() == 1);
+
+    REQUIRE(exec("INSERT INTO sl.t (d) VALUES ('not-a-date');")->is_error());
+    REQUIRE(exec("INSERT INTO sl.t (n) VALUES ('not-a-number');")->is_error());
+}
+
+TEST_CASE("integration::cpp::test_insert_type_promotion::boolean_column_takes_literal_spellings") {
+    auto config = test_create_config(integration_fixture_path("test_insert_type_promotion/boolean"));
+    test_clear_directory(config);
+    config.log.level = log_t::level::off;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    auto exec = [&](const std::string& sql) {
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(exec("CREATE DATABASE bl;")->is_success());
+    REQUIRE(exec("CREATE TABLE bl.t (id bigint, flag boolean);")->is_success());
+    REQUIRE(exec("INSERT INTO bl.t (id, flag) VALUES (1, 'true'), (2, 'false');")->is_success());
+    REQUIRE(exec("INSERT INTO bl.t (id, flag) VALUES (3, true);")->is_success());
+    REQUIRE(exec("INSERT INTO bl.t (id, flag) VALUES (4, 1);")->is_error());
+
+    auto stored = exec("SELECT flag FROM bl.t ORDER BY id;");
+    REQUIRE(stored->is_success());
+    REQUIRE(stored->size() == 3);
+    REQUIRE(stored->value(0, 0).value<bool>());
+    REQUIRE_FALSE(stored->value(0, 1).value<bool>());
+    REQUIRE(stored->value(0, 2).value<bool>());
 }

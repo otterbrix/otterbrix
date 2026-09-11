@@ -112,11 +112,11 @@ namespace components::operators {
         // placeholder columns and sets the target cardinality itself. row_ids are gathered
         // unconditionally: over a SINK the input's are zero-filled placeholders, so gathering them
         // reproduces exactly the zero sentinel the per-cell path left behind.
-        vector::data_chunk_t out_chunk = sparse
-                                             ? vector::data_chunk_t(resource, types, populated_cols, out_count)
-                                             : vector::data_chunk_t(resource, types, out_count);
+        vector::data_chunk_t out_chunk = sparse ? vector::data_chunk_t(resource, types, populated_cols, out_count)
+                                                : vector::data_chunk_t(resource, types, out_count);
         chunk.copy(out_chunk, sel, out_count);
         out.emplace_back(std::move(out_chunk));
+        note_emitted();
         return core::error_t::no_error();
     }
 
@@ -181,6 +181,19 @@ namespace components::operators {
                              input,
                              stream_limit_total_,
                              out);
+    }
+
+    core::error_t operator_match_t::finalize(pipeline::context_t* /*ctx*/, chunks_vector_t& out) {
+        if (emitted() || stream_types_.empty()) {
+            return core::error_t::no_error();
+        }
+        auto* res = stream_resource_ ? stream_resource_ : resource_;
+        vector::data_chunk_t empty = stream_sparse_
+                                         ? vector::data_chunk_t(res, stream_types_, stream_populated_cols_, 0)
+                                         : vector::data_chunk_t(res, stream_types_, 0);
+        empty.set_cardinality(0);
+        out.emplace_back(std::move(empty));
+        return core::error_t::no_error();
     }
 
     actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>

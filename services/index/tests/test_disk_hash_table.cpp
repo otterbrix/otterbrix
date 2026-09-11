@@ -28,9 +28,9 @@ namespace {
 
     auto loader_must_not_be_consulted(std::pmr::memory_resource* resource) {
         return [resource](uint32_t, uint64_t) -> core::result_wrapper_t<std::pmr::string> {
-            return core::error_t(core::error_code_t::io_error,
-                                 std::pmr::string{"the loader must not be consulted: every key in this case is inline",
-                                                  resource});
+            return core::error_t(
+                core::error_code_t::io_error,
+                std::pmr::string{"the loader must not be consulted: every key in this case is inline", resource});
         };
     }
 
@@ -92,7 +92,7 @@ namespace {
             }
         }
     };
-}
+} // namespace
 
 TEST_CASE("services::index::disk_hash_table::put_get_erase_roundtrip") {
     auto resource = core::pmr::otterbrix_resource();
@@ -191,7 +191,6 @@ TEST_CASE("services::index::disk_hash_table::truncated_collision_requires_loader
     const auto path = mk_path("disk_hash_table_truncated_collision.data");
     std::filesystem::remove(path);
 
-
     disk_hash_table_t table(path, 32, &resource);
     REQUIRE_FALSE(table.put(enc_a, 777, 1, 100).contains_error());
 
@@ -235,8 +234,7 @@ TEST_CASE("services::index::disk_hash_table::a_colliding_stranger_that_cannot_be
             return as_loader_key(&resource, enc_b);
         }
         return core::error_t(core::error_code_t::io_error,
-                             std::pmr::string{"the stranger's record is unreadable",
-                                              &resource});
+                             std::pmr::string{"the stranger's record is unreadable", &resource});
     };
 
     auto walked = table.get_all(enc_b, stranger_unreadable);
@@ -334,8 +332,7 @@ TEST_CASE("services::index::disk_hash_table::truncated_entry_refuses_when_the_re
     REQUIRE(truncated_entries == 1);
 
     const auto refuses = [&resource](uint32_t, uint64_t) -> core::result_wrapper_t<std::pmr::string> {
-        return core::error_t(core::error_code_t::io_error,
-                             std::pmr::string{"record unreadable", &resource});
+        return core::error_t(core::error_code_t::io_error, std::pmr::string{"record unreadable", &resource});
     };
 
     auto read = table.get_all(long_key, refuses);
@@ -443,8 +440,7 @@ TEST_CASE("services::index::disk_hash_table::rehash_truncated_keys_without_loade
         if (file_id == 6 && offset == 600) {
             return as_loader_key(&resource, key2);
         }
-        return core::error_t(core::error_code_t::io_error,
-                             std::pmr::string{"no record at this location", &resource});
+        return core::error_t(core::error_code_t::io_error, std::pmr::string{"no record at this location", &resource});
     };
     auto v1 = must_read(table.get(key1, source_7));
     REQUIRE(v1.has_value());
@@ -565,7 +561,8 @@ TEST_CASE("services::index::disk_hash_table::split_crash_after_copy_sync") {
         table.set_auto_rehash_suppressed(true);
         for (int i = 0; i < 300; ++i) {
             keys.emplace_back("crash.copy.k." + std::to_string(i));
-            REQUIRE_FALSE(table.put(keys.back(), static_cast<int64_t>(i), 1, static_cast<uint64_t>(1000 + i)).contains_error());
+            REQUIRE_FALSE(
+                table.put(keys.back(), static_cast<int64_t>(i), 1, static_cast<uint64_t>(1000 + i)).contains_error());
         }
         env_var_guard_t guard("OTTERBRIX_DISK_HASH_SPLIT_FAILPOINT", "after_copy_sync");
         REQUIRE(table.rehash(5).contains_error());
@@ -594,7 +591,8 @@ TEST_CASE("services::index::disk_hash_table::split_crash_after_header_sync") {
         table.set_auto_rehash_suppressed(true);
         for (int i = 0; i < 300; ++i) {
             keys.emplace_back("crash.header.k." + std::to_string(i));
-            REQUIRE_FALSE(table.put(keys.back(), static_cast<int64_t>(i), 1, static_cast<uint64_t>(2000 + i)).contains_error());
+            REQUIRE_FALSE(
+                table.put(keys.back(), static_cast<int64_t>(i), 1, static_cast<uint64_t>(2000 + i)).contains_error());
         }
         env_var_guard_t guard("OTTERBRIX_DISK_HASH_SPLIT_FAILPOINT", "after_header_sync");
         REQUIRE(table.rehash(5).contains_error());
@@ -623,7 +621,8 @@ TEST_CASE("services::index::disk_hash_table::split_crash_recovery_continues_prog
         table.set_auto_rehash_suppressed(true);
         for (int i = 0; i < 400; ++i) {
             keys.emplace_back("crash.recover.k." + std::to_string(i));
-            REQUIRE_FALSE(table.put(keys.back(), static_cast<int64_t>(i), 1, static_cast<uint64_t>(5000 + i)).contains_error());
+            REQUIRE_FALSE(
+                table.put(keys.back(), static_cast<int64_t>(i), 1, static_cast<uint64_t>(5000 + i)).contains_error());
         }
 
         env_var_guard_t guard("OTTERBRIX_DISK_HASH_SPLIT_FAILPOINT", "after_header_sync");
@@ -689,7 +688,8 @@ TEST_CASE("services::index::disk_hash_table::for_each_walks_duplicates_in_insert
 
     constexpr int64_t duplicates = 300;
     for (int64_t i = 0; i < duplicates; ++i) {
-        REQUIRE_FALSE(table.put("dup", i, static_cast<uint32_t>(i + 1), static_cast<uint64_t>(1000 + i)).contains_error());
+        REQUIRE_FALSE(
+            table.put("dup", i, static_cast<uint32_t>(i + 1), static_cast<uint64_t>(1000 + i)).contains_error());
     }
     REQUIRE_FALSE(table.sync().contains_error());
 
@@ -698,7 +698,8 @@ TEST_CASE("services::index::disk_hash_table::for_each_walks_duplicates_in_insert
     REQUIRE(std::filesystem::file_size(overflow_path) >= disk_hash_table_t::page_size);
 
     std::pmr::vector<disk_hash_table_t::value_ref_t> seen(&resource);
-    REQUIRE_FALSE(table.for_each([&](const disk_hash_table_t::value_ref_t& ref) { seen.push_back(ref); }).contains_error());
+    REQUIRE_FALSE(
+        table.for_each([&](const disk_hash_table_t::value_ref_t& ref) { seen.push_back(ref); }).contains_error());
 
     REQUIRE(seen.size() == static_cast<size_t>(duplicates));
     for (int64_t i = 0; i < duplicates; ++i) {
@@ -730,23 +731,23 @@ TEST_CASE("services::index::disk_hash_table::for_each_keeps_interleaved_keys_in_
         std::string_view key;
         int64_t value;
     };
-    const std::pmr::vector<put_t> script(
-        {put_t{"alpha", 1},
-         put_t{"beta", 2},
-         put_t{"alpha", 3},
-         put_t{"gamma", 4},
-         put_t{"beta", 5},
-         put_t{"alpha", 6},
-         put_t{"gamma", 7},
-         put_t{"beta", 8},
-         put_t{"alpha", 9}},
-        &resource);
+    const std::pmr::vector<put_t> script({put_t{"alpha", 1},
+                                          put_t{"beta", 2},
+                                          put_t{"alpha", 3},
+                                          put_t{"gamma", 4},
+                                          put_t{"beta", 5},
+                                          put_t{"alpha", 6},
+                                          put_t{"gamma", 7},
+                                          put_t{"beta", 8},
+                                          put_t{"alpha", 9}},
+                                         &resource);
     for (const auto& step : script) {
         REQUIRE_FALSE(table.put(step.key, step.value, 7, static_cast<uint64_t>(step.value) * 10).contains_error());
     }
 
     std::pmr::vector<int64_t> seen(&resource);
-    REQUIRE_FALSE(table.for_each([&](const disk_hash_table_t::value_ref_t& ref) { seen.push_back(ref.value); }).contains_error());
+    REQUIRE_FALSE(
+        table.for_each([&](const disk_hash_table_t::value_ref_t& ref) { seen.push_back(ref.value); }).contains_error());
 
     REQUIRE(seen.size() == script.size());
     for (size_t i = 0; i < script.size(); ++i) {
@@ -774,12 +775,17 @@ TEST_CASE("services::index::disk_hash_table::for_each_multi_bucket_order_is_stab
         for (int64_t n = 0; n < per_key; ++n) {
             for (int k = 0; k < key_count; ++k) {
                 const std::string key = "key_" + std::to_string(k);
-                REQUIRE_FALSE(table.put(key, static_cast<int64_t>(k) * 1000 + n, 1, static_cast<uint64_t>(n)).contains_error());
+                REQUIRE_FALSE(
+                    table.put(key, static_cast<int64_t>(k) * 1000 + n, 1, static_cast<uint64_t>(n)).contains_error());
             }
         }
 
-        REQUIRE_FALSE(table.for_each([&](const disk_hash_table_t::value_ref_t& ref) { first_pass.push_back(ref.value); }).contains_error());
-        REQUIRE_FALSE(table.for_each([&](const disk_hash_table_t::value_ref_t& ref) { second_pass.push_back(ref.value); }).contains_error());
+        REQUIRE_FALSE(
+            table.for_each([&](const disk_hash_table_t::value_ref_t& ref) { first_pass.push_back(ref.value); })
+                .contains_error());
+        REQUIRE_FALSE(
+            table.for_each([&](const disk_hash_table_t::value_ref_t& ref) { second_pass.push_back(ref.value); })
+                .contains_error());
     }
 
     REQUIRE(first_pass.size() == static_cast<size_t>(key_count) * static_cast<size_t>(per_key));
@@ -876,7 +882,7 @@ namespace {
         const auto suffix = "." + std::to_string(index);
         return std::string(disk_hash_table_t::inline_key_limit - suffix.size(), 'k') + suffix;
     }
-}
+} // namespace
 
 TEST_CASE("services::index::disk_hash_table::reads_refuse_when_an_overflow_page_cannot_be_read") {
     auto resource = core::pmr::otterbrix_resource();
@@ -1054,7 +1060,7 @@ namespace {
         const auto crc = static_cast<uint32_t>(absl::ComputeCrc32c(absl::string_view(bytes.data() + 12, 28)));
         write_le32_at(bytes, 8, crc);
     }
-}
+} // namespace
 
 // count_entries_unlocked must not `break` out of an unreadable chain and hand open_or_create a partial count.
 TEST_CASE("services::index::disk_hash_table::open_refuses_when_the_entry_count_cannot_be_counted") {
@@ -1068,8 +1074,8 @@ TEST_CASE("services::index::disk_hash_table::open_refuses_when_the_entry_count_c
         disk_hash_table_t table(path, 8, &resource);
         table.set_auto_rehash_suppressed(true);
         for (int64_t i = 0; i < 64; ++i) {
-            REQUIRE_FALSE(table.put("count-key-" + std::to_string(i), i, 1, 100 + static_cast<uint64_t>(i))
-                              .contains_error());
+            REQUIRE_FALSE(
+                table.put("count-key-" + std::to_string(i), i, 1, 100 + static_cast<uint64_t>(i)).contains_error());
         }
         REQUIRE_FALSE(table.sync().contains_error());
     }
@@ -1198,8 +1204,7 @@ TEST_CASE("services::index::disk_hash_table::an_erased_slot_is_reused_by_the_nex
         REQUIRE(erased.value());
     }
 
-    const bool overflow_grew =
-        std::filesystem::exists(overflow_path) && std::filesystem::file_size(overflow_path) > 0;
+    const bool overflow_grew = std::filesystem::exists(overflow_path) && std::filesystem::file_size(overflow_path) > 0;
     INFO("a page cycling ONE live entry must reuse its freed slot, not grow an overflow chain");
     REQUIRE_FALSE(overflow_grew);
 
@@ -1222,8 +1227,7 @@ namespace {
         std::fflush(stderr);
         const int saved_stderr = ::dup(2);
         REQUIRE(saved_stderr >= 0);
-        const int capture_fd =
-            ::open(capture_file.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
+        const int capture_fd = ::open(capture_file.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
         REQUIRE(capture_fd >= 0);
         REQUIRE(::dup2(capture_fd, 2) == 2);
         ::close(capture_fd);
@@ -1233,7 +1237,7 @@ namespace {
         ::close(saved_stderr);
         return read_file_bytes(capture_file);
     }
-}
+} // namespace
 
 TEST_CASE("services::index::disk_hash_table::a_failed_closing_flush_is_reported_loudly") {
     auto resource = core::pmr::otterbrix_resource();

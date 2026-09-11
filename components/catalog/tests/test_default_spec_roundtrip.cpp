@@ -22,13 +22,13 @@ namespace {
         return &arena;
     }
 
-    components::types::complex_logical_type
-    make_decimal(uint8_t width, uint8_t scale, std::string alias = "") {
-        auto created = components::types::complex_logical_type::create_decimal(decimal_resource(), width, scale, std::move(alias));
+    components::types::complex_logical_type make_decimal(uint8_t width, uint8_t scale, std::string alias = "") {
+        auto created =
+            components::types::complex_logical_type::create_decimal(decimal_resource(), width, scale, std::move(alias));
         REQUIRE_FALSE(created.has_error());
         return std::move(created.value());
     }
-}
+} // namespace
 
 namespace {
     auto* g_resource = decimal_resource();
@@ -50,7 +50,7 @@ namespace {
     bool same_bits(T a, T b) {
         return std::memcmp(&a, &b, sizeof(T)) == 0;
     }
-}
+} // namespace
 
 TEST_CASE("catalog::default_spec::scalar_round_trip") {
     CHECK(round_trip(logical_value_t(g_resource, true)).value() == logical_value_t(g_resource, true));
@@ -80,8 +80,9 @@ TEST_CASE("catalog::default_spec::scalar_round_trip") {
 TEST_CASE("catalog::default_spec::temporal_and_decimal_round_trip") {
     CHECK(round_trip(logical_value_t(g_resource, core::date::date_t{core::date::days{19000}})).value() ==
           logical_value_t(g_resource, core::date::date_t{core::date::days{19000}}));
-    CHECK(round_trip(logical_value_t(g_resource, core::date::time_t{core::date::microseconds{86399123456LL}}))
-              .value() == logical_value_t(g_resource, core::date::time_t{core::date::microseconds{86399123456LL}}));
+    CHECK(
+        round_trip(logical_value_t(g_resource, core::date::time_t{core::date::microseconds{86399123456LL}})).value() ==
+        logical_value_t(g_resource, core::date::time_t{core::date::microseconds{86399123456LL}}));
     CHECK(round_trip(logical_value_t(g_resource, core::date::timestamp_t{core::date::microseconds{1700000000000000LL}}))
               .value() ==
           logical_value_t(g_resource, core::date::timestamp_t{core::date::microseconds{1700000000000000LL}}));
@@ -105,8 +106,7 @@ TEST_CASE("catalog::default_spec::temporal_and_decimal_round_trip") {
                                         static_cast<int128_t>(std::int64_t{-9007199254740993LL}) * 1000000);
     auto wide_back = round_trip(wide, wide_type);
     REQUIRE(wide_back.has_value());
-    CHECK(wide_back->value<int128_t>() ==
-          static_cast<int128_t>(std::int64_t{-9007199254740993LL}) * 1000000);
+    CHECK(wide_back->value<int128_t>() == static_cast<int128_t>(std::int64_t{-9007199254740993LL}) * 1000000);
 }
 
 TEST_CASE("catalog::default_spec::floats_keep_every_bit") {
@@ -179,10 +179,9 @@ TEST_CASE("catalog::default_spec::explicit_null_default_is_not_absence") {
 
     // A NULL value is NA-typed here (is_null() is type()==NA); that is how the parser hands DEFAULT NULL down.
     std::string null_spec;
-    REQUIRE_FALSE(encode_default_spec(g_resource,
-                                      logical_value_t(g_resource, complex_logical_type{logical_type::NA}),
-                                      null_spec)
-                      .contains_error());
+    REQUIRE_FALSE(
+        encode_default_spec(g_resource, logical_value_t(g_resource, complex_logical_type{logical_type::NA}), null_spec)
+            .contains_error());
     CHECK_FALSE(null_spec.empty());
     std::optional<logical_value_t> null_default;
     REQUIRE_FALSE(decode_default_spec(g_resource, column_type, null_spec, null_default).contains_error());

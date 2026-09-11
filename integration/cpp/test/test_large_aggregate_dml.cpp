@@ -2,8 +2,8 @@
 // expected to crash/abort until the fix lands, then serve as the regression guard. Harness mirrors
 // test_streaming_dml.cpp; assertions stay on the merged cursor API only, never chunk_data().
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 #include <algorithm>
 #include <catch2/catch_test_macros.hpp>
 #include <functional>

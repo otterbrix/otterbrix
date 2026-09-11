@@ -159,10 +159,10 @@ namespace otterbrix {
         }
         void* parse_result = linitial(parse_tree);
         if (!parse_result) {
-            return make_cursor(resource(),
-                               core::error_t(core::error_code_t::sql_parse_error,
-                                             std::pmr::string{"the parser produced a statement with no node in it",
-                                                              resource()}));
+            return make_cursor(
+                resource(),
+                core::error_t(core::error_code_t::sql_parse_error,
+                              std::pmr::string{"the parser produced a statement with no node in it", resource()}));
         }
         transformer local_transformer(resource(), query.c_str(), &parser_extensions_);
         if (auto result = local_transformer.transform(pg_cell_to_node_cast(parse_result)).finalize();
@@ -211,10 +211,10 @@ namespace otterbrix {
         }
         void* parse_result = linitial(parse_tree);
         if (!parse_result) {
-            return make_cursor(resource(),
-                               core::error_t(core::error_code_t::sql_parse_error,
-                                             std::pmr::string{"the parser produced a statement with no node in it",
-                                                              resource()}));
+            return make_cursor(
+                resource(),
+                core::error_t(core::error_code_t::sql_parse_error,
+                              std::pmr::string{"the parser produced a statement with no node in it", resource()}));
         }
         transformer local_transformer(resource(), query.c_str(), &parser_extensions_);
         auto binder = local_transformer.transform(pg_cell_to_node_cast(parse_result));

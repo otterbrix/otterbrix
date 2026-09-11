@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -29,9 +29,9 @@ TEST_CASE("integration::cpp::select_missing_table_refusal") {
     }
     {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           "CREATE TABLE " + database_name + "." + collection_name +
-                                               " (id INT, name TEXT);");
+        auto cur =
+            dispatcher->execute_sql(session,
+                                    "CREATE TABLE " + database_name + "." + collection_name + " (id INT, name TEXT);");
         REQUIRE(cur->is_success());
     }
 
@@ -54,8 +54,7 @@ TEST_CASE("integration::cpp::select_missing_table_refusal") {
     INFO("refusal is not fatal: the engine still answers a valid query");
     {
         auto session = otterbrix::session_id_t();
-        auto cur =
-            dispatcher->execute_sql(session, "SELECT * FROM " + database_name + "." + collection_name + ";");
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM " + database_name + "." + collection_name + ";");
         INFO("error: " << (cur->is_error() ? cur->get_error().what.c_str() : ""));
         REQUIRE(cur->is_success());
     }

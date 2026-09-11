@@ -1097,8 +1097,7 @@ namespace components::vector {
         }
         // Captures the temporal branch in this local so it shares the NULL-propagation tail below.
         if (!types::is_duration(left.type().type()) && !types::is_duration(right.type().type()) &&
-            types::arithmetic_result_type(left.type().type(), right.type().type(), op) ==
-                types::logical_type::NA &&
+            types::arithmetic_result_type(left.type().type(), right.type().type(), op) == types::logical_type::NA &&
             !operand_is_untyped(left.type().type()) && !operand_is_untyped(right.type().type())) {
             return untypeable_pair(resource, "compute_binary_arithmetic", left.type().type(), right.type().type());
         }
@@ -1152,8 +1151,7 @@ namespace components::vector {
             return vector_t(resource, types::complex_logical_type(types::logical_type::DOUBLE), 0);
         }
         if (!types::is_duration(vec.type().type()) && !types::is_duration(scalar.type().type()) &&
-            types::arithmetic_result_type(vec.type().type(), scalar.type().type(), op) ==
-                types::logical_type::NA &&
+            types::arithmetic_result_type(vec.type().type(), scalar.type().type(), op) == types::logical_type::NA &&
             !operand_is_untyped(vec.type().type()) && !operand_is_untyped(scalar.type().type())) {
             return untypeable_pair(resource,
                                    "compute_vector_scalar_arithmetic",
@@ -1211,8 +1209,7 @@ namespace components::vector {
             return vector_t(resource, types::complex_logical_type(types::logical_type::DOUBLE), 0);
         }
         if (!types::is_duration(scalar.type().type()) && !types::is_duration(vec.type().type()) &&
-            types::arithmetic_result_type(scalar.type().type(), vec.type().type(), op) ==
-                types::logical_type::NA &&
+            types::arithmetic_result_type(scalar.type().type(), vec.type().type(), op) == types::logical_type::NA &&
             !operand_is_untyped(scalar.type().type()) && !operand_is_untyped(vec.type().type())) {
             return untypeable_pair(resource,
                                    "compute_scalar_vector_arithmetic",

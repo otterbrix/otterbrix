@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <optional>
@@ -104,7 +104,7 @@ namespace {
         CHECK(scal(d, "SELECT SUM(x) FROM " + t + ";") == opt{15});
         CHECK(scal(d, "SELECT MIN(x) FROM " + t + ";") == opt{0});
         CHECK(scal(d, "SELECT MAX(x) FROM " + t + ";") == opt{10});
-    // AVG on an integer column stays integer-typed, read here as int64.
+        // AVG on an integer column stays integer-typed, read here as int64.
         CHECK(scal(d, "SELECT AVG(x) FROM " + t + ";") == opt{5});
     }
 

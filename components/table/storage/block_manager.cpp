@@ -26,10 +26,10 @@ namespace components::table::storage {
         const bool sector_aligned = block_alloc_size >= SECTOR_SIZE && (block_alloc_size % SECTOR_SIZE) == 0;
         if (!sector_aligned) {
             return core::error_t(core::error_code_t::data_corruption,
-                                 std::pmr::string{"Unusable block allocation size " +
-                                                      std::to_string(block_alloc_size) + ": it must be a non-zero "
-                                                      "multiple of the " + std::to_string(SECTOR_SIZE) +
-                                                      "-byte sector size",
+                                 std::pmr::string{"Unusable block allocation size " + std::to_string(block_alloc_size) +
+                                                      ": it must be a non-zero "
+                                                      "multiple of the " +
+                                                      std::to_string(SECTOR_SIZE) + "-byte sector size",
                                                   buffer_manager.resource()});
         }
         block_alloc_size_ = block_alloc_size;

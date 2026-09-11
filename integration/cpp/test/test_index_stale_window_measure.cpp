@@ -80,7 +80,6 @@ namespace {
         return true;
     }
 
-
     struct probe_outcome_t {
         bool success{false};
         std::size_t rows{0};
@@ -184,10 +183,7 @@ namespace {
         long failed{0};
     };
 
-    void run_natural_leg(otterbrix::wrapper_dispatcher_t* d,
-                         table_state_t& st,
-                         int iterations,
-                         const char* label) {
+    void run_natural_leg(otterbrix::wrapper_dispatcher_t* d, table_state_t& st, int iterations, const char* label) {
         leg_tally_t tally;
         for (int it = 0; it < iterations; ++it) {
             slide(d, st);

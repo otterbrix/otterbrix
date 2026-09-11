@@ -107,10 +107,7 @@ namespace {
         REQUIRE_FALSE(bm.write_header(header).has_error());
     }
 
-    void delete_leading_rows(data_table_t& table,
-                             free_list_env_t& env,
-                             transaction_manager_t& mgr,
-                             uint64_t count) {
+    void delete_leading_rows(data_table_t& table, free_list_env_t& env, transaction_manager_t& mgr, uint64_t count) {
         auto session = components::session::session_id_t::generate_uid();
         auto& txn = mgr.begin_transaction(session);
         std::pmr::vector<complex_logical_type> id_type(&env.resource);
@@ -332,11 +329,10 @@ TEST_CASE("shadow_free_list: a crash between the release and the header write le
 
         auto report = otterbrix_test::walk_blocks(bm, copy_path, &recovery_env.resource);
         REQUIRE(report.ok);
-        WARN("[A7.2] walker: block_count=" << report.block_count << " chain=" << id_set(report.chain_blocks)
-                                           << " durable_data=" << id_set(report.durable_data)
-                                           << " registry=" << id_set(report.registry_live)
-                                           << " freelist=" << id_set(report.free_list_content)
-                                           << " unexplained=" << id_set(report.unexplained));
+        WARN("[A7.2] walker: block_count="
+             << report.block_count << " chain=" << id_set(report.chain_blocks)
+             << " durable_data=" << id_set(report.durable_data) << " registry=" << id_set(report.registry_live)
+             << " freelist=" << id_set(report.free_list_content) << " unexplained=" << id_set(report.unexplained));
         const auto holes = unattributable(report, known_prior);
         INFO("unattributable=" << id_set(holes));
         CHECK(holes.empty());

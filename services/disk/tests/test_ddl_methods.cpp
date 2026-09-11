@@ -26,7 +26,6 @@
 #include <thread>
 #include <unistd.h>
 
-
 using namespace services::disk;
 using namespace disk_test_helpers;
 namespace catalog = components::catalog;
@@ -1038,8 +1037,8 @@ TEST_CASE("services::disk::ddl::replay_mutations_refuse_when_the_owner_has_no_st
     const auto otbx = std::filesystem::path(ddl_dir()) / std::to_string(static_cast<unsigned>(ns_oid)) /
                       std::to_string(static_cast<unsigned>(table_oid)) / "table.otbx";
     std::filesystem::create_directories(otbx.parent_path());
-    REQUIRE_FALSE(fx.manager->create_storage_disk_sync(table_oid, ns_oid, cols, otbx, /*is_computed=*/false)
-                      .contains_error());
+    REQUIRE_FALSE(
+        fx.manager->create_storage_disk_sync(table_oid, ns_oid, cols, otbx, /*is_computed=*/false).contains_error());
     REQUIRE(fx.manager->has_storage(table_oid));
     CHECK(fx.manager->direct_add_column_sync(table_oid, schema_chunk).type == core::error_code_t::none);
 }

@@ -179,17 +179,17 @@ TEST_CASE("services::index::a CREATE INDEX catchup delete never shrinks the buil
     {
         std::pmr::vector<int64_t> row_ids(&resource);
         row_ids.push_back(1);
-        auto fut = manager->apply_wal_record_for_index(
-            session,
-            kTableOid,
-            kIndexOid,
-            /*wal_record_id=*/7,
-            static_cast<uint8_t>(services::wal::wal_record_type::PHYSICAL_DELETE),
-            std::move(row_ids),
-            chunk_of(&resource, {20}),
-            /*physical_row_start=*/0,
-            build_txn,
-            core::date::timezone_offset_t{});
+        auto fut =
+            manager->apply_wal_record_for_index(session,
+                                                kTableOid,
+                                                kIndexOid,
+                                                /*wal_record_id=*/7,
+                                                static_cast<uint8_t>(services::wal::wal_record_type::PHYSICAL_DELETE),
+                                                std::move(row_ids),
+                                                chunk_of(&resource, {20}),
+                                                /*physical_row_start=*/0,
+                                                build_txn,
+                                                core::date::timezone_offset_t{});
         settle(fut, agent);
     }
 
@@ -275,17 +275,17 @@ TEST_CASE("services::index::the horizon does not erase what a CREATE INDEX catch
     {
         std::pmr::vector<int64_t> row_ids(&resource);
         row_ids.push_back(1);
-        auto fut = manager->apply_wal_record_for_index(
-            session,
-            kTableOid,
-            kIndexOid,
-            /*wal_record_id=*/9,
-            static_cast<uint8_t>(services::wal::wal_record_type::PHYSICAL_DELETE),
-            std::move(row_ids),
-            chunk_of(&resource, {20}),
-            /*physical_row_start=*/0,
-            build_txn,
-            core::date::timezone_offset_t{});
+        auto fut =
+            manager->apply_wal_record_for_index(session,
+                                                kTableOid,
+                                                kIndexOid,
+                                                /*wal_record_id=*/9,
+                                                static_cast<uint8_t>(services::wal::wal_record_type::PHYSICAL_DELETE),
+                                                std::move(row_ids),
+                                                chunk_of(&resource, {20}),
+                                                /*physical_row_start=*/0,
+                                                build_txn,
+                                                core::date::timezone_offset_t{});
         settle(fut, agent);
     }
     {

@@ -1004,10 +1004,10 @@ TEST_CASE("checkpoint_load: LIST column round-trips its child data") {
         }
         {
             table_append_state state(&env.resource);
-        REQUIRE_FALSE(table->append_lock(state).has_error());
-        REQUIRE_FALSE(table->initialize_append(state).has_error());
-        REQUIRE_FALSE(table->append(chunk, state).has_error());
-        table->finalize_append(state, transaction_data{0, 0});
+            REQUIRE_FALSE(table->append_lock(state).has_error());
+            REQUIRE_FALSE(table->initialize_append(state).has_error());
+            REQUIRE_FALSE(table->append(chunk, state).has_error());
+            table->finalize_append(state, transaction_data{0, 0});
         }
         REQUIRE(table->calculate_size() == NUM_ROWS);
 
@@ -1086,10 +1086,10 @@ TEST_CASE("checkpoint_load: ARRAY column round-trips its child data") {
         }
         {
             table_append_state state(&env.resource);
-        REQUIRE_FALSE(table->append_lock(state).has_error());
-        REQUIRE_FALSE(table->initialize_append(state).has_error());
-        REQUIRE_FALSE(table->append(chunk, state).has_error());
-        table->finalize_append(state, transaction_data{0, 0});
+            REQUIRE_FALSE(table->append_lock(state).has_error());
+            REQUIRE_FALSE(table->initialize_append(state).has_error());
+            REQUIRE_FALSE(table->append(chunk, state).has_error());
+            table->finalize_append(state, transaction_data{0, 0});
         }
         REQUIRE(table->calculate_size() == NUM_ROWS);
 
@@ -1168,10 +1168,10 @@ TEST_CASE("checkpoint_load: STRUCT column round-trips its fields") {
         }
         {
             table_append_state state(&env.resource);
-        REQUIRE_FALSE(table->append_lock(state).has_error());
-        REQUIRE_FALSE(table->initialize_append(state).has_error());
-        REQUIRE_FALSE(table->append(chunk, state).has_error());
-        table->finalize_append(state, transaction_data{0, 0});
+            REQUIRE_FALSE(table->append_lock(state).has_error());
+            REQUIRE_FALSE(table->initialize_append(state).has_error());
+            REQUIRE_FALSE(table->append(chunk, state).has_error());
+            table->finalize_append(state, transaction_data{0, 0});
         }
         REQUIRE(table->calculate_size() == NUM_ROWS);
 

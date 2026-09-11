@@ -127,8 +127,7 @@ namespace components::sql::transform {
                     // `OWNED BY NONE` restates the default. A real column would create a
                     // dependency (drop the column, drop the sequence) nothing records.
                     auto* names = def->arg ? pg_ptr_cast<List>(def->arg) : nullptr;
-                    const bool is_none = names && list_length(names) == 1 &&
-                                         nodeTag(linitial(names)) == T_String &&
+                    const bool is_none = names && list_length(names) == 1 && nodeTag(linitial(names)) == T_String &&
                                          std::string_view{strVal(linitial(names))} == "none";
                     if (!is_none) {
                         return core::error_t(

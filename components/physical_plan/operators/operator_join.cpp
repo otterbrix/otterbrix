@@ -206,6 +206,14 @@ namespace components::operators {
         emit_unmatched_build_(out);
         builder_.set_output(&out);
         builder_.flush();
+        if (builder_.emitted()) {
+            note_emitted();
+        }
+        if (!emitted()) {
+            vector::data_chunk_t empty(resource_, res_types_, 0);
+            empty.set_cardinality(0);
+            out.emplace_back(std::move(empty));
+        }
         return core::error_t::no_error();
     }
 

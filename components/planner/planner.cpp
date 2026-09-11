@@ -599,11 +599,11 @@ namespace components::planner {
                         msg.append(": constraint oid unresolved — nothing was dropped");
                         return core::error_t(core::error_code_t::invalid_constraint, std::move(msg));
                     }
-                    seq->append_child(boost::intrusive_ptr(new logical_plan::node_dynamic_cascade_delete_t(
-                        r,
-                        catalog::well_known_oid::pg_constraint_table,
-                        sub.constraint_oid,
-                        sub.behavior)));
+                    seq->append_child(boost::intrusive_ptr(
+                        new logical_plan::node_dynamic_cascade_delete_t(r,
+                                                                        catalog::well_known_oid::pg_constraint_table,
+                                                                        sub.constraint_oid,
+                                                                        sub.behavior)));
                 }
             }
             return node_ptr{seq};

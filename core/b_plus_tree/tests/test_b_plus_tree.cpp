@@ -17,8 +17,8 @@
 namespace {
     // Keyed by pid so concurrent runs cannot collide (a relative path would land in the repo root).
     std::filesystem::path scratch_dir(const char* name) {
-        const auto base = std::filesystem::temp_directory_path() /
-                          ("otterbrix_b_plus_tree_" + std::to_string(::getpid()));
+        const auto base =
+            std::filesystem::temp_directory_path() / ("otterbrix_b_plus_tree_" + std::to_string(::getpid()));
         std::error_code ec;
         std::filesystem::create_directories(base, ec);
         return base / name;
@@ -44,9 +44,8 @@ namespace {
     }
 
     // The fault model for the checksum tests: the block's shape stays intact, only its content changes.
-    size_t flip_a_bit_in(core::filesystem::local_file_system_t& fs,
-                         const core::filesystem::path_t& path,
-                         uint64_t marker) {
+    size_t
+    flip_a_bit_in(core::filesystem::local_file_system_t& fs, const core::filesystem::path_t& path, uint64_t marker) {
         const auto bytes = slurp(fs, path);
         for (size_t off = core::b_plus_tree::segment_tree_t::header_size; off + sizeof(marker) <= bytes.size(); off++) {
             if (read_unaligned<uint64_t>(bytes.data() + off) == marker) {
@@ -257,7 +256,6 @@ TEST_CASE("core::b_plus_tree::block_t") {
                 REQUIRE(std::memcmp(it->item.data, (test_data_sorted[sorted_index]).data(), it->item.size) == 0);
             }
 
-
             test_block->recalculate_checksum();
 
             unique_ptr<file_handle_t> handle =
@@ -328,7 +326,6 @@ TEST_CASE("core::b_plus_tree::block_t") {
                 REQUIRE(test_block_2->contains({static_cast<data_ptr_t>(test_data_sorted[i].data()),
                                                 static_cast<uint32_t>(test_data_sorted[i].size())}));
             }
-
 
             test_block_1->merge(std::move(test_block_2));
             REQUIRE(test_block_1->occupied_memory());
@@ -417,7 +414,6 @@ TEST_CASE("core::b_plus_tree::block_t") {
             handle->write(test_block->internal_buffer(), test_block->block_size(), 0);
             handle->sync();
 
-
             REQUIRE(test_block->count() == test_data_size * duplicate_count);
             REQUIRE(test_block->unique_indices_count() == test_data_size);
             for (uint32_t i = 0; i < test_data_size; i++) {
@@ -431,7 +427,6 @@ TEST_CASE("core::b_plus_tree::block_t") {
 
             handle->read(test_block->internal_buffer(), test_block->block_size(), 0);
             test_block->restore_block();
-
 
             REQUIRE(test_block->count() == test_data_size * duplicate_count);
             REQUIRE(test_block->unique_indices_count() == test_data_size);
@@ -2218,8 +2213,7 @@ TEST_CASE("core::b_plus_tree::split_does_not_carve_up_a_block_it_could_not_read"
     const size_t uniques_before = tree.unique_indices_count();
     REQUIRE(blocks_before > 1);
 
-    auto other =
-        tree.split(open_file(fs, right_name, file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE));
+    auto other = tree.split(open_file(fs, right_name, file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE));
     REQUIRE(other != nullptr);
 
     INFO("nothing may be carved out of a block whose bytes never arrived");
@@ -2295,8 +2289,7 @@ TEST_CASE("core::b_plus_tree::an_unreadable_block_is_never_carried_into_another_
     REQUIRE(tree.poisoned());
     REQUIRE(tree.load_failure() == load_failure_t::io_error);
 
-    auto other =
-        tree.split(open_file(fs, right_name, file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE));
+    auto other = tree.split(open_file(fs, right_name, file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE));
     REQUIRE(other != nullptr);
 
     INFO("the split half received " << other->blocks_count() << " of the donor's " << blocks_total << " blocks");
@@ -2837,7 +2830,6 @@ TEST_CASE("core::b_plus_tree::b+tree") {
             }
         }
 
-
         for (size_t i = 0; i < num_threads; i++) {
             threads.emplace_back(get_func, i);
         }
@@ -3368,7 +3360,7 @@ TEST_CASE("core::b_plus_tree::segment_tree_iterator_assignment_rebinds_the_tree"
         REQUIRE((i < 4 ? *tree_a : *tree_b).append(dummy.buffer, dummy.size));
     }
 
-// Regression: operator= copied metadata_ but not seg_tree_, so an assigned iterator read the OLD tree's segment table.
+    // Regression: operator= copied metadata_ but not seg_tree_, so an assigned iterator read the OLD tree's segment table.
     auto it = tree_a->begin();
     it = tree_b->begin();
     REQUIRE(it.get() == tree_b->begin().get());

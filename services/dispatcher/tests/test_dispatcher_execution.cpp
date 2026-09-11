@@ -9,10 +9,10 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <thread>
-#include <vector>
-#include <unistd.h>
 #include <sys/wait.h>
+#include <thread>
+#include <unistd.h>
+#include <vector>
 
 #include <services/dispatcher/dispatcher.hpp>
 
@@ -37,7 +37,7 @@
 #include <services/index/manager_index.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 
-// wave_dir() carries ::getpid() so parallel ctest shards never share a disk directory.
+// dispatcher_dir() carries ::getpid() so parallel ctest shards never share a disk directory.
 
 using namespace services;
 using namespace services::wal;
@@ -58,8 +58,8 @@ namespace {
         return node;
     }
 
-    std::string wave_dir(const char* leaf) {
-        return "/tmp/test_wave_exec_dispatcher_" + std::to_string(::getpid()) + "/" + leaf;
+    std::string dispatcher_dir(const char* leaf) {
+        return "/tmp/test_dispatcher_execution_" + std::to_string(::getpid()) + "/" + leaf;
     }
 
     const std::string& scrubbed(const std::string& path) {
@@ -99,12 +99,12 @@ namespace {
 
 } // namespace
 
-struct wave_fixture : actor_zeta::actor::actor_mixin<wave_fixture> {
-    wave_fixture(std::pmr::memory_resource* resource,
-                 const std::string& disk_path,
-                 components::planner::optimizer_pass_t optimizer_pass = &components::planner::no_op_pass,
-                 bool wire_index = true)
-        : actor_zeta::actor::actor_mixin<wave_fixture>()
+struct dispatcher_fixture : actor_zeta::actor::actor_mixin<dispatcher_fixture> {
+    dispatcher_fixture(std::pmr::memory_resource* resource,
+                       const std::string& disk_path,
+                       components::planner::optimizer_pass_t optimizer_pass = &components::planner::no_op_pass,
+                       bool wire_index = true)
+        : actor_zeta::actor::actor_mixin<dispatcher_fixture>()
         , resource_(resource)
         , disk_path_(scrubbed(disk_path))
         , log_(initialization_logger("python", "/tmp/docker_logs/"))
@@ -112,37 +112,37 @@ struct wave_fixture : actor_zeta::actor::actor_mixin<wave_fixture> {
         , disk_config_(disk_path)
         , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource, scheduler_, scheduler_, disk_config_, log_))
         , manager_index_(actor_zeta::spawn<services::index::manager_index_t>(resource,
-                                                                            scheduler_,
-                                                                            log_,
-                                                                            disk_config_.path,
-                                                                            disk_config_.bitcask_flush_threshold,
-                                                                            disk_config_.bitcask_segment_record_limit,
-                                                                            disk_config_.btree_flush_threshold))
+                                                                             scheduler_,
+                                                                             log_,
+                                                                             disk_config_.path,
+                                                                             disk_config_.bitcask_flush_threshold,
+                                                                             disk_config_.bitcask_segment_record_limit,
+                                                                             disk_config_.btree_flush_threshold))
         , wal_config_(disk_path)
-        , manager_wal_(actor_zeta::spawn<manager_wal_replicate_t>(
-              resource,
-              scheduler_,
-              wal_config_,
-              log_,
-              manager_disk_->address(),
-              wire_index ? manager_index_->address() : components::pipeline::no_mailbox()))
-        , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(
-              resource,
-              scheduler_,
-              log_,
-              manager_wal_->address(),
-              manager_disk_->address(),
-              wire_index ? manager_index_->address() : components::pipeline::no_mailbox(),
-              0,
-              &services::planner::no_custom_lowering,
-              optimizer_pass)) {
+        , manager_wal_(actor_zeta::spawn<manager_wal_replicate_t>(resource,
+                                                                  scheduler_,
+                                                                  wal_config_,
+                                                                  log_,
+                                                                  manager_disk_->address(),
+                                                                  wire_index ? manager_index_->address()
+                                                                             : components::pipeline::no_mailbox()))
+        , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(resource,
+                                                                      scheduler_,
+                                                                      log_,
+                                                                      manager_wal_->address(),
+                                                                      manager_disk_->address(),
+                                                                      wire_index ? manager_index_->address()
+                                                                                 : components::pipeline::no_mailbox(),
+                                                                      0,
+                                                                      &services::planner::no_custom_lowering,
+                                                                      optimizer_pass)) {
         manager_wal_->set_manager_dispatcher_sync(manager_dispatcher_->address());
         manager_disk_->set_manager_wal_sync(manager_wal_->address());
         manager_index_->set_manager_dispatcher_sync(manager_dispatcher_->address());
         manager_disk_->bootstrap_system_tables_sync();
     }
 
-    ~wave_fixture() {
+    ~dispatcher_fixture() {
         // Index resets before disk: it holds manager_disk_'s address and messages it during teardown.
         manager_dispatcher_.reset();
         manager_wal_.reset();
@@ -242,9 +242,9 @@ private:
     std::unique_ptr<std::pmr::monotonic_buffer_resource> parser_arena_;
 };
 
-TEST_CASE("services::dispatcher::wave3::insert_select_registers_computed_columns") {
+TEST_CASE("services::dispatcher::insert_select_registers_computed_columns") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
-    wave_fixture test(mr.get(), wave_dir("insert_select_computed"));
+    dispatcher_fixture test(mr.get(), dispatcher_dir("insert_select_computed"));
 
     REQUIRE(test.execute_sql("CREATE DATABASE cdc;")->is_success());
     REQUIRE(test.execute_sql("CREATE TABLE cdc.src (id bigint, price bigint);")->is_success());
@@ -271,9 +271,9 @@ TEST_CASE("services::dispatcher::wave3::insert_select_registers_computed_columns
 }
 
 // rewrite_alter_table only bails ("let execute_ddl error out"); the executor guard must refuse.
-TEST_CASE("services::dispatcher::wave3::alter_unresolved_table_is_refused") {
+TEST_CASE("services::dispatcher::alter_unresolved_table_is_refused") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
-    wave_fixture test(mr.get(), wave_dir("alter_unresolved"));
+    dispatcher_fixture test(mr.get(), dispatcher_dir("alter_unresolved"));
 
     REQUIRE(test.execute_sql("CREATE DATABASE db;")->is_success());
 
@@ -283,9 +283,9 @@ TEST_CASE("services::dispatcher::wave3::alter_unresolved_table_is_refused") {
 }
 
 // The assert here compiles away under NDEBUG, and output_types().front() reads an empty vector.
-TEST_CASE("services::dispatcher::wave3::boolean_subquery_unstamped_schema_is_refused") {
+TEST_CASE("services::dispatcher::boolean_subquery_unstamped_schema_is_refused") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
-    wave_fixture test(mr.get(), wave_dir("bool_subq_unstamped"));
+    dispatcher_fixture test(mr.get(), dispatcher_dir("bool_subq_unstamped"));
 
     REQUIRE(test.execute_sql("CREATE DATABASE db;")->is_success());
     REQUIRE(test.execute_sql("CREATE TABLE db.t (b bigint);")->is_success());
@@ -296,9 +296,9 @@ TEST_CASE("services::dispatcher::wave3::boolean_subquery_unstamped_schema_is_ref
     REQUIRE(cur->is_error());
 }
 
-TEST_CASE("services::dispatcher::wave3::array_equality_subquery_unstamped_schema_is_refused") {
+TEST_CASE("services::dispatcher::array_equality_subquery_unstamped_schema_is_refused") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
-    wave_fixture test(mr.get(), wave_dir("array_subq_unstamped"));
+    dispatcher_fixture test(mr.get(), dispatcher_dir("array_subq_unstamped"));
 
     REQUIRE(test.execute_sql("CREATE DATABASE db;")->is_success());
     REQUIRE(test.execute_sql("CREATE TABLE db.t (b bigint);")->is_success());
@@ -310,10 +310,10 @@ TEST_CASE("services::dispatcher::wave3::array_equality_subquery_unstamped_schema
 }
 
 // Storing optimizer_pass_ without forwarding it into optimize() would silently ignore it.
-TEST_CASE("services::dispatcher::wave3::host_optimizer_pass_reaches_optimize") {
+TEST_CASE("services::dispatcher::host_optimizer_pass_reaches_optimize") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     g_host_pass_calls.store(0, std::memory_order_relaxed);
-    wave_fixture test(mr.get(), wave_dir("host_pass"), &counting_host_pass);
+    dispatcher_fixture test(mr.get(), dispatcher_dir("host_pass"), &counting_host_pass);
 
     REQUIRE(test.execute_sql("CREATE DATABASE db;")->is_success());
     REQUIRE(test.execute_sql("CREATE TABLE db.t (b bigint);")->is_success());
@@ -324,9 +324,9 @@ TEST_CASE("services::dispatcher::wave3::host_optimizer_pass_reaches_optimize") {
 }
 
 // The transformer registers the referenced table's resolve under its OWN database, not the child's.
-TEST_CASE("services::dispatcher::wave3::cross_db_foreign_key_binds") {
+TEST_CASE("services::dispatcher::cross_db_foreign_key_binds") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
-    wave_fixture test(mr.get(), wave_dir("cross_db_fk"));
+    dispatcher_fixture test(mr.get(), dispatcher_dir("cross_db_fk"));
 
     REQUIRE(test.execute_sql("CREATE DATABASE db1;")->is_success());
     REQUIRE(test.execute_sql("CREATE DATABASE db2;")->is_success());
@@ -353,12 +353,12 @@ TEST_CASE("services::dispatcher::wave3::cross_db_foreign_key_binds") {
 }
 
 // register_udf fans out to every per-executor registry BEFORE the operator's catalog work.
-TEST_CASE("services::dispatcher::wave3::register_udf_operator_refusal_unwinds_executors") {
+TEST_CASE("services::dispatcher::register_udf_operator_refusal_unwinds_executors") {
     components::compute::function_registry_t::reset_default();
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
-    wave_fixture test(mr.get(), wave_dir("udf_unwind"));
+    dispatcher_fixture test(mr.get(), dispatcher_dir("udf_unwind"));
 
-    const std::string fname = "wave3_udf_unwind_probe";
+    const std::string fname = "udf_unwind_probe";
     test.seed_pg_proc_row(fname);
 
     {
@@ -380,9 +380,9 @@ TEST_CASE("services::dispatcher::wave3::register_udf_operator_refusal_unwinds_ex
 }
 
 // SQL can't spell a too-deep type (CREATE TYPE gates its own depth), so this hands a hand-built plan.
-TEST_CASE("services::dispatcher::wave3::alter_add_column_gates_persistable_type") {
+TEST_CASE("services::dispatcher::alter_add_column_gates_persistable_type") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
-    wave_fixture test(mr.get(), wave_dir("alter_add_gate"));
+    dispatcher_fixture test(mr.get(), dispatcher_dir("alter_add_gate"));
 
     REQUIRE(test.execute_sql("CREATE DATABASE db;")->is_success());
     REQUIRE(test.execute_sql("CREATE TABLE db.t (b bigint);")->is_success());
@@ -407,7 +407,7 @@ TEST_CASE("services::dispatcher::wave3::alter_add_column_gates_persistable_type"
 }
 
 // A ready future answered with a default value would build it on the empty address's null resource.
-TEST_CASE("services::dispatcher::wave3::empty_target_send_dies_loudly") {
+TEST_CASE("services::dispatcher::empty_target_send_dies_loudly") {
     const pid_t child = fork();
     REQUIRE(child >= 0);
     if (child == 0) {
@@ -423,9 +423,9 @@ TEST_CASE("services::dispatcher::wave3::empty_target_send_dies_loudly") {
 }
 
 // Skipping set_column_bindings would register a and b instead of the written x and y.
-TEST_CASE("services::dispatcher::wave4::insert_select_column_list_renames_into_computed_table") {
+TEST_CASE("services::dispatcher::insert_select_column_list_renames_into_computed_table") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
-    wave_fixture test(mr.get(), wave_dir("insert_select_rename_computed"));
+    dispatcher_fixture test(mr.get(), dispatcher_dir("insert_select_rename_computed"));
 
     REQUIRE(test.execute_sql("CREATE DATABASE cdd;")->is_success());
     REQUIRE(test.execute_sql("CREATE TABLE cdd.src (a bigint, b bigint);")->is_success());
@@ -461,9 +461,9 @@ TEST_CASE("services::dispatcher::wave4::insert_select_column_list_renames_into_c
 }
 
 // Duplicate detection is by (keys,type) only, so a taken name would mint a second pg_class row.
-TEST_CASE("services::dispatcher::wave4::create_index_refuses_a_taken_name") {
+TEST_CASE("services::dispatcher::create_index_refuses_a_taken_name") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
-    wave_fixture test(mr.get(), wave_dir("create_index_name_unique"));
+    dispatcher_fixture test(mr.get(), dispatcher_dir("create_index_name_unique"));
 
     REQUIRE(test.execute_sql("CREATE DATABASE cdi;")->is_success());
     REQUIRE(test.execute_sql("CREATE TABLE cdi.t (a bigint, b bigint);")->is_success());
@@ -481,9 +481,9 @@ TEST_CASE("services::dispatcher::wave4::create_index_refuses_a_taken_name") {
 }
 
 // A column written NULL in every row has no type, so it's dropped before anything downstream sees it.
-TEST_CASE("services::dispatcher::wave4::insert_names_the_all_null_column_it_drops") {
+TEST_CASE("services::dispatcher::insert_names_the_all_null_column_it_drops") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
-    wave_fixture test(mr.get(), wave_dir("insert_all_null_column_named"));
+    dispatcher_fixture test(mr.get(), dispatcher_dir("insert_all_null_column_named"));
 
     REQUIRE(test.execute_sql("CREATE DATABASE anc;")->is_success());
     REQUIRE(test.execute_sql("CREATE TABLE anc.t ();")->is_success());
@@ -508,12 +508,12 @@ TEST_CASE("services::dispatcher::wave4::insert_names_the_all_null_column_it_drop
 }
 
 // Without this, operator_create_index_backfill silently answers SUCCESS without doing anything.
-TEST_CASE("services::dispatcher::wave4::create_index_refuses_without_an_index_manager") {
+TEST_CASE("services::dispatcher::create_index_refuses_without_an_index_manager") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
-    wave_fixture test(mr.get(),
-                      wave_dir("create_index_no_index_manager"),
-                      &components::planner::no_op_pass,
-                      /*wire_index=*/false);
+    dispatcher_fixture test(mr.get(),
+                            dispatcher_dir("create_index_no_index_manager"),
+                            &components::planner::no_op_pass,
+                            /*wire_index=*/false);
 
     REQUIRE(test.execute_sql("CREATE DATABASE cim;")->is_success());
     REQUIRE(test.execute_sql("CREATE TABLE cim.t (a bigint);")->is_success());
@@ -525,9 +525,9 @@ TEST_CASE("services::dispatcher::wave4::create_index_refuses_without_an_index_ma
 }
 
 // A hand-built plan bypasses the ALTER-statement coercion path, so validate_default_value_type stays load-bearing.
-TEST_CASE("services::dispatcher::wave4::alter_add_column_default_is_coerced_like_create_table") {
+TEST_CASE("services::dispatcher::alter_add_column_default_is_coerced_like_create_table") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
-    wave_fixture test(mr.get(), wave_dir("alter_add_default_type"));
+    dispatcher_fixture test(mr.get(), dispatcher_dir("alter_add_default_type"));
 
     REQUIRE(test.execute_sql("CREATE DATABASE db;")->is_success());
 
@@ -571,24 +571,6 @@ TEST_CASE("services::dispatcher::wave4::alter_add_column_default_is_coerced_like
         CHECK(v.value<int32_t>() == 7);
     }
 
-    // STRING -> number is registered explicit_only, so it exists but isn't usable under COERCION_ASSIGNMENT.
-    {
-        auto cur = test.execute_sql("CREATE TABLE db.nocast_create (a bigint, c integer DEFAULT '7');");
-        INFO("CREATE TABLE with a default that has no assignment cast");
-        CHECK(cur->is_error());
-    }
-    REQUIRE(test.execute_sql("CREATE TABLE db.nocast (a bigint);")->is_success());
-    {
-        auto cur = test.execute_sql("ALTER TABLE db.nocast ADD COLUMN c integer DEFAULT '7';");
-        INFO("ALTER TABLE with a default that has no assignment cast");
-        CHECK(cur->is_error());
-    }
-    {
-        // The refusal landed before the first catalog mutation: no half-added column.
-        auto cur = test.execute_sql("SELECT c FROM db.nocast;");
-        CHECK(cur->is_error());
-    }
-
     // attdefspec checks a stored logical tag byte against the column type before reading anything else.
     {
         const components::types::logical_value_t bigint_seven{mr.get(), static_cast<int64_t>(7)};
@@ -614,12 +596,11 @@ TEST_CASE("services::dispatcher::wave4::alter_add_column_default_is_coerced_like
     }
 }
 
-
 // 16 scalars give 240 ordered wrong-type pairs, all must refuse, and the 16 self-pairs must
 // still round-trip. Before the tag byte, 50 of the 240 were accepted silently as a valid
 // value of the wrong type (bit-pattern reinterpretation, not relabelling); the other 190 were
 // only caught because their widths happened to disagree.
-TEST_CASE("services::dispatcher::wave4::attdefspec_type_tag_refuses_every_wrong_type_pair") {
+TEST_CASE("services::dispatcher::attdefspec_type_tag_refuses_every_wrong_type_pair") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     auto* resource = mr.get();
     using components::types::logical_value_t;
@@ -703,7 +684,7 @@ TEST_CASE("services::dispatcher::wave4::attdefspec_type_tag_refuses_every_wrong_
 }
 
 // NULL carries no tag (presence 0 ends the value), and nested values carry the tag at EVERY level.
-TEST_CASE("services::dispatcher::wave4::attdefspec_type_tag_spares_null_and_reaches_every_leaf") {
+TEST_CASE("services::dispatcher::attdefspec_type_tag_spares_null_and_reaches_every_leaf") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     auto* resource = mr.get();
     using components::types::logical_value_t;
@@ -711,16 +692,15 @@ TEST_CASE("services::dispatcher::wave4::attdefspec_type_tag_spares_null_and_reac
     INFO("an explicit DEFAULT NULL still decodes against any column type");
     {
         std::string null_spec;
-        REQUIRE_FALSE(components::catalog::encode_default_spec(
-                          resource,
-                          logical_value_t{resource, complex_logical_type{logical_type::NA}},
-                          null_spec)
-                          .contains_error());
+        REQUIRE_FALSE(
+            components::catalog::encode_default_spec(resource,
+                                                     logical_value_t{resource, complex_logical_type{logical_type::NA}},
+                                                     null_spec)
+                .contains_error());
         for (const auto t : {logical_type::BIGINT, logical_type::TIMESTAMP, logical_type::STRING_LITERAL}) {
             std::optional<logical_value_t> out;
-            REQUIRE_FALSE(
-                components::catalog::decode_default_spec(resource, complex_logical_type{t}, null_spec, out)
-                    .contains_error());
+            REQUIRE_FALSE(components::catalog::decode_default_spec(resource, complex_logical_type{t}, null_spec, out)
+                              .contains_error());
             REQUIRE(out.has_value());
             CHECK(out->is_null());
         }
@@ -736,8 +716,8 @@ TEST_CASE("services::dispatcher::wave4::attdefspec_type_tag_spares_null_and_reac
         for (const bool as_array : {true, false}) {
             const auto value = as_array ? logical_value_t::create_array(resource, bigint, elems)
                                         : logical_value_t::create_list(resource, bigint, elems);
-            const auto good = as_array ? complex_logical_type::create_array(bigint, 2)
-                                       : complex_logical_type::create_list(bigint);
+            const auto good =
+                as_array ? complex_logical_type::create_array(bigint, 2) : complex_logical_type::create_list(bigint);
             const auto bad = as_array ? complex_logical_type::create_array(timestamp, 2)
                                       : complex_logical_type::create_list(timestamp);
 

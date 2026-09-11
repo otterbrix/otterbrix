@@ -1,8 +1,8 @@
 // e2e for the host-extension SOURCE/SINK operators: uid-qualified external leaves are swapped for
 // node_extension_t leaves (pure (db, rel) identity, no host state), resolved by an injected create_plan rule.
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
@@ -312,7 +312,7 @@ namespace {
         return nullptr;
     }
 
-}
+} // namespace
 
 static externals_by_uid_t one_source(std::pmr::memory_resource* res,
                                      const std::string& uid,

@@ -23,13 +23,9 @@ namespace {
 // naming it (components::pipeline::no_mailbox()).
 TEST_CASE("services::dispatcher::manager_dispatcher_t::a dispatcher cannot be built without naming its mailboxes") {
     CHECK_FALSE(std::is_constructible_v<manager_dispatcher_t, resource_t, scheduler_t, log_t&>);
-    CHECK(std::is_constructible_v<manager_dispatcher_t,
-                                  resource_t,
-                                  scheduler_t,
-                                  log_t&,
-                                  address_t,
-                                  address_t,
-                                  address_t>);
+    CHECK(
+        std::
+            is_constructible_v<manager_dispatcher_t, resource_t, scheduler_t, log_t&, address_t, address_t, address_t>);
 }
 
 // The executor already demands its four addresses at construction; pin that an address-less

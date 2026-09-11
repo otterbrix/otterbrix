@@ -88,12 +88,12 @@ namespace services::index {
 
         // index_oid = pg_index.indexrelid, the index's only identity below the planner boundary.
         unique_future<core::error_t> create_index(session_id_t session,
-                                             components::catalog::oid_t table_oid,
-                                             components::catalog::oid_t index_oid,
-                                             components::index::keys_base_storage_t keys,
-                                             components::logical_plan::index_type type,
-                                             core::date::timezone_offset_t session_tz,
-                                             uint64_t built_compact_epoch);
+                                                  components::catalog::oid_t table_oid,
+                                                  components::catalog::oid_t index_oid,
+                                                  components::index::keys_base_storage_t keys,
+                                                  components::logical_plan::index_type type,
+                                                  core::date::timezone_offset_t session_tz,
+                                                  uint64_t built_compact_epoch);
         unique_future<void>
         drop_index(session_id_t session, components::catalog::oid_t table_oid, components::catalog::oid_t index_oid);
 

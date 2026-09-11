@@ -12,8 +12,8 @@
 #include <components/table/column_state.hpp>
 #include <components/table/data_table.hpp>
 #include <components/table/storage/buffer_pool.hpp>
-#include <components/table/storage/standard_buffer_manager.hpp>
 #include <components/table/storage/single_file_block_manager.hpp>
+#include <components/table/storage/standard_buffer_manager.hpp>
 #include <components/table/table_state.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <core/file/local_file_system.hpp>
@@ -30,7 +30,8 @@ namespace tstorage = components::table::storage;
 namespace {
 
     const std::string& nested_fetch_db_path() {
-        static const std::string path = "/tmp/test_otterbrix_nested_fetch_channel_" + std::to_string(::getpid()) + ".otbx";
+        static const std::string path =
+            "/tmp/test_otterbrix_nested_fetch_channel_" + std::to_string(::getpid()) + ".otbx";
         std::remove(path.c_str());
         return path;
     }

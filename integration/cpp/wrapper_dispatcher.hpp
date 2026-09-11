@@ -53,8 +53,6 @@ namespace otterbrix {
         [[nodiscard]] std::pair<bool, actor_zeta::detail::enqueue_result>
         enqueue_impl(actor_zeta::mailbox::message_ptr msg);
 
-        // core::error_t, not bool: collision, unregistered cast, refused catalog write and a
-        // failed drop are different failures the host must tell apart.
         auto register_udf(const session_id_t& session, components::compute::function_ptr function) -> core::error_t;
         auto unregister_udf(const session_id_t& session,
                             const std::string& function_name,

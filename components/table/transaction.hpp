@@ -178,4 +178,4 @@ namespace components::table {
         std::vector<created_index_t> created_indexes_;
     };
 
-}
+} // namespace components::table

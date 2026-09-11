@@ -4,8 +4,8 @@
 // No live SQL route reaches this shape anymore; what's left is a floor for a catalog written
 // before those gates existed.
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -34,14 +34,13 @@ namespace {
     }
 
     // The node carries the user's column NAMES and an EMPTY attoid list, so conkey encodes as "".
-    components::cursor::cursor_t_ptr
-    add_constraint_with_attoids(otterbrix::wrapper_dispatcher_t* d,
-                                const std::string& db,
-                                const std::string& rel,
-                                const std::string& con_name,
-                                components::logical_plan::constraint_kind kind,
-                                std::vector<std::string> cols,
-                                std::vector<components::catalog::oid_t> attoids) {
+    components::cursor::cursor_t_ptr add_constraint_with_attoids(otterbrix::wrapper_dispatcher_t* d,
+                                                                 const std::string& db,
+                                                                 const std::string& rel,
+                                                                 const std::string& con_name,
+                                                                 components::logical_plan::constraint_kind kind,
+                                                                 std::vector<std::string> cols,
+                                                                 std::vector<components::catalog::oid_t> attoids) {
         auto* resource = d->resource();
         auto node = components::logical_plan::make_node_create_constraint(resource,
                                                                           db,
@@ -237,9 +236,9 @@ TEST_CASE("integration::cpp::declared_key_conkey_loss::an_unenforceable_key_row_
         }
 
         INFO("a write onto an unenforceable key is refused WITH WORDS, never silently taken");
-        for (const auto& [table, con_name] : std::vector<std::pair<std::string, std::string>>{
-                 {"cur.lost", "uq_lost_code"},
-                 {"cur.stale", "uq_stale_code"}}) {
+        for (const auto& [table, con_name] :
+             std::vector<std::pair<std::string, std::string>>{{"cur.lost", "uq_lost_code"},
+                                                              {"cur.stale", "uq_stale_code"}}) {
             INFO("table under test: " << table);
             auto ins = exec(d, "INSERT INTO " + table + " (id, code) VALUES (3, 100);");
             INFO("result: " << (ins->is_error() ? ins->get_error().what : "accepted"));
@@ -280,13 +279,13 @@ namespace {
                                                                 std::vector<std::string> child_cols,
                                                                 std::vector<std::string> parent_cols) {
         auto* resource = d->resource();
-        auto node =
-            components::logical_plan::make_node_create_constraint(resource,
-                                                                  db,
-                                                                  child_rel,
-                                                                  core::constraint_name_t{con_name},
-                                                                  components::logical_plan::constraint_kind::foreign_key,
-                                                                  db);
+        auto node = components::logical_plan::make_node_create_constraint(
+            resource,
+            db,
+            child_rel,
+            core::constraint_name_t{con_name},
+            components::logical_plan::constraint_kind::foreign_key,
+            db);
         node->set_ref_relname(parent_rel);
         node->set_local_col_names(std::move(child_cols));
         node->set_ref_col_names(std::move(parent_cols));
@@ -313,8 +312,8 @@ TEST_CASE("integration::cpp::declared_key_conkey_loss::an_unreadable_fk_column_l
     REQUIRE(exec(d, "INSERT INTO cur.parent (id) VALUES (1);")->is_success());
 
     auto ddl = add_fk_with_lost_key_lists(d, "cur", "child", "parent", "fk_child_parent", {"parent_id"}, {"id"});
-    INFO("ADD CONSTRAINT FOREIGN KEY (parent_id) REFERENCES parent (id): "
-         << (ddl->is_error() ? ddl->get_error().what : "accepted"));
+    INFO("ADD CONSTRAINT FOREIGN KEY (parent_id) REFERENCES parent (id): " << (ddl->is_error() ? ddl->get_error().what
+                                                                                               : "accepted"));
 
     auto orphan = exec(d, "INSERT INTO cur.child (id, parent_id) VALUES (1, 999);");
     INFO("orphan INSERT: " << (orphan->is_error() ? orphan->get_error().what : "accepted"));

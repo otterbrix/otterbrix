@@ -361,9 +361,8 @@ namespace services::disk {
         auto& block_manager = *block_manager_;
         // Same id can repeat (many segments pack into one block); dedup before the loop below.
         std::sort(pending_released_blocks_.begin(), pending_released_blocks_.end());
-        pending_released_blocks_.erase(
-            std::unique(pending_released_blocks_.begin(), pending_released_blocks_.end()),
-            pending_released_blocks_.end());
+        pending_released_blocks_.erase(std::unique(pending_released_blocks_.begin(), pending_released_blocks_.end()),
+                                       pending_released_blocks_.end());
 
         // NOT held across the frees below -- a holder that outlives them keeps handles alive past reclaim.
         std::pmr::vector<uint64_t> live(pending_released_blocks_.get_allocator().resource());

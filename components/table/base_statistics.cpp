@@ -313,8 +313,7 @@ namespace components::table {
                     if (dec_type.has_error()) {
                         // (width, scale) outside range = corrupt stream; no error channel here,
                         // so answer NA and leave min/max ABSENT rather than fabricate a bound.
-                        return types::logical_value_t(resource,
-                                                      types::complex_logical_type{types::logical_type::NA});
+                        return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
                     }
                     return types::logical_value_t::create_decimal(resource, dec_type.value(), raw);
                 }

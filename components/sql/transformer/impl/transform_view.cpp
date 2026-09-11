@@ -15,8 +15,9 @@ namespace components::sql::transform {
                 std::pmr::string{"CREATE VIEW with a column alias list is not supported yet", resource_});
         }
         // Stored verbatim and re-parsed on every read, so it must match exactly what the user wrote.
-        VALUE_OR_RETURN(auto query_sql,
-                        view_body_text(resource_, raw_sql_, node.query_location, node.query_end_location, "CREATE VIEW"));
+        VALUE_OR_RETURN(
+            auto query_sql,
+            view_body_text(resource_, raw_sql_, node.query_location, node.query_end_location, "CREATE VIEW"));
 
         auto qn = rangevar_to_qualified_name(node.view);
         const std::string db_for_resolve = qn.dbname;

@@ -56,8 +56,8 @@ namespace {
             manager->bootstrap_system_tables_sync();
         }
         ~fixture() {
-        // Destroy the manager first — its dtor joins the internal loop thread, which may still enqueue
-        // children onto the scheduler; only then is it safe to stop/delete the scheduler.
+            // Destroy the manager first — its dtor joins the internal loop thread, which may still enqueue
+            // children onto the scheduler; only then is it safe to stop/delete the scheduler.
             manager.reset();
             scheduler->stop();
             delete scheduler;

@@ -88,8 +88,8 @@ TEST_CASE("components::planner::ddl_oid_batch::a_rewrite_that_consumes_more_than
 
 TEST_CASE("components::planner::ddl_oid_batch::a_demand_of_zero_with_an_empty_batch_is_a_success") {
     auto resource = core::pmr::otterbrix_resource();
-    auto node = components::logical_plan::make_node_drop(&resource,
-                                                        components::logical_plan::drop_target_kind::database);
+    auto node =
+        components::logical_plan::make_node_drop(&resource, components::logical_plan::drop_target_kind::database);
 
     // DROP consumes no OID, so its caller hands the planner an empty batch — normal, not a failure.
     const std::size_t need = components::planner::compute_oid_demand(node.get());

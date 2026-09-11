@@ -85,8 +85,7 @@ TEST_CASE("integration::cpp::wal_storage_namespace_dirs::no_worker_for_a_storage
 
     wal_probe_spaces_t space(config);
     const auto workers = space.wal_worker_count();
-    INFO("db dirs (should each get a worker): " << db_dirs.size()
-                                                << "; storage namespace dirs (should get none): " << storage_dirs.size()
-                                                << "; workers spawned: " << workers);
+    INFO("db dirs (should each get a worker): " << db_dirs.size() << "; storage namespace dirs (should get none): "
+                                                << storage_dirs.size() << "; workers spawned: " << workers);
     REQUIRE(workers == db_dirs.size());
 }

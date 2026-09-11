@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <filesystem>
 #include <integration/cpp/connection.hpp>
@@ -163,8 +163,8 @@ TEST_CASE("integration::cpp::test_connectors") {
 // channel base_spaces uses for its startup refusals.
 // ===========================================================================
 TEST_CASE("integration::cpp::connection::execute_after_close_refuses_loudly") {
-    auto config = test_create_config(integration_fixture_path("test_connection_after_close") /
-                                     std::to_string(::getpid()));
+    auto config =
+        test_create_config(integration_fixture_path("test_connection_after_close") / std::to_string(::getpid()));
     test_clear_directory(config);
     auto otterbrix = otterbrix::make_otterbrix(config);
 

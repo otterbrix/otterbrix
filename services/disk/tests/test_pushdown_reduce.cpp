@@ -42,10 +42,9 @@ namespace {
     }
 
     // Append routes columns by name (via type aliases) only, with no positional fallback.
-    std::pmr::vector<components::vector::data_chunk_t>
-    batch_rows(std::pmr::memory_resource* r,
-               const std::vector<std::string>& names,
-               const std::vector<std::vector<int64_t>>& rows) {
+    std::pmr::vector<components::vector::data_chunk_t> batch_rows(std::pmr::memory_resource* r,
+                                                                  const std::vector<std::string>& names,
+                                                                  const std::vector<std::vector<int64_t>>& rows) {
         const size_t ncols = names.size();
         std::pmr::vector<types::complex_logical_type> ct{r};
         for (size_t c = 0; c < ncols; ++c) {

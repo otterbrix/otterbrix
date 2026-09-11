@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <integration/cpp/catalog_listing.hpp>
@@ -76,15 +76,15 @@ TEST_CASE("integration::cpp::list_tables::empty_catalog_is_an_empty_list") {
 // Production filter: oid >= FIRST_USER_OID and relkind == 'r'.
 TEST_CASE("integration::cpp::list_tables::filters_system_rows_and_non_tables") {
     core::pmr::otterbrix_resource resource;
-    auto cursor = make_pg_class_cursor(
-        &resource,
-        {
-            {catalog::well_known_oid::pg_class_table, "pg_class", catalog::relkind::regular},
-            {catalog::FIRST_USER_OID + 1, "alpha", catalog::relkind::regular},
-            {catalog::FIRST_USER_OID + 2, "alpha_idx", catalog::relkind::index},
-            {catalog::FIRST_USER_OID + 3, "alpha_view", catalog::relkind::view},
-            {catalog::FIRST_USER_OID + 4, "beta", catalog::relkind::regular},
-        });
+    auto cursor =
+        make_pg_class_cursor(&resource,
+                             {
+                                 {catalog::well_known_oid::pg_class_table, "pg_class", catalog::relkind::regular},
+                                 {catalog::FIRST_USER_OID + 1, "alpha", catalog::relkind::regular},
+                                 {catalog::FIRST_USER_OID + 2, "alpha_idx", catalog::relkind::index},
+                                 {catalog::FIRST_USER_OID + 3, "alpha_view", catalog::relkind::view},
+                                 {catalog::FIRST_USER_OID + 4, "beta", catalog::relkind::regular},
+                             });
 
     auto names = otterbrix::user_table_names_from_pg_class(&resource, cursor);
     REQUIRE_FALSE(names.has_error());

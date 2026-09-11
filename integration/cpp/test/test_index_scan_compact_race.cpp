@@ -170,7 +170,8 @@ TEST_CASE("integration::cpp::index_scan_compact_race::matched_row_ids_survive_a_
     guard.gate.armed.store(false, std::memory_order_release);
 
     INFO("checkpoint round inside the window: rewritten=" << services::disk::checkpoint_entries_rewritten()
-                                                          << " deferred=" << services::disk::checkpoint_entries_deferred());
+                                                          << " deferred="
+                                                          << services::disk::checkpoint_entries_deferred());
 
     {
         auto cur = exec(d, control_query());
@@ -198,4 +199,3 @@ TEST_CASE("integration::cpp::index_scan_compact_race::matched_row_ids_survive_a_
         REQUIRE(cur->value(0, 0).value<int64_t>() == kProbeId);
     }
 }
-

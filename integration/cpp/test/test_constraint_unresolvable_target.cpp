@@ -1,8 +1,8 @@
 // A constraint naming something that isn't there must be refused, not silently accepted and left unenforced --
 // same class as `REFERENCES parent` with the column list omitted (see test_fk_omitted_ref_columns.cpp).
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <string>

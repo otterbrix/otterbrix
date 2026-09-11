@@ -143,18 +143,17 @@ namespace services::disk {
         drop_storage_column(session_id_t session, components::catalog::oid_t table_oid, std::string attname);
 
         // rearm_dropped_column_blocks_sync matches by ATTOID, so a missed rename reads as a stale name, not a drop.
-        actor_zeta::unique_future<core::result_wrapper_t<bool>> rename_storage_column(
-            session_id_t session,
-            components::catalog::oid_t table_oid,
-            std::string old_attname,
-            std::string new_attname);
+        actor_zeta::unique_future<core::result_wrapper_t<bool>>
+        rename_storage_column(session_id_t session,
+                              components::catalog::oid_t table_oid,
+                              std::string old_attname,
+                              std::string new_attname);
 
-        actor_zeta::unique_future<void>
-        create_storage_disk(session_id_t session,
-                            components::catalog::oid_t table_oid,
-                            components::catalog::oid_t database_oid,
-                            std::vector<components::table::column_definition_t> columns,
-                            bool is_computed);
+        actor_zeta::unique_future<void> create_storage_disk(session_id_t session,
+                                                            components::catalog::oid_t table_oid,
+                                                            components::catalog::oid_t database_oid,
+                                                            std::vector<components::table::column_definition_t> columns,
+                                                            bool is_computed);
         actor_zeta::unique_future<void> drop_storage_many(session_id_t session,
                                                           std::pmr::vector<components::catalog::oid_t> table_oids);
 

@@ -184,8 +184,7 @@ namespace services::dispatcher {
                         if (!unified.has_value()) {
                             return std::nullopt;
                         }
-                        auto constrained =
-                            constrain_to_domain(resource, cast_registry, context, parameter, *unified);
+                        auto constrained = constrain_to_domain(resource, cast_registry, context, parameter, *unified);
                         if (!constrained.has_value()) {
                             return std::nullopt;
                         }

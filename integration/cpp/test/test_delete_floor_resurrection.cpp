@@ -135,8 +135,8 @@ TEST_CASE("integration::cpp::delete_floor_resurrection::committed_delete_survive
         auto* d = space.dispatcher();
 
         const auto survivors = rows_at_or_below(d, kDeleteUpTo);
-        INFO("rows with id <= " << kDeleteUpTo << " after restart (0 = delete survived; >0 = resurrected): "
-                                << survivors);
+        INFO("rows with id <= " << kDeleteUpTo
+                                << " after restart (0 = delete survived; >0 = resurrected): " << survivors);
         REQUIRE(survivors == 0);
         auto cur = exec(d, "SELECT id FROM adb.t;");
         REQUIRE(cur->is_success());

@@ -72,6 +72,14 @@ namespace components::planner::optimizer {
                 return false;
             }
 
+            // TODO: return an error
+            // For now it will results in an error during processing
+            if (op == arithmetic_op::divide || op == arithmetic_op::mod) {
+                if (right_val == logical_value_t{resource, right_val.type()}) {
+                    return false;
+                }
+            }
+
             // No type guard here any more: logical_value_t's arithmetic used to dispatch on the LEFT
             // type alone and read the right operand through the wrong getter, so a mixed pair had to
             // be declined at plan time. It refuses mismatches itself now and answers DATE + INTERVAL

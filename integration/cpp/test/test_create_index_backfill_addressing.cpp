@@ -33,9 +33,7 @@ namespace {
     }
 
     // Qualified by pid so two binaries running at once can't open, truncate, or unlink each other's files.
-    std::string fixture_root() {
-        return integration_fixture_path("test_create_index_backfill_addressing").string();
-    }
+    std::string fixture_root() { return integration_fixture_path("test_create_index_backfill_addressing").string(); }
 
 } // namespace
 
@@ -117,8 +115,7 @@ TEST_CASE("integration::cpp::create_index_backfill_addressing::a_second_build_ma
 
     // Same table, rows, and scan decomposition, so a build that feeds only the index it is building sends as many
     // staging messages as the first build did.
-    INFO("stage_inserts messages the SECOND build sent: " << staged_by_the_second_build
-                                                          << " , the first build sent "
+    INFO("stage_inserts messages the SECOND build sent: " << staged_by_the_second_build << " , the first build sent "
                                                           << staged_by_the_first_build);
     CHECK(staged_by_the_second_build == staged_by_the_first_build);
 

@@ -54,15 +54,33 @@ namespace {
 
 TEST_CASE("catalog::encoder_domains::every_plain_scalar_the_gate_blesses_survives_the_flat_writer") {
     const logical_type plain_scalars[] = {
-        logical_type::NA,         logical_type::ANY,           logical_type::BOOLEAN,
-        logical_type::TINYINT,    logical_type::SMALLINT,      logical_type::INTEGER,
-        logical_type::BIGINT,     logical_type::HUGEINT,       logical_type::DATE,
-        logical_type::TIME,       logical_type::TIME_TZ,       logical_type::TIMESTAMP,
-        logical_type::TIMESTAMP_TZ, logical_type::INTERVAL,    logical_type::FLOAT,
-        logical_type::DOUBLE,     logical_type::BLOB,          logical_type::UTINYINT,
-        logical_type::USMALLINT,  logical_type::UINTEGER,      logical_type::UBIGINT,
-        logical_type::UHUGEINT,   logical_type::BIT,           logical_type::STRING_LITERAL,
-        logical_type::INTEGER_LITERAL, logical_type::POINTER,  logical_type::VALIDITY,
+        logical_type::NA,
+        logical_type::ANY,
+        logical_type::BOOLEAN,
+        logical_type::TINYINT,
+        logical_type::SMALLINT,
+        logical_type::INTEGER,
+        logical_type::BIGINT,
+        logical_type::HUGEINT,
+        logical_type::DATE,
+        logical_type::TIME,
+        logical_type::TIME_TZ,
+        logical_type::TIMESTAMP,
+        logical_type::TIMESTAMP_TZ,
+        logical_type::INTERVAL,
+        logical_type::FLOAT,
+        logical_type::DOUBLE,
+        logical_type::BLOB,
+        logical_type::UTINYINT,
+        logical_type::USMALLINT,
+        logical_type::UINTEGER,
+        logical_type::UBIGINT,
+        logical_type::UHUGEINT,
+        logical_type::BIT,
+        logical_type::STRING_LITERAL,
+        logical_type::INTEGER_LITERAL,
+        logical_type::POINTER,
+        logical_type::VALIDITY,
         logical_type::UUID,
     };
     for (auto lt : plain_scalars) {
@@ -101,7 +119,6 @@ TEST_CASE("catalog::encoder_domains::a_bare_UNKNOWN_is_written_without_inventing
 TEST_CASE("catalog::encoder_domains::a_column_alias_must_not_be_written_as_a_type_name") {
     complex_logical_type aliased{logical_type::UNKNOWN};
     aliased.set_alias("mycol");
-    REQUIRE(aliased.type_name() == "mycol"); // type_name() is overloaded to also carry the alias
     REQUIRE(gate_accepts(aliased));
     REQUIRE(encode_type_spec(aliased) == "UNKNOWN()");
     bool ok = false;

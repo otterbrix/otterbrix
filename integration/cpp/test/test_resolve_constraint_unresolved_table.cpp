@@ -27,9 +27,8 @@ namespace {
                              catalog::oid_t table_oid,
                              std::size_t override_target = 0,
                              bool use_override = false) {
-        resolve_pair_t pair{
-            logical_plan::make_node_catalog_resolve(resource, logical_plan::resolve_kind::table),
-            logical_plan::make_node_catalog_resolve(resource, logical_plan::resolve_kind::constraint)};
+        resolve_pair_t pair{logical_plan::make_node_catalog_resolve(resource, logical_plan::resolve_kind::table),
+                            logical_plan::make_node_catalog_resolve(resource, logical_plan::resolve_kind::constraint)};
 
         logical_plan::resolve_entry_t table_entry;
         table_entry.dbname = "db";

@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <set>
@@ -125,8 +125,7 @@ TEST_CASE("integration::cpp::test_index_key_type_gate::decimal_is_hash_only") {
 
     REQUIRE(exec(d, "CREATE INDEX i_n_h ON g.t USING hash (n);")->is_success());
     for (const char* t : {"g.t", "g.p"}) {
-        const std::string sql =
-            std::string{"INSERT INTO "} + t + " (id, n) VALUES (1, 1.25), (2, 2.50), (3, 2.50);";
+        const std::string sql = std::string{"INSERT INTO "} + t + " (id, n) VALUES (1, 1.25), (2, 2.50), (3, 2.50);";
         INFO(sql);
         REQUIRE(exec(d, sql)->is_success());
     }

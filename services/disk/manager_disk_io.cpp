@@ -335,7 +335,8 @@ namespace services::disk {
                                              std::to_string(static_cast<unsigned>(table_oid)) +
                                              " could not be read, so " + otbx_path.string() +
                                              " cannot be opened without guessing whether it is a document table; "
-                                             "refusing. Nothing was modified: " + relkind_r.error().what.c_str(),
+                                             "refusing. Nothing was modified: " +
+                                             relkind_r.error().what.c_str(),
                                          resource()});
                 }
                 is_computed = relkind_r.value() == components::catalog::relkind::computed;
@@ -436,7 +437,8 @@ namespace services::disk {
         bool probe_failed = false;
         std::string probe_error;
         {
-            auto probe = std::make_unique<collection_storage_entry_t>(resource(), otbx_path, catalog_columns, is_computed);
+            auto probe =
+                std::make_unique<collection_storage_entry_t>(resource(), otbx_path, catalog_columns, is_computed);
             if (probe->table_storage.construction_failed()) {
                 probe_failed = true;
                 probe_error = probe->table_storage.construction_error().what.c_str();
@@ -477,10 +479,9 @@ namespace services::disk {
             }
         }
         if (ec) {
-            return core::error_t(core::error_code_t::io_error,
-                                 std::pmr::string{"verify_otbx_sidecars: cannot list " + dir.string() + ": " +
-                                                      ec.message(),
-                                                  resource});
+            return core::error_t(
+                core::error_code_t::io_error,
+                std::pmr::string{"verify_otbx_sidecars: cannot list " + dir.string() + ": " + ec.message(), resource});
         }
         return core::error_t::no_error();
     }
@@ -536,8 +537,8 @@ namespace services::disk {
         const bool present = std::filesystem::exists(sidecar, exists_ec);
         if (exists_ec) {
             return core::error_t(core::error_code_t::io_error,
-                                 std::pmr::string{"peek_checkpoint_wal_id_from_disk: cannot stat " +
-                                                      sidecar.string() + ": " + exists_ec.message(),
+                                 std::pmr::string{"peek_checkpoint_wal_id_from_disk: cannot stat " + sidecar.string() +
+                                                      ": " + exists_ec.message(),
                                                   resource()});
         }
         if (!present) {

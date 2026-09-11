@@ -6,17 +6,17 @@
 #include <components/table/data_table.hpp>
 #include <components/table/persistent_column_data.hpp>
 #include <components/table/storage/buffer_pool.hpp>
-#include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/storage/metadata_manager.hpp>
 #include <components/table/storage/partial_block_manager.hpp>
+#include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
 #include <core/file/local_file_system.hpp>
 
 #include <cstring>
 
 #include <algorithm>
-#include <optional>
 #include <limits>
+#include <optional>
 #include <string>
 #include <unistd.h>
 
@@ -30,8 +30,7 @@ namespace tstorage = components::table::storage;
 namespace {
 
     std::string bigstr_db_path() {
-        static std::string path =
-            "/tmp/test_otterbrix_big_strings_" + std::to_string(::getpid()) + ".otbx";
+        static std::string path = "/tmp/test_otterbrix_big_strings_" + std::to_string(::getpid()) + ".otbx";
         return path;
     }
 
@@ -48,9 +47,7 @@ namespace {
             , buffer_manager(&resource, fs, buffer_pool) {}
     };
 
-    void append_string_rows(data_table_t& table,
-                            bigstr_env_t& env,
-                            const std::vector<std::string>& values) {
+    void append_string_rows(data_table_t& table, bigstr_env_t& env, const std::vector<std::string>& values) {
         auto types = table.copy_types();
         data_chunk_t chunk(&env.resource, types, values.size());
         chunk.set_cardinality(values.size());
@@ -179,9 +176,7 @@ namespace {
 
     using maybe_string = std::optional<std::string>;
 
-    void append_string_rows_batched(data_table_t& table,
-                                    bigstr_env_t& env,
-                                    const std::vector<maybe_string>& values) {
+    void append_string_rows_batched(data_table_t& table, bigstr_env_t& env, const std::vector<maybe_string>& values) {
         auto types = table.copy_types();
         uint64_t offset = 0;
         while (offset < values.size()) {

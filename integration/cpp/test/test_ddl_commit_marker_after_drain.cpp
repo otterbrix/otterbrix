@@ -2,8 +2,8 @@
 // keys committed transactions off that id (wal_reader.cpp), a refusal after that point still leaves a durable
 // marker on disk, and a restart resurrects the rejected commit.
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -19,8 +19,7 @@ using namespace test_helpers;
 
 TEST_CASE("integration::cpp::ddl_commit_marker::carries_the_drained_commit_id") {
     auto config =
-        make_test_config(integration_fixture_path("test_ddl_commit_marker_after_drain") /
-                         std::to_string(::getpid()));
+        make_test_config(integration_fixture_path("test_ddl_commit_marker_after_drain") / std::to_string(::getpid()));
     config.log.level = log_t::level::off;
 
     test_spaces space(config);
@@ -49,8 +48,8 @@ TEST_CASE("integration::cpp::ddl_commit_marker::carries_the_drained_commit_id") 
 
     REQUIRE(markers_total >= 3);
 
-    INFO("commit markers found: " << markers_total << ", of them carrying commit_id == 0: "
-                                  << markers_without_commit_id);
+    INFO("commit markers found: " << markers_total
+                                  << ", of them carrying commit_id == 0: " << markers_without_commit_id);
     INFO("a marker with commit_id == 0 was written BEFORE the drain that allocates the id — i.e. "
          "before the first step that may still refuse the commit");
     CHECK(markers_without_commit_id == 0);

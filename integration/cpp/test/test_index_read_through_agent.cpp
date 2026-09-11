@@ -1,8 +1,8 @@
 // disk_hash_table_t::get_all keeps only the LAST row id per key; bitcask_index_disk_t::find replays
 // the full list from the snapshot record. EXPLAIN is asserted first so a full-scan regression can't pass silently.
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

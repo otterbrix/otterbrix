@@ -11,8 +11,8 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <components/tests/generaty.hpp>
-#include <core/pmr.hpp>
 #include <core/counting_resource.hpp>
+#include <core/pmr.hpp>
 #include <services/wal/base.hpp>
 #include <services/wal/record.hpp>
 #include <services/wal/wal_binary.hpp>

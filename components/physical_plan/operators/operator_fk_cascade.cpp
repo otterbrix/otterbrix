@@ -62,17 +62,16 @@ namespace components::operators {
             co_return;
         }
         if (par_indices.empty()) {
-            set_error(core::error_t{
-                core::error_code_t::invalid_constraint,
-                std::pmr::string{"FK constraint: no referenced columns resolved — the ON DELETE action "
-                                 "cannot be evaluated",
-                                 resource_}});
+            set_error(
+                core::error_t{core::error_code_t::invalid_constraint,
+                              std::pmr::string{"FK constraint: no referenced columns resolved — the ON DELETE action "
+                                               "cannot be evaluated",
+                                               resource_}});
             mark_failed();
             co_return;
         }
 
-        if (fk_.del_action == 'd' &&
-            fk_.child_col_default_specs.size() < fk_.child_col_schema_indices.size()) {
+        if (fk_.del_action == 'd' && fk_.child_col_default_specs.size() < fk_.child_col_schema_indices.size()) {
             std::pmr::string what{"FK constraint: ON DELETE SET DEFAULT has ", resource_};
             what.append(std::to_string(fk_.child_col_default_specs.size()).c_str());
             what.append(" default spec(s) for ");
@@ -217,18 +216,17 @@ namespace components::operators {
                 for (std::size_t i = 0; i < all_child_ids.size(); ++i) {
                     fetch_ids.data<int64_t>()[i] = all_child_ids[i];
                 }
-                auto [_f, ffut] =
-                    actor_zeta::otterbrix::send(ctx->disk_address,
-                                                &services::disk::manager_disk_t::storage_fetch,
-                                                ctx->session,
-                                                fk_.child_table_oid,
-                                                std::move(fetch_ids),
-                                                static_cast<uint64_t>(all_child_ids.size()),
-                                                std::vector<size_t>{},
-                                                ctx->txn,
-                                                components::table::fetch_visibility_t::SNAPSHOT,
-                                                /*limit=*/int64_t{-1},
-                                                services::disk::k_fetch_epoch_unchecked);
+                auto [_f, ffut] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                              &services::disk::manager_disk_t::storage_fetch,
+                                                              ctx->session,
+                                                              fk_.child_table_oid,
+                                                              std::move(fetch_ids),
+                                                              static_cast<uint64_t>(all_child_ids.size()),
+                                                              std::vector<size_t>{},
+                                                              ctx->txn,
+                                                              components::table::fetch_visibility_t::SNAPSHOT,
+                                                              /*limit=*/int64_t{-1},
+                                                              services::disk::k_fetch_epoch_unchecked);
                 auto fetched_r = co_await std::move(ffut);
                 if (fetched_r.has_error()) {
                     // Must abort — transforming empty cells on a failed read would corrupt rows.

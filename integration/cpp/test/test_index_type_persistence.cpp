@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -12,9 +12,7 @@
 
 namespace {
 
-    bool has_bitcask_artefacts(const std::filesystem::path& dir) {
-        return std::filesystem::exists(dir / "CURRENT");
-    }
+    bool has_bitcask_artefacts(const std::filesystem::path& dir) { return std::filesystem::exists(dir / "CURRENT"); }
 
     std::uintmax_t bitcask_segment_bytes(const std::filesystem::path& dir) {
         std::uintmax_t total = 0;
@@ -171,8 +169,8 @@ TEST_CASE("integration::cpp::test_index_type_persistence::temporal_key_type_surv
             REQUIRE(indexed->is_success());
             auto heap = exec("SELECT id FROM t.tp WHERE " + predicate + ";");
             REQUIRE(heap->is_success());
-            INFO("predicate: " << predicate << " -- index " << indexed->size() << ", unindexed twin "
-                               << heap->size() << ", expected " << expected);
+            INFO("predicate: " << predicate << " -- index " << indexed->size() << ", unindexed twin " << heap->size()
+                               << ", expected " << expected);
             CHECK(heap->size() == expected);
             CHECK(indexed->size() == expected);
         };

@@ -139,12 +139,13 @@ namespace disk_test_helpers {
     }
 
     template<typename Fx>
-    catalog::oid_t test_create_index(Fx& fx,
-                                     catalog::oid_t ns_oid,
-                                     catalog::oid_t table_oid,
-                                     const std::string& index_name,
-                                     const std::vector<std::string>& /*col_names*/, // dropped from build_create_index_writes
-                                     const std::vector<catalog::oid_t>& col_attoids) {
+    catalog::oid_t
+    test_create_index(Fx& fx,
+                      catalog::oid_t ns_oid,
+                      catalog::oid_t table_oid,
+                      const std::string& index_name,
+                      const std::vector<std::string>& /*col_names*/, // dropped from build_create_index_writes
+                      const std::vector<catalog::oid_t>& col_attoids) {
         auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
         const catalog::oid_t index_oid = oids[0];
         catalog::oid_batch_t batch;
@@ -172,7 +173,8 @@ namespace disk_test_helpers {
         }
         auto valid_row =
             catalog::build_pg_index_row(&fx.resource, index_oid, table_oid, indkey, true, catalog::indtype::single);
-        auto rng = append_ok(fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_index, std::move(valid_row)));
+        auto rng =
+            append_ok(fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_index, std::move(valid_row)));
         appends_local.push_back(std::move(rng));
         std::set<catalog::oid_t> deletes_local{pg_index};
         fx.invoke(&manager_disk_t::storage_publish_commits, txn_ctx(), std::uint64_t{1000}, std::move(appends_local));

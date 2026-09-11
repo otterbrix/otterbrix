@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <string>
@@ -31,8 +31,7 @@ TEST_CASE("integration::cpp::test_null_persistence::nulls_survive_checkpoint_and
         };
         REQUIRE(exec("CREATE DATABASE b;")->is_success());
         REQUIRE(exec("CREATE TABLE b.t (id BIGINT, v BIGINT, s STRING) ;")->is_success());
-        REQUIRE(exec("INSERT INTO b.t (id, v, s) VALUES (1, 10, 'a'), (2, NULL, NULL), (3, 30, 'c');")
-                    ->is_success());
+        REQUIRE(exec("INSERT INTO b.t (id, v, s) VALUES (1, 10, 'a'), (2, NULL, NULL), (3, 30, 'c');")->is_success());
 
         // Before the restart the engine has this right, so any phase-2 failure is the
         // restart, not the insert.
@@ -237,7 +236,7 @@ TEST_CASE("integration::cpp::test_null_persistence::nulls_survive_past_first_row
     test_clear_directory(config);
     config.log.level = log_t::level::off;
 
-    constexpr int64_t ROWS = 3000;    // > 2 row groups of 1024
+    constexpr int64_t ROWS = 3000;     // > 2 row groups of 1024
     constexpr int64_t NULL_STEP = 100; // ids 100, 200, ..., 3000 carry NULLs
     constexpr int64_t NULLS = ROWS / NULL_STEP;
 
@@ -261,8 +260,8 @@ TEST_CASE("integration::cpp::test_null_persistence::nulls_survive_past_first_row
                 if (id % NULL_STEP == 0) {
                     sql += "(" + std::to_string(id) + ", NULL, NULL)";
                 } else {
-                    sql += "(" + std::to_string(id) + ", " + std::to_string(id * 2) + ", 's" + std::to_string(id) +
-                           "')";
+                    sql +=
+                        "(" + std::to_string(id) + ", " + std::to_string(id * 2) + ", 's" + std::to_string(id) + "')";
                 }
             }
             sql += ";";

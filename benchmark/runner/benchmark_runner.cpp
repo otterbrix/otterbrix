@@ -23,12 +23,12 @@ namespace {
 
 class benchmark_instance_t final : public base_otterbrix_t {
 public:
-    explicit benchmark_instance_t(const benchmark_configuration_t& config)
-        : base_otterbrix_t(make_config(config)) {}
+    benchmark_instance_t()
+        : base_otterbrix_t(make_config()) {}
 
 private:
-    static configuration::config make_config(const benchmark_configuration_t& config) {
-        // One named base dir via create_config -- not bare `current_path()/"disk"` and
+    static configuration::config make_config() {
+        // One named base d1ir via create_config -- not bare `current_path()/"disk"` and
         // `.../"wal"`, which scatter both into whatever directory the runner was launched from.
         auto cfg = configuration::config::create_config(std::filesystem::current_path() /
                                                         "otterbrix_benchmark_data");
@@ -245,7 +245,7 @@ void benchmark_runner_t::run(const benchmark_configuration_t& config) {
             std::cout << "Load-only: --skip-load is set, nothing to load.\n";
             return;
         }
-        benchmark_instance_t instance(config);
+        benchmark_instance_t instance;
         benchmark_state_t state;
         state.dispatcher = instance.dispatcher();
         state.session = session_id_t();
@@ -281,7 +281,7 @@ void benchmark_runner_t::run(const benchmark_configuration_t& config) {
     // are populated for the build-side decision), then print the physical plan for each
     // selected benchmark's query via EXPLAIN. No timing.
     if (config.explain_mode) {
-        benchmark_instance_t instance(config);
+        benchmark_instance_t instance;
         benchmark_state_t state;
         state.dispatcher = instance.dispatcher();
         state.session = session_id_t();
@@ -352,7 +352,7 @@ benchmark_result_t benchmark_runner_t::run_single(benchmark_t& bench, const benc
             std::filesystem::remove_all(std::filesystem::current_path() / "otterbrix_benchmark_data", ec);
         }
 
-        benchmark_instance_t instance(config);
+        benchmark_instance_t instance;
         benchmark_state_t state;
         state.dispatcher = instance.dispatcher();
         state.session = session_id_t();

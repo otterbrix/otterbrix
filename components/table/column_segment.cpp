@@ -105,9 +105,7 @@ namespace components::table {
                 return true;
             }
 
-            read_string_marker(base_ptr + dict.end - static_cast<uint64_t>(-1 * dict_offset),
-                               out.block_id,
-                               out.offset);
+            read_string_marker(base_ptr + dict.end - static_cast<uint64_t>(-1 * dict_offset), out.block_id, out.offset);
             return true;
         }
 
@@ -204,8 +202,7 @@ namespace components::table {
             auto block_size = segment.block_size();
             string_location_t location;
             if (!fetch_string_location(dict, base_ptr, dict_offset, block_size, location)) {
-                state.fetch_error =
-                    string_read_error(segment, "fetch_string: dictionary offset outside the block");
+                state.fetch_error = string_read_error(segment, "fetch_string: dictionary offset outside the block");
                 return std::string_view(nullptr, 0);
             }
             if (location.is_overflow()) {
@@ -1127,12 +1124,11 @@ namespace components::table {
         return false;
     }
 
-    core::result_wrapper_t<bool>
-    column_segment_t::persist_string_overflow(std::byte* segment_copy,
-                                              uint64_t segment_size,
-                                              uint64_t tuple_count,
-                                              storage::partial_block_manager_t& pbm,
-                                              std::vector<uint64_t>& out_blocks) {
+    core::result_wrapper_t<bool> column_segment_t::persist_string_overflow(std::byte* segment_copy,
+                                                                           uint64_t segment_size,
+                                                                           uint64_t tuple_count,
+                                                                           storage::partial_block_manager_t& pbm,
+                                                                           std::vector<uint64_t>& out_blocks) {
         auto& buffer_manager = block->buffer_manager;
         auto* resource = buffer_manager.resource();
         const uint64_t block_size = block->block_size();

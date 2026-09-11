@@ -370,11 +370,12 @@ namespace services::disk {
                                                                      components::catalog::oid_t database_oid);
 
         // Disambiguated here: no_error (already owns the oid) vs io_error (could not build).
-        [[nodiscard]] core::error_t create_storage_disk_sync(components::catalog::oid_t table_oid,
-                                                             components::catalog::oid_t database_oid,
-                                                             std::vector<components::table::column_definition_t> columns,
-                                                             const std::filesystem::path& otbx_path,
-                                                             bool is_computed);
+        [[nodiscard]] core::error_t
+        create_storage_disk_sync(components::catalog::oid_t table_oid,
+                                 components::catalog::oid_t database_oid,
+                                 std::vector<components::table::column_definition_t> columns,
+                                 const std::filesystem::path& otbx_path,
+                                 bool is_computed);
         void bootstrap_system_tables_sync();
         void load_user_table_storages_sync();
         // Rebuilds the .otbx for tables load_user_table_storages_sync couldn't load; returns divergences not closed.
@@ -413,8 +414,8 @@ namespace services::disk {
         // Most recent value for `name` in pg_settings, empty only if no such row exists (else throws).
         std::string read_setting_sync(std::string_view name);
 
-        unique_future<core::result_wrapper_t<resolve_namespace_result_t>>
-        resolve_namespace(execution_context_t ctx, std::string name);
+        unique_future<core::result_wrapper_t<resolve_namespace_result_t>> resolve_namespace(execution_context_t ctx,
+                                                                                            std::string name);
 
         unique_future<core::result_wrapper_t<std::pmr::vector<resolve_function_result_t>>>
         resolve_function_by_name(execution_context_t ctx, std::string name);
@@ -573,9 +574,8 @@ namespace services::disk {
                                  int64_t limit,
                                  std::vector<size_t> projected_cols,
                                  components::table::transaction_data txn);
-        unique_future<void> storage_close_cursor(session_id_t session,
-                                                 components::catalog::oid_t table_oid,
-                                                 uint64_t cursor_id);
+        unique_future<void>
+        storage_close_cursor(session_id_t session, components::catalog::oid_t table_oid, uint64_t cursor_id);
         unique_future<core::result_wrapper_t<uint64_t>> storage_open_scan_hold(session_id_t session,
                                                                                components::catalog::oid_t table_oid);
         unique_future<core::result_wrapper_t<uint64_t>> storage_compact_epoch(session_id_t session,

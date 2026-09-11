@@ -1,35 +1,6 @@
+#include "integration_fixture_path.hpp"
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
-
-// Departments:  (id, name,          budget)
-//               (1,  'Engineering', 100000)
-//               (2,  'Marketing',    50000)
-//               (3,  'HR',           30000)
-//               (4,  'Sales',        80000)
-//               (5,  'Finance',      70000)
-//
-// Employees:    (id,  name,      dept_id,  salary)
-//               (1,   'Alice',   1,        90000)
-//               (2,   'Bob',     1,        80000)
-//               (3,   'Charlie', 2,        60000)
-//               (4,   'Diana',   2,        55000)
-//               (5,   'Eve',     3,        45000)
-//               (6,   'Frank',   3,        40000)
-//               (7,   'Grace',   4,        70000)
-//               (8,   'Henry',   4,        65000)
-//               (9,   'Iris',    5,        75000)
-//               (10,  'Jack',    5,        72000)
-//
-// Derived constants used across tests:
-//   overall avg salary   = 65200
-//   overall avg budget   = 66000
-//   dept1 avg salary     = 85000   (Alice 90k, Bob 80k)
-//   dept2 avg salary     = 57500   (Charlie 60k, Diana 55k)
-//   dept3 avg salary     = 42500   (Eve 45k, Frank 40k)
-//   dept4 avg salary     = 67500   (Grace 70k, Henry 65k)
-//   dept5 avg salary     = 73500   (Iris 75k, Jack 72k)
-//   high-budget depts    = {1,4,5} (budget > 60000)
-//   above-avg employees  = {Alice,Bob,Grace,Iris,Jack} (salary > 65200)
 
 // TODO: edge case with connecting query and it's subquery
 /*
@@ -89,7 +60,6 @@ namespace {
         }
     }
 
-    // Flatten an EXPLAIN cursor's "QUERY PLAN" column into a single searchable string.
     std::string plan_text(const components::cursor::cursor_t_ptr& cur) {
         std::string out;
         for (std::size_t r = 0; r < cur->size(); ++r) {
@@ -104,15 +74,9 @@ namespace {
 
 } // namespace
 
-// ---------------------------------------------------------------------------
-// Subqueries in WHERE
-// ---------------------------------------------------------------------------
-
 TEST_CASE("integration::cpp::test_subqueries::where_clause") {
-    auto config = test_create_config("/tmp/test_subqueries/where_clause");
+    auto config = test_create_config(integration_fixture_path("test_subqueries/where_clause"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -121,7 +85,6 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
 
     INFO("scalar subquery in WHERE with equality");
     {
-        // Highest-paid employee: Alice (salary 90000)
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT name FROM TestDatabase.Employees "
@@ -133,7 +96,6 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
 
     INFO("scalar subquery in WHERE with greater-than");
     {
-        // Employees above overall average (65200): Alice, Bob, Grace, Iris, Jack
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT name FROM TestDatabase.Employees "
@@ -144,8 +106,6 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
 
     INFO("scalar subquery in WHERE with less-than against aggregated outer");
     {
-        // Min budget of high-budget depts (budget > 60000) is Finance's 70000;
-        // employees with salary < 70000: Charlie, Diana, Eve, Frank, Henry → 5
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT name FROM TestDatabase.Employees "
@@ -158,8 +118,6 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
 
     INFO("IN subquery");
     {
-        // High-budget departments (budget > 60000): Engineering(1), Sales(4), Finance(5)
-        // Employees in those 3 departments: Alice, Bob, Grace, Henry, Iris, Jack → 6
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT name FROM TestDatabase.Employees "
@@ -172,8 +130,6 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
 
     INFO("NOT IN subquery");
     {
-        // Low-budget departments: Marketing(2), HR(3)
-        // Employees in those departments: Charlie, Diana, Eve, Frank → 4
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT name FROM TestDatabase.Employees "
@@ -186,8 +142,6 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
 
     INFO("IN empty subquery matches nothing (PostgreSQL: IN () -> 0 rows, not an error)");
     {
-        // The sub-query returns zero rows; `x IN (empty)` selects no rows. Used to turn
-        // the whole statement into an error cursor.
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT count(*) AS c FROM TestDatabase.Employees "
@@ -212,8 +166,6 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
 
     INFO("EXISTS non-correlated subquery — rows found");
     {
-        // Subquery finds employees earning > 85000 (Alice = 90000) → EXISTS is true for every outer row
-        // All 5 departments are returned
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT name FROM TestDatabase.Departments "
@@ -224,8 +176,6 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
 
     INFO("EXISTS non-correlated subquery — no rows found");
     {
-        // Subquery finds no employee earning > 999999 → EXISTS is false for every outer row
-        // 0 departments are returned
         auto session = otterbrix::session_id_t();
         auto cur =
             dispatcher->execute_sql(session,
@@ -237,8 +187,6 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
 
     INFO("NOT EXISTS non-correlated subquery — subquery empty");
     {
-        // Subquery returns no rows → NOT EXISTS is true for every outer row
-        // All 5 departments are returned
         auto session = otterbrix::session_id_t();
         auto cur =
             dispatcher->execute_sql(session,
@@ -252,8 +200,6 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
     /*
     INFO("EXISTS correlated subquery");
     {
-        // Departments that have at least one employee earning > 85000
-        // Only Engineering (Alice = 90000) → 1 row
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
             "SELECT d.name FROM TestDatabase.Departments d "
@@ -268,8 +214,6 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
 
     INFO("NOT EXISTS correlated subquery");
     {
-        // Departments where no employee earns > 50000
-        // HR: Eve(45000), Frank(40000) — neither exceeds 50000 → 1 row
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
             "SELECT d.name FROM TestDatabase.Departments d "
@@ -284,7 +228,6 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
 
     INFO("correlated subquery comparing to own-department average");
     {
-        // Employees earning above their own department's average: one per department → 5
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
             "SELECT e1.name FROM TestDatabase.Employees e1 "
@@ -299,9 +242,6 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
 
     INFO("ANY subquery");
     {
-        // Departments with budget greater than at least one employee salary
-        // (budget > ANY salaries) = budget > MIN(salary) = 40000
-        // Engineering(100k), Marketing(50k), Sales(80k), Finance(70k) satisfy; HR(30k) does not → 4
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT name FROM TestDatabase.Departments "
@@ -312,8 +252,6 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
 
     INFO("ALL subquery");
     {
-        // Departments with budget greater than ALL employee salaries
-        // (budget > MAX(salary) = 90000): only Engineering (100000) → 1 row
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT name FROM TestDatabase.Departments "
@@ -325,7 +263,6 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
 
     INFO("scalar subquery returning NULL (empty result)");
     {
-        // Subquery for a non-existent dept returns no rows → NULL comparison → 0 matches
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT name FROM TestDatabase.Employees "
@@ -337,23 +274,11 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Correlated EXISTS / NOT EXISTS routed to a semi- / anti-join
-//
-// A correlated `WHERE EXISTS (SELECT ... WHERE inner.k = outer.k)` is the
-// canonical SEMI join (emit each outer row at most once, iff the inner side
-// produces >=1 row for it); the NOT EXISTS form is the ANTI join (emit each
-// outer row iff the inner side produces zero rows). These were previously
-// unsupported (the SubLink flatten path cannot resolve the outer column); they
-// now lower to a LATERAL semi/anti join that binds the correlation per outer
-// row and re-runs the inner sub-plan.
-// ---------------------------------------------------------------------------
+// Both correlated EXISTS and NOT EXISTS lower to a LATERAL join binding the correlation per outer row.
 
 TEST_CASE("integration::cpp::test_subqueries::correlated_exists_semi_anti") {
-    auto config = test_create_config("/tmp/test_subqueries/correlated_exists_semi_anti");
+    auto config = test_create_config(integration_fixture_path("test_subqueries/correlated_exists_semi_anti"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -362,7 +287,6 @@ TEST_CASE("integration::cpp::test_subqueries::correlated_exists_semi_anti") {
 
     INFO("correlated EXISTS -> semi-join: departments with a >85000 earner");
     {
-        // Only Engineering has an employee earning > 85000 (Alice = 90000) -> 1 row.
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT d.name FROM TestDatabase.Departments d "
@@ -377,7 +301,6 @@ TEST_CASE("integration::cpp::test_subqueries::correlated_exists_semi_anti") {
 
     INFO("correlated NOT EXISTS -> anti-join: departments with no >50000 earner");
     {
-        // HR: Eve(45000), Frank(40000) -- neither exceeds 50000 -> 1 row.
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT d.name FROM TestDatabase.Departments d "
@@ -405,7 +328,6 @@ TEST_CASE("integration::cpp::test_subqueries::correlated_exists_semi_anti") {
 
     INFO("correlated NOT EXISTS -> anti-join: inner never matches (all rows)");
     {
-        // No department has an employee earning > 999999 -> NOT EXISTS true for all -> 5 rows.
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT d.name FROM TestDatabase.Departments d "
@@ -419,7 +341,6 @@ TEST_CASE("integration::cpp::test_subqueries::correlated_exists_semi_anti") {
 
     INFO("correlated EXISTS -> anti-join: inner always matches (no rows)");
     {
-        // Every department has an employee earning > 30000 -> NOT EXISTS false for all -> 0 rows.
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT d.name FROM TestDatabase.Departments d "
@@ -445,20 +366,12 @@ TEST_CASE("integration::cpp::test_subqueries::correlated_exists_semi_anti") {
     }
 }
 
-// NOTE: NOT IN is deliberately NOT routed to an anti-join — a plain anti-join
-// cannot reproduce SQL three-valued logic (a single NULL in the subquery makes
-// `x NOT IN (S)` never TRUE, yielding zero rows), so it stays on the existing
-// membership-test path.
-
-// ---------------------------------------------------------------------------
-// Subqueries in SELECT list and in FROM (derived tables)
-// ---------------------------------------------------------------------------
+// NOTE: NOT IN is deliberately not routed to an anti-join — a plain anti-join can't reproduce SQL
+// three-valued logic (a NULL in the subquery makes `x NOT IN (S)` never TRUE), so it keeps the membership-test path.
 
 TEST_CASE("integration::cpp::test_subqueries::select_list_and_from") {
-    auto config = test_create_config("/tmp/test_subqueries/select_list_and_from");
+    auto config = test_create_config(integration_fixture_path("test_subqueries/select_list_and_from"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -469,7 +382,6 @@ TEST_CASE("integration::cpp::test_subqueries::select_list_and_from") {
     /*
     INFO("scalar correlated subquery in SELECT list");
     {
-        // For Engineering employees, show their department name via subquery
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
             "SELECT e.name, "
@@ -484,8 +396,6 @@ TEST_CASE("integration::cpp::test_subqueries::select_list_and_from") {
 
     INFO("aggregate correlated subquery in SELECT list");
     {
-        // Show each department's headcount next to the department row
-        // Every department has exactly 2 employees
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
             "SELECT d.name, "
@@ -501,7 +411,6 @@ TEST_CASE("integration::cpp::test_subqueries::select_list_and_from") {
 
     INFO("subquery in SELECT list returning maximum of outer group");
     {
-        // Each employee row shows the max salary in their department
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
             "SELECT e.name, "
@@ -511,7 +420,6 @@ TEST_CASE("integration::cpp::test_subqueries::select_list_and_from") {
             "ORDER BY e.salary DESC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
-        // dept_max for Engineering = 90000 for both rows
         REQUIRE(cur->value(1, 0).value<int64_t>() == 90000);
         REQUIRE(cur->value(1, 1).value<int64_t>() == 90000);
     }
@@ -519,8 +427,6 @@ TEST_CASE("integration::cpp::test_subqueries::select_list_and_from") {
 
     INFO("derived table in FROM (basic)");
     {
-        // Select from a derived table that filters high earners
-        // salary > 70000: Alice(90k), Bob(80k), Iris(75k), Jack(72k) → 4 rows
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(
             session,
@@ -532,8 +438,6 @@ TEST_CASE("integration::cpp::test_subqueries::select_list_and_from") {
 
     INFO("derived table in FROM with outer WHERE");
     {
-        // Derived table produces salary > 60000 rows, outer query restricts to dept 1
-        // salary > 60000 AND dept_id = 1: Alice(90k), Bob(80k) → 2 rows
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(
             session,
@@ -546,8 +450,6 @@ TEST_CASE("integration::cpp::test_subqueries::select_list_and_from") {
 
     INFO("double-nested derived tables in FROM");
     {
-        // Inner derived table: salary > 60000 → Alice,Bob,Grace,Henry,Iris,Jack (6 rows)
-        // Outer derived table: salary < 80000 → Grace(70k),Henry(65k),Iris(75k),Jack(72k) → 4 rows
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT name FROM ("
@@ -562,7 +464,6 @@ TEST_CASE("integration::cpp::test_subqueries::select_list_and_from") {
 
     INFO("derived table aggregated in FROM");
     {
-        // Join the derived per-department stats back to departments
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT d.name, stats.avg_sal "
@@ -574,20 +475,13 @@ TEST_CASE("integration::cpp::test_subqueries::select_list_and_from") {
                                            "WHERE stats.avg_sal > 70000 "
                                            "ORDER BY d.id;");
         REQUIRE(cur->is_success());
-        // dept1 avg=85000>70k ✓, dept4 avg=67500<70k ✗, dept5 avg=73500>70k ✓ → 2 rows
         REQUIRE(cur->size() == 2);
     }
 }
 
-// ---------------------------------------------------------------------------
-// Subqueries in JOIN
-// ---------------------------------------------------------------------------
-
 TEST_CASE("integration::cpp::test_subqueries::join") {
-    auto config = test_create_config("/tmp/test_subqueries/join");
+    auto config = test_create_config(integration_fixture_path("test_subqueries/join"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -596,7 +490,6 @@ TEST_CASE("integration::cpp::test_subqueries::join") {
 
     INFO("subquery as right side of JOIN, filter above department average");
     {
-        // One above-average earner per department → 5 rows
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT e.name "
@@ -612,8 +505,6 @@ TEST_CASE("integration::cpp::test_subqueries::join") {
 
     INFO("subquery in JOIN ON clause — top earner per department");
     {
-        // Each employee joins the max-salary-per-dept subquery and keeps only the match
-        // Top earner per dept: Alice(dept1), Charlie(dept2), Eve(dept3), Grace(dept4), Iris(dept5) → 5
         auto session = otterbrix::session_id_t();
         auto cur =
             dispatcher->execute_sql(session,
@@ -629,14 +520,6 @@ TEST_CASE("integration::cpp::test_subqueries::join") {
 
     INFO("subquery in JOIN producing multi-column derived table");
     {
-        // Join employees to department stats; select employees whose salary is
-        // within 5000 of the department average (both above and below)
-        // dept1 avg=85000: Alice(90k, diff=5000 ✓), Bob(80k, diff=5000 ✓)
-        // dept2 avg=57500: Charlie(60k, diff=2500 ✓), Diana(55k, diff=2500 ✓)
-        // dept3 avg=42500: Eve(45k, diff=2500 ✓), Frank(40k, diff=2500 ✓)
-        // dept4 avg=67500: Grace(70k, diff=2500 ✓), Henry(65k, diff=2500 ✓)
-        // dept5 avg=73500: Iris(75k, diff=1500 ✓), Jack(72k, diff=1500 ✓)
-        // All 10 employees are within 5000 of their dept average
         auto session = otterbrix::session_id_t();
         auto cur =
             dispatcher->execute_sql(session,
@@ -653,15 +536,9 @@ TEST_CASE("integration::cpp::test_subqueries::join") {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Subqueries in HAVING
-// ---------------------------------------------------------------------------
-
 TEST_CASE("integration::cpp::test_subqueries::having") {
-    auto config = test_create_config("/tmp/test_subqueries/having");
+    auto config = test_create_config(integration_fixture_path("test_subqueries/having"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -670,8 +547,6 @@ TEST_CASE("integration::cpp::test_subqueries::having") {
 
     INFO("subquery in HAVING comparing to overall average");
     {
-        // Departments whose average salary exceeds the overall average (65200)
-        // dept1=85000✓, dept2=57500✗, dept3=42500✗, dept4=67500✓, dept5=73500✓ → 3
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT dept_id, AVG(salary) AS avg_sal "
@@ -684,9 +559,6 @@ TEST_CASE("integration::cpp::test_subqueries::having") {
 
     INFO("subquery in HAVING with MIN");
     {
-        // Departments where the minimum salary exceeds the overall average (65200)
-        // dept1 min=80000>65200 ✓, dept2 min=55000 ✗, dept3 min=40000 ✗,
-        // dept4 min=65000 ✗, dept5 min=72000>65200 ✓ → 2
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT dept_id "
@@ -699,9 +571,6 @@ TEST_CASE("integration::cpp::test_subqueries::having") {
 
     INFO("subquery in HAVING comparing to specific department budget");
     {
-        // Departments whose total payroll exceeds the budget of HR (30000)
-        // dept1 total=170000>30k ✓, dept2=115000>30k ✓, dept3=85000>30k ✓,
-        // dept4=135000>30k ✓, dept5=147000>30k ✓ → all 5
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT dept_id, SUM(salary) AS total_payroll "
@@ -711,20 +580,13 @@ TEST_CASE("integration::cpp::test_subqueries::having") {
                                            "  SELECT budget FROM TestDatabase.Departments WHERE name = 'HR'"
                                            ");");
         REQUIRE(cur->is_success());
-        // Every dept's total payroll (≥85000) > HR budget (30000) → all 5
         REQUIRE(cur->size() == 5);
     }
 }
 
-// ---------------------------------------------------------------------------
-// Deeply nested subqueries (3, 4, and 5 levels)
-// ---------------------------------------------------------------------------
-
 TEST_CASE("integration::cpp::test_subqueries::nested") {
-    auto config = test_create_config("/tmp/test_subqueries/nested");
+    auto config = test_create_config(integration_fixture_path("test_subqueries/nested"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -733,10 +595,6 @@ TEST_CASE("integration::cpp::test_subqueries::nested") {
 
     INFO("3-level nested: scalar in scalar in IN");
     {
-        // Find employees whose salary exceeds the average salary of employees
-        // in high-budget departments (budget > 60000).
-        // High-budget depts: {1,4,5}; their employees avg: (90k+80k+70k+65k+75k+72k)/6 = 75333
-        // Employees with salary > 75333: Alice(90k), Bob(80k) → 2
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT name FROM TestDatabase.Employees "
@@ -754,21 +612,6 @@ TEST_CASE("integration::cpp::test_subqueries::nested") {
     /*
     INFO("3-level nested: EXISTS inside IN inside scalar");
     {
-        // Find the maximum salary among employees who work in a department
-        // that has at least one peer earning less than the overall average.
-        // Overall avg = 65200.
-        // Depts with at least one employee earning < 65200:
-        //   dept1: Bob(80k)? No, Bob > 65200. Alice(90k)? No. So dept1 has no one below avg. Wait:
-        //   dept1: both Alice(90k) and Bob(80k) > 65200 → dept1 NOT included
-        //   dept2: Charlie(60k) < 65200 ✓ → dept2 included
-        //   dept3: Eve(45k) < 65200 ✓ → dept3 included
-        //   dept4: Henry(65k) < 65200 ✓ → dept4 included
-        //   dept5: Jack(72k) > 65200, but no... wait: Jack=72000 > 65200, Iris=75000 > 65200
-        //          dept5: both above → not included
-        // So depts with someone below avg: {2,3,4}
-        // Employees in those depts: Charlie(60k),Diana(55k),Eve(45k),Frank(40k),Grace(70k),Henry(65k)
-        // MAX of their salaries = 70000 (Grace)
-        // Employees with salary = 70000: Grace → 1 row
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
             "SELECT name FROM TestDatabase.Employees "
@@ -791,10 +634,6 @@ TEST_CASE("integration::cpp::test_subqueries::nested") {
 
     INFO("4-level nested: top earner in each of the best departments");
     {
-        // Find employees whose salary equals the maximum salary within their department,
-        // and whose department has a budget above the median (average) budget.
-        // Avg budget = 66000; depts above 66000: Engineering(100k), Sales(80k), Finance(70k) → {1,4,5}
-        // Top earner per dept: Alice(dept1,90k), Grace(dept4,70k), Iris(dept5,75k) → 3
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
             "SELECT e.name FROM TestDatabase.Employees e "
@@ -813,13 +652,6 @@ TEST_CASE("integration::cpp::test_subqueries::nested") {
 
     INFO("4-level nested: IN in IN in scalar in scalar");
     {
-        // Employees in departments whose budget exceeds the average budget
-        // of departments that contain above-average earners.
-        // Overall avg salary = 65200.
-        // Above-avg earners: Alice(1),Bob(1),Grace(4),Iris(5),Jack(5) → dept_ids {1,4,5}
-        // Avg budget of depts {1,4,5}: (100k+80k+70k)/3 = 83333
-        // Depts with budget > 83333: Engineering(100k) → id=1
-        // Employees in dept 1: Alice, Bob → 2
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT name FROM TestDatabase.Employees "
@@ -841,16 +673,6 @@ TEST_CASE("integration::cpp::test_subqueries::nested") {
 
     INFO("5-level nested: scalar chain through both tables");
     {
-        // Find employees who work in the department with the single highest budget
-        // among departments whose budget exceeds the average budget of departments
-        // that contain at least one above-average earner.
-        //
-        // L5: AVG(salary) = 65200
-        // L4: dept_ids with salary > 65200 → {1,4,5}
-        // L3: AVG budget of depts {1,4,5} = 83333
-        // L2: MAX budget of depts with budget > 83333 → 100000 (Engineering)
-        // L1: dept id with budget = 100000 → 1
-        // Main: employees in dept 1: Alice, Bob → 2
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT name FROM TestDatabase.Employees "
@@ -875,15 +697,6 @@ TEST_CASE("integration::cpp::test_subqueries::nested") {
 
     INFO("5-level nested: second-highest budget department via subquery chain");
     {
-        // Find employees earning above the average salary in the department
-        // with the second-highest budget.
-        //
-        // L5: DISTINCT dept_ids of all employees → {1,2,3,4,5}
-        // L4: MAX(budget) of all departments → 100000
-        // L3: MAX(budget) where budget < 100000 → 80000 (Sales)
-        // L2: id of department with budget = 80000 → 4
-        // L1: AVG(salary) of employees in dept 4: (70000+65000)/2 = 67500
-        // Main: employees with salary > 67500: Alice(90k),Bob(80k),Grace(70k),Iris(75k),Jack(72k) → 5
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT name FROM TestDatabase.Employees "
@@ -907,15 +720,9 @@ TEST_CASE("integration::cpp::test_subqueries::nested") {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Subqueries in DML: INSERT SELECT, DELETE WHERE, UPDATE WHERE
-// ---------------------------------------------------------------------------
-
 TEST_CASE("integration::cpp::test_subqueries::dml") {
-    auto config = test_create_config("/tmp/test_subqueries/dml");
+    auto config = test_create_config(integration_fixture_path("test_subqueries/dml"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -931,7 +738,6 @@ TEST_CASE("integration::cpp::test_subqueries::dml") {
             REQUIRE(cur->is_success());
         }
         {
-            // salary > 70000: Alice(90k), Bob(80k), Iris(75k), Jack(72k) → 4 rows
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
                                                "INSERT INTO TestDatabase.TopEarners (name, salary) "
@@ -962,15 +768,12 @@ TEST_CASE("integration::cpp::test_subqueries::dml") {
                 "INSERT INTO TestDatabase.RankedEarners (name, salary) "
                 "SELECT name, salary FROM TestDatabase.Employees ORDER BY salary DESC LIMIT 3;");
             REQUIRE(cur->is_success());
-            // Top 3: Alice(90k), Bob(80k), Iris(75k)
             REQUIRE(cur->size() == 3);
         }
     }
 
     INFO("DELETE WHERE IN subquery");
     {
-        // Remove employees in the lowest-budget department (HR, budget=30000)
-        // HR employees: Eve(5), Frank(6) → 2 rows deleted
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
@@ -994,15 +797,6 @@ TEST_CASE("integration::cpp::test_subqueries::dml") {
 
     INFO("UPDATE WHERE scalar subquery");
     {
-        // Promote below-average earners in high-budget departments to the dept average
-        // High-budget depts: {1,4,5}; below-avg-in-dept in those depts:
-        //   dept1: Bob(80k < 85k avg) → update to 85000
-        //   dept4: Henry(65k < 67.5k avg) → update to 67500
-        //   dept5: Jack(72k < 73.5k avg) → update to 73500
-        // But we implement a simpler variant: set salary = 70000 for employees
-        // in low-budget depts (budget < 40000) → HR employees (Eve, Frank, but deleted above)
-        // So after the DELETE above, no HR employees remain; let's update Marketing employees instead.
-        // Marketing employees: Charlie(60k), Diana(55k); set salary to overall avg floor
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "UPDATE TestDatabase.Employees SET salary = 65200 "
@@ -1010,14 +804,11 @@ TEST_CASE("integration::cpp::test_subqueries::dml") {
                                            "  SELECT id FROM TestDatabase.Departments WHERE budget = 50000"
                                            ");");
         REQUIRE(cur->is_success());
-        // Marketing dept: Charlie and Diana → 2 rows updated
         REQUIRE(cur->size() == 2);
     }
 
     INFO("DELETE WHERE NOT IN subquery");
     {
-        // Keep only employees in Engineering (highest budget dept)
-        // and remove the rest
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
@@ -1028,11 +819,6 @@ TEST_CASE("integration::cpp::test_subqueries::dml") {
                                                "  )"
                                                ");");
             REQUIRE(cur->is_success());
-            // After previous DELETE (HR removed) and this DELETE (non-Engineering removed):
-            // dept2 (Marketing): Charlie, Diana  → 2
-            // dept4 (Sales):     Grace, Henry    → 2
-            // dept5 (Finance):   Iris, Jack      → 2
-            // Total deleted: 6
             REQUIRE(cur->size() == 6);
         }
         {
@@ -1040,21 +826,14 @@ TEST_CASE("integration::cpp::test_subqueries::dml") {
             auto cur = dispatcher->execute_sql(session, "SELECT COUNT(*) AS cnt FROM TestDatabase.Employees;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            // Only Alice and Bob remain (dept 1 = Engineering)
             REQUIRE(cur->value(0, 0).value<int64_t>() == 2);
         }
     }
 }
 
-// ---------------------------------------------------------------------------
-// Common Table Expressions (WITH clause)
-// ---------------------------------------------------------------------------
-
 TEST_CASE("integration::cpp::test_subqueries::cte") {
-    auto config = test_create_config("/tmp/test_subqueries/cte");
+    auto config = test_create_config(integration_fixture_path("test_subqueries/cte"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1063,8 +842,6 @@ TEST_CASE("integration::cpp::test_subqueries::cte") {
 
     INFO("simple CTE used in SELECT");
     {
-        // CTE filters above-average earners, outer query counts them
-        // Above overall avg (65200): Alice, Bob, Grace, Iris, Jack → 5
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "WITH above_avg AS ("
@@ -1080,8 +857,6 @@ TEST_CASE("integration::cpp::test_subqueries::cte") {
 
     INFO("CTE joined with base table");
     {
-        // CTE produces per-department stats; join with Departments to show names
-        // All 5 departments have stats → 5 rows
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "WITH dept_stats AS ("
@@ -1095,16 +870,11 @@ TEST_CASE("integration::cpp::test_subqueries::cte") {
                                            "ORDER BY ds.avg_sal DESC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
-        // Highest avg: Engineering (85000)
         REQUIRE(cur->value(0, 0).value<std::string_view>() == "Engineering");
     }
 
     INFO("multiple CTEs chained");
     {
-        // CTE1: above-average earners (salary > 65200): Alice,Bob,Grace,Iris,Jack (5)
-        // CTE2: high-budget department ids (budget > 60000): {1,4,5} (3 depts)
-        // Final: above_avg employees whose dept is in high_budget_depts:
-        //   Alice(dept1✓), Bob(dept1✓), Grace(dept4✓), Iris(dept5✓), Jack(dept5✓) → 5
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "WITH above_avg AS ("
@@ -1125,10 +895,6 @@ TEST_CASE("integration::cpp::test_subqueries::cte") {
 
     INFO("CTE used twice in the same query");
     {
-        // CTE defines top-earner per dept; join it with itself to find departments
-        // whose top earner salary equals the overall maximum top-earner salary.
-        // top earners: Alice(90k), Charlie(60k), Eve(45k), Grace(70k), Iris(75k)
-        // max of those = 90000 → only Alice's department (Engineering)
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "WITH dept_tops AS ("
@@ -1146,9 +912,6 @@ TEST_CASE("integration::cpp::test_subqueries::cte") {
 
     INFO("CTE with subquery in its own WHERE clause");
     {
-        // CTE selects employees earning above the budget of the cheapest department
-        // MIN budget = HR = 30000; salary > 30000: all 10 employees
-        // Outer query counts per department
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "WITH eligible AS ("
@@ -1161,7 +924,6 @@ TEST_CASE("integration::cpp::test_subqueries::cte") {
                                            "GROUP BY dept_id "
                                            "ORDER BY dept_id;");
         REQUIRE(cur->is_success());
-        // All 5 departments represented, each with 2 employees
         REQUIRE(cur->size() == 5);
         for (size_t row = 0; row < 5; ++row) {
             REQUIRE(cur->value(1, row).value<int64_t>() == 2);
@@ -1169,15 +931,9 @@ TEST_CASE("integration::cpp::test_subqueries::cte") {
     }
 }
 
-// ---------------------------------------------------------------------------
-// UNION / UNION ALL
-// ---------------------------------------------------------------------------
-
 TEST_CASE("integration::cpp::test_subqueries::union") {
-    auto config = test_create_config("/tmp/test_subqueries/union");
+    auto config = test_create_config(integration_fixture_path("test_subqueries/union"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1186,7 +942,6 @@ TEST_CASE("integration::cpp::test_subqueries::union") {
 
     INFO("UNION ALL preserves duplicates");
     {
-        // Both sides select dept_id=1; UNION ALL keeps all 4 rows
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT dept_id FROM TestDatabase.Employees WHERE dept_id = 1 "
@@ -1194,8 +949,6 @@ TEST_CASE("integration::cpp::test_subqueries::union") {
                                            "SELECT dept_id FROM TestDatabase.Employees WHERE dept_id = 1;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 4);
-        // UNION ALL keeps each branch's rows as its own chunk, so the 4 rows span two
-        // chunks — read through the cursor's chunk-spanning accessor, not chunks().front().
         for (size_t row = 0; row < 4; ++row) {
             REQUIRE(cur->value(0, row).value<int64_t>() == 1);
         }
@@ -1203,7 +956,6 @@ TEST_CASE("integration::cpp::test_subqueries::union") {
 
     INFO("UNION ALL disjoint sets");
     {
-        // dept_id=1: Alice,Bob. dept_id=2: Charlie,Diana. No overlap → 4 rows
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT name FROM TestDatabase.Employees WHERE dept_id = 1 "
@@ -1215,10 +967,6 @@ TEST_CASE("integration::cpp::test_subqueries::union") {
 
     INFO("UNION distinct removes duplicates");
     {
-        // Both sides return dept_ids of high-salary employees:
-        // salary >= 80000: Alice(90k,dept1), Bob(80k,dept1) → {1,1}
-        // salary >= 70000: Alice, Bob, Grace(70k,dept4), Iris(75k,dept5), Jack(72k,dept5) → {1,1,4,5,5}
-        // UNION distinct: {1,4,5} → 3 rows
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT dept_id FROM TestDatabase.Employees WHERE salary >= 80000 "
@@ -1230,7 +978,6 @@ TEST_CASE("integration::cpp::test_subqueries::union") {
 
     INFO("UNION distinct same values on both sides");
     {
-        // dept_id=1 on left, dept_id=1 on right → only one unique value
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT dept_id FROM TestDatabase.Employees WHERE dept_id = 1 "
@@ -1243,7 +990,6 @@ TEST_CASE("integration::cpp::test_subqueries::union") {
 
     INFO("UNION ALL three operands");
     {
-        // A UNION ALL B UNION ALL C: dept 1 (2 rows) + dept 2 (2 rows) + dept 3 (2 rows) = 6
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT name FROM TestDatabase.Employees WHERE dept_id = 1 "
@@ -1257,7 +1003,6 @@ TEST_CASE("integration::cpp::test_subqueries::union") {
 
     INFO("UNION schema mismatch rejected");
     {
-        // Different column counts: error expected
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT dept_id FROM TestDatabase.Employees WHERE dept_id = 1 "
@@ -1267,17 +1012,10 @@ TEST_CASE("integration::cpp::test_subqueries::union") {
     }
 }
 
-// ---------------------------------------------------------------------------
-// LIMIT / OFFSET (no ORDER BY) over UNION and GROUP BY — F1: the canonical
-// operator_limit applies the MERGED window once, over the fully-merged stream,
-// instead of pushing the outer limit into each UNION arm / the GROUP BY scan.
-// ---------------------------------------------------------------------------
-
+// F1: operator_limit applies the MERGED window once, not per UNION arm or GROUP BY scan.
 TEST_CASE("integration::cpp::test_subqueries::union_group_limit_offset") {
-    auto config = test_create_config("/tmp/test_subqueries/union_group_limit_offset");
+    auto config = test_create_config(integration_fixture_path("test_subqueries/union_group_limit_offset"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1286,9 +1024,6 @@ TEST_CASE("integration::cpp::test_subqueries::union_group_limit_offset") {
 
     INFO("UNION ALL OFFSET (no ORDER BY) skips the head of the MERGED stream, not each arm");
     {
-        // left dept_id=1 → {1,1}; right dept_id=2 → {2,2}; UNION ALL → {1,1,2,2}.
-        // OFFSET 2 over the merged stream → the 2-row tail {2,2}. The buggy per-arm
-        // forwarding skipped 2 rows of EACH 2-row arm → 0 rows.
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT dept_id FROM TestDatabase.Employees WHERE dept_id = 1 "
@@ -1303,8 +1038,6 @@ TEST_CASE("integration::cpp::test_subqueries::union_group_limit_offset") {
 
     INFO("UNION ALL LIMIT+OFFSET (no ORDER BY) windows the concatenation once");
     {
-        // 10 ids UNION ALL 10 ids → 20 rows; LIMIT 3 OFFSET 4 → exactly 3 rows.
-        // The buggy per-arm forwarding gave OFFSET 4 LIMIT 3 on EACH arm → 6 rows.
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT id FROM TestDatabase.Employees "
@@ -1317,8 +1050,6 @@ TEST_CASE("integration::cpp::test_subqueries::union_group_limit_offset") {
 
     INFO("UNION distinct OFFSET (no ORDER BY) offsets the deduped result");
     {
-        // distinct dept_ids → {1,2,3,4,5} (5 rows); OFFSET 3 → 2 rows. The buggy
-        // per-arm forwarding skipped 3 rows of each 10-row arm before dedup → 4 rows.
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT dept_id FROM TestDatabase.Employees "
@@ -1331,11 +1062,6 @@ TEST_CASE("integration::cpp::test_subqueries::union_group_limit_offset") {
 
     INFO("GROUP BY LIMIT+OFFSET (no ORDER BY) windows the GROUPS, not the scan");
     {
-        // 5 groups (dept 1..5), each count 2. LIMIT 3 OFFSET 3 → the 2 remaining
-        // whole groups (5-3=2), each with the FULL count 2. Two ways this used to
-        // break: the pushdown coordinator ignored OFFSET (top-cap is count-only) →
-        // 3 rows; the non-pushdown scan was windowed to rows [3,6) → partial groups
-        // with count 1.
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT dept_id, count(*) AS c FROM TestDatabase.Employees "
@@ -1349,8 +1075,6 @@ TEST_CASE("integration::cpp::test_subqueries::union_group_limit_offset") {
 
     INFO("GROUP BY LIMIT+OFFSET returns whole groups with correct counts");
     {
-        // LIMIT 2 OFFSET 1 → 2 whole groups, each count 2 (not a windowed scan's
-        // partial count).
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT dept_id, count(*) AS c FROM TestDatabase.Employees "
@@ -1364,7 +1088,6 @@ TEST_CASE("integration::cpp::test_subqueries::union_group_limit_offset") {
 
     INFO("UNION with ORDER BY LIMIT OFFSET still applies the window post-sort (no regression)");
     {
-        // dept_ids {1,2,3,4,5} ordered ascending; LIMIT 2 OFFSET 1 → {2,3}.
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT dept_id FROM TestDatabase.Employees "
@@ -1378,15 +1101,9 @@ TEST_CASE("integration::cpp::test_subqueries::union_group_limit_offset") {
     }
 }
 
-// ---------------------------------------------------------------------------
-// UNION with structured / array columns
-// ---------------------------------------------------------------------------
-
 TEST_CASE("integration::cpp::test_subqueries::union_complex_types") {
-    auto config = test_create_config("/tmp/test_subqueries/union_complex_types");
+    auto config = test_create_config(integration_fixture_path("test_subqueries/union_complex_types"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1416,7 +1133,6 @@ TEST_CASE("integration::cpp::test_subqueries::union_complex_types") {
                                       "(id bigint, pt point_t, tags bigint[3]);")
                         ->is_success());
         }
-        // ShapeA: 3 rows
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
@@ -1427,7 +1143,6 @@ TEST_CASE("integration::cpp::test_subqueries::union_complex_types") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 3);
         }
-        // ShapeB: 2 rows — row id=1 duplicates ShapeA's first row exactly
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
@@ -1441,7 +1156,6 @@ TEST_CASE("integration::cpp::test_subqueries::union_complex_types") {
 
     INFO("UNION ALL id column");
     {
-        // ids from A: {1,2,3}; ids from B: {1,4}; UNION ALL = 5 rows
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT id FROM TestDatabase.ShapeA "
@@ -1453,7 +1167,6 @@ TEST_CASE("integration::cpp::test_subqueries::union_complex_types") {
 
     INFO("UNION ALL with UDT and array columns");
     {
-        // All 5 rows: 3 from A + 2 from B
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT id, pt, tags FROM TestDatabase.ShapeA "
@@ -1465,7 +1178,6 @@ TEST_CASE("integration::cpp::test_subqueries::union_complex_types") {
 
     INFO("UNION distinct id column removes duplicates");
     {
-        // ids from A: {1,2,3}; ids from B: {1,4}; distinct = {1,2,3,4} = 4
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT id FROM TestDatabase.ShapeA "
@@ -1477,7 +1189,6 @@ TEST_CASE("integration::cpp::test_subqueries::union_complex_types") {
 
     INFO("UNION schema mismatch rejected");
     {
-        // Different column counts — error expected
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT id FROM TestDatabase.ShapeA "
@@ -1486,22 +1197,6 @@ TEST_CASE("integration::cpp::test_subqueries::union_complex_types") {
         REQUIRE_FALSE(cur->is_success());
     }
 }
-
-// ---------------------------------------------------------------------------
-// Recursive Common Table Expressions (WITH RECURSIVE)
-// ---------------------------------------------------------------------------
-//
-// OrgChart: (id, name,        manager_id)
-//           (1,  'CEO',       0)          -- root: manager_id=0 means no manager
-//           (2,  'VP Eng',    1)
-//           (3,  'VP Mkt',    1)
-//           (4,  'Engineer',  2)
-//           (5,  'Designer',  3)
-//
-// Hierarchy (depth):
-//   depth 0: CEO
-//   depth 1: VP Eng, VP Mkt
-//   depth 2: Engineer, Designer
 
 namespace {
     void setup_recursive_db(otterbrix::wrapper_dispatcher_t* dispatcher) {
@@ -1532,10 +1227,8 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::test_subqueries::recursive_cte") {
-    auto config = test_create_config("/tmp/test_subqueries/recursive_cte");
+    auto config = test_create_config(integration_fixture_path("test_subqueries/recursive_cte"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1544,7 +1237,6 @@ TEST_CASE("integration::cpp::test_subqueries::recursive_cte") {
 
     INFO("full hierarchy traversal");
     {
-        // Starting from root (manager_id=0), traverse all 5 nodes
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "WITH RECURSIVE hierarchy AS ("
@@ -1564,7 +1256,6 @@ TEST_CASE("integration::cpp::test_subqueries::recursive_cte") {
 
     INFO("subtree rooted at VP Eng");
     {
-        // Starting from VP Eng (id=2), traverse only her subtree: VP Eng + Engineer
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "WITH RECURSIVE subtree AS ("
@@ -1583,8 +1274,6 @@ TEST_CASE("integration::cpp::test_subqueries::recursive_cte") {
 
     INFO("hierarchy with depth");
     {
-        // Carry depth through recursion: depth 0 at root, +1 each level
-        // CEO=0, VP Eng=1, VP Mkt=1, Engineer=2, Designer=2
         auto session = otterbrix::session_id_t();
         auto cur =
             dispatcher->execute_sql(session,
@@ -1598,14 +1287,13 @@ TEST_CASE("integration::cpp::test_subqueries::recursive_cte") {
                                     "SELECT name, depth FROM hierarchy ORDER BY id;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
-        REQUIRE(cur->value(1, 0).value<int64_t>() == 0); // CEO
-        REQUIRE(cur->value(1, 1).value<int64_t>() == 1); // VP Eng
-        REQUIRE(cur->value(1, 3).value<int64_t>() == 2); // Engineer
+        REQUIRE(cur->value(1, 0).value<int64_t>() == 0);
+        REQUIRE(cur->value(1, 1).value<int64_t>() == 1);
+        REQUIRE(cur->value(1, 3).value<int64_t>() == 2);
     }
 
     INFO("filter by depth in outer query");
     {
-        // Only depth-2 employees (Engineer, Designer) via outer WHERE on depth
         auto session = otterbrix::session_id_t();
         auto cur =
             dispatcher->execute_sql(session,
@@ -1624,17 +1312,11 @@ TEST_CASE("integration::cpp::test_subqueries::recursive_cte") {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tier-0: previously assert(false) (Release UB) for unsupported SubLink forms.
-// Now: EXPR bare boolean predicate is supported (PostgreSQL semantics); every
-// other unsupported form returns a clean sql_parse_error instead of crashing,
-// including when nested under AND/OR/NOT (which previously null-deref'd).
-// ---------------------------------------------------------------------------
+// Tier-0: every unsupported SubLink form must error cleanly, not crash via assert(false) (Release UB)
+// or a null-deref under AND/OR/NOT; EXPR bare boolean predicates are supported.
 TEST_CASE("integration::cpp::test_subqueries::tier0_unsupported_sublink_forms") {
-    auto config = test_create_config("/tmp/test_subqueries/tier0_unsupported_sublink_forms");
+    auto config = test_create_config(integration_fixture_path("test_subqueries/tier0_unsupported_sublink_forms"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1657,7 +1339,7 @@ TEST_CASE("integration::cpp::test_subqueries::tier0_unsupported_sublink_forms") 
             s,
             "SELECT name FROM TestDatabase.Employees WHERE (SELECT ok FROM TestDatabase.flags WHERE id = 1);");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 10); // sub-query is true -> all employees pass
+        REQUIRE(cur->size() == 10);
     }
 
     INFO("EXPR bare boolean predicate that is false selects no rows");
@@ -1667,7 +1349,7 @@ TEST_CASE("integration::cpp::test_subqueries::tier0_unsupported_sublink_forms") 
             s,
             "SELECT name FROM TestDatabase.Employees WHERE (SELECT ok FROM TestDatabase.flags WHERE id = 2);");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 0); // sub-query is false -> no rows
+        REQUIRE(cur->size() == 0);
     }
 
     INFO("ARRAY(SELECT ...) as a predicate is a clean error, not a crash (was assert(false) UB)");
@@ -1681,8 +1363,8 @@ TEST_CASE("integration::cpp::test_subqueries::tier0_unsupported_sublink_forms") 
 
     INFO("unsupported sub-query form nested under AND is a clean error, not a null-deref crash");
     {
-        // Previously: transform_sublink_expr returned a null intrusive_ptr and the AND append lambda
-        // dereferenced child_expr->group() before the top-level has_error() guard was reached.
+        // A null intrusive_ptr from transform_sublink_expr must not reach the AND append lambda's
+        // child_expr->group() dereference before the top-level has_error() guard runs.
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s,
                                            "SELECT name FROM TestDatabase.Employees "
@@ -1691,17 +1373,10 @@ TEST_CASE("integration::cpp::test_subqueries::tier0_unsupported_sublink_forms") 
     }
 }
 
-// ---------------------------------------------------------------------------
-// F4: a bare boolean-context scalar sub-query — `WHERE (SELECT ...)` /
-// `HAVING (SELECT ...)` — must have a BOOLEAN static output type (PostgreSQL:
-// "argument of WHERE/HAVING must be type boolean"). A non-boolean scalar is
-// rejected before binding instead of silently coercing numeric->bool.
-// ---------------------------------------------------------------------------
+// F4: a bare boolean-context scalar sub-query is rejected before binding, never silently coerced (PostgreSQL).
 TEST_CASE("integration::cpp::test_subqueries::where_having_boolean_required") {
-    auto config = test_create_config("/tmp/test_subqueries/where_having_boolean_required");
+    auto config = test_create_config(integration_fixture_path("test_subqueries/where_having_boolean_required"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1762,7 +1437,7 @@ TEST_CASE("integration::cpp::test_subqueries::where_having_boolean_required") {
                                            "SELECT dept_id FROM TestDatabase.Employees GROUP BY dept_id "
                                            "HAVING (SELECT ok FROM TestDatabase.flags WHERE id = 1);");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 5); // the bool is true -> every group qualifies
+        REQUIRE(cur->size() == 5);
     }
 
     INFO("HAVING (SELECT <int>) is rejected (argument must be boolean)");
@@ -1775,16 +1450,11 @@ TEST_CASE("integration::cpp::test_subqueries::where_having_boolean_required") {
     }
 }
 
-// ---------------------------------------------------------------------------
-// F7: numeric <-> boolean coercion. CAST(<numeric> AS boolean) is 0->false /
-// non-zero->true (was inverted), and an IMPLICIT boolean-vs-numeric comparison
-// is rejected (PostgreSQL: "operator does not exist: boolean = integer").
-// ---------------------------------------------------------------------------
+// F7: CAST(<numeric> AS boolean) must be 0->false / non-zero->true (was inverted), and an IMPLICIT
+// boolean-vs-numeric comparison is rejected (PostgreSQL: "operator does not exist").
 TEST_CASE("integration::cpp::test_subqueries::bool_numeric_coercion") {
-    auto config = test_create_config("/tmp/test_subqueries/bool_numeric_coercion");
+    auto config = test_create_config(integration_fixture_path("test_subqueries/bool_numeric_coercion"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1811,9 +1481,8 @@ TEST_CASE("integration::cpp::test_subqueries::bool_numeric_coercion") {
 
     INFO("implicit boolean = numeric is rejected cleanly (operator does not exist), not an abort");
     {
-        // Column-vs-column so the numeric side is NOT coerced to boolean at bind time (a
-        // bare literal `1` is). This must be a clean error cursor — previously it reached a
-        // validate-time throw and aborted under -fno-exceptions.
+        // Column-vs-column so the numeric side isn't coerced to boolean at bind time (unlike a bare literal);
+        // this must be a clean error, not a validate-time throw aborting under -fno-exceptions.
         auto cur = exec("SELECT id FROM TestDatabase.flags WHERE ok = id;");
         REQUIRE_FALSE(cur->is_success());
     }
@@ -1822,21 +1491,16 @@ TEST_CASE("integration::cpp::test_subqueries::bool_numeric_coercion") {
     {
         auto cur = exec("SELECT id FROM TestDatabase.flags WHERE ok = true;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 1); // only id=1 has ok=true
+        REQUIRE(cur->size() == 1);
         REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tier-1: a compound (UNION) SELECT silently dropped its trailing ORDER BY /
-// LIMIT / OFFSET (gram.y attaches them to the SETOP node, and the transformer
-// early-returned the bare union before lowering them). Now they are applied.
-// ---------------------------------------------------------------------------
+// Tier-1: a compound SELECT dropped its trailing ORDER BY/LIMIT/OFFSET -- gram.y hangs them on the SETOP
+// node and the transformer returned before lowering them.
 TEST_CASE("integration::cpp::test_subqueries::union_order_by_limit") {
-    auto config = test_create_config("/tmp/test_subqueries/union_order_by_limit");
+    auto config = test_create_config(integration_fixture_path("test_subqueries/union_order_by_limit"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1845,7 +1509,6 @@ TEST_CASE("integration::cpp::test_subqueries::union_order_by_limit") {
 
     INFO("UNION ALL with ORDER BY DESC + LIMIT keeps only the top-N in order");
     {
-        // dept1 ids {1,2}, dept2 ids {3,4}; UNION ALL = {1,2,3,4}; ORDER BY id DESC = {4,3,2,1}; LIMIT 2 = {4,3}
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s,
                                            "SELECT id FROM TestDatabase.Employees WHERE dept_id = 1 "
@@ -1853,14 +1516,13 @@ TEST_CASE("integration::cpp::test_subqueries::union_order_by_limit") {
                                            "SELECT id FROM TestDatabase.Employees WHERE dept_id = 2 "
                                            "ORDER BY id DESC LIMIT 2;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 2); // was 4 (all rows) before the fix
+        REQUIRE(cur->size() == 2);
         REQUIRE(cur->value(0, 0).value<int64_t>() == 4);
         REQUIRE(cur->value(0, 1).value<int64_t>() == 3);
     }
 
     INFO("UNION ALL with ORDER BY ASC + LIMIT + OFFSET skips correctly");
     {
-        // {1,2,3,4} ORDER BY id ASC OFFSET 1 LIMIT 2 = {2,3}
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s,
                                            "SELECT id FROM TestDatabase.Employees WHERE dept_id = 1 "
@@ -1886,7 +1548,6 @@ TEST_CASE("integration::cpp::test_subqueries::union_order_by_limit") {
 
     INFO("WITH on a compound UNION is visible to the arms (was dropped with the tail clauses)");
     {
-        // The CTE `e` is referenced by the first UNION arm; register_with_ctes must run before the arms.
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s,
                                            "WITH e AS (SELECT id FROM TestDatabase.Employees WHERE dept_id = 1) "
@@ -1895,22 +1556,17 @@ TEST_CASE("integration::cpp::test_subqueries::union_order_by_limit") {
                                            "SELECT id FROM TestDatabase.Employees WHERE dept_id = 2 "
                                            "ORDER BY id;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 4); // {1,2} from the CTE arm + {3,4}
+        REQUIRE(cur->size() == 4);
         REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
         REQUIRE(cur->value(0, 3).value<int64_t>() == 4);
     }
 }
 
-// ---------------------------------------------------------------------------
-// F5: positional ORDER BY <int> maps to the n-th output column, on a plain
-// SELECT and over a UNION (PostgreSQL). Previously a bare integer in ORDER BY
-// errored ("Unknown node type in ORDER BY" / "supports only column references").
-// ---------------------------------------------------------------------------
+// F5: positional ORDER BY <int> names the n-th output column; a bare integer used to error
+// "Unknown node type in ORDER BY".
 TEST_CASE("integration::cpp::test_subqueries::positional_order_by") {
-    auto config = test_create_config("/tmp/test_subqueries/positional_order_by");
+    auto config = test_create_config(integration_fixture_path("test_subqueries/positional_order_by"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1927,8 +1583,8 @@ TEST_CASE("integration::cpp::test_subqueries::positional_order_by") {
         auto cur = exec("SELECT dept_id, name FROM TestDatabase.Employees ORDER BY 1;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 10);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 1); // dept 1 first
-        REQUIRE(cur->value(0, 9).value<int64_t>() == 5); // dept 5 last
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
+        REQUIRE(cur->value(0, 9).value<int64_t>() == 5);
     }
 
     INFO("plain SELECT: ORDER BY 1 DESC orders by the first output column descending");
@@ -1936,12 +1592,11 @@ TEST_CASE("integration::cpp::test_subqueries::positional_order_by") {
         auto cur = exec("SELECT dept_id, name FROM TestDatabase.Employees ORDER BY 1 DESC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 10);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 5); // dept 5 first
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 5);
     }
 
     INFO("plain SELECT: ORDER BY 2 orders by the second output column");
     {
-        // salary ascending -> lowest salary (Frank, 40000) first.
         auto cur = exec("SELECT name, salary FROM TestDatabase.Employees ORDER BY 2;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 10);
@@ -1951,7 +1606,6 @@ TEST_CASE("integration::cpp::test_subqueries::positional_order_by") {
 
     INFO("UNION: positional ORDER BY 1 orders the deduped output by its first column");
     {
-        // distinct dept_ids {1,2,3,4,5}; ORDER BY 1 -> ascending.
         auto cur = exec("SELECT dept_id FROM TestDatabase.Employees "
                         "UNION SELECT dept_id FROM TestDatabase.Employees ORDER BY 1;");
         REQUIRE(cur->is_success());
@@ -1967,18 +1621,10 @@ TEST_CASE("integration::cpp::test_subqueries::positional_order_by") {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tier-1: a sub-query result was compacted from cursor->chunks().front() only,
-// so an IN-list past DEFAULT_VECTOR_CAPACITY (1024) — or a multi-branch
-// UNION ALL that keeps each branch as its own chunk — was silently truncated.
-// Now the compacters span every chunk (PostgreSQL: IN (SELECT ...) is an
-// unbounded semi-join).
-// ---------------------------------------------------------------------------
+// Tier-1: chunks().front()-only compaction silently truncated an IN-list past 1024 rows or a multi-chunk UNION ALL.
 TEST_CASE("integration::cpp::test_subqueries::in_subquery_spans_all_chunks") {
-    auto config = test_create_config("/tmp/test_subqueries/in_subquery_spans_all_chunks");
+    auto config = test_create_config(integration_fixture_path("test_subqueries/in_subquery_spans_all_chunks"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1991,7 +1637,6 @@ TEST_CASE("integration::cpp::test_subqueries::in_subquery_spans_all_chunks") {
         REQUIRE(dispatcher->execute_sql(s, "CREATE TABLE TestDatabase.big (id bigint);")->is_success());
     }
     {
-        // 1100 ids (1..1100) — more than one 1024-row chunk.
         std::string ins = "INSERT INTO TestDatabase.big (id) VALUES ";
         for (int i = 1; i <= 1100; ++i) {
             ins += "(" + std::to_string(i) + ")";
@@ -2005,14 +1650,12 @@ TEST_CASE("integration::cpp::test_subqueries::in_subquery_spans_all_chunks") {
         REQUIRE(dispatcher->execute_sql(s, "CREATE TABLE TestDatabase.probe (v bigint);")->is_success());
     }
     {
-        // v = 1050 lives ONLY in the tail past the first 1024-row chunk.
         auto s = otterbrix::session_id_t();
         REQUIRE(dispatcher->execute_sql(s, "INSERT INTO TestDatabase.probe (v) VALUES (1050);")->is_success());
     }
 
     INFO("IN sub-query returning >1024 rows is not truncated at the first chunk");
     {
-        // v=1050 matches only if the IN-list includes ids past 1024 (was: truncated to 1..1024 -> 0).
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(
             s,
@@ -2023,8 +1666,7 @@ TEST_CASE("integration::cpp::test_subqueries::in_subquery_spans_all_chunks") {
 
     INFO("scalar sub-query with 2 rows split across chunks still errors (not chunk-0's value)");
     {
-        // A UNION ALL keeps each branch as its own chunk; a scalar `=` sub-query must see BOTH rows and
-        // error (">1 row"), not silently take the first chunk's single value.
+        // A scalar `=` sub-query must see both UNION ALL chunks, not just the first, and error.
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s,
                                            "SELECT v FROM TestDatabase.probe WHERE v = "
@@ -2034,17 +1676,10 @@ TEST_CASE("integration::cpp::test_subqueries::in_subquery_spans_all_chunks") {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tier-1: a recursive CTE with UNION (DISTINCT) was driven as UNION ALL — the
-// `all` flag was dropped at plan-gen, so duplicate rows were emitted and cyclic
-// graphs ran to the recursion-depth cap. Now UNION de-duplicates the working
-// set + result against every emitted row.
-// ---------------------------------------------------------------------------
+// Tier-1: recursive UNION (DISTINCT) ran as UNION ALL -- duplicate rows, and cyclic graphs hit the depth cap.
 TEST_CASE("integration::cpp::test_subqueries::recursive_cte_union_distinct") {
-    auto config = test_create_config("/tmp/test_subqueries/recursive_cte_union_distinct");
+    auto config = test_create_config(integration_fixture_path("test_subqueries/recursive_cte_union_distinct"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -2057,7 +1692,6 @@ TEST_CASE("integration::cpp::test_subqueries::recursive_cte_union_distinct") {
         REQUIRE(dispatcher->execute_sql(s, "CREATE TABLE TestDatabase.edges (src bigint, dst bigint);")->is_success());
     }
     {
-        // Diamond DAG: 1->2, 1->3, 2->4, 3->4. Node 4 is reachable by TWO paths.
         auto s = otterbrix::session_id_t();
         REQUIRE(dispatcher->execute_sql(s, "INSERT INTO TestDatabase.edges (src, dst) VALUES (1,2),(1,3),(2,4),(3,4);")
                     ->is_success());
@@ -2065,7 +1699,6 @@ TEST_CASE("integration::cpp::test_subqueries::recursive_cte_union_distinct") {
 
     INFO("recursive UNION de-duplicates the diamond node reachable by two paths");
     {
-        // reachable-from-1 = {1,2,3,4}; UNION collapses the two paths to 4 -> 4 rows.
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s,
                                            "WITH RECURSIVE reach AS ("
@@ -2074,7 +1707,7 @@ TEST_CASE("integration::cpp::test_subqueries::recursive_cte_union_distinct") {
                                            "  SELECT e.dst FROM TestDatabase.edges e JOIN reach r ON e.src = r.node"
                                            ") SELECT node FROM reach;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 4); // was 5 (node 4 twice) under the UNION-ALL-only driver
+        REQUIRE(cur->size() == 4);
     }
 
     INFO("the same shape as UNION ALL keeps both paths (control)");
@@ -2087,21 +1720,15 @@ TEST_CASE("integration::cpp::test_subqueries::recursive_cte_union_distinct") {
                                            "  SELECT e.dst FROM TestDatabase.edges e JOIN reach r ON e.src = r.node"
                                            ") SELECT node FROM reach;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 5); // node 4 reached via both 2 and 3
+        REQUIRE(cur->size() == 5);
     }
 }
 
-// ---------------------------------------------------------------------------
-// F2: DISTINCT / recursive-UNION dedup uses the engine's canonical typed
-// hash + cells_equal, NOT a lossy 6-significant-digit ostringstream key with a
-// default:"?" arm. The old key collapsed FLOAT/DOUBLE at 6 sig-digits and every
-// 128-bit / DECIMAL / nested value to "?", silently dropping distinct rows.
-// ---------------------------------------------------------------------------
+// F2: DISTINCT/recursive-UNION dedup must use the canonical typed hash + cells_equal, not a lossy
+// 6-sig-digit ostringstream key — the old key collapsed FLOAT/DOUBLE and 128-bit/DECIMAL values to "?".
 TEST_CASE("integration::cpp::test_subqueries::distinct_dedup_fidelity") {
-    auto config = test_create_config("/tmp/test_subqueries/distinct_dedup_fidelity");
+    auto config = test_create_config(integration_fixture_path("test_subqueries/distinct_dedup_fidelity"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -2114,9 +1741,6 @@ TEST_CASE("integration::cpp::test_subqueries::distinct_dedup_fidelity") {
 
     INFO("DISTINCT over a DOUBLE column keeps values that differ beyond 6 significant digits");
     {
-        // 1000000.0, 1000001.0, 1000002.0 all round to "1e+06" at ostringstream's
-        // default 6-sig-digit precision, so the old string key collapsed them to ONE
-        // row. cells_equal compares the actual doubles -> 3 distinct (+ the repeat).
         REQUIRE(exec("CREATE TABLE TestDatabase.dvals (v double);")->is_success());
         REQUIRE(exec("INSERT INTO TestDatabase.dvals (v) VALUES "
                      "(1000000.0),(1000001.0),(1000002.0),(1000000.0);")
@@ -2126,18 +1750,11 @@ TEST_CASE("integration::cpp::test_subqueries::distinct_dedup_fidelity") {
         REQUIRE(cur->size() == 3);
     }
 
-    // NOTE: a DISTINCT over a 128-bit column (numeric width>18 -> INT128, hugeint, uuid)
-    // would exercise the extended hash switches + cells_equal's INT128 leg, but DECIMAL-128
-    // COLUMN support has further gaps (INSERT / decimal conversion) outside this fix's scope
-    // — such a DISTINCT aborted before this change too (its typed output chunk hit the same
-    // unsized-INT128 assert). The hash-switch + complex_logical_type::size/align extensions
-    // here remove the latent throw/abort the canonical hash path would otherwise hit.
+    // NOTE: a DISTINCT over a 128-bit column (INT128/hugeint/uuid) would exercise the same hash extension,
+    // but DECIMAL-128 column support has other gaps (INSERT/conversion) outside this fix's scope.
 
     INFO("recursive UNION (DISTINCT) over DOUBLE node ids keeps distinct nodes (no 6-digit collapse)");
     {
-        // Diamond over DOUBLE node ids: 1000000 -> {1000001,1000002} -> 1000003 (reached
-        // by two paths). reach = {1000000,1000001,1000002,1000003} = 4 distinct nodes. The
-        // old 6-sig-digit key collapsed all four to "1e+06" -> 1 row; cells_equal keeps 4.
         REQUIRE(exec("CREATE TABLE TestDatabase.fedges (src double, dst double);")->is_success());
         REQUIRE(exec("INSERT INTO TestDatabase.fedges (src, dst) VALUES "
                      "(1000000.0, 1000001.0), (1000000.0, 1000002.0), "
@@ -2153,17 +1770,10 @@ TEST_CASE("integration::cpp::test_subqueries::distinct_dedup_fidelity") {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tier-1: a leading WITH (CTE) on a DML statement was dropped — only the SELECT
-// transformer registered withClause, so `FROM cte` in a DELETE/UPDATE/INSERT
-// fell through to a base-table lookup (silent-wrong or error). Now the DML
-// transformers register the WITH first.
-// ---------------------------------------------------------------------------
+// Tier-1: a leading WITH on DML was dropped, so `FROM cte` fell through to a base-table lookup.
 TEST_CASE("integration::cpp::test_subqueries::with_before_dml") {
-    auto config = test_create_config("/tmp/test_subqueries/with_before_dml");
+    auto config = test_create_config(integration_fixture_path("test_subqueries/with_before_dml"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -2180,7 +1790,6 @@ TEST_CASE("integration::cpp::test_subqueries::with_before_dml") {
 
     INFO("WITH before DELETE: the CTE feeds the DELETE predicate (was dropped)");
     {
-        // c = staged, flagged ids {1,3}; delete t rows whose id is in c -> t left with {2,4}.
         REQUIRE(exec("WITH c AS (SELECT id FROM TestDatabase.staging WHERE flag = 1) "
                      "DELETE FROM TestDatabase.t WHERE id IN (SELECT id FROM c);")
                     ->is_success());
@@ -2199,14 +1808,13 @@ TEST_CASE("integration::cpp::test_subqueries::with_before_dml") {
                     ->is_success());
         auto cur = exec("SELECT COUNT(*) FROM TestDatabase.dst;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 2); // ids {1,3}
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 2);
     }
 
     INFO("WITH before UPDATE: the CTE feeds the UPDATE predicate");
     {
         REQUIRE(exec("CREATE TABLE TestDatabase.u (id bigint);")->is_success());
         REQUIRE(exec("INSERT INTO TestDatabase.u (id) VALUES (1),(2),(3);")->is_success());
-        // c = {1,3}; rows of u with id in c become 99 -> u = {99, 2, 99}.
         REQUIRE(exec("WITH c AS (SELECT id FROM TestDatabase.staging WHERE flag = 1) "
                      "UPDATE TestDatabase.u SET id = 99 WHERE id IN (SELECT id FROM c);")
                     ->is_success());
@@ -2217,35 +1825,22 @@ TEST_CASE("integration::cpp::test_subqueries::with_before_dml") {
 
     INFO("a data-modifying CTE (WITH x AS (DELETE ...)) is rejected cleanly, not a bad cast");
     {
-        // Deferred feature: register_with_ctes errors instead of casting a DeleteStmt ctequery to SelectStmt.
         auto cur = exec("WITH c AS (DELETE FROM TestDatabase.u RETURNING id) SELECT id FROM c;");
         REQUIRE(cur->is_error());
     }
 }
 
-// ---------------------------------------------------------------------------
-// LIMIT unification: operator_limit is the SINGLE authoritative LIMIT/OFFSET
-// operator for EVERY SELECT shape, inserted ABOVE DISTINCT / GROUP / JOIN /
-// SORT whenever the window is effective. These lock in three shapes that were
-// previously wrong because the SCAN was capped before dedup / before the
-// filter, plus the shapes that were already correct and must stay correct.
-// ---------------------------------------------------------------------------
+// LIMIT unification: operator_limit is the SINGLE authoritative LIMIT/OFFSET operator for every SELECT
+// shape, inserted ABOVE DISTINCT/GROUP/JOIN/SORT whenever the window is effective.
 
-// (1) Plain `SELECT DISTINCT <col> ... LIMIT/OFFSET` — the scan is NOT capped
-// before dedup; the window is applied to the fully-deduplicated stream. With
-// ORDER BY it is full sort + dedup, THEN the window.
 TEST_CASE("integration::cpp::test_subqueries::distinct_limit_offset") {
-    auto config = test_create_config("/tmp/test_subqueries/distinct_limit_offset");
+    auto config = test_create_config(integration_fixture_path("test_subqueries/distinct_limit_offset"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
     INFO("setup");
     { setup_subquery_db(dispatcher); }
-
-    // Distinct dept_ids across the 10 employees = {1,2,3,4,5} (5 distinct values).
 
     INFO("SELECT DISTINCT dept_id LIMIT 3 returns exactly 3 distinct rows (was < 3: scan capped pre-dedup)");
     {
@@ -2266,7 +1861,6 @@ TEST_CASE("integration::cpp::test_subqueries::distinct_limit_offset") {
 
     INFO("SELECT DISTINCT dept_id ORDER BY dept_id LIMIT 3 returns the 3 smallest distinct dept_ids in order");
     {
-        // Full sort + dedup, THEN the window: {1,2,3,4,5} -> {1,2,3}.
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT DISTINCT dept_id FROM TestDatabase.Employees "
@@ -2295,17 +1889,11 @@ TEST_CASE("integration::cpp::test_subqueries::distinct_limit_offset") {
     }
 }
 
-// (2) A NON-pushable WHERE predicate (column-vs-column: is_pure_compare -> false
-// because both operands are keys, so it routes through operator_match, NOT a
-// pushable disk table_filter_t) where only the TAIL rows match. The inner
-// full_scan must stay UNLIMITED so the filter is not starved of matching rows;
-// operator_limit applies the window to the FILTERED stream. Was: the inner scan
-// was capped at LIMIT n (the head rows) -> the tail matches were never read.
+// A non-pushable WHERE (column-vs-column, routes through operator_match) where only tail rows
+// match: the inner scan must stay unlimited so LIMIT windows the filtered stream, not a capped scan.
 TEST_CASE("integration::cpp::test_subqueries::nonpushable_where_limit_tail") {
-    auto config = test_create_config("/tmp/test_subqueries/nonpushable_where_limit_tail");
+    auto config = test_create_config(integration_fixture_path("test_subqueries/nonpushable_where_limit_tail"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -2316,8 +1904,6 @@ TEST_CASE("integration::cpp::test_subqueries::nonpushable_where_limit_tail") {
 
     exec("CREATE DATABASE TestDatabase;");
     REQUIRE(exec("CREATE TABLE TestDatabase.tail_match (a bigint, b bigint);")->is_success());
-    // 6 HEAD rows never match (a=100 > b); 4 TAIL rows match (a=1 < b=100). `a < b` is a
-    // column-vs-column compare -> non-pushable -> operator_match over an unlimited scan.
     REQUIRE(exec("INSERT INTO TestDatabase.tail_match (a, b) VALUES "
                  "(100, 1),(100, 2),(100, 3),(100, 4),(100, 5),(100, 6),"
                  "(1, 100),(1, 100),(1, 100),(1, 100);")
@@ -2345,15 +1931,9 @@ TEST_CASE("integration::cpp::test_subqueries::nonpushable_where_limit_tail") {
     }
 }
 
-// (3) Regressions: shapes that were ALREADY correct must stay correct under the
-// unified operator_limit — a plain LIMIT, a pushable `col = const` LIMIT (disk
-// table_filter_t path), a GROUP BY LIMIT (whole groups, correct counts), and a
-// UNION ALL LIMIT (the merged concatenation windowed once).
 TEST_CASE("integration::cpp::test_subqueries::limit_unification_regressions") {
-    auto config = test_create_config("/tmp/test_subqueries/limit_unification_regressions");
+    auto config = test_create_config(integration_fixture_path("test_subqueries/limit_unification_regressions"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -2370,7 +1950,6 @@ TEST_CASE("integration::cpp::test_subqueries::limit_unification_regressions") {
 
     INFO("pushable WHERE col = const LIMIT n (disk table_filter_t path) still caps correctly");
     {
-        // dept_id = 3 has two employees (Eve, Frank); LIMIT 1 -> 1 row.
         auto session = otterbrix::session_id_t();
         auto cur =
             dispatcher->execute_sql(session, "SELECT name FROM TestDatabase.Employees WHERE dept_id = 3 LIMIT 1;");
@@ -2380,8 +1959,6 @@ TEST_CASE("integration::cpp::test_subqueries::limit_unification_regressions") {
 
     INFO("GROUP BY ... LIMIT n returns n whole groups with correct counts");
     {
-        // 5 groups (dept 1..5), each count 2; LIMIT 2 -> 2 whole groups, each count 2
-        // (not a windowed scan's partial count).
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT dept_id, count(*) AS c FROM TestDatabase.Employees "
@@ -2395,7 +1972,6 @@ TEST_CASE("integration::cpp::test_subqueries::limit_unification_regressions") {
 
     INFO("UNION ALL ... LIMIT n windows the merged concatenation once");
     {
-        // dept 1 (2 rows) UNION ALL dept 2 (2 rows) = 4 rows; LIMIT 3 -> 3.
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT dept_id FROM TestDatabase.Employees WHERE dept_id = 1 "
@@ -2407,13 +1983,11 @@ TEST_CASE("integration::cpp::test_subqueries::limit_unification_regressions") {
     }
 }
 
-// (4) Top-level `VALUES (...) LIMIT/OFFSET` — previously a hard parse error. The
-// literal rows are wrapped in an aggregate so operator_limit windows them.
+// Top-level VALUES (...) LIMIT/OFFSET: the literal rows are wrapped in an aggregate so
+// operator_limit can window them.
 TEST_CASE("integration::cpp::test_subqueries::values_top_level_limit") {
-    auto config = test_create_config("/tmp/test_subqueries/values_top_level_limit");
+    auto config = test_create_config(integration_fixture_path("test_subqueries/values_top_level_limit"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -2440,14 +2014,9 @@ TEST_CASE("integration::cpp::test_subqueries::values_top_level_limit") {
     }
 }
 
-// #563: a SubLink as a comparison operand is lowered by kind. `flag = EXISTS (SELECT ...)`
-// must compare against the BOOLEAN result of EXISTS (compact_to_bool_value), not the first value of the
-// sub-query (the pre-fix silent-wrong behaviour).
 TEST_CASE("integration::cpp::test_subqueries::exists_operand") {
-    auto config = test_create_config("/tmp/test_subqueries/exists_operand");
+    auto config = test_create_config(integration_fixture_path("test_subqueries/exists_operand"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -2477,13 +2046,9 @@ TEST_CASE("integration::cpp::test_subqueries::exists_operand") {
     }
 }
 
-// #559: scalar sub-queries in value position — projected in the SELECT list and as an arithmetic
-// operand — plus a NULL/0-row scalar sub-query returning a typed NULL row.
 TEST_CASE("integration::cpp::test_subqueries::value_position_scalar") {
-    auto config = test_create_config("/tmp/test_subqueries/value_position_scalar");
+    auto config = test_create_config(integration_fixture_path("test_subqueries/value_position_scalar"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -2511,14 +2076,14 @@ TEST_CASE("integration::cpp::test_subqueries::value_position_scalar") {
     {
         auto cur = run("SELECT x + (SELECT max(x) FROM db.t) FROM db.t;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 3); // 10+30, 20+30, 30+30
+        REQUIRE(cur->size() == 3);
     }
     INFO("Reentrancy: outer aggregate + value-position sub-query in the same list");
     {
         auto cur = run("SELECT sum(x) + (SELECT count(*) FROM db.t) FROM db.t;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 63); // sum=60 + count=3
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 63);
     }
     INFO("M4-NULL: a 0-row scalar sub-query projects a typed NULL row");
     {
@@ -2529,13 +2094,9 @@ TEST_CASE("integration::cpp::test_subqueries::value_position_scalar") {
     }
 }
 
-// #559/#563: a bare NULL literal in value position is typed (PG unknown->text) instead of rejected,
-// and `NULL::T` is a proper NULL rather than a garbage non-null value.
 TEST_CASE("integration::cpp::test_subqueries::null_literal_typing") {
-    auto config = test_create_config("/tmp/test_subqueries/null_literal_typing");
+    auto config = test_create_config(integration_fixture_path("test_subqueries/null_literal_typing"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -2572,14 +2133,9 @@ TEST_CASE("integration::cpp::test_subqueries::null_literal_typing") {
     }
 }
 
-// #563: the LIKE/ILIKE family for `<op> ANY (SELECT ...)` and scalar ILIKE. LIKE ANY
-// converts each sub-query pattern via like_to_regex (%/_), ILIKE ANY matches case-insensitively, NOT LIKE
-// ANY negates per element before the ANY fold; scalar ILIKE / NOT ILIKE match case-insensitively.
 TEST_CASE("integration::cpp::test_subqueries::like_ilike_family") {
-    auto config = test_create_config("/tmp/test_subqueries/like_ilike_family");
+    auto config = test_create_config(integration_fixture_path("test_subqueries/like_ilike_family"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -2593,7 +2149,6 @@ TEST_CASE("integration::cpp::test_subqueries::like_ilike_family") {
     REQUIRE(run("CREATE TABLE db.t (id bigint, s string);")->is_success());
     REQUIRE(run("INSERT INTO db.t (id, s) VALUES (1, 'apple'), (2, 'Banana'), (3, 'cherry');")->is_success());
     REQUIRE(run("CREATE TABLE db.pat (p string);")->is_success());
-    // UPPERCASE glob patterns: LIKE ANY (case-sensitive) matches none; ILIKE ANY matches apple + cherry.
     REQUIRE(run("INSERT INTO db.pat (p) VALUES ('A%'), ('C%');")->is_success());
 
     INFO("LIKE ANY (case-sensitive, %/_): uppercase patterns match no lowercase row");
@@ -2629,14 +2184,9 @@ TEST_CASE("integration::cpp::test_subqueries::like_ilike_family") {
     }
 }
 
-// A COMPARISON ANY/ALL over a sub-query (= ANY / IN / > ALL / <> ALL) is pushed into the disk
-// scan as a conjunction of per-element constant_filters (the array is bound once — non-correlated). An empty
-// sub-query leaves the conjunction empty: `= ANY(empty)` matches nothing, `<> ALL(empty)` matches everything.
 TEST_CASE("integration::cpp::test_subqueries::any_subquery_disk_pushdown") {
-    auto config = test_create_config("/tmp/test_subqueries/any_subquery_disk_pushdown");
+    auto config = test_create_config(integration_fixture_path("test_subqueries/any_subquery_disk_pushdown"));
     test_clear_directory(config);
-    config.disk.on = true;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -2656,7 +2206,7 @@ TEST_CASE("integration::cpp::test_subqueries::any_subquery_disk_pushdown") {
     {
         auto cur = run("SELECT id FROM db.t WHERE v = ANY (SELECT k FROM db.keys);");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 2); // v in {20, 40}
+        REQUIRE(cur->size() == 2);
     }
     INFO("IN (SELECT ...)");
     {
@@ -2668,13 +2218,13 @@ TEST_CASE("integration::cpp::test_subqueries::any_subquery_disk_pushdown") {
     {
         auto cur = run("SELECT id FROM db.t WHERE v > ALL (SELECT k FROM db.keys);");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 1); // only 50 > both 20 and 40
+        REQUIRE(cur->size() == 1);
     }
     INFO("<> ALL (SELECT ...) == NOT IN");
     {
         auto cur = run("SELECT id FROM db.t WHERE v <> ALL (SELECT k FROM db.keys);");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 3); // 10, 30, 50
+        REQUIRE(cur->size() == 3);
     }
     INFO("= ANY (empty sub-query) matches nothing");
     {
@@ -2690,14 +2240,9 @@ TEST_CASE("integration::cpp::test_subqueries::any_subquery_disk_pushdown") {
     }
 }
 
-// POSITIVE LIKE/ILIKE ANY|ALL over a sub-query pushes into the disk scan as a conjunction of
-// regex_filter_t (per-element, pmr::string pattern, RE2, no logical_value_t). ILIKE case-insensitivity is
-// a filter option. NOT LIKE ANY stays in-memory (per-element negation is not a conjunction of positives).
 TEST_CASE("integration::cpp::test_subqueries::like_any_disk_pushdown") {
-    auto config = test_create_config("/tmp/test_subqueries/like_any_disk_pushdown");
+    auto config = test_create_config(integration_fixture_path("test_subqueries/like_any_disk_pushdown"));
     test_clear_directory(config);
-    config.disk.on = true;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -2712,7 +2257,6 @@ TEST_CASE("integration::cpp::test_subqueries::like_any_disk_pushdown") {
     REQUIRE(run("INSERT INTO db.t (id, s) VALUES (1, 'apple'), (2, 'Banana'), (3, 'cherry'), (4, 'avocado');")
                 ->is_success());
     REQUIRE(run("CREATE TABLE db.pat (p string);")->is_success());
-    // UPPERCASE patterns: case-sensitive LIKE matches nothing; case-insensitive ILIKE matches a*/c* rows.
     REQUIRE(run("INSERT INTO db.pat (p) VALUES ('A%'), ('C%');")->is_success());
 
     INFO("LIKE ANY (disk, case-sensitive): uppercase patterns match no lowercase row");
@@ -2725,7 +2269,7 @@ TEST_CASE("integration::cpp::test_subqueries::like_any_disk_pushdown") {
     {
         auto cur = run("SELECT id FROM db.t WHERE s ILIKE ANY (SELECT p FROM db.pat);");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 3); // apple, cherry, avocado (Banana starts with B)
+        REQUIRE(cur->size() == 3);
     }
     INFO("ILIKE ALL (disk): no row starts with both A and C");
     {
@@ -2739,30 +2283,26 @@ TEST_CASE("integration::cpp::test_subqueries::like_any_disk_pushdown") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 4);
     }
-    // NULL subject: `NULL NOT LIKE p` is NULL -> excluded (the is_not_null guard). Without it the disk
-    // regex reads NULL as empty, negates to true, and would wrongly include the row.
+    // NULL subject: `NULL NOT LIKE p` is NULL -> excluded (is_not_null guard); without it the disk regex
+    // reads NULL as empty, negates to true, and wrongly includes the row.
     REQUIRE(run("INSERT INTO db.t (id, s) VALUES (99, NULL);")->is_success());
     INFO("NOT LIKE ANY excludes a NULL subject");
     {
         auto cur = run("SELECT id FROM db.t WHERE s NOT LIKE ANY (SELECT p FROM db.pat);");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 4); // still 4 — the NULL row is excluded
+        REQUIRE(cur->size() == 4);
     }
     INFO("NOT LIKE ALL excludes a NULL subject");
     {
         auto cur = run("SELECT id FROM db.t WHERE s NOT LIKE ALL (SELECT p FROM db.pat);");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 4); // apple/Banana/cherry/avocado each fail all patterns; NULL excluded
+        REQUIRE(cur->size() == 4);
     }
 }
 
-// #559/#563: a bare NULL literal in one UNION branch reconciles to the other branch's type
-// (PostgreSQL), instead of a spurious "UNION column type mismatch". A genuine text-vs-int mismatch still errors.
 TEST_CASE("integration::cpp::test_subqueries::union_null_reconcile") {
-    auto config = test_create_config("/tmp/test_subqueries/union_null_reconcile");
+    auto config = test_create_config(integration_fixture_path("test_subqueries/union_null_reconcile"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -2780,7 +2320,7 @@ TEST_CASE("integration::cpp::test_subqueries::union_null_reconcile") {
     {
         auto cur = run("SELECT id FROM db.one UNION SELECT NULL FROM db.one;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 2); // {1, NULL}
+        REQUIRE(cur->size() == 2);
     }
     INFO("NULL on the left branch reconciles to the right (bigint) type");
     {
@@ -2790,22 +2330,11 @@ TEST_CASE("integration::cpp::test_subqueries::union_null_reconcile") {
     }
 }
 
-// ---------------------------------------------------------------------------
-// SORT ELIMINATION for a provably-unobservable sub-query ORDER BY.
-//
-// An `ORDER BY` WITHOUT `LIMIT`/`OFFSET` inside a sub-query whose result is
-// COMPACTED (IN / ANY / ALL via compact_to_array_value, EXISTS via
-// compact_to_bool_value, scalar via compact_to_single_value) is dead work: it
-// builds a full blocking sort feeding an order-insensitive membership / exists /
-// single-value test. The transformer strips such a bare sort from the flattened
-// sub-query. HARD guard: a sort carrying a LIMIT/OFFSET (top-N) is OBSERVABLE and
-// MUST stay, and a TOP-LEVEL ORDER BY (the main query) is never touched.
-// ---------------------------------------------------------------------------
+// A sub-query's ORDER BY is dead work when its result is compacted (IN/ANY/ALL, EXISTS, scalar),
+// so the transformer strips it; it survives when it carries LIMIT/OFFSET (an observable top-N).
 TEST_CASE("integration::cpp::test_subqueries::sort_elimination") {
-    auto config = test_create_config("/tmp/test_subqueries/sort_elimination");
+    auto config = test_create_config(integration_fixture_path("test_subqueries/sort_elimination"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -2820,7 +2349,6 @@ TEST_CASE("integration::cpp::test_subqueries::sort_elimination") {
 
     INFO("IN (SELECT ... ORDER BY) is order-insensitive: identical result, sub-query Sort stripped");
     {
-        // High-budget departments (budget > 60000): 1,4,5 -> 6 employees, same as without ORDER BY.
         auto cur = run("SELECT name FROM TestDatabase.Employees "
                        "WHERE dept_id IN (SELECT id FROM TestDatabase.Departments "
                        "                  WHERE budget > 60000 ORDER BY id);");
@@ -2832,13 +2360,12 @@ TEST_CASE("integration::cpp::test_subqueries::sort_elimination") {
                       "                  WHERE budget > 60000 ORDER BY id);");
         REQUIRE(ex->is_success());
         const auto t = plan_text(ex);
-        REQUIRE(contains(t, "InitPlan"));   // the sub-query is still flattened + present
-        REQUIRE_FALSE(contains(t, "Sort")); // its bare ORDER BY was eliminated
+        REQUIRE(contains(t, "InitPlan"));
+        REQUIRE_FALSE(contains(t, "Sort"));
     }
 
     INFO("EXISTS (SELECT ... ORDER BY) is order-insensitive: identical result, sub-query Sort stripped");
     {
-        // Sub-query has rows -> EXISTS true for every one of the 10 outer rows.
         auto cur = run("SELECT name FROM TestDatabase.Employees "
                        "WHERE EXISTS (SELECT id FROM TestDatabase.Departments ORDER BY id);");
         REQUIRE(cur->is_success());
@@ -2854,7 +2381,6 @@ TEST_CASE("integration::cpp::test_subqueries::sort_elimination") {
 
     INFO("ANY (SELECT ... ORDER BY) is order-insensitive: identical result, sub-query Sort stripped");
     {
-        // salary = ANY (dept-1 salaries {90000,80000}) -> Alice, Bob (2 rows), order-independent.
         auto cur = run("SELECT name FROM TestDatabase.Employees "
                        "WHERE salary = ANY (SELECT salary FROM TestDatabase.Employees "
                        "                    WHERE dept_id = 1 ORDER BY salary);");
@@ -2870,7 +2396,6 @@ TEST_CASE("integration::cpp::test_subqueries::sort_elimination") {
 
     INFO("NEGATIVE: scalar (SELECT ... ORDER BY ... LIMIT 1) is a top-N — the Sort is OBSERVABLE and stays");
     {
-        // Highest salary via ORDER BY salary DESC LIMIT 1 = 90000 -> Alice.
         auto cur = run("SELECT name FROM TestDatabase.Employees "
                        "WHERE salary = (SELECT salary FROM TestDatabase.Employees "
                        "                ORDER BY salary DESC LIMIT 1);");
@@ -2882,7 +2407,7 @@ TEST_CASE("integration::cpp::test_subqueries::sort_elimination") {
                       "WHERE salary = (SELECT salary FROM TestDatabase.Employees "
                       "                ORDER BY salary DESC LIMIT 1);");
         REQUIRE(ex->is_success());
-        REQUIRE(contains(plan_text(ex), "Sort")); // top-N sort MUST survive
+        REQUIRE(contains(plan_text(ex), "Sort"));
     }
 
     INFO("NEGATIVE: a TOP-LEVEL ORDER BY (the main query, not a sub-query) is never touched");
@@ -2890,34 +2415,18 @@ TEST_CASE("integration::cpp::test_subqueries::sort_elimination") {
         auto cur = run("SELECT name FROM TestDatabase.Employees ORDER BY salary DESC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 10);
-        REQUIRE(cur->value(0, 0).value<std::string_view>() == "Alice"); // highest salary first — order preserved
+        REQUIRE(cur->value(0, 0).value<std::string_view>() == "Alice");
 
         auto ex = run("EXPLAIN SELECT name FROM TestDatabase.Employees ORDER BY salary DESC;");
         REQUIRE(ex->is_success());
         REQUIRE(contains(plan_text(ex), "Sort"));
     }
 }
-// ---------------------------------------------------------------------------
-// Three-valued (NULL) semantics for  x IN / NOT IN (subquery)  when the
-// sub-query result set contains a NULL element.
-//
-// PostgreSQL SQL semantics (membership is three-valued):
-//   x IN (S):
-//     * x = some non-NULL element         -> TRUE  (row kept)
-//     * no non-NULL match, S has a NULL    -> UNKNOWN -> row DROPPED
-//     * no element match, S has no NULL    -> FALSE -> row dropped
-//   x NOT IN (S):
-//     * x = some non-NULL element         -> FALSE -> dropped
-//     * no non-NULL match, S has a NULL    -> UNKNOWN -> row DROPPED (classic surprise)
-//     * no element match, S has no NULL    -> TRUE  -> row KEPT
-//   S empty: IN -> FALSE for all x ; NOT IN -> TRUE for all x.
-//   x itself NULL: UNKNOWN -> dropped (unless S empty for NOT IN, which is TRUE).
-// ---------------------------------------------------------------------------
+// IN/NOT IN over an S holding NULL is three-valued: a non-match is UNKNOWN, not the naive opposite.
+// S empty: IN -> FALSE, NOT IN -> TRUE for every x.
 TEST_CASE("integration::cpp::test_subqueries::in_not_in_null_semantics") {
-    auto config = test_create_config("/tmp/test_subqueries/in_not_in_null_semantics");
+    auto config = test_create_config(integration_fixture_path("test_subqueries/in_not_in_null_semantics"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -2932,17 +2441,14 @@ TEST_CASE("integration::cpp::test_subqueries::in_not_in_null_semantics") {
         REQUIRE(run("CREATE DATABASE nulldb;")->is_success());
         REQUIRE(run("CREATE TABLE nulldb.outer (id bigint, x bigint);")->is_success());
         REQUIRE(run("INSERT INTO nulldb.outer (id, x) VALUES (1, 10), (2, 20), (3, 30);")->is_success());
-        // needles.v = {10, NULL, 30}
         REQUIRE(run("CREATE TABLE nulldb.needles (id bigint, v bigint);")->is_success());
         REQUIRE(run("INSERT INTO nulldb.needles (id, v) VALUES (1, 10), (2, NULL), (3, 30);")->is_success());
-        // pure = {10, 30} (no NULL)
         REQUIRE(run("CREATE TABLE nulldb.pure (id bigint, v bigint);")->is_success());
         REQUIRE(run("INSERT INTO nulldb.pure (id, v) VALUES (1, 10), (2, 30);")->is_success());
     }
 
     INFO("IN with a NULL element: x=10 and x=30 match; x=20 is UNKNOWN -> dropped");
     {
-        // {10,20,30} IN {10,NULL,30}: 10 -> TRUE, 20 -> UNKNOWN(drop), 30 -> TRUE => 2 rows.
         auto cur = run("SELECT id FROM nulldb.outer WHERE x IN (SELECT v FROM nulldb.needles);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
@@ -2950,7 +2456,6 @@ TEST_CASE("integration::cpp::test_subqueries::in_not_in_null_semantics") {
 
     INFO("NOT IN with a NULL element: yields ZERO rows (no non-matched row survives the NULL)");
     {
-        // {10,20,30} NOT IN {10,NULL,30}: 10 -> FALSE, 20 -> UNKNOWN(drop), 30 -> FALSE => 0 rows.
         auto cur = run("SELECT id FROM nulldb.outer WHERE x NOT IN (SELECT v FROM nulldb.needles);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 0);
@@ -2958,7 +2463,6 @@ TEST_CASE("integration::cpp::test_subqueries::in_not_in_null_semantics") {
 
     INFO("IN over a no-NULL set is a plain FALSE for the non-member (regression)");
     {
-        // {10,20,30} IN {10,30}: 10,30 -> TRUE; 20 -> FALSE => 2 rows.
         auto cur = run("SELECT id FROM nulldb.outer WHERE x IN (SELECT v FROM nulldb.pure);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
@@ -2966,7 +2470,6 @@ TEST_CASE("integration::cpp::test_subqueries::in_not_in_null_semantics") {
 
     INFO("NOT IN over a no-NULL set keeps the non-member (regression)");
     {
-        // {10,20,30} NOT IN {10,30}: only 20 -> TRUE => 1 row (id=2).
         auto cur = run("SELECT id FROM nulldb.outer WHERE x NOT IN (SELECT v FROM nulldb.pure);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
@@ -3001,20 +2504,11 @@ TEST_CASE("integration::cpp::test_subqueries::in_not_in_null_semantics") {
     }
 }
 
-// ---------------------------------------------------------------------------
-// The pending internal-aggregate stash (an aggregate hidden inside SELECT-
-// list arithmetic, e.g. `SELECT sum(x) + 1`) must SURVIVE a sub-query transform
-// that runs BEFORE the stash is flushed into this level's group (WHERE is
-// transformed between the SELECT list and the flush). The inner
-// transform_select epilogue flushes + clears the stash; without a save/restore
-// around every inner transform the OUTER aggregate leaks into the INNER group
-// and the outer projection references a never-computed column.
-// ---------------------------------------------------------------------------
+// The pending internal-aggregate stash must survive a sub-query transform that runs before it flushes --
+// without a save/restore around each inner transform, the outer aggregate leaks into the inner group.
 TEST_CASE("integration::cpp::test_subqueries::outer_aggregate_survives_where_subquery") {
-    auto config = test_create_config("/tmp/test_subqueries/outer_agg_where_subquery");
+    auto config = test_create_config(integration_fixture_path("test_subqueries/outer_agg_where_subquery"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -3029,7 +2523,6 @@ TEST_CASE("integration::cpp::test_subqueries::outer_aggregate_survives_where_sub
 
     INFO("scalar (EXPR) sub-query as a WHERE comparison operand");
     {
-        // avg(budget) = 66000; salaries above it: 90000+80000+70000+75000+72000 = 387000.
         auto cur = run("SELECT SUM(salary) + 10 AS s FROM TestDatabase.Employees "
                        "WHERE salary > (SELECT AVG(budget) FROM TestDatabase.Departments);");
         REQUIRE(cur->is_success());
@@ -3039,7 +2532,6 @@ TEST_CASE("integration::cpp::test_subqueries::outer_aggregate_survives_where_sub
 
     INFO("EXISTS sub-query in WHERE (speculative semi/anti probe + flatten path)");
     {
-        // EXISTS is true -> all 10 rows aggregated: sum(salary) = 652000.
         auto cur = run("SELECT SUM(salary) + 10 AS s FROM TestDatabase.Employees "
                        "WHERE EXISTS (SELECT id FROM TestDatabase.Departments WHERE budget > 60000);");
         REQUIRE(cur->is_success());
@@ -3049,7 +2541,6 @@ TEST_CASE("integration::cpp::test_subqueries::outer_aggregate_survives_where_sub
 
     INFO("ANY sub-query in WHERE");
     {
-        // High-budget depts {1,4,5}: 90000+80000+70000+65000+75000+72000 = 452000.
         auto cur = run("SELECT SUM(salary) + 10 AS s FROM TestDatabase.Employees "
                        "WHERE dept_id = ANY (SELECT id FROM TestDatabase.Departments WHERE budget > 60000);");
         REQUIRE(cur->is_success());
@@ -3058,17 +2549,10 @@ TEST_CASE("integration::cpp::test_subqueries::outer_aggregate_survives_where_sub
     }
 }
 
-// ---------------------------------------------------------------------------
-// DISTINCT ON makes a sub-query ORDER BY OBSERVABLE without any LIMIT — it
-// keeps the FIRST row per ON-key group in ORDER BY order. The bare-sort
-// elimination for order-insensitively compacted sub-queries (IN / ANY / ALL /
-// EXISTS / scalar) must NOT strip the sort under a DISTINCT ON aggregate.
-// ---------------------------------------------------------------------------
+// DISTINCT ON makes a sub-query's ORDER BY observable without LIMIT; sort elimination must not strip it here.
 TEST_CASE("integration::cpp::test_subqueries::distinct_on_subquery_sort_kept") {
-    auto config = test_create_config("/tmp/test_subqueries/distinct_on_subquery_sort");
+    auto config = test_create_config(integration_fixture_path("test_subqueries/distinct_on_subquery_sort"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -3080,8 +2564,7 @@ TEST_CASE("integration::cpp::test_subqueries::distinct_on_subquery_sort_kept") {
 
     REQUIRE(run("CREATE DATABASE db;")->is_success());
     REQUIRE(run("CREATE TABLE db.events (k bigint, ts bigint, v bigint);")->is_success());
-    // Insertion order = oldest-ts first, so a stripped sort would keep the OLDEST
-    // row per k (scan order) instead of the latest-ts row DISTINCT ON demands.
+    // Insertion order is oldest-ts first, so a wrongly-stripped sort would keep the oldest, not latest, row per k.
     REQUIRE(run("INSERT INTO db.events (k, ts, v) VALUES "
                 "(1, 1, 100), (2, 1, 300), (1, 2, 200), (2, 2, 400);")
                 ->is_success());
@@ -3094,7 +2577,6 @@ TEST_CASE("integration::cpp::test_subqueries::distinct_on_subquery_sort_kept") {
                        "(SELECT DISTINCT ON (k) v FROM db.events ORDER BY k, ts DESC);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
-        // Latest-ts rows are v=200 (k=1) and v=400 (k=2), in either output order.
         const auto a = cur->value(0, 0).value<int64_t>();
         const auto b = cur->value(0, 1).value<int64_t>();
         const bool latest_pair = (a == 200 && b == 400) || (a == 400 && b == 200);

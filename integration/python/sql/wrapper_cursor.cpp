@@ -89,8 +89,9 @@ namespace {
     }
 } // namespace
 
-wrapper_cursor::wrapper_cursor(pointer cursor, otterbrix::wrapper_dispatcher_t* dispatcher)
-    : ptr_(std::move(cursor))
+wrapper_cursor::wrapper_cursor(pointer cursor, otterbrix::wrapper_dispatcher_t* dispatcher, otterbrix::spaces_ptr space)
+    : space_(std::move(space))
+    , ptr_(std::move(cursor))
     , dispatcher_(dispatcher) {}
 
 void wrapper_cursor::close() { close_ = true; }

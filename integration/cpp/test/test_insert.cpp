@@ -1,3 +1,4 @@
+#include "integration_fixture_path.hpp"
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <components/expressions/aggregate_expression.hpp>
@@ -32,10 +33,8 @@ using key = expressions::key_t;
 static constexpr int kNumInserts = 100;
 
 TEST_CASE("integration::cpp::test_collection::insert") {
-    auto config = test_create_config("/tmp/test_collection_insert");
+    auto config = test_create_config(integration_fixture_path("test_collection_insert"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
 
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();

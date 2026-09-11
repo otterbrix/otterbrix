@@ -16,8 +16,11 @@ namespace components::operators {
 #ifdef DEV_MODE
     namespace {
         std::atomic<uint64_t> g_delete_scanned_columns{0};
+        delete_wal_apply_gate_t* g_delete_wal_apply_gate = nullptr;
     } // namespace
     uint64_t delete_scanned_columns() noexcept { return g_delete_scanned_columns.load(std::memory_order_relaxed); }
+    void dev_set_delete_wal_apply_gate(delete_wal_apply_gate_t* gate) { g_delete_wal_apply_gate = gate; }
+    delete_wal_apply_gate_t* dev_delete_wal_apply_gate() { return g_delete_wal_apply_gate; }
 #endif
 
     operator_delete::operator_delete(std::pmr::memory_resource* resource,
@@ -68,7 +71,6 @@ namespace components::operators {
         }
         std::optional<vector::data_chunk_t> produced;
         if (condition_ == expressions::condition_kind::computed) {
-            // lazy ininialized graph (if consume() is never called, there is no point in building it)
             if (!graph_) {
                 auto built = expressions::build_condition_graph(resource_,
                                                                 pipeline_context->parameters.parameters,
@@ -90,10 +92,7 @@ namespace components::operators {
         }
         const vector::vector_t* decisions = produced.has_value() ? &produced->data.front() : nullptr;
 
-        // Matched ABSOLUTE row-ids of THIS batch (kept separate so the index mirror
-        // pairs each staged old-row with its own id, regardless of batch order).
         vector::vector_t batch_ids(resource_, types::logical_type::BIGINT, chunk.size());
-        // Indexing of matched rows into `chunk`, for the gathered old-row / RETURNING copies.
         vector::indexing_vector_t matched_indexing(resource_);
         matched_indexing.reset(chunk.size());
 
@@ -120,9 +119,7 @@ namespace components::operators {
             modified_->append(static_cast<size_t>(batch_ids.data<int64_t>()[i]));
         }
 
-        // Stage the matched OLD scan rows + their absolute ids for the index mirror
-        // (bounded: only matched rows). The merged staged chunk row k pairs with
-        // index_old_row_ids_[k], so manager_index_t::delete_rows reads them aligned.
+        // Staged chunk row k pairs with index_old_row_ids_[k]; manager_index_t::delete_rows relies on that alignment.
         {
             data_chunk_t old_matched(resource_, types, index);
             chunk.copy(old_matched, matched_indexing, index);
@@ -133,8 +130,6 @@ namespace components::operators {
             }
         }
 
-        // Stage matched RETURNING rows: gather the matched subset, then project the
-        // requested columns straight into capacity-bounded chunks.
         if (collect_returning) {
             data_chunk_t affected(resource_, types, index);
             chunk.copy(affected, matched_indexing, index);
@@ -158,17 +153,7 @@ namespace components::operators {
     core::error_t operator_delete::consume_join_batch_(pipeline::context_t* pipeline_context,
                                                        const vector::data_chunk_t& chunk_left,
                                                        const chunks_vector_t& right_chunks) {
-        // DELETE ... USING shared core (R6: one implementation, two entry points).
-        // Probes ONE LEFT (target) scan batch against the fully-materialized RIGHT
-        // (USING) build chunks: a semi-join (a target row is deleted once regardless
-        // of how many USING rows match). Per matched LEFT row it stages the SAME
-        // bounded state the simple path does — matched ABSOLUTE row-ids in modified_,
-        // the matched OLD left rows + their ids for the index mirror, and (per batch,
-        // gathered in lockstep) the projected RETURNING rows from the matched
-        // left+right pair. The RIGHT side is taken PER-CHUNK (chunks_vector_t),
-        // never merged into one data_chunk_t — a USING/build table > DEFAULT_VECTOR_
-        // CAPACITY would overflow a single chunk's capacity assert. push() calls it
-        // per LEFT batch. await_async_and_resume drains it all.
+        // RIGHT stays per-chunk: merging it could overflow a single chunk past DEFAULT_VECTOR_CAPACITY.
         using components::vector::data_chunk_t;
         ensure_simple_init_();
         if (chunk_left.size() == 0) {
@@ -176,8 +161,6 @@ namespace components::operators {
         }
         const bool collect_returning = !returning_.empty();
         auto types_left = chunk_left.types();
-        // Right column types come from the first non-empty right chunk (every chunk
-        // shares the build-side schema); an all-empty build side yields no matches.
         std::pmr::vector<types::complex_logical_type> types_right(resource_);
         for (const auto& rc : right_chunks) {
             if (rc.size() > 0) {
@@ -212,29 +195,15 @@ namespace components::operators {
             }
         }
 
-        // Matched ABSOLUTE row-ids of THIS batch (kept separate so the index mirror
-        // pairs each staged old-row with its own id, regardless of batch order).
         vector::vector_t batch_ids(resource_, types::logical_type::BIGINT, chunk_left.size());
-        // Index into chunk_left of each matched target row (loop-relative) — for the
-        // matched OLD-row / RETURNING left gathers, in lockstep with batch_ids.
         vector::indexing_vector_t matched_indexing(resource_);
         matched_indexing.reset(chunk_left.size());
-        // The matched RIGHT (USING) rows gathered PER-ROW in lockstep with the matched
-        // target rows, so a joined RETURNING column reads the matched pair. Built
-        // row-by-row (NOT via an indexing gather across the small right chunk): a
-        // target batch can match far more rows than the right chunk holds (every left
-        // row joins the same handful of right rows), so an indexing-copy whose
-        // source_count exceeds the right chunk size is invalid — copy the chosen right
-        // row into slot `index` directly instead. Bounded by chunk_left.size()
-        // (<=DEFAULT_VECTOR_CAPACITY): the semi-join takes at most one right row per
-        // left row.
+        // Gathered per-row, not via an indexing gather — a batch can match more right rows than the chunk holds.
         data_chunk_t affected_right(resource_, types_right, chunk_left.size());
 
         size_t index = 0;
         for (size_t i = 0; i < chunk_left.size(); i++) {
-            // Affected-row bound (DELETE ... USING ... LIMIT n): stop matching once the
-            // running matched total (already-flushed matches in matched_total_ + this
-            // batch's index) reaches the bound. -1 = unbounded.
+            // Stops once matched_total_ + this batch's index reaches affected_bound_; -1 = unbounded.
             if (affected_bound_ >= 0 && matched_total_ + index >= static_cast<uint64_t>(affected_bound_)) {
                 break;
             }
@@ -261,10 +230,7 @@ namespace components::operators {
                     if (decisions != nullptr && (decisions->is_null(j) || !decisions->get_value<bool>(j))) {
                         continue;
                     }
-                    // Storage / index delete keys on the ABSOLUTE table row id of the
-                    // matched left row, NOT the left-chunk loop index — the two diverge
-                    // once the table has gaps, multiple row groups, or a non-zero
-                    // row-group start. Mirror the simple branch's DICTIONARY fallback.
+                    // Keys on the absolute row id, not the loop index — they diverge with gaps or row groups.
                     int64_t abs_id;
                     if (chunk_left.data.front().get_vector_type() == vector::vector_type::DICTIONARY) {
                         abs_id = static_cast<int64_t>(chunk_left.data.front().indexing().get_index(i));
@@ -280,7 +246,6 @@ namespace components::operators {
                     }
                     index++;
                     vector::validate_chunk_capacity(affected_right, index);
-                    // Semi-join: stop after the first matching USING row.
                     row_matched = true;
                     break;
                 }
@@ -289,8 +254,6 @@ namespace components::operators {
                 }
             }
         }
-        // Count matched left rows at MATCH time (covers this batch, flushed or not) so the
-        // bound survives mid-pump flushes that clear modified_.
         matched_total_ += index;
         if (index == 0) {
             return core::error_t::no_error();
@@ -301,10 +264,6 @@ namespace components::operators {
             modified_->append(static_cast<size_t>(batch_ids.data<int64_t>()[i]));
         }
 
-        // Stage the matched OLD left rows + their absolute ids for the index mirror,
-        // exactly as the simple (consume_batch_) path does — the merged staged chunk
-        // row k pairs with index_old_row_ids_[k], so manager_index_t::delete_rows
-        // reads them aligned, even when streaming leaves left_->output() empty.
         {
             data_chunk_t old_matched(resource_, types_left, index);
             chunk_left.copy(old_matched, matched_indexing, index);
@@ -315,11 +274,6 @@ namespace components::operators {
             }
         }
 
-        // Stage matched RETURNING rows: gather the matched LEFT subset (valid: index
-        // <= chunk_left.size()), pair it with the per-row-built matched RIGHT chunk,
-        // then project the matched rows with the joined right chunk. Appended to
-        // returning_staged_, which await_async_and_resume drains exactly like the
-        // simple path.
         if (collect_returning) {
             data_chunk_t affected_left(resource_, types_left, index);
             chunk_left.copy(affected_left, matched_indexing, index);
@@ -344,15 +298,8 @@ namespace components::operators {
 
     core::error_t
     operator_delete::push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& /*out*/) {
-        // STREAMING DML SINK: fold one scan batch into the matched-id / index-old /
-        // RETURNING staging. Emits nothing (out stays empty); await_async_and_resume
-        // drains the staged state into the single WAL->storage->index commit.
-        // USING-join shape: probe the LEFT batch against the materialized RIGHT
-        // (USING) build chunk; otherwise the simple predicate-scan fold.
 #ifdef DEV_MODE
         for (const auto& column : input.data) {
-            // A placeholder for an unprojected column carries no buffer at all; a real
-            // (even all-NULL) column does. Counting buffers counts what the scan read.
             if (column.data() != nullptr || column.auxiliary() != nullptr) {
                 g_delete_scanned_columns.fetch_add(1, std::memory_order_relaxed);
             }
@@ -368,30 +315,23 @@ namespace components::operators {
         using components::vector::data_chunk_t;
         using components::vector::vector_t;
 
-        // The executor drives this INCREMENTALLY — once per "buffer full" during
-        // the pump (dml_flush_is_final==false) and once at finalize (==true). Each call
-        // flushes the currently-buffered matched-id slice; only the final call emits the
-        // RETURNING / affected-count output and mark_executed. threshold==0 collapses to
-        // exactly one final call.
+        // Called once per buffer-full during the pump and once at finalize (dml_flush_is_final); only the
+        // final call emits output and mark_executed. threshold==0 collapses to a single final call.
         const bool is_final = ctx->dml_flush_is_final;
 
-        // Catalog-delete mode: delete pg_catalog rows by (oid_col_idx, target_oid)
-        // via the WAL-first delete_pg_catalog_rows, then record the catalog table
-        // on ctx->pg_catalog_delete_tables so operator_commit_transaction reverts/
-        // publishes the MVCC tombstone for it. Bypasses the predicate-scan +
-        // storage_delete_rows + WAL physical_delete + index path entirely. It buffers
-        // nothing (buffered_rows()==0), so it is a single-shot sink — never mid-flushed.
+        // Bypasses the predicate-scan/storage/index path; pg_catalog_delete_tables lets
+        // operator_commit_transaction revert/publish the MVCC tombstone. Buffers nothing, so never mid-flushed.
         if (oid_col_idx_ >= 0) {
             components::execution_context_t exec_ctx{ctx->session,
                                                      ctx->txn,
                                                      ctx->execution_context.timezone_offset,
                                                      table_oid_};
-            auto [_c, cf] = actor_zeta::send(ctx->disk_address,
-                                             &services::disk::manager_disk_t::delete_pg_catalog_rows,
-                                             exec_ctx,
-                                             table_oid_,
-                                             oid_col_idx_,
-                                             target_oid_);
+            auto [_c, cf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                        &services::disk::manager_disk_t::delete_pg_catalog_rows,
+                                                        exec_ctx,
+                                                        table_oid_,
+                                                        oid_col_idx_,
+                                                        target_oid_);
             co_await std::move(cf);
             if (ctx->txn.transaction_id != 0) {
                 ctx->pg_catalog_delete_tables.insert(table_oid_);
@@ -400,16 +340,8 @@ namespace components::operators {
             co_return;
         }
 
-        // Flush the buffered matched-id slice, if any. The divergent DELETE storage op
-        // (WAL-first physical_delete, then storage_delete_rows, then the index mirror)
-        // lives in the NAMED coroutine lambda `op`, which yields a flush_outcome_t;
-        // record_flush() then does the COMMON post-storage bookkeeping (constraint
-        // accumulation when a parent constraint sits above the DML). DELETE writes its
-        // OWN WAL (unlike INSERT, where the disk agent owns it) and appends
-        // nothing, so the outcome carries no append range.
+        // DELETE writes its own WAL, unlike INSERT where the disk agent owns it.
         if (modified_ && modified_->size() > 0) {
-            // See operator_insert: "an index manager exists" holds for every table, so the real
-            // question is whether the TABLE has an index.
             const bool mirror_index = table_has_indexes_ &&
                                       ctx->index_address != actor_zeta::address_t::empty_address() &&
                                       !index_old_chunks_.empty();
@@ -423,13 +355,26 @@ namespace components::operators {
                 auto& ids = modified_->ids();
                 const size_t modified_size = modified_->size();
 
-                // 1. WAL-FIRST: physical_delete BEFORE the storage mark, so a crash
-                //    between the two replays the delete (uncommitted deletes are
-                //    filtered by replay). The row_ids come from the upstream scan, so
-                //    they are fully known before any storage mutation — unlike INSERT
-                //    (whose final count depends on dedup), DELETE has no post-op
-                //    dependency, so it adopts the same WAL-first ordering the catalog
-                //    delete uses (delete_pg_catalog_rows_inner).
+                // Storage first, then WAL (same order operator_update uses): a mutation's WAL id must never
+                // be allocated before the mutation is applied, or a checkpoint can advance the durable floor
+                // past a delete never folded into the .otbx (test_delete_floor_resurrection).
+                vector_t row_ids(res, types::logical_type::BIGINT, modified_size);
+                for (size_t i = 0; i < modified_size; i++) {
+                    row_ids.data<int64_t>()[i] = static_cast<int64_t>(ids[i]);
+                }
+                auto [_d, df] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                            &services::disk::manager_disk_t::storage_delete_rows,
+                                                            exec_ctx,
+                                                            table_oid_,
+                                                            std::move(row_ids),
+                                                            static_cast<uint64_t>(modified_size));
+                auto deleted_r = co_await std::move(df);
+                if (deleted_r.has_error()) {
+                    co_return dml_detail::flush_outcome_t{deleted_r.error(), false, 0, 0};
+                }
+
+                // The delete marker recorded before this error check lets the abort tail un-stamp the rows
+                // on a refused WAL record, so no committed delete lacks its journal record.
                 if (ctx->wal_address != actor_zeta::address_t::empty_address()) {
                     std::pmr::vector<int64_t> wal_row_ids(res);
                     wal_row_ids.reserve(modified_size);
@@ -437,52 +382,41 @@ namespace components::operators {
                         wal_row_ids.push_back(static_cast<int64_t>(ids[i]));
                     }
                     auto count = static_cast<uint64_t>(wal_row_ids.size());
-                    // See operator_insert comment on db_oid temporary hardcode.
                     constexpr auto db_oid = components::catalog::well_known_oid::main_database;
-                    auto [_w, wf] = actor_zeta::send(ctx->wal_address,
-                                                     &services::wal::manager_wal_replicate_t::write_physical_delete,
-                                                     ctx->session,
-                                                     table_oid_,
-                                                     std::move(wal_row_ids),
-                                                     count,
-                                                     ctx->txn.transaction_id,
-                                                     db_oid);
-                    auto wal_id = co_await std::move(wf);
-                    auto [_df2, dff] = actor_zeta::send(ctx->disk_address,
-                                                        &services::disk::manager_disk_t::flush,
-                                                        ctx->session,
-                                                        wal_id);
-                    ctx->add_pending_disk_future(std::move(dff));
+                    auto [_w, wf] =
+                        actor_zeta::otterbrix::send(ctx->wal_address,
+                                                    &services::wal::manager_wal_replicate_t::write_physical_delete,
+                                                    ctx->session,
+                                                    table_oid_,
+                                                    std::move(wal_row_ids),
+                                                    count,
+                                                    ctx->txn.transaction_id,
+                                                    db_oid);
+                    auto wal_result = co_await std::move(wf);
+                    if (wal_result.has_error()) {
+                        co_return dml_detail::flush_outcome_t{wal_result.error(), false, 0, 0};
+                    }
                 }
 
-                // 2. storage_delete_rows — mark the rows deleted under this txn (MVCC).
-                vector_t row_ids(res, types::logical_type::BIGINT, modified_size);
-                for (size_t i = 0; i < modified_size; i++) {
-                    row_ids.data<int64_t>()[i] = static_cast<int64_t>(ids[i]);
+#ifdef DEV_MODE
+                while (auto* gate = dev_delete_wal_apply_gate()) {
+                    if (!gate->hold(table_oid_)) {
+                        break;
+                    }
+                    auto [_g, gf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                                &services::disk::manager_disk_t::storage_total_rows,
+                                                                ctx->session,
+                                                                table_oid_);
+                    auto ping = co_await std::move(gf);
+                    if (ping.has_error()) {
+                        break;
+                    }
                 }
-                auto [_d, df] = actor_zeta::send(ctx->disk_address,
-                                                 &services::disk::manager_disk_t::storage_delete_rows,
-                                                 exec_ctx,
-                                                 table_oid_,
-                                                 std::move(row_ids),
-                                                 static_cast<uint64_t>(modified_size));
-                co_await std::move(df);
+#endif
 
-                // 3. Mirror to index (old data). BOTH paths stage the MATCHED old rows +
-                //    their absolute ids into index_old_chunks_/index_old_row_ids_: the
-                //    SIMPLE path via consume_batch_ (push()), the USING-join path in its
-                //    match loop. So the index delete_rows always receives the matched
-                //    rows paired with their own ids — never the first-N scan rows — even
-                //    when streaming leaves left_->output() empty.
+                // Both paths stage the matched old rows into index_old_chunks_/index_old_row_ids_, so
+                // delete_rows always gets the matched rows paired with their own ids, never the first-N scan rows.
                 if (mirror_index) {
-                    // Send an OWNED deep copy of the staged old rows across the mailbox.
-                    // record_flush() (below) deep-copies index_old_chunks_ into
-                    // constraint_input_ when a parent constraint is present, so the
-                    // staged chunks must stay executor-owned — never handed to the
-                    // manager_index actor by move. Deep-copy each
-                    // (<=DEFAULT_VECTOR_CAPACITY) chunk into fresh FLAT vectors instead.
-                    // index_old_row_ids_ carries no shared buffers, so it is moved; the
-                    // copied chunks stay aligned to it row-for-row.
                     chunks_vector_t index_old_copy(res);
                     index_old_copy.reserve(index_old_chunks_.size());
                     for (const auto& c : index_old_chunks_) {
@@ -492,31 +426,25 @@ namespace components::operators {
                         }
                         index_old_copy.emplace_back(std::move(owned));
                     }
-                    auto [_ix, ixf] = actor_zeta::send(ctx->index_address,
-                                                       &services::index::manager_index_t::delete_rows,
-                                                       exec_ctx,
-                                                       table_oid_,
-                                                       std::move(index_old_copy),
-                                                       std::move(index_old_row_ids_));
+                    auto [_ix, ixf] = actor_zeta::otterbrix::send(ctx->index_address,
+                                                                  &services::index::manager_index_t::delete_rows,
+                                                                  exec_ctx,
+                                                                  table_oid_,
+                                                                  std::move(index_old_copy),
+                                                                  std::move(index_old_row_ids_));
                     auto index_error = co_await std::move(ixf);
                     if (index_error.contains_error()) {
-                        // Rows removed from the table but still present in the index: the next
-                        // index scan would return them. Fail the statement instead.
                         co_return dml_detail::flush_outcome_t{std::move(index_error), false, 0, 0};
                     }
                 }
 
                 affected_rows_ += static_cast<uint64_t>(modified_size);
-                // DELETE appends nothing: no append range on the outcome.
                 co_return dml_detail::flush_outcome_t{core::error_t::no_error(), false, 0, 0};
             };
 
             auto outcome = co_await op(resource_);
-            // The rows a parent fk_cascade must observe are the OLD (about-to-delete)
-            // rows it reads to find referencing children — index_old_chunks_. Pass them
-            // as constraint_rows; record_flush accumulates them into constraint_input_
-            // ONLY when dml_has_parent_constraint (bounded memory otherwise). The deep
-            // copy for the index send above left index_old_chunks_ intact for this read.
+            // fk_cascade needs the OLD rows (index_old_chunks_) to find referencing children; record_flush
+            // accumulates them into constraint_input_ only when dml_has_parent_constraint, to bound memory.
             auto err = dml_detail::record_flush(ctx,
                                                 resource_,
                                                 table_oid_,
@@ -524,10 +452,8 @@ namespace components::operators {
                                                 ctx->dml_has_parent_constraint,
                                                 constraint_input_,
                                                 index_old_chunks_);
-            // Record the delete marker ONCE across all flushes: COMMIT/ABORT key the
-            // MVCC swap/revert on the txn id, not on per-flush ranges. Recorded BEFORE
-            // the flush-error check so a late flush failure still leaves the marker for
-            // the failed-statement abort tail to un-stamp the already-stamped marks.
+            // Recorded once per txn, before the flush-error check, so a late failure still leaves the marker
+            // for the abort tail to un-stamp; COMMIT/ABORT key the MVCC swap/revert on the txn id, not the flush.
             if (!delete_marker_recorded_) {
                 ctx->dml_deletes.push_back(components::table::dml_delete_range_t{table_oid_, ctx->txn.transaction_id});
                 delete_marker_recorded_ = true;
@@ -539,34 +465,57 @@ namespace components::operators {
                 co_return;
             }
 
-            // Clear the flushed slice (bounded memory). Keep returning_staged_ — it is
-            // the RETURNING accumulator, drained only on the final call.
             modified_ = operators::make_operator_write_data(resource_);
             index_old_chunks_.clear();
             index_old_row_ids_.clear();
         }
 
-        // Mid-pump flush: emit nothing, keep accumulating for the next call.
         if (!is_final) {
             co_return;
         }
 
-        // FINAL: with RETURNING, drain the staged RETURNING accumulator. Without
-        // RETURNING, emit a typed chunk batch whose cardinalities sum to the total
-        // affected-row count accumulated across every flush. Nothing deleted and no
-        // RETURNING => leave output_ null (a 0-affected DELETE emits no result rows).
+        // A 0-affected DELETE without RETURNING leaves output_ null, emitting no result rows.
         if (!returning_.empty()) {
-            if (!returning_staged_.empty()) {
-                set_output(make_operator_data(resource_, std::move(returning_staged_)));
+            if (returning_staged_.empty()) {
+                // Nothing matched, but we still have to return correct columns
+                auto [_rt, rtf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                              &services::disk::manager_disk_t::storage_types,
+                                                              ctx->session,
+                                                              table_oid_);
+                auto returning_types = co_await std::move(rtf);
+                if (returning_types.has_error()) {
+                    set_error(returning_types.error());
+                    mark_failed();
+                    co_return;
+                }
+                data_chunk_t empty(resource_, returning_types.value(), 0);
+                empty.set_cardinality(0);
+                auto proj = evaluate_projection(resource_,
+                                                returning_,
+                                                &empty,
+                                                ctx->parameters,
+                                                ctx->execution_context,
+                                                &returning_graph_);
+                if (proj.has_error()) {
+                    set_error(proj.error());
+                    mark_failed();
+                    co_return;
+                }
+                returning_staged_.emplace_back(std::move(proj.value()));
             }
+            set_output(make_operator_data(resource_, std::move(returning_staged_)));
         } else if (affected_rows_ > 0) {
-            auto [_t, tf] = actor_zeta::send(ctx->disk_address,
-                                             &services::disk::manager_disk_t::storage_types,
-                                             ctx->session,
-                                             table_oid_);
-            auto types = co_await std::move(tf);
-            // The result carries only the affected-row count as cardinality (no row data),
-            // emitted as ≤DEFAULT_VECTOR_CAPACITY-row chunks shaped by the table's types.
+            auto [_t, tf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                        &services::disk::manager_disk_t::storage_types,
+                                                        ctx->session,
+                                                        table_oid_);
+            auto types_r = co_await std::move(tf);
+            if (types_r.has_error()) {
+                set_error(types_r.error());
+                mark_failed();
+                co_return;
+            }
+            auto types = std::move(types_r.value());
             set_output(make_operator_data(resource_,
                                           dml_detail::make_affected_count_chunks(resource_, affected_rows_, types)));
         }

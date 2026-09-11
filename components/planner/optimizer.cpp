@@ -72,8 +72,8 @@ namespace components::planner {
         // Stamp a pure COUNT read-cap on the cardinality-preserving source under an
         // effective LIMIT/OFFSET (create_plan_aggregate reads it; the authoritative
         // operator_limit still windows on top). UNGATED — unlike pushdown_aggregate
-        // this is a local scan/sort hint with no owning-agent precondition, valid in
-        // in-memory mode too. AFTER pushdown_filter/rewrite_hash_joins so it sees the
+        // this is a local scan/sort hint with no owning-agent precondition, so it runs
+        // even where there is none. AFTER pushdown_filter/rewrite_hash_joins so it sees the
         // settled match/join shape.
         node = optimizer::pushdown_limit(resource, std::move(node));
 
@@ -82,9 +82,9 @@ namespace components::planner {
         // other rules is immaterial. The rule decides purely by shape (single
         // owned table, mergeable kinds, no HAVING/DISTINCT — exactly like
         // hash-join selection). The sole gate here is a hard CAPABILITY
-        // precondition, NOT a fallback/rollout flag: `can_push_to_agent` is false
-        // in disk-less (in-memory) mode, where there is NO owning agent to push
-        // to, so pushable aggregates must stay coordinator-side.
+        // precondition, NOT a fallback/rollout flag: `can_push_to_agent` is false when
+        // the executor was handed no disk-manager address, so there is NO owning agent
+        // to push to and pushable aggregates must stay coordinator-side.
         if (can_push_to_agent) {
             node = optimizer::pushdown_aggregate(resource, std::move(node));
         }
@@ -96,8 +96,8 @@ namespace components::planner {
         // column indices this rule splits on. At this
         // point key.side()/key.path() are final, so process_join's per-side split and
         // ON-key remap read the same localized indices rewrite_hash_joins detected.
-        // UNGATED: projected_cols is a scan projection HINT (empty = read all), valid
-        // in in-memory mode too — it needs no owning agent, only the resolved paths.
+        // UNGATED: projected_cols is a scan projection HINT (empty = read all) — it needs
+        // no owning agent, only the resolved paths.
         optimizer::prune_columns(node, resolves);
 
         // Host-injected final pass on the fully-optimized tree (Null Object = no-op).

@@ -1,3 +1,4 @@
+#include "integration_fixture_path.hpp"
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <string>
@@ -50,7 +51,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::group_cardinality::accepts") {
-    auto config = test_helpers::make_test_config("/tmp/group_cardinality/accepts");
+    auto config = test_helpers::make_test_config(integration_fixture_path("group_cardinality/accepts"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -77,7 +78,7 @@ TEST_CASE("integration::cpp::group_cardinality::accepts") {
 }
 
 TEST_CASE("integration::cpp::group_cardinality::rejects") {
-    auto config = test_helpers::make_test_config("/tmp/group_cardinality/rejects");
+    auto config = test_helpers::make_test_config(integration_fixture_path("group_cardinality/rejects"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);

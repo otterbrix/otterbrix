@@ -1,14 +1,26 @@
 #include <catch2/catch_approx.hpp>
+
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/base_statistics.hpp>
 #include <components/table/column_data.hpp>
 #include <components/table/column_segment.hpp>
 #include <components/table/column_state.hpp>
 #include <components/table/storage/buffer_pool.hpp>
-#include <components/table/storage/in_memory_block_manager.hpp>
+#include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
 #include <components/vector/vector.hpp>
 #include <core/file/local_file_system.hpp>
+#include <cstdio>
+#include <string>
+#include <unistd.h>
+
+namespace {
+    const std::string& statistics_db_path() {
+        static const std::string path = "/tmp/test_otterbrix_statistics_" + std::to_string(::getpid()) + ".otbx";
+        std::remove(path.c_str());
+        return path;
+    }
+} // namespace
 
 TEST_CASE("statistics: update from vector") {
     using namespace components::types;
@@ -137,7 +149,10 @@ TEST_CASE("zonemap: check_zonemap filters") {
     core::filesystem::local_file_system_t fs;
     storage::buffer_pool_t buffer_pool(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24);
     storage::standard_buffer_manager_t buffer_manager(&resource, fs, buffer_pool);
-    storage::in_memory_block_manager_t block_manager(buffer_manager, 262144);
+    // A real disk manager over a scratch file: these tests need a column without a catalog,
+    // not a storage layer that cannot do I/O.
+    storage::single_file_block_manager_t block_manager(buffer_manager, fs, statistics_db_path());
+    REQUIRE_FALSE(block_manager.create_new_database().has_error());
 
     // Create a column with data [1..100] and populate stats
     auto col = column_data_t::create_column(&resource, block_manager, 0, 0, complex_logical_type{logical_type::BIGINT});
@@ -195,7 +210,10 @@ TEST_CASE("per-segment statistics: check_segment_zonemap") {
     core::filesystem::local_file_system_t fs;
     storage::buffer_pool_t buffer_pool(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24);
     storage::standard_buffer_manager_t buffer_manager(&resource, fs, buffer_pool);
-    storage::in_memory_block_manager_t block_manager(buffer_manager, 262144);
+    // A real disk manager over a scratch file: these tests need a column without a catalog,
+    // not a storage layer that cannot do I/O.
+    storage::single_file_block_manager_t block_manager(buffer_manager, fs, statistics_db_path());
+    REQUIRE_FALSE(block_manager.create_new_database().has_error());
 
     auto col = column_data_t::create_column(&resource, block_manager, 0, 0, complex_logical_type{logical_type::BIGINT});
 
@@ -277,7 +295,10 @@ TEST_CASE("per-segment statistics: populated during append") {
     core::filesystem::local_file_system_t fs;
     storage::buffer_pool_t buffer_pool(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24);
     storage::standard_buffer_manager_t buffer_manager(&resource, fs, buffer_pool);
-    storage::in_memory_block_manager_t block_manager(buffer_manager, 262144);
+    // A real disk manager over a scratch file: these tests need a column without a catalog,
+    // not a storage layer that cannot do I/O.
+    storage::single_file_block_manager_t block_manager(buffer_manager, fs, statistics_db_path());
+    REQUIRE_FALSE(block_manager.create_new_database().has_error());
 
     auto col = column_data_t::create_column(&resource, block_manager, 0, 0, complex_logical_type{logical_type::BIGINT});
 

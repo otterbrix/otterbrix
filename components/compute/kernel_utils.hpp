@@ -30,8 +30,10 @@ namespace components::compute {
         function_registry_t* func_registry_;
     };
 
-    //TODO: remove default version, because it requires a static initialization of memory_resource
-    exec_context_t& default_exec_context();
+    // No default_exec_context(): a defaulted `ctx` backed by get_default_resource() (banned)
+    // made every unnamed-context caller share one process-wide arena -- measured at
+    // 134 allocations / 29 860 bytes for a single one-row execute(). Every caller names its
+    // resource explicitly instead.
 
     struct kernel_init_args {
         const compute_kernel& kernel;

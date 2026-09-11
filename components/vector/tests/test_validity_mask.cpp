@@ -5,23 +5,9 @@
 #include <core/resource_tracer.hpp>
 #include <memory_resource>
 
-// validity_mask_t over external buffers carries its resource
-// ==========================================================
-//
-// The pointer constructor validity_mask_t(resource, ptr) wraps an externally
-// owned bit buffer AND records the memory resource that every allocating
-// member function draws from: copy ctor, copy operator=, combine(),
-// slice(offset), and the lazy-resize paths of set()/set_invalid/set_valid.
-// The [validity-null-resource] cases assert those allocating paths on
-// pointer-constructed masks.
-//
-// Note: all_valid() is defined as !validity_mask_, so a pointer-constructed
-// mask over a non-null buffer is never "all valid" even when every bit is set;
-// copying such a mask therefore ALWAYS takes the allocating branch.
-//
-// Production callers of the pointer constructor pass the buffer manager's
-// resource (components/table/column_segment.cpp: validity_fetch_row,
-// validity_check_row, validity_append, column_segment_t::revert_append).
+// The pointer ctor validity_mask_t(resource, ptr) wraps an external buffer but still stores the
+// resource for allocating paths (copy/assign/combine/slice/lazy-resize). all_valid() means "no
+// buffer at all", so a pointer-constructed mask is never all_valid even with every bit set.
 
 using components::vector::validity_mask_t;
 
@@ -30,14 +16,8 @@ namespace {
     constexpr uint64_t entry_count = validity_mask_t::STANDARD_ENTRY_COUNT;
 } // namespace
 
-// ---------------------------------------------------------------------------
-// Control cases: safe behavior that must keep working.
-// ---------------------------------------------------------------------------
-
 TEST_CASE("validity_mask_t: pointer-constructed mask reads and writes the external buffer", "[validity-mask]") {
-    // This is exactly the column_segment.cpp usage pattern: wrap a pinned
-    // buffer and operate on bits in place. validity_mask_ is non-null, so the
-    // lazy resize/allocation paths are never taken and resource_ is unused.
+    // Matches the column_segment.cpp pattern: buffer is non-null, so lazy-allocation paths are never taken.
     auto resource = core::pmr::otterbrix_resource();
     uint64_t buffer[entry_count];
     for (auto& entry : buffer) {
@@ -46,7 +26,7 @@ TEST_CASE("validity_mask_t: pointer-constructed mask reads and writes the extern
 
     validity_mask_t mask(&resource, buffer);
     REQUIRE(mask.is_mask_set());
-    REQUIRE_FALSE(mask.all_valid()); // pointer-backed: all_valid() is pointer-null, not bit state
+    REQUIRE_FALSE(mask.all_valid());
     REQUIRE(mask.count() == test_capacity);
     REQUIRE(mask.data() == buffer);
     REQUIRE(mask.resource() == &resource);
@@ -58,7 +38,6 @@ TEST_CASE("validity_mask_t: pointer-constructed mask reads and writes the extern
     REQUIRE_FALSE(mask.row_is_valid(42));
     REQUIRE(mask.row_is_valid(41));
     REQUIRE(mask.row_is_valid(43));
-    // mutation went into the external buffer, not a private allocation
     REQUIRE((buffer[0] & (uint64_t(1) << 42)) == 0);
 
     mask.set(42, true);
@@ -69,8 +48,7 @@ TEST_CASE("validity_mask_t: pointer-constructed mask reads and writes the extern
 }
 
 TEST_CASE("validity_mask_t: copy and move of all-valid / pointer-constructed masks stay safe", "[validity-mask]") {
-    // A pointer-constructed mask over nullptr is all_valid(); copying it takes
-    // the non-allocating branch and never touches resource_.
+    // Over nullptr the mask IS all_valid(), so copying takes the non-allocating branch.
     auto resource = core::pmr::otterbrix_resource();
     validity_mask_t null_ptr_mask(&resource, static_cast<uint64_t*>(nullptr));
     REQUIRE(null_ptr_mask.all_valid());
@@ -78,7 +56,6 @@ TEST_CASE("validity_mask_t: copy and move of all-valid / pointer-constructed mas
     REQUIRE(copy.all_valid());
     REQUIRE(copy.row_is_valid(0));
 
-    // Moving a pointer-constructed mask never allocates either.
     uint64_t buffer[entry_count];
     for (auto& entry : buffer) {
         entry = components::vector::validity_data_t::MAX_ENTRY;
@@ -92,42 +69,31 @@ TEST_CASE("validity_mask_t: copy and move of all-valid / pointer-constructed mas
     REQUIRE(moved.row_is_valid(8));
 }
 
-// ---------------------------------------------------------------------------
-// Allocating paths on pointer-constructed masks: each must allocate from the
-// carried resource and leave the external buffer untouched.
-// ---------------------------------------------------------------------------
-
 TEST_CASE("validity_mask_t: copy-constructing from a pointer-constructed mask with an invalid bit",
           "[validity-null-resource]") {
-    // copy ctor (validation.cpp): other is not all_valid(), so it allocates a
-    // private validity_data_t from the carried resource and copies the bits.
     auto resource = core::pmr::otterbrix_resource();
     uint64_t buffer[entry_count];
     for (auto& entry : buffer) {
         entry = components::vector::validity_data_t::MAX_ENTRY;
     }
     validity_mask_t source(&resource, buffer);
-    source.set_invalid(uint64_t(3)); // in-place on the buffer, still fine
+    source.set_invalid(uint64_t(3));
 
     validity_mask_t copy(source);
     REQUIRE(copy.is_mask_set());
-    REQUIRE(copy.data() != buffer); // private allocation, not the external buffer
+    REQUIRE(copy.data() != buffer);
     REQUIRE_FALSE(copy.row_is_valid(3));
     REQUIRE(copy.row_is_valid(2));
     REQUIRE(copy.row_is_valid(4));
     REQUIRE(copy.count_valid(test_capacity) == test_capacity - 1);
-    // bit-for-bit equal to the source buffer
     for (uint64_t entry = 0; entry < entry_count; entry++) {
         REQUIRE(copy.data()[entry] == buffer[entry]);
     }
-    // the source still wraps the external buffer
     REQUIRE(source.data() == buffer);
 }
 
 TEST_CASE("validity_mask_t: copy-assigning between two pointer-constructed masks", "[validity-null-resource]") {
-    // copy operator= (validation.cpp) requires matching resources
-    // (assert(resource_ == other.resource_)), then allocates a private copy
-    // of the source bits — the target's external buffer is left untouched.
+    // copy operator= asserts matching resources before allocating a private copy of the source bits.
     auto resource = core::pmr::otterbrix_resource();
     uint64_t src_buffer[entry_count];
     uint64_t dst_buffer[entry_count];
@@ -144,15 +110,12 @@ TEST_CASE("validity_mask_t: copy-assigning between two pointer-constructed masks
     REQUIRE(target.row_is_valid(4));
     REQUIRE(target.row_is_valid(6));
     REQUIRE(target.count_valid(test_capacity) == test_capacity - 1);
-    REQUIRE(target.data() != src_buffer); // private copy of the source bits
-    REQUIRE(target.data() != dst_buffer); // detached from the old external buffer
+    REQUIRE(target.data() != src_buffer);
+    REQUIRE(target.data() != dst_buffer);
     REQUIRE(dst_buffer[0] == components::vector::validity_data_t::MAX_ENTRY);
 }
 
 TEST_CASE("validity_mask_t: combine() on a pointer-constructed mask", "[validity-null-resource]") {
-    // combine (validation.cpp): this is not all_valid() (pointer set) and the
-    // masks differ, so it copies its own bits into a private allocation and
-    // ANDs the other mask in. The external buffer stays untouched.
     auto resource = core::pmr::otterbrix_resource();
     uint64_t buffer[entry_count];
     for (auto& entry : buffer) {
@@ -168,14 +131,11 @@ TEST_CASE("validity_mask_t: combine() on a pointer-constructed mask", "[validity
     REQUIRE(ptr_mask.row_is_valid(0));
     REQUIRE(ptr_mask.row_is_valid(2));
     REQUIRE(ptr_mask.count_valid(test_capacity) == test_capacity - 1);
-    REQUIRE(ptr_mask.data() != buffer); // combine reallocates away from the external buffer
+    REQUIRE(ptr_mask.data() != buffer);
     REQUIRE(buffer[0] == components::vector::validity_data_t::MAX_ENTRY);
 }
 
 TEST_CASE("validity_mask_t: slice() at non-zero offset on a pointer-constructed mask", "[validity-null-resource]") {
-    // slice (validation.cpp): other is not all_valid() and offset != 0, so it
-    // builds a fresh validity_mask_t(resource(), count) and shifts the source
-    // bits into it: target bit i == source bit (offset + i).
     auto resource = core::pmr::otterbrix_resource();
     uint64_t buffer[entry_count];
     for (auto& entry : buffer) {
@@ -192,19 +152,12 @@ TEST_CASE("validity_mask_t: slice() at non-zero offset on a pointer-constructed 
     for (uint64_t row = 0; row < test_capacity - 1; row++) {
         REQUIRE(ptr_mask.row_is_valid(row) == (row != 1));
     }
-    REQUIRE(ptr_mask.data() != buffer); // sliced into a private allocation
+    REQUIRE(ptr_mask.data() != buffer);
     REQUIRE(buffer[0] == components::vector::validity_data_t::MAX_ENTRY);
 }
 
-// A validity mask must allocate ENTRIES, not rows
-// ===============================================
-//
-// The mask is a bitmap: one bit per row packed into 64-bit entries, and
-// validity_data_t::entry_count() is the conversion. Three allocation sites passed the ROW count
-// straight through instead (validation.cpp's size constructor, the lazy allocation in set(), and
-// resize()), so each reserved and filled 64 times the memory it needed: 8 KiB and 1024 stores for
-// a 1024-row mask that fits in 128 bytes and 16 stores. Over-allocation corrupts nothing, which is
-// why it survived — it showed up only as memset dominating the SSB query profile.
+// Three allocation sites once passed the row count straight through instead of entry_count(rows),
+// over-allocating harmlessly -- it only surfaced as memset dominating the SSB query profile.
 TEST_CASE("validity_mask_t allocates one entry per 64 rows, not one per row", "[validity-size]") {
     using namespace components::vector;
 
@@ -221,9 +174,6 @@ TEST_CASE("validity_mask_t allocates one entry per 64 rows, not one per row", "[
         REQUIRE(allocated > 0);
         CHECK(allocated <= expected);
 
-        // And it must still behave as a mask over `rows` rows. Note all_valid() is defined as
-        // "no buffer at all" (validation.hpp:74), so a mask that OWNS a buffer is never all_valid
-        // even with every bit set — the bits are what this checks.
         CHECK(mask.row_is_valid(rows - 1));
         mask.set_invalid(rows - 1);
         CHECK_FALSE(mask.row_is_valid(rows - 1));
@@ -231,13 +181,7 @@ TEST_CASE("validity_mask_t allocates one entry per 64 rows, not one per row", "[
     }
 }
 
-// A vector that creates its own data must not build a validity mask first
-// =======================================================================
-//
-// vector_t's constructor used to build validity_mask_t{resource, capacity} in its member-init list
-// and then, when create_data is set, call validity_.reset() in the body — discarding the buffer it
-// had just allocated and filled. Every vector on the query path takes that branch, so every one of
-// them paid an allocation and a full initialisation for nothing.
+// vector_t skips building a validity_mask_t when create_data is set (body just resets and discards it).
 TEST_CASE("a data-creating vector_t allocates no validity mask", "[validity-size]") {
     using namespace components::vector;
 
@@ -250,8 +194,6 @@ TEST_CASE("a data-creating vector_t allocates no validity mask", "[validity-size
         const uint64_t data_bytes = capacity * sizeof(int64_t);
         INFO("bytes allocated by a data-creating BIGINT vector: " << allocated << ", the data alone is " << data_bytes);
         REQUIRE(allocated > 0);
-        // The data buffer plus whatever bookkeeping the buffer carries — but no discarded mask,
-        // which would add entry_count(capacity) * 8 bytes on top.
         CHECK(allocated < data_bytes + validity_data_t::entry_count(capacity) * sizeof(uint64_t));
     }
 }

@@ -8,6 +8,8 @@
 #include <components/expressions/scalar_expression.hpp>
 #include <components/expressions/sort_expression.hpp>
 
+#include <integration/cpp/otterbrix.hpp>
+
 #include <memory>
 #include <string>
 
@@ -26,7 +28,9 @@ namespace otterbrix {
     class py_expression_t {
     public:
         py_expression_t(expression_wrapper_t expr, py_connection_t& conn);
-        py_expression_t(expression_wrapper_t expr, expression_factory_t* factory);
+        //! Chaining ctor: takes the source expression, not a bare `expression_factory_t*`,
+        //! since a factory pointer alone carries no lifetime (see the members below).
+        py_expression_t(expression_wrapper_t expr, const py_expression_t& source);
 
         ~py_expression_t();
         static void initialize(py::module_& m);
@@ -109,8 +113,34 @@ namespace otterbrix {
         static pyexpr_ptr sort_expression(components::expressions::sort_order type, const py_expression_t& expr);
 
     private:
+        //! Refuses unless still open: building a new expression dereferences the (possibly
+        //! null, after close()) space, which under NDEBUG is a plain null dereference, not an
+        //! assert. Same refusal as py_connection_t/py_relation_t::live_env().
+        py_connection_t& live_env() const;
+
+        //! Without the open check: to_string() never touches the space, so a closed
+        //! connection must still be able to print the expressions it made.
+        expression_factory_t& factory() const;
+
+    private:
+        //! The space `expr` was allocated out of, held instead of borrowed (same reason as
+        //! py_relation_t::space_ / py_result_t::space): `expr`'s pmr data lives on the space's
+        //! arena, and Python can drop the connection before this expression -- a reachable
+        //! use-after-free when it was a raw borrow. Declared first so reverse-order member
+        //! destruction frees it last, after `expr` has deallocated into it. No ref cycle:
+        //! neither py_connection_t nor otterbrix_t knows this class exists.
+        boost::intrusive_ptr<otterbrix_t> space_;
+
+        //! Held rather than borrowed, and not covered by `space_`: a CONSTANT expression is a
+        //! parameter id whose value lives in `expression_factory_t::values`, a member of the
+        //! connection object, not the arena. Measured: holding only the space made
+        //! tests/test_expression_lifetime.py's 64 constants come back as IndexError while its
+        //! 64 columns read fine. std::shared_ptr because pybind11 owns py_connection_t through
+        //! a shared_ptr holder (pyconnection/initialize.cpp) -- that IS its lifetime here;
+        //! py_relation_t::env holds it the same way.
+        std::shared_ptr<py_connection_t> env_;
+
         expression_wrapper_t expr;
-        expression_factory_t* factory;
     };
 
 } // namespace otterbrix

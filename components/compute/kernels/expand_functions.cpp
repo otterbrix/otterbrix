@@ -115,7 +115,11 @@ namespace {
             {parameter_type::exact(logical_type::BIGINT), parameter_type::exact(logical_type::BIGINT)},
             {output_type::fixed(logical_type::BIGINT)});
         expand_kernel k2(std::move(sig2), expand_generate_series);
-        (void) fn->add_kernel(resource, std::move(k2));
+        // Bound, not (void)-cast, which is banned: add_kernel only refuses on a full slot
+        // table or an arity mismatch, both compile-time constants at this registration site, so
+        // the assert states a file invariant rather than screening runtime input.
+        [[maybe_unused]] const auto added_k2 = fn->add_kernel(resource, std::move(k2));
+        assert(!added_k2.contains_error() && "expand kernel must fit the declared slots and arity");
 
         kernel_signature_t sig3(function_type_t::expand,
                                 {parameter_type::exact(logical_type::BIGINT),
@@ -123,7 +127,8 @@ namespace {
                                  parameter_type::exact(logical_type::BIGINT)},
                                 {output_type::fixed(logical_type::BIGINT)});
         expand_kernel k3(std::move(sig3), expand_generate_series);
-        (void) fn->add_kernel(resource, std::move(k3));
+        [[maybe_unused]] const auto added_k3 = fn->add_kernel(resource, std::move(k3));
+        assert(!added_k3.contains_error() && "expand kernel must fit the declared slots and arity");
 
         return fn;
     }
@@ -135,11 +140,10 @@ namespace components::compute {
     // WARNING: uid and signatures must mirror the DEFAULT_FUNCTIONS "generate_series"
     // entry (uid 8) in function.hpp.
     void register_expand_functions(function_registry_t& r) {
-        (void) r.add_function(
-            make_generate_series_func(r.resource(),
-                                      "generate_series",
-                                      "Generate a series of values",
-                                      "generate_series(start, stop[, step]) — inclusive integer series"));
+        r.add_builtin(make_generate_series_func(r.resource(),
+                                                "generate_series",
+                                                "Generate a series of values",
+                                                "generate_series(start, stop[, step]) — inclusive integer series"));
     }
 
 } // namespace components::compute

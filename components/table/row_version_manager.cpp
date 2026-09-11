@@ -19,17 +19,9 @@ namespace components::table {
     void reset_cleanup_slots_visited() noexcept { g_cleanup_slots_visited.store(0, std::memory_order_relaxed); }
 #endif
 
-    // ProcArray canonical visibility filter:
-    //   1. If id == this txn's own transaction_id → self-write, always visible.
-    //   2. If id >= TRANSACTION_ID_START → another txn's pending write, not visible.
-    //   3. If id > snapshot_horizon → committed after our snapshot, not visible.
-    //   4. If id is in in_flight_snapshot → committed at snapshot time but not yet
-    //      publish()-published, not visible.
-    //   5. Otherwise → committed-and-published before our snapshot, visible.
-    //
-    // use_deleted_version is the inverse: a delete-marker id "survives" (i.e. row
-    // remains alive) when use_inserted_version says it's NOT visible. NOT_DELETED_ID
-    // is huge (>> TRANSACTION_ID_START) so rule 2 implicitly handles it.
+    // in_flight_snapshot holds ids committed but not yet publish()-published, along with
+    // still-running ones — both count as not-yet-visible. NOT_DELETED_ID is huge (>> TRANSACTION_ID_START),
+    // so the id >= TRANSACTION_ID_START check below already treats it as pending for free.
     struct transaction_version_operator {
         static bool use_inserted_version(const transaction_data& txn, uint64_t id) {
             if (txn.transaction_id != 0 && id == txn.transaction_id)
@@ -112,8 +104,9 @@ namespace components::table {
         if (insert_id > lowest_transaction) {
             return false;
         }
-        // Committed deletes are fine — they're visible to all active transactions
-        if (delete_id != NOT_DELETED_ID && delete_id > lowest_transaction) {
+        // Any delete stamp pins this slot, committed or not: returning true here would let
+        // cleanup_append install a null chunk_info — "all rows visible" — resurrecting every deleted row.
+        if (delete_id != NOT_DELETED_ID) {
             return false;
         }
         return true;
@@ -182,9 +175,8 @@ namespace components::table {
         uint64_t deleted_tuples = 0;
         for (uint64_t i = 0; i < count; i++) {
             if (deleted[rows[i]] != NOT_DELETED_ID) {
-                // Already deleted (by this txn, or a prior committed txn in a
-                // cascade-drop where the scan ignores MVCC visibility). Skip
-                // rather than abort: cascade DDL must be idempotent.
+                // Already deleted — by this txn, or a prior cascade-drop that ignored MVCC visibility.
+                // Skip rather than abort: cascade DDL must be idempotent.
                 continue;
             }
             deleted[rows[i]] = transaction_id;
@@ -222,10 +214,9 @@ namespace components::table {
     }
 
     void chunk_vector_info::revert_all_deletes(uint64_t txn_id) {
-        // Mirror of commit_all_deletes: instead of stamping this txn's pending
-        // delete marks with a commit_id, un-stamp them back to NOT_DELETED_ID so
-        // an aborted DELETE leaves the rows visible again. any_deleted stays as-is
-        // (a conservative hint — indexing/cleanup re-check each slot).
+        // Reverses commit_all_deletes: un-stamps this txn's pending deletes back to NOT_DELETED_ID so an
+        // aborted DELETE leaves rows visible again. any_deleted stays as-is — a conservative hint;
+        // indexing/cleanup re-check each slot.
         if (!any_deleted) {
             return;
         }
@@ -261,7 +252,6 @@ namespace components::table {
     }
 
     bool chunk_vector_info::cleanup(uint64_t lowest_transaction, std::unique_ptr<chunk_info>& result) const {
-        // Check inserts: all must be committed and old enough
         if (!same_inserted_id) {
             for (uint64_t idx = 0; idx < vector::DEFAULT_VECTOR_CAPACITY; idx++) {
                 if (inserted[idx] > lowest_transaction) {
@@ -273,37 +263,43 @@ namespace components::table {
         }
 
         if (any_deleted) {
-            // Check if ALL deletes are committed (< TRANSACTION_ID_START) and old enough
-            bool all_committed = true;
+            bool any_delete_stamp = false;
             bool all_deleted = true;
-            uint64_t min_delete_id = NOT_DELETED_ID;
+            bool same_delete_id = true;
+            uint64_t first_delete_id = NOT_DELETED_ID;
             for (uint64_t i = 0; i < vector::DEFAULT_VECTOR_CAPACITY; i++) {
                 if (deleted[i] == NOT_DELETED_ID) {
                     all_deleted = false;
                     continue;
                 }
                 if (deleted[i] >= TRANSACTION_ID_START || deleted[i] > lowest_transaction) {
-                    // Uncommitted or too recent delete — can't cleanup
-                    all_committed = false;
-                    break;
+                    return false;
                 }
-                if (deleted[i] < min_delete_id) {
-                    min_delete_id = deleted[i];
+                if (!any_delete_stamp) {
+                    first_delete_id = deleted[i];
+                } else if (deleted[i] != first_delete_id) {
+                    same_delete_id = false;
                 }
+                any_delete_stamp = true;
             }
-            if (!all_committed) {
-                return false;
-            }
-            // All deletes are committed and old enough.
-            // If every row is deleted, convert to chunk_constant_info
-            if (all_deleted) {
+            // A committed delete stamp must survive: cleanup_append installs `result` here, and a null
+            // slot means all rows visible again (see chunk_constant_info::cleanup).
+            if (all_deleted && same_delete_id) {
+                // Collapsing to a constant_info only works when every row shares ONE delete id — mixed
+                // ids would rewrite some rows' delete time, hiding or revealing rows a snapshot must not.
                 auto constant = std::make_unique<chunk_constant_info>(start);
                 constant->insert_id = same_inserted_id ? insert_id : inserted[0];
-                constant->delete_id = min_delete_id;
+                constant->delete_id = first_delete_id;
                 result = std::move(constant);
+                return true;
             }
-            // else: partial deletes — still allow cleanup (version info no longer needed
-            //       because all versions are visible to all active transactions)
+            if (any_delete_stamp) {
+                // Partial or mixed-id deletes: per-row stamps are the only record of which rows went
+                // and when, so nothing here is reclaimable — physical reclaim is data_table_t::compact's job.
+                return false;
+            }
+            // any_deleted can be a stale hint from revert_all_deletes with no stamps left; the slot is
+            // still reclaimable on the insert-only terms below.
         }
         return true;
     }
@@ -415,12 +411,32 @@ namespace components::table {
     }
 
     bool row_version_manager_t::fetch(const transaction_data& transaction, uint64_t row) {
-        uint64_t vector_index = row / vector::DEFAULT_VECTOR_CAPACITY;
+        // `row` is collection-absolute; vector_info_ slots are group-local, so fetch rebases by start_
+        // (which moves with the group via row_group_t::move_to_collection).
+        assert(row >= static_cast<uint64_t>(start_));
+        const uint64_t local_row = row - static_cast<uint64_t>(start_);
+        uint64_t vector_index = local_row / vector::DEFAULT_VECTOR_CAPACITY;
         auto info = get_chunk_info(vector_index);
         if (!info) {
             return true;
         }
-        return info->fetch(transaction, static_cast<int64_t>(row - vector_index * vector::DEFAULT_VECTOR_CAPACITY));
+        return info->fetch(transaction,
+                           static_cast<int64_t>(local_row - vector_index * vector::DEFAULT_VECTOR_CAPACITY));
+    }
+
+    uint64_t row_version_manager_t::delete_stamp(uint64_t row) {
+        assert(row >= static_cast<uint64_t>(start_));
+        const uint64_t local_row = row - static_cast<uint64_t>(start_);
+        const uint64_t vector_index = local_row / vector::DEFAULT_VECTOR_CAPACITY;
+        auto* info = get_chunk_info(vector_index);
+        if (!info) {
+            return NOT_DELETED_ID;
+        }
+        const uint64_t idx = local_row - vector_index * vector::DEFAULT_VECTOR_CAPACITY;
+        if (info->type == chunk_info_type::CONSTANT_INFO) {
+            return info->cast<chunk_constant_info>().delete_id;
+        }
+        return info->cast<chunk_vector_info>().deleted[idx];
     }
 
     void row_version_manager_t::fill_vector_info(uint64_t vector_idx) {

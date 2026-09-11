@@ -1,12 +1,7 @@
-// Group-A e2e for the host-extension SOURCE/SINK operators (node_extension_t):
-// simulates the NEW OtterStax federation flow. Mirrors test_join_raw.cpp, which
-// simulates the OLD flow (pre-fetch + node_raw_data splice): here the
-// uid-qualified external leaves are swapped for node_extension_t leaves (pure
-// (db, rel) identity — no host state on the node), and the injected create_plan
-// RULE builds a HOST mock operator, looking its runtime data up by identity. The
-// async fetch is fulfilled from a BACKGROUND thread through an actor_zeta::promise
-// — the disk-actor await pattern a real host BackendActor uses.
+// e2e for the host-extension SOURCE/SINK operators: uid-qualified external leaves are swapped for
+// node_extension_t leaves (pure (db, rel) identity, no host state), resolved by an injected create_plan rule.
 
+#include "integration_fixture_path.hpp"
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <components/expressions/compare_expression.hpp>
@@ -28,8 +23,6 @@ using namespace components;
 
 namespace {
 
-    // POD row source (plain data, no function wrappers per project rules):
-    // two BIGINT columns + rows; chunks are built on demand from it.
     struct rows_spec_t {
         std::string col_a;
         std::string col_b;
@@ -49,14 +42,11 @@ namespace {
         return chunk;
     }
 
-    // Host-side runtime store (test double), keyed by the extension node's
-    // (db, rel) identity — exactly how a real host maps a registered external
-    // table to its own backend data. The node carries NO host state (it is pure
-    // logical plan); the injected create_plan rule looks the data up by identity.
+    // Keyed by the extension node's (db, rel) identity; the node itself carries no host state.
     struct mock_ext_data_t {
-        rows_spec_t spec; // SOURCE rows
+        rows_spec_t spec;
         bool async_delivery{true};
-        std::vector<std::pair<int64_t, int64_t>>* sink_written{nullptr}; // SINK target
+        std::vector<std::pair<int64_t, int64_t>>* sink_written{nullptr};
     };
     std::unordered_map<std::string, mock_ext_data_t>& mock_ext_store() {
         static std::unordered_map<std::string, mock_ext_data_t> store;
@@ -64,9 +54,6 @@ namespace {
     }
     std::string ext_key(const std::string& db, const std::string& rel) { return db + "." + rel; }
 
-    // Host-side mock operator: role()==source; first source_next delivers the
-    // spec's chunk (async: fulfilled from a background thread while the
-    // executor cooperatively awaits), second call reports drained.
     class mock_source_op_t final : public operators::read_only_operator_t {
     public:
         mock_source_op_t(std::pmr::memory_resource* resource,
@@ -88,17 +75,16 @@ namespace {
             actor_zeta::promise<core::result_wrapper_t<vector::data_chunk_t>> promise(resource());
             auto future = promise.get_future();
             if (drained_) {
-                // Drained sentinel: a 0-COLUMN chunk (`batch.data.empty()`), per the
-                // pump contract in execute_pipeline — a schema'd 0-row chunk is REAL
-                // input (the empty-guard a scalar aggregate needs), not a drain.
+                // Drained sentinel is a 0-column chunk; a schema'd 0-row chunk is real input
+                // (the empty-guard a scalar aggregate needs) per execute_pipeline's pump contract.
                 vector::data_chunk_t sentinel(resource(), std::pmr::vector<types::complex_logical_type>{resource()}, 0);
                 promise.set_value(core::result_wrapper_t<vector::data_chunk_t>{std::move(sentinel)});
                 return future;
             }
             drained_ = true;
             if (async_delivery_) {
-                // Fulfill from a background thread AFTER the executor has begun
-                // awaiting — models a host backend actor answering a fetch.
+                // Fulfills from a background thread after the executor has begun awaiting, modeling
+                // a host backend actor answering a fetch; the promise outlives this stack frame.
                 std::thread([p = std::move(promise), chunk = build_pairs(resource(), spec_)]() mutable {
                     std::this_thread::sleep_for(std::chrono::milliseconds(30));
                     p.set_value(core::result_wrapper_t<vector::data_chunk_t>{std::move(chunk)});
@@ -111,8 +97,6 @@ namespace {
 
         void reset_pipeline_state() noexcept override { drained_ = false; }
 
-        // EXPLAIN: emit the oid (uniform scan contract) — the renderer resolves it
-        // to the registered catalog name, so the plan shows which source it hits.
         void explain_impl(const operators::explain_sink& s) const override {
             explain_begin(s, table_oid_);
             s.end();
@@ -125,10 +109,6 @@ namespace {
         bool drained_{false};
     };
 
-    // Host-side mock SINK operator: role()==sink. push() consumes the child's
-    // rows (the SELECT feeding INSERT..SELECT) and records them — a real host
-    // would send them to its BackendActor to INSERT. finalize() is a no-op here
-    // (a real sink flushes the remainder + reports the affected count).
     class mock_sink_op_t final : public operators::read_only_operator_t {
     public:
         mock_sink_op_t(std::pmr::memory_resource* resource,
@@ -155,12 +135,7 @@ namespace {
         std::vector<std::pair<int64_t, int64_t>>* written_;
     };
 
-    // The ONE host customization the engine calls at physgen: the injected
-    // create_plan RULE (plain fn-ptr, passed to test_spaces). create_plan invokes
-    // it for any node it does not lower itself; we handle only node_extension_t and
-    // look the host's runtime data up by the node's (db, rel) identity — the node
-    // carries no host state. Dispatch by shape: a LEAF is a source (reads a
-    // backend), a node WITH a child is a sink (writes a backend).
+    // Dispatch by shape: a leaf is a source (reads a backend), a node with a child is a sink (writes one).
     operators::operator_ptr make_mock_extension(const services::context_storage_t& context,
                                                 const compute::function_registry_t&,
                                                 const logical_plan::node_ptr& node) {
@@ -182,9 +157,6 @@ namespace {
         return {new mock_sink_op_t(context.resource, context.log.clone(), it->second.sink_written)};
     }
 
-    // Every external source is REGISTERED in the engine catalog under
-    // db="extreg", rel=<uid> (register_externals), so the extension node's
-    // (db, rel) resolves + types + names from the catalog like any table.
     static constexpr const char* kExtDb = "extreg";
 
     struct external_source_t {
@@ -194,9 +166,6 @@ namespace {
     };
     using externals_by_uid_t = std::unordered_map<std::string, external_source_t>;
 
-    // The NEW-flow splice: replace each uid-qualified external aggregate leaf with
-    // a node_extension_t carrying the registered (db, rel). The old flow
-    // (test_join_raw) spliced pre-fetched node_raw_data here instead.
     void swap_to_extension(logical_plan::node_ptr& node,
                            std::pmr::memory_resource* res,
                            const externals_by_uid_t& externals) {
@@ -209,21 +178,16 @@ namespace {
             if (!uid_s.empty()) {
                 auto it = externals.find(uid_s);
                 if (it != externals.end()) {
-                    // Host keeps its per-source runtime data keyed by the node's
-                    // (db, rel) identity — NOT on the node.
                     mock_ext_store()[ext_key(kExtDb, uid_s)] =
                         mock_ext_data_t{it->second.spec, it->second.async_delivery, nullptr};
                     auto ext = logical_plan::make_node_extension(res, core::dbname_t{kExtDb}, core::relname_t{uid_s});
                     ext->set_result_alias(agg->result_alias().empty() ? static_cast<const std::string&>(agg->relname())
                                                                       : agg->result_alias());
                     if (node->children().empty()) {
-                        node = ext; // bare scan leaf — the extension IS the plan node
+                        node = ext;
                     } else {
-                        // The uid aggregate carries pipeline stages (group / select /
-                        // match / sort / limit): keep them — the extension replaces only
-                        // the implicit SCAN. Rebuild as an identity aggregate whose data
-                        // child is the extension leaf (exactly how a host plan-builder
-                        // wraps its source).
+                        // The extension replaces only the implicit scan: rebuild as an identity aggregate
+                        // whose data child is the extension leaf, keeping the uid aggregate's own stages.
                         auto wrapper = logical_plan::make_node_aggregate(res, core::dbname_t{}, core::relname_t{});
                         wrapper->set_result_alias(node->result_alias());
                         wrapper->append_child(ext);
@@ -232,7 +196,7 @@ namespace {
                         }
                         node = wrapper;
                     }
-                    return; // leaf is now a host-extension source
+                    return;
                 }
             }
         }
@@ -246,10 +210,6 @@ namespace {
         logical_plan::node_ptr plan;
     };
 
-    // oid is mandatory on extension nodes: register each external table in the
-    // engine catalog (create_collection, columns = the source's schema) under
-    // db="extreg", rel=<uid> — exactly the host flow. The extension node then
-    // resolves / types / names from the catalog by that (db, rel).
     void register_externals(otterbrix::wrapper_dispatcher_t* dispatcher, const externals_by_uid_t& externals) {
         auto* res = dispatcher->resource();
         {
@@ -298,7 +258,6 @@ namespace {
         return {std::move(cursor), std::move(plan)};
     }
 
-    // Run EXPLAIN (plan-only) over a federated plan and return the rendered text.
     std::string explain_extension_plan(otterbrix::wrapper_dispatcher_t* dispatcher,
                                        const std::string& sql,
                                        externals_by_uid_t externals) {
@@ -338,7 +297,6 @@ namespace {
         return schema;
     }
 
-    // Walk the executed plan and return the (single) extension leaf, if any.
     const logical_plan::node_extension_t* find_extension(const logical_plan::node_ptr& node) {
         if (!node) {
             return nullptr;
@@ -372,15 +330,13 @@ static externals_by_uid_t one_source(std::pmr::memory_resource* res,
 #define EXT_TEST_BOILERPLATE(DIR)                                                                                      \
     auto config = test_create_config(DIR);                                                                             \
     test_clear_directory(config);                                                                                      \
-    config.disk.on = false;                                                                                            \
-    config.wal.on = false;                                                                                             \
     mock_ext_store().clear();                        /* fresh host store per test (keyed by db.rel) */                 \
     test_spaces space(config, &make_mock_extension); /* host injects its create_plan rule at engine start */           \
     auto dispatcher = space.dispatcher();                                                                              \
     auto* res = dispatcher->resource();
 
 TEST_CASE("integration::cpp::extension_source::sync_single_leaf") {
-    EXT_TEST_BOILERPLATE("/tmp/test_ext_sync/base")
+    EXT_TEST_BOILERPLATE(integration_fixture_path("test_ext_sync/base"))
     auto externals = one_source(res, "uid_x", "key", "val", {{7, 70}}, /*async=*/false);
     auto r = run_with_extension_sources(dispatcher, "SELECT * FROM uid_x.remote.db1.t1;", externals);
     REQUIRE(r.cursor->is_success());
@@ -388,7 +344,7 @@ TEST_CASE("integration::cpp::extension_source::sync_single_leaf") {
 }
 
 TEST_CASE("integration::cpp::extension_source::async_single_leaf") {
-    EXT_TEST_BOILERPLATE("/tmp/test_ext_async/base")
+    EXT_TEST_BOILERPLATE(integration_fixture_path("test_ext_async/base"))
     auto externals = one_source(res, "uid_x", "key", "val", {{1, 10}, {2, 20}, {3, 30}}, /*async=*/true);
     auto r = run_with_extension_sources(dispatcher, "SELECT * FROM uid_x.remote.db1.t1;", externals);
     REQUIRE(r.cursor->is_success());
@@ -396,7 +352,7 @@ TEST_CASE("integration::cpp::extension_source::async_single_leaf") {
 }
 
 TEST_CASE("integration::cpp::extension_source::empty_result") {
-    EXT_TEST_BOILERPLATE("/tmp/test_ext_empty/base")
+    EXT_TEST_BOILERPLATE(integration_fixture_path("test_ext_empty/base"))
     auto externals = one_source(res, "uid_x", "key", "val", {}, /*async=*/true);
     auto r = run_with_extension_sources(dispatcher, "SELECT * FROM uid_x.remote.db1.t1;", externals);
     REQUIRE(r.cursor->is_success());
@@ -404,7 +360,7 @@ TEST_CASE("integration::cpp::extension_source::empty_result") {
 }
 
 TEST_CASE("integration::cpp::extension_source::join_two_extensions") {
-    EXT_TEST_BOILERPLATE("/tmp/test_ext_join2/base")
+    EXT_TEST_BOILERPLATE(integration_fixture_path("test_ext_join2/base"))
     externals_by_uid_t externals;
     externals.emplace("uid_l",
                       external_source_t{rows_spec_t{"key", "name", {{1, 11}, {2, 22}, {3, 33}}},
@@ -419,11 +375,11 @@ TEST_CASE("integration::cpp::extension_source::join_two_extensions") {
                                         "JOIN uid_r.remote.db1.t2 AS r ON l.key = r.key;",
                                         externals);
     REQUIRE(r.cursor->is_success());
-    REQUIRE(r.cursor->size() == 2); // keys 1 and 3 match
+    REQUIRE(r.cursor->size() == 2);
 }
 
 TEST_CASE("integration::cpp::extension_source::group_by") {
-    EXT_TEST_BOILERPLATE("/tmp/test_ext_group/base")
+    EXT_TEST_BOILERPLATE(integration_fixture_path("test_ext_group/base"))
     auto externals =
         one_source(res, "uid_g", "grp", "val", {{1, 10}, {1, 15}, {2, 20}, {2, 5}, {3, 1}}, /*async=*/true);
     auto r = run_with_extension_sources(dispatcher,
@@ -434,7 +390,7 @@ TEST_CASE("integration::cpp::extension_source::group_by") {
 }
 
 TEST_CASE("integration::cpp::extension_source::barrier_where_above_join") {
-    EXT_TEST_BOILERPLATE("/tmp/test_ext_barrier/base")
+    EXT_TEST_BOILERPLATE(integration_fixture_path("test_ext_barrier/base"))
     externals_by_uid_t externals;
     externals.emplace("uid_l",
                       external_source_t{rows_spec_t{"key", "name", {{1, 11}, {2, 22}, {3, 33}}},
@@ -450,10 +406,9 @@ TEST_CASE("integration::cpp::extension_source::barrier_where_above_join") {
                                         "WHERE r.value > 150;",
                                         externals);
     REQUIRE(r.cursor->is_success());
-    REQUIRE(r.cursor->size() == 2); // values 200, 300
+    REQUIRE(r.cursor->size() == 2);
 
-    // Barrier semantics: the extension leaves survived optimize() untouched —
-    // identity (db.rel) intact, no predicate/limit injected into the leaf.
+    // Extension leaves must survive optimize() untouched: identity intact, no predicate/limit injected.
     const auto* ext = find_extension(r.plan);
     REQUIRE(ext != nullptr);
     REQUIRE(ext->relname() == "uid_l");
@@ -462,7 +417,7 @@ TEST_CASE("integration::cpp::extension_source::barrier_where_above_join") {
 }
 
 TEST_CASE("integration::cpp::extension_source::join_with_local_table") {
-    EXT_TEST_BOILERPLATE("/tmp/test_ext_local/base") {
+    EXT_TEST_BOILERPLATE(integration_fixture_path("test_ext_local/base")) {
         auto session = otterbrix::session_id_t();
         dispatcher->execute_sql(session, "CREATE DATABASE extdb;");
     }
@@ -483,19 +438,13 @@ TEST_CASE("integration::cpp::extension_source::join_with_local_table") {
                                         "JOIN extdb.local_t AS t ON e.key = t.key;",
                                         externals);
     REQUIRE(r.cursor->is_success());
-    REQUIRE(r.cursor->size() == 2); // keys 1 and 2 match
+    REQUIRE(r.cursor->size() == 2);
 }
 
-// #1 regression: a host-extension node with NO injected create_plan rule (the
-// default Null Object lowers it to a null operator) must surface a clean
-// "invalid query plan" error — NOT a crash — in EVERY position. The null-child
-// guards in create_plan_join / create_plan_aggregate convert the would-be
-// null-child deref into a propagated nullptr → create_physical_plan_error.
+// A host-extension node with no injected create_plan rule must surface a clean error, not a crash.
 TEST_CASE("integration::cpp::extension_source::missing_rule_errors_not_crash") {
-    auto config = test_create_config("/tmp/test_ext_norule/base");
+    auto config = test_create_config(integration_fixture_path("test_ext_norule/base"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     mock_ext_store().clear();
     test_spaces space(config); // NO create_plan rule injected → extension lowers to null
     auto dispatcher = space.dispatcher();
@@ -508,7 +457,6 @@ TEST_CASE("integration::cpp::extension_source::missing_rule_errors_not_crash") {
         auto s = otterbrix::session_id_t();
         REQUIRE(dispatcher->execute_sql(s, "CREATE TABLE extdb.local_t (key BIGINT, amount BIGINT);")->is_success());
     }
-    // Extension under a JOIN → create_plan_join null-child guard.
     {
         auto externals = one_source(res, "uid_l", "key", "name", {{1, 11}}, /*async=*/false);
         auto r = run_with_extension_sources(dispatcher,
@@ -517,7 +465,6 @@ TEST_CASE("integration::cpp::extension_source::missing_rule_errors_not_crash") {
                                             externals);
         REQUIRE(r.cursor->is_error());
     }
-    // Extension under an AGGREGATE (GROUP BY) → create_plan_aggregate null-child guard.
     {
         auto externals = one_source(res, "uid_g", "key", "val", {{1, 10}}, /*async=*/false);
         auto r = run_with_extension_sources(dispatcher,
@@ -527,11 +474,8 @@ TEST_CASE("integration::cpp::extension_source::missing_rule_errors_not_crash") {
     }
 }
 
-// The whole point of the catalog-typed design: EXPLAIN reveals WHICH backend the
-// query hits. The extension scan resolves its oid to the registered catalog name,
-// so the plan shows "Extension Scan on <rel>" for each federated source.
 TEST_CASE("integration::cpp::extension_source::explain_shows_backend") {
-    EXT_TEST_BOILERPLATE("/tmp/test_ext_explain/base")
+    EXT_TEST_BOILERPLATE(integration_fixture_path("test_ext_explain/base"))
     externals_by_uid_t externals;
     externals.emplace("uid_l",
                       external_source_t{rows_spec_t{"key", "name", {{1, 11}}},
@@ -546,20 +490,14 @@ TEST_CASE("integration::cpp::extension_source::explain_shows_backend") {
                                        "JOIN uid_r.remote.db1.t2 AS r ON l.key = r.key;",
                                        externals);
     INFO(text);
-    // Both federated sources are visible as extension scans on their registered names.
     REQUIRE(text.find("Extension Scan on uid_l") != std::string::npos);
     REQUIRE(text.find("Extension Scan on uid_r") != std::string::npos);
 }
 
-// SINK via extension: a federated write. Build `INSERT INTO <backend> SELECT ...`
-// by hand — a node_extension_t whose (db, rel) is the registered backend TARGET
-// and whose CHILD is the SELECT feeding the rows. The host factory builds a
-// role()==sink operator; physgen wires the child; execute drives child -> sink,
-// and the sink "writes" the rows (records them).
+// Built by hand: there is no SQL syntax for INSERT INTO <backend>, so this wires a node_extension_t directly.
 TEST_CASE("integration::cpp::extension_source::sink_writes_backend") {
-    EXT_TEST_BOILERPLATE("/tmp/test_ext_sink/base")
+    EXT_TEST_BOILERPLATE(integration_fixture_path("test_ext_sink/base"))
 
-    // Local source rows for the SELECT that feeds the write.
     {
         auto s = otterbrix::session_id_t();
         REQUIRE(dispatcher->execute_sql(s, "CREATE DATABASE sdb;")->is_success());
@@ -573,13 +511,11 @@ TEST_CASE("integration::cpp::extension_source::sink_writes_backend") {
         REQUIRE(dispatcher->execute_sql(s, "INSERT INTO sdb.local_src (key, val) VALUES (1,10),(2,20),(3,30);")
                     ->is_success());
     }
-    // Register the federated write TARGET in the catalog (its (db, rel) identity).
     {
         auto s = otterbrix::session_id_t();
         REQUIRE(dispatcher->execute_sql(s, "CREATE TABLE sdb.sink_target (key BIGINT, val BIGINT);")->is_success());
     }
 
-    // Child = the SELECT sub-plan feeding the write.
     std::pmr::monotonic_buffer_resource arena(res);
     sql::transform::transformer transformer(res);
     auto* raw = raw_parser(&arena, "SELECT key, val FROM sdb.local_src;");
@@ -590,8 +526,6 @@ TEST_CASE("integration::cpp::extension_source::sink_writes_backend") {
     auto child = binder.node_ptr();
     REQUIRE(child);
 
-    // Sink extension node: target (db, rel) + a child SELECT. The host records
-    // where the sink "writes" in its own store, keyed by the node's (db, rel).
     std::vector<std::pair<int64_t, int64_t>> written;
     mock_ext_store()[ext_key("sdb", "sink_target")] = mock_ext_data_t{rows_spec_t{}, false, &written};
     auto sink = logical_plan::make_node_extension(res, core::dbname_t{"sdb"}, core::relname_t{"sink_target"});
@@ -601,7 +535,6 @@ TEST_CASE("integration::cpp::extension_source::sink_writes_backend") {
     auto cur = dispatcher->execute_plan(session, logical_plan::execution_plan_t{res, sink, binder.params_ptr()});
     REQUIRE(cur->is_success());
 
-    // The sink received + "wrote" all three source rows to the backend.
     REQUIRE(written.size() == 3);
     std::sort(written.begin(), written.end());
     REQUIRE(written == std::vector<std::pair<int64_t, int64_t>>{{1, 10}, {2, 20}, {3, 30}});

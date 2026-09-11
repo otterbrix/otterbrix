@@ -43,9 +43,11 @@ namespace components::vector::arrow {
         return core::error_t::no_error();
     }
 
-    core::result_wrapper_t<std::shared_ptr<arrow_array_wrapper_t>>
+    core::result_wrapper_t<arrow_array_wrapper_ptr>
     arrow_array_schema_wrapper_t::get_next_chunk(std::pmr::memory_resource* resource) {
-        auto current_chunk = std::make_shared<arrow_array_wrapper_t>();
+        // Global new, like the std::make_shared it replaces: the wrapper outlives this call's
+        // `resource` (vector buffers keep it alive past this scan step), so it must not bind to it.
+        arrow_array_wrapper_ptr current_chunk(new arrow_array_wrapper_t());
         if (arrow_array_stream.get_next(&arrow_array_stream, &current_chunk->arrow_array)) {
             return core::error_t(core::error_code_t::conversion_failure,
                                  std::pmr::string("arrow_scan: get_next failed()", resource));

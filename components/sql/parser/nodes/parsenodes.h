@@ -2921,6 +2921,11 @@ typedef struct ViewStmt {
     bool replace;                    /* replace an existing view? */
     List* options;                   /* options from WITH clause */
     ViewCheckOption withCheckOption; /* WITH CHECK OPTION */
+    /* Byte offset of `query`'s first token in the source text (0 = not recorded); the body is
+     * persisted verbatim in pg_rewrite.ev_action, so it must be the literal source, not a guess. */
+    int query_location;
+    /* Byte offset just past `query`'s last token; -1 means the body runs to the statement's end. */
+    int query_end_location;
 } ViewStmt;
 
 /* ----------------------
@@ -3099,6 +3104,11 @@ typedef struct CreateTableAsStmt {
     IntoClause* into;    /* destination table */
     ObjectType relkind;  /* OBJECT_TABLE or OBJECT_MATVIEW */
     bool is_select_into; /* it was written as SELECT INTO */
+    /* Same contract as ViewStmt::query_location; the matview body is persisted in
+     * pg_rewrite.ev_action and re-parsed by REFRESH. */
+    int query_location;
+    /* Same contract as ViewStmt::query_end_location. */
+    int query_end_location;
 } CreateTableAsStmt;
 
 /* ----------------------

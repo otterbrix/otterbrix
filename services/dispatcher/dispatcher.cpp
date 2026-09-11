@@ -40,17 +40,10 @@ namespace services::dispatcher {
 #endif
 
     namespace {
-        // subscriber-kind discriminator carried in the on_drop_resource_marked /
-        // on_subscriber_empty / on_horizon_advanced messages between the
-        // dispatcher and its drop-GC subscribers.
         constexpr uint8_t DISK_KIND = 1;
         constexpr uint8_t INDEX_KIND = 2;
     } // namespace
 
-    // ---- behavior/dispatch_traits sync check ----
-    // Ensures behavior() handles every method registered in dispatch_traits
-    // (positional msg_id: a missed case = silent message loss). When adding a
-    // method: dispatch_traits entry + behavior() case + kBehaviorHandledIds.
     namespace {
         template<typename MethodList>
         struct behavior_expected_ids_t;
@@ -77,6 +70,7 @@ namespace services::dispatcher {
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_accumulate_msg>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_abort_msg>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_publish_msg>,
+            actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_discard_msg>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_compact_watermark_msg>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::on_drop_resource_marked>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::on_subscriber_empty>,
@@ -107,6 +101,10 @@ namespace services::dispatcher {
     manager_dispatcher_t::manager_dispatcher_t(std::pmr::memory_resource* resource_ptr,
                                                actor_zeta::scheduler_raw scheduler,
                                                log_t& log,
+                                               actor_zeta::address_t wal_address,
+                                               actor_zeta::address_t disk_address,
+                                               actor_zeta::address_t index_address,
+                                               uint64_t dml_flush_row_threshold,
                                                planner::create_plan_rule_t create_plan_rule,
                                                components::planner::optimizer_pass_t optimizer_pass)
         : actor_zeta::actor::actor_mixin<manager_dispatcher_t>()
@@ -117,6 +115,9 @@ namespace services::dispatcher {
         , optimizer_pass_(optimizer_pass)
         , executors_(resource_ptr)
         , executor_addresses_(resource_ptr)
+        , wal_address_(std::move(wal_address))
+        , disk_address_(std::move(disk_address))
+        , index_address_(std::move(index_address))
         , txn_manager_(resource_ptr)
         , cast_registry_(resource_ptr)
         , pending_void_(resource_ptr) {
@@ -124,29 +125,31 @@ namespace services::dispatcher {
         trace(log_, "manager_dispatcher_t::manager_dispatcher_t");
         components::casts::register_default_casts(cast_registry_);
 
-        // Event-loop-in-thread model. enqueue_impl (any sender thread) only
-        // pushes into the lock-free inbox_ and notifies pump_cv_; this thread
-        // owns ALL processing. The in-flight slot list is LOCAL to the loop, so
-        // no mutex guards the phase logic (resource() is a thread-safe
-        // synchronized_pool_resource).
+        executors_.reserve(executor_pool_size_);
+        executor_addresses_.reserve(executor_pool_size_);
+        for (std::size_t i = 0; i < executor_pool_size_; ++i) {
+            auto exec = actor_zeta::spawn<collection::executor::executor_t>(resource(),
+                                                                            address(),
+                                                                            wal_address_,
+                                                                            disk_address_,
+                                                                            index_address_,
+                                                                            log_.clone(),
+                                                                            dml_flush_row_threshold,
+                                                                            create_plan_rule_,
+                                                                            optimizer_pass_);
+            executor_addresses_.push_back(exec->address());
+            executors_.push_back(std::move(exec));
+        }
+        trace(log_, "manager_dispatcher_t: spawned {} executors with WAL/Disk/Index addresses", executor_pool_size_);
+
         loop_thread_ = std::thread([this] {
-            // Loop waits. While work is IN FLIGHT a future completed on another thread
-            // notifies nobody (pump_cv_ is signalled from enqueue_impl alone), so readiness
-            // is discovered by this wait TIMING OUT: that timeout IS the per-hop latency, and
-            // a statement crosses ~20 hops — at 100us each, a ~3.5ms per-statement floor.
-            // When nothing is in flight only a new message can arrive and that DOES notify,
-            // so the idle tick is left as it was: shortening it burns CPU for nothing,
-            // lengthening it exposes the documented push-notify race to the first statement
-            // after a pause.
+            // ~20 hops at 100us floors a statement at ~3.5ms, so idle_wait must exceed in_flight_wait.
             constexpr auto in_flight_wait = pump_tuning_t::in_flight_wait;
             constexpr auto idle_wait = pump_tuning_t::idle_wait;
             constexpr uint32_t stale_tick_threshold = pump_tuning_t::stale_tick_threshold;
 
             std::pmr::list<in_flight_entry_t> in_flight(resource());
             while (loop_running_.load(std::memory_order_acquire)) {
-                // Drain the inbox into local slots, re-wrapping each raw pointer
-                // into a message_ptr. The behavior created below holds a raw
-                // pointer into the message, so pending_msg must outlive it.
                 actor_zeta::mailbox::message* raw = nullptr;
                 while (inbox_.pop(raw)) {
                     in_flight.emplace_back();
@@ -157,11 +160,6 @@ namespace services::dispatcher {
                 while (progress) {
                     progress = false;
 
-                    // (a) Create behavior for the first slot that needs one
-                    //     (marker: behavior handle still null). The coroutine
-                    //     runs on this loop thread until its first co_await and
-                    //     holds a raw pointer into pending_msg across suspension,
-                    //     so pending_msg must STAY in the slot.
                     {
                         in_flight_entry_t* slot = nullptr;
                         for (auto& e : in_flight) {
@@ -177,7 +175,6 @@ namespace services::dispatcher {
                         }
                     }
 
-                    // (b) Resume the first ready behavior; reset its staleness.
                     {
                         in_flight_entry_t* ready_slot = nullptr;
                         actor_zeta::detail::coroutine_handle<> cont{};
@@ -196,9 +193,6 @@ namespace services::dispatcher {
                             ready_slot->stale_ticks = 0;
                             ready_slot->poke_rounds = 0;
 #ifdef DEV_MODE
-                            // One resumed continuation is one hop — the count the per-statement
-                            // floor multiplies by the tick. Independent of machine speed, unlike
-                            // the number of times the wait above spins.
                             note_pump_hop();
 #endif
                             cont.resume();
@@ -208,9 +202,6 @@ namespace services::dispatcher {
                         }
                     }
 
-                    // (c) Erase one done slot, then restart the pass (the erase
-                    //     invalidates the iteration). behavior + pending_msg
-                    //     destruct on this thread.
                     for (auto it = in_flight.begin(); it != in_flight.end(); ++it) {
                         if (it->behavior && it->behavior.done()) {
                             in_flight.erase(it);
@@ -222,14 +213,8 @@ namespace services::dispatcher {
                     poll_pending();
                 }
 
-                // WATCHDOG for the actor-zeta parking race on an executor
-                // (docs/actor-zeta-lost-wakeup.md): the executor's mailbox can be
-                // reader_blocked while its awaited future is READY, and
-                // resume_impl's blocked-check precedes the busy/ready check, so it
-                // never wakes. A mailbox PUSH unblocks it. A slot stuck busy &&
-                // !ready past the staleness threshold signals this; we poke with
-                // the dedicated no-op poke_msg. Firing early on a legitimately
-                // long executor operation is harmless (an empty handler run).
+                // WATCHDOG for the actor-zeta lost-wakeup race (docs/actor-zeta-lost-wakeup.md): a
+                // mailbox parked reader_blocked while its future is already ready never wakes on its own.
                 bool any_stale = false;
                 for (auto& e : in_flight)
                     if (e.behavior && !e.behavior.done() && e.behavior.is_busy() && !e.behavior.is_awaited_ready() &&
@@ -238,16 +223,6 @@ namespace services::dispatcher {
                         break;
                     }
                 if (any_stale) {
-                    // Routine firings are EXPECTED and are on the critical path: the
-                    // executor parks busy && ready on a documented lost wakeup
-                    // (docs/actor-zeta-lost-wakeup.md, reproduced by the hidden
-                    // [lostwakeup] tests), and this poke is what revives it. Any
-                    // operation longer than poke_after trips it, so a healthy
-                    // multi-row DML statement fires this many times.
-                    // Those log at trace. A slot that stays stale across hundreds
-                    // of consecutive poke rounds is a genuine stall (a wedged
-                    // executor, or a lost wakeup no poke can clear) — that one
-                    // escalates to a single warn with a distinct message.
                     constexpr uint32_t escalate_poke_rounds = 256;
                     bool escalate = false;
                     for (auto& e : in_flight) {
@@ -267,26 +242,20 @@ namespace services::dispatcher {
                     }
                     for (auto& ex : executors_) {
                         if (ex) {
-                            auto [ns, f] = actor_zeta::send(ex.get(), &collection::executor::executor_t::poke_msg);
+                            [[maybe_unused]] auto [ns, f] =
+                                actor_zeta::send(ex.get(), &collection::executor::executor_t::poke_msg);
                             if (ns)
                                 scheduler_->enqueue(ex.get());
-                            (void) f; // safe to drop: dealloc happens when the last of future/promise releases
                         }
                     }
-                    for (auto& e : in_flight) e.stale_ticks = 0; // backoff: re-arm threshold
+                    for (auto& e : in_flight) e.stale_ticks = 0;
                 }
 
                 std::unique_lock<std::mutex> lk(mutex_);
                 if (inbox_.empty()) {
                     pump_cv_.wait_for(lk, in_flight.empty() ? idle_wait : in_flight_wait);
                 }
-                // NOTE: lock-free inbox trade — a push+notify may slip between
-                // empty() and wait_for; bounded by the wait timeout above
-                // (staleness, not loss).
             }
-            // Local in_flight destructs HERE on the loop thread: still-suspended
-            // behaviors are destroyed safely (~behavior_t destroys suspended
-            // frames; future/promise state freed on last release).
         });
     }
 
@@ -296,8 +265,6 @@ namespace services::dispatcher {
         if (loop_thread_.joinable()) {
             loop_thread_.join();
         }
-        // Drain any leftover inbox_ raw pointers: re-wrap each into a
-        // message_ptr temporary so its PMR memory is freed (the loop is gone).
         actor_zeta::mailbox::message* raw = nullptr;
         while (inbox_.pop(raw)) {
             actor_zeta::mailbox::message_ptr drop{raw};
@@ -310,10 +277,6 @@ namespace services::dispatcher {
 
     std::pair<bool, actor_zeta::detail::enqueue_result>
     manager_dispatcher_t::enqueue_impl(actor_zeta::mailbox::message_ptr msg) {
-        // Delivery only — ALL processing happens on loop_thread_. The lock-free
-        // inbox takes ownership of the raw message* (release()); the loop
-        // re-wraps it into a message_ptr. notify without holding mutex_ is fine
-        // (the loop re-checks inbox_.empty() under the lock before sleeping).
         inbox_.push(msg.release());
         pump_cv_.notify_one();
         return {false, actor_zeta::detail::enqueue_result::success};
@@ -379,6 +342,10 @@ namespace services::dispatcher {
                 co_await actor_zeta::dispatch(this, &manager_dispatcher_t::txn_publish_msg, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_discard_msg>: {
+                co_await actor_zeta::dispatch(this, &manager_dispatcher_t::txn_discard_msg, msg);
+                break;
+            }
             case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_compact_watermark_msg>: {
                 co_await actor_zeta::dispatch(this, &manager_dispatcher_t::txn_compact_watermark_msg, msg);
                 break;
@@ -396,71 +363,29 @@ namespace services::dispatcher {
         }
     }
 
-    void manager_dispatcher_t::sync(sync_pack pack) {
-        wal_address_ = pack.wal;
-        disk_address_ = pack.disk;
-        index_address_ = pack.index;
-
-        executors_.reserve(executor_pool_size_);
-        executor_addresses_.reserve(executor_pool_size_);
-        for (std::size_t i = 0; i < executor_pool_size_; ++i) {
-            auto exec = actor_zeta::spawn<collection::executor::executor_t>(resource(),
-                                                                            address(),
-                                                                            wal_address_,
-                                                                            disk_address_,
-                                                                            index_address_,
-                                                                            log_.clone(),
-                                                                            pack.dml_flush_row_threshold,
-                                                                            create_plan_rule_,
-                                                                            optimizer_pass_);
-            executor_addresses_.push_back(exec->address());
-            executors_.push_back(std::move(exec));
-        }
-        trace(log_, "manager_dispatcher_t: spawned {} executors with WAL/Disk/Index addresses", executor_pool_size_);
-    }
-
     void manager_dispatcher_t::try_trigger_cleanup_if_horizon_advanced() noexcept {
-        // Commit-id value space: the subscribers' sweep compares
-        // dropped_at_commit_id (remapped to the real commit_id by
-        // storage_dropped_committed / table_dropped_committed) against this
-        // horizon, so the broadcast must use the same space — the oldest
-        // snapshot_horizon any live txn can still read below, NOT
-        // lowest_active_start_time (txn start-time space; mixing the two kept
-        // DROP-GC dead: 2^62-range ids never compared < small start-times).
-        //
-        // Remap-before-broadcast ordering proof. For the committing
-        // txn the broadcast here can only carry a horizon that reclaims its own
-        // tombstones AFTER its DROP-GC remap has stamped them, never before:
-        //   1. operator_commit_transaction runs the storage/table dropped-committed
-        //      remap by sending it to the disk/index managers PRE-publish and
-        //      co_awaiting the result — the remap has LANDED before the operator
-        //      proceeds.
-        //   2. ONLY THEN does the operator send txn_publish_msg, whose handler
-        //      calls publish() (advancing published_horizon_ to this commit_id)
-        //      and then this function, enqueuing on_horizon_advanced to the SAME
-        //      subscriber addresses.
-        // Because (1)'s remap message and (2)'s broadcast target the same
-        // subscriber mailbox, same-mailbox FIFO ordering per subscriber guarantees
-        // the remap is dequeued first. The sweep therefore always sees the
-        // commit_id-stamped tombstones before the horizon that would reclaim them.
+        // Must key off lowest_active_snapshot_horizon() (commit-id space), not lowest_active_start_time
+        // — mixing the two left DROP-GC permanently dead.
         auto new_lowest = txn_manager_.lowest_active_snapshot_horizon();
         if (new_lowest > last_broadcast_horizon_) {
             last_broadcast_horizon_ = new_lowest;
-            if (disk_has_dropped_ && disk_address_ != actor_zeta::address_t::empty_address()) {
-                // Fire-and-forget (subscriber acks via on_subscriber_empty).
-                // Parking the future on pending_void_ is just bookkeeping —
-                // poll_pending() drains it via is_ready(); dropping it instead
-                // would be memory-safe too.
-                auto disk_send_result =
-                    actor_zeta::send(disk_address_, &services::disk::manager_disk_t::on_horizon_advanced, new_lowest);
-                pending_void_.emplace_back(std::move(disk_send_result.second));
-            }
-            if (index_has_dropped_ && index_address_ != actor_zeta::address_t::empty_address()) {
-                auto index_send_result = actor_zeta::send(index_address_,
-                                                          &services::index::manager_index_t::on_horizon_advanced,
-                                                          new_lowest);
-                pending_void_.emplace_back(std::move(index_send_result.second));
-            }
+            auto sweep_broadcast = [&] {
+                if (disk_has_dropped_) {
+                    auto disk_send_result =
+                        actor_zeta::otterbrix::send(disk_address_,
+                                                    &services::disk::manager_disk_t::on_horizon_advanced,
+                                                    new_lowest);
+                    pending_void_.emplace_back(std::move(disk_send_result.second));
+                }
+                if (index_has_dropped_ && index_address_ != actor_zeta::address_t::empty_address()) {
+                    auto index_send_result =
+                        actor_zeta::otterbrix::send(index_address_,
+                                                    &services::index::manager_index_t::on_horizon_advanced,
+                                                    new_lowest);
+                    pending_void_.emplace_back(std::move(index_send_result.second));
+                }
+            };
+            sweep_broadcast();
         }
     }
 
@@ -483,15 +408,8 @@ namespace services::dispatcher {
     }
 
     void manager_dispatcher_t::seed_commit_clock_sync(uint64_t high_water) {
-        // Restore BOTH halves of the commit clock from the combined durable frontier,
-        // not just published_horizon_. Raising only the horizon while current_timestamp_
-        // restarts at 1 lets post-reopen INSERTs draw commit-ids that reuse the
-        // already-published band; a reader that snapshots them in-flight then judges them
-        // invisible forever (symptom: SSB q1-1 returned 0 rows on reopen).
-        // restore_commit_clock raises current_timestamp_ to frontier+1 in lockstep
-        // with published_horizon_, so fresh commits land strictly above the durable
-        // frontier. Monotonic / idempotent — never lowers either half. Single-threaded
-        // bootstrap; scheduler not yet started.
+        // Restores BOTH halves of the commit clock: raising only the horizon left post-reopen
+        // INSERTs reusing already-published commit-ids (symptom: SSB q1-1 returned 0 rows on reopen).
         if (high_water > 0) {
             txn_manager_.restore_commit_clock(high_water);
             trace(log_,
@@ -503,8 +421,6 @@ namespace services::dispatcher {
     manager_dispatcher_t::unique_future<components::cursor::cursor_t_ptr>
     manager_dispatcher_t::execute_plan(components::session::session_id_t session,
                                        components::logical_plan::execution_plan_t plan) {
-        // to_string() renders the whole plan tree; unguarded it ran on every statement at every
-        // log level. wrapper_dispatcher_t::send_plan guards its own trace the same way.
         if (log_.should_log(log_t::level::trace)) {
             trace(log_,
                   "manager_dispatcher_t::execute_plan session: {}, {}",
@@ -512,9 +428,6 @@ namespace services::dispatcher {
                   plan.sub_queries.back()->to_string());
         }
 
-        // Pure session-hash routing — no plan inspection: the executor owns
-        // optimize/resolve/validate/enrich/rewrites and the commit tails. The
-        // hash gives every session a sticky executor, deterministically.
         assert(!executors_.empty());
         const std::size_t pool_idx = std::hash<components::session::session_id_t>{}(session) % executors_.size();
         trace(log_, "manager_dispatcher_t::execute_plan: routing to executor[{}]", pool_idx);
@@ -527,32 +440,26 @@ namespace services::dispatcher {
         }
         auto exec_result = co_await std::move(future);
 
-        // The ONLY post-execute bookkeeping left on the dispatcher: a
-        // successful SET TIMEZONE surfaces the persisted zone name by value;
-        // refresh the solely-owned default_tz_cat_ so subsequent session_tz()
-        // reads see it. Only this loop thread mutates the catalog.
         if (!exec_result.applied_timezone.empty()) {
-            (void) default_tz_cat_.set_timezone(
+            auto tz_err = default_tz_cat_.set_timezone(
                 resource(),
                 std::string_view{exec_result.applied_timezone.data(), exec_result.applied_timezone.size()});
+            if (tz_err.contains_error()) {
+                error(log_,
+                      "manager_dispatcher_t::execute_plan: session timezone cache refused '{}' AFTER it was "
+                      "persisted to pg_settings: {}",
+                      std::string_view{exec_result.applied_timezone.data(), exec_result.applied_timezone.size()},
+                      tz_err.what);
+                exec_result.cursor = components::cursor::make_cursor(resource(), std::move(tz_err));
+            }
         }
 
         trace(log_,
               "manager_dispatcher_t::execute_plan: result received, success: {}",
               exec_result.cursor->is_success());
         if (exec_result.cursor && exec_result.cursor->is_error()) {
-            // Failure release — IMPLICIT txns only. Executor error paths that
-            // co_return BEFORE their commit/abort tails (validation,
-            // catalog-resolve and sub-query errors) leave the session txn begun
-            // by txn_begin_session_msg ACTIVE forever. A leaked active txn pins
-            // compact_watermark() at its snapshot horizon permanently, blocking
-            // every later compact and (via the checkpoint gate) every per-table
-            // checkpoint. The no-txn / already-ended cases fall through (the
-            // executor's failed-DML tail aborts itself). EXPLICIT txns are left
-            // alive on purpose: the client's ROLLBACK runs the abort-drain
-            // revert cascade (e.g. un-stamping a DROP's catalog tombstones); a
-            // bare abort() here would discard that revert state and leave dead
-            // txn-id delete marks blocking any later re-DELETE of the same rows.
+            // IMPLICIT txns only: left open, this would pin compact_watermark() forever; EXPLICIT ones stay
+            // alive on purpose, for the client's ROLLBACK to run the abort-drain cascade.
             if (auto* txn = txn_manager_.find_transaction(session); txn != nullptr && !txn->is_explicit()) {
                 txn_manager_.abort(session);
                 try_trigger_cleanup_if_horizon_advanced();
@@ -561,27 +468,20 @@ namespace services::dispatcher {
         co_return std::move(exec_result.cursor);
     }
 
-    manager_dispatcher_t::unique_future<bool>
+    manager_dispatcher_t::unique_future<core::error_t>
     manager_dispatcher_t::register_udf(components::session::session_id_t session,
                                        components::compute::function_ptr function) {
+        if (!function) {
+            co_return core::error_t{core::error_code_t::invalid_parameter,
+                                    std::pmr::string{"register_udf: no function to register", resource()}};
+        }
         trace(log_, "dispatcher_t::register_udf session: {}, function name: {}", session.data(), function->name());
 
-        // Pool-admin operation: the dispatcher owns the executor addresses and
-        // the scheduler, so it drives the per-executor registry fan-out ITSELF
-        // (plain sequential sends — no callable indirection), then runs the
-        // operator pipeline for the default-registry mirror + pg_proc rows.
-        // The node owns the unique function payload; every fan-out send
-        // carries a deep copy via get_copy().
         auto plan =
             boost::intrusive_ptr(new components::logical_plan::node_register_udf_t(resource(), std::move(function)));
 
         components::operators::operator_register_udf_t::executor_uids_t executor_uids(resource());
         executor_uids.reserve(executor_addresses_.size());
-        // Two-phase fan-out: send register_udf to every executor first (each
-        // send carries its own deep function copy, so the sends are mutually
-        // independent), then await all the acks. Every future is drained even
-        // after the first error so none is dropped; a single error fails the
-        // whole registration.
         std::pmr::vector<actor_zeta::unique_future<std::unique_ptr<collection::executor::function_result_t>>>
             ack_futures(resource());
         ack_futures.reserve(executor_addresses_.size());
@@ -595,23 +495,44 @@ namespace services::dispatcher {
             }
             ack_futures.push_back(std::move(fut));
         }
-        bool fanout_failed = false;
-        for (auto& fut : ack_futures) {
-            auto res = co_await std::move(fut);
-            if (!res || res->has_error()) {
-                fanout_failed = true;
+        core::error_t fanout_error = core::error_t::no_error();
+        std::pmr::vector<std::pair<std::size_t, components::compute::function_uid>> registered(resource());
+        registered.reserve(ack_futures.size());
+        for (std::size_t i = 0; i < ack_futures.size(); ++i) {
+            auto res = co_await std::move(ack_futures[i]);
+            if (!res) {
+                if (!fanout_error.contains_error()) {
+                    fanout_error = core::error_t{core::error_code_t::function_registry_error,
+                                                 std::pmr::string{"register_udf: executor " + std::to_string(i) +
+                                                                      " of " + std::to_string(ack_futures.size()) +
+                                                                      " returned no registration result",
+                                                                  resource()}};
+                }
+                continue;
+            }
+            if (res->has_error()) {
+                if (!fanout_error.contains_error()) {
+                    fanout_error = res->error();
+                }
                 continue;
             }
             executor_uids.push_back(res->value());
+            registered.emplace_back(i, res->value());
         }
-        if (fanout_failed) {
-            co_return false;
+        if (fanout_error.contains_error()) {
+            error(log_, "dispatcher_t::register_udf: executor fan-out refused: {}", fanout_error.what);
+            co_await unwind_udf_fanout_(session, std::move(registered));
+            co_return fanout_error;
         }
 
         services::context_storage_t cstor{resource(), log_.clone(), session_tz(session)};
         auto op = services::planner::impl::create_plan_register_udf(cstor, plan, std::move(executor_uids));
         if (!op) {
-            co_return false;
+            co_await unwind_udf_fanout_(session, std::move(registered));
+            co_return core::error_t{core::error_code_t::create_physical_plan_error,
+                                    std::pmr::string{"register_udf: node_register_udf_t could not be lowered into an "
+                                                     "operator",
+                                                     resource()}};
         }
         op->set_as_root();
 
@@ -621,19 +542,13 @@ namespace services::dispatcher {
                                              actor_zeta::address_t::empty_address(),
                                              actor_zeta::address_t::empty_address(),
                                              &fn_registry,
-                                             params};
-        pctx.disk_address = disk_address_;
+                                             params,
+                                             disk_address_,
+                                             index_address_,
+                                             wal_address_};
         pctx.txn = components::table::transaction_data{0, 0};
 
         op->prepare();
-        // operator_register_udf_t is a sourceless sink (role()==sink,
-        // needs_async_finalize()==true): ALL work — the conflict read, default-registry
-        // mirror, pg_proc/pg_depend writes — runs in await_async_and_resume (the
-        // executor's bottom-up async-finalize pass). The dispatcher is a DIFFERENT
-        // actor than the executor, so it cannot call drive_subplan_; the minimal
-        // correct drive for a sourceless-sink leaf is a single direct
-        // await_async_and_resume (the executor's execute_pipeline does exactly this
-        // in its bottom-up async-finalize pass).
         co_await op->await_async_and_resume(&pctx);
         if (pctx.has_pending_disk_futures()) {
             auto futures = pctx.take_pending_disk_futures();
@@ -643,14 +558,50 @@ namespace services::dispatcher {
         }
 
         auto* ru = static_cast<components::operators::operator_register_udf_t*>(op.get());
-        co_return ru->success();
+        if (op->has_error()) {
+            error(log_, "dispatcher_t::register_udf: {}", op->get_error().what);
+            co_await unwind_udf_fanout_(session, std::move(registered));
+            co_return op->get_error();
+        }
+        if (!ru->success()) {
+            co_await unwind_udf_fanout_(session, std::move(registered));
+            co_return core::error_t{core::error_code_t::other_error,
+                                    std::pmr::string{"register_udf: the operator reported failure without naming a "
+                                                     "reason",
+                                                     resource()}};
+        }
+        co_return core::error_t::no_error();
     }
 
-    manager_dispatcher_t::unique_future<bool>
+    manager_dispatcher_t::unique_future<void> manager_dispatcher_t::unwind_udf_fanout_(
+        components::session::session_id_t session,
+        std::pmr::vector<std::pair<std::size_t, components::compute::function_uid>> registered) {
+        std::pmr::vector<actor_zeta::unique_future<bool>> acks(resource());
+        acks.reserve(registered.size());
+        for (const auto& [idx, uid] : registered) {
+            auto [needs_sched, fut] = actor_zeta::otterbrix::send(executor_addresses_[idx],
+                                                                  &collection::executor::executor_t::unregister_udf_uid,
+                                                                  session,
+                                                                  uid);
+            if (needs_sched && executors_[idx]) {
+                scheduler_->enqueue(executors_[idx].get());
+            }
+            acks.push_back(std::move(fut));
+        }
+        for (std::size_t k = 0; k < acks.size(); ++k) {
+            const bool dropped = co_await std::move(acks[k]);
+            if (!dropped) {
+                error(log_,
+                      "dispatcher_t::register_udf unwind: executor {} did not hold uid {} it had just answered",
+                      registered[k].first,
+                      registered[k].second);
+            }
+        }
+        co_return;
+    }
+
+    manager_dispatcher_t::unique_future<core::error_t>
     manager_dispatcher_t::set_explain_renderer(uint32_t id, services::collection::explain_render_fn fn) {
-        // Pool-admin fan-out (like register_udf): send the slot id + POD fn-pointer to every executor;
-        // each registers into its OWN registry copy (no shared mutable state). Two-phase: send-all,
-        // then await-all so no ack is dropped.
         std::pmr::vector<actor_zeta::unique_future<bool>> ack_futures(resource());
         ack_futures.reserve(executor_addresses_.size());
         for (std::size_t i = 0; i < executor_addresses_.size(); ++i) {
@@ -664,23 +615,30 @@ namespace services::dispatcher {
             }
             ack_futures.push_back(std::move(fut));
         }
-        bool ok = true;
-        for (auto& fut : ack_futures) {
-            auto res = co_await std::move(fut);
-            if (!res) {
-                ok = false;
+        core::error_t fanout_error = core::error_t::no_error();
+        for (std::size_t i = 0; i < ack_futures.size(); ++i) {
+            const bool res = co_await std::move(ack_futures[i]);
+            if (!res && !fanout_error.contains_error()) {
+                fanout_error = core::error_t{
+                    core::error_code_t::invalid_parameter,
+                    std::pmr::string{"set_explain_renderer: executor " + std::to_string(i) + " of " +
+                                         std::to_string(ack_futures.size()) + " refused renderer slot " +
+                                         std::to_string(id) + " (slot id past the registry limit, or a null renderer)",
+                                     resource()}};
             }
         }
-        co_return ok;
+        if (fanout_error.contains_error()) {
+            error(log_, "dispatcher_t::set_explain_renderer: {}", fanout_error.what);
+        }
+        co_return fanout_error;
     }
 
-    manager_dispatcher_t::unique_future<bool>
+    manager_dispatcher_t::unique_future<core::error_t>
     manager_dispatcher_t::unregister_udf(components::session::session_id_t session,
                                          std::string function_name,
                                          std::pmr::vector<components::types::complex_logical_type> inputs) {
         trace(log_, "dispatcher_t::unregister_udf: session {}, {}", session.data(), function_name);
 
-        // every per-executor registry has to drop the overload
         std::pmr::vector<actor_zeta::unique_future<bool>> ack_futures(resource());
         ack_futures.reserve(executor_addresses_.size());
         for (std::size_t i = 0; i < executor_addresses_.size(); ++i) {
@@ -695,14 +653,23 @@ namespace services::dispatcher {
             }
             ack_futures.push_back(std::move(fut));
         }
-        for (auto& fut : ack_futures) {
-            co_await std::move(fut);
+        core::error_t fanout_error = core::error_t::no_error();
+        for (std::size_t i = 0; i < ack_futures.size(); ++i) {
+            const bool dropped = co_await std::move(ack_futures[i]);
+            if (!dropped && !fanout_error.contains_error()) {
+                fanout_error = core::error_t{core::error_code_t::unrecognized_function,
+                                             std::pmr::string{"unregister_udf: executor " + std::to_string(i) + " of " +
+                                                                  std::to_string(ack_futures.size()) +
+                                                                  " held no overload of '" + function_name +
+                                                                  "' matching this signature; pg_proc left untouched",
+                                                              resource()}};
+            }
+        }
+        if (fanout_error.contains_error()) {
+            error(log_, "dispatcher_t::unregister_udf: {}", fanout_error.what);
+            co_return fanout_error;
         }
 
-        // Operator-pipeline path. The logical leaf node_unregister_udf_t
-        // carries the (name, inputs) signature; the operator probes
-        // function_registry_t::get_default(), removes the matching overload,
-        // and purges pg_proc + pg_depend rows.
         auto plan = boost::intrusive_ptr(
             new components::logical_plan::node_unregister_udf_t(resource(),
                                                                 core::function_name_t{std::move(function_name)},
@@ -716,7 +683,10 @@ namespace services::dispatcher {
                                                  components::logical_plan::limit_t::unlimit(),
                                                  /*params=*/nullptr);
         if (!op) {
-            co_return false;
+            co_return core::error_t{core::error_code_t::create_physical_plan_error,
+                                    std::pmr::string{"unregister_udf: node_unregister_udf_t could not be lowered into "
+                                                     "an operator",
+                                                     resource()}};
         }
         op->set_as_root();
 
@@ -725,19 +695,13 @@ namespace services::dispatcher {
                                              actor_zeta::address_t::empty_address(),
                                              actor_zeta::address_t::empty_address(),
                                              &fn_registry,
-                                             params};
-        pctx.disk_address = disk_address_;
+                                             params,
+                                             disk_address_,
+                                             index_address_,
+                                             wal_address_};
         pctx.txn = components::table::transaction_data{0, 0};
 
         op->prepare();
-        // operator_unregister_udf_t is a sourceless sink (role()==sink,
-        // needs_async_finalize()==true): ALL work — the registry existence-check +
-        // overload drop, the pg_proc/pg_depend purge — runs in await_async_and_resume
-        // (the executor's bottom-up async-finalize pass). The dispatcher is a
-        // DIFFERENT actor than the executor, so it cannot call drive_subplan_; the
-        // minimal correct drive for a sourceless-sink leaf is a single direct
-        // await_async_and_resume (mirrors execute_pipeline's bottom-up async-finalize
-        // pass).
         co_await op->await_async_and_resume(&pctx);
         if (pctx.has_pending_disk_futures()) {
             auto futures = pctx.take_pending_disk_futures();
@@ -747,13 +711,20 @@ namespace services::dispatcher {
         }
 
         auto* uu = static_cast<components::operators::operator_unregister_udf_t*>(op.get());
-        co_return uu->success();
+        if (op->has_error()) {
+            error(log_, "dispatcher_t::unregister_udf: {}", op->get_error().what);
+            co_return op->get_error();
+        }
+        if (!uu->success()) {
+            co_return core::error_t{core::error_code_t::other_error,
+                                    std::pmr::string{"unregister_udf: the operator reported failure without naming a "
+                                                     "reason",
+                                                     resource()}};
+        }
+        co_return core::error_t::no_error();
     }
 
     namespace {
-        // Build a register/unregister-cast plan that first resolves any UDT
-        // source/target type names against the catalog, so execute_plan_full's
-        // resolve pass turns them into real types (or leaves UNKNOWN → rejected).
         components::logical_plan::execution_plan_t
         make_cast_resolve_plan(std::pmr::memory_resource* resource,
                                components::logical_plan::node_ptr leaf,
@@ -780,16 +751,13 @@ namespace services::dispatcher {
         }
     } // namespace
 
-    manager_dispatcher_t::unique_future<bool>
+    manager_dispatcher_t::unique_future<core::error_t>
     manager_dispatcher_t::register_cast(components::session::session_id_t session,
                                         components::types::complex_logical_type source,
                                         components::types::complex_logical_type target,
                                         components::casts::cast_entry entry) {
         trace(log_, "dispatcher_t::register_cast session: {}", session.data());
 
-        // Step 1 — resolve + validate through the standard pipeline (read-only): an
-        // unregistered source/target type is rejected, as is an already-registered
-        // (source, target). The executor returns the resolved types on resolved_cast.
         auto leaf =
             boost::intrusive_ptr(new components::logical_plan::node_register_cast_t(resource(), source, target, entry));
         auto plan = make_cast_resolve_plan(resource(), leaf, source, target);
@@ -802,20 +770,27 @@ namespace services::dispatcher {
             scheduler_->enqueue(executors_[pool_idx].get());
         }
         auto res = co_await std::move(fut);
-        // The resolve/validate pass mutates nothing; end its implicit session txn.
         if (auto* txn = txn_manager_.find_transaction(session); txn != nullptr && !txn->is_explicit()) {
             txn_manager_.abort(session);
             try_trigger_cleanup_if_horizon_advanced();
         }
-        if (!res.cursor || res.cursor->is_error() || !res.resolved_cast) {
-            co_return false;
+        if (!res.cursor) {
+            co_return core::error_t{core::error_code_t::other_error,
+                                    std::pmr::string{"register_cast: the resolve pass returned no cursor", resource()}};
+        }
+        if (res.cursor->is_error()) {
+            co_return res.cursor->get_error();
+        }
+        if (!res.resolved_cast) {
+            co_return core::error_t{
+                core::error_code_t::schema_error,
+                std::pmr::string{"register_cast: the resolve pass returned no resolved (source, target) pair",
+                                 resource()}};
         }
         const auto resolved_source = res.resolved_cast->first;
         const auto resolved_target = res.resolved_cast->second;
 
-        // Step 2 — set the registries FIRST (fan-out to every executor + the
-        // dispatcher-side copy). Registry before catalog: a crash after this but
-        // before the pg_cast write can never leave a durable row with no live cast.
+        // Registries set first: a crash before the pg_cast write can never leave a durable row with no live cast.
         std::pmr::vector<actor_zeta::unique_future<bool>> ack_futures(resource());
         ack_futures.reserve(executor_addresses_.size());
         for (std::size_t i = 0; i < executor_addresses_.size(); ++i) {
@@ -830,28 +805,36 @@ namespace services::dispatcher {
             }
             ack_futures.push_back(std::move(ack));
         }
-        bool fanout_ok = true;
-        for (auto& ack : ack_futures) {
-            if (!co_await std::move(ack)) {
-                fanout_ok = false;
+        core::error_t fanout_error = core::error_t::no_error();
+        for (std::size_t i = 0; i < ack_futures.size(); ++i) {
+            const bool accepted = co_await std::move(ack_futures[i]);
+            if (!accepted && !fanout_error.contains_error()) {
+                fanout_error = core::error_t{core::error_code_t::schema_error,
+                                             std::pmr::string{"register_cast: executor " + std::to_string(i) + " of " +
+                                                                  std::to_string(ack_futures.size()) +
+                                                                  " refused the cast entry; pg_cast left unwritten",
+                                                              resource()}};
             }
         }
-        if (!fanout_ok) {
-            co_return false;
+        if (fanout_error.contains_error()) {
+            error(log_, "dispatcher_t::register_cast: {}", fanout_error.what);
+            co_return fanout_error;
         }
         if (auto err = cast_registry_.add(resolved_source, resolved_target, components::casts::cast_entry(entry));
             err.contains_error()) {
             error(log_, "register_cast: cast registry refused the entry: {}", err.what);
-            co_return false;
+            co_return err;
         }
 
-        // Step 3 — write the pg_cast row (catalog after registry).
         auto write_leaf = boost::intrusive_ptr(
             new components::logical_plan::node_register_cast_t(resource(), resolved_source, resolved_target, entry));
         services::context_storage_t cstor{resource(), log_.clone(), session_tz(session)};
         auto op = services::planner::impl::create_plan_register_cast(cstor, write_leaf);
         if (!op) {
-            co_return false;
+            co_return core::error_t{core::error_code_t::create_physical_plan_error,
+                                    std::pmr::string{"register_cast: node_register_cast_t could not be lowered into an "
+                                                     "operator",
+                                                     resource()}};
         }
         op->set_as_root();
         components::logical_plan::storage_parameters params(resource());
@@ -860,8 +843,10 @@ namespace services::dispatcher {
                                              actor_zeta::address_t::empty_address(),
                                              actor_zeta::address_t::empty_address(),
                                              &fn_registry,
-                                             params};
-        pctx.disk_address = disk_address_;
+                                             params,
+                                             disk_address_,
+                                             index_address_,
+                                             wal_address_};
         pctx.txn = components::table::transaction_data{0, 0};
         op->prepare();
         co_await op->await_async_and_resume(&pctx);
@@ -872,17 +857,25 @@ namespace services::dispatcher {
             }
         }
         auto* rc = static_cast<components::operators::operator_register_cast_t*>(op.get());
-        co_return rc->success();
+        if (op->has_error()) {
+            error(log_, "dispatcher_t::register_cast: {}", op->get_error().what);
+            co_return op->get_error();
+        }
+        if (!rc->success()) {
+            co_return core::error_t{core::error_code_t::other_error,
+                                    std::pmr::string{"register_cast: the operator reported failure without naming a "
+                                                     "reason",
+                                                     resource()}};
+        }
+        co_return core::error_t::no_error();
     }
 
-    manager_dispatcher_t::unique_future<bool>
+    manager_dispatcher_t::unique_future<core::error_t>
     manager_dispatcher_t::unregister_cast(components::session::session_id_t session,
                                           components::types::complex_logical_type source,
                                           components::types::complex_logical_type target) {
         trace(log_, "dispatcher_t::unregister_cast session: {}", session.data());
 
-        // Step 1 — resolve + validate: reject an unregistered type or a cast that
-        // does not exist; get the resolved types back.
         auto leaf =
             boost::intrusive_ptr(new components::logical_plan::node_unregister_cast_t(resource(), source, target));
         auto plan = make_cast_resolve_plan(resource(), leaf, source, target);
@@ -899,13 +892,23 @@ namespace services::dispatcher {
             txn_manager_.abort(session);
             try_trigger_cleanup_if_horizon_advanced();
         }
-        if (!res.cursor || res.cursor->is_error() || !res.resolved_cast) {
-            co_return false;
+        if (!res.cursor) {
+            co_return core::error_t{
+                core::error_code_t::other_error,
+                std::pmr::string{"unregister_cast: the resolve pass returned no cursor", resource()}};
+        }
+        if (res.cursor->is_error()) {
+            co_return res.cursor->get_error();
+        }
+        if (!res.resolved_cast) {
+            co_return core::error_t{
+                core::error_code_t::schema_error,
+                std::pmr::string{"unregister_cast: the resolve pass returned no resolved (source, target) pair",
+                                 resource()}};
         }
         const auto resolved_source = res.resolved_cast->first;
         const auto resolved_target = res.resolved_cast->second;
 
-        // Step 2 — remove from every registry FIRST.
         std::pmr::vector<actor_zeta::unique_future<bool>> ack_futures(resource());
         ack_futures.reserve(executor_addresses_.size());
         for (std::size_t i = 0; i < executor_addresses_.size(); ++i) {
@@ -919,18 +922,40 @@ namespace services::dispatcher {
             }
             ack_futures.push_back(std::move(ack));
         }
-        for (auto& ack : ack_futures) {
-            co_await std::move(ack);
+        core::error_t fanout_error = core::error_t::no_error();
+        for (std::size_t i = 0; i < ack_futures.size(); ++i) {
+            const bool removed = co_await std::move(ack_futures[i]);
+            if (!removed && !fanout_error.contains_error()) {
+                fanout_error = core::error_t{core::error_code_t::schema_error,
+                                             std::pmr::string{"unregister_cast: executor " + std::to_string(i) +
+                                                                  " of " + std::to_string(ack_futures.size()) +
+                                                                  " did not drop the cast; pg_cast row left in place",
+                                                              resource()}};
+            }
         }
-        cast_registry_.remove(resolved_source, resolved_target);
+        if (fanout_error.contains_error()) {
+            error(log_, "dispatcher_t::unregister_cast: {}", fanout_error.what);
+            co_return fanout_error;
+        }
+        if (!cast_registry_.remove(resolved_source, resolved_target)) {
+            auto own_error = core::error_t{
+                core::error_code_t::do_not_exists,
+                std::pmr::string{"unregister_cast: the dispatcher's own cast registry did not hold the cast; "
+                                 "pg_cast row left in place",
+                                 resource()}};
+            error(log_, "dispatcher_t::unregister_cast: {}", own_error.what);
+            co_return own_error;
+        }
 
-        // Step 3 — delete the pg_cast row (catalog after registry).
         auto write_leaf = boost::intrusive_ptr(
             new components::logical_plan::node_unregister_cast_t(resource(), resolved_source, resolved_target));
         services::context_storage_t cstor{resource(), log_.clone(), session_tz(session)};
         auto op = services::planner::impl::create_plan_unregister_cast(cstor, write_leaf);
         if (!op) {
-            co_return false;
+            co_return core::error_t{core::error_code_t::create_physical_plan_error,
+                                    std::pmr::string{"unregister_cast: node_unregister_cast_t could not be lowered "
+                                                     "into an operator",
+                                                     resource()}};
         }
         op->set_as_root();
         components::logical_plan::storage_parameters params(resource());
@@ -939,8 +964,10 @@ namespace services::dispatcher {
                                              actor_zeta::address_t::empty_address(),
                                              actor_zeta::address_t::empty_address(),
                                              &fn_registry,
-                                             params};
-        pctx.disk_address = disk_address_;
+                                             params,
+                                             disk_address_,
+                                             index_address_,
+                                             wal_address_};
         pctx.txn = components::table::transaction_data{0, 0};
         op->prepare();
         co_await op->await_async_and_resume(&pctx);
@@ -951,17 +978,21 @@ namespace services::dispatcher {
             }
         }
         auto* uc = static_cast<components::operators::operator_unregister_cast_t*>(op.get());
-        co_return uc->success();
+        if (op->has_error()) {
+            error(log_, "dispatcher_t::unregister_cast: {}", op->get_error().what);
+            co_return op->get_error();
+        }
+        if (!uc->success()) {
+            co_return core::error_t{core::error_code_t::other_error,
+                                    std::pmr::string{"unregister_cast: the operator reported failure without naming a "
+                                                     "reason",
+                                                     resource()}};
+        }
+        co_return core::error_t::no_error();
     }
-
-    // ===== txn-state mailbox service =====
-    // Every handler is a pure co_return over intra-actor txn_manager_ calls —
-    // no awaits, no executor round-trips (anti-deadlock invariant).
 
     manager_dispatcher_t::unique_future<txn_session_context_t>
     manager_dispatcher_t::txn_begin_session_msg(components::session::session_id_t session) {
-        // begin_transaction is idempotent per session (returns the existing
-        // active txn), so a DML statement inside an explicit BEGIN joins it.
         auto& txn = txn_manager_.begin_transaction(session);
         txn_session_context_t out;
         out.txn = txn.data();
@@ -978,8 +1009,6 @@ namespace services::dispatcher {
 
     manager_dispatcher_t::unique_future<void>
     manager_dispatcher_t::txn_mark_explicit_msg(components::session::session_id_t session) {
-        // begin (idempotent) THEN mark — never a silent no-op on a missing txn.
-        // A stray BEGIN inside an open txn reuses it (Postgres semantics).
         auto& txn = txn_manager_.begin_transaction(session);
         txn.mark_explicit();
         trace(log_,
@@ -995,22 +1024,11 @@ namespace services::dispatcher {
         txn_commit_drain_t out;
         if (auto* txn_t = txn_manager_.find_transaction(session)) {
             if (!txn_t->has_accumulated()) {
-                // Empty COMMIT — a bare COMMIT, a read-only explicit txn, or
-                // zero-row DML accumulated nothing. Aborting is the MVCC-equivalent
-                // end: an empty commit must NOT allocate a commit_id nor advance
-                // the horizon (no rows to make visible, no tombstones to GC). out
-                // stays default — commit_id 0, every drain field empty — so the
-                // caller skips publish() and storage_publish_* entirely.
+                // Empty COMMIT aborts instead of committing: it must not allocate a commit_id or advance the horizon.
                 txn_manager_.abort(session);
-                // Ending the txn frees its snapshot horizon — let the DROP-GC
-                // broadcast fire (parity with the abort-drain / abort handlers).
                 try_trigger_cleanup_if_horizon_advanced();
                 co_return out;
             }
-            // Snapshot + drain BEFORE commit() purges the active map: base
-            // appends remapped to pg_catalog_append_range_t, base deletes
-            // collapsed to a table-oid set (loss-free: every drained range
-            // carries the same explicit txn id).
             out.txn = txn_t->data();
             txn_t->drain_pg_catalog_pending(out.swap_appends, out.swap_deletes);
             out.swap_backfills = txn_t->drain_pg_attribute_commit_id_backfills();
@@ -1024,18 +1042,11 @@ namespace services::dispatcher {
             for (const auto& d : drained_deletes) {
                 out.base_delete_tables.insert(d.table_oid);
             }
-            // Drained out so the commit operator's GC-remap can stamp these with
-            // commit_id; non-empty here (NOT is_ddl_commit_) triggers that block.
             out.dropped_storage_oids = txn_t->drain_dropped_storages();
-            // CREATE side, symmetric with the DROP drain above: the commit
-            // operator publishes these storage oids / indexes at COMMIT.
             out.created_storage_oids = txn_t->drain_created_storages();
             out.created_indexes = txn_t->drain_created_indexes();
         }
-        // Allocates the commit_id and leaves it in in_flight_commits_ (0 on a
-        // missing txn). The ProcArray publish barrier deliberately does NOT run
-        // here — the caller sends txn_publish_msg AFTER storage_publish_* / WAL,
-        // so concurrent snapshots never observe a half-flipped pg_catalog.
+        // No publish barrier here — txn_publish_msg runs it after storage/WAL, so no snapshot sees it half-flipped.
         out.commit_id = txn_manager_.commit(session);
         co_return out;
     }
@@ -1046,93 +1057,80 @@ namespace services::dispatcher {
         txn_abort_drain_t out;
         if (auto* txn_t = txn_manager_.find_transaction(session)) {
             out.txn = txn_t->data();
-            // Keep the appends (their physical row slots need
-            // storage_revert_appends). KEEP the pg_catalog delete-tables too: a
-            // DROP inside this txn stamped delete marks on catalog heaps
-            // (delete_id == txn_id). Those marks are invisible to readers (aborted
-            // txn id), but they PERSIST on the heap and would block a future
-            // re-DELETE of the same catalog row (chunk_vector_info::delete_rows
-            // skips an already-marked slot). The abort operator un-stamps them via
-            // storage_revert_deletes, mirroring the base-table delete revert.
-            // The backfill markers are still discarded (their targets are in the
-            // appends, reverted by storage_revert_appends).
             txn_t->drain_pg_catalog_pending(out.swap_appends, out.pg_catalog_delete_tables);
             auto backfills_discarded = txn_t->drain_pg_attribute_commit_id_backfills();
             (void) backfills_discarded;
-            // Drain the parked base appends only to collect the UNIQUE table
-            // oids they touched: the abort operator fans out
-            // manager_index_t::revert_insert per oid to drop this txn's PENDING
-            // in-memory index entries (parity with executor.cpp's failed-DML
-            // revert). The ranges themselves are discarded — their physical row
-            // slots ride in the pg_catalog/base storage_revert path, and the
-            // index revert keys per (table_oid, txn_id), not per range. The base
-            // DELETE ranges are collected the same way: only their UNIQUE table
-            // oids matter, so the abort operator can fan out
-            // manager_index_t::revert_delete per oid to clear this txn's PENDING
-            // in-memory index DELETE markers (parity with executor.cpp's
-            // failed-DML revert_delete). The ranges themselves are still dropped:
-            // uncommitted tombstones (delete_id == txn_id) are invisible to every
-            // reader and VACUUM reclaims them; only the index markers, which sit
-            // outside the MVCC visibility filter, need the explicit revert.
             auto drained_appends = txn_t->drain_base_appends();
+            out.base_appends.reserve(drained_appends.size());
             for (const auto& r : drained_appends) {
                 out.base_append_tables.insert(r.table_oid);
+                out.base_appends.push_back(
+                    components::pg_catalog_append_range_t{r.table_oid, r.row_start, r.row_count});
             }
             auto drained_deletes = txn_t->drain_base_deletes();
             for (const auto& d : drained_deletes) {
                 out.base_delete_tables.insert(d.table_oid);
             }
-            // Drain the DROP-retired storage oids too. Informational today: the
-            // abort operator does not yet un-stamp them on abort; for now they ride
-            // out for symmetry with the commit drain and to clear the accumulator.
+            // DROP-retired storage oids are informational today — the abort operator does not yet un-stamp them.
             out.dropped_storage_oids = txn_t->drain_dropped_storages();
-            // Drain the CREATE-brought storage oids / indexes so the abort
-            // operator can drop the still-uncommitted artifacts — symmetric with
-            // the commit drain and the DROP drain above.
             out.created_storage_oids = txn_t->drain_created_storages();
             out.created_indexes = txn_t->drain_created_indexes();
         }
         txn_manager_.abort(session);
-        // Aborting removes the txn from the active set, so the lowest-active
-        // horizon may advance — give the DROP-GC broadcast a chance to fire.
         try_trigger_cleanup_if_horizon_advanced();
         co_return out;
     }
 
-    manager_dispatcher_t::unique_future<void>
+    manager_dispatcher_t::unique_future<core::error_t>
     manager_dispatcher_t::txn_accumulate_msg(components::session::session_id_t session,
                                              txn_accumulate_payload_t payload) {
         trace(log_, "manager_dispatcher_t::txn_accumulate_msg, session: {}", session.data());
-        if (auto* txn_t = txn_manager_.find_transaction(session)) {
-            // transaction_t's single-owner-thread invariant is structurally
-            // enforced here: only this loop thread mutates the body.
-            for (const auto& app : payload.base_appends) {
-                txn_t->accumulate_base_append(app);
-            }
-            for (const auto& del : payload.base_deletes) {
-                txn_t->accumulate_base_delete(del);
-            }
-            txn_t->accumulate_pg_catalog_pending(std::move(payload.pg_catalog_appends),
-                                                 std::move(payload.pg_catalog_delete_tables));
-            txn_t->accumulate_pg_attribute_commit_id_backfills(std::move(payload.backfills));
-            for (auto oid : payload.dropped_storage_oids) {
-                txn_t->accumulate_dropped_storage(oid);
-            }
-            for (auto oid : payload.created_storage_oids) {
-                txn_t->accumulate_created_storage(oid);
-            }
-            for (auto& index : payload.created_indexes) {
-                txn_t->accumulate_created_index(std::move(index));
-            }
+        auto* txn_t = txn_manager_.find_transaction(session);
+        if (txn_t == nullptr) {
+            error(log_,
+                  "manager_dispatcher_t::txn_accumulate_msg: session {} has no active transaction; refusing to park "
+                  "{} base appends, {} base deletes, {} pg_catalog appends, {} pg_catalog delete-tables, {} "
+                  "backfills, {} dropped storages, {} created storages, {} created indexes",
+                  session.data(),
+                  payload.base_appends.size(),
+                  payload.base_deletes.size(),
+                  payload.pg_catalog_appends.size(),
+                  payload.pg_catalog_delete_tables.size(),
+                  payload.backfills.size(),
+                  payload.dropped_storage_oids.size(),
+                  payload.created_storage_oids.size(),
+                  payload.created_indexes.size());
+            co_return core::error_t{
+                core::error_code_t::transaction_inactive,
+                std::pmr::string{"txn_accumulate_msg: the session has no active transaction, so the statement's "
+                                 "accumulated ranges cannot be parked",
+                                 resource()}};
         }
-        co_return;
+        for (const auto& app : payload.base_appends) {
+            txn_t->accumulate_base_append(app);
+        }
+        for (const auto& del : payload.base_deletes) {
+            txn_t->accumulate_base_delete(del);
+        }
+        txn_t->accumulate_pg_catalog_pending(std::move(payload.pg_catalog_appends),
+                                             std::move(payload.pg_catalog_delete_tables));
+        txn_t->accumulate_pg_attribute_commit_id_backfills(std::move(payload.backfills));
+        for (auto oid : payload.dropped_storage_oids) {
+            txn_t->accumulate_dropped_storage(oid);
+        }
+        for (auto oid : payload.created_storage_oids) {
+            txn_t->accumulate_created_storage(oid);
+        }
+        for (auto& index : payload.created_indexes) {
+            txn_t->accumulate_created_index(std::move(index));
+        }
+        co_return core::error_t::no_error();
     }
 
     manager_dispatcher_t::unique_future<void>
     manager_dispatcher_t::txn_abort_msg(components::session::session_id_t session) {
         trace(log_, "manager_dispatcher_t::txn_abort_msg, session: {}", session.data());
         txn_manager_.abort(session);
-        // Abort ends an active txn — the horizon may have advanced.
         try_trigger_cleanup_if_horizon_advanced();
         co_return;
     }
@@ -1140,24 +1138,18 @@ namespace services::dispatcher {
     manager_dispatcher_t::unique_future<uint64_t> manager_dispatcher_t::txn_publish_msg(uint64_t commit_id) {
         trace(log_, "manager_dispatcher_t::txn_publish_msg, commit_id: {}", commit_id);
         txn_manager_.publish(commit_id);
-        // The committed txn left the active set at commit(); after the publish
-        // barrier the DROP-GC horizon broadcast is safe to evaluate.
         try_trigger_cleanup_if_horizon_advanced();
-        // Return value is the COMPACT-WATERMARK (commit-id value space): the
-        // visible-to-all horizon from txn_manager_.compact_watermark(). It rides
-        // through maybe_cleanup_many into data_table_t::compact(), whose local
-        // stamp scan refuses the rebuild when ANY version stamp is above it —
-        // another active txn's snapshot, or a committed-but-unpublished commit
-        // still sitting in in_flight_commits_, could otherwise lose versions it
-        // must still see. Distinct from the commit-id-space GC horizon
-        // broadcast above (lowest_active_snapshot_horizon), which bounds the
-        // DROP-tombstone sweep, not version-history collapse.
         co_return txn_manager_.compact_watermark();
     }
 
+    manager_dispatcher_t::unique_future<void> manager_dispatcher_t::txn_discard_msg(uint64_t commit_id) {
+        trace(log_, "manager_dispatcher_t::txn_discard_msg, commit_id: {}", commit_id);
+        txn_manager_.discard(commit_id);
+        try_trigger_cleanup_if_horizon_advanced();
+        co_return;
+    }
+
     manager_dispatcher_t::unique_future<uint64_t> manager_dispatcher_t::txn_compact_watermark_msg() {
-        // Pure intra-actor read for the checkpoint/vacuum compact paths (see
-        // header). Monotone, so staleness across the mailbox hop is safe.
         const auto watermark = txn_manager_.compact_watermark();
         trace(log_, "manager_dispatcher_t::txn_compact_watermark_msg, watermark: {}", watermark);
         co_return watermark;

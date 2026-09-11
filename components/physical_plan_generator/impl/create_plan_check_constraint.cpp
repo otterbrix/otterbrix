@@ -29,8 +29,6 @@ namespace services::planner::impl {
                                                                                                 n->not_null_columns(),
                                                                                                 n->check_predicates(),
                                                                                                 n->array_size_reqs(),
-                                                                                                n->column_defaults(),
-                                                                                                n->write_set_named(),
                                                                                                 enforce_param_map(n)));
         // Child sub-plan (the DML sink, possibly under an fk_check chain).
         components::operators::operator_ptr child;
@@ -48,9 +46,7 @@ namespace services::planner::impl {
                 boost::intrusive_ptr(new components::operators::operator_unique_constraint_t(context.resource,
                                                                                              context.log.clone(),
                                                                                              n->table_oid(),
-                                                                                             n->unique_groups(),
-                                                                                             n->column_defaults(),
-                                                                                             n->write_set_named()));
+                                                                                             n->unique_groups()));
             if (child) {
                 unique->set_children(child);
             }

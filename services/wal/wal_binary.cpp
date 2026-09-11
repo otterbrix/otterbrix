@@ -11,10 +11,7 @@
 
 namespace services::wal {
 
-    // -----------------------------------------------------------------------
-    // Little-endian helpers (no-op on x86/ARM-LE, but correct everywhere).
-    // Using memcpy lets the compiler emit the optimal load/store on any ISA.
-    // -----------------------------------------------------------------------
+    // Little-endian helpers: memcpy is a no-op on x86/ARM-LE, but correct (and optimal) everywhere.
     namespace {
 
         inline void write_le32(char* dst, uint32_t v) { std::memcpy(dst, &v, 4); }
@@ -31,15 +28,12 @@ namespace services::wal {
             return v;
         }
 
-        // CRC32-C over an arbitrary byte range.
         crc32_t compute_crc(const char* data, size_t len) {
             auto crc = absl::ComputeCrc32c(absl::string_view(data, len));
             return static_cast<crc32_t>(crc);
         }
 
-        // Serialize a chunk batch into one length-prefixed payload:
-        //   [chunk_count:4] then for each chunk: [chunk_size:4][serialized chunk]
-        // The whole batch lands in a single record, so recovery sees all chunks or none.
+        // Layout: [chunk_count:4][chunk_size:4][chunk]*; the whole batch is one record, so recovery sees all or none.
         void serialize_chunk_batch(buffer_t& payload_buf,
                                    const std::pmr::vector<components::vector::data_chunk_t>& chunks) {
             const size_t count_pos = payload_buf.size();
@@ -55,8 +49,7 @@ namespace services::wal {
             }
         }
 
-        // Inverse of serialize_chunk_batch: deserialize every ≤CAP chunk into a vector
-        // (the form replay consumes). Sets ok=false on a malformed payload.
+        // Inverse of serialize_chunk_batch, producing the vector form replay consumes.
         std::pmr::vector<components::vector::data_chunk_t> deserialize_chunk_batch(const char* payload,
                                                                                    uint32_t payload_size,
                                                                                    std::pmr::memory_resource* resource,
@@ -101,40 +94,18 @@ namespace services::wal {
             return chunks;
         }
 
-        // -----------------------------------------------------------------
-        // DML header (common to INSERT/DELETE/UPDATE) layout:
-        //
-        //   [size:4]         <- payload_size (bytes between size and trailing crc32)
-        //   [last_crc32:4]
-        //   [wal_id:8]
-        //   [txn_id:8]
-        //   [record_type:1]
-        //   [table_oid:4]
-        //   [row_start:8]
-        //   [row_count:8]
-        //   [payload_size:4]
-        //   [payload: payload_size bytes]
-        //   [crc32:4]
-        //
-        // "size" counts everything from last_crc32 through payload (inclusive),
-        // i.e. everything the CRC covers.
-        //
-        // Header size: 4+8+8+1+4+8+8+4 = 45 bytes (was 45 with db_len:2+coll_len:2;
-        // exact same total since 4 bytes for table_oid replace 2+2 for the lengths
-        // and the variable strings disappear).
-        // -----------------------------------------------------------------
+        // DML header: [size:4][last_crc32:4][wal_id:8][txn_id:8][record_type:1][table_oid:4]
+        // [row_start:8][row_count:8][payload_size:4][payload][crc32:4].
 
         static constexpr size_t DML_FIXED_HEADER = 4    // last_crc32
                                                    + 8  // wal_id
                                                    + 8  // txn_id
                                                    + 1  // record_type
-                                                   + 4  // table_oid (was: db_len:2 + coll_len:2)
+                                                   + 4  // table_oid
                                                    + 8  // row_start
                                                    + 8  // row_count
                                                    + 4; // payload_size
-        // = 45
 
-        // Write a complete DML record. Returns the CRC of that record.
         crc32_t write_dml_record(buffer_t& buffer,
                                  crc32_t last_crc32,
                                  id_t wal_id,
@@ -153,11 +124,9 @@ namespace services::wal {
             buffer.resize(base + total);
             char* out = buffer.data() + base;
 
-            // size
             write_le32(out, size_field);
             out += 4;
 
-            // --- CRC-covered region starts here ---
             char* crc_start = out;
 
             write_le32(out, last_crc32);
@@ -177,7 +146,6 @@ namespace services::wal {
             write_le32(out, payload_size);
             out += 4;
 
-            // payload
             if (payload_size > 0) {
                 std::memcpy(out, payload, payload_size);
                 out += payload_size;
@@ -185,7 +153,6 @@ namespace services::wal {
 
             assert(static_cast<size_t>(out - crc_start) == size_field);
 
-            // compute CRC over the body
             crc32_t crc = compute_crc(crc_start, size_field);
             write_le32(out, crc);
 
@@ -194,9 +161,6 @@ namespace services::wal {
 
     } // anonymous namespace
 
-    // -----------------------------------------------------------------------
-    // encode_insert
-    // -----------------------------------------------------------------------
     crc32_t encode_insert(buffer_t& buffer,
                           std::pmr::memory_resource* /*resource*/,
                           crc32_t last_crc32,
@@ -206,7 +170,6 @@ namespace services::wal {
                           const std::pmr::vector<components::vector::data_chunk_t>& chunks,
                           uint64_t row_start,
                           uint64_t row_count) {
-        // Serialize the whole chunk batch into one record payload.
         buffer_t payload_buf(buffer.get_allocator());
         serialize_chunk_batch(payload_buf, chunks);
 
@@ -222,14 +185,7 @@ namespace services::wal {
                                 static_cast<uint32_t>(payload_buf.size()));
     }
 
-    // -----------------------------------------------------------------------
-    // encode_add_column
-    //
-    // Schema-growth record. Payload is a 0-row data_chunk whose columns ARE the new
-    // columns (alias-tagged types), serialized via the same data_chunk codec INSERT
-    // uses so the types round-trip through the exact path the row data does.
-    // row_count = number of new columns; row_start = 0 (unused for schema records).
-    // -----------------------------------------------------------------------
+    // Schema-growth record: payload is a 0-row data_chunk whose columns are the new ones; row_count = new-column count.
     crc32_t encode_add_column(buffer_t& buffer,
                               crc32_t last_crc32,
                               id_t wal_id,
@@ -238,11 +194,8 @@ namespace services::wal {
                               const components::vector::data_chunk_t& schema_chunk,
                               uint64_t column_count) {
         buffer_t payload_buf(buffer.get_allocator());
-        // Frame the schema chunk as a one-element chunk batch so it uses the SAME
-        // [count][len][chunk] framing INSERT does — replay decodes ADD_COLUMN via
-        // deserialize_chunk_batch, which reads a leading count a bare serialize_binary
-        // would not write (the decoder would then read the chunk's first bytes as a
-        // garbage count and drop the record, losing the grown column on restart).
+        // Framed as a one-element chunk batch, not bare serialize_binary, so the leading-count
+        // read in deserialize_chunk_batch doesn't misfire.
         std::pmr::vector<components::vector::data_chunk_t> schema_batch{payload_buf.get_allocator().resource()};
         components::vector::data_chunk_t schema_copy(schema_chunk.resource(),
                                                      schema_chunk.types(),
@@ -264,9 +217,6 @@ namespace services::wal {
                                 static_cast<uint32_t>(payload_buf.size()));
     }
 
-    // -----------------------------------------------------------------------
-    // encode_delete
-    // -----------------------------------------------------------------------
     crc32_t encode_delete(buffer_t& buffer,
                           crc32_t last_crc32,
                           id_t wal_id,
@@ -289,9 +239,6 @@ namespace services::wal {
                                 payload_size);
     }
 
-    // -----------------------------------------------------------------------
-    // encode_update
-    // -----------------------------------------------------------------------
     crc32_t encode_update(buffer_t& buffer,
                           std::pmr::memory_resource* /*resource*/,
                           crc32_t last_crc32,
@@ -301,23 +248,18 @@ namespace services::wal {
                           const int64_t* row_ids,
                           const std::pmr::vector<components::vector::data_chunk_t>& new_chunks,
                           uint64_t count) {
-        // Payload layout for UPDATE:
-        //   [row_ids_size : 4 LE]          // byte count of the row-ids block
-        //   [row_ids      : row_ids_size]
-        //   [chunk_batch  : remainder]     // [chunk_count:4] then [chunk_size:4][chunk]*
+        // Payload: [row_ids_size:4][row_ids][chunk_batch: serialize_chunk_batch's own framing].
 
         buffer_t payload_buf(buffer.get_allocator());
 
         const auto row_ids_bytes = static_cast<uint32_t>(count * sizeof(int64_t));
 
-        // Reserve for the 4-byte length prefix + row_ids.
         payload_buf.resize(4 + row_ids_bytes);
         char* p = payload_buf.data();
         write_le32(p, row_ids_bytes);
         p += 4;
         std::memcpy(p, row_ids, row_ids_bytes);
 
-        // Append the serialized chunk batch.
         serialize_chunk_batch(payload_buf, new_chunks);
 
         return write_dml_record(buffer,
@@ -332,24 +274,11 @@ namespace services::wal {
                                 static_cast<uint32_t>(payload_buf.size()));
     }
 
-    // -----------------------------------------------------------------------
-    // encode_commit
-    //
-    // Compact layout (37 bytes total):
-    //   [size:4]  = 29
-    //   [last_crc32:4]
-    //   [wal_id:8]
-    //   [txn_id:8]
-    //   [record_type:1]   = COMMIT (1)
-    //   [commit_id:8]
-    //   [crc32:4]
-    // -----------------------------------------------------------------------
+    // COMMIT (37 bytes): [size:4][last_crc32:4][wal_id:8][txn_id:8][record_type:1=COMMIT][commit_id:8][crc32:4].
     crc32_t encode_commit(buffer_t& buffer, crc32_t last_crc32, id_t wal_id, uint64_t txn_id, uint64_t commit_id) {
-        // commit_id is appended AFTER the type byte to preserve the type byte's
-        // offset, so DML decode (which reads only up to the type byte before
-        // branching) stays unaffected.
-        static constexpr uint32_t COMMIT_BODY_SIZE = 4 + 8 + 8 + 1 + 8;  // = 29
-        static constexpr size_t COMMIT_TOTAL = 4 + COMMIT_BODY_SIZE + 4; // = 37
+        // commit_id sits after the type byte so its offset matches DML records for decode.
+        static constexpr uint32_t COMMIT_BODY_SIZE = 4 + 8 + 8 + 1 + 8;
+        static constexpr size_t COMMIT_TOTAL = 4 + COMMIT_BODY_SIZE + 4;
 
         const size_t base = buffer.size();
         buffer.resize(base + COMMIT_TOTAL);
@@ -379,15 +308,12 @@ namespace services::wal {
         return crc;
     }
 
-    // -----------------------------------------------------------------------
-    // decode_record
-    // -----------------------------------------------------------------------
     record_t decode_record(const buffer_t& buffer, std::pmr::memory_resource* resource) {
         return decode_record(buffer.data(), buffer.size(), resource);
     }
 
     record_t decode_record(const char* data, size_t len, std::pmr::memory_resource* resource) {
-        record_t rec;
+        record_t rec{resource};
         rec.is_corrupt = false;
 
         // Minimum valid record is a COMMIT at 37 bytes.
@@ -399,7 +325,6 @@ namespace services::wal {
 
         const char* ptr = data;
 
-        // --- size ---
         uint32_t body_size = read_le32(ptr);
         ptr += 4;
 
@@ -411,7 +336,6 @@ namespace services::wal {
 
         rec.size = static_cast<size_tt>(4 + body_size + 4);
 
-        // CRC check: body starts at ptr, has body_size bytes.
         const char* body_start = ptr;
         crc32_t expected_crc = read_le32(body_start + body_size);
         crc32_t actual_crc = compute_crc(body_start, body_size);
@@ -423,7 +347,6 @@ namespace services::wal {
         }
         rec.crc32 = actual_crc;
 
-        // --- Common fields ---
         rec.last_crc32 = read_le32(ptr);
         ptr += 4;
         rec.id = read_le64(ptr);
@@ -433,16 +356,13 @@ namespace services::wal {
         rec.record_type = static_cast<wal_record_type>(*reinterpret_cast<const uint8_t*>(ptr));
         ptr += 1;
 
-        // commit_id is present only on COMMIT records. DML records leave it 0;
-        // replay back-fills them once the matching COMMIT (same transaction_id)
-        // is parsed.
+        // commit_id stays 0 for DML records; replay back-fills it from the matching COMMIT.
         if (rec.record_type == wal_record_type::COMMIT) {
             rec.commit_id = read_le64(ptr);
             ptr += 8;
             return rec;
         }
 
-        // --- DML fields ---
         if (static_cast<size_t>(body_size) < DML_FIXED_HEADER) {
             rec.is_corrupt = true;
             return rec;
@@ -457,7 +377,6 @@ namespace services::wal {
         uint32_t payload_size = read_le32(ptr);
         ptr += 4;
 
-        // Bounds check on variable-length data.
         if (static_cast<size_t>(DML_FIXED_HEADER + payload_size) != body_size) {
             rec.is_corrupt = true;
             return rec;
@@ -465,12 +384,9 @@ namespace services::wal {
 
         const char* payload = ptr;
 
-        // --- Type-specific payload decoding ---
         switch (rec.record_type) {
             case wal_record_type::PHYSICAL_INSERT:
-            // PHYSICAL_ADD_COLUMN shares INSERT's payload shape: a serialized
-            // data_chunk (0-row for schema records). Decode it into physical_data;
-            // the replay handler reads the column types from it.
+            // PHYSICAL_ADD_COLUMN shares INSERT's payload shape: a serialized data_chunk (0-row for schema records).
             case wal_record_type::PHYSICAL_ADD_COLUMN: {
                 if (payload_size > 0) {
                     bool ok = false;
@@ -483,8 +399,12 @@ namespace services::wal {
                 break;
             }
             case wal_record_type::PHYSICAL_DELETE: {
+                // Row-id payloads are WHOLE row ids; sizing as size/8 overran by up to 7 bytes on a ragged length.
+                if (payload_size % sizeof(int64_t) != 0) {
+                    rec.is_corrupt = true;
+                    return rec;
+                }
                 uint64_t count = payload_size / sizeof(int64_t);
-                rec.physical_row_ids = std::pmr::vector<int64_t>(resource);
                 rec.physical_row_ids.resize(count);
                 std::memcpy(rec.physical_row_ids.data(), payload, payload_size);
                 break;
@@ -496,12 +416,13 @@ namespace services::wal {
                 }
                 uint32_t row_ids_bytes = read_le32(payload);
                 const char* row_ids_data = payload + 4;
-                if (4 + row_ids_bytes > payload_size) {
+                // Wrap-safe: `4 + row_ids_bytes` could overflow 32-bit arithmetic near UINT32_MAX
+                // and let a bogus length through; same whole-row-ids rule as PHYSICAL_DELETE.
+                if (row_ids_bytes > payload_size - 4 || row_ids_bytes % sizeof(int64_t) != 0) {
                     rec.is_corrupt = true;
                     return rec;
                 }
                 uint64_t id_count = row_ids_bytes / sizeof(int64_t);
-                rec.physical_row_ids = std::pmr::vector<int64_t>(resource);
                 rec.physical_row_ids.resize(id_count);
                 std::memcpy(rec.physical_row_ids.data(), row_ids_data, row_ids_bytes);
 
@@ -525,9 +446,6 @@ namespace services::wal {
         return rec;
     }
 
-    // -----------------------------------------------------------------------
-    // extract_crc
-    // -----------------------------------------------------------------------
     crc32_t extract_crc(const buffer_t& buffer) { return extract_crc(buffer.data(), buffer.size()); }
 
     crc32_t extract_crc(const char* data, size_t len) {

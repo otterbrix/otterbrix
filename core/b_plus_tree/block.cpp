@@ -333,17 +333,26 @@ namespace core::b_plus_tree {
         assert(occupied_memory() < new_size && "block data won't fit in new size");
         auto new_buffer = static_cast<data_ptr_t>(resource_->allocate(new_size));
         std::memcpy(new_buffer, internal_buffer_, static_cast<size_t>(buffer_ - internal_buffer_));
-        std::memcpy(new_buffer + new_size - header_->unique_indices_count_ * metadata_size,
-                    last_metadata_,
-                    header_->unique_indices_count_ * metadata_size);
-        auto* new_last_metadata = reinterpret_cast<metadata*>(
-            new_buffer + full_size_ - (reinterpret_cast<data_ptr_t>(last_metadata_) - internal_buffer_));
-        for (metadata* it = last_metadata_; reinterpret_cast<data_ptr_t>(new_last_metadata) < new_buffer + new_size;
-             new_last_metadata++, it++) {
-            if (it->index.type() == components::types::physical_type::STRING) {
-                auto sv = it->index.value<components::types::physical_type::STRING>();
-                new_last_metadata->index =
-                    index_t(new_buffer + (sv.data() - internal_buffer_), static_cast<uint32_t>(sv.size()));
+
+        // One metadata entry per ITEM, not per unique index (append() bumps count_ on every
+        // item; restore_block() agrees: last_metadata_ = end_ - count_). Using
+        // unique_indices_count_ here instead drops every duplicate-key entry on resize -- e.g.
+        // 2998 of 3000 on a 2-distinct-key column, tree reporting an empty root.
+        const size_t metadata_count = header_->count_;
+        auto* new_end = reinterpret_cast<metadata*>(new_buffer + new_size);
+        auto* new_last_metadata = new_end - metadata_count;
+        std::memcpy(new_last_metadata, last_metadata_, metadata_count * metadata_size);
+
+        // STRING keys borrow their bytes from the block buffer, so re-base them onto the
+        // new allocation. Walk both ranges in lockstep, bounded by the entry count.
+        {
+            metadata* src = last_metadata_;
+            metadata* dst = new_last_metadata;
+            for (size_t i = 0; i < metadata_count; ++i, ++src, ++dst) {
+                if (src->index.type() == components::types::physical_type::STRING) {
+                    auto sv = src->index.value<components::types::physical_type::STRING>();
+                    dst->index = index_t(new_buffer + (sv.data() - internal_buffer_), static_cast<uint32_t>(sv.size()));
+                }
             }
         }
 
@@ -351,11 +360,14 @@ namespace core::b_plus_tree {
         resource_->deallocate(internal_buffer_, full_size_);
         internal_buffer_ = new_buffer;
         buffer_ = internal_buffer_ + buffer_offset;
-        available_memory_ = new_size - full_size_;
         full_size_ = new_size;
         header_ = reinterpret_cast<header_t*>(internal_buffer_);
-        end_ = reinterpret_cast<metadata*>(internal_buffer_ + new_size);
-        last_metadata_ = end_ - header_->unique_indices_count_;
+        end_ = new_end;
+        last_metadata_ = new_last_metadata;
+        // Free space is what actually separates the payload from the metadata, the same
+        // definition restore_block() uses. The old `new_size - full_size_` reported only the
+        // GROWTH and silently discarded the space that was already free.
+        available_memory_ = static_cast<uint32_t>(reinterpret_cast<data_ptr_t>(last_metadata_) - buffer_);
     }
 
     // TODO: try to split into smaller blocks if current size is greater then DEFAULT_BLOCK_SIZE

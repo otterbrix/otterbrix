@@ -23,6 +23,12 @@ namespace components::operators {
 
         [[nodiscard]] core::error_t finalize(pipeline::context_t* ctx, chunks_vector_t& out) override;
 
+        void reset_pipeline_state() noexcept override {
+            seen_.clear();
+            retained_.clear();
+            retained_fill_ = 0;
+        }
+
         // DISTINCT ON: dedup on this ON-key column subset (indices into the operator's input layer)
         // instead of the whole row; the full row is still emitted. Empty = whole-row dedup (plain
         // DISTINCT). A setter (not a defaulted ctor arg) so no get_default_resource() allocation (R14).
@@ -49,6 +55,9 @@ namespace components::operators {
         uint64_t retained_fill_{0};
         // DISTINCT ON key subset (empty ⇒ whole-row dedup). Set via set_on_keys by the planner.
         std::pmr::vector<size_t> on_keys_;
+
+        // captured schema, in case result is empty
+        std::pmr::vector<types::complex_logical_type> shape_{resource_};
 
         // The shared dedup core: for each row of each chunk, hash it, verify against the
         // retained rows, and on first occurrence copy the row into `out` (chunks of

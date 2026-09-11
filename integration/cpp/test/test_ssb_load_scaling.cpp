@@ -1,7 +1,10 @@
+#include "integration_fixture_path.hpp"
 #include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <services/disk/agent_disk.hpp>
@@ -98,33 +101,35 @@ namespace {
 //
 // Hidden ([.]) and slow. Run it with [ssbcapacity].
 namespace {
-    void probe_capacity(const std::filesystem::path& root, bool wal_on);
+    void probe_capacity(const std::filesystem::path& root, std::uintmax_t auto_checkpoint_threshold_bytes);
 } // namespace
 
 TEST_CASE("integration::cpp::test_ssb_load_scaling::lineorder_at_scale_factor_one", "[.][ssbcapacity]") {
-    probe_capacity("/tmp/otterbrix/integration/test_ssb/capacity", true);
+    probe_capacity(integration_fixture_path("test_ssb/capacity"), 16u * 1024 * 1024);
 }
 
-// The same volume with the WAL OFF, where there are no auto-checkpoints at all: nothing reaches the
-// .otbx during the load, so the only thing that can reclaim buffer memory is spilling the transient
-// column segments (can_unload refuses a block with no disk copy). If that path regresses, this case
-// runs out of memory where the WAL-on one does not.
-TEST_CASE("integration::cpp::test_ssb_load_scaling::capacity_without_wal", "[.][ssbcapacity]") {
-    probe_capacity("/tmp/otterbrix/integration/test_ssb/capacity_nowal", false);
+// The same volume with auto-checkpoints disabled entirely, so nothing reaches the .otbx during the
+// load and the only thing that can reclaim buffer memory is spilling the transient column segments
+// (can_unload refuses a block with no disk copy). If that path regresses, this case runs out of
+// memory where the checkpointing one does not. It used to reach this state by switching the WAL
+// off; a zero threshold is the honest way to ask for it.
+TEST_CASE("integration::cpp::test_ssb_load_scaling::capacity_without_auto_checkpoint", "[.][ssbcapacity]") {
+    probe_capacity(integration_fixture_path("test_ssb/capacity_no_auto_ckpt"), 0);
 }
 
 namespace {
-    void probe_capacity(const std::filesystem::path& root, bool wal_on) {
+    void probe_capacity(const std::filesystem::path& root, std::uintmax_t auto_checkpoint_threshold_bytes) {
         const std::filesystem::path source =
             std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path() / "benchmark" /
             "data" / "ssb" / "lineorder.tbl";
-        REQUIRE(std::filesystem::exists(source));
+        if (!std::filesystem::exists(source)) {
+            SKIP("benchmark/data/ssb/lineorder.tbl is missing; fetch it with benchmark/download_data.sh");
+        }
 
         auto config = test_create_config(root);
         test_clear_directory(config);
-        config.disk.on = true;
-        config.wal.on = wal_on;
         config.log.level = log_t::level::off;
+        config.wal.auto_checkpoint_threshold_bytes = auto_checkpoint_threshold_bytes;
         test_spaces space(config);
         auto* d = space.dispatcher();
         auto exec = [&](const std::string& sql) {
@@ -192,29 +197,29 @@ namespace {
 
 namespace {
     // The measurement body, shared by the two configurations below. The benchmark runner uses
-    // batches of 100 rows and turns the WAL on; the first case here deliberately differs on both so
-    // the two can be compared.
-    void measure_lineorder_load(const std::filesystem::path& root, int batch, bool wal_on, const char* label);
+    // batches of 100 rows; the first case here deliberately uses a much larger batch so the two
+    // can be compared.
+    void measure_lineorder_load(const std::filesystem::path& root, int batch, const char* label);
 } // namespace
 
 TEST_CASE("integration::cpp::test_ssb_load_scaling::lineorder_cost_per_slice", "[.][ssbload]") {
-    measure_lineorder_load("/tmp/otterbrix/integration/test_ssb/load_batch1000_nowal",
-                           1000,
-                           false,
-                           "batch 1000, WAL off");
+    measure_lineorder_load(integration_fixture_path("test_ssb/load_batch1000"), 1000, "batch 1000");
 }
 
-// The benchmark runner's exact shape: 100-row batches and the WAL enabled. If this one degrades
-// while the case above stays flat, the cost is not in the insert path at all.
+// The benchmark runner's exact shape: 100-row batches. If this one degrades while the case above
+// stays flat, the cost is not in the insert path at all.
 TEST_CASE("integration::cpp::test_ssb_load_scaling::lineorder_as_the_runner_loads_it", "[.][ssbload]") {
-    measure_lineorder_load("/tmp/otterbrix/integration/test_ssb/load_batch100_wal", 100, true, "batch 100, WAL on");
+    measure_lineorder_load(integration_fixture_path("test_ssb/load_batch100"), 100, "batch 100");
 }
 
 namespace {
-    void measure_lineorder_load(const std::filesystem::path& root, int batch, bool wal_on, const char* label) {
+    void measure_lineorder_load(const std::filesystem::path& root, int batch, const char* label) {
         const std::filesystem::path source =
             std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path() / "benchmark" /
             "data" / "ssb" / "lineorder.tbl";
+        if (!std::filesystem::exists(source)) {
+            SKIP("benchmark/data/ssb/lineorder.tbl is missing; fetch it with benchmark/download_data.sh");
+        }
         std::ifstream file(source);
         REQUIRE(file.is_open());
         std::string header;
@@ -222,8 +227,6 @@ namespace {
 
         auto config = test_create_config(root);
         test_clear_directory(config);
-        config.disk.on = true;
-        config.wal.on = wal_on;
         // The auto-checkpoint threshold is left at its production default on purpose: the defect this
         // guards against — the counter holding the WHOLE WAL directory size instead of the bytes written
         // since the last checkpoint, so the threshold stayed tripped forever once crossed — only shows
@@ -341,12 +344,12 @@ TEST_CASE("integration::cpp::test_ssb_load_scaling::explicit_checkpoint_does_not
     const std::filesystem::path source =
         std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path() / "benchmark" / "data" /
         "ssb" / "lineorder.tbl";
-    REQUIRE(std::filesystem::exists(source));
+    if (!std::filesystem::exists(source)) {
+        SKIP("benchmark/data/ssb/lineorder.tbl is missing; fetch it with benchmark/download_data.sh");
+    }
 
-    auto config = test_create_config("/tmp/otterbrix/integration/test_ssb/explicit_checkpoint");
+    auto config = test_create_config(integration_fixture_path("test_ssb/explicit_checkpoint"));
     test_clear_directory(config);
-    config.disk.on = true;
-    config.wal.on = true;
     config.log.level = log_t::level::off;
     // Small enough that a slice of rows crosses it several times over.
     config.wal.auto_checkpoint_threshold_bytes = 2 * 1024 * 1024;

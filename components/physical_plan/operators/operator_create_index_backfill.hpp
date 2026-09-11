@@ -11,51 +11,37 @@
 
 namespace components::operators {
 
-    // Test-observable counter of BATCHES the streaming CREATE INDEX backfill scan
-    // consumed (one bump per non-empty storage_fetch_next_batch reply). A backfill
-    // over a table larger than one scan batch must bump this past 1, proving the
-    // scan streams in bounded batches instead of materializing the whole table.
-    // DEV_MODE-only: the integration test target compiles with -DDEV_MODE; production
-    // binaries carry neither the counter nor this accessor.
+    // Counts non-empty storage_fetch_next_batch replies the backfill consumes; a table larger
+    // than one batch must bump this past 1 (proving it streams, not materializes).
 #ifdef DEV_MODE
     uint64_t create_index_backfill_batches() noexcept;
+    // Counts runs handed over by partial_copy rather than moved whole. Only a batch with a HOLE in
+    // its physical row ids takes that leg, and nothing in the suite produced one until
+    // backfill_over_a_mid_batch_hole -- so without this counter a test could not tell that it
+    // reached the branch at all, only that the answer happened to be right.
+    uint64_t create_index_backfill_partial_copies() noexcept;
 #endif
 
-    // Performs the runtime side of CREATE INDEX:
-    //   1. ensure the collection is registered with the index manager
-    //   2. create the in-memory index engine entry (manager_index::create_index)
-    //   3. scan the table's existing rows from disk and feed them via insert_rows
-    //   4. flip pg_index.indisvalid → true (delete the !valid row, write a valid one)
-    //
-    // The pg_class/pg_index(indisvalid=false)/pg_depend rows have already been
-    // written by operator_create_index_metadata_t earlier in the sequence, so
-    // recovery sees a half-built index as invalid until the backfill step
-    // commits successfully.
+    // pg_class/pg_index(indisvalid=false)/pg_depend rows are already written by
+    // operator_create_index_metadata_t, so recovery sees a half-built index as invalid until this commits.
     class operator_create_index_backfill_t final : public read_write_operator_t {
     public:
         operator_create_index_backfill_t(std::pmr::memory_resource* resource,
                                          log_t log,
-                                         std::string index_name,
                                          components::logical_plan::index_type index_type,
                                          std::pmr::vector<components::expressions::key_t> keys,
                                          components::catalog::oid_t table_oid,
                                          components::catalog::oid_t index_oid,
                                          std::string indkey);
 
-        // SINK with an async commit. CREATE INDEX lowers to a 2-node all-sink
-        // chain [backfill(root) -> metadata(left leaf)] (see create_plan_sequence).
-        // The metadata leaf is the sourceless chain bottom; the executor admits the
-        // chain and drives metadata.await then backfill.await
-        // BOTTOM-UP via the needs_async_finalize pass — so the pg_catalog rows are
-        // durable before this operator scans + backfills + flips indisvalid=true.
-        // push()/finalize() inherit the no-op defaults (no pipeline data flows);
-        // all work lives in await_async_and_resume.
+        // CREATE INDEX lowers to a 2-node all-sink chain [backfill(root) -> metadata(left leaf)]
+        // (create_plan_sequence); bottom-up needs_async_finalize drives metadata first, so
+        // pg_catalog rows are durable before this step scans and flips indisvalid=true.
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
     private:
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
-        std::string index_name_;
         components::logical_plan::index_type index_type_;
         std::pmr::vector<components::expressions::key_t> keys_;
         components::catalog::oid_t table_oid_;

@@ -3,9 +3,8 @@
 #include <core/result_wrapper.hpp>
 
 #include <components/types/types.hpp>
-#include <functional>
 #include <memory_resource>
-#include <variant>
+#include <type_traits>
 #include <vector>
 
 namespace components::compute {
@@ -54,16 +53,59 @@ namespace components::compute {
 
     private:
         parameter_type() = default;
+        // Constructs admissible_ rather than assigning over the default member: assignment onto
+        // a pmr vector with a different allocator relocates elements into the TARGET's resource.
+        parameter_type(variable_id id, std::pmr::vector<types::complex_logical_type> admissible)
+            : is_variable_(true)
+            , id_(id)
+            , admissible_(std::move(admissible)) {}
 
         bool is_variable_{false};
         variable_id id_{0};
         types::complex_logical_type type_{types::logical_type::ANY};
-        std::pmr::vector<types::complex_logical_type> admissible_{std::pmr::get_default_resource()};
+        // null_memory_resource() on purpose: this member is never allocated through
+        // directly, so an allocation here is a bug that should fail loudly, not quietly borrow
+        // a process-global arena.
+        std::pmr::vector<types::complex_logical_type> admissible_{std::pmr::null_memory_resource()};
     };
 
     using fixed_t = types::complex_logical_type;
-    using type_resolver_fn = std::function<core::result_wrapper_t<fixed_t>(std::pmr::memory_resource* resource,
-                                                                           const std::pmr::vector<fixed_t>&)>;
+
+    // Not std::function: only two resolver shapes exist -- stateless (capture-less
+    // callable) and indexed (same_type_resolver(i), state = i) -- so two pointers + a size_t
+    // erase nothing, staying trivially copyable; an empty one reports via the error channel
+    // instead of throwing bad_function_call.
+    struct type_resolver_fn {
+        using stateless_fn_t = core::result_wrapper_t<fixed_t> (*)(std::pmr::memory_resource* resource,
+                                                                   const std::pmr::vector<fixed_t>& input_types);
+        using indexed_fn_t = core::result_wrapper_t<fixed_t> (*)(size_t input_index,
+                                                                 std::pmr::memory_resource* resource,
+                                                                 const std::pmr::vector<fixed_t>& input_types);
+
+        type_resolver_fn() = default;
+
+        // Implicit template, not a non-template ctor taking stateless_fn_t directly: that would
+        // need lambda -> stateless_fn_t -> type_resolver_fn, two user-defined conversions in one
+        // implicit sequence (ill-formed). Deducing F and casting inline spends only one.
+        template<typename F>
+        requires(!std::is_same_v<std::remove_cvref_t<F>, type_resolver_fn> && std::is_convertible_v<F, stateless_fn_t>)
+            type_resolver_fn(F&& fn) noexcept
+            : stateless_(static_cast<stateless_fn_t>(fn)) {}
+
+        type_resolver_fn(indexed_fn_t fn, size_t input_index) noexcept
+            : indexed_(fn)
+            , input_index_(input_index) {}
+
+        [[nodiscard]] bool empty() const noexcept { return stateless_ == nullptr && indexed_ == nullptr; }
+
+        core::result_wrapper_t<fixed_t> operator()(std::pmr::memory_resource* resource,
+                                                   const std::pmr::vector<fixed_t>& input_types) const;
+
+    private:
+        stateless_fn_t stateless_{nullptr};
+        indexed_fn_t indexed_{nullptr};
+        size_t input_index_{0};
+    };
 
     // Output-type for a kernel signature. Same hybrid pattern as input_type:
     // typed factories `fixed(t)` / `same_type_at(idx)` are introspectable for
@@ -91,10 +133,13 @@ namespace components::compute {
     private:
         output_type() = default;
 
+        // kind_ is the sole discriminator: the introspectable kinds read straight from
+        // fixed_value_/input_index_, resolver_ only for kind_t::custom. (std::variant, which
+        // duplicated the fixed value here before, is rule-14 banned.)
         kind_t kind_{kind_t::custom};
         fixed_t fixed_value_{types::logical_type::ANY};
         size_t input_index_{0};
-        std::variant<fixed_t, type_resolver_fn> value_;
+        type_resolver_fn resolver_;
     };
 
     struct kernel_signature_t {

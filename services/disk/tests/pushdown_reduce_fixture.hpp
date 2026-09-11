@@ -7,6 +7,7 @@
 // that runs a pushed_aggregate_spec_t reduce and returns its finalized chunks.
 
 #include <catch2/catch_test_macros.hpp>
+#include <core/pmr.hpp>
 
 // actor-zeta/spawn.hpp uses std::unique_ptr but does not include <memory>
 #include <memory>
@@ -41,7 +42,7 @@ namespace pushdown_reduce_test {
     inline void cleanup() { std::filesystem::remove_all(reduce_dir()); }
 
     struct fixture {
-        std::pmr::synchronized_pool_resource resource;
+        core::pmr::otterbrix_resource resource;
         log_t log;
         core::non_thread_scheduler::scheduler_test_t* scheduler;
         configuration::config_disk disk_config;

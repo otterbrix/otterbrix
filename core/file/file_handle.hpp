@@ -1,6 +1,10 @@
 #pragma once
 
+#include <core/result_wrapper.hpp>
+
+#include <cstdint>
 #include <filesystem>
+#include <memory_resource>
 #include <string>
 
 #if defined(_WIN32) || defined(_WIN64)
@@ -18,6 +22,17 @@ namespace core::filesystem {
     using path_t = std::filesystem::path;
 
     class local_file_system_t;
+
+    // Neither an int64_t nor result_wrapper_t (value OR error) can express both landed-and-failed.
+    struct [[nodiscard]] write_result_t {
+        uint64_t bytes_written{0};
+        bool complete{false};
+
+        [[nodiscard]] bool partial() const noexcept { return !complete && bytes_written != 0; }
+
+        static write_result_t done(uint64_t written) noexcept { return write_result_t{written, true}; }
+        static write_result_t refused(uint64_t written) noexcept { return write_result_t{written, false}; }
+    };
 
     enum class file_type_t
     {
@@ -37,24 +52,31 @@ namespace core::filesystem {
         file_handle_t(const file_handle_t&) = delete;
         virtual ~file_handle_t();
 
-        int64_t read(void* buffer, uint64_t nr_bytes);
-        int64_t write(void* buffer, uint64_t nr_bytes);
-        bool read(void* buffer, uint64_t nr_bytes, uint64_t location);
-        bool write(void* buffer, uint64_t nr_bytes, uint64_t location);
-        bool seek(uint64_t location);
+        // Production free functions reinterpret_cast the handle to the PLATFORM type, so any
+        // wrapper must delegate to its wrapped inner handle, never pass itself.
+        virtual int64_t read(void* buffer, uint64_t nr_bytes);
+        // SEQUENTIAL WRITE. Returns what landed AND whether it finished -- see write_result_t.
+        virtual write_result_t write(void* buffer, uint64_t nr_bytes);
+        virtual bool read(void* buffer, uint64_t nr_bytes, uint64_t location);
+        virtual bool write(void* buffer, uint64_t nr_bytes, uint64_t location);
+        virtual bool seek(uint64_t location);
         void reset();
-        uint64_t seek_position();
-        bool sync();
-        bool truncate(int64_t new_size);
-        bool trim(uint64_t offset_bytes, uint64_t length_bytes);
+        virtual uint64_t seek_position();
+        virtual bool sync();
+        virtual bool truncate(int64_t new_size);
+        virtual bool trim(uint64_t offset_bytes, uint64_t length_bytes);
         std::string read_line();
 
         bool can_seek();
         bool is_pipe();
-        uint64_t file_size();
+        virtual uint64_t file_size();
         file_type_t type();
 
-        virtual void close() = 0;
+        // ::close(2) can fail, and on a write-back filesystem that is where a deferred write error
+        // (EIO) surfaces, so a refused close is a lost write; delegating wrappers must forward it.
+        // Not a rule-6 violation: a destructor's only upward channel is std::terminate, trading one
+        // lost write's report for every other handle still to flush; prints and drops instead.
+        virtual core::error_t close() = 0;
 
         path_t path() const { return path_; }
 

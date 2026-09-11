@@ -1,14 +1,35 @@
 #include "test_config.hpp"
 
+#include "integration_fixture_path.hpp"
+
 #include <catch2/catch_test_macros.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <string>
+#include <string_view>
+#include <system_error>
 #include <thread>
+#include <unistd.h>
 
-// database_name used indirectly via SQL strings
-// static const database_name_t database_name = "testdatabase";
+namespace {
+
+    // Rooted under this process's pid so concurrent test binaries don't clobber each other's fixture directory.
+    std::filesystem::path production_fixture(std::string_view leaf) {
+        return integration_fixture_path("test_production_scenarios") / leaf;
+    }
+
+} // namespace
+
+// The fixture root must be private to THIS process: a case here failed with two other build dirs' test_otterbrix
+// running concurrently, despite passing 10/10 solo.
+TEST_CASE("integration::cpp::production::the_fixture_root_is_not_shared_between_processes") {
+    const auto directory = production_fixture("compaction_cycle").string();
+    const auto pid = std::to_string(static_cast<long>(::getpid()));
+    INFO("fixture directory: " << directory);
+    REQUIRE(directory.find(pid) != std::string::npos);
+}
 
 #define CHECK_SQL(QUERY, COUNT)                                                                                        \
     do {                                                                                                               \
@@ -18,14 +39,60 @@
         REQUIRE(cur->size() == COUNT);                                                                                 \
     } while (false)
 
-// ---------------------------------------------------------------------------
-// Test 1: Scale test — INSERT 100K rows, GROUP BY, aggregates
-// ---------------------------------------------------------------------------
+// A parent directory at mode 0500 stands in for real staging failures (full disk, revoked mount): unlinking a
+// child needs write on the parent.
+TEST_CASE("integration::cpp::production::a_clear_that_cannot_finish_is_reported_not_thrown") {
+    const auto root = production_fixture("clear_refusal");
+    const auto blocked = root / "blocked";
+    const auto restore = [&blocked]() {
+        std::error_code ignored;
+        std::filesystem::permissions(blocked,
+                                     std::filesystem::perms::owner_all,
+                                     std::filesystem::perm_options::replace,
+                                     ignored);
+    };
+
+    std::error_code ec;
+    restore();
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::create_directories(blocked, ec);
+    REQUIRE_FALSE(ec);
+    {
+        std::ofstream child(blocked / "child.txt");
+        REQUIRE(child.is_open());
+        child << "x";
+    }
+    std::filesystem::permissions(blocked,
+                                 std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec,
+                                 std::filesystem::perm_options::replace,
+                                 ec);
+    REQUIRE_FALSE(ec);
+
+    // Running as a user the mode doesn't bind (root); say so instead of a pass that measured nothing.
+    std::error_code enforced;
+    std::filesystem::remove(blocked / "child.txt", enforced);
+    if (!enforced) {
+        restore();
+        std::filesystem::remove_all(root, ec);
+        SUCCEED("directory permissions are not enforced for this user; there is nothing to refuse");
+        return;
+    }
+
+    const std::error_code refusal = test_try_clear_directory(test_create_config(root));
+
+    restore();
+    std::filesystem::remove_all(root, ec);
+
+    // The contract is the channel, not the errno (libc++ reports ENOTEMPTY, libstdc++ EACCES); pinning either
+    // would pin the stdlib, not the helper.
+    INFO("refusal: " << refusal.message());
+    REQUIRE(refusal);
+    REQUIRE_FALSE(refusal.message().empty());
+}
+
 TEST_CASE("integration::cpp::production::scale_100k_group_by") {
-    auto config = test_create_config("/tmp/otterbrix/production/scale_100k");
+    auto config = test_create_config(production_fixture("scale_100k"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -80,21 +147,15 @@ TEST_CASE("integration::cpp::production::scale_100k_group_by") {
                                            "GROUP BY group_name;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 50);
-        // Each group should have exactly 2000 rows
         for (size_t i = 0; i < cur->size(); ++i) {
             REQUIRE(cur->value(1, i).value<uint64_t>() == 2000);
         }
     }
 }
 
-// ---------------------------------------------------------------------------
-// Test 2: Multi-table JOIN + aggregates (2 JOINs)
-// ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::production::multi_table_join") {
-    auto config = test_create_config("/tmp/otterbrix/production/multi_join");
+    auto config = test_create_config(production_fixture("multi_join"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -104,7 +165,6 @@ TEST_CASE("integration::cpp::production::multi_table_join") {
             auto session = otterbrix::session_id_t();
             dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
         }
-        // Create 3 tables
         {
             auto session = otterbrix::session_id_t();
             dispatcher->execute_sql(
@@ -197,14 +257,9 @@ TEST_CASE("integration::cpp::production::multi_table_join") {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Test 3: NULL in JOIN keys — SQL standard: NULL = NULL → UNKNOWN (false)
-// ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::production::null_join_keys") {
-    auto config = test_create_config("/tmp/otterbrix/production/null_join");
+    auto config = test_create_config(production_fixture("null_join"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -226,7 +281,6 @@ TEST_CASE("integration::cpp::production::null_join_keys") {
 
     INFO("insert data with NULLs");
     {
-        // Table A: rows with id = 1, 2, 4 and two rows with NULL id
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
@@ -236,7 +290,6 @@ TEST_CASE("integration::cpp::production::null_join_keys") {
             REQUIRE(cur->size() == 3);
         }
         {
-            // Insert rows with NULL id
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
                                                "INSERT INTO TestDatabase.table_a (label) VALUES "
@@ -244,7 +297,6 @@ TEST_CASE("integration::cpp::production::null_join_keys") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 2);
         }
-        // Table B: rows with id = 2, 4, 5 and one row with NULL id
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
@@ -269,8 +321,7 @@ TEST_CASE("integration::cpp::production::null_join_keys") {
                                            "FROM TestDatabase.table_a a "
                                            "INNER JOIN TestDatabase.table_b b ON a.id = b.id;");
         REQUIRE(cur->is_success());
-        // SQL standard: NULL = NULL → UNKNOWN → false
-        // Matches: (2,b2), (4,b4) only — NULL keys excluded
+        // SQL standard: NULL = NULL -> UNKNOWN -> false, so NULL-keyed rows never match in an equi-join.
         REQUIRE(cur->size() == 2);
     }
 
@@ -282,9 +333,7 @@ TEST_CASE("integration::cpp::production::null_join_keys") {
                                            "FROM TestDatabase.table_a a "
                                            "LEFT JOIN TestDatabase.table_b b ON a.id = b.id;");
         REQUIRE(cur->is_success());
-        // table_a has 5 rows: a1(id=1), a2(id=2), a4(id=4), a_null_1(id=NULL), a_null_2(id=NULL)
-        // LEFT JOIN: all rows from table_a preserved; NULL keys find no match (NULL=NULL is false)
-        // Expected: (a1,NULL), (a2,b2), (a4,b4), (a_null_1,NULL), (a_null_2,NULL) = 5 rows
+        // LEFT JOIN preserves every table_a row; NULL keys still find no match (NULL = NULL is false).
         REQUIRE(cur->size() == 5);
     }
 
@@ -317,14 +366,9 @@ TEST_CASE("integration::cpp::production::null_join_keys") {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Test 4: Unicode strings
-// ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::production::unicode_strings") {
-    auto config = test_create_config("/tmp/otterbrix/production/unicode");
+    auto config = test_create_config(production_fixture("unicode"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -401,14 +445,9 @@ TEST_CASE("integration::cpp::production::unicode_strings") {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Test 5: Concurrent INSERT (2 threads)
-// ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::production::concurrent_insert") {
-    auto config = test_create_config("/tmp/otterbrix/production/concurrent_insert");
+    auto config = test_create_config(production_fixture("concurrent_insert"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -480,14 +519,9 @@ TEST_CASE("integration::cpp::production::concurrent_insert") {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Test 6: Concurrent read + write
-// ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::production::concurrent_read_write") {
-    auto config = test_create_config("/tmp/otterbrix/production/concurrent_rw");
+    auto config = test_create_config(production_fixture("concurrent_rw"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -545,7 +579,6 @@ TEST_CASE("integration::cpp::production::concurrent_read_write") {
         writer.join();
         reader.join();
 
-        // Count should never decrease (monotonic growth)
         REQUIRE_FALSE(reader_saw_decrease.load());
     }
 
@@ -559,14 +592,10 @@ TEST_CASE("integration::cpp::production::concurrent_read_write") {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Test 7: Large batch checkpoint (100K rows)
-// ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::production::large_checkpoint_100k") {
-    auto config = test_create_config("/tmp/otterbrix/production/large_checkpoint");
+    auto config = test_create_config(production_fixture("large_checkpoint"));
     test_clear_directory(config);
 
-    // Compute expected sum: sum of i*1.5 for i=0..99999 = 1.5 * (99999*100000/2) = 1.5 * 4999950000 = 7499925000
     constexpr int64_t expected_count = 100000;
 
     INFO("phase 1: insert 100K rows and checkpoint");
@@ -582,10 +611,9 @@ TEST_CASE("integration::cpp::production::large_checkpoint_100k") {
             auto session = otterbrix::session_id_t();
             dispatcher->execute_sql(session,
                                     "CREATE TABLE TestDatabase.TestCollection (id bigint, value bigint) "
-                                    "WITH (storage = 'disk');");
+                                    ";");
         }
 
-        // Insert 100K rows in batches of 1000
         for (int batch = 0; batch < 100; ++batch) {
             std::stringstream ss;
             ss << "INSERT INTO TestDatabase.TestCollection (id, value) VALUES ";
@@ -602,7 +630,6 @@ TEST_CASE("integration::cpp::production::large_checkpoint_100k") {
             REQUIRE(cur->size() == 1000);
         }
 
-        // Verify before checkpoint
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "SELECT COUNT(id) AS cnt FROM TestDatabase.TestCollection;");
@@ -611,7 +638,6 @@ TEST_CASE("integration::cpp::production::large_checkpoint_100k") {
             REQUIRE(cur->value(0, 0).value<uint64_t>() == uint64_t(expected_count));
         }
 
-        // Checkpoint
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "CHECKPOINT;");
@@ -632,21 +658,15 @@ TEST_CASE("integration::cpp::production::large_checkpoint_100k") {
             REQUIRE(cur->value(0, 0).value<uint64_t>() == uint64_t(expected_count));
         }
 
-        // Spot-check specific values
         CHECK_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 0;", 1);
         CHECK_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 50000;", 1);
         CHECK_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 99999;", 1);
     }
 }
 
-// ---------------------------------------------------------------------------
-// Test 8: Complex WHERE with nested AND/OR
-// ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::production::complex_where") {
-    auto config = test_create_config("/tmp/otterbrix/production/complex_where");
+    auto config = test_create_config(production_fixture("complex_where"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -666,7 +686,7 @@ TEST_CASE("integration::cpp::production::complex_where") {
 
     INFO("insert 100 rows");
     {
-        // id: 1..100, category: A/B/C (cycle), value: 1..100, status: active/inactive (cycle)
+        // id 1..100; category cycles A/B/C; value = id; status cycles active/inactive.
         std::stringstream ss;
         ss << "INSERT INTO TestDatabase.TestCollection (id, category, value, status) VALUES ";
         std::string cats[] = {"A", "B", "C"};
@@ -691,10 +711,6 @@ TEST_CASE("integration::cpp::production::complex_where") {
                                            "WHERE (category = 'A' AND value > 50) "
                                            "OR (category = 'B' AND status = 'inactive');");
         REQUIRE(cur->is_success());
-        // Category A, value > 50: ids where (id-1)%3==0 and id>50
-        // ids: 52,55,58,61,64,67,70,73,76,79,82,85,88,91,94,97,100 = 17
-        // Category B, status inactive: ids where (id-1)%3==1 and (id-1)%2==1
-        //   meaning id%3==2 and id%2==0 → id in {2,8,14,20,26,32,38,44,50,56,62,68,74,80,86,92,98} = 17
         REQUIRE(cur->size() == 34);
     }
 
@@ -706,11 +722,6 @@ TEST_CASE("integration::cpp::production::complex_where") {
                                            "WHERE value > 20 AND value <= 40 "
                                            "AND category IN ('A', 'C');");
         REQUIRE(cur->is_success());
-        // value 21..40 = 20 values. Among them, category A or C: (id-1)%3==0 or (id-1)%3==2
-        // That's 2/3 of values. In 20 values: ids 21-40
-        // A: (id-1)%3==0 → id=22,25,28,31,34,37,40 = 7
-        // C: (id-1)%3==2 → id=21,24,27,30,33,36,39 = 7
-        // Total: 14
         REQUIRE(cur->size() == 14);
     }
 
@@ -721,18 +732,12 @@ TEST_CASE("integration::cpp::production::complex_where") {
                                            "SELECT * FROM TestDatabase.TestCollection "
                                            "WHERE status != 'inactive' AND (value < 10 OR value > 90);");
         REQUIRE(cur->is_success());
-        // status active: (id-1)%2==0 → odd ids: 1,3,5,7,9,11,...,99
-        // value < 10: ids 1..9, active among them: 1,3,5,7,9 = 5
-        // value > 90: ids 91..100, active among them: 91,93,95,97,99 = 5
         REQUIRE(cur->size() == 10);
     }
 }
 
-// ---------------------------------------------------------------------------
-// Test 9: Corrupted .otbx recovery
-// ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::production::corrupted_otbx_recovery") {
-    auto config = test_create_config("/tmp/otterbrix/production/corrupted_otbx");
+    auto config = test_create_config(production_fixture("corrupted_otbx"));
     test_clear_directory(config);
 
     INFO("phase 1: create DISK table, insert, checkpoint");
@@ -748,10 +753,9 @@ TEST_CASE("integration::cpp::production::corrupted_otbx_recovery") {
             auto session = otterbrix::session_id_t();
             dispatcher->execute_sql(session,
                                     "CREATE TABLE TestDatabase.TestCollection (id bigint, name string) "
-                                    "WITH (storage = 'disk');");
+                                    ";");
         }
 
-        // Insert 50 rows
         {
             std::stringstream ss;
             ss << "INSERT INTO TestDatabase.TestCollection (id, name) VALUES ";
@@ -767,7 +771,6 @@ TEST_CASE("integration::cpp::production::corrupted_otbx_recovery") {
             REQUIRE(cur->size() == 50);
         }
 
-        // Checkpoint to flush to .otbx
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "CHECKPOINT;");
@@ -777,10 +780,8 @@ TEST_CASE("integration::cpp::production::corrupted_otbx_recovery") {
 
     INFO("corrupt the .otbx file");
     {
-        // On-disk layout is oid-keyed: ${path}/${db_oid}/${tbl_oid}/table.otbx.
-        // The test creates exactly one user table (TestDatabase.TestCollection); find
-        // its .otbx by walking for the first DB dir whose numeric name is >=
-        // FIRST_USER_OID and contains a table dir with table.otbx.
+        // On-disk layout is oid-keyed (${path}/${db_oid}/${tbl_oid}/table.otbx); find the one user table's
+        // .otbx by walking DB dirs >= FIRST_USER_OID for a table dir containing table.otbx.
         std::filesystem::path otbx_path;
         for (const auto& db_dir : std::filesystem::directory_iterator(config.disk.path)) {
             if (!db_dir.is_directory())
@@ -810,7 +811,6 @@ TEST_CASE("integration::cpp::production::corrupted_otbx_recovery") {
         auto file_size = std::filesystem::file_size(otbx_path);
         REQUIRE(file_size > 1024);
 
-        // Write garbage in the middle of the file
         {
             std::fstream f(otbx_path, std::ios::binary | std::ios::in | std::ios::out);
             REQUIRE(f.is_open());
@@ -823,37 +823,28 @@ TEST_CASE("integration::cpp::production::corrupted_otbx_recovery") {
 
     INFO("restart after corruption: must not crash");
     {
-        // The key assertion: the process does not SIGSEGV or abort.
-        // It's acceptable if load fails gracefully (empty table, exception caught, etc.)
+        // The real assertion is that the PROCESS doesn't SIGSEGV/abort; a caught exception or empty load is fine.
         bool crashed = false;
         try {
             test_spaces space(config);
             auto* dispatcher = space.dispatcher();
 
-            // Try to query — may return 0 rows or throw, both are acceptable
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
-            // If we get here, the engine handled corruption gracefully
             REQUIRE(cur != nullptr);
         } catch (const std::exception& /*e*/) {
-            // Exception is acceptable — corruption was detected
             crashed = false;
         } catch (...) {
-            // Unknown exception is also acceptable
             crashed = false;
         }
         REQUIRE_FALSE(crashed);
     }
 }
 
-// ---------------------------------------------------------------------------
-// Test 10: WAL segment rotation under load
-// ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::production::wal_segment_rotation") {
-    auto config = test_create_config("/tmp/otterbrix/production/wal_rotation");
+    auto config = test_create_config(production_fixture("wal_rotation"));
     test_clear_directory(config);
-    // disk.on = true for catalog persistence (needed for restart recovery)
-    // Table uses in-memory storage (no WITH storage='disk') so data comes from WAL replay
+    // Tables are always disk-backed: restart recovery draws from the .otbx checkpoint plus WAL replay above it.
     config.wal.max_segment_size = 4 * 1024; // 4 KB — force small segments
 
     INFO("phase 1: insert 500 rows (one by one to force many WAL records)");
@@ -870,7 +861,6 @@ TEST_CASE("integration::cpp::production::wal_segment_rotation") {
             dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.TestCollection (id bigint, data string);");
         }
 
-        // Insert in small batches to generate many WAL records
         for (int batch = 0; batch < 50; ++batch) {
             std::stringstream ss;
             ss << "INSERT INTO TestDatabase.TestCollection (id, data) VALUES ";
@@ -887,7 +877,6 @@ TEST_CASE("integration::cpp::production::wal_segment_rotation") {
             REQUIRE(cur->size() == 10);
         }
 
-        // Verify before restart
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "SELECT COUNT(id) AS cnt FROM TestDatabase.TestCollection;");
@@ -899,8 +888,7 @@ TEST_CASE("integration::cpp::production::wal_segment_rotation") {
 
     INFO("check WAL segment files exist");
     {
-        // With 4KB segments and 500 rows of data, there should be multiple WAL files
-        // New WAL puts files in per-database subdirectories
+        // New WAL puts files in per-database subdirectories.
         int wal_file_count = 0;
         if (std::filesystem::exists(config.wal.path)) {
             for (const auto& database_entry : std::filesystem::directory_iterator(config.wal.path)) {
@@ -916,7 +904,6 @@ TEST_CASE("integration::cpp::production::wal_segment_rotation") {
                 }
             }
         }
-        // Should have at least 2 WAL files (rotation happened)
         REQUIRE(wal_file_count >= 2);
     }
 
@@ -933,18 +920,14 @@ TEST_CASE("integration::cpp::production::wal_segment_rotation") {
             REQUIRE(cur->value(0, 0).value<uint64_t>() == 500);
         }
 
-        // Spot-check
         CHECK_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 0;", 1);
         CHECK_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 250;", 1);
         CHECK_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 499;", 1);
     }
 }
 
-// ---------------------------------------------------------------------------
-// Test 11: Compaction + checkpoint cycle (VACUUM + CHECKPOINT + restart)
-// ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::production::compaction_checkpoint_cycle") {
-    auto config = test_create_config("/tmp/otterbrix/production/compaction_cycle");
+    auto config = test_create_config(production_fixture("compaction_cycle"));
     test_clear_directory(config);
 
     INFO("phase 1: insert 1000, delete 80%, vacuum, checkpoint");
@@ -960,10 +943,9 @@ TEST_CASE("integration::cpp::production::compaction_checkpoint_cycle") {
             auto session = otterbrix::session_id_t();
             dispatcher->execute_sql(session,
                                     "CREATE TABLE TestDatabase.TestCollection (id bigint, value bigint) "
-                                    "WITH (storage = 'disk');");
+                                    ";");
         }
 
-        // Insert 1000 rows
         for (int batch = 0; batch < 10; ++batch) {
             std::stringstream ss;
             ss << "INSERT INTO TestDatabase.TestCollection (id, value) VALUES ";
@@ -980,10 +962,8 @@ TEST_CASE("integration::cpp::production::compaction_checkpoint_cycle") {
             REQUIRE(cur->size() == 100);
         }
 
-        // Verify 1000 rows
         CHECK_SQL("SELECT * FROM TestDatabase.TestCollection;", 1000);
 
-        // Delete rows where id > 200 (removes 800 rows)
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE id > 200;");
@@ -993,17 +973,14 @@ TEST_CASE("integration::cpp::production::compaction_checkpoint_cycle") {
 
         CHECK_SQL("SELECT * FROM TestDatabase.TestCollection;", 200);
 
-        // VACUUM to compact
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "VACUUM;");
             REQUIRE(cur->is_success());
         }
 
-        // Verify after vacuum
         CHECK_SQL("SELECT * FROM TestDatabase.TestCollection;", 200);
 
-        // CHECKPOINT
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "CHECKPOINT;");
@@ -1024,7 +1001,6 @@ TEST_CASE("integration::cpp::production::compaction_checkpoint_cycle") {
             REQUIRE(cur->value(0, 0).value<uint64_t>() == 200);
         }
 
-        // Verify boundary values
         CHECK_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 1;", 1);
         CHECK_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 200;", 1);
         CHECK_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 201;", 0);
@@ -1032,40 +1008,15 @@ TEST_CASE("integration::cpp::production::compaction_checkpoint_cycle") {
     }
 }
 
-// Large-table-scan segfault repro (SSB q1-1 shape), DISK-backed e2e guard.
-//
-// On pre-fix code a q1-1-style aggregate over a WIDE table (mirroring SSB
-// lineorder, 17 columns) SIGSEGVs mid-scan (EXC_BAD_ACCESS, null buffer in
-// standard_buffer_manager_t::pin). The fix has two parts the disk-backed path
-// here exercises: an eviction guard (managed, non-reloadable blocks can never
-// be unloaded, so re-pinning an evicted segment never derefs a null buffer) and
-// disk-backed write-through (a filled segment is flushed to the data file and
-// gets a real reloadable block_id, so the pool can evict + reload it and large
-// inserts stay BOUNDED instead of pinning the whole table resident). Post-fix
-// this must (a) accept every INSERT batch without OOM and (b) complete the large
-// scan with the CORRECT aggregate — prove COMPLETION, not just no-crash.
-//
-// DISK-backed (config.disk.on, storage = 'disk') so write-through is actually
-// exercised — an in-memory table would pin the whole working set and clean-OOM
-// by design, which cannot validate the write-through bound.
-//
-// Working-set / pool note: there is NO buffer-pool / memory-limit knob in
-// configuration::config — the pool size is hardcoded (4 GiB) inside the disk
-// service (services/disk/manager_disk.cpp) and is only overridable
-// programmatically (set_memory_limit), which production never calls and a test
-// at this e2e layer cannot reach. So we cannot shrink the pool to force
-// eviction at a small row count from here; that path is covered directly at the
-// unit layer (components/table/test/test_disk_backed_scan.cpp, which uses a tiny
-// pool). Here the row count is chosen as the largest WIDE-table scan that keeps
-// this Debug-build case to a few seconds while still meaningfully driving the
-// disk-backed append + full-scan path end to end.
+// SSB q1-1 shape repro (DISK-backed): pre-fix, a wide-table (17-col) scan SIGSEGVs (null buffer in
+// standard_buffer_manager_t::pin). Fix = an eviction guard (non-reloadable blocks never unload) + disk-backed
+// write-through (a filled segment flushes and gets a reloadable block_id, keeping inserts BOUNDED); an in-memory
+// table would just pin the whole set instead. There is no buffer-pool-size config knob (hardcoded 4 GiB in
+// services/disk/manager_disk.cpp), so eviction-at-small-count is covered at the unit layer instead
+// (components/table/test/test_disk_backed_scan.cpp); the row count here is sized to stay a few seconds in Debug.
 TEST_CASE("integration::cpp::production::large_scan_segfault_red", "[step1]") {
-    auto config = test_create_config("/tmp/otterbrix/production/large_scan_segfault");
+    auto config = test_create_config(production_fixture("large_scan_segfault"));
     test_clear_directory(config);
-    // DISK-backed so write-through evicts filled segments and large inserts stay
-    // bounded.
-    config.disk.on = true;
-    config.wal.on = true;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -1073,9 +1024,7 @@ TEST_CASE("integration::cpp::production::large_scan_segfault_red", "[step1]") {
     constexpr int rows_per_batch = 1000;
     constexpr int64_t total_rows = int64_t(batches) * rows_per_batch;
 
-    // Mirror the row-generation formulas below to compute the EXPECTED q1-1
-    // aggregate and matching-row count up front, so the assertions prove the
-    // scan returned the right value (not merely "no crash").
+    // Mirrors the row-generation formulas below to compute the expected aggregate up front, proving a correct result.
     int64_t expected_revenue = 0;
     int64_t expected_match_rows = 0;
     for (int64_t id = 0; id < total_rows; ++id) {
@@ -1097,9 +1046,7 @@ TEST_CASE("integration::cpp::production::large_scan_segfault_red", "[step1]") {
             dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
         }
         {
-            // Mirror the SSB lineorder shape: many wide bigint columns plus a few
-            // text columns, so a 1024-row row-group is a large working set.
-            // storage = 'disk' enables write-through for this table.
+            // Many wide bigint columns (SSB lineorder shape) make a 1024-row row-group a large working set.
             auto session = otterbrix::session_id_t();
             dispatcher->execute_sql(session,
                                     "CREATE TABLE TestDatabase.Lineorder ("
@@ -1120,17 +1067,14 @@ TEST_CASE("integration::cpp::production::large_scan_segfault_red", "[step1]") {
                                     "lo_tax bigint, "
                                     "lo_commitdate bigint, "
                                     "lo_shipmode string) "
-                                    "WITH (storage = 'disk');");
+                                    ";");
         }
     }
 
     INFO("insert wide rows in batches of 1000");
     {
-        // Derive every column from the row index so the data is varied and the
-        // q1-1 filters select a non-trivial subset:
-        //   lo_orderdate  -> year, 1992..1998 (so d_year = 1993 selects ~1/7)
-        //   lo_discount   -> 0..10            (BETWEEN 1 AND 3 selects 3/11)
-        //   lo_quantity   -> 1..50            (< 25 selects ~half)
+        // Columns derive from the row index so q1-1's filters each select a meaningful fraction (year 1993 ~1/7,
+        // discount 1-3 of 0-10, quantity <25 of 1-50).
         for (int batch = 0; batch < batches; ++batch) {
             std::stringstream ss;
             ss << "INSERT INTO TestDatabase.Lineorder ("
@@ -1167,9 +1111,7 @@ TEST_CASE("integration::cpp::production::large_scan_segfault_red", "[step1]") {
             ss << ";";
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, ss.str());
-            // Write-through must keep each batch BOUNDED: a clean success is
-            // required. An OOM here means the bound is not working — do NOT
-            // weaken this; investigate instead.
+            // Write-through must keep each batch BOUNDED; an OOM means the bound broke -- investigate, don't weaken.
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == rows_per_batch);
         }
@@ -1177,8 +1119,6 @@ TEST_CASE("integration::cpp::production::large_scan_segfault_red", "[step1]") {
 
     INFO("q1-1-style aggregate over the full WIDE table (the large scan)");
     {
-        // On pre-fix code the process SIGSEGVs during this scan. On the fixed
-        // code it must COMPLETE with the correct aggregate.
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT SUM(lo_extendedprice * lo_discount) AS revenue "
@@ -1188,9 +1128,7 @@ TEST_CASE("integration::cpp::production::large_scan_segfault_red", "[step1]") {
                                            "AND lo_quantity < 25;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        // SUM over bigint expressions comes back as a signed scalar. Match the
-        // value computed from the same generation formulas above: proves the
-        // large scan COMPLETED with the correct result, not just no-crash.
+        // SUM over bigint comes back as a signed scalar; the exact match proves the scan completed correctly.
         REQUIRE(cur->value(0, 0).value<int64_t>() == expected_revenue);
     }
 
@@ -1204,21 +1142,12 @@ TEST_CASE("integration::cpp::production::large_scan_segfault_red", "[step1]") {
     }
 }
 
-// REGRESSION: a disk-backed table that is CHECKPOINTed and then reopened must
-// still resolve its columns and run a q1-1-style aggregate. This exercises the
-// full bootstrap → resolve_table path after reopen, including the MVCC
-// commit-clock re-seed. Without that seed, a reopened instance whose persisted
-// pg_attribute columns carry a non-zero added_at_commit_id from the prior
-// session would judge every column "added after my snapshot" (start_time reset
-// to 1) and resolution would fail "<col> not found".
-//
-// WAL stays on so the user rows survive the reopen and the post-reopen
-// aggregate can be value-checked end to end.
+// REGRESSION: a reopened disk-backed table must re-seed the MVCC commit-clock on resolve_table, or persisted
+// pg_attribute columns with a stale added_at_commit_id look "added after my snapshot" and resolution fails.
+// WAL stays on so rows survive the reopen for an end-to-end value check.
 TEST_CASE("integration::cpp::production::reopen_resolves_columns_after_checkpoint") {
-    auto config = test_create_config("/tmp/otterbrix/production/reopen_resolve_columns");
+    auto config = test_create_config(production_fixture("reopen_resolve_columns"));
     test_clear_directory(config);
-    config.disk.on = true;
-    config.wal.on = true;
 
     INFO("phase 1: disk-backed CREATE TABLE, INSERT, CHECKPOINT");
     {
@@ -1229,8 +1158,6 @@ TEST_CASE("integration::cpp::production::reopen_resolves_columns_after_checkpoin
             dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
         }
         {
-            // Disk-backed so the rows survive reopen and the aggregate below is
-            // value-checkable; the SSB lineorder column shape.
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
                                                "CREATE TABLE TestDatabase.Lineorder ("
@@ -1239,7 +1166,7 @@ TEST_CASE("integration::cpp::production::reopen_resolves_columns_after_checkpoin
                                                "lo_quantity bigint, "
                                                "lo_extendedprice bigint, "
                                                "lo_discount bigint) "
-                                               "WITH (storage = 'disk');");
+                                               ";");
             REQUIRE(cur->is_success());
         }
         {
@@ -1253,8 +1180,7 @@ TEST_CASE("integration::cpp::production::reopen_resolves_columns_after_checkpoin
             REQUIRE(cur->size() == 3);
         }
         {
-            // CHECKPOINT folds the durable frontier into pg_attribute and the
-            // user table's row-groups into its .otbx.
+            // CHECKPOINT folds the durable frontier into pg_attribute and the table's row-groups into its .otbx.
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "CHECKPOINT;");
             REQUIRE(cur->is_success());
@@ -1265,8 +1191,6 @@ TEST_CASE("integration::cpp::production::reopen_resolves_columns_after_checkpoin
     {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
-        // The pre-fix failure was column resolution: SELECT <col> reported the
-        // column as not found. Assert the resolve path succeeds.
         {
             auto session = otterbrix::session_id_t();
             auto cur =
@@ -1275,8 +1199,6 @@ TEST_CASE("integration::cpp::production::reopen_resolves_columns_after_checkpoin
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 2);
         }
-        // And a q1-1-style aggregate over the reopened table resolves every
-        // referenced column and returns the correct value.
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
@@ -1287,9 +1209,6 @@ TEST_CASE("integration::cpp::production::reopen_resolves_columns_after_checkpoin
                                                "AND lo_quantity < 25;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            // row 1: 1000*2=2000 (orderdate 1993, disc 2, qty 10<25) — matches
-            // row 3: 1500*1=1500 (orderdate 1993, disc 1, qty 20<25) — matches
-            // row 2: orderdate 1994 — excluded
             REQUIRE(cur->value(0, 0).value<int64_t>() == 3500);
         }
     }

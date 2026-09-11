@@ -2,9 +2,11 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <map>
 #include <memory_resource>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -14,10 +16,7 @@
 namespace core::b_plus_tree {
 
 #ifdef DEV_MODE
-    // Test-observable counts of LEAF flushes. One segment_tree_t is one B+tree leaf owning one
-    // file, and btree_t::flush() walks every leaf, so an unneeded leaf flush still costs a header
-    // write, a truncate and an fsync. `leaf_flushes_without_changes` narrows that to the flushes
-    // that wrote no block — a diagnostic, not a bound: a header-only rewrite can be legitimate.
+    // `leaf_flushes_without_changes` narrows to flushes that wrote no block — a diagnostic, not a bound.
     uint64_t leaf_flushes() noexcept;
     uint64_t leaf_flushes_without_changes() noexcept;
     void reset_leaf_flushes() noexcept;
@@ -79,9 +78,50 @@ namespace core::b_plus_tree {
         std::vector<gap_t> empty_spaces_;
     };
 
+    // Reported, not asserted (asserts compile out under NDEBUG): an unreadable block refuses to flush.
+    enum class load_failure_t : uint8_t
+    {
+        none = 0,
+        data_corruption,   // a block's stored checksum did not match the bytes that came back
+        io_error,          // the file would not hand the bytes over at all
+        out_of_memory,     // no memory for the block, even after evicting this leaf's residents
+        capacity_exceeded, // metadata array full (max_segments); insert would overflow the header
+    };
+
+    [[nodiscard]] std::string_view to_string(load_failure_t failure) noexcept;
+
+#ifdef DEV_MODE
+    void dev_set_max_segments(size_t limit) noexcept;
+    [[nodiscard]] size_t max_segments_limit() noexcept;
+#endif
+
+    // First failure wins (compare_exchange only sets from `none`); shared by every leaf of a btree_t.
+    class failure_channel_t {
+    public:
+        void report(load_failure_t failure) noexcept {
+            auto expected = static_cast<uint8_t>(load_failure_t::none);
+            state_.compare_exchange_strong(expected,
+                                           static_cast<uint8_t>(failure),
+                                           std::memory_order_acq_rel,
+                                           std::memory_order_relaxed);
+        }
+        [[nodiscard]] load_failure_t peek() const noexcept {
+            return static_cast<load_failure_t>(state_.load(std::memory_order_acquire));
+        }
+        [[nodiscard]] load_failure_t take() noexcept {
+            return static_cast<load_failure_t>(
+                state_.exchange(static_cast<uint8_t>(load_failure_t::none), std::memory_order_acq_rel));
+        }
+        void clear() noexcept { state_.store(static_cast<uint8_t>(load_failure_t::none), std::memory_order_release); }
+
+    private:
+        std::atomic<uint8_t> state_{static_cast<uint8_t>(load_failure_t::none)};
+    };
+
     // TODO: move memory overflow checks to b_plus_tree
     class segment_tree_t {
         struct header_t {
+            size_t header_checksum_;
             size_t segments_count_;
             size_t item_count_;
             size_t unique_id_count_;
@@ -105,6 +145,8 @@ namespace core::b_plus_tree {
             std::unique_ptr<block_t> block;
             std::chrono::time_point<std::chrono::system_clock> last_used;
             bool modified;
+            // Empty stand-in for a read/checksum failure; travels with the node, refused by insert_segment_().
+            bool unreadable = false;
         };
         using it = std::vector<node_t>::iterator;
         static constexpr size_t block_metadata_size = sizeof(block_metadata);
@@ -113,20 +155,22 @@ namespace core::b_plus_tree {
         using index_t = block_t::index_t;
         using item_data = block_t::item_data;
 
-        // 80%
         static constexpr double merge_check = 4.0 / 5.0;
-        // this will give 2^14 - 1 block capacity and 16 free bytes for something later
         static constexpr size_t header_size = 2 * DEFAULT_BLOCK_SIZE;
+        // Bound checked in read_header_() and insert_segment_(), or either could walk past the header allocation.
+        static constexpr size_t max_segments = (header_size - sizeof(header_t)) / block_metadata_size;
 
-        // it is possible to just use segments_::iterator, but it won't work correctly if block is not loaded
-        // and there won't be any overhead of node_t shown
         class iterator {
         public:
-            // const segment_tree_t* will block from trying to load a block_t, if it is needed by the iterator
             iterator(segment_tree_t* seg_tree, block_metadata* metadata);
             iterator(const iterator& other);
             iterator(iterator&& other) noexcept;
 
+            // Unlike operator*/operator->, may return nullptr: an out_of_memory can't even allocate the stand-in.
+            [[nodiscard]] inline const block_t* get() {
+                load_block();
+                return block_;
+            }
             inline const block_t& operator*() {
                 load_block();
                 return *block_;
@@ -136,13 +180,14 @@ namespace core::b_plus_tree {
                 return block_;
             }
 
+            // Must move the same direction as postfix below; tree traversal relies on it.
             inline const iterator& operator++() {
-                metadata_--;
+                metadata_++;
                 get_block();
                 return *this;
             }
             inline const iterator& operator--() {
-                metadata_++;
+                metadata_--;
                 get_block();
                 return *this;
             }
@@ -172,6 +217,8 @@ namespace core::b_plus_tree {
             }
 
             inline iterator& operator=(const iterator& rhs) {
+                // Must copy seg_tree_ too — a past bug left the iterator reading the OLD tree's table.
+                seg_tree_ = rhs.seg_tree_;
                 metadata_ = rhs.metadata_;
                 get_block();
                 return *this;
@@ -205,11 +252,14 @@ namespace core::b_plus_tree {
 
         class r_iterator {
         public:
-            // const segment_tree_t* will block from trying to load a block_t, if it is needed by the iterator
             r_iterator(segment_tree_t* seg_tree, block_metadata* metadata);
             r_iterator(const r_iterator& other);
             r_iterator(r_iterator&& other) noexcept;
 
+            [[nodiscard]] inline const block_t* get() {
+                load_block();
+                return block_;
+            }
             inline const block_t& operator*() {
                 load_block();
                 return *block_;
@@ -220,12 +270,12 @@ namespace core::b_plus_tree {
             }
 
             inline const r_iterator& operator++() {
-                metadata_++;
+                metadata_--;
                 get_block();
                 return *this;
             }
             inline const r_iterator& operator--() {
-                metadata_--;
+                metadata_++;
                 get_block();
                 return *this;
             }
@@ -255,6 +305,7 @@ namespace core::b_plus_tree {
             }
 
             inline r_iterator& operator=(const r_iterator& rhs) {
+                seg_tree_ = rhs.seg_tree_;
                 metadata_ = rhs.metadata_;
                 get_block();
                 return *this;
@@ -289,12 +340,17 @@ namespace core::b_plus_tree {
         friend class iterator;
         friend class r_iterator;
 
+        // Pinned-handle ctor: holds one fd for the leaf's whole life. Test-only fault-injection seam.
         segment_tree_t(std::pmr::memory_resource* resource,
                        index_t (*func)(const item_data&),
                        std::unique_ptr<filesystem::file_handle_t> file);
+        // Opens/closes a lease per operation: the pinned ctor exhausted the fd table under parallel tests.
+        segment_tree_t(std::pmr::memory_resource* resource,
+                       index_t (*func)(const item_data&),
+                       filesystem::local_file_system_t& fs,
+                       filesystem::path_t file_path);
         ~segment_tree_t();
 
-        // will try to maintain default block size if possible
         bool append(data_ptr_t data, uint32_t size);
         bool append(item_data item);
         bool append(const index_t& index, item_data item);
@@ -303,11 +359,12 @@ namespace core::b_plus_tree {
         bool remove(const index_t& index, item_data item);
         bool remove_index(const index_t& index);
         [[nodiscard]] std::unique_ptr<segment_tree_t> split(std::unique_ptr<filesystem::file_handle_t> file);
+        [[nodiscard]] std::unique_ptr<segment_tree_t> split(filesystem::path_t new_file_path);
         // requires other->count() > this->count()
         void balance_with(std::unique_ptr<segment_tree_t>& other);
-        void merge(std::unique_ptr<segment_tree_t>& other);
+        // false = nothing moved; all-or-nothing since btree_t deletes the source leaf regardless.
+        [[nodiscard]] bool merge(std::unique_ptr<segment_tree_t>& other);
 
-        // due to lazy loading this batch can't be const anymore
         bool contains_index(const index_t& index);
         bool contains(item_data item);
         bool contains(const index_t& index, item_data item);
@@ -322,16 +379,24 @@ namespace core::b_plus_tree {
         size_t blocks_count() const;
         size_t count() const;
         size_t unique_indices_count() const;
-        // Persist to disk. Returns false when any of the writes, the truncate or the fsync failed;
-        // the leaf then stays dirty so the next flush retries it, and the caller must treat the
-        // data as NOT durable.
+        // False when a write/truncate/fsync failed (leaf stays dirty), or while holding an unreadable block.
         [[nodiscard]] bool flush();
-        // load all tree segment at once from scratch
         void clean_load();
-        // clear current blocks, load only block's metadata
         void lazy_load();
 
-        // segment_tree is an ordered container, data cannot be modified by iterator
+        // THE REFUSAL CHANNEL: sticky, and shared with the owning btree_t so one read covers every leaf.
+        [[nodiscard]] load_failure_t load_failure() const noexcept { return channel_->peek(); }
+        void reset_load_failure() noexcept { channel_->clear(); }
+        [[nodiscard]] failure_channel_t* failure_channel() const noexcept { return channel_; }
+        void set_failure_channel(failure_channel_t* channel) noexcept {
+            channel_ = channel != nullptr ? channel : &own_failures_;
+        }
+        // DERIVED, not remembered: a block reading back later makes the leaf writable again by itself.
+        [[nodiscard]] bool poisoned() const noexcept {
+            return abandoned_.load(std::memory_order_acquire) ||
+                   unreadable_segments_.load(std::memory_order_acquire) != 0;
+        }
+
         iterator begin() const { return cbegin(); }
         iterator end() const { return cend(); }
         iterator cbegin() const { return iterator(const_cast<segment_tree_t*>(this), metadata_begin_); }
@@ -340,15 +405,37 @@ namespace core::b_plus_tree {
         r_iterator rend() const { return r_iterator({const_cast<segment_tree_t*>(this), metadata_begin_ - 1}); }
 
     private:
-        // Set whenever anything this leaf's FILE would have to reflect has changed: a block's
-        // contents, the header (segment count / per-block metadata), the on-disk layout, or a
-        // write that has not been fsynced yet.
-        //
-        // Deliberately coarse — one bit per leaf, set from every mutation path rather than derived
-        // at flush time. Deriving it would have to re-read state the mutation already knows about,
-        // and a wrong derivation loses data silently at restart. mark_dirty_() is the single place
-        // that sets it, so the paths stay greppable.
+        // Deliberately coarse: set from every mutation path, not derived (a wrong derivation loses data).
         void mark_dirty_() noexcept { dirty_.store(true, std::memory_order_release); }
+
+        void report_failure_(load_failure_t failure) noexcept {
+            last_failure_.store(failure, std::memory_order_release);
+            channel_->report(failure);
+        }
+        [[nodiscard]] load_failure_t last_failure_of_this_leaf_() const noexcept {
+            return last_failure_.load(std::memory_order_acquire);
+        }
+        // Puts a VALID empty stand-in in place of an unreadable block, so callers stay memory-safe without null checks.
+        void poison_segment_(it node, load_failure_t failure);
+        void clear_segment_poison_(it node) noexcept;
+        void ensure_loaded_(block_metadata* metadata);
+        // A caller taking items OUT of a block must ask BEFORE doing that, or a refusal destroys items already out.
+        [[nodiscard]] bool reserve_segments_(size_t count) noexcept;
+        void abandon_leaf_(load_failure_t failure);
+        [[nodiscard]] bool read_header_(filesystem::file_handle_t& file);
+
+        // Pinned mode points at the leaf's handle; lazy mode OWNS one, closed when the operation's frame ends.
+        struct file_lease_t {
+            filesystem::file_handle_t* handle = nullptr;
+            std::unique_ptr<filesystem::file_handle_t> opened;
+            explicit operator bool() const noexcept { return handle != nullptr; }
+            filesystem::file_handle_t* operator->() const noexcept { return handle; }
+            filesystem::file_handle_t& operator*() const noexcept { return *handle; }
+        };
+        [[nodiscard]] file_lease_t lease_file_() const;
+        void initialize_header_region_();
+        [[nodiscard]] std::unique_ptr<segment_tree_t> split_into_(std::unique_ptr<segment_tree_t> splited_tree);
+        [[nodiscard]] size_t header_region_checksum_() const;
 
         metadata_range find_range_(const index_t& index) const;
         void remove_range_(metadata_range range);
@@ -356,22 +443,21 @@ namespace core::b_plus_tree {
         [[nodiscard]] node_t construct_new_node_(item_data item);
         void load_segment_(block_metadata* metadata);
         void unload_old_segments_();
-        // header changes will be handled here:
-        void insert_segment_(it pos, node_t&& block);
+        [[nodiscard]] bool insert_segment_(it pos, node_t&& block);
         void remove_segment_(it pos);
         void update_metadata_(it pos, block_metadata* metadata);
         void close_gaps_();
 
-        // Atomic, and flush() CLEARS IT BEFORE writing rather than after. btree_t::flush() locks
-        // only tree_mutex_ and explicitly does not lock the leaves, while btree_t::append() releases
-        // its node locks before mutating the leaf — so a writer can be inside a leaf while that leaf
-        // is being flushed. Clearing after the write would drop a mark_dirty_() raised during it and
-        // lose that change forever; clearing first only ever costs one redundant flush.
-        //
-        // In otterbrix the disk index is owned by a single actor, so that race cannot happen there —
-        // but core/b_plus_tree is a standalone library with its own locking and its own
-        // multithreaded test, and must not depend on it.
+        // flush() CLEARS THIS BEFORE writing, not after, or a concurrent mark_dirty_() mid-flush would be lost.
         std::atomic<bool> dirty_{true}; // a freshly built leaf has never been written
+
+        // While nonzero, flush() writes nothing — the stand-ins are empty and would destroy live rows.
+        std::atomic<size_t> unreadable_segments_{0};
+        // The leaf gave up as a WHOLE; only a load replacing it from the file clears this.
+        std::atomic<bool> abandoned_{false};
+        std::atomic<load_failure_t> last_failure_{load_failure_t::none};
+        failure_channel_t own_failures_;
+        failure_channel_t* channel_ = &own_failures_;
 
         std::pmr::memory_resource* resource_;
         index_t (*key_func_)(const item_data&);
@@ -380,10 +466,12 @@ namespace core::b_plus_tree {
         header_t* header_;
         block_metadata* metadata_begin_;
         block_metadata* metadata_end_;
-        // keep track of gaps in block record and try to fill them when creating new blocks
         gap_tracker_t gap_tracker_{header_size, INVALID_SIZE};
 
+        // Pinned mode: the handle lives here. Lazy mode: null, fs_/file_path_ below open a lease.
         std::unique_ptr<filesystem::file_handle_t> file_;
+        filesystem::local_file_system_t* fs_ = nullptr;
+        filesystem::path_t file_path_;
         std::vector<std::pair<std::unique_ptr<std::pmr::string>, std::unique_ptr<std::pmr::string>>> string_storage_;
     };
 

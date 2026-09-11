@@ -18,9 +18,9 @@ namespace components::planner::optimizer {
     // (The relkind computed/matview gate is NOT decidable here — physgen keeps
     // the final gate.) The rule is unconditional-by-shape; the optimize() bool
     // (can_push_to_agent) is a CAPABILITY precondition — an owning agent must be
-    // reachable — not a rollout flag. When it is false (disk-less/in-memory mode)
-    // there is no agent to push to, so optimize() never calls the rule and
-    // nothing is stamped.
+    // reachable — not a rollout flag. When it is false the executor was given no
+    // disk-manager address, so there is no agent to push to: optimize() never calls
+    // the rule and nothing is stamped.
     //
     // ANNOTATION only — logical semantics are unchanged; physgen lowering
     // (create_plan_aggregate) consumes the flag. Signature mirrors

@@ -2,10 +2,12 @@
 
 #include <cstring>
 #include <map>
+#include <memory_resource>
 #include <vector>
 
 #include <components/table/column_data.hpp>
 #include <components/table/column_segment.hpp>
+#include <components/table/column_state.hpp>
 #include <components/table/storage/block_manager.hpp>
 #include <components/table/storage/buffer_handle.hpp>
 #include <components/table/storage/buffer_manager.hpp>
@@ -14,8 +16,7 @@ namespace components::table {
 
     namespace {
 
-        // Custom comparator for std::vector<std::byte> keys — avoids GCC 14
-        // false-positive -Wstringop-overread from std::vector<std::byte>::operator<=>
+        // Avoids a GCC 14 false-positive -Wstringop-overread from std::vector<std::byte>::operator<=>.
         struct byte_vector_less {
             bool operator()(const std::vector<std::byte>& a, const std::vector<std::byte>& b) const {
                 if (a.size() != b.size())
@@ -26,7 +27,6 @@ namespace components::table {
             }
         };
 
-        // Check if all fixed-size values in a buffer are identical.
         bool is_constant_data(const std::byte* data, uint64_t type_size, uint64_t count) {
             if (count <= 1) {
                 return true;
@@ -40,7 +40,6 @@ namespace components::table {
             return true;
         }
 
-        // Count runs in fixed-size data. Returns number of runs.
         uint32_t count_runs(const std::byte* data, uint64_t type_size, uint64_t count) {
             if (count == 0)
                 return 0;
@@ -53,8 +52,7 @@ namespace components::table {
             return runs;
         }
 
-        // Build RLE buffer: [uint32_t num_runs][value(ts bytes) + run_length(4 bytes)]...
-        // Returns total compressed size.
+        // RLE buffer layout: [uint32_t num_runs][value(type_size bytes) + run_length(4 bytes)]...
         uint64_t
         build_rle_buffer(const std::byte* data, uint64_t type_size, uint64_t count, std::vector<std::byte>& out) {
             if (count == 0) {
@@ -64,7 +62,6 @@ namespace components::table {
                 return sizeof(uint32_t);
             }
 
-            // First pass: count runs
             uint32_t num_runs = count_runs(data, type_size, count);
 
             uint64_t entry_size = type_size + sizeof(uint32_t);
@@ -80,10 +77,8 @@ namespace components::table {
                 if (i < count && std::memcmp(data + (i - 1) * type_size, data + i * type_size, type_size) == 0) {
                     run_length++;
                 } else {
-                    // Write value
                     std::memcpy(ptr, data + (i - 1) * type_size, type_size);
                     ptr += type_size;
-                    // Write run length
                     std::memcpy(ptr, &run_length, sizeof(uint32_t));
                     ptr += sizeof(uint32_t);
                     run_length = 1;
@@ -93,15 +88,11 @@ namespace components::table {
             return total_size;
         }
 
-        // Dictionary compression analysis.
-        // Returns number of unique values, or 0 if dictionary is not beneficial.
-        // max_dict_entries = 65535 (fits in uint16_t)
         static constexpr uint16_t MAX_DICT_ENTRIES = 65535;
 
         struct dict_analysis_t {
             uint16_t num_unique{0};
             uint64_t compressed_size{0};
-            // value→index mapping stored as byte key
             std::map<std::vector<std::byte>, uint16_t, byte_vector_less> value_map;
         };
 
@@ -115,7 +106,7 @@ namespace components::table {
                 std::vector<std::byte> key(data + i * type_size, data + (i + 1) * type_size);
                 if (mapping.find(key) == mapping.end()) {
                     if (mapping.size() >= MAX_DICT_ENTRIES) {
-                        return result; // too many unique values
+                        return result;
                     }
                     mapping[key] = static_cast<uint16_t>(mapping.size());
                 }
@@ -128,9 +119,7 @@ namespace components::table {
             return result;
         }
 
-        // Build dictionary buffer:
-        // [uint16_t num_unique][value_0(ts)]...[value_{n-1}(ts)][index_0]...[index_{count-1}]
-        // index_size is 1 byte if num_unique<=256, else 2 bytes
+        // Dictionary buffer: [num_unique][values...][indices...], index 1 byte if num_unique<=256 else 2 bytes.
         uint64_t build_dict_buffer(const std::byte* data,
                                    uint64_t type_size,
                                    uint64_t count,
@@ -139,11 +128,9 @@ namespace components::table {
             out.resize(analysis.compressed_size);
             auto* ptr = out.data();
 
-            // Write num_unique
             std::memcpy(ptr, &analysis.num_unique, sizeof(uint16_t));
             ptr += sizeof(uint16_t);
 
-            // Write dictionary values in index order
             std::vector<const std::byte*> ordered(analysis.num_unique);
             for (auto& [key, idx] : analysis.value_map) {
                 ordered[idx] = key.data();
@@ -153,7 +140,6 @@ namespace components::table {
                 ptr += type_size;
             }
 
-            // Write indices
             bool use_uint8 = (analysis.num_unique <= 256);
             for (uint64_t i = 0; i < count; i++) {
                 std::vector<std::byte> key(data + i * type_size, data + (i + 1) * type_size);
@@ -182,27 +168,44 @@ namespace components::table {
     column_checkpoint_state_t::flush_segment(column_segment_t& segment, uint64_t row_start, uint64_t tuple_count) {
         auto& block_manager = column_data_.block_manager();
 
-        // pin the segment's buffer to get data
+        const auto phys = segment.type.to_physical_type();
+        const bool is_fixed_size = (phys != types::physical_type::STRING && phys != types::physical_type::BIT &&
+                                    phys != types::physical_type::INVALID);
+        const auto loaded_compression = segment.compression();
+
+        // A disk-backed segment (is_reloadable()) is READ-ONLY, so a final-form image can NAME the existing
+        // block instead of copying it. Without this, every round rewrote the whole table -- measured offline:
+        // 113 of 294 blocks (29.6 MB of a 77 MB file), ~2851 bytes/row.
+        const bool disk_backed = segment.block && segment.block->is_reloadable();
+        if (disk_backed) {
+            const bool analyzable = is_fixed_size && tuple_count > 1 && segment.type_size > 0;
+            const bool final_form = loaded_compression != compression::compression_type::UNCOMPRESSED ||
+                                    phys == types::physical_type::STRING || !analyzable;
+            if (final_form) {
+                storage::data_pointer_t dp;
+                dp.row_start = row_start;
+                dp.tuple_count = tuple_count;
+                dp.block_pointer =
+                    storage::block_pointer_t(segment.block->block_id(), static_cast<uint32_t>(segment.block_offset()));
+                dp.compression = loaded_compression;
+                dp.segment_size = segment.segment_size();
+                if (auto* state = segment.segment_state()) {
+                    dp.overflow_blocks = state->additional_blocks();
+                }
+                data_pointers_.push_back(std::move(dp));
+                return true;
+            }
+        }
+
         auto pinned = block_manager.buffer_manager.pin(segment.block);
         if (pinned.has_error()) {
-            return pinned.convert_error<bool>(); // out_of_memory
+            return pinned.convert_error<bool>();
         }
         auto& handle = pinned.value();
         auto* data = handle.ptr();
 
-        auto phys = segment.type.to_physical_type();
-        bool is_fixed_size = (phys != types::physical_type::STRING && phys != types::physical_type::BIT &&
-                              phys != types::physical_type::INVALID);
-
-        // A DISK-LOADED segment that is already compressed (CONSTANT/RLE/DICTIONARY) holds its COMPRESSED
-        // byte stream in the pinned buffer, NOT raw values. Re-running the compression analysis below would
-        // read those compressed bytes as raw fixed-width values and re-compress garbage (reopen corruption:
-        // a packed RLE column read back as 0x140003). Such a segment is already in its final on-disk form,
-        // so copy its bytes through VERBATIM to a fresh allocation, preserving the compression type and the
-        // (compressed) segment_size. A freshly-appended in-memory segment is UNCOMPRESSED (compression_
-        // defaults to UNCOMPRESSED until checkpoint), so this branch only fires for segments loaded from a
-        // prior checkpoint.
-        const auto loaded_compression = segment.compression();
+        // A compressed segment holds COMPRESSED bytes in the pinned buffer, not raw values; every producer
+        // of compressed segments makes them disk-backed, so this is a defensive fallback, not dead code.
         if (loaded_compression != compression::compression_type::UNCOMPRESSED && data && segment.segment_size() > 0) {
             const auto compressed_size = segment.segment_size();
             auto* compressed_data = data + segment.block_offset();
@@ -224,7 +227,6 @@ namespace components::table {
         if (is_fixed_size && tuple_count > 1 && data && segment.type_size > 0) {
             auto* segment_data = data + segment.block_offset();
 
-            // Try CONSTANT compression (all values identical)
             if (is_constant_data(segment_data, segment.type_size, tuple_count)) {
                 auto constant_size = segment.type_size;
                 auto allocation = partial_block_manager_.get_block_allocation(constant_size);
@@ -243,7 +245,6 @@ namespace components::table {
                 return true;
             }
 
-            // Try RLE compression
             uint32_t num_runs = count_runs(segment_data, segment.type_size, tuple_count);
             uint64_t entry_size = segment.type_size + sizeof(uint32_t);
             uint64_t rle_size = sizeof(uint32_t) + num_runs * entry_size;
@@ -269,7 +270,6 @@ namespace components::table {
                 return true;
             }
 
-            // Try DICTIONARY compression (low-cardinality columns)
             auto dict_info = analyze_dictionary(segment_data, segment.type_size, tuple_count);
             if (dict_info.num_unique > 1 && dict_info.compressed_size < uncompressed_size) {
                 std::vector<std::byte> dict_buf;
@@ -292,17 +292,60 @@ namespace components::table {
             }
         }
 
-        // Default: UNCOMPRESSED
         auto segment_size = segment.segment_size();
-        auto allocation = partial_block_manager_.get_block_allocation(segment_size);
+        storage::data_pointer_t dp;
 
+        if (disk_backed) {
+            dp.row_start = row_start;
+            dp.tuple_count = tuple_count;
+            dp.block_pointer =
+                storage::block_pointer_t(segment.block->block_id(), static_cast<uint32_t>(segment.block_offset()));
+            dp.compression = compression::compression_type::UNCOMPRESSED;
+            dp.segment_size = segment_size;
+            data_pointers_.push_back(std::move(dp));
+            return true;
+        }
+
+        // A STRING segment persists a TIGHT image: compact_string_dictionary trims slack left by partial fills
+        // (measured before this: 8000 rows of 4090-byte text cost 9635 bytes/row, 1365 of that pure slack),
+        // and persist_string_overflow moves TRANSIENT overflow blocks into real file blocks before rewriting.
+        if (phys == types::physical_type::STRING && data && segment_size > 0 && tuple_count > 0) {
+            auto* segment_data = data + segment.block_offset();
+            std::pmr::vector<std::byte> rewritten(segment_size, std::byte{0}, column_data_.resource());
+            std::memcpy(rewritten.data(), segment_data, segment_size);
+            auto compacted = segment.compact_string_dictionary(rewritten.data(), segment_size, tuple_count);
+            if (compacted.has_error()) {
+                return compacted.convert_error<bool>();
+            }
+            segment_size = compacted.value();
+            if (segment.references_string_overflow(rewritten.data(), segment_size, tuple_count)) {
+                auto persisted = segment.persist_string_overflow(rewritten.data(),
+                                                                 segment_size,
+                                                                 tuple_count,
+                                                                 partial_block_manager_,
+                                                                 dp.overflow_blocks);
+                if (persisted.has_error()) {
+                    return persisted;
+                }
+            }
+            auto string_allocation = partial_block_manager_.get_block_allocation(segment_size);
+            partial_block_manager_.write_to_block(string_allocation.block_id,
+                                                  string_allocation.offset_in_block,
+                                                  rewritten.data(),
+                                                  segment_size);
+            dp.row_start = row_start;
+            dp.tuple_count = tuple_count;
+            dp.block_pointer = storage::block_pointer_t(string_allocation.block_id, string_allocation.offset_in_block);
+            dp.compression = compression::compression_type::UNCOMPRESSED;
+            dp.segment_size = segment_size;
+            data_pointers_.push_back(std::move(dp));
+            return true;
+        }
+
+        auto allocation = partial_block_manager_.get_block_allocation(segment_size);
         if (data && segment_size > 0) {
-            // Read from the segment's OWN payload within its (possibly shared) block. A segment that the
-            // write-through re-pointed via partial-block packing (B2) lives at a NON-ZERO block_offset in a
-            // block shared with other segments; reading from data (offset 0) would copy a neighbour's bytes
-            // into the checkpoint (reopen corruption). The compressed and fixed-size branches above already
-            // add block_offset(); this UNCOMPRESSED branch (BIT/validity, STRING, single-tuple fixed-size)
-            // must too. Pre-B2 every re-pointed segment was at offset 0 so this was latent.
+            // A segment packed via partial-block packing lives at a NON-ZERO block_offset in a shared block;
+            // reading from data (offset 0) instead would copy a neighbour's bytes into the checkpoint.
             auto* segment_data = data + segment.block_offset();
             partial_block_manager_.write_to_block(allocation.block_id,
                                                   allocation.offset_in_block,
@@ -310,13 +353,12 @@ namespace components::table {
                                                   segment_size);
         }
 
-        storage::data_pointer_t dp;
         dp.row_start = row_start;
         dp.tuple_count = tuple_count;
         dp.block_pointer = storage::block_pointer_t(allocation.block_id, allocation.offset_in_block);
         dp.compression = compression::compression_type::UNCOMPRESSED;
         dp.segment_size = segment_size;
-        data_pointers_.push_back(dp);
+        data_pointers_.push_back(std::move(dp));
         return true;
     }
 

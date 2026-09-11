@@ -2,7 +2,7 @@
 """
 Manual correctness checks for the disk-backed hash index (Bitcask + disk_hash_table).
 
-Runs SQL via benchmark_runner (--disk) and validates:
+Runs SQL via benchmark_runner and validates:
   - query row counts (-- @expected_rows N)
   - on-disk layout under <workspace>/<phase>/wal/<table_oid>/<index_name>/
 
@@ -38,6 +38,9 @@ from typing import Callable
 
 PAGE_SIZE = 4096
 INDEX_NAME = "idx_id_hash"
+# benchmark_runner puts every artefact under one named base dir
+# (benchmark/runner/benchmark_runner.cpp make_config), not bare ./wal.
+RUNNER_DATA_DIR = "otterbrix_benchmark_data"
 TABLE_NAME = "kv"
 MIN_USER_TABLE_OID = 16384
 
@@ -110,16 +113,16 @@ def read_hash_index_header(path: Path) -> tuple[int, int, int]:
 
 
 def find_index_dir(phase_dir: Path, index_name: str = INDEX_NAME) -> Path | None:
-    """Index files live under config.disk.path (benchmark cwd → ./wal/<table_oid>/<index>/)."""
-    for root_name in ("wal", "disk"):
-        root = phase_dir / root_name
-        if not root.is_dir():
-            continue
-        for candidate in root.rglob(index_name):
-            if candidate.is_dir():
-                return candidate
-        for hash_bin in root.rglob("hash_index.bin"):
-            return hash_bin.parent
+    """Index files live under config.disk.path, which shares the WAL directory:
+    <benchmark cwd>/otterbrix_benchmark_data/wal/<table_oid>/<index>/."""
+    root = phase_dir / RUNNER_DATA_DIR / "wal"
+    if not root.is_dir():
+        return None
+    for candidate in root.rglob(index_name):
+        if candidate.is_dir():
+            return candidate
+    for hash_bin in root.rglob("hash_index.bin"):
+        return hash_bin.parent
     return None
 
 
@@ -170,7 +173,7 @@ def build_setup_sql(
     """
     lines = [
         f"-- @database {db_name}",
-        f"CREATE TABLE {TABLE_NAME} (id INTEGER, payload STRING) WITH (storage = 'disk');",
+        f"CREATE TABLE {TABLE_NAME} (id INTEGER, payload STRING) ;",
     ]
     if csv_path is not None:
         # Relative path: @load_csv is tokenized on spaces (no absolute paths with spaces).
@@ -192,7 +195,6 @@ def run_runner(
     cwd: Path,
     sql_file: str,
     *,
-    disk: bool = True,
     load_only: bool = False,
     skip_load: bool = False,
     no_setup: bool = False,
@@ -200,8 +202,6 @@ def run_runner(
     timeout_sec: float = 300,
 ) -> subprocess.CompletedProcess[str]:
     cmd = [str(runner), f"--file={sql_file}"]
-    if disk:
-        cmd.append("--disk")
     if load_only:
         cmd.append("--load-only")
         if checkpoint_mb > 0:
@@ -426,7 +426,7 @@ def run_phase(
         runner, phase_dir, "_setup.sql", load_only=True, timeout_sec=timeout_sec, checkpoint_mb=checkpoint_mb
     )
     assert_runner_ok(proc, f"{phase.name}/load")
-    # benchmark_runner --load-only already runs CHECKPOINT when --disk is set
+    # benchmark_runner --load-only already runs CHECKPOINT
 
     for mut in phase.mutation_sql:
         mut_name = f"mutation_{hash(mut) & 0xFFFF:04x}.sql"

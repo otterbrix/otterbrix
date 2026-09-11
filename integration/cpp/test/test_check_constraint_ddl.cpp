@@ -1,3 +1,4 @@
+#include "integration_fixture_path.hpp"
 #include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -31,10 +32,8 @@ namespace {
     }
 
     configuration::config config_for(const std::string& name) {
-        auto config = test_create_config("/tmp/otterbrix/integration/test_check_constraint_ddl/" + name);
+        auto config = test_create_config(integration_fixture_path("test_check_constraint_ddl/" + name));
         test_clear_directory(config);
-        config.disk.on = false;
-        config.wal.on = false;
         config.log.level = log_t::level::off;
         return config;
     }

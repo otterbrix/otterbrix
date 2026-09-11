@@ -14,6 +14,16 @@
 
 namespace services::dispatcher::validation {
 
+    // used to address expressions from previous steps, without recomputing them
+    struct precomputed_column_t {
+        components::expressions::key_t reference;
+        components::expressions::expression_ptr expression;
+        components::expressions::cardinality_t cardinality{components::expressions::cardinality_t::row};
+
+        explicit precomputed_column_t(std::pmr::memory_resource* resource)
+            : reference(resource) {}
+    };
+
     struct expression_context_t {
         std::pmr::memory_resource* resource;
         // Node's The input schema
@@ -24,8 +34,7 @@ namespace services::dispatcher::validation {
         const components::graph_execution_context& execution_context;
         components::compute::function_types_mask allowed_functions;
         const named_schema* schema_right{nullptr};
-        // Resolved GROUP BY key paths
-        const std::pmr::vector<std::pmr::vector<size_t>>* group_key_paths{nullptr};
+        const std::pmr::vector<precomputed_column_t>* precomputed{nullptr};
         components::types::complex_logical_type required_type{components::types::logical_type::ANY};
     };
 

@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <components/logical_plan/node_alter_table.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/parser/pg_functions.h>
@@ -222,10 +223,167 @@ TEST_CASE("components::sql::errors") {
 
     TEST_TRANSFORMER_ERROR("CREATE TYPE ty AS (a VARCHAR(10));", R"_(string length modifier is not supported)_");
     TEST_TRANSFORMER_ERROR("ALTER TABLE d.t ADD COLUMN c VARCHAR(10);", R"_(string length modifier is not supported)_");
+    // A CHECK is lowered as a general expression now, so a function call in it is enforced, not rejected.
     TEST_TRANSFORMER_OK("ALTER TABLE d.t ADD CONSTRAINT ck CHECK (lower(a) = 'x');");
     TEST_TRANSFORMER_ERROR("SELECT * FROM d.t WHERE ((5 + 1) -> 'a') ? 'b';",
                            R"_(unsupported left operand in jsonb operator chain)_");
     TEST_TRANSFORMER_ERROR("SELECT * FROM d.t WHERE (5 -> 'a') ? 'b';",
                            R"_(unsupported base operand for jsonb operator)_");
     TEST_TRANSFORMER_ERROR("SELECT * FROM d.t WHERE 5 ? 'a';", R"_(unsupported base operand for jsonb operator)_");
+}
+
+// WITH (storage = ...) is gone; every value must fail loudly, not be silently accepted.
+TEST_CASE("components::sql::errors::create_table_storage_option_removed") {
+    auto resource = core::pmr::otterbrix_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
+    transform::transformer transformer(&resource);
+
+    // 'disk' literal split so a grep for the removed option finds no caller writing it.
+    TEST_TRANSFORMER_ERROR("CREATE TABLE db.tbl (id BIGINT) WITH (storage = 'di"
+                           "sk');",
+                           R"_(the WITH (storage = ...) option has been removed: tables are always disk-backed)_");
+    TEST_TRANSFORMER_ERROR("CREATE TABLE db.tbl (id BIGINT) WITH (storage = 'memory');",
+                           R"_(the WITH (storage = ...) option has been removed: tables are always disk-backed)_");
+    TEST_TRANSFORMER_ERROR("CREATE TABLE db.tbl (id BIGINT) WITH (storage = 'anything');",
+                           R"_(the WITH (storage = ...) option has been removed: tables are always disk-backed)_");
+    TEST_TRANSFORMER_ERROR("CREATE TABLE db.tbl (id BIGINT) WITH (storage);",
+                           R"_(the WITH (storage = ...) option has been removed: tables are always disk-backed)_");
+}
+
+// ---------------------------------------------------------------------------
+// ALTER forms that must not report SUCCESS after doing nothing.
+//
+// An unrecognised subcommand in transform_alter_table/transform_rename used to fall through to
+// an empty-named DROP/RENAME COLUMN node, which operator_alter_column_drop_t then silently no-ops
+// on. A statement that changes nothing must fail loudly instead, naming the form typed.
+// ---------------------------------------------------------------------------
+namespace {
+    struct alter_probe_t {
+        bool errored{false};
+        // Error text when refused, otherwise the produced node's to_string().
+        std::string what;
+        // An empty-named DROP/RENAME COLUMN subcommand is indistinguishable from a successful no-op; nothing may produce one.
+        bool empty_named_subcommand{false};
+    };
+
+    alter_probe_t probe_alter(std::pmr::memory_resource* resource, const char* query) {
+        std::pmr::monotonic_buffer_resource arena(resource);
+        // Needs the statement text: slice_check_expression pulls a CHECK's expression from it,
+        // so a transformer without it refuses every ADD CONSTRAINT ... CHECK.
+        transform::transformer t(resource, query);
+        auto stmt = linitial(raw_parser(&arena, query));
+        auto result = t.transform(transform::pg_cell_to_node_cast(stmt));
+        if (result.has_error()) {
+            return {true, std::string{result.get_error().what.c_str()}, false};
+        }
+        auto node = result.node_ptr();
+        if (!node) {
+            return {false, std::string{"<null node>"}, false};
+        }
+        alter_probe_t out{false, node->to_string(), false};
+        if (node->type() == components::logical_plan::node_type::alter_table_t) {
+            const auto* alter = static_cast<const components::logical_plan::node_alter_table_t*>(node.get());
+            for (const auto& sub : alter->subcommands()) {
+                // DROP CONSTRAINT carries constraint_name; every column clause carries column_name.
+                if (sub.kind == components::logical_plan::alter_table_kind::drop_constraint
+                        ? sub.constraint_name.empty()
+                        : sub.column_name.empty()) {
+                    out.empty_named_subcommand = true;
+                }
+            }
+        }
+        return out;
+    }
+} // namespace
+
+#define TEST_ALTER_REFUSED(QUERY, RESULT)                                                                              \
+    SECTION(QUERY) {                                                                                                   \
+        auto probe = probe_alter(&resource, QUERY);                                                                    \
+        INFO(QUERY << " -> " << (probe.errored ? "ERROR: " : "NODE: ") << probe.what);                                 \
+        REQUIRE(probe.errored);                                                                                        \
+        REQUIRE(probe.what == RESULT);                                                                                 \
+        REQUIRE_FALSE(probe.empty_named_subcommand);                                                                   \
+    }
+
+#define TEST_ALTER_ACCEPTED(QUERY)                                                                                     \
+    SECTION(QUERY) {                                                                                                   \
+        auto probe = probe_alter(&resource, QUERY);                                                                    \
+        INFO(QUERY << " -> " << (probe.errored ? "ERROR: " : "NODE: ") << probe.what);                                 \
+        REQUIRE_FALSE(probe.errored);                                                                                  \
+        REQUIRE_FALSE(probe.empty_named_subcommand);                                                                   \
+    }
+
+TEST_CASE("components::sql::errors::alter_forms_that_did_nothing_are_refused") {
+    auto resource = core::pmr::otterbrix_resource();
+
+    // RENAME of anything that is not a column.
+    TEST_ALTER_REFUSED("ALTER TABLE d.t RENAME TO t2;",
+                       R"_(ALTER TABLE ... RENAME TO t2 is not implemented; nothing was renamed)_");
+    TEST_ALTER_REFUSED("ALTER INDEX d.i RENAME TO i2;",
+                       R"_(ALTER INDEX ... RENAME TO i2 is not implemented; nothing was renamed)_");
+    TEST_ALTER_REFUSED("ALTER VIEW d.v RENAME TO v2;",
+                       R"_(ALTER VIEW ... RENAME TO v2 is not implemented; nothing was renamed)_");
+    TEST_ALTER_REFUSED("ALTER MATERIALIZED VIEW d.mv RENAME TO mv2;",
+                       R"_(ALTER MATERIALIZED VIEW ... RENAME TO mv2 is not implemented; nothing was renamed)_");
+    TEST_ALTER_REFUSED("ALTER SEQUENCE d.s RENAME TO s2;",
+                       R"_(ALTER SEQUENCE ... RENAME TO s2 is not implemented; nothing was renamed)_");
+    TEST_ALTER_REFUSED("ALTER TABLE d.t RENAME CONSTRAINT ck TO ck2;",
+                       R"_(ALTER TABLE ... RENAME CONSTRAINT ck TO ck2 is not implemented; nothing was renamed)_");
+
+    // ALTER COLUMN sub-forms the grammar accepts and nothing below implements.
+    TEST_ALTER_REFUSED("ALTER TABLE d.t ALTER COLUMN a TYPE bigint;",
+                       R"_(ALTER TABLE ... ALTER COLUMN a TYPE ... is not implemented; the table was not altered)_");
+    TEST_ALTER_REFUSED("ALTER TABLE d.t ALTER COLUMN a SET DEFAULT 5;",
+                       R"_(ALTER TABLE ... ALTER COLUMN a SET DEFAULT ... is not implemented; )_"
+                       R"_(the table was not altered)_");
+    TEST_ALTER_REFUSED("ALTER TABLE d.t ALTER COLUMN a DROP DEFAULT;",
+                       R"_(ALTER TABLE ... ALTER COLUMN a DROP DEFAULT is not implemented; )_"
+                       R"_(the table was not altered)_");
+    TEST_ALTER_REFUSED("ALTER TABLE d.t ALTER COLUMN a SET NOT NULL;",
+                       R"_(ALTER TABLE ... ALTER COLUMN a SET NOT NULL is not implemented; )_"
+                       R"_(the table was not altered)_");
+    TEST_ALTER_REFUSED("ALTER TABLE d.t ALTER COLUMN a DROP NOT NULL;",
+                       R"_(ALTER TABLE ... ALTER COLUMN a DROP NOT NULL is not implemented; )_"
+                       R"_(the table was not altered)_");
+
+    // Table-level sub-forms, same class.
+    TEST_ALTER_REFUSED("ALTER TABLE d.t SET TABLESPACE fast;",
+                       R"_(ALTER TABLE ... SET TABLESPACE fast is not implemented; the table was not altered)_");
+    TEST_ALTER_REFUSED("ALTER TABLE d.t OWNER TO alice;",
+                       R"_(ALTER TABLE ... OWNER TO alice is not implemented; the table was not altered)_");
+    TEST_ALTER_REFUSED("ALTER TABLE d.t VALIDATE CONSTRAINT ck;",
+                       R"_(ALTER TABLE ... VALIDATE CONSTRAINT ck is not implemented; the table was not altered)_");
+
+    // integration/cpp/test/test_alter_drop_constraint.cpp pins its end-to-end behavior.
+    TEST_ALTER_ACCEPTED("ALTER TABLE d.t DROP CONSTRAINT ck;");
+
+    // The AddConstraint arm returns its own node type without looking at subcommands the loop
+    // already collected, so a constraint clause mixed with any other must be refused, not silently drop the rest.
+    TEST_ALTER_REFUSED("ALTER TABLE d.t ADD COLUMN x bigint, ADD CONSTRAINT uq UNIQUE (x);",
+                       R"_(ALTER TABLE ... ADD CONSTRAINT uq alongside other subcommands in one statement is )_"
+                       R"_(not implemented; the table was not altered)_");
+    TEST_ALTER_REFUSED("ALTER TABLE d.t ADD CONSTRAINT a UNIQUE (x), ADD CONSTRAINT b UNIQUE (y);",
+                       R"_(ALTER TABLE ... ADD CONSTRAINT a alongside other subcommands in one statement is )_"
+                       R"_(not implemented; the table was not altered)_");
+
+    TEST_ALTER_REFUSED("ALTER TABLE d.t ADD CONSTRAINT ex EXCLUDE (a WITH =);",
+                       R"_(ALTER TABLE ... ADD CONSTRAINT ex EXCLUDE is not implemented; )_"
+                       R"_(the table was not altered)_");
+}
+
+// Counterpart: forms that DO work must keep working, and never produce the empty-named DROP COLUMN node the refusals above eliminate.
+TEST_CASE("components::sql::errors::alter_forms_that_work_keep_working") {
+    auto resource = core::pmr::otterbrix_resource();
+
+    TEST_ALTER_ACCEPTED("ALTER TABLE d.t ADD COLUMN c bigint;");
+    TEST_ALTER_ACCEPTED("ALTER TABLE d.t DROP COLUMN c;");
+    TEST_ALTER_ACCEPTED("ALTER TABLE d.t ADD CONSTRAINT uq UNIQUE (c);");
+    TEST_ALTER_ACCEPTED("ALTER TABLE d.t ADD CONSTRAINT ck CHECK (c > 0);");
+    TEST_ALTER_ACCEPTED("ALTER TABLE d.t ADD CONSTRAINT fk FOREIGN KEY (c) REFERENCES d.p (id);");
+    TEST_ALTER_ACCEPTED("ALTER TABLE d.t RENAME COLUMN a TO b;");
+    TEST_ALTER_ACCEPTED("ALTER TABLE d.t ADD COLUMN x bigint, DROP COLUMN y;");
+    TEST_ALTER_ACCEPTED("ALTER TABLE d.t ADD COLUMN x bigint, ADD COLUMN y bigint, DROP COLUMN z;");
+    // Lands in the same AlterTableStmt arms (AT_AddColumn / AT_DropColumn) as ALTER TABLE.
+    TEST_ALTER_ACCEPTED("ALTER TYPE shop.addr_t ADD ATTRIBUTE zip TEXT;");
+    TEST_ALTER_ACCEPTED("ALTER TYPE shop.addr_t DROP ATTRIBUTE zip;");
 }

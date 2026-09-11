@@ -38,31 +38,18 @@ namespace components::catalog::alter_column_validators {
         return core::error_t::no_error();
     }
 
-    core::error_t
-    validate_default_value_evaluatable(std::pmr::memory_resource* /*resource*/,
-                                       const std::optional<components::types::logical_value_t>& default_value) {
-        // A materialised logical_value_t is evaluatable by construction; nothing to check yet.
-        (void) default_value;
-        return core::error_t::no_error();
-    }
-
-    core::error_t
-    validate_cascade_dependencies(std::pmr::memory_resource* /*resource*/,
-                                  const std::pmr::vector<std::pair<int, components::catalog::oid_t>>& dependents) {
-        // TODO: stub; real handler table dispatches on pg_depend.classid (see .hpp).
-        (void) dependents;
-        return core::error_t::no_error();
-    }
-
-    core::error_t encode_default_spec_ec(std::pmr::memory_resource* /*resource*/,
+    core::error_t encode_default_spec_ec(std::pmr::memory_resource* resource,
                                          const std::optional<components::types::logical_value_t>& default_value,
                                          std::pmr::string& out_spec) {
         out_spec.clear();
         if (!default_value.has_value()) {
             return core::error_t::no_error();
         }
-        // encode_default_spec returns "" for complex types; we forward that as success (see .hpp).
-        const std::string encoded = components::catalog::encode_default_spec(*default_value);
+        std::string encoded;
+        if (auto ec = components::catalog::encode_default_spec(resource, *default_value, encoded);
+            ec.contains_error()) {
+            return ec;
+        }
         out_spec.assign(encoded.begin(), encoded.end());
         return core::error_t::no_error();
     }

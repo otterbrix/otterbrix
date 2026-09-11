@@ -1,74 +1,24 @@
 #include <catch2/catch_test_macros.hpp>
 
-#include "components/index/index_engine.hpp"
+#include <components/logical_plan/node_create_index.hpp>
 
-using namespace components::index;
+// Index registry tests live in services/index/tests/test_index_registry.cpp. This file only
+// covers pg_index.indtype's catalog-code round-trip (components/logical_plan).
 
-static index_value_t NULL_INDEX_VALUE{};
-
-class dummy final : public index_t {
-public:
-    using storage_t = std::vector<value_t>;
-    using const_iterator = storage_t::const_iterator;
-
-    explicit dummy(std::pmr::memory_resource* resource, const std::string& name, const keys_base_storage_t& keys)
-        : index_t(resource, components::logical_plan::index_type::single, name, keys) {}
-
-private:
-    void insert_impl(value_t, index_value_t, core::date::timezone_offset_t) override {}
-    void remove_impl(value_t, core::date::timezone_offset_t) override {}
-    range find_impl(const value_t&, core::date::timezone_offset_t) const override {
-        return std::make_pair(iterator(new impl_t(dummy_storage_.cbegin())),
-                              iterator(new impl_t(dummy_storage_.cend())));
+// Every writable index_type round-trips through its single-char catalog code; an unknown code
+// decodes to no_valid, which manager_disk_bootstrap.cpp treats as catalog corruption and refuses
+// to start rather than guess a backend. no_valid itself has no writable code (encoder returns 0).
+TEST_CASE("components::index::indtype_code_roundtrip") {
+    using components::logical_plan::index_type;
+    using components::logical_plan::index_type_from_indtype_code;
+    using components::logical_plan::index_type_to_indtype_code;
+    for (auto t :
+         {index_type::single, index_type::composite, index_type::multikey, index_type::hashed, index_type::wildcard}) {
+        const char code = index_type_to_indtype_code(t);
+        REQUIRE(code != 0);
+        REQUIRE(index_type_from_indtype_code(code) == t);
     }
-    range lower_bound_impl(const value_t&, core::date::timezone_offset_t) const override {
-        return std::make_pair(iterator(new impl_t(dummy_storage_.cbegin())),
-                              iterator(new impl_t(dummy_storage_.cend())));
-    }
-    range upper_bound_impl(const value_t&, core::date::timezone_offset_t) const override {
-        return std::make_pair(iterator(new impl_t(dummy_storage_.cbegin())),
-                              iterator(new impl_t(dummy_storage_.cend())));
-    }
-    iterator cbegin_impl() const override { return iterator(new impl_t(dummy_storage_.cbegin())); }
-    iterator cend_impl() const override { return iterator(new impl_t(dummy_storage_.cend())); }
-    void insert_txn_impl(value_t, int64_t, uint64_t, core::date::timezone_offset_t) override {}
-    void mark_delete_impl(value_t, int64_t, uint64_t, core::date::timezone_offset_t) override {}
-    void commit_insert_impl(uint64_t, uint64_t) override {}
-    void commit_delete_impl(uint64_t, uint64_t) override {}
-    void revert_insert_impl(uint64_t) override {}
-    void revert_delete_impl(uint64_t) override {}
-    void cleanup_versions_impl(uint64_t) override {}
-    pending_entries_t pending_inserts_impl(uint64_t) const override { return pending_entries_t{resource()}; }
-    pending_entries_t pending_deletes_impl(uint64_t) const override { return pending_entries_t{resource()}; }
-    void clean_memory_to_new_elements_impl(size_t) override {}
-
-    class impl_t final : public iterator::iterator_impl_t {
-    public:
-        explicit impl_t(const_iterator) {}
-        iterator::reference value_ref() const override { return NULL_INDEX_VALUE; }
-        iterator_t::iterator_impl_t* next() override { return nullptr; }
-        bool equals(const iterator::iterator_impl_t* other) const override { return this == other; }
-        bool not_equals(const iterator::iterator_impl_t* other) const override { return this != other; }
-        iterator::iterator_impl_t* copy() const override { return new impl_t(*this); }
-    };
-
-    storage_t dummy_storage_;
-};
-
-TEST_CASE("components::index::base_index_created") {
-    auto resource = core::pmr::otterbrix_resource();
-    auto index_engine = make_index_engine(&resource);
-    auto one_id = make_index<dummy>(index_engine, "dummy_one", {components::expressions::key_t{&resource, "1"}});
-    auto two_id = make_index<dummy>(
-        index_engine,
-        "dummy_two",
-        {components::expressions::key_t{&resource, "1"}, components::expressions::key_t{&resource, "2"}});
-    auto two_1_id = make_index<dummy>(
-        index_engine,
-        "dummy_two_1",
-        {components::expressions::key_t{&resource, "2"}, components::expressions::key_t{&resource, "1"}});
-    REQUIRE(index_engine->size() == 3);
-    REQUIRE(search_index(index_engine, one_id) != nullptr);
-    REQUIRE(search_index(index_engine, two_id) != nullptr);
-    REQUIRE(search_index(index_engine, two_1_id) != nullptr);
+    REQUIRE(index_type_from_indtype_code('x') == index_type::no_valid);
+    REQUIRE(index_type_from_indtype_code('\0') == index_type::no_valid);
+    REQUIRE(index_type_to_indtype_code(index_type::no_valid) == 0);
 }

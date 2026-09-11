@@ -24,6 +24,6 @@ namespace otterbrix {
         debug(log_, "wrapper_client::execute");
         auto session = otterbrix::session_id_t();
         return wrapper_cursor_ptr(
-            new wrapper_cursor{ptr_->dispatcher()->execute_sql(session, query), ptr_->dispatcher()});
+            new wrapper_cursor{ptr_->dispatcher()->execute_sql(session, query), ptr_->dispatcher(), ptr_});
     }
 } // namespace otterbrix

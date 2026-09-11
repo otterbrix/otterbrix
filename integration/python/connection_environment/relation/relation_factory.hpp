@@ -15,6 +15,7 @@
 #include <memory>
 
 #include <memory_resource>
+#include <string>
 #include <vector>
 
 using namespace components::logical_plan;
@@ -34,6 +35,10 @@ namespace otterbrix {
     class relation_factory_t {
     public:
         relation_factory_t(const boost::intrusive_ptr<otterbrix_t>& space);
+        // A cursor copy (py_connection_t::cursor) shares `space` but must not inherit
+        // scratch_tables_: two objects dropping the same table would refuse the second drop.
+        relation_factory_t(const relation_factory_t& other);
+        relation_factory_t& operator=(const relation_factory_t&) = delete;
         virtual ~relation_factory_t();
         void set_null_space();
 
@@ -70,6 +75,12 @@ namespace otterbrix {
                             components::logical_plan::node_limit_ptr limit = nullptr);
 
         boost::intrusive_ptr<otterbrix_t> space;
+
+        // Scratch tables created, in order; the destructor's body drops them via
+        // space->dispatcher() before any member is torn down. Plain std::vector, not pmr:
+        // the only arena in reach is space->dispatcher()'s, and a member initializer would
+        // make constructing a factory the first dereference of `space`.
+        std::vector<std::string> scratch_tables_;
     };
 
 } // namespace otterbrix

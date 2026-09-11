@@ -30,42 +30,28 @@
 
 namespace services::collection::executor {
 
-    // Test-observable streaming-path counter. execute_pipeline() bumps it once per
-    // entry, so a test can assert a statement actually routed through the push-based
-    // streaming path (vs the legacy materialize path) rather than only that its
-    // result is correct. Process-global + relaxed: a coarse instrumentation hook,
-    // not a synchronization primitive. Not on any hot path (one bump per sub-plan).
-    // DEV_MODE-only: the integration test target compiles with -DDEV_MODE; production
-    // binaries carry neither the counter nor these accessors.
+    // Bumped once per execute_pipeline() entry (streaming vs. legacy materialize path).
 #ifdef DEV_MODE
     uint64_t streaming_pipeline_runs() noexcept;
 
-    // Test-observable counter of BASE-table DML append ranges PHYSICALLY reverted on
-    // the failed-statement abort path (revert_failed_txn → storage_revert_appends).
-    // Exists to make the constraint-error-leak regression deterministically RED/GREEN
-    // through SQL: a CHECK/FK violation in autocommit appends a row BEFORE the
-    // constraint fails; if the executor's error path does not lift that recorded
-    // append range, this counter stays 0 and the physical row lingers (the bug). After
-    // the fix it bumps by exactly the number of leaked ranges reverted. Process-global
-    // + relaxed: coarse instrumentation, not a synchronization primitive; off every hot
-    // path. DEV_MODE-only, like streaming_pipeline_runs().
+    // Guards the regression where a CHECK/FK failure in autocommit leaves an appended row behind.
     uint64_t dml_appends_reverted() noexcept;
 
-    // Test-observable counter of MID-PUMP DML flushes: bumped each time the
-    // mid-pump flush gate fires (threshold set and buffered_rows() >= threshold),
-    // i.e. once per NON-final incremental flush of a bounded DML sink. With the
-    // default threshold==0 the gate never fires and this stays 0. Lets tests prove
-    // the incremental spill path actually executed rather than collapsing to a
-    // single post-pump flush. Process-global + relaxed: coarse instrumentation,
-    // not a synchronization primitive; off every hot path. DEV_MODE-only, like
-    // streaming_pipeline_runs().
     uint64_t dml_flush_count() noexcept;
+
+    // Fault-injection seam for OID allocation; no file/page/block, so the .otbx/WAL interposers can't reach it.
+    struct oid_alloc_interposer_t {
+        virtual ~oid_alloc_interposer_t() = default;
+        // An empty `allocated` isn't invented — it's what allocate_oids_inline's failure branches already produce.
+        virtual std::vector<components::catalog::oid_t>
+        substitute(std::size_t requested, std::vector<components::catalog::oid_t> allocated) = 0;
+    };
+
+    void dev_set_oid_alloc_interposer(oid_alloc_interposer_t* interposer);
+    oid_alloc_interposer_t* dev_oid_alloc_interposer();
 #endif
 
-    // One range per (table, DML fragment), accumulated across sub-plans.
-    // Must accumulate, not overwrite: FK cascade DELETE on >=2 tables emits a
-    // range per child table, and a single last-wins field would silently drop
-    // the publishes for every non-last child.
+    // Accumulates across sub-plans: FK cascade DELETE emits one range per child table (last-wins would drop entries).
     struct dml_append_range_t {
         components::catalog::oid_t table_oid;
         int64_t row_start;
@@ -78,55 +64,24 @@ namespace services::collection::executor {
 
     struct execute_result_t {
         components::cursor::cursor_t_ptr cursor;
-        // INTERNAL accumulators: populated by execute_plan (the operator
-        // pipeline) and fully CONSUMED by execute_plan_full's commit/abort
-        // tail before the result crosses the mailbox back to the dispatcher —
-        // implicit DML publishes them inline (per-range + index mirrors),
-        // explicit DML / DDL ships them to the dispatcher's transaction_t via
-        // txn_accumulate_msg. The dispatcher reads ONLY cursor and
-        // applied_timezone.
+        // Drained by execute_plan_full's commit tail; the dispatcher reads only cursor and applied_timezone.
         std::vector<components::pg_catalog_append_range_t> pg_catalog_appends{};
         std::set<components::catalog::oid_t> pg_catalog_delete_tables{};
-        // markers emitted by ALTER COLUMN ADD/DROP/RENAME; ride to
-        // transaction_t via txn_accumulate_msg so operator_commit_transaction
-        // can patch the rows after commit_id allocation.
         std::vector<components::pg_attribute_commit_id_backfill_t> pg_attribute_commit_id_backfills{};
         std::vector<dml_append_range_t> dml_appends{};
         std::vector<dml_delete_range_t> dml_deletes{};
-        // Storage oids whose backing files a DROP scrubbed this statement,
-        // lifted from pipeline::context_t::dropped_storage_oids. Shipped in the
-        // accumulate payload so operator_commit_transaction's DROP-GC remap
-        // block keys off the drained drop set rather than the ddl-commit mode
-        // flag. Cleared with the other accumulators by the commit tail.
+        // DROP-GC remap keys off this drained set, not the ddl-commit mode flag.
         std::vector<components::catalog::oid_t> dropped_storage_oids{};
-        // CREATE counterpart of dropped_storage_oids: the storage oids / indexes
-        // a CREATE TABLE / CREATE INDEX brought into being this statement, lifted
-        // from pipeline::context_t::created_storage_oids / created_indexes.
-        // Shipped in the accumulate payload so COMMIT publishes them and a same-
-        // txn ABORT drops the still-uncommitted artifacts. Cleared with the
-        // other accumulators by the commit/abort tail.
+        // CREATE counterpart: COMMIT publishes these, a same-txn ABORT drops the uncommitted artifacts.
         std::vector<components::catalog::oid_t> created_storage_oids{};
         std::vector<components::table::created_index_t> created_indexes{};
-        // Commit back-channel lifted from pipeline::context_t::committed_id:
-        // non-zero when this pipeline ran operator_commit_transaction_t (the
-        // CREATE INDEX tail needs the allocated commit_id for its index-only
-        // backfill commit). 0 = no commit ran.
+        // Non-zero only after a commit ran; CREATE INDEX's backfill tail needs the allocated commit_id.
         uint64_t commit_id{0};
-        // Non-empty => a SET TIMEZONE statement persisted this zone name to
-        // pg_settings; the dispatcher refreshes its default_tz_cat_ from it.
-        // The ONLY post-execute signal the dispatcher consumes besides cursor.
+        // Non-empty only after SET TIMEZONE persists a new zone; the dispatcher refreshes default_tz_cat_.
         std::string applied_timezone{};
-        // EXPLAIN ANALYZE only: when a sub-plan ran with explain_capture_ir, its
-        // built IR rides back here (data cursor left intact). The main execute_plan
-        // hangs each captured sub-plan on the main IR root as an InitPlan. Move-only
-        // (explain_plan_node deletes copy) → execute_result_t is move-only, which is
-        // safe: nothing copies it, the mailbox moves it. Appended LAST so every
-        // aggregate-init brace that sets a prefix of members stays valid.
+        // Move-only, and everything from here down is appended at the END: a brace initializer that sets
+        // only a prefix of the members has to keep compiling.
         std::optional<explain_plan_node> captured_explain_ir{};
-        // Set by the register/unregister-cast resolve+validate pass: the source and
-        // target types after catalog-resolve. The dispatcher reads these to fan the
-        // cast out to every executor registry and (for register) drive the pg_cast
-        // write — the pipeline itself touches neither registry nor pg_cast.
         std::optional<std::pair<components::types::complex_logical_type, components::types::complex_logical_type>>
             resolved_cast{};
     };
@@ -135,14 +90,9 @@ namespace services::collection::executor {
 
     struct plan_t {
         std::stack<components::operators::operator_ptr> sub_plans;
-        // Non-owning: points at the shared parameter node's storage owned by
-        // the execute_plan frame, which outlives execute_sub_plan_. Avoids
-        // copying the parameter map into every plan_t (the per-sub-plan
-        // pipeline::context_t still owns its own copy).
+        // Non-owning: points into the execute_plan frame's storage, which outlives execute_sub_plan_.
         const components::logical_plan::storage_parameters* parameters;
         services::context_storage_t context_storage_;
-        // EXPLAIN ANALYZE: propagates to pipeline_context.analyze in execute_sub_plan_ so
-        // execute_pipeline records per-operator stats. Set by execute_plan.
         bool analyze{false};
 
         explicit plan_t(std::stack<components::operators::operator_ptr>&& sub_plans,
@@ -150,44 +100,23 @@ namespace services::collection::executor {
                         services::context_storage_t&& context_storage);
     };
 
-    // Internal result with MVCC tracking (never crosses an actor boundary).
-    // DML operators self-contain WAL/storage/index I/O and record swap-info on
-    // pipeline::context_t::dml_*. execute_sub_plan_ drains those onto the
-    // dml_* vectors below so execute_plan_full's commit tail can drive
-    // storage_publish_commit / storage_publish_delete for every range.
+    // Internal only — never crosses an actor boundary; drained from pipeline::context_t::dml_*.
     struct sub_plan_result_t {
         components::cursor::cursor_t_ptr cursor;
-        // Accumulating vectors (FK cascade correctness — see dml_append_range_t).
         std::vector<dml_append_range_t> dml_appends;
         std::vector<dml_delete_range_t> dml_deletes;
-        // Storage oids drained from pipeline::context_t::dropped_storage_oids
-        // (a DROP scrubbed their backing files). execute_plan moves these into
-        // execute_result_t for the accumulate tail.
         std::vector<components::catalog::oid_t> dropped_storage_oids;
-        // CREATE counterpart: storage oids / indexes drained from
-        // pipeline::context_t::created_storage_oids / created_indexes (a CREATE
-        // brought them into being). execute_plan moves these into
-        // execute_result_t for the accumulate tail.
         std::vector<components::catalog::oid_t> created_storage_oids;
         std::vector<components::table::created_index_t> created_indexes;
 
-        // pg_catalog swap-info drained from each pipeline::context_t inside
-        // execute_sub_plan_. execute_plan moves these into the outer
-        // execute_result_t for the commit/accumulate tail.
         std::vector<components::pg_catalog_append_range_t> pg_catalog_appends;
         std::set<components::catalog::oid_t> pg_catalog_delete_tables;
         std::vector<components::pg_attribute_commit_id_backfill_t> pg_attribute_commit_id_backfills;
-        // Commit back-channel (pipeline::context_t::committed_id).
         uint64_t commit_id{0};
     };
 
-    // Implements components::pipeline::subplan_runner_t so an operator (running
-    // INTRA-actor inside this executor's coroutine) can run a child sub-plan
-    // through the SAME streaming executor via ctx->runner->run_subplan(...). The
-    // executor publishes itself onto pipeline::context_t::runner before driving a
-    // plan. This is NOT cross-actor sharing: operators are owned by and run
-    // synchronously inside executor_t (operator_t is a boost::intrusive_ref_counter,
-    // not a basic_actor).
+    // Implements subplan_runner_t: an operator inside this executor's coroutine drives a child sub-plan via
+    // ctx->runner->run_subplan() — not cross-actor sharing, since operator_t runs synchronously inside executor_t.
     class executor_t final
         : public actor_zeta::basic_actor<executor_t>
         , public components::pipeline::subplan_runner_t {
@@ -206,13 +135,8 @@ namespace services::collection::executor {
                    components::planner::optimizer_pass_t optimizer_pass = &components::planner::no_op_pass);
         ~executor_t() = default;
 
-        // Operator-pipeline run over an already-rewritten plan. INTERNAL:
-        // called only from execute_plan_full (directly, via co_await — never
-        // through the mailbox). The txn lifecycle is owned by the caller.
-        // captured_subplans (EXPLAIN ANALYZE main plan): flattened sub-query IRs, moved in from
-        // execute_plan_full's loop buffer, hung on the main IR root as InitPlans. Passed BY VALUE
-        // (moved) — a pmr member cannot be defaulted (would re-anchor to get_default_resource(),
-        // Rule 14), so callers with no sub-queries pass an empty vector built on resource().
+        // INTERNAL: called only from execute_plan_full via co_await, never through the mailbox. captured_subplans
+        // is by value — a pmr member can't default without re-anchoring to the forbidden get_default_resource().
         unique_future<execute_result_t> execute_plan(components::session::session_id_t session,
                                                      components::logical_plan::execution_plan_t plan,
                                                      services::context_storage_t context_storage,
@@ -220,14 +144,8 @@ namespace services::collection::executor {
                                                      uint64_t lowest_active_start_time,
                                                      std::pmr::vector<explain_plan_node> captured_subplans);
 
-        // THE per-query entry point (the dispatcher's only execute send).
-        // Runs the full pipeline on an unrewritten logical_plan: session
-        // context fetch (txn/tz/is_explicit/lowest_active via one
-        // txn_begin_session_msg round-trip), optimize, resolve wrap, catalog
-        // resolve loop, view splice, validate, enrich, planner rewrites, OID
-        // allocation, the operator pipeline, and the DML/DDL commit (or
-        // abort/accumulate) tail. All txn-state access rides txn_*_msg
-        // messages to the dispatcher — the sole transaction_manager_t owner.
+        // The per-query entry point (the dispatcher's only execute send); txn-state access rides
+        // txn_*_msg to the dispatcher, the sole transaction_manager_t owner.
         unique_future<execute_result_t> execute_plan_full(components::session::session_id_t session,
                                                           components::logical_plan::execution_plan_t plan);
 
@@ -238,9 +156,10 @@ namespace services::collection::executor {
                                            std::string name,
                                            std::pmr::vector<components::types::complex_logical_type> inputs);
 
-        // Add / remove one cast in THIS executor's cast_registry_. Fanned out from
-        // the dispatcher so every per-executor registry stays identical — the
-        // registry is the sole runtime cast authority (there is no default one).
+        // Compensation for a failed register_udf fan-out; appended last in dispatch_traits (message ids positional).
+        unique_future<bool> unregister_udf_uid(components::session::session_id_t session,
+                                               components::compute::function_uid uid);
+
         unique_future<bool> register_cast(components::session::session_id_t session,
                                           components::types::complex_logical_type source,
                                           components::types::complex_logical_type target,
@@ -249,21 +168,13 @@ namespace services::collection::executor {
                                             components::types::complex_logical_type source,
                                             components::types::complex_logical_type target);
 
-        // Register a host EXPLAIN renderer into this executor's registry at slot `id` (host
-        // customization; fanned out from the dispatcher). POD fn-pointers stored per-executor — no
-        // shared mutable state (Rule 10). Registration is rare; per-query selection is a local index.
+        // Fanned out from the dispatcher; POD fn-pointers stored per-executor, so there's no shared mutable state.
         unique_future<bool> set_explain_renderer(uint32_t id, explain_render_fn fn);
 
-        // No-op poke target for the dispatcher's lost-wakeup watchdog (see
-        // executor.cpp for the rationale).
+        // No-op poke target for the dispatcher's lost-wakeup watchdog.
         unique_future<void> poke_msg();
 
-        // subplan_runner_t override. Routes a prepared sub-plan root through the
-        // SAME streaming seam execute_sub_plan_ uses (drive_subplan_ ->
-        // execute_pipeline) and returns its output chunks. Called INTRA-actor by an
-        // operator through ctx->runner (never across the mailbox). NOT in
-        // dispatch_traits: it is a synchronous in-coroutine interface call, not a
-        // mailbox handler.
+        // Same seam as execute_sub_plan_; not in dispatch_traits, a synchronous in-coroutine call.
         [[nodiscard]] unique_future<core::result_wrapper_t<components::operators::chunks_vector_t>>
         run_subplan(components::operators::operator_ptr root, components::pipeline::context_t* ctx) override;
 
@@ -273,7 +184,8 @@ namespace services::collection::executor {
                                                             &executor_t::register_cast,
                                                             &executor_t::unregister_cast,
                                                             &executor_t::set_explain_renderer,
-                                                            &executor_t::poke_msg>;
+                                                            &executor_t::poke_msg,
+                                                            &executor_t::unregister_udf_uid>;
 
         auto make_type() const noexcept -> const char*;
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
@@ -288,58 +200,26 @@ namespace services::collection::executor {
                                                            components::table::transaction_data txn,
                                                            uint64_t lowest_active_start_time);
 
-        // Push-based streaming driver. Pulls one batch at a time from the pipeline
-        // source (the chain bottom), pushes it up through the streaming operators into
-        // the sink, then finalizes — peak memory is one batch plus active sink state.
-        // Also drives the sourceless-sink-bottom shapes (DDL/txn leaves, the resolve
-        // front-pass, a producing recursive_cte) by running the bottom sink's
-        // await_async_and_resume first and pumping any rows it produces up. Populates
-        // `root`'s output_, so the cursor/back-channel logic in execute_sub_plan_ is
-        // unchanged. EVERY reachable plan streams through here.
+        // Push-based, one batch at a time from source to sink; peak memory is one batch plus active sink state.
         unique_future<core::result_wrapper_t<components::operators::chunks_vector_t>>
         execute_pipeline(components::operators::operator_ptr root, components::pipeline::context_t* ctx);
 
-        // Drive ONE prepared sub-plan root to completion through the streaming seam
-        // (execute_pipeline). On return `root` is executed with its output_ set
-        // (unless an error occurred). Shared by execute_sub_plan_ (which then reads
-        // root->output()) and run_subplan (which copies the chunks out). Returns the
-        // first error encountered (no exceptions — rule 2/9);
-        // core::error_t::no_error() on success. The caller must have already called
-        // root->prepare().
+        // Precondition: caller must have already called root->prepare(); returns the first error, or no_error().
         unique_future<core::error_t> drive_subplan_(components::operators::operator_ptr root,
                                                     components::pipeline::context_t* ctx);
 
-        // Materialize the build sides of a sub-plan's left-chain before the streaming
-        // pump. execute_pipeline streams the LEFT chain and reads each join's RIGHT
-        // (build) child from its already-materialized output_; the TOP-LEVEL flow gets
-        // those build sides pre-executed because traverse_plan_ splits them into their
-        // own sub-plans. run_subplan drives a single root with NO such split (e.g. the
-        // recursive-CTE recursive term JOIN(scan, cte_scan)), so the build side would be
-        // un-materialized at first push(). This walks the left-chain and recursively
-        // drives any un-executed right subtree via drive_subplan_ — a no-op when the
-        // build sides were already split out (is_executed() short-circuits). Returns the
-        // first error; no_error() on success.
+        // Fills a gap run_subplan has: traverse_plan_ pre-splits build sides for the top-level flow, but a single
+        // root (e.g. the recursive-CTE's JOIN(scan, cte_scan)) has none, so drive it here via drive_subplan_.
         unique_future<core::error_t> materialize_build_sides_(components::operators::operator_ptr root,
                                                               components::pipeline::context_t* ctx);
 
-        // Mid-pump DML flush gate, shared by execute_pipeline's pump branches
-        // (producing-bottom, scan-source, materialized-input). When the streaming DML sink at
-        // chain[dml_idx] has buffered >= dml_flush_row_threshold_ rows, drive a
-        // NON-final incremental async flush so the sink stays open for the remaining
-        // batches. A MEMBER coroutine (so `this` supplies the frame memory_resource)
-        // holding EXACTLY ONE co_await (the await_async_and_resume) => lost-wakeup-safe.
-        // Returns the sink's error when the flush failed, else core::error_t::no_error()
-        // (also the no-op result when the gate is disabled or not yet reached).
+        // Fires a non-final incremental flush once chain[dml_idx]'s buffered rows >= dml_flush_row_threshold_; a
+        // member coroutine with exactly one co_await (lost-wakeup-safe).
         unique_future<core::error_t> maybe_mid_flush(std::pmr::vector<components::operators::operator_t*>& chain,
                                                      std::size_t dml_idx,
                                                      components::pipeline::context_t* ctx);
 
-        // THE unified commit publisher: builds node_transaction_t(commit)
-        // (ddl_mode adds the flush/WAL prefix) and runs it through the same
-        // execute_plan pipeline every statement uses. The operator drains
-        // transaction_t via txn_commit_drain_msg, batch-publishes storage,
-        // commits the index mirrors per table, writes the WAL marker, crosses
-        // the ProcArray barrier (txn_publish_msg) and fans out maybe_cleanup.
+        // Unified commit publisher: builds node_transaction_t(commit) — ddl_mode adds the flush/WAL prefix.
         unique_future<execute_result_t> run_commit_pipeline_(components::session::session_id_t session,
                                                              components::table::transaction_data txn,
                                                              core::date::timezone_offset_t session_tz,
@@ -347,43 +227,29 @@ namespace services::collection::executor {
                                                              bool ddl_mode);
 
     private:
-        actor_zeta::address_t parent_address_ = actor_zeta::address_t::empty_address();
-        actor_zeta::address_t wal_address_ = actor_zeta::address_t::empty_address();
-        actor_zeta::address_t disk_address_ = actor_zeta::address_t::empty_address();
-        actor_zeta::address_t index_address_ = actor_zeta::address_t::empty_address();
+        // Constructor arguments, never defaults: forgetting one in the init-list does not compile.
+        actor_zeta::address_t parent_address_;
+        actor_zeta::address_t wal_address_;
+        actor_zeta::address_t disk_address_;
+        actor_zeta::address_t index_address_;
         log_t log_;
         components::compute::function_registry_t function_registry_;
         components::casts::cast_registry_t cast_registry_;
-        // Host-injected customization, ctor-provided (dispatcher -> executor), forwarded
-        // to physgen / the optimizer. Never null (Null Object defaults):
-        //   create_plan_rule_ — lowers node_extension / any host-custom node to a host
-        //     operator (passed as an explicit arg into create_plan);
-        //   optimizer_pass_   — a final host rewrite passed into optimize().
+        // Host-injected (dispatcher -> executor); never null — Null Object defaults.
         planner::create_plan_rule_t create_plan_rule_{&planner::no_custom_lowering};
         components::planner::optimizer_pass_t optimizer_pass_{&components::planner::no_op_pass};
-        // Config-gated bound on rows buffered by a streaming DML sink before the
-        // execute_pipeline pump forces an incremental async flush. 0 = disabled
-        // (the mid-pump gate never fires).
+        // Bound on buffered rows before the pump forces an incremental flush; 0 disables the gate.
         uint64_t dml_flush_row_threshold_{0};
-        // Upper bound on registerable EXPLAIN renderer slots. The registry is a small dense set of
-        // host renderers, so a larger id is a caller error and is rejected (see set_explain_renderer)
-        // rather than reserved — this bounds the vector so a bogus host id can never trigger an
-        // unbounded allocation / bad_alloc abort.
         static constexpr uint32_t kExplainRendererSlotLimit = 1024;
-        // EXPLAIN renderer registry: per-query selectable formatters, indexed by
-        // execution_plan_t::explain_render_id. Slot 0 (built-in postgres) is seeded in the ctor
-        // body — a container member can't brace-default a keyed slot. Registered via
-        // set_explain_renderer; no shared mutable state (Rule 10), no locks (Rule 12), POD
-        // fn-pointers (Rule 14); pinned to `resource` in the ctor init-list.
+        // Slot 0 (built-in postgres) is seeded in the ctor body — can't brace-default a keyed slot.
         std::pmr::vector<explain_render_fn> explain_renderers_;
 
-        // True when `id` names a real registered renderer (in range and non-null).
         [[nodiscard]] bool explain_slot_registered_(uint32_t id) const noexcept {
             return id < explain_renderers_.size() && explain_renderers_[id] != nullptr;
         }
 
-        // Resolve the per-query renderer by slot `id`. An unregistered id yields the DEFAULT — slot 0
-        // (built-in postgres unless a host overwrote it) — a default value, not a fallback branch.
+        // Unregistered id resolves to slot 0 as the default, not a silent fallback — pinned by
+        // test_explain.cpp's out-of-range cases.
         [[nodiscard]] explain_render_fn resolve_explain_renderer_(uint32_t id) const noexcept {
             if (explain_slot_registered_(id)) {
                 return explain_renderers_[id];
@@ -391,12 +257,7 @@ namespace services::collection::executor {
             return explain_renderers_.empty() ? &render_postgres : explain_renderers_[0];
         }
 
-        // Build the EXPLAIN IR from `explain_root`, resolve the per-query renderer (render_id: slot 0
-        // default + unregistered-id trace), and render. `cs` non-null resolves scan names from the live
-        // catalog (plan-only path); null reads the pre-collected `names` (ANALYZE, post context-move).
-        // Shared by the plan-only and ANALYZE branches of execute_plan.
-        // captured_subplans: flattened sub-query IRs to hang on the built root as InitPlans (EXPLAIN
-        // ANALYZE main plan); empty for plan-only / sub-plan captures. Moved in (consumed).
+        // `cs` non-null resolves scan names live; null reads the pre-collected `names` (ANALYZE).
         [[nodiscard]] components::cursor::cursor_t_ptr
         render_explain_(const components::operators::operator_ptr& explain_root,
                         const explain_name_map_t& names,

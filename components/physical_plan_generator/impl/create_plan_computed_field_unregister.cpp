@@ -13,7 +13,8 @@ namespace services::planner::impl {
                                                                                                     context.log.clone(),
                                                                                                     n->table_oid(),
                                                                                                     n->attoid(),
-                                                                                                    n->column_name()));
+                                                                                                    n->column_name(),
+                                                                                                    n->missing_ok()));
     }
 
 } // namespace services::planner::impl

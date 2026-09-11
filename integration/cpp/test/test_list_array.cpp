@@ -1,3 +1,4 @@
+#include "integration_fixture_path.hpp"
 #include "test_config.hpp"
 
 #include <catch2/catch_approx.hpp>
@@ -14,10 +15,8 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::list_array::fixed_array_crud") {
-    auto config = test_create_config("/tmp/test_list_array/fixed_array_crud");
+    auto config = test_create_config(integration_fixture_path("test_list_array/fixed_array_crud"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -82,10 +81,8 @@ TEST_CASE("integration::list_array::fixed_array_crud") {
 }
 
 TEST_CASE("integration::list_array::fixed_array_element_types") {
-    auto config = test_create_config("/tmp/test_list_array/element_types");
+    auto config = test_create_config(integration_fixture_path("test_list_array/element_types"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -108,10 +105,8 @@ TEST_CASE("integration::list_array::fixed_array_element_types") {
 }
 
 TEST_CASE("integration::list_array::variadic_list_crud") {
-    auto config = test_create_config("/tmp/test_list_array/variadic_list_crud");
+    auto config = test_create_config(integration_fixture_path("test_list_array/variadic_list_crud"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -184,10 +179,8 @@ TEST_CASE("integration::list_array::variadic_list_crud") {
 }
 
 TEST_CASE("integration::list_array::list_array_conversion") {
-    auto config = test_create_config("/tmp/test_list_array/conversion");
+    auto config = test_create_config(integration_fixture_path("test_list_array/conversion"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -228,10 +221,8 @@ TEST_CASE("integration::list_array::list_array_conversion") {
 }
 
 TEST_CASE("integration::list_array::list_to_array_length") {
-    auto config = test_create_config("/tmp/test_list_array/length_reconcile");
+    auto config = test_create_config(integration_fixture_path("test_list_array/length_reconcile"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -279,10 +270,8 @@ TEST_CASE("integration::list_array::list_to_array_length") {
 }
 
 TEST_CASE("integration::list_array::empty_array_literal") {
-    auto config = test_create_config("/tmp/test_list_array/empty_array");
+    auto config = test_create_config(integration_fixture_path("test_list_array/empty_array"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -313,10 +302,8 @@ TEST_CASE("integration::list_array::empty_array_literal") {
 }
 
 TEST_CASE("integration::list_array::array_default_padding") {
-    auto config = test_create_config("/tmp/test_list_array/default_padding");
+    auto config = test_create_config(integration_fixture_path("test_list_array/default_padding"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -406,10 +393,8 @@ TEST_CASE("integration::list_array::array_default_padding") {
 }
 
 TEST_CASE("integration::list_array::subscript_in_where") {
-    auto config = test_create_config("/tmp/test_list_array/subscript_where");
+    auto config = test_create_config(integration_fixture_path("test_list_array/subscript_where"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -456,10 +441,8 @@ TEST_CASE("integration::list_array::subscript_in_where") {
 }
 
 TEST_CASE("integration::list_array::unsupported_clean_failures") {
-    auto config = test_create_config("/tmp/test_list_array/unsupported");
+    auto config = test_create_config(integration_fixture_path("test_list_array/unsupported"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -501,10 +484,8 @@ TEST_CASE("integration::list_array::unsupported_clean_failures") {
 }
 
 TEST_CASE("integration::list_array::full_array_update") {
-    auto config = test_create_config("/tmp/test_list_array/full_array_update");
+    auto config = test_create_config(integration_fixture_path("test_list_array/full_array_update"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -544,10 +525,8 @@ TEST_CASE("integration::list_array::full_array_update") {
 }
 
 TEST_CASE("integration::list_array::full_list_update") {
-    auto config = test_create_config("/tmp/test_list_array/full_list_update");
+    auto config = test_create_config(integration_fixture_path("test_list_array/full_list_update"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -592,10 +571,8 @@ TEST_CASE("integration::list_array::full_list_update") {
     }
 }
 TEST_CASE("integration::list_array::null_array_value_reads_safely") {
-    auto config = test_create_config("/tmp/test_list_array/null_array_value");
+    auto config = test_create_config(integration_fixture_path("test_list_array/null_array_value"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -627,10 +604,8 @@ TEST_CASE("integration::list_array::null_array_value_reads_safely") {
 // and a NULL row's value read through the children() idiom must be empty rather
 // than crashing the process.
 TEST_CASE("integration::list_array::null_array_sql_operations_clean") {
-    auto config = test_create_config("/tmp/test_list_array/null_array_sql_ops");
+    auto config = test_create_config(integration_fixture_path("test_list_array/null_array_sql_ops"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -688,10 +663,8 @@ TEST_CASE("integration::list_array::null_array_sql_operations_clean") {
 // simply unequal (never truncated/padded), and an empty sub-query yields a real empty array {} (unequal
 // to a non-empty column), not the NA-null sentinel.
 TEST_CASE("integration::list_array::array_equality_subquery") {
-    auto config = test_create_config("/tmp/test_list_array/array_eq_subquery");
+    auto config = test_create_config(integration_fixture_path("test_list_array/array_eq_subquery"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -727,10 +700,8 @@ TEST_CASE("integration::list_array::array_equality_subquery") {
 // A NULL element inside an ARRAY/LIST literal must be storable and must survive the round trip as a
 // NULL element (validity mask honored), for both fixed ARRAY[n] and variable-length LIST columns.
 TEST_CASE("integration::list_array::null_elements") {
-    auto config = test_create_config("/tmp/test_list_array/null_elements");
+    auto config = test_create_config(integration_fixture_path("test_list_array/null_elements"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     auto ok = [&](const std::string& sql) {
@@ -794,6 +765,18 @@ TEST_CASE("integration::list_array::null_elements") {
         REQUIRE(notnull->size() == 1);
         REQUIRE(notnull->value(0, 0).value<int32_t>() == 1);
     }
+    SECTION("comparing whole arrays with a NULL element still answers true or false") {
+        // A NULL ELEMENT is not a NULL array. Whole containers order totally: a NULL element
+        // sorts after every value and two NULLs in the same place are equal, so the row gets a
+        // definite answer. Matches PostgreSQL, where `arr = ARRAY[10,NULL,30]` selects the row
+        // and `arr > ARRAY[10,20,30]` selects it too.
+        auto same = ok("SELECT id FROM db.a WHERE lst = ARRAY[10,NULL,30];");
+        REQUIRE(same->size() == 1);
+        REQUIRE(same->value(0, 0).value<int32_t>() == 2);
+        auto after = ok("SELECT id FROM db.a WHERE lst > ARRAY[10,20,30];");
+        REQUIRE(after->size() == 1);
+        REQUIRE(after->value(0, 0).value<int32_t>() == 2);
+    }
     SECTION("ORDER BY a subscript orders by the element, NULLs last") {
         // arr[2] is 20 (id 1) and NULL (id 2): ascending places 20 first, the NULL last.
         auto cur = ok("SELECT id FROM db.a ORDER BY arr[2];");
@@ -805,5 +788,198 @@ TEST_CASE("integration::list_array::null_elements") {
         REQUIRE(nf->size() == 2);
         REQUIRE(nf->value(0, 0).value<int32_t>() == 2);
         REQUIRE(nf->value(0, 1).value<int32_t>() == 1);
+    }
+}
+
+// MIN/MAX over a whole array is the ordinary reduction over the vector's rows — it picks one
+// winning row out of many, exactly as over a number. What differs is only the comparison:
+// lexicographic over the shared prefix, then by length, with a NULL element sorting last.
+TEST_CASE("integration::list_array::min_max_over_whole_array") {
+    auto config = test_create_config(integration_fixture_path("test_list_array/min_max_over_whole_array"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    auto ok = [&](const std::string& sql) {
+        INFO(sql);
+        auto cur = exec(dispatcher, sql);
+        REQUIRE(cur->is_success());
+        return cur;
+    };
+
+    ok("CREATE DATABASE db;");
+    ok("CREATE TABLE db.l (id int, grp int, v int[]);");
+    ok("INSERT INTO db.l (id, grp, v) VALUES (1, 1, ARRAY[1,2]);");
+    ok("INSERT INTO db.l (id, grp, v) VALUES (2, 1, ARRAY[1,2,3]);");
+    ok("INSERT INTO db.l (id, grp, v) VALUES (3, 2, ARRAY[0,9]);");
+
+    SECTION("the winner is a whole list, not a scalar drawn from inside one") {
+        auto cur = ok("SELECT max(v) FROM db.l;");
+        REQUIRE(cur->size() == 1);
+        auto winner = cur->value(0, 0);
+        REQUIRE(winner.children().size() == 3);
+        REQUIRE(winner.children()[0].value<int32_t>() == 1);
+        REQUIRE(winner.children()[1].value<int32_t>() == 2);
+        REQUIRE(winner.children()[2].value<int32_t>() == 3);
+    }
+    SECTION("min picks the row that is smallest at the first element that differs") {
+        auto cur = ok("SELECT min(v) FROM db.l;");
+        REQUIRE(cur->size() == 1);
+        auto winner = cur->value(0, 0);
+        REQUIRE(winner.children().size() == 2);
+        REQUIRE(winner.children()[0].value<int32_t>() == 0);
+        REQUIRE(winner.children()[1].value<int32_t>() == 9);
+    }
+    SECTION("a shared prefix is broken by length: the longer list is the greater one") {
+        auto cur = ok("SELECT max(v) FROM db.l WHERE grp = 1;");
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).children().size() == 3);
+        auto shorter = ok("SELECT min(v) FROM db.l WHERE grp = 1;");
+        REQUIRE(shorter->value(0, 0).children().size() == 2);
+    }
+    SECTION("each group reduces to its own winner") {
+        auto cur = ok("SELECT grp, max(v) FROM db.l GROUP BY grp ORDER BY grp;");
+        REQUIRE(cur->size() == 2);
+        REQUIRE(cur->value(0, 0).value<int32_t>() == 1);
+        REQUIRE(cur->value(1, 0).children()[2].value<int32_t>() == 3); // {1,2,3}
+        REQUIRE(cur->value(0, 1).value<int32_t>() == 2);
+        REQUIRE(cur->value(1, 1).children()[0].value<int32_t>() == 0); // {0,9}
+    }
+    SECTION("a constant array argument reduces to that array") {
+        auto cur = ok("SELECT max(ARRAY[7,8,9]) FROM db.l;");
+        REQUIRE(cur->size() == 1);
+        auto winner = cur->value(0, 0);
+        REQUIRE(winner.children().size() == 3);
+        REQUIRE(winner.children()[0].value<int32_t>() == 7);
+        REQUIRE(winner.children()[2].value<int32_t>() == 9);
+    }
+    SECTION("NULL rows are skipped, and only NULL rows give a NULL result") {
+        ok("INSERT INTO db.l (id, grp, v) VALUES (4, 3, NULL);");
+        auto skipped = ok("SELECT max(v) FROM db.l WHERE grp = 2 OR grp = 3;");
+        REQUIRE(skipped->size() == 1);
+        REQUIRE(skipped->value(0, 0).children().size() == 2); // {0,9}, the NULL row ignored
+        auto empty = ok("SELECT max(v) FROM db.l WHERE grp = 3;");
+        REQUIRE(empty->size() == 1);
+        REQUIRE(empty->value(0, 0).is_null());
+    }
+    SECTION("a NULL element sorts after every value, so it wins max and loses min") {
+        ok("CREATE TABLE db.n (id int, v int[]);");
+        ok("INSERT INTO db.n (id, v) VALUES (1, ARRAY[1,NULL]);");
+        ok("INSERT INTO db.n (id, v) VALUES (2, ARRAY[1,2]);");
+
+        auto largest = ok("SELECT max(v) FROM db.n;");
+        REQUIRE(largest->value(0, 0).children()[1].is_null());
+        auto smallest = ok("SELECT min(v) FROM db.n;");
+        REQUIRE(smallest->value(0, 0).children()[1].value<int32_t>() == 2);
+    }
+}
+
+// The same reduction over a fixed-width ARRAY column, where every row is the same length and
+// only the elements can break the tie.
+TEST_CASE("integration::list_array::min_max_over_fixed_array") {
+    auto config = test_create_config(integration_fixture_path("test_list_array/min_max_over_fixed_array"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    auto ok = [&](const std::string& sql) {
+        INFO(sql);
+        auto cur = exec(dispatcher, sql);
+        REQUIRE(cur->is_success());
+        return cur;
+    };
+
+    ok("CREATE DATABASE db;");
+    ok("CREATE TABLE db.a (id int, v int[3]);");
+    ok("INSERT INTO db.a (id, v) VALUES (1, ARRAY[1,2,3]);");
+    ok("INSERT INTO db.a (id, v) VALUES (2, ARRAY[1,5,0]);");
+    ok("INSERT INTO db.a (id, v) VALUES (3, ARRAY[1,2,9]);");
+
+    SECTION("max compares element by element") {
+        auto cur = ok("SELECT max(v) FROM db.a;");
+        REQUIRE(cur->size() == 1);
+        auto winner = cur->value(0, 0);
+        REQUIRE(winner.children().size() == 3);
+        REQUIRE(winner.children()[1].value<int32_t>() == 5); // {1,5,0} beats both {1,2,*}
+        REQUIRE(winner.children()[2].value<int32_t>() == 0);
+    }
+    SECTION("min falls through to the last element when the prefix ties") {
+        auto cur = ok("SELECT min(v) FROM db.a;");
+        REQUIRE(cur->size() == 1);
+        auto winner = cur->value(0, 0);
+        REQUIRE(winner.children()[1].value<int32_t>() == 2);
+        REQUIRE(winner.children()[2].value<int32_t>() == 3); // {1,2,3} < {1,2,9}
+    }
+}
+
+// Casting a whole array to text renders it the way an array literal reads back: the elements
+// comma-separated inside braces, a NULL element as the bare word NULL, and an element quoted
+// only when leaving it bare would change what it says.
+TEST_CASE("integration::list_array::cast_array_to_text") {
+    auto config = test_create_config(integration_fixture_path("test_list_array/cast_array_to_text"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    auto ok = [&](const std::string& sql) {
+        INFO(sql);
+        auto cur = exec(dispatcher, sql);
+        REQUIRE(cur->is_success());
+        return cur;
+    };
+    // Copied out: the view points into the cursor, which dies with this call.
+    auto text_of = [&](const std::string& expression) -> std::string {
+        auto cur = ok("SELECT CAST(" + expression + " AS TEXT) FROM db.one;");
+        REQUIRE(cur->size() == 1);
+        return std::string{cur->value(0, 0).value<std::string_view>()};
+    };
+
+    ok("CREATE DATABASE db;");
+    ok("CREATE TABLE db.one (id int);");
+    ok("INSERT INTO db.one (id) VALUES (1);");
+
+    SECTION("an array literal renders braced and comma-separated") { REQUIRE(text_of("ARRAY[1,2,3]") == "{1,2,3}"); }
+    SECTION("a one-element array keeps its braces") { REQUIRE(text_of("ARRAY[7]") == "{7}"); }
+    SECTION("a NULL element is the bare word NULL, not an empty slot") {
+        REQUIRE(text_of("ARRAY[1,NULL,3]") == "{1,NULL,3}");
+    }
+    SECTION("a nested array renders as nested braces, unquoted") {
+        REQUIRE(text_of("ARRAY[ARRAY[1,2],ARRAY[3,4]]") == "{{1,2},{3,4}}");
+    }
+    SECTION("plain text elements need no quoting") { REQUIRE(text_of("ARRAY['a','b']") == "{a,b}"); }
+    SECTION("an element is quoted when a bare one would read as something else") {
+        // A space or a comma would break the element apart, a quote or backslash is escaped,
+        // an empty element would vanish, and a bare NULL would read as the null marker.
+        REQUIRE(text_of("ARRAY['a b']") == "{\"a b\"}");
+        REQUIRE(text_of("ARRAY['c,d']") == "{\"c,d\"}");
+        REQUIRE(text_of("ARRAY['e\"f']") == "{\"e\\\"f\"}");
+        REQUIRE(text_of("ARRAY['']") == "{\"\"}");
+        REQUIRE(text_of("ARRAY['NULL']") == "{\"NULL\"}");
+        REQUIRE(text_of("ARRAY['{a}']") == "{\"{a}\"}");
+    }
+
+    SECTION("a stored column casts the same way, row by row") {
+        ok("CREATE TABLE db.l (id int, v int[]);");
+        ok("INSERT INTO db.l (id, v) VALUES (1, ARRAY[10,20]);");
+        ok("INSERT INTO db.l (id, v) VALUES (2, ARRAY[30,40,50]);");
+        ok("INSERT INTO db.l (id, v) VALUES (3, NULL);");
+
+        auto cur = ok("SELECT CAST(v AS TEXT) FROM db.l ORDER BY id;");
+        REQUIRE(cur->size() == 3);
+        REQUIRE(cur->value(0, 0).value<std::string_view>() == "{10,20}");
+        REQUIRE(cur->value(0, 1).value<std::string_view>() == "{30,40,50}");
+        REQUIRE(cur->value(0, 2).is_null()); // a NULL array is a NULL text, not the string "{}"
+    }
+    SECTION("a fixed-width ARRAY column renders its full width") {
+        ok("CREATE TABLE db.a (id int, v int[3]);");
+        ok("INSERT INTO db.a (id, v) VALUES (1, ARRAY[1,2,3]);");
+        auto cur = ok("SELECT CAST(v AS TEXT) FROM db.a;");
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<std::string_view>() == "{1,2,3}");
+    }
+    SECTION("the rendered text is what lands in a TEXT column assigned from an array") {
+        ok("CREATE TABLE db.t (id int, name text);");
+        ok("INSERT INTO db.t (id, name) VALUES (1, 'before');");
+        ok("UPDATE db.t SET name = CAST(ARRAY[1,2,3] AS TEXT) WHERE id = 1;");
+        auto cur = ok("SELECT name FROM db.t WHERE id = 1;");
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<std::string_view>() == "{1,2,3}");
     }
 }

@@ -1,5 +1,7 @@
 #include "../function.hpp"
 
+#include <cassert>
+
 #include <components/vector/vector_operations.hpp>
 
 #include <cmath>
@@ -216,7 +218,11 @@ namespace {
         kernel_signature_t sig(function_type_t::vector,
                                std::move(parameters),
                                {output_type::fixed(complex_logical_type{type})});
-        (void) fn->add_kernel(resource, vector_kernel(std::move(sig), kernel));
+        // Bound, not (void)-cast, which is banned: add_kernel only refuses on a full slot
+        // table or an arity mismatch, both compile-time constants at this registration site, so
+        // the assert states a file invariant rather than screening runtime input.
+        [[maybe_unused]] const auto added = fn->add_kernel(resource, vector_kernel(std::move(sig), kernel));
+        assert(!added.contains_error() && "vector kernel must fit the declared slots and arity");
 
         return fn;
     }
@@ -233,7 +239,8 @@ namespace {
                                {parameter_type::variable(0, absolute_parameters(resource))},
                                {output_type::same_type_at(0)});
         vector_kernel k(std::move(sig), vector_abs);
-        (void) fn->add_kernel(resource, std::move(k));
+        [[maybe_unused]] const auto added_k = fn->add_kernel(resource, std::move(k));
+        assert(!added_k.contains_error() && "vector kernel must fit the declared slots and arity");
 
         return fn;
     }
@@ -244,36 +251,36 @@ namespace components::compute {
 
     // WARNING: uid and signature must mirror the DEFAULT_FUNCTIONS "abs" entry in function.hpp
     void register_math_functions(function_registry_t& r) {
-        (void) r.add_function(
+        r.add_builtin(
             make_abs_func(r.resource(), "abs", "Absolute value", "ABS(x) -> the magnitude of x, in x's own type"));
-        (void) r.add_function(make_fixed_type_func(r.resource(),
-                                                   "pow",
-                                                   "Exponentiation",
-                                                   "POW(x, y) -> x raised to the power y",
-                                                   logical_type::DOUBLE,
-                                                   2,
-                                                   vector_pow));
-        (void) r.add_function(make_fixed_type_func(r.resource(),
-                                                   "sqrt",
-                                                   "Square root",
-                                                   "SQRT(x) -> the square root of x",
-                                                   logical_type::DOUBLE,
-                                                   1,
-                                                   vector_sqrt));
-        (void) r.add_function(make_fixed_type_func(r.resource(),
-                                                   "cbrt",
-                                                   "Cube root",
-                                                   "CBRT(x) -> the cube root of x",
-                                                   logical_type::DOUBLE,
-                                                   1,
-                                                   vector_cbrt));
-        (void) r.add_function(make_fixed_type_func(r.resource(),
-                                                   "factorial",
-                                                   "Factorial",
-                                                   "FACTORIAL(x) -> the product of the integers 1..x",
-                                                   logical_type::BIGINT,
-                                                   1,
-                                                   vector_factorial));
+        r.add_builtin(make_fixed_type_func(r.resource(),
+                                           "pow",
+                                           "Exponentiation",
+                                           "POW(x, y) -> x raised to the power y",
+                                           logical_type::DOUBLE,
+                                           2,
+                                           vector_pow));
+        r.add_builtin(make_fixed_type_func(r.resource(),
+                                           "sqrt",
+                                           "Square root",
+                                           "SQRT(x) -> the square root of x",
+                                           logical_type::DOUBLE,
+                                           1,
+                                           vector_sqrt));
+        r.add_builtin(make_fixed_type_func(r.resource(),
+                                           "cbrt",
+                                           "Cube root",
+                                           "CBRT(x) -> the cube root of x",
+                                           logical_type::DOUBLE,
+                                           1,
+                                           vector_cbrt));
+        r.add_builtin(make_fixed_type_func(r.resource(),
+                                           "factorial",
+                                           "Factorial",
+                                           "FACTORIAL(x) -> the product of the integers 1..x",
+                                           logical_type::BIGINT,
+                                           1,
+                                           vector_factorial));
     }
 
 } // namespace components::compute

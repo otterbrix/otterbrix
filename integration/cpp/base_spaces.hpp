@@ -100,16 +100,17 @@ namespace otterbrix {
         // Catalog-driven index bootstrap. Called once during construction, after
         // WAL replay and before scheduler.start, while single-threaded. Scans
         // pg_class / pg_index via manager_disk_ sync helpers, then:
-        //   - creates an empty index_engine_t per live table oid;
-        //   - spawns an index_agent_disk_t per alive pg_index row and transfers
-        //     ownership to manager_index_;
+        //   - registers every live table oid with manager_index_;
+        //   - asks manager_index_ to raise one index agent per alive pg_index row
+        //     (by indtype family), which owns it;
         //   - restores per-oid dropped-table tombstones.
         //
         // committed_txn_ids is the WAL-replay set of committed transaction ids,
         // forwarded by value into each spawned bitcask agent's txn-log recover
-        // gate (M1.1). Passed during the single-threaded pre-scheduler window.
-        void bootstrap_indexes_sync(const configuration::config_disk& disk_config,
-                                    const std::set<std::uint64_t>& committed_txn_ids);
+        // gate. Passed during the single-threaded pre-scheduler window.
+        // No config_disk parameter: manager_index_ already holds the same
+        // config.disk.* thresholds via its own constructor and does the raising.
+        void bootstrap_indexes_sync(const std::set<std::uint64_t>& committed_txn_ids);
 
     private:
         inline static std::unordered_set<std::filesystem::path, core::filesystem::path_hash> paths_ = {};

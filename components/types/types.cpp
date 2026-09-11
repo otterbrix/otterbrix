@@ -6,6 +6,12 @@
 namespace components::types {
 
     namespace {
+        // Static, so callers returning `const std::string&` have something to return.
+        const std::string& no_name() {
+            static const std::string empty{};
+            return empty;
+        }
+
         std::array<physical_type, 256> make_physical_type_table() {
             std::array<physical_type, 256> t{};
             for (auto& v : t) v = physical_type::INVALID;
@@ -39,32 +45,34 @@ namespace components::types {
             t[uint8_t(logical_type::UNION)] = physical_type::STRUCT;
             t[uint8_t(logical_type::VARIANT)] = physical_type::STRUCT;
             t[uint8_t(logical_type::LIST)] = physical_type::LIST;
-            t[uint8_t(logical_type::MAP)] = physical_type::LIST; // MAP is stored as a list of key/value structs
+            t[uint8_t(logical_type::MAP)] = physical_type::LIST;
             t[uint8_t(logical_type::UNKNOWN)] = physical_type::UNKNOWN;
             return t;
         }
 
         const auto physical_type_table = make_physical_type_table();
 
-        physical_type decimal_storage_type(uint8_t width) {
-            static constexpr uint8_t max_width_16 = 4;
-            static constexpr uint8_t max_width_32 = 9;
-            static constexpr uint8_t max_width_64 = 18;
-            static constexpr uint8_t max_width_128 = 38;
-            if (width <= max_width_16) {
-                return physical_type::INT16;
-            } else if (width <= max_width_32) {
-                return physical_type::INT32;
-            } else if (width <= max_width_64) {
-                return physical_type::INT64;
-            } else if (width <= max_width_128) {
-                return physical_type::INT128;
-            } else {
-                throw std::runtime_error("can not create decimal with width bigger than: " +
-                                         std::to_string(static_cast<int>(max_width_128)));
-            }
-        }
     } // anonymous namespace
+
+    // noexcept, not throwing: reachable from ordinary SQL (`NUMERIC(39,0)`) and from
+    // the index-key decoder reading width off disk. Out-of-window width answers INVALID.
+    physical_type decimal_storage_for_width(uint8_t width) noexcept {
+        static constexpr uint8_t max_width_16 = 4;
+        static constexpr uint8_t max_width_32 = 9;
+        static constexpr uint8_t max_width_64 = 18;
+        if (width == 0) {
+            return physical_type::INVALID;
+        } else if (width <= max_width_16) {
+            return physical_type::INT16;
+        } else if (width <= max_width_32) {
+            return physical_type::INT32;
+        } else if (width <= max_width_64) {
+            return physical_type::INT64;
+        } else if (width <= DECIMAL_MAX_WIDTH) {
+            return physical_type::INT128;
+        }
+        return physical_type::INVALID;
+    }
 
     physical_type to_physical_type(logical_type type) { return physical_type_table[static_cast<uint8_t>(type)]; }
 
@@ -253,7 +261,7 @@ namespace components::types {
                 return 0; // no own payload
             default:
                 assert(false && "complex_logical_type::object_size: reached unsupported type");
-                return 0; // no own payload
+                return 0;
         }
     }
 
@@ -296,10 +304,10 @@ namespace components::types {
             case physical_type::STRUCT:
             case physical_type::UNION:
             case physical_type::UNKNOWN:
-                return 0; // no own payload
+                return 0;
             default:
                 assert(false && "complex_logical_type::object_size: reached unsupported type");
-                return 0; // no own payload
+                return 0;
         }
     }
 
@@ -328,13 +336,23 @@ namespace components::types {
         return false;
     }
 
+    // The three name accessors are total functions, and they have to be.
+    //
+    // extension_ can legitimately be null (default ctor, a bare `{logical_type::X}`, an unnamed
+    // system-table column, a reader from decode_type_spec("")) — not a broken object, so these
+    // accessors must be total, not assert. assert(extension_) previously turned `SELECT * FROM
+    // pg_class` into a Debug abort on a read path and a null deref under NDEBUG.
     const std::string& complex_logical_type::alias() const {
-        assert(extension_);
+        if (!extension_) {
+            return no_name();
+        }
         return extension_->alias();
     }
 
     const std::string& complex_logical_type::type_name() const {
-        assert(extension_);
+        if (!extension_) {
+            return no_name();
+        }
         if (extension_->type() == logical_type_extension::extension_type::UNKNOWN) {
             return static_cast<unknown_logical_type_extension*>(extension_.get())->type_name();
         } else if (extension_->type() == logical_type_extension::extension_type::STRUCT) {
@@ -342,15 +360,26 @@ namespace components::types {
         } else if (extension_->type() == logical_type_extension::extension_type::ENUM) {
             return static_cast<enum_logical_type_extension*>(extension_.get())->type_name();
         }
-        return extension_->alias();
+        // A builtin has no type name of its own
+        static const std::string no_type_name;
+        return no_type_name;
     }
 
+    // A STRUCT-tagged type that never went through create_struct may carry no struct
+    // extension (or a GENERIC one, from set_alias on a bare tag); check before the cast.
     const std::string& complex_logical_type::child_name(uint64_t index) const {
         assert(type_ == logical_type::STRUCT);
-        return static_cast<struct_logical_type_extension*>(extension_.get())->child_types()[index].alias();
+        if (!extension_ || extension_->type() != logical_type_extension::extension_type::STRUCT) {
+            return no_name();
+        }
+        const auto& children = static_cast<struct_logical_type_extension*>(extension_.get())->child_types();
+        if (index >= children.size()) {
+            return no_name();
+        }
+        return children[index].alias();
     }
 
-    bool complex_logical_type::is_unnamed() const { return extension_->alias().empty(); }
+    bool complex_logical_type::is_unnamed() const { return !extension_ || extension_->alias().empty(); }
 
     bool complex_logical_type::is_nested() const {
         switch (type_) {
@@ -496,9 +525,8 @@ namespace components::types {
 
             return element_convertable(arr_ext->internal_type(), other_list_ext->node());
         }
-        // A variable-length LIST is convertable to a fixed ARRAY column when their element
-        // types are convertable; a length mismatch is reconciled at cast time per row by
-        // truncating an over-long list or padding a short one with element defaults.
+        // A variable-length LIST is convertable to a fixed ARRAY column when their element types
+        // are convertable; a length mismatch is reconciled the same way as above.
         if (type_ == logical_type::LIST && other.type_ == logical_type::ARRAY) {
             const auto* list_ext = static_cast<const list_logical_type_extension*>(extension_.get());
             const auto* other_arr_ext = static_cast<const array_logical_type_extension*>(other.extension_.get());
@@ -534,8 +562,25 @@ namespace components::types {
                (type >= logical_type::UTINYINT && type <= logical_type::UHUGEINT);
     }
 
-    complex_logical_type complex_logical_type::create_decimal(uint8_t width, uint8_t scale, std::string alias) {
-        assert(width >= scale);
+    core::result_wrapper_t<complex_logical_type>
+    complex_logical_type::create_decimal(std::pmr::memory_resource* resource,
+                                         uint8_t width,
+                                         uint8_t scale,
+                                         std::string alias) {
+        // `resource` is the caller's arena, touched only on the refusal path below; an
+        // in-window DECIMAL allocates nothing from it. Passing null_memory_resource() is only
+        // safe when (width, scale) are literals already known in-window (e.g. registry keys);
+        // never for a width/scale that comes from data.
+        assert(resource != nullptr && "create_decimal needs a resource for its refusal message");
+        if (!is_valid_decimal_spec(width, scale)) {
+            return core::error_t(core::error_code_t::invalid_parameter,
+                                 std::pmr::string{"DECIMAL(" + std::to_string(static_cast<unsigned>(width)) + "," +
+                                                      std::to_string(static_cast<unsigned>(scale)) +
+                                                      ") is out of range: width must be between 1 and " +
+                                                      std::to_string(static_cast<unsigned>(DECIMAL_MAX_WIDTH)) +
+                                                      " and scale must not exceed width",
+                                                  resource});
+        }
         return complex_logical_type(logical_type::DECIMAL,
                                     std::make_unique<decimal_logical_type_extension>(width, scale),
                                     std::move(alias));
@@ -720,7 +765,7 @@ namespace components::types {
 
     decimal_logical_type_extension::decimal_logical_type_extension(uint8_t width, uint8_t scale)
         : logical_type_extension(extension_type::DECIMAL)
-        , stored_as_(decimal_storage_type(width))
+        , stored_as_(decimal_storage_for_width(width))
         , width_(width)
         , scale_(scale) {}
 

@@ -132,12 +132,16 @@ namespace services::wal {
                               wal::id_t wal_id);
 
         unique_future<core::result_wrapper_t<wal::id_t>>
-        write_physical_add_column(session_id_t session,
-                                  components::catalog::oid_t table_oid,
-                                  std::unique_ptr<components::vector::data_chunk_t> schema_chunk,
-                                  uint64_t column_count,
-                                  uint64_t txn_id,
-                                  wal::id_t wal_id);
+        write_physical_grow(session_id_t session,
+                            components::catalog::oid_t table_oid,
+                            std::unique_ptr<components::vector::data_chunk_t> schema_chunk,
+                            uint64_t column_count,
+                            std::pmr::vector<components::vector::data_chunk_t> chunks,
+                            uint64_t row_start,
+                            uint64_t row_count,
+                            uint64_t txn_id,
+                            wal::id_t add_column_id,
+                            wal::id_t insert_id);
 
         using dispatch_traits = actor_zeta::dispatch_traits<&wal_worker_t::load,
                                                             &wal_worker_t::commit_txn,
@@ -146,9 +150,17 @@ namespace services::wal {
                                                             &wal_worker_t::write_physical_insert,
                                                             &wal_worker_t::write_physical_delete,
                                                             &wal_worker_t::write_physical_update,
-                                                            &wal_worker_t::write_physical_add_column>;
+                                                            &wal_worker_t::write_physical_grow>;
 
     private:
+        unique_future<core::result_wrapper_t<wal::id_t>>
+        write_physical_add_column(session_id_t session,
+                                  components::catalog::oid_t table_oid,
+                                  std::unique_ptr<components::vector::data_chunk_t> schema_chunk,
+                                  uint64_t column_count,
+                                  uint64_t txn_id,
+                                  wal::id_t wal_id);
+
         /// Refuses when a segment can't be opened -- skipping one breaks the CRC chain and page_lsn ordering.
         [[nodiscard]] core::error_t recover_from_disk();
 

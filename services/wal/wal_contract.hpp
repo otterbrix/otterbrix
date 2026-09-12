@@ -70,17 +70,19 @@ namespace services::wal {
                               uint64_t txn_id,
                               components::catalog::oid_t database_oid);
 
-        // Schema-growth record (dynamic add_column on computed / relkind='g' tables).
-        // schema_chunk is a 0-row data_chunk whose columns ARE the new columns
-        // (alias-tagged types). Written BEFORE the PHYSICAL_INSERT that depends on
-        // them so WAL-first replay re-applies the schema before the rows.
+        // Schema growth (dynamic add_column on computed / relkind='g' tables): the PHYSICAL_ADD_COLUMN, then the
+        // PHYSICAL_INSERT that needs it, in one write, so WAL-first replay re-applies the schema before the rows.
+        // schema_chunk is a 0-row data_chunk whose columns ARE the new columns (alias-tagged types).
         actor_zeta::unique_future<core::result_wrapper_t<id_t>>
-        write_physical_add_column(session_id_t session,
-                                  components::catalog::oid_t table_oid,
-                                  std::unique_ptr<components::vector::data_chunk_t> schema_chunk,
-                                  uint64_t column_count,
-                                  uint64_t txn_id,
-                                  components::catalog::oid_t database_oid);
+        write_physical_grow(session_id_t session,
+                            components::catalog::oid_t table_oid,
+                            std::unique_ptr<components::vector::data_chunk_t> schema_chunk,
+                            uint64_t column_count,
+                            std::pmr::vector<components::vector::data_chunk_t> chunks,
+                            uint64_t row_start,
+                            uint64_t row_count,
+                            uint64_t txn_id,
+                            components::catalog::oid_t database_oid);
 
         using dispatch_traits = actor_zeta::dispatch_traits<&wal_contract::load,
                                                             &wal_contract::commit_txn,
@@ -90,7 +92,7 @@ namespace services::wal {
                                                             &wal_contract::write_physical_insert,
                                                             &wal_contract::write_physical_delete,
                                                             &wal_contract::write_physical_update,
-                                                            &wal_contract::write_physical_add_column>;
+                                                            &wal_contract::write_physical_grow>;
 
         wal_contract() = delete;
     };

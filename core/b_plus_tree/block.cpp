@@ -2,7 +2,6 @@
 #include <absl/crc/crc32c.h>
 #include <algorithm>
 #include <cassert>
-#include <core/buffer.hpp>
 #include <cstring>
 
 namespace core::b_plus_tree {

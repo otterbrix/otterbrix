@@ -171,6 +171,36 @@ namespace {
     }
 } // namespace
 
+TEST_CASE("integration::cpp::autocommit::a_statement_refused_before_planning_fails_the_transaction_too") {
+    auto config = test_create_config(integration_fixture_path("test_autocommit/refused_before_planning"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    create_table(dispatcher);
+
+    std::string refused_statement;
+    SECTION("a syntax error") {
+        refused_statement = "SELEC id FROM TestDatabase.marks;";
+    }
+    SECTION("a statement the transformer refuses") {
+        refused_statement = "SAVEPOINT before_the_end;";
+    }
+
+    auto writer = otterbrix::session_id_t();
+    REQUIRE(run(dispatcher, writer, "BEGIN;")->is_success());
+    REQUIRE(run(dispatcher, writer, "INSERT INTO TestDatabase.marks (id) VALUES (1);")->is_success());
+    REQUIRE(run(dispatcher, writer, refused_statement)->is_error());
+    // Refused as after any other failure, not run in a transaction that still takes statements.
+    REQUIRE(run(dispatcher, writer, "INSERT INTO TestDatabase.marks (id) VALUES (2);")->is_error());
+    REQUIRE(run(dispatcher, writer, "ROLLBACK;")->is_success());
+    REQUIRE(committed_rows(dispatcher) == 0);
+
+    // Outside a transaction the same refusal leaves the session as it was.
+    REQUIRE(run(dispatcher, writer, refused_statement)->is_error());
+    REQUIRE(run(dispatcher, writer, "INSERT INTO TestDatabase.marks (id) VALUES (3);")->is_success());
+    REQUIRE(committed_rows(dispatcher) == 1);
+}
+
 TEST_CASE("integration::cpp::autocommit::on_commits_each_statement") {
     auto config = test_create_config(integration_fixture_path("test_autocommit/on_commits_each_statement"));
     test_clear_directory(config);

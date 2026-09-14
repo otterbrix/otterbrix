@@ -108,6 +108,9 @@ namespace services::dispatcher {
 
         unique_future<components::cursor::cursor_t_ptr> execute_plan(components::session::session_id_t session,
                                                                      components::logical_plan::execution_plan_t plan);
+        // Errored queries still have to go through regular transaction management
+        unique_future<components::cursor::cursor_t_ptr> refuse_statement(components::session::session_id_t session,
+                                                                         core::error_t error);
 
         unique_future<core::error_t> register_udf(components::session::session_id_t session,
                                                   components::compute::function_ptr function);
@@ -153,6 +156,7 @@ namespace services::dispatcher {
         unique_future<void> on_subscriber_empty(uint8_t subscriber_kind);
 
         using dispatch_traits = actor_zeta::dispatch_traits<&manager_dispatcher_t::execute_plan,
+                                                            &manager_dispatcher_t::refuse_statement,
                                                             &manager_dispatcher_t::register_udf,
                                                             &manager_dispatcher_t::unregister_udf,
                                                             &manager_dispatcher_t::register_cast,

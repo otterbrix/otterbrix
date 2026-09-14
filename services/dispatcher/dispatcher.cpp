@@ -59,6 +59,7 @@ namespace services::dispatcher {
 
         constexpr std::array kBehaviorHandledIds{
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::execute_plan>,
+            actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::refuse_statement>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::register_udf>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::unregister_udf>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::register_cast>,
@@ -298,6 +299,10 @@ namespace services::dispatcher {
                 co_await actor_zeta::dispatch(this, &manager_dispatcher_t::execute_plan, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::refuse_statement>: {
+                co_await actor_zeta::dispatch(this, &manager_dispatcher_t::refuse_statement, msg);
+                break;
+            }
             case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::register_udf>: {
                 co_await actor_zeta::dispatch(this, &manager_dispatcher_t::register_udf, msg);
                 break;
@@ -522,6 +527,18 @@ namespace services::dispatcher {
                                                resource()}});
         }
         co_return std::move(exec_result.cursor);
+    }
+
+    manager_dispatcher_t::unique_future<components::cursor::cursor_t_ptr>
+    manager_dispatcher_t::refuse_statement(components::session::session_id_t session, core::error_t error) {
+        trace(log_, "manager_dispatcher_t::refuse_statement session: {}, {}", session.data(), error.what);
+        const auto control = components::table::transaction_control_t::none;
+        co_await take_turn_(session, control);
+        session_turn_t turn{this, session, control};
+        if (const auto* txn = txn_manager_.find_transaction(session); txn != nullptr) {
+            co_await finish_failed_statement_(session, txn->transaction_id());
+        }
+        co_return components::cursor::make_cursor(resource(), std::move(error));
     }
 
     manager_dispatcher_t::unique_future<core::error_t>

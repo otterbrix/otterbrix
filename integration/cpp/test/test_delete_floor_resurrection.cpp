@@ -108,9 +108,7 @@ TEST_CASE("integration::cpp::delete_floor_resurrection::committed_delete_survive
         INFO("the delete must reach the post-WAL seam");
         REQUIRE(wait_flag(guard.gate.reached, std::chrono::seconds(30)));
 
-        // Executor holds its mailbox through every co_await, a statement hashed onto a parked one is never dispatched,
-        // mint the second session away
-        const auto cp_session = session_avoiding_executor(executor_of(del_session));
+        const auto cp_session = otterbrix::session_id_t();
         REQUIRE(d->execute_sql(cp_session, "CHECKPOINT;")->is_success());
 
         guard.gate.released.store(true, std::memory_order_release);

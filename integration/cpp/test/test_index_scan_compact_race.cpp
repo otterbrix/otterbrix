@@ -161,8 +161,7 @@ TEST_CASE("integration::cpp::index_scan_compact_race::matched_row_ids_survive_a_
     INFO("the scan must reach the between-awaits seam");
     REQUIRE(wait_flag(guard.gate.reached, std::chrono::seconds(30)));
 
-    // Away from the scan's executor: it is parked on the seam and holds its mailbox.
-    const auto cp_session = session_avoiding_executor(executor_of(scan_session));
+    const auto cp_session = otterbrix::session_id_t();
     REQUIRE(d->execute_sql(cp_session, "CHECKPOINT;")->is_success());
 
     guard.gate.released.store(true, std::memory_order_release);

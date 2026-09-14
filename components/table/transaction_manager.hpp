@@ -60,6 +60,9 @@ namespace components::table {
         // Seeds the clock after reopen, or persisted pg_attribute columns could look not-yet-added.
         void seed_commit_clock(uint64_t high_water) { restore_commit_clock(high_water); }
 
+        // Resumes txn ids above every id the journal still holds
+        void seed_transaction_ids(uint64_t high_water);
+
         std::pmr::memory_resource* resource() const noexcept { return resource_; }
 
     private:
@@ -68,8 +71,7 @@ namespace components::table {
         transaction_t& open_locked(session::session_id_t session, transaction_scope_t scope);
 
         std::pmr::memory_resource* resource_;
-        // NOT seeded from the journal, unlike the commit clock -- deliberate (cost a durability bug once):
-        // txn ids are within-process only; filter_committed_records's wal-order check guards journal replay.
+        // Seeded from the journal at reopen (seed_transaction_ids)
         std::atomic<uint64_t> next_transaction_id_{TRANSACTION_ID_START};
         std::atomic<uint64_t> current_timestamp_{1};
         mutable std::mutex lock_;

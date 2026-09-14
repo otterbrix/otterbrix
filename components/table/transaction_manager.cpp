@@ -67,6 +67,17 @@ namespace components::table {
         }
     }
 
+    void transaction_manager_t::seed_transaction_ids(uint64_t high_water) {
+        // Previously active transactions do not affect it
+        if (high_water < TRANSACTION_ID_START) {
+            return;
+        }
+        auto current = next_transaction_id_.load(std::memory_order_relaxed);
+        if (high_water + 1 > current) {
+            next_transaction_id_.store(high_water + 1, std::memory_order_relaxed);
+        }
+    }
+
     void transaction_manager_t::publish(uint64_t commit_id) {
         std::lock_guard guard(lock_);
         in_flight_commits_.erase(commit_id);

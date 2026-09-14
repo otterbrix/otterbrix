@@ -424,15 +424,15 @@ namespace services::dispatcher {
               "manager_dispatcher_t::cache_settings_sync");
     }
 
-    void manager_dispatcher_t::seed_commit_clock_sync(uint64_t high_water) {
+    void manager_dispatcher_t::seed_clocks_sync(uint64_t commit_frontier, uint64_t txn_id_high_water) {
         // Restores BOTH halves of the commit clock: raising only the horizon left post-reopen
         // INSERTs reusing already-published commit-ids (symptom: SSB q1-1 returned 0 rows on reopen).
-        if (high_water > 0) {
-            txn_manager_.restore_commit_clock(high_water);
-            trace(log_,
-                  "manager_dispatcher_t::seed_commit_clock_sync , restored commit clock to frontier {}",
-                  high_water);
-        }
+        txn_manager_.restore_commit_clock(commit_frontier);
+        txn_manager_.seed_transaction_ids(txn_id_high_water);
+        trace(log_,
+              "manager_dispatcher_t::seed_clocks_sync , commit frontier {} , transaction ids above {}",
+              commit_frontier,
+              txn_id_high_water);
     }
 
     namespace {

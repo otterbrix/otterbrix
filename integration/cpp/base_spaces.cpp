@@ -579,15 +579,16 @@ namespace otterbrix {
 
         // Both commit-clock halves are raised together, from one frontier, so they never disagree.
         uint64_t reopen_frontier = disk.max_persisted_commit_id_sync();
+        uint64_t txn_high_water = 0;
         for (const auto& r : wal_records) {
             if (r.is_commit_marker() && r.commit_id > reopen_frontier) {
                 reopen_frontier = r.commit_id;
             }
+            if (r.transaction_id > txn_high_water) {
+                txn_high_water = r.transaction_id;
+            }
         }
-        if (reopen_frontier > 0) {
-            manager_dispatcher_->seed_commit_clock_sync(reopen_frontier);
-            trace(log_, "spaces::restored MVCC commit clock from durable frontier {}", reopen_frontier);
-        }
+        manager_dispatcher_->seed_clocks_sync(reopen_frontier, txn_high_water);
 
         // Recovers pg_class rows tombstoned by a pre-crash DROP TABLE that never removed the .otbx.
         auto dropped_oids = disk.scan_dropped_oids_sync();

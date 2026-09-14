@@ -98,7 +98,7 @@ namespace services::dispatcher {
         enqueue_impl(actor_zeta::mailbox::message_ptr msg);
 
         // Direct sync call, safe only because the scheduler has not started yet; idempotent.
-        void seed_commit_clock_sync(uint64_t high_water);
+        void seed_clocks_sync(uint64_t commit_frontier, uint64_t txn_id_high_water);
 
         void cache_settings_sync(const components::catalog::session_catalog_t& settings);
 

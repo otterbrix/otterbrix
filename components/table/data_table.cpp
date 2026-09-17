@@ -166,6 +166,9 @@ namespace components::table {
             }
             if (column.dropped_at() == txn_id) {
                 column.set_dropped_at(commit_id);
+                // name is free to be used by other columns
+                // and empty name is not addressable in query
+                column.set_name(std::string{});
                 ++published;
             }
         }
@@ -428,6 +431,10 @@ namespace components::table {
         // Collision check first, over the whole list, so a refusal changes nothing.
         uint64_t idx = column_definitions_.size();
         for (uint64_t i = 0; i < column_definitions_.size(); ++i) {
+            // Dropped column is kept, in case of a rollback, but name is free to use
+            if (column_definitions_[i].dropped_at() != NOT_DELETED_ID) {
+                continue;
+            }
             const auto& col_name = column_definitions_[i].name();
             if (col_name == new_name) {
                 std::pmr::string msg{"data_table_t::rename_column: table '", resource_};

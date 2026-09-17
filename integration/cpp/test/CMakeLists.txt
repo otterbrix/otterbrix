@@ -97,6 +97,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_ddl_in_transaction.cpp
         test_cursor_under_concurrent_ddl.cpp
         test_alter_rename_column.cpp
+        test_alter_rename_column_collisions.cpp
         test_alter_missing_column.cpp
         test_wal_nested_payload_replay.cpp
         test_type_spec_write_gate.cpp

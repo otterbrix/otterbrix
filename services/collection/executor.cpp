@@ -771,6 +771,15 @@ namespace services::collection::executor {
                 }
                 break;
             case node_type::create_collection_t: {
+                if (auto* cc = static_cast<const node_create_collection_t*>(plan.sub_queries.back().get());
+                    cc != nullptr) {
+                    if (auto dup =
+                            services::dispatcher::check_column_names_unique(resource(), cc->column_definitions());
+                        dup.contains_error()) {
+                        error = make_cursor(resource(), std::move(dup));
+                        break;
+                    }
+                }
                 if (!services::dispatcher::check_collection_exists(resource(), &plan.catalog_resolves, id)
                          .contains_error()) {
                     auto* cc = static_cast<const node_create_collection_t*>(plan.sub_queries.back().get());

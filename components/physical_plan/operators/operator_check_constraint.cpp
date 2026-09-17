@@ -65,11 +65,10 @@ namespace components::operators {
         if (!bound) {
             // Only a null predicate (or the unreachable `invalid` group) clones to nothing. Passing
             // it on would classify as condition_kind::always and skip the constraint entirely.
-            return core::error_t{
-                core::error_code_t::invalid_constraint,
-                std::pmr::string{"CHECK constraint \"" + std::string{constraint_name} +
-                                     "\" carries no predicate to evaluate",
-                                 resource_}};
+            return core::error_t{core::error_code_t::invalid_constraint,
+                                 std::pmr::string{"CHECK constraint \"" + std::string{constraint_name} +
+                                                      "\" carries no predicate to evaluate",
+                                                  resource_}};
         }
         // A column reference is only a write-set position — every table column is fully materialised there
         // (INSERT omissions expanded, UPDATE's row gathered), so a name not found is unresolvable.
@@ -134,12 +133,11 @@ namespace components::operators {
         };
         walk(bound.get(), walk);
         if (!missing_column.empty()) {
-            return core::error_t{
-                core::error_code_t::invalid_constraint,
-                std::pmr::string{"CHECK constraint \"" + std::string{constraint_name} +
-                                     "\" cannot be evaluated: the column \"" + missing_column +
-                                     "\" is not in the written row",
-                                 resource_}};
+            return core::error_t{core::error_code_t::invalid_constraint,
+                                 std::pmr::string{"CHECK constraint \"" + std::string{constraint_name} +
+                                                      "\" cannot be evaluated: the column \"" + missing_column +
+                                                      "\" is not in the written row",
+                                                  resource_}};
         }
         return bound;
     }

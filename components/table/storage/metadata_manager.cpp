@@ -139,13 +139,13 @@ namespace components::table::storage {
             }
             auto* data = pin(pointer);
             if (data == nullptr) {
-                return has_error() ? core::result_wrapper_t<bool>(core::error_t(error_))
-                                   : core::result_wrapper_t<bool>(core::error_t(
-                                         core::error_code_t::data_corruption,
-                                         std::pmr::string{"metadata chain sub-block " +
-                                                              std::to_string(pointer.block_pointer) +
-                                                              " could not be pinned",
-                                                          resource}));
+                return has_error()
+                           ? core::result_wrapper_t<bool>(core::error_t(error_))
+                           : core::result_wrapper_t<bool>(core::error_t(
+                                 core::error_code_t::data_corruption,
+                                 std::pmr::string{"metadata chain sub-block " + std::to_string(pointer.block_pointer) +
+                                                      " could not be pinned",
+                                                  resource}));
             }
             // 12-byte sub-block header written by metadata_writer_t: {uint64 next_block_pointer,
             // uint32 next_offset}. memcpy, not a reinterpret_cast load: the pointer is a

@@ -351,8 +351,7 @@ namespace core::b_plus_tree {
             for (size_t i = 0; i < metadata_count; ++i, ++src, ++dst) {
                 if (src->index.type() == components::types::physical_type::STRING) {
                     auto sv = src->index.value<components::types::physical_type::STRING>();
-                    dst->index = index_t(new_buffer + (sv.data() - internal_buffer_),
-                                         static_cast<uint32_t>(sv.size()));
+                    dst->index = index_t(new_buffer + (sv.data() - internal_buffer_), static_cast<uint32_t>(sv.size()));
                 }
             }
         }

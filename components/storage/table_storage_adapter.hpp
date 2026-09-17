@@ -1,10 +1,10 @@
 #pragma once
 
 #include "storage.hpp"
-#include <cstdio>
 #include <components/table/data_table.hpp>
 #include <components/table/row_group.hpp>
 #include <components/table/table_state.hpp>
+#include <cstdio>
 
 namespace components::storage {
 
@@ -19,9 +19,7 @@ namespace components::storage {
             return table_.visible_types(txn);
         }
 
-        std::pmr::vector<types::complex_logical_type> types() const override {
-            return table_.copy_types();
-        }
+        std::pmr::vector<types::complex_logical_type> types() const override { return table_.copy_types(); }
 
         const std::vector<table::column_definition_t>& columns() const override { return table_.columns(); }
 
@@ -30,7 +28,6 @@ namespace components::storage {
         bool has_schema() const override { return !table_.columns().empty(); }
 
         void adopt_schema(const std::pmr::vector<types::complex_logical_type>& t) override { table_.adopt_schema(t); }
-
 
         uint64_t total_rows() const override { return table_.row_group()->total_rows(); }
 
@@ -242,7 +239,6 @@ namespace components::storage {
 
             return appended_range_t{start_row, count};
         }
-
 
         core::result_wrapper_t<uint64_t>
         delete_rows(vector::vector_t& row_ids, uint64_t count, uint64_t txn_id) override {

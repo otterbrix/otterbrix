@@ -9,10 +9,10 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <thread>
-#include <vector>
-#include <unistd.h>
 #include <sys/wait.h>
+#include <thread>
+#include <unistd.h>
+#include <vector>
 
 #include <services/dispatcher/dispatcher.hpp>
 
@@ -112,30 +112,30 @@ struct wave_fixture : actor_zeta::actor::actor_mixin<wave_fixture> {
         , disk_config_(disk_path)
         , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource, scheduler_, scheduler_, disk_config_, log_))
         , manager_index_(actor_zeta::spawn<services::index::manager_index_t>(resource,
-                                                                            scheduler_,
-                                                                            log_,
-                                                                            disk_config_.path,
-                                                                            disk_config_.bitcask_flush_threshold,
-                                                                            disk_config_.bitcask_segment_record_limit,
-                                                                            disk_config_.btree_flush_threshold))
+                                                                             scheduler_,
+                                                                             log_,
+                                                                             disk_config_.path,
+                                                                             disk_config_.bitcask_flush_threshold,
+                                                                             disk_config_.bitcask_segment_record_limit,
+                                                                             disk_config_.btree_flush_threshold))
         , wal_config_(disk_path)
-        , manager_wal_(actor_zeta::spawn<manager_wal_replicate_t>(
-              resource,
-              scheduler_,
-              wal_config_,
-              log_,
-              manager_disk_->address(),
-              wire_index ? manager_index_->address() : components::pipeline::no_mailbox()))
-        , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(
-              resource,
-              scheduler_,
-              log_,
-              manager_wal_->address(),
-              manager_disk_->address(),
-              wire_index ? manager_index_->address() : components::pipeline::no_mailbox(),
-              0,
-              &services::planner::no_custom_lowering,
-              optimizer_pass)) {
+        , manager_wal_(actor_zeta::spawn<manager_wal_replicate_t>(resource,
+                                                                  scheduler_,
+                                                                  wal_config_,
+                                                                  log_,
+                                                                  manager_disk_->address(),
+                                                                  wire_index ? manager_index_->address()
+                                                                             : components::pipeline::no_mailbox()))
+        , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(resource,
+                                                                      scheduler_,
+                                                                      log_,
+                                                                      manager_wal_->address(),
+                                                                      manager_disk_->address(),
+                                                                      wire_index ? manager_index_->address()
+                                                                                 : components::pipeline::no_mailbox(),
+                                                                      0,
+                                                                      &services::planner::no_custom_lowering,
+                                                                      optimizer_pass)) {
         manager_wal_->set_manager_dispatcher_sync(manager_dispatcher_->address());
         manager_disk_->set_manager_wal_sync(manager_wal_->address());
         manager_index_->set_manager_dispatcher_sync(manager_dispatcher_->address());
@@ -614,7 +614,6 @@ TEST_CASE("services::dispatcher::wave4::alter_add_column_default_is_coerced_like
     }
 }
 
-
 // 16 scalars give 240 ordered wrong-type pairs, all must refuse, and the 16 self-pairs must
 // still round-trip. Before the tag byte, 50 of the 240 were accepted silently as a valid
 // value of the wrong type (bit-pattern reinterpretation, not relabelling); the other 190 were
@@ -711,16 +710,15 @@ TEST_CASE("services::dispatcher::wave4::attdefspec_type_tag_spares_null_and_reac
     INFO("an explicit DEFAULT NULL still decodes against any column type");
     {
         std::string null_spec;
-        REQUIRE_FALSE(components::catalog::encode_default_spec(
-                          resource,
-                          logical_value_t{resource, complex_logical_type{logical_type::NA}},
-                          null_spec)
-                          .contains_error());
+        REQUIRE_FALSE(
+            components::catalog::encode_default_spec(resource,
+                                                     logical_value_t{resource, complex_logical_type{logical_type::NA}},
+                                                     null_spec)
+                .contains_error());
         for (const auto t : {logical_type::BIGINT, logical_type::TIMESTAMP, logical_type::STRING_LITERAL}) {
             std::optional<logical_value_t> out;
-            REQUIRE_FALSE(
-                components::catalog::decode_default_spec(resource, complex_logical_type{t}, null_spec, out)
-                    .contains_error());
+            REQUIRE_FALSE(components::catalog::decode_default_spec(resource, complex_logical_type{t}, null_spec, out)
+                              .contains_error());
             REQUIRE(out.has_value());
             CHECK(out->is_null());
         }
@@ -736,8 +734,8 @@ TEST_CASE("services::dispatcher::wave4::attdefspec_type_tag_spares_null_and_reac
         for (const bool as_array : {true, false}) {
             const auto value = as_array ? logical_value_t::create_array(resource, bigint, elems)
                                         : logical_value_t::create_list(resource, bigint, elems);
-            const auto good = as_array ? complex_logical_type::create_array(bigint, 2)
-                                       : complex_logical_type::create_list(bigint);
+            const auto good =
+                as_array ? complex_logical_type::create_array(bigint, 2) : complex_logical_type::create_list(bigint);
             const auto bad = as_array ? complex_logical_type::create_array(timestamp, 2)
                                       : complex_logical_type::create_list(timestamp);
 

@@ -6,8 +6,8 @@
 // assertions below are load-bearing. The row sits past row_group_size (1024) — see
 // test_index_fetch_visibility for why a first-row-group row can't tell a rebase from a miss.
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
 
 #include <components/cursor/cursor.hpp>
@@ -24,9 +24,8 @@ namespace {
     constexpr unsigned kSeedRows = 2000;
     constexpr int64_t kDoomedId = 1500;
 
-    cursor_t_ptr exec(otterbrix::wrapper_dispatcher_t* dispatcher,
-                      otterbrix::session_id_t& session,
-                      const std::string& sql) {
+    cursor_t_ptr
+    exec(otterbrix::wrapper_dispatcher_t* dispatcher, otterbrix::session_id_t& session, const std::string& sql) {
         return dispatcher->execute_sql(session, sql);
     }
 

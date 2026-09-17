@@ -11,8 +11,8 @@
 #include <components/table/data_table.hpp>
 #include <components/table/list_column_data.hpp>
 #include <components/table/storage/buffer_pool.hpp>
-#include <components/table/storage/standard_buffer_manager.hpp>
 #include <components/table/storage/single_file_block_manager.hpp>
+#include <components/table/storage/standard_buffer_manager.hpp>
 #include <components/table/struct_column_data.hpp>
 #include <components/table/table_state.hpp>
 #include <components/vector/data_chunk.hpp>

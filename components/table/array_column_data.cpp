@@ -177,8 +177,6 @@ namespace components::table {
         return 0;
     }
 
-
-
     void array_column_data_t::fetch_row(column_fetch_state& state,
                                         int64_t row_id,
                                         vector::vector_t& result,

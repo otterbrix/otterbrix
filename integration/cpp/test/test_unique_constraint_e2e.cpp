@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/physical_plan/operators/operator_unique_constraint.hpp>
@@ -337,8 +337,8 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::declared_key_never_admi
 
     REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.badges (id bigint, code bigint, kind bigint);")->is_success());
-    REQUIRE(exec(dispatcher, "ALTER TABLE TestDatabase.badges ADD CONSTRAINT uq_badges_code UNIQUE (code);")
-                ->is_success());
+    REQUIRE(
+        exec(dispatcher, "ALTER TABLE TestDatabase.badges ADD CONSTRAINT uq_badges_code UNIQUE (code);")->is_success());
     REQUIRE(exec(dispatcher, "ALTER TABLE TestDatabase.badges ADD CONSTRAINT pk_badges PRIMARY KEY (id, kind);")
                 ->is_success());
     REQUIRE(exec(dispatcher, "INSERT INTO TestDatabase.badges (id, code, kind) VALUES (1, 7, 100);")->is_success());

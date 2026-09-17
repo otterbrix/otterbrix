@@ -30,7 +30,8 @@ namespace tstorage = components::table::storage;
 namespace {
 
     const std::string& adapter_fetch_db_path() {
-        static const std::string path = "/tmp/test_otterbrix_storage_adapter_fetch_" + std::to_string(::getpid()) + ".otbx";
+        static const std::string path =
+            "/tmp/test_otterbrix_storage_adapter_fetch_" + std::to_string(::getpid()) + ".otbx";
         std::remove(path.c_str());
         return path;
     }
@@ -102,7 +103,7 @@ namespace {
         return out;
     }
 
-}
+} // namespace
 
 TEST_CASE("storage_adapter: fetch returns owned big-string bytes on the intact path") {
     adapter_env_t env;

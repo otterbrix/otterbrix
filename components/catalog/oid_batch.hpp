@@ -27,8 +27,8 @@ namespace components::catalog {
         [[nodiscard]] static core::result_wrapper_t<oid_batch_t>
         make(std::pmr::memory_resource* resource, std::vector<oid_t> oids, std::size_t need) {
             if (oids.size() < need) {
-                const std::string msg = "DDL OID allocation round delivered " + std::to_string(oids.size()) +
-                                        " of " + std::to_string(need) +
+                const std::string msg = "DDL OID allocation round delivered " + std::to_string(oids.size()) + " of " +
+                                        std::to_string(need) +
                                         " OIDs; the statement is refused rather than written with "
                                         "an invalid catalog identity";
                 return core::error_t{core::error_code_t::io_error, std::pmr::string{msg.c_str(), resource}};

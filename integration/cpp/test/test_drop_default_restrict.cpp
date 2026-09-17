@@ -3,8 +3,8 @@
 // DROP DATABASE's grammar takes no behavior word at all ("implicitly CASCADE", gram.y ~11047), so
 // transform_drop_database stamps cascade_ explicitly.
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <string>

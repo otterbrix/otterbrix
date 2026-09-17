@@ -174,11 +174,11 @@ TEST_CASE("root_reclaim: PROBE measure per-round growth and load-time allocation
         bm.dev_reset_tracking();
         const uint64_t blocks_before = bm.total_blocks();
         auto table = reload_table(env, bm);
-        WARN("[probe] load allocated issued=" << bm.dev_issued_ids().size()
-                                              << " block_count " << blocks_before << " -> " << bm.total_blocks());
+        WARN("[probe] load allocated issued=" << bm.dev_issued_ids().size() << " block_count " << blocks_before
+                                              << " -> " << bm.total_blocks());
         REQUIRE(scan_and_count(*table, env) == RECLAIM_ROWS);
-        WARN("[probe] after a full scan of the freshly loaded table: issued="
-             << bm.dev_issued_ids().size() << " block_count=" << bm.total_blocks());
+        WARN("[probe] after a full scan of the freshly loaded table: issued=" << bm.dev_issued_ids().size()
+                                                                              << " block_count=" << bm.total_blocks());
     }
 
     {
@@ -194,16 +194,14 @@ TEST_CASE("root_reclaim: PROBE measure per-round growth and load-time allocation
             checkpoint_production(bm, *table);
             auto report = otterbrix_test::walk_blocks(bm, path, &env.resource);
             REQUIRE(report.ok);
-            WARN("[probe] round " << round << ": block_count " << before_blocks << " -> " << bm.total_blocks()
-                                  << " (+" << (bm.total_blocks() - before_blocks) << ")"
-                                  << " file_size " << before_size << " -> " << file_size_of(path)
-                                  << " (+" << (file_size_of(path) - before_size) << " bytes)"
-                                  << " reclaimed_this_round=" << bm.dev_freed_ids().size()
-                                  << " chain=" << report.chain_blocks.size()
-                                  << " durable_data=" << report.durable_data.size()
-                                  << " registry=" << report.registry_live.size()
-                                  << " freelist=" << report.free_list_content.size()
-                                  << " unexplained=" << report.unexplained.size());
+            WARN("[probe] round " << round << ": block_count " << before_blocks << " -> " << bm.total_blocks() << " (+"
+                                  << (bm.total_blocks() - before_blocks) << ")"
+                                  << " file_size " << before_size << " -> " << file_size_of(path) << " (+"
+                                  << (file_size_of(path) - before_size) << " bytes)"
+                                  << " reclaimed_this_round=" << bm.dev_freed_ids().size() << " chain="
+                                  << report.chain_blocks.size() << " durable_data=" << report.durable_data.size()
+                                  << " registry=" << report.registry_live.size() << " freelist="
+                                  << report.free_list_content.size() << " unexplained=" << report.unexplained.size());
         }
         REQUIRE(scan_and_count(*table, env) == RECLAIM_ROWS);
     }
@@ -240,8 +238,8 @@ TEST_CASE("root_reclaim: an unchanged database does not grow round to round", "[
     for (int round = 0; round < 4; ++round) {
         REQUIRE(table->compact(WATERMARK));
         checkpoint_production(bm, *table);
-        INFO("round " << round << ": block_count " << steady_blocks << " -> " << bm.total_blocks()
-                      << ", file_size " << steady_size << " -> " << file_size_of(path));
+        INFO("round " << round << ": block_count " << steady_blocks << " -> " << bm.total_blocks() << ", file_size "
+                      << steady_size << " -> " << file_size_of(path));
         CHECK(bm.total_blocks() == steady_blocks);
         CHECK(file_size_of(path) == steady_size);
     }
@@ -275,8 +273,7 @@ TEST_CASE("root_reclaim: nothing reclaimed is reachable from the new root or liv
         auto report = otterbrix_test::walk_blocks(bm, path, &env.resource);
         REQUIRE(report.ok);
         INFO("round " << round << " chain=" << report.chain_blocks.size()
-                      << " durable_data=" << report.durable_data.size()
-                      << " registry=" << report.registry_live.size()
+                      << " durable_data=" << report.durable_data.size() << " registry=" << report.registry_live.size()
                       << " freelist=" << report.free_list_content.size()
                       << " unexplained=" << report.unexplained.size());
         CHECK(report.reachable_free_overlap.empty());
@@ -387,9 +384,9 @@ TEST_CASE("root_reclaim: one transient fsync failure does not grow the file with
         bm.set_meta_block(writer.get_block_pointer().block_pointer);
         auto free_ptr = bm.serialize_free_list();
         auto barrier = bm.file_sync();
-        INFO("the round that hit the transient error: checkpoint="
-             << cp.has_error() << " flush=" << flushed.has_error() << " free_list=" << free_ptr.has_error()
-             << " barrier=" << barrier.has_error());
+        INFO("the round that hit the transient error: checkpoint=" << cp.has_error() << " flush=" << flushed.has_error()
+                                                                   << " free_list=" << free_ptr.has_error()
+                                                                   << " barrier=" << barrier.has_error());
         CHECK(barrier.has_error()); // the failing fsync is the pre-header barrier
     }
     plan.fail_syncs_from = 0; // transient: the device is healthy again
@@ -506,7 +503,7 @@ TEST_CASE("root_reclaim: a failed reclaim latches degraded and stops the file gr
         tstorage::metadata_writer_t writer(meta_mgr);
         auto cp = table->checkpoint(writer);
         INFO("the round whose reclaim could not read root N: checkpoint=" << cp.has_error()
-             << " reads_failed=" << plan.reads_failed);
+                                                                          << " reads_failed=" << plan.reads_failed);
         CHECK(cp.has_error()); // the reclaim could not account for root N
     }
     CHECK(plan.reads_failed > 0);
@@ -599,8 +596,8 @@ TEST_CASE("root_reclaim: a collection held across compact does not strip a reuse
     auto report = otterbrix_test::walk_blocks(bm, path, &env.resource);
     REQUIRE(report.ok);
     INFO("chain=" << report.chain_blocks.size() << " durable_data=" << report.durable_data.size()
-                  << " registry=" << report.registry_live.size() << " freelist="
-                  << report.free_list_content.size() << " unexplained=" << dump(report.unexplained));
+                  << " registry=" << report.registry_live.size() << " freelist=" << report.free_list_content.size()
+                  << " unexplained=" << dump(report.unexplained));
     CHECK(report.reachable_free_overlap.empty());
     CHECK(report.unexplained.empty());
     REQUIRE(scan_and_count(*table, env) == RECLAIM_ROWS);

@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -31,7 +31,9 @@ namespace {
         if (cursor->is_success()) {
             const auto n = cursor->size();
             INFO("[" << sql << "] silently answered from ONE of two same-named tables: " << n << " row(s) — that is "
-                     << (n == 2 ? "dbone.alpha" : n == 5 ? "dbtwo.alpha" : "neither table whole"));
+                     << (n == 2   ? "dbone.alpha"
+                         : n == 5 ? "dbtwo.alpha"
+                                  : "neither table whole"));
             REQUIRE(cursor->is_error());
         }
         INFO("[" << sql << "] error: " << cursor->get_error().what.c_str());

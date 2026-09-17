@@ -105,11 +105,11 @@ namespace components::operators {
         // Same refusal as the register sibling: pg_cast is the cast, and with no disk actor there's
         // neither a row to delete nor a way to know one exists.
         if (ctx->disk_address == actor_zeta::address_t::empty_address()) {
-            set_error(core::error_t{
-                core::error_code_t::physical_plan_error,
-                std::pmr::string{"unregister_cast: no disk actor is wired — pg_cast cannot be read or "
-                                 "written, so there is no cast to drop",
-                                 resource_}});
+            set_error(
+                core::error_t{core::error_code_t::physical_plan_error,
+                              std::pmr::string{"unregister_cast: no disk actor is wired — pg_cast cannot be read or "
+                                               "written, so there is no cast to drop",
+                                               resource_}});
             mark_failed();
             co_return;
         }

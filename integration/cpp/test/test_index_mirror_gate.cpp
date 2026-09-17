@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/physical_plan/operators/operator_insert.hpp>
@@ -99,7 +99,7 @@ TEST_CASE("integration::cpp::test_index_mirror_gate::indexed_table_still_mirrors
         auto heap = exec("SELECT id FROM m.twin WHERE " + predicate + ";");
         REQUIRE(heap->is_success());
         INFO("predicate: " << predicate << " -- index answered " << indexed->size() << " row(s), the "
-             << "unindexed twin holds " << heap->size());
+                           << "unindexed twin holds " << heap->size());
         INFO("a registered index engine answering short is the silent wrong answer rule 6 forbids");
         CHECK(indexed->size() == heap->size());
         return indexed->size();

@@ -5,8 +5,8 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <components/execution_dag/execution_dag.hpp>
-#include <core/pmr.hpp>
 #include <core/counting_resource.hpp>
+#include <core/pmr.hpp>
 
 #include <memory_resource>
 #include <optional>

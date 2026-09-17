@@ -193,8 +193,7 @@ TEST_CASE("example::sql::group_by") {
             auto name = std::string(c->value(column_of(c, "name"), i).value<std::string_view>());
             REQUIRE(name == "Name " + std::to_string(number));
             REQUIRE(c->value(column_of(c, "count_"), i).value<uint64_t>() == 10);
-            REQUIRE(c->value(column_of(c, "sum_"), i).value<int64_t>() ==
-                    5 * (number % 20) + 5 * ((number + 10) % 20));
+            REQUIRE(c->value(column_of(c, "sum_"), i).value<int64_t>() == 5 * (number % 20) + 5 * ((number + 10) % 20));
             REQUIRE(static_cast<int64_t>(c->value(column_of(c, "avg_"), i).value<double>()) ==
                     (number % 20 + (number + 10) % 20) / 2);
             REQUIRE(c->value(column_of(c, "min_"), i).value<int64_t>() == number % 20);

@@ -1,8 +1,8 @@
 #include <catch2/catch_test_macros.hpp>
 
-#include <components/table/data_table.hpp>
 #include <components/table/base_statistics.hpp>
 #include <components/table/column_data.hpp>
+#include <components/table/data_table.hpp>
 #include <components/table/persistent_column_data.hpp>
 #include <components/table/storage/buffer_pool.hpp>
 #include <components/table/storage/metadata_manager.hpp>
@@ -57,9 +57,7 @@ namespace {
             const uint64_t batch = std::min<uint64_t>(count - offset, DEFAULT_VECTOR_CAPACITY);
             auto chunk = data_chunk_t(&env.resource, types, batch);
             for (uint64_t i = 0; i < batch; i++) {
-                chunk.data[0].set_value(
-                    i,
-                    logical_value_t(&env.resource, start + static_cast<int64_t>(offset + i)));
+                chunk.data[0].set_value(i, logical_value_t(&env.resource, start + static_cast<int64_t>(offset + i)));
             }
             chunk.set_cardinality(batch);
             REQUIRE_FALSE(table.append(chunk, state).has_error());
@@ -113,8 +111,11 @@ TEST_CASE("components::table::wave::unload_of_a_spill_less_transient_refuses") {
 TEST_CASE("components::table::wave::a_zero_count_with_rows_on_disk_is_corruption") {
     wave_env env("count_mismatch");
 
-    auto column =
-        column_data_t::create_column(&env.resource, env.block_manager, 0, 0, complex_logical_type(logical_type::BIGINT));
+    auto column = column_data_t::create_column(&env.resource,
+                                               env.block_manager,
+                                               0,
+                                               0,
+                                               complex_logical_type(logical_type::BIGINT));
 
     auto make_pcd = [&](uint64_t seg_size) {
         persistent_column_data_t pcd(&env.resource);
@@ -217,8 +218,7 @@ TEST_CASE("components::table::wave::a_failed_add_column_backfill_refuses_loudly"
     // представимой on-disk формы, и append новой колонки обязан отказать
     // (write_string_memory: "string value ... exceeds the maximum storable string size").
     column_definition_t new_column("added", complex_logical_type(logical_type::STRING_LITERAL));
-    new_column.set_default_value(
-        logical_value_t(&env.resource, std::string(300 * 1024, 'x')));
+    new_column.set_default_value(logical_value_t(&env.resource, std::string(300 * 1024, 'x')));
     auto extended = std::make_unique<data_table_t>(*table, new_column);
 
     // Отказ защёлкнут и виден; родитель остался корнем (DDL не случился) и пишется.

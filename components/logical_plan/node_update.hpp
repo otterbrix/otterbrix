@@ -88,8 +88,8 @@ namespace components::logical_plan {
         std::vector<std::pair<std::string, std::string>> check_exprs_; // (name, expr)
         std::vector<std::pair<std::string, expressions::expression_ptr>> check_predicates_;
         parameter_node_ptr check_params_;
-        std::vector<std::pair<std::string, uint64_t>> array_size_reqs_;               // (name, declared array size)
-        std::vector<std::vector<std::string>> unique_groups_;                         // UNIQUE / PK column groups
+        std::vector<std::pair<std::string, uint64_t>> array_size_reqs_; // (name, declared array size)
+        std::vector<std::vector<std::string>> unique_groups_;           // UNIQUE / PK column groups
     };
 
     using node_update_ptr = boost::intrusive_ptr<node_update_t>;

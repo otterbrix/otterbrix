@@ -106,9 +106,7 @@ namespace {
         }
 
         // resource_ is declared first so it outlives ~wal_env_t's teardown of manager_.
-        std::pmr::vector<data_chunk_t> make_insert_batch(size_t rows) {
-            return one_chunk(&resource_, rows);
-        }
+        std::pmr::vector<data_chunk_t> make_insert_batch(size_t rows) { return one_chunk(&resource_, rows); }
 
         auto send_insert(uint64_t txn_id, size_t rows, uint64_t row_start) {
             auto [ns, fut] = actor_zeta::otterbrix::send(manager_->address(),
@@ -308,9 +306,8 @@ TEST_CASE("wal::load_hole::an_interior_break_must_not_be_answered_with_the_segme
     auto answer = await_ready(fut);
 
     const auto answered = answer.has_error() ? std::vector<wal::id_t>{} : ids_of(answer.value());
-    INFO("load answered " << answered.size() << " records reaching id " << max_of(answered)
-                          << " while everything past " << prefix_max << " up to " << seg0_on_disk
-                          << " is unreachable");
+    INFO("load answered " << answered.size() << " records reaching id " << max_of(answered) << " while everything past "
+                          << prefix_max << " up to " << seg0_on_disk << " is unreachable");
     REQUIRE((answer.has_error() || max_of(answered) <= prefix_max));
 }
 

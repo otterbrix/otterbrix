@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 #include "types/operations_helper.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -3114,8 +3114,8 @@ TEST_CASE("integration::cpp::test_sql_features::fk_cross_logical_same_physical_k
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.child (id bigint, d date);")
-                        ->is_success());
+            REQUIRE(
+                dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.child (id bigint, d date);")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -3148,7 +3148,6 @@ TEST_CASE("integration::cpp::test_sql_features::fk_cross_logical_same_physical_k
         REQUIRE(cur->size() == 0);
     }
 }
-
 
 namespace {
     bool has_column(const components::cursor::cursor_t& cur, std::string_view name) {
@@ -3776,7 +3775,6 @@ TEST_CASE("integration::cpp::test_sql_features::drop_database_cascade_cleanup") 
         }
     }
 }
-
 
 #if 0
 TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_join") {

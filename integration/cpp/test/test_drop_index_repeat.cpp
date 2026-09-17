@@ -1,8 +1,8 @@
 // Regression pin: an unresolved oid must never reach mark_executed() through an empty spec
 // list — that combination is what let a failed DROP INDEX report success while deleting nothing.
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

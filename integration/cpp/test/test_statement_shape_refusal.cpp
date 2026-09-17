@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -15,9 +15,7 @@
 using namespace components;
 
 namespace {
-    std::string error_text(const cursor::cursor_t_ptr& cursor) {
-        return std::string{cursor->get_error().what.c_str()};
-    }
+    std::string error_text(const cursor::cursor_t_ptr& cursor) { return std::string{cursor->get_error().what.c_str()}; }
 } // namespace
 
 TEST_CASE("integration::cpp::statement_shape::no_statement_is_a_named_refusal") {

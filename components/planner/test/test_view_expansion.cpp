@@ -133,10 +133,8 @@ TEST_CASE("planner::view_expansion::a correlated join in the body is refused") {
     // renumbered against the outer plan's — a silent collision. Refuse instead.
     auto ref = make_view_ref("db", "v");
     auto body = logical_plan::make_node_aggregate(res(), core::dbname_t{"db"}, core::relname_t{"t"});
-    auto join = logical_plan::make_node_join(res(),
-                                             core::dbname_t{"db"},
-                                             core::relname_t{"t"},
-                                             logical_plan::join_type::inner);
+    auto join =
+        logical_plan::make_node_join(res(), core::dbname_t{"db"}, core::relname_t{"t"}, logical_plan::join_type::inner);
     join->set_lateral(true);
     join->add_correlation(core::parameter_id_t{0}, expressions::key_t{res(), "col_a"});
     body->append_child(join);
@@ -158,16 +156,18 @@ TEST_CASE("planner::view_expansion::body parameters are renumbered into the oute
     CHECK(body_id == core::parameter_id_t{0});
 
     auto body = logical_plan::make_node_aggregate(res(), core::dbname_t{"db"}, core::relname_t{"t"});
-    auto predicate = expressions::make_compare_expression(res(),
-                                                          expressions::compare_type::gt,
-                                                          expressions::param_storage{expressions::key_t{res(), "col_b"}},
-                                                          expressions::param_storage{body_id});
+    auto predicate =
+        expressions::make_compare_expression(res(),
+                                             expressions::compare_type::gt,
+                                             expressions::param_storage{expressions::key_t{res(), "col_b"}},
+                                             expressions::param_storage{body_id});
     body->append_expression(predicate);
 
     renumber_body_parameters(res(), body.get(), body_params, outer_params);
 
     INFO("the body's operand now points at a fresh id");
-    const auto& moved = static_cast<const expressions::compare_expression_t*>(body->expressions().front().get())->right();
+    const auto& moved =
+        static_cast<const expressions::compare_expression_t*>(body->expressions().front().get())->right();
     REQUIRE(expressions::is_parameter(moved));
     const auto new_id = expressions::as_parameter(moved);
     CHECK(new_id != outer_id);

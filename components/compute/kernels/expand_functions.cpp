@@ -140,11 +140,10 @@ namespace components::compute {
     // WARNING: uid and signatures must mirror the DEFAULT_FUNCTIONS "generate_series"
     // entry (uid 8) in function.hpp.
     void register_expand_functions(function_registry_t& r) {
-        r.add_builtin(
-            make_generate_series_func(r.resource(),
-                                      "generate_series",
-                                      "Generate a series of values",
-                                      "generate_series(start, stop[, step]) — inclusive integer series"));
+        r.add_builtin(make_generate_series_func(r.resource(),
+                                                "generate_series",
+                                                "Generate a series of values",
+                                                "generate_series(start, stop[, step]) — inclusive integer series"));
     }
 
 } // namespace components::compute

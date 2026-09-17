@@ -190,9 +190,9 @@ namespace components::operators {
                 const auto dep_cls = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
                 const auto dep_oid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
                 const bool deptype_null = chunk.is_null(catalog::pg_depend_col::deptype, i);
-                const auto deptype_cell =
-                    deptype_null ? std::string_view{}
-                                 : chunk.get_value<std::string_view>(catalog::pg_depend_col::deptype, i);
+                const auto deptype_cell = deptype_null
+                                              ? std::string_view{}
+                                              : chunk.get_value<std::string_view>(catalog::pg_depend_col::deptype, i);
 
                 if (deptype_cell.empty() || catalog::deptype::blocks_restrict(deptype_cell[0])) {
                     restrict_blockers.push_back(dep_oid);

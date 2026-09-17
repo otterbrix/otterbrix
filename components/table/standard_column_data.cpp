@@ -45,8 +45,7 @@ namespace components::table {
         validity.initialize_scan_with_offset(state.child_states[0], row_idx);
     }
 
-    uint64_t
-    standard_column_data_t::scan(column_scan_state& state, vector::vector_t& result, uint64_t target_count) {
+    uint64_t standard_column_data_t::scan(column_scan_state& state, vector::vector_t& result, uint64_t target_count) {
         assert(state.row_index == state.child_states[0].row_index);
         // Targets the same result base as the main data: without this sync a multi-vector scan
         // into one growing chunk (compact's rebuild) folded the whole table's NULL pattern into

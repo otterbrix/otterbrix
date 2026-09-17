@@ -133,9 +133,7 @@ namespace core::filesystem {
         return remove_directory(vfs.find_file_system(directory), directory);
     }
 
-    bool list_files(virtual_file_system_t& vfs,
-                    const path_t& directory,
-                    const list_files_callback_t& callback) {
+    bool list_files(virtual_file_system_t& vfs, const path_t& directory, const list_files_callback_t& callback) {
         return list_files(vfs.find_file_system(directory), directory, callback);
     }
 

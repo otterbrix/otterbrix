@@ -134,7 +134,7 @@ namespace {
         return buf.str();
     }
 
-}
+} // namespace
 
 // FAIL() inside test_create_config can't be asserted on directly, so the predicate is
 // pulled out as a pure function and tested here.
@@ -153,8 +153,8 @@ TEST_CASE("integration::cpp::fixture_root::qualified_paths_are_told_from_unquali
     CHECK_FALSE(integration_fixture_path_is_qualified(shared / "test_foo"));
     CHECK_FALSE(integration_fixture_path_is_qualified(shared / "otterbrix" / "integration" / "test_foo"));
 
-    CHECK_FALSE(integration_fixture_path_is_qualified(
-        shared / ("test_foo_" + std::to_string(static_cast<long>(::getpid())))));
+    CHECK_FALSE(
+        integration_fixture_path_is_qualified(shared / ("test_foo_" + std::to_string(static_cast<long>(::getpid())))));
 
     CHECK_FALSE(integration_fixture_path_is_qualified(shared / (root.filename().string() + "9")));
 
@@ -163,18 +163,32 @@ TEST_CASE("integration::cpp::fixture_root::qualified_paths_are_told_from_unquali
 
 TEST_CASE("integration::cpp::fixture_root::the_source_scan_reads_string_literals_only") {
     const std::string root = integration_fixture_shared_root().string();
-    const std::string src = "// a note about " + root + "/old_fixture\n"
+    const std::string src = "// a note about " + root +
+                            "/old_fixture\n"
                             "/* a block about\n"
-                            "   " + root + "/another */\n"
-                            "auto a = f(\"" + root + "/leaf\");\n"
-                            "auto b = g(\"" + root + "\");\n"
+                            "   " +
+                            root +
+                            "/another */\n"
+                            "auto a = f(\"" +
+                            root +
+                            "/leaf\");\n"
+                            "auto b = g(\"" +
+                            root +
+                            "\");\n"
                             "const char* s = \"harmless\";\n"
-                            "char q = '\\\"';\n"                                  // a quote in a char literal
-                            "auto c = h(\"" + root + "fs/not_ours\");\n"          // not a root of ours
-                            "auto d = i(\"/var" + root + "/not_ours\");\n"        // does not start at the root
-                            "auto e = j(R\"_(" + root + "/in_raw)_\");\n"
+                            "char q = '\\\"';\n" // a quote in a char literal
+                            "auto c = h(\"" +
+                            root +
+                            "fs/not_ours\");\n" // not a root of ours
+                            "auto d = i(\"/var" +
+                            root +
+                            "/not_ours\");\n" // does not start at the root
+                            "auto e = j(R\"_(" +
+                            root +
+                            "/in_raw)_\");\n"
                             "auto n = 1'000'000;\n"
-                            "auto k = l(\"" + root + "/after_separators\");\n";
+                            "auto k = l(\"" +
+                            root + "/after_separators\");\n";
 
     const std::vector<std::size_t> hits = root_naming_literal_lines(src, root);
     const std::vector<std::size_t> expected{4, 5, 10, 12};

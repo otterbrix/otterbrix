@@ -2,8 +2,8 @@
 // though manager_index_t/bootstrap_indexes_sync derive the identical path anyway. Both cases
 // restart the instance so pending in-memory buckets can't answer without touching the store.
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <services/index/manager_index.hpp>
 
@@ -110,8 +110,8 @@ TEST_CASE("integration::cpp::index_agent_owns_hash_storage::long_key_hash_index_
         REQUIRE(exec("CREATE DATABASE lkdb;")->is_success());
         REQUIRE(exec("CREATE TABLE lkdb.t (id bigint, k text);")->is_success());
         REQUIRE(exec("CREATE INDEX t_k ON lkdb.t USING hash (k);")->is_success());
-        REQUIRE(exec("INSERT INTO lkdb.t (id, k) VALUES (1, '" + long_key + "'), (2, '" + sibling_key +
-                     "'), (3, '" + short_key + "'), (4, '" + long_key + "');")
+        REQUIRE(exec("INSERT INTO lkdb.t (id, k) VALUES (1, '" + long_key + "'), (2, '" + sibling_key + "'), (3, '" +
+                     short_key + "'), (4, '" + long_key + "');")
                     ->is_success());
     }
 

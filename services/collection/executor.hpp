@@ -4,7 +4,6 @@
 #include <components/casts/cast_registry.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/settings.hpp>
-#include <services/dispatcher/txn_messages.hpp>
 #include <components/compute/function.hpp>
 #include <components/context/pg_catalog_swap.hpp>
 #include <components/context/subplan_runner.hpp>
@@ -13,6 +12,7 @@
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <optional>
+#include <services/dispatcher/txn_messages.hpp>
 #include <set>
 
 #include <actor-zeta/actor/actor_mixin.hpp>

@@ -375,20 +375,20 @@ namespace services::dispatcher {
         if (new_lowest > last_broadcast_horizon_) {
             last_broadcast_horizon_ = new_lowest;
             auto sweep_broadcast = [&] {
-                    if (disk_has_dropped_) {
-                        auto disk_send_result =
-                            actor_zeta::otterbrix::send(disk_address_,
-                                                        &services::disk::manager_disk_t::on_horizon_advanced,
-                                                        new_lowest);
-                        pending_void_.emplace_back(std::move(disk_send_result.second));
-                    }
-                    if (index_has_dropped_ && index_address_ != actor_zeta::address_t::empty_address()) {
-                        auto index_send_result =
-                            actor_zeta::otterbrix::send(index_address_,
-                                                        &services::index::manager_index_t::on_horizon_advanced,
-                                                        new_lowest);
-                        pending_void_.emplace_back(std::move(index_send_result.second));
-                    }
+                if (disk_has_dropped_) {
+                    auto disk_send_result =
+                        actor_zeta::otterbrix::send(disk_address_,
+                                                    &services::disk::manager_disk_t::on_horizon_advanced,
+                                                    new_lowest);
+                    pending_void_.emplace_back(std::move(disk_send_result.second));
+                }
+                if (index_has_dropped_ && index_address_ != actor_zeta::address_t::empty_address()) {
+                    auto index_send_result =
+                        actor_zeta::otterbrix::send(index_address_,
+                                                    &services::index::manager_index_t::on_horizon_advanced,
+                                                    new_lowest);
+                    pending_void_.emplace_back(std::move(index_send_result.second));
+                }
             };
             sweep_broadcast();
         }
@@ -420,8 +420,7 @@ namespace services::dispatcher {
 
     void manager_dispatcher_t::cache_settings_sync(const components::catalog::session_catalog_t& settings) {
         default_settings_ = settings;
-        trace(log_,
-              "manager_dispatcher_t::cache_settings_sync");
+        trace(log_, "manager_dispatcher_t::cache_settings_sync");
     }
 
     void manager_dispatcher_t::seed_clocks_sync(uint64_t commit_frontier, uint64_t txn_id_high_water) {
@@ -522,9 +521,9 @@ namespace services::dispatcher {
         } else if (commits_failed) {
             exec_result.cursor = components::cursor::make_cursor(
                 resource(),
-                core::error_t{core::error_code_t::transaction_finalized,
-                              std::pmr::string{"the transaction failed and was rolled back; nothing was committed",
-                                               resource()}});
+                core::error_t{
+                    core::error_code_t::transaction_finalized,
+                    std::pmr::string{"the transaction failed and was rolled back; nothing was committed", resource()}});
         }
         co_return std::move(exec_result.cursor);
     }
@@ -652,11 +651,10 @@ namespace services::dispatcher {
         std::pmr::vector<actor_zeta::unique_future<bool>> acks(resource());
         acks.reserve(registered.size());
         for (const auto& [idx, uid] : registered) {
-            auto [needs_sched, fut] = actor_zeta::otterbrix::send(
-                executor_addresses_[idx],
-                &collection::executor::executor_t::unregister_udf_uid,
-                session,
-                uid);
+            auto [needs_sched, fut] = actor_zeta::otterbrix::send(executor_addresses_[idx],
+                                                                  &collection::executor::executor_t::unregister_udf_uid,
+                                                                  session,
+                                                                  uid);
             if (needs_sched && executors_[idx]) {
                 scheduler_->enqueue(executors_[idx].get());
             }
@@ -1118,8 +1116,7 @@ namespace services::dispatcher {
     }
 
     manager_dispatcher_t::unique_future<void>
-    manager_dispatcher_t::finish_failed_statement_(components::session::session_id_t session,
-                                                   uint64_t transaction_id) {
+    manager_dispatcher_t::finish_failed_statement_(components::session::session_id_t session, uint64_t transaction_id) {
         auto* txn = statement_transaction_(session, transaction_id);
         if (txn == nullptr) {
             co_return;
@@ -1247,8 +1244,9 @@ namespace services::dispatcher {
               transaction_id);
         auto* txn = statement_transaction_(session, transaction_id);
         if (txn == nullptr) {
-            co_return core::error_t{core::error_code_t::transaction_inactive,
-                                    std::pmr::string{"BEGIN: its transaction ended before BEGIN reached it", resource()}};
+            co_return core::error_t{
+                core::error_code_t::transaction_inactive,
+                std::pmr::string{"BEGIN: its transaction ended before BEGIN reached it", resource()}};
         }
         txn->keep_until_commit();
         co_return core::error_t::no_error();

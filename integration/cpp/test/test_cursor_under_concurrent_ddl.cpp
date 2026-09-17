@@ -158,4 +158,3 @@ TEST_CASE("integration::cursor_under_concurrent_ddl::surviving_projected_column_
     const auto fresh_first = fresh->value(0, 0);
     REQUIRE(fresh_first.value<int64_t>() == B_BASE);
 }
-

@@ -3,8 +3,8 @@
 // child; it now slices by chunk.row_ids instead. These tests assert row content, not count, since a shifted
 // id set still reports the same count.
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <vector>
 
@@ -16,9 +16,8 @@ namespace {
     // Sentinel: no seeded parent has id 0, so 0 in the expectation tables means NULL.
     constexpr int64_t kNullParent = 0;
 
-    cursor_t_ptr run(otterbrix::wrapper_dispatcher_t* dispatcher,
-                     otterbrix::session_id_t& session,
-                     const std::string& sql) {
+    cursor_t_ptr
+    run(otterbrix::wrapper_dispatcher_t* dispatcher, otterbrix::session_id_t& session, const std::string& sql) {
         return dispatcher->execute_sql(session, sql);
     }
 
@@ -44,8 +43,8 @@ namespace {
         }
         {
             auto s = otterbrix::session_id_t();
-            REQUIRE(run(dispatcher, s, "CREATE TABLE FkDb.child (id bigint, parent_id bigint, tag bigint);")
-                        ->is_success());
+            REQUIRE(
+                run(dispatcher, s, "CREATE TABLE FkDb.child (id bigint, parent_id bigint, tag bigint);")->is_success());
         }
         {
             auto s = otterbrix::session_id_t();
@@ -58,9 +57,7 @@ namespace {
         }
         {
             auto s = otterbrix::session_id_t();
-            REQUIRE(run(dispatcher,
-                        s,
-                        "INSERT INTO FkDb.parent (id, val) VALUES (1, 'p1'), (2, 'p2'), (3, 'p3');")
+            REQUIRE(run(dispatcher, s, "INSERT INTO FkDb.parent (id, val) VALUES (1, 'p1'), (2, 'p2'), (3, 'p3');")
                         ->is_success());
         }
         {

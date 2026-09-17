@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -158,8 +158,7 @@ TEST_CASE("integration::cpp::pg_catalog_dml_guard::sequence_wrapped_create_index
     index_node->keys().emplace_back(resource, "relname");
     index_node->set_dbname("pg_catalog");
     index_node->set_relname("pg_class");
-    auto sequence =
-        boost::intrusive_ptr<logical_plan::node_t>(new logical_plan::node_sequence_t(resource));
+    auto sequence = boost::intrusive_ptr<logical_plan::node_t>(new logical_plan::node_sequence_t(resource));
     sequence->append_child(index_node);
 
     logical_plan::execution_plan_t plan{resource, sequence, logical_plan::make_parameter_node(resource)};

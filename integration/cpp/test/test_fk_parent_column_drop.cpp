@@ -1,8 +1,8 @@
 // Root cause: confkey (the parent side of an FK) got no per-column pg_depend edge, so
 // dropping a referenced parent column passed the dependency check and bricked child inserts.
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <string>

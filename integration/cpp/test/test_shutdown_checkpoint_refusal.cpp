@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -58,11 +58,10 @@ namespace {
         return false;
     }
 
-}
+} // namespace
 
 TEST_CASE("integration::cpp::shutdown_checkpoint::a_refused_final_checkpoint_is_reported") {
-    const auto dir = integration_fixture_path("test_shutdown_checkpoint_refusal") /
-                     std::to_string(::getpid());
+    const auto dir = integration_fixture_path("test_shutdown_checkpoint_refusal") / std::to_string(::getpid());
     auto config = test_create_config(dir);
     test_clear_directory(config);
     config.log.level = log_t::level::err;

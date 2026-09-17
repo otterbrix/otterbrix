@@ -117,8 +117,7 @@ namespace components::vector {
                 ok = false;
                 return types::complex_logical_type{types::logical_type::INVALID};
             }
-            auto decoded =
-                types::decode_type_spec(resource, reinterpret_cast<const std::byte*>(scan), spec_size);
+            auto decoded = types::decode_type_spec(resource, reinterpret_cast<const std::byte*>(scan), spec_size);
             scan += spec_size;
             if (decoded.has_error()) {
                 ok = false;

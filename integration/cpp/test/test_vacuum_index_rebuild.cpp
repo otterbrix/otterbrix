@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -205,8 +205,7 @@ TEST_CASE("integration::cpp::vacuum_index_rebuild::a_compacting_checkpoint_still
 
 // THE PRICE, in the one place a number belongs. Hidden by default ([.]) because it loads a
 // table big enough for the per-table scan-and-refill to dominate; run it with [vacuumcost].
-TEST_CASE("integration::cpp::vacuum_index_rebuild::what_a_vacuum_costs_on_an_indexed_table",
-          "[.][vacuumcost]") {
+TEST_CASE("integration::cpp::vacuum_index_rebuild::what_a_vacuum_costs_on_an_indexed_table", "[.][vacuumcost]") {
     auto config = test_create_config(integration_fixture_path("test_vacuum_index_rebuild/cost"));
     test_clear_directory(config);
     config.log.level = log_t::level::off;

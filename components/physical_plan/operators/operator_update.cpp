@@ -440,11 +440,10 @@ namespace components::operators {
         // Accepted into the plan but not implemented: a plain UPDATE would report SUCCESS with 0 rows instead of
         // the insert the plan declared. No SQL reaches this flag, only the logical-plan API — refuse it now.
         if (upsert_) {
-            set_error(core::error_t{
-                core::error_code_t::unimplemented_yet,
-                std::pmr::string{"UPDATE with upsert=true: upsert semantics are not implemented — "
-                                 "the plan declares an insert-or-update this engine cannot deliver",
-                                 resource_}});
+            set_error(core::error_t{core::error_code_t::unimplemented_yet,
+                                    std::pmr::string{"UPDATE with upsert=true: upsert semantics are not implemented — "
+                                                     "the plan declares an insert-or-update this engine cannot deliver",
+                                                     resource_}});
             mark_failed();
             co_return;
         }
@@ -606,7 +605,10 @@ namespace components::operators {
                     affected_rows_ += appended.count;
                 }
 
-                co_return dml_detail::flush_outcome_t{core::error_t::no_error(), true, appended.start_row, appended.count};
+                co_return dml_detail::flush_outcome_t{core::error_t::no_error(),
+                                                      true,
+                                                      appended.start_row,
+                                                      appended.count};
             };
 
             auto outcome = co_await op(resource_);

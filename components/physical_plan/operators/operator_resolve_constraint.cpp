@@ -28,9 +28,9 @@ namespace components::operators {
         // empty, not an error.
         std::pmr::vector<std::uint64_t> pg_attribute_fk_child_cols(std::pmr::memory_resource* resource) {
             std::pmr::vector<std::uint64_t> cols(resource);
-            cols.emplace_back(catalog::pg_attribute_col::attoid);       // matched against the FK attoid list
-            cols.emplace_back(catalog::pg_attribute_col::attname);      // the name carried into fk_info
-            cols.emplace_back(catalog::pg_attribute_col::attnum);       // referencing direction only
+            cols.emplace_back(catalog::pg_attribute_col::attoid);  // matched against the FK attoid list
+            cols.emplace_back(catalog::pg_attribute_col::attname); // the name carried into fk_info
+            cols.emplace_back(catalog::pg_attribute_col::attnum);  // referencing direction only
             cols.emplace_back(catalog::pg_attribute_col::attisdropped);
             cols.emplace_back(catalog::pg_attribute_col::attdefspec);
             return cols;
@@ -101,8 +101,7 @@ namespace components::operators {
                 std::string msg = "constraint resolution: table \"";
                 msg += target_md->name;
                 msg += "\" resolved to no oid — its constraints cannot be read";
-                set_error(core::error_t{core::error_code_t::schema_error,
-                                        std::pmr::string{std::move(msg), resource_}});
+                set_error(core::error_t{core::error_code_t::schema_error, std::pmr::string{std::move(msg), resource_}});
                 co_return;
             }
             const catalog::oid_t table_oid = target_md->table_oid;
@@ -170,8 +169,8 @@ namespace components::operators {
                     msg += " this build reads — the constraints of table \"";
                     msg += target_md->name;
                     msg += "\" cannot be decoded";
-                    set_error(core::error_t{core::error_code_t::schema_error,
-                                            std::pmr::string{std::move(msg), resource_}});
+                    set_error(
+                        core::error_t{core::error_code_t::schema_error, std::pmr::string{std::move(msg), resource_}});
                     co_return;
                 }
                 for (uint64_t ci = 0; ci < con_chunk.size(); ++ci) {
@@ -195,7 +194,8 @@ namespace components::operators {
 
                     if (direction == direction_t::outgoing && !con_chunk.is_null(catalog::pg_constraint_col::oid, ci) &&
                         !con_chunk.is_null(catalog::pg_constraint_col::conname, ci)) {
-                        const auto cname = con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::conname, ci);
+                        const auto cname =
+                            con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::conname, ci);
                         if (!cname.empty()) {
                             constraint_oids.emplace_back(
                                 std::string{cname},
@@ -229,9 +229,8 @@ namespace components::operators {
                                                           : catalog::pg_constraint_col::conrelid;
                         if (con_chunk.is_null(far_col, ci)) {
                             std::string msg = "foreign key constraint \"";
-                            msg += pending.constraint_name.empty()
-                                       ? "oid " + std::to_string(fk.constraint_oid)
-                                       : pending.constraint_name;
+                            msg += pending.constraint_name.empty() ? "oid " + std::to_string(fk.constraint_oid)
+                                                                   : pending.constraint_name;
                             msg += (direction == direction_t::outgoing)
                                        ? "\": pg_constraint.confrelid is unreadable — the referenced table "
                                          "cannot be identified"
@@ -608,8 +607,8 @@ namespace components::operators {
                                                     std::pmr::string{std::move(msg), resource_}});
                             co_return;
                         }
-                        fk.child_collection_name = std::string(
-                            cls_batches[0].get_value<std::string_view>(catalog::pg_class_col::relname, 0));
+                        fk.child_collection_name =
+                            std::string(cls_batches[0].get_value<std::string_view>(catalog::pg_class_col::relname, 0));
                         fk.child_database = "";
                         const auto ns_oid = static_cast<catalog::oid_t>(
                             cls_batches[0].get_value<std::uint32_t>(catalog::pg_class_col::relnamespace, 0));

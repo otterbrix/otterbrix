@@ -32,8 +32,7 @@ PYBIND11_MODULE(OTTERBRIX_PYTHON_LIB_NAME, m) {
     // can outlive it; each holds its own reference (otterbrix_py_type_t::arena_), so the last
     // owner, not the module, decides when the pool is released.
     module_arena_ptr module_arena{new module_arena_t()};
-    m.add_object("__arena__",
-                 pybind11::capsule(module_arena_ptr(module_arena).detach(), [](void* raw) {
+    m.add_object("__arena__", pybind11::capsule(module_arena_ptr(module_arena).detach(), [](void* raw) {
                      module_arena_ptr released(static_cast<module_arena_t*>(raw), false);
                  }));
 
@@ -48,15 +47,16 @@ PYBIND11_MODULE(OTTERBRIX_PYTHON_LIB_NAME, m) {
 
     // Lambda captures the arena by value: make_space's refusals return before the engine (and
     // its own arena) exists, so the refusal message needs the module's arena to live on.
-    m.def("connect",
-          [module_arena](const pybind11::object& database, bool read_only, const pybind11::dict& config) {
-              return py_connection_t::connect(module_arena, database, read_only, config);
-          },
-          "Create a OtterBrix database instance. Can take a database file name to read/write persistent data and a "
-          "read_only flag if no changes are desired",
-          pybind11::arg("database") = "default",
-          pybind11::arg("read_only") = false,
-          pybind11::arg_v("config", pybind11::dict(), "None"));
+    m.def(
+        "connect",
+        [module_arena](const pybind11::object& database, bool read_only, const pybind11::dict& config) {
+            return py_connection_t::connect(module_arena, database, read_only, config);
+        },
+        "Create a OtterBrix database instance. Can take a database file name to read/write persistent data and a "
+        "read_only flag if no changes are desired",
+        pybind11::arg("database") = "default",
+        pybind11::arg("read_only") = false,
+        pybind11::arg_v("config", pybind11::dict(), "None"));
 
     // https://pybind11.readthedocs.io/en/stable/advanced/misc.html#module-destructors
     auto clean_default_connection = []() { py_connection_t::cleanup(); };

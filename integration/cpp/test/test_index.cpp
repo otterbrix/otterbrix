@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 #include <algorithm>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/compute/function.hpp>
@@ -21,12 +21,12 @@
 #include <array>
 #include <catch2/catch_test_macros.hpp>
 #include <charconv>
-#include <map>
-#include <set>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <memory_resource>
+#include <set>
 #include <sstream>
 #include <unistd.h>
 #include <utility>
@@ -134,10 +134,10 @@ static std::set<std::filesystem::path> list_index_dirs(const std::filesystem::pa
             session,                                                                                                   \
             components::logical_plan::execution_plan_t{dispatcher->resource(), plan, nullptr});                        \
         REQUIRE(res->is_error() == true);                                                                              \
-        /* DML operators wrap any operator-level set_error into create_physical_plan_error, so */ \
-        /* "index already exists" can surface either as its own index_create_fail or as that   */ \
-        /* wrapped code, depending on where the caller observes it.                            */ \
-                                                                                                     \
+        /* DML operators wrap any operator-level set_error into create_physical_plan_error, so */                      \
+        /* "index already exists" can surface either as its own index_create_fail or as that   */                      \
+        /* wrapped code, depending on where the caller observes it.                            */                      \
+                                                                                                                       \
         REQUIRE((res->get_error().type == core::error_code_t::index_create_fail ||                                     \
                  res->get_error().type == core::error_code_t::create_physical_plan_error));                            \
     } while (false)
@@ -145,7 +145,7 @@ static std::set<std::filesystem::path> list_index_dirs(const std::filesystem::pa
 #define DROP_INDEX(INDEX_NAME)                                                                                         \
     do {                                                                                                               \
         auto session = otterbrix::session_id_t();                                                                      \
-        /* names two pg_class rows: the parent table and the index itself */                                          \
+        /* names two pg_class rows: the parent table and the index itself */                                           \
         auto node = components::logical_plan::make_node_drop(dispatcher->resource(),                                   \
                                                              components::logical_plan::drop_target_kind::index);       \
         node->set_dbname(database_name);                                                                               \
@@ -399,9 +399,7 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
     }
 
     INFO("verify initial state via index");
-    {
-        CHECK_FIND_COUNT(compare_type::gt, side_t::left, logical_value_t(dispatcher->resource(), 50), 50);
-    }
+    { CHECK_FIND_COUNT(compare_type::gt, side_t::left, logical_value_t(dispatcher->resource(), 50), 50); }
 
     INFO("delete rows where count > 90");
     {
@@ -435,9 +433,7 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
     }
 
     INFO("verify index after delete");
-    {
-        CHECK_FIND_COUNT(compare_type::gt, side_t::left, logical_value_t(dispatcher->resource(), 50), 40);
-    }
+    { CHECK_FIND_COUNT(compare_type::gt, side_t::left, logical_value_t(dispatcher->resource(), 50), 40); }
 
     INFO("update row where count == 50 to count = 999");
     {
@@ -712,7 +708,7 @@ TEST_CASE("integration::cpp::test_index::vacuum_rebuild_visible") {
 // chunk_info::cleanup only processes FULL vectors, so this fills a whole row group; two VACUUMs
 // because a partially deleted vector loses its stamps a pass later than a fully deleted one.
 TEST_CASE("integration::cpp::test_index::vacuum_keeps_committed_deletes_full_row_group") {
-    constexpr int kRows = 1024;  // exactly one full row group / one full vector
+    constexpr int kRows = 1024; // exactly one full row group / one full vector
     constexpr int kDeleted = 500;
 
     auto config =
@@ -797,8 +793,7 @@ TEST_CASE("integration::cpp::test_index::create_index_backfill_over_vector_capac
     constexpr int kVectorCapacity = 1024;
     static_assert(kRows > kVectorCapacity);
 
-    auto config =
-        test_create_config(integration_fixture_path("test_index/create_index_backfill_over_vector_capacity"));
+    auto config = test_create_config(integration_fixture_path("test_index/create_index_backfill_over_vector_capacity"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();

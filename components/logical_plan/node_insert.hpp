@@ -132,8 +132,8 @@ namespace components::logical_plan {
         std::vector<std::pair<std::string, std::string>> check_exprs_; // (name, expr)
         std::vector<std::pair<std::string, expressions::expression_ptr>> check_predicates_;
         parameter_node_ptr check_params_;
-        std::vector<std::pair<std::string, uint64_t>> array_size_reqs_;               // (name, declared array size)
-        std::vector<std::vector<std::string>> unique_groups_; // UNIQUE / PK column groups
+        std::vector<std::pair<std::string, uint64_t>> array_size_reqs_; // (name, declared array size)
+        std::vector<std::vector<std::string>> unique_groups_;           // UNIQUE / PK column groups
         insert_column_bindings_t column_bindings_;
         insert_fill_list_t fill_list_; // omitted columns + the value each is filled with
         insert_literal_digits_list_t literal_digits_;

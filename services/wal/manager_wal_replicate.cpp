@@ -370,15 +370,15 @@ namespace services::wal {
         // (operator_commit_transaction sends commit_txn and awaits it), so the refusal is logged
         // and the round abandoned instead of travelling back up.
         auto trigger_auto_checkpoint = [&] {
-                if (needs_auto_checkpoint() && !auto_checkpoint_in_flight_) {
-                    auto_checkpoint_in_flight_ = true;
-                    reset_auto_checkpoint_bytes();
-                    auto [_ac, ac_fut] =
-                        actor_zeta::otterbrix::send(address(), &manager_wal_replicate_t::run_auto_checkpoint, session);
-                    // needs_sched is always false (enqueue_impl just wakes the loop); the [[nodiscard]] future is
-                    // parked for poll_auto_checkpoint_.
-                    pending_auto_checkpoint_.emplace_back(std::move(ac_fut));
-                }
+            if (needs_auto_checkpoint() && !auto_checkpoint_in_flight_) {
+                auto_checkpoint_in_flight_ = true;
+                reset_auto_checkpoint_bytes();
+                auto [_ac, ac_fut] =
+                    actor_zeta::otterbrix::send(address(), &manager_wal_replicate_t::run_auto_checkpoint, session);
+                // needs_sched is always false (enqueue_impl just wakes the loop); the [[nodiscard]] future is
+                // parked for poll_auto_checkpoint_.
+                pending_auto_checkpoint_.emplace_back(std::move(ac_fut));
+            }
         };
         trigger_auto_checkpoint();
         co_return core::result_wrapper_t<wal::id_t>{result.value()};
@@ -545,7 +545,6 @@ namespace services::wal {
     }
 
     manager_wal_replicate_t::unique_future<wal::id_t> manager_wal_replicate_t::current_wal_id(session_id_t session) {
-
         wal::id_t max_id = 0;
         for (auto& [db_oid, worker] : wal_actors_) {
             auto [needs_sched, fut] =

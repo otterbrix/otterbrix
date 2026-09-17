@@ -145,11 +145,12 @@ namespace otterbrix {
         // parser.h: the list may be EMPTY (no statement, not an error) or hold MORE than one --
         // linitial() alone reads past the end on empty and silently drops all but the first.
         if (list_length(parse_tree) == 0) {
-            return send_failed_plan(session,
-                          core::error_t(core::error_code_t::sql_parse_error,
-                                        std::pmr::string{"the query contains no statement to execute (empty "
-                                                         "input, a comment, or a bare ';') — nothing was executed",
-                                                         resource()}));
+            return send_failed_plan(
+                session,
+                core::error_t(core::error_code_t::sql_parse_error,
+                              std::pmr::string{"the query contains no statement to execute (empty "
+                                               "input, a comment, or a bare ';') — nothing was executed",
+                                               resource()}));
         }
         if (list_length(parse_tree) > 1) {
             std::pmr::string msg{"the query contains ", resource()};
@@ -159,10 +160,10 @@ namespace otterbrix {
         }
         void* parse_result = linitial(parse_tree);
         if (!parse_result) {
-            return send_failed_plan(session,
-                          core::error_t(core::error_code_t::sql_parse_error,
-                                        std::pmr::string{"the parser produced a statement with no node in it",
-                                                         resource()}));
+            return send_failed_plan(
+                session,
+                core::error_t(core::error_code_t::sql_parse_error,
+                              std::pmr::string{"the parser produced a statement with no node in it", resource()}));
         }
         transformer local_transformer(resource(), query.c_str(), &parser_extensions_);
         if (auto result = local_transformer.transform(pg_cell_to_node_cast(parse_result)).finalize();
@@ -197,11 +198,12 @@ namespace otterbrix {
 
         // Same seam as execute_sql above.
         if (list_length(parse_tree) == 0) {
-            return send_failed_plan(session,
-                          core::error_t(core::error_code_t::sql_parse_error,
-                                        std::pmr::string{"the query contains no statement to execute (empty "
-                                                         "input, a comment, or a bare ';') — nothing was executed",
-                                                         resource()}));
+            return send_failed_plan(
+                session,
+                core::error_t(core::error_code_t::sql_parse_error,
+                              std::pmr::string{"the query contains no statement to execute (empty "
+                                               "input, a comment, or a bare ';') — nothing was executed",
+                                               resource()}));
         }
         if (list_length(parse_tree) > 1) {
             std::pmr::string msg{"the query contains ", resource()};
@@ -211,10 +213,10 @@ namespace otterbrix {
         }
         void* parse_result = linitial(parse_tree);
         if (!parse_result) {
-            return send_failed_plan(session,
-                          core::error_t(core::error_code_t::sql_parse_error,
-                                        std::pmr::string{"the parser produced a statement with no node in it",
-                                                         resource()}));
+            return send_failed_plan(
+                session,
+                core::error_t(core::error_code_t::sql_parse_error,
+                              std::pmr::string{"the parser produced a statement with no node in it", resource()}));
         }
         transformer local_transformer(resource(), query.c_str(), &parser_extensions_);
         auto binder = local_transformer.transform(pg_cell_to_node_cast(parse_result));

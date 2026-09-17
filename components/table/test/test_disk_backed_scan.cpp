@@ -201,8 +201,13 @@ TEST_CASE("disk_backed_scan: streaming fetch_next_batch reloads correctly under 
     uint64_t scanned = 0;
     while (!drained) {
         data_chunk_t batch(&env.resource, types, DEFAULT_VECTOR_CAPACITY);
-        auto r =
-            table->fetch_next_batch(batch, column_ids, nullptr, transaction_data::committed(), next_row, max_row, drained);
+        auto r = table->fetch_next_batch(batch,
+                                         column_ids,
+                                         nullptr,
+                                         transaction_data::committed(),
+                                         next_row,
+                                         max_row,
+                                         drained);
         REQUIRE_FALSE(r.has_error());
         for (uint64_t i = 0; i < batch.size(); i++) {
             auto val = batch.data[0].value(i);
@@ -262,9 +267,13 @@ TEST_CASE("disk_backed_scan: streaming fetch_next_batch over reopened checkpoint
         uint64_t scanned = 0;
         while (!drained) {
             data_chunk_t batch(&env.resource, types, DEFAULT_VECTOR_CAPACITY);
-            auto r =
-                loaded
-                    ->fetch_next_batch(batch, column_ids, nullptr, transaction_data::committed(), next_row, max_row, drained);
+            auto r = loaded->fetch_next_batch(batch,
+                                              column_ids,
+                                              nullptr,
+                                              transaction_data::committed(),
+                                              next_row,
+                                              max_row,
+                                              drained);
             REQUIRE_FALSE(r.has_error());
             for (uint64_t i = 0; i < batch.size(); i++) {
                 auto val = batch.data[0].value(i);
@@ -575,8 +584,13 @@ TEST_CASE("disk_backed_scan: streaming STRING batch survives block eviction (no 
     // Fetch the first batch and hold it -- the chunk outlives its source pin.
     data_chunk_t held(&env.resource, types, DEFAULT_VECTOR_CAPACITY);
     {
-        auto r =
-            loaded->fetch_next_batch(held, column_ids, nullptr, transaction_data::committed(), next_row, max_row, drained);
+        auto r = loaded->fetch_next_batch(held,
+                                          column_ids,
+                                          nullptr,
+                                          transaction_data::committed(),
+                                          next_row,
+                                          max_row,
+                                          drained);
         REQUIRE_FALSE(r.has_error());
     }
     REQUIRE(held.size() > 0);
@@ -585,8 +599,13 @@ TEST_CASE("disk_backed_scan: streaming STRING batch survives block eviction (no 
     // Drain the rest through throwaway batches; the 1 MiB pool forces the held batch's block out.
     while (!drained) {
         data_chunk_t scratch(&env.resource, types, DEFAULT_VECTOR_CAPACITY);
-        auto r =
-            loaded->fetch_next_batch(scratch, column_ids, nullptr, transaction_data::committed(), next_row, max_row, drained);
+        auto r = loaded->fetch_next_batch(scratch,
+                                          column_ids,
+                                          nullptr,
+                                          transaction_data::committed(),
+                                          next_row,
+                                          max_row,
+                                          drained);
         REQUIRE_FALSE(r.has_error());
     }
 

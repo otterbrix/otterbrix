@@ -14,7 +14,8 @@ namespace components::table {
         return open_locked(session, scope);
     }
 
-    transaction_t& transaction_manager_t::resolve_transaction(session::session_id_t session, transaction_scope_t scope) {
+    transaction_t& transaction_manager_t::resolve_transaction(session::session_id_t session,
+                                                              transaction_scope_t scope) {
         std::lock_guard guard(lock_);
         auto it = active_.find(session);
         if (it == active_.end()) {

@@ -22,8 +22,8 @@
 // rather than substituting the hash-join fast path (covered by test_hash_join.cpp).
 // ============================================================================
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <services/collection/executor.hpp>
 

@@ -3,8 +3,8 @@
 // the named ones by operator_insert::push(), so its position came back absent and every such row took the
 // operator's quiet zero-qualifying-rows success path instead of being checked.
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <string>

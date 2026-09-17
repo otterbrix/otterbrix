@@ -299,11 +299,12 @@ namespace services::disk {
                                                                      components::catalog::oid_t database_oid);
 
         // Disambiguated here: no_error (already owns the oid) vs io_error (could not build).
-        [[nodiscard]] core::error_t create_storage_disk_sync(components::catalog::oid_t table_oid,
-                                                             components::catalog::oid_t database_oid,
-                                                             std::vector<components::table::column_definition_t> columns,
-                                                             const std::filesystem::path& otbx_path,
-                                                             bool is_computed);
+        [[nodiscard]] core::error_t
+        create_storage_disk_sync(components::catalog::oid_t table_oid,
+                                 components::catalog::oid_t database_oid,
+                                 std::vector<components::table::column_definition_t> columns,
+                                 const std::filesystem::path& otbx_path,
+                                 bool is_computed);
         void bootstrap_system_tables_sync();
         void load_user_table_storages_sync();
         // Rebuilds the .otbx for tables load_user_table_storages_sync couldn't load; returns divergences not closed.
@@ -342,12 +343,10 @@ namespace services::disk {
         // Most recent value for `name` in pg_settings, empty only if no such row exists (else throws).
         std::string read_setting_sync(std::string_view name);
 
-        const components::catalog::session_catalog_t& stored_settings_sync() const noexcept {
-            return stored_catalog_;
-        }
+        const components::catalog::session_catalog_t& stored_settings_sync() const noexcept { return stored_catalog_; }
 
-        unique_future<core::result_wrapper_t<resolve_namespace_result_t>>
-        resolve_namespace(execution_context_t ctx, std::string name);
+        unique_future<core::result_wrapper_t<resolve_namespace_result_t>> resolve_namespace(execution_context_t ctx,
+                                                                                            std::string name);
 
         unique_future<core::result_wrapper_t<std::pmr::vector<resolve_function_result_t>>>
         resolve_function_by_name(execution_context_t ctx, std::string name);
@@ -411,10 +410,9 @@ namespace services::disk {
                                                         components::catalog::oid_t table_oid,
                                                         components::table::column_definition_t column);
 
-        unique_future<core::error_t>
-        stamp_column_dropped(execution_context_t ctx,
-                             components::catalog::oid_t table_oid,
-                             components::catalog::oid_t attoid);
+        unique_future<core::error_t> stamp_column_dropped(execution_context_t ctx,
+                                                          components::catalog::oid_t table_oid,
+                                                          components::catalog::oid_t attoid);
 
         unique_future<void> publish_column_stamps(execution_context_t ctx,
                                                   uint64_t commit_id,
@@ -432,17 +430,14 @@ namespace services::disk {
         core::result_wrapper_t<uint64_t> append_sync(components::catalog::oid_t table_oid,
                                                      components::vector::data_chunk_t& data,
                                                      components::table::transaction_data txn);
-        [[nodiscard]] core::error_t commit_append_sync(components::catalog::oid_t table_oid,
-                                                       uint64_t commit_id,
-                                                       int64_t row_start,
-                                                       uint64_t count);
+        [[nodiscard]] core::error_t
+        commit_append_sync(components::catalog::oid_t table_oid, uint64_t commit_id, int64_t row_start, uint64_t count);
         [[nodiscard]] core::error_t delete_sync(components::catalog::oid_t table_oid,
                                                 const std::pmr::vector<int64_t>& row_ids,
                                                 uint64_t count,
                                                 components::table::transaction_data txn);
-        [[nodiscard]] core::error_t commit_all_deletes_sync(components::catalog::oid_t table_oid,
-                                                            uint64_t txn_id,
-                                                            uint64_t commit_id);
+        [[nodiscard]] core::error_t
+        commit_all_deletes_sync(components::catalog::oid_t table_oid, uint64_t txn_id, uint64_t commit_id);
         [[nodiscard]] core::result_wrapper_t<components::storage::appended_range_t>
         update_sync(components::catalog::oid_t table_oid,
                     const std::pmr::vector<int64_t>& row_ids,
@@ -523,9 +518,8 @@ namespace services::disk {
                                  int64_t limit,
                                  std::vector<size_t> projected_cols,
                                  components::table::transaction_data txn);
-        unique_future<void> storage_close_cursor(session_id_t session,
-                                                 components::catalog::oid_t table_oid,
-                                                 uint64_t cursor_id);
+        unique_future<void>
+        storage_close_cursor(session_id_t session, components::catalog::oid_t table_oid, uint64_t cursor_id);
         unique_future<core::result_wrapper_t<uint64_t>> storage_open_scan_hold(session_id_t session,
                                                                                components::catalog::oid_t table_oid);
         unique_future<core::result_wrapper_t<uint64_t>> storage_compact_epoch(session_id_t session,

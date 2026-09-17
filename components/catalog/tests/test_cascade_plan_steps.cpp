@@ -55,7 +55,7 @@ namespace {
         return n;
     }
 
-}
+} // namespace
 
 TEST_CASE("catalog::cascade_plan::restrict_with_no_dependencies_still_drops_the_seed") {
     core::pmr::otterbrix_resource resource;

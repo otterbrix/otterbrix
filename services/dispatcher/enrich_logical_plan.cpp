@@ -102,11 +102,10 @@ namespace services::dispatcher { namespace {
             fill.push_back(components::logical_plan::insert_fill_column_t{
                 std::pmr::string{col.attname.c_str(), resource},
                 col.type,
-                decoded.has_value()
-                    ? std::move(*decoded)
-                    : components::types::logical_value_t(
-                          resource,
-                          components::types::complex_logical_type{components::types::logical_type::NA})});
+                decoded.has_value() ? std::move(*decoded)
+                                    : components::types::logical_value_t(resource,
+                                                                         components::types::complex_logical_type{
+                                                                             components::types::logical_type::NA})});
         }
         node->set_fill_list(std::move(fill));
         return core::error_t::no_error();
@@ -532,9 +531,9 @@ namespace services::catalog_resolve {
                 const entry_view_t rn{
                     resolves.namespace_entry(names.namespace_dbname.empty() ? names.dbname : names.namespace_dbname)};
                 const entry_view_t rt{resolves.table_entry(names.dbname, names.relname)};
-                const entry_view_t rt_index{resolves.table_entry(
-                    names.secondary_dbname.empty() ? names.dbname : names.secondary_dbname,
-                    names.secondary_relname)};
+                const entry_view_t rt_index{
+                    resolves.table_entry(names.secondary_dbname.empty() ? names.dbname : names.secondary_dbname,
+                                         names.secondary_relname)};
                 const entry_view_t ry{resolves.type_entry(names.dbname, names.type_name)};
                 // Pasted whole, except relkind='v': a view's oid would make create_plan_match_ scan the empty heap.
                 const bool targets_a_view =
@@ -733,8 +732,8 @@ namespace services::catalog_resolve {
                 resolves->ensure(resource, resolve_kind::namespace_).add(std::move(entry));
             }
             const auto secondary_dbname = names.secondary_dbname.empty() ? names.dbname : names.secondary_dbname;
-            for (const auto& [db, relname] : {std::pair{names.dbname, names.relname},
-                                              std::pair{secondary_dbname, names.secondary_relname}}) {
+            for (const auto& [db, relname] :
+                 {std::pair{names.dbname, names.relname}, std::pair{secondary_dbname, names.secondary_relname}}) {
                 if (relname.empty()) {
                     continue;
                 }
@@ -935,15 +934,14 @@ namespace services::dispatcher { namespace {
                                                       resource});
             }
             if (node->local_col_names().size() != referenced->pk_columns.size()) {
-                return core::error_t(
-                    core::error_code_t::invalid_constraint,
-                    std::pmr::string{describe_constraint() + ": foreign key column count mismatch — " +
-                                         std::to_string(node->local_col_names().size()) +
-                                         " referencing column(s) vs " +
-                                         std::to_string(referenced->pk_columns.size()) +
-                                         " column(s) in the primary key of referenced table \"" +
-                                         std::string(referenced->name) + "\"",
-                                     resource});
+                return core::error_t(core::error_code_t::invalid_constraint,
+                                     std::pmr::string{describe_constraint() + ": foreign key column count mismatch — " +
+                                                          std::to_string(node->local_col_names().size()) +
+                                                          " referencing column(s) vs " +
+                                                          std::to_string(referenced->pk_columns.size()) +
+                                                          " column(s) in the primary key of referenced table \"" +
+                                                          std::string(referenced->name) + "\"",
+                                                      resource});
             }
             node->set_ref_col_names(referenced->pk_columns);
         }
@@ -952,8 +950,8 @@ namespace services::dispatcher { namespace {
             return core::error_t(
                 core::error_code_t::invalid_constraint,
                 std::pmr::string{describe_constraint() + ": foreign key column count mismatch — " +
-                                     std::to_string(node->local_col_names().size()) +
-                                     " referencing column(s) vs " + std::to_string(node->ref_col_names().size()) +
+                                     std::to_string(node->local_col_names().size()) + " referencing column(s) vs " +
+                                     std::to_string(node->ref_col_names().size()) +
                                      " referenced column(s) in table \"" + std::string(referenced->name) + "\"",
                                  resource});
         }
@@ -1164,10 +1162,9 @@ namespace services::dispatcher { namespace {
                         if (cstr->self_reference()) {
                             referenced_ptr = &local;
                         } else {
-                            const auto* rrt =
-                                (cstr->ref_table_oid() != components::catalog::INVALID_OID && resolves)
-                                    ? resolves->table_md(cstr->ref_table_oid())
-                                    : nullptr;
+                            const auto* rrt = (cstr->ref_table_oid() != components::catalog::INVALID_OID && resolves)
+                                                  ? resolves->table_md(cstr->ref_table_oid())
+                                                  : nullptr;
                             if (rrt) {
                                 if (rrt->relkind == 'g') {
                                     co_return core::error_t(
@@ -1254,10 +1251,7 @@ namespace services::dispatcher { namespace {
                         referenced_ptr = &referenced;
                     }
                 }
-                if (auto ec = resolve_constraint_columns(resource,
-                                                         node,
-                                                         tbl ? &local : nullptr,
-                                                         referenced_ptr);
+                if (auto ec = resolve_constraint_columns(resource, node, tbl ? &local : nullptr, referenced_ptr);
                     ec.contains_error()) {
                     co_return ec;
                 }

@@ -55,11 +55,10 @@ namespace services::index {
                                         : std::string{std::strerror(last_open_errno)};
         }
 
-        std::unique_ptr<core::filesystem::file_handle_t> open_bitcask_file(
-            core::filesystem::local_file_system_t& fs,
-            const std::filesystem::path& path,
-            file_flags flags,
-            file_lock_type lock) {
+        std::unique_ptr<core::filesystem::file_handle_t> open_bitcask_file(core::filesystem::local_file_system_t& fs,
+                                                                           const std::filesystem::path& path,
+                                                                           file_flags flags,
+                                                                           file_lock_type lock) {
             auto handle = open_file(fs, path, flags, lock);
             last_open_errno = handle == nullptr ? errno : 0;
 #ifdef DEV_MODE
@@ -157,8 +156,7 @@ namespace services::index {
             }
             rows.reserve(n);
             for (uint32_t i = 0; i < n; ++i) {
-                rows.emplace_back(
-                    static_cast<size_t>(components::index::codec::read_le<uint64_t>(payload, pos, &ok)));
+                rows.emplace_back(static_cast<size_t>(components::index::codec::read_le<uint64_t>(payload, pos, &ok)));
             }
             return ok;
         }
@@ -527,8 +525,8 @@ namespace services::index {
         std::error_code ec;
         std::filesystem::create_directories(path_, ec);
         if (ec) {
-            return io_failure("bitcask: the index directory " + path_.string() + " could not be created: " +
-                              ec.message());
+            return io_failure("bitcask: the index directory " + path_.string() +
+                              " could not be created: " + ec.message());
         }
         return core::error_t::no_error();
     }
@@ -753,8 +751,8 @@ namespace services::index {
     bitcask_index_disk_t::collect_segments() const {
         std::pmr::vector<segment_info_t> segments(resource());
         const auto listing_failure = [this](const std::error_code& code) {
-            return io_failure("bitcask: the index directory " + path_.string() + " could not be listed: " +
-                              code.message());
+            return io_failure("bitcask: the index directory " + path_.string() +
+                              " could not be listed: " + code.message());
         };
 
         std::error_code ec;
@@ -819,8 +817,8 @@ namespace services::index {
             clean_end != no_tail_to_trim && file_->file_size() > clean_end) {
             if (!file_->truncate(static_cast<int64_t>(clean_end)) || !file_->sync()) {
                 file_.reset();
-                return io_failure("bitcask: the unreadable tail of active segment " +
-                                  active_data_file_path_.string() + " could not be removed");
+                return io_failure("bitcask: the unreadable tail of active segment " + active_data_file_path_.string() +
+                                  " could not be removed");
             }
         }
         active_segment_clean_end_ = no_tail_to_trim;
@@ -889,8 +887,7 @@ namespace services::index {
                 }
             }
             if (f == nullptr) {
-                auto opened_segment =
-                    open_bitcask_file(fs_, segment_path, file_flags::READ, file_lock_type::NO_LOCK);
+                auto opened_segment = open_bitcask_file(fs_, segment_path, file_flags::READ, file_lock_type::NO_LOCK);
                 if (!opened_segment) {
                     return io_failure("bitcask: segment " + segment_path.string() +
                                       " could not be opened for reading: " + open_refusal_reason());
@@ -908,10 +905,9 @@ namespace services::index {
                     }
                     rotated_read_cache_.erase(victim);
                 }
-                rotated_read_cache_.push_back(
-                    rotated_segment_lease_t{static_cast<uint64_t>(segment_id),
-                                            std::move(opened_segment),
-                                            ++rotated_read_tick_});
+                rotated_read_cache_.push_back(rotated_segment_lease_t{static_cast<uint64_t>(segment_id),
+                                                                      std::move(opened_segment),
+                                                                      ++rotated_read_tick_});
             }
         }
         record_header_t header{};
@@ -928,8 +924,8 @@ namespace services::index {
         const auto segment_size = f->file_size();
         if (value_offset > segment_size || header.payload_size > segment_size - value_offset) {
             return io_failure("bitcask: the record at " + std::to_string(value_offset) + " of " +
-                              segment_path.string() + " claims a payload of " +
-                              std::to_string(header.payload_size) + " bytes, which runs past the end of the segment");
+                              segment_path.string() + " claims a payload of " + std::to_string(header.payload_size) +
+                              " bytes, which runs past the end of the segment");
         }
         payload.resize(static_cast<size_t>(header.payload_size));
         if (header.payload_size != 0 && !f->read(payload.data(), header.payload_size, value_offset)) {
@@ -1091,8 +1087,7 @@ namespace services::index {
                                   applied_path.string() + ", and its temp " + temp_path +
                                   " could not be removed either: " + cleanup_ec.message());
             }
-            return io_failure("bitcask: the applied-offset sidecar could not be published as " +
-                              applied_path.string());
+            return io_failure("bitcask: the applied-offset sidecar could not be published as " + applied_path.string());
         }
         return core::error_t::no_error();
     }
@@ -1126,9 +1121,9 @@ namespace services::index {
 
         if (!txn_log_file_) {
             txn_log_file_ = open_bitcask_file(fs_,
-                                      txn_log_file_path(),
-                                      file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
-                                      file_lock_type::NO_LOCK);
+                                              txn_log_file_path(),
+                                              file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
+                                              file_lock_type::NO_LOCK);
             if (!txn_log_file_) {
                 return core::error_t{core::error_code_t::index_create_fail,
                                      std::pmr::string{"bitcask: txn-log open failed", resource()}};
@@ -1383,9 +1378,7 @@ namespace services::index {
         flush_if_needed();
     }
 
-    void bitcask_index_disk_t::remove_bulk_unchecked(const value_t& key, size_t row_id) {
-        remove(key, row_id);
-    }
+    void bitcask_index_disk_t::remove_bulk_unchecked(const value_t& key, size_t row_id) { remove(key, row_id); }
 
     void bitcask_index_disk_t::flush_if_needed() {
         if (bulk_mode_) {
@@ -1533,14 +1526,14 @@ namespace services::index {
         // Must not survive: FILE_CREATE is O_CREAT, not O_TRUNC, so a stale temp's bytes would get published.
         std::error_code stale_temp_ec;
         if (!unlink_if_present(temp_path, stale_temp_ec)) {
-            return io_failure("bitcask: the merge output " + temp_path.string() +
-                              " was left behind by an earlier attempt and could not be removed: " +
-                              stale_temp_ec.message());
+            return io_failure(
+                "bitcask: the merge output " + temp_path.string() +
+                " was left behind by an earlier attempt and could not be removed: " + stale_temp_ec.message());
         }
         if (!unlink_if_present(meta_temp_path, stale_temp_ec)) {
-            return io_failure("bitcask: the merge journal " + meta_temp_path.string() +
-                              " was left behind by an earlier attempt and could not be removed: " +
-                              stale_temp_ec.message());
+            return io_failure(
+                "bitcask: the merge journal " + meta_temp_path.string() +
+                " was left behind by an earlier attempt and could not be removed: " + stale_temp_ec.message());
         }
 
         const auto abandon_merge = [&](std::unique_ptr<core::filesystem::file_handle_t>& merged,
@@ -1566,8 +1559,8 @@ namespace services::index {
                                              file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
                                              file_lock_type::NO_LOCK);
         if (!merged_file) {
-            return io_failure("bitcask: the merge output " + temp_path.string() + " could not be opened: " +
-                              open_refusal_reason());
+            return io_failure("bitcask: the merge output " + temp_path.string() +
+                              " could not be opened: " + open_refusal_reason());
         }
         auto meta_file = open_bitcask_file(fs_,
                                            meta_temp_path,
@@ -1602,10 +1595,10 @@ namespace services::index {
             const auto offset = merged_file->seek_position();
             if (!write_record(*merged_file, static_cast<uint8_t>(record_kind_t::value), ++next_timestamp_, payload)
                      .complete) {
-                return abandon_merge(merged_file,
-                                     meta_file,
-                                     io_failure("bitcask: a relocated record could not be written to " +
-                                                temp_path.string()));
+                return abandon_merge(
+                    merged_file,
+                    meta_file,
+                    io_failure("bitcask: a relocated record could not be written to " + temp_path.string()));
             }
 
             uint32_t key_size = static_cast<uint32_t>(key_bytes.size());
@@ -1619,13 +1612,12 @@ namespace services::index {
             if (!meta_write(&key_size, sizeof(key_size)) ||
                 (key_size != 0 && !meta_write(key_bytes.data(), key_size)) ||
                 !meta_write(&old_log_file_id, sizeof(old_log_file_id)) ||
-                !meta_write(&old_log_offset, sizeof(old_log_offset)) ||
-                !meta_write(&row_value, sizeof(row_value)) ||
+                !meta_write(&old_log_offset, sizeof(old_log_offset)) || !meta_write(&row_value, sizeof(row_value)) ||
                 !meta_write(&new_log_offset, sizeof(new_log_offset))) {
-                return abandon_merge(merged_file,
-                                     meta_file,
-                                     io_failure("bitcask: the merge journal entry could not be written to " +
-                                                meta_temp_path.string()));
+                return abandon_merge(
+                    merged_file,
+                    meta_file,
+                    io_failure("bitcask: the merge journal entry could not be written to " + meta_temp_path.string()));
             }
             ++meta_records;
         }
@@ -1646,17 +1638,16 @@ namespace services::index {
             if (!move_files(fs_, temp_path, merged_path)) {
                 std::error_code manifest_ec;
                 if (!remove_merge_manifest(path_, manifest_ec)) {
-                    return abandon_merge(merged_file,
-                                         meta_file,
-                                         io_failure("bitcask: the merged segment could not be published as " +
-                                                    merged_path.string() +
-                                                    ", and the merge manifest could not be removed either: " +
-                                                    manifest_ec.message()));
+                    return abandon_merge(
+                        merged_file,
+                        meta_file,
+                        io_failure("bitcask: the merged segment could not be published as " + merged_path.string() +
+                                   ", and the merge manifest could not be removed either: " + manifest_ec.message()));
                 }
-                return abandon_merge(merged_file,
-                                     meta_file,
-                                     io_failure("bitcask: the merged segment could not be published as " +
-                                                merged_path.string()));
+                return abandon_merge(
+                    merged_file,
+                    meta_file,
+                    io_failure("bitcask: the merged segment could not be published as " + merged_path.string()));
             }
             built = true;
         } else {
@@ -1664,14 +1655,14 @@ namespace services::index {
             meta_file.reset();
             std::error_code empty_merge_ec;
             if (!unlink_if_present(temp_path, empty_merge_ec)) {
-                return io_failure("bitcask: the merge output " + temp_path.string() +
-                                  " of a merge that produced nothing could not be removed: " +
-                                  empty_merge_ec.message());
+                return io_failure(
+                    "bitcask: the merge output " + temp_path.string() +
+                    " of a merge that produced nothing could not be removed: " + empty_merge_ec.message());
             }
             if (!unlink_if_present(meta_temp_path, empty_merge_ec)) {
-                return io_failure("bitcask: the merge journal " + meta_temp_path.string() +
-                                  " of a merge that produced nothing could not be removed: " +
-                                  empty_merge_ec.message());
+                return io_failure(
+                    "bitcask: the merge journal " + meta_temp_path.string() +
+                    " of a merge that produced nothing could not be removed: " + empty_merge_ec.message());
             }
         }
 
@@ -1687,8 +1678,8 @@ namespace services::index {
         // Past this line the manifest is on disk, so sources must not be unlinked over a half-applied relocation.
         meta_file = open_bitcask_file(fs_, meta_temp_path, file_flags::READ, file_lock_type::NO_LOCK);
         if (!meta_file) {
-            return io_failure("bitcask: the merge journal " + meta_temp_path.string() + " could not be reopened: " +
-                              open_refusal_reason());
+            return io_failure("bitcask: the merge journal " + meta_temp_path.string() +
+                              " could not be reopened: " + open_refusal_reason());
         }
         uint64_t meta_offset = 0;
         const uint64_t meta_size = meta_file->file_size();
@@ -1786,8 +1777,8 @@ namespace services::index {
         const auto unlink_artifact = [&](const std::filesystem::path& artifact) {
             std::error_code ec;
             if (!unlink_if_present(artifact, ec)) {
-                record(io_failure("bitcask: " + artifact.string() + " could not be removed by clear(): " +
-                                  ec.message()));
+                record(
+                    io_failure("bitcask: " + artifact.string() + " could not be removed by clear(): " + ec.message()));
             }
         };
 

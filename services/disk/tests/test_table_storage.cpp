@@ -435,8 +435,7 @@ TEST_CASE("services::disk::table_storage::drop_column_disk_frees_blocks") {
             }
         }
         INFO("root before=" << before.root_data.size() << " after=" << after.root_data.size()
-                            << " left the root=" << dump_ids(gone) << " unexplained="
-                            << dump_ids(after.unexplained));
+                            << " left the root=" << dump_ids(gone) << " unexplained=" << dump_ids(after.unexplained));
         REQUIRE_FALSE(gone.empty());
         for (auto id : gone) {
             INFO("block " << id << " left the durable root when column b was dropped");

@@ -102,7 +102,6 @@ TEST_CASE("buffer manager: re-pinning an evicted managed block does not crash", 
     for (uint64_t j = 0; j < block_size; j++) {
         REQUIRE(data[j] == PATTERN[j % sizeof(PATTERN)]);
     }
-
 }
 
 // Companion: genuine pool exhaustion is a clean OOM ERROR VALUE, not a throw. Every managed block

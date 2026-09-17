@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
@@ -35,7 +35,7 @@ namespace {
         return v;
     }
 
-}
+} // namespace
 
 TEST_CASE("integration::cpp::test_decimal_literal_exactness::a_bare_fractional_literal_reaches_a_numeric_column") {
     auto config = make_test_config(integration_fixture_path("test_decimal_literal_exactness/numeric128"));

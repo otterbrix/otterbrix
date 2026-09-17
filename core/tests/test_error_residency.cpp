@@ -27,7 +27,7 @@ namespace {
                              std::pmr::string{refusal.begin(), refusal.end(), producer}};
     }
 
-}
+} // namespace
 
 TEST_CASE("core::error_on_rebuilds_the_message_on_the_named_resource") {
     resource_tracer_t producer;
@@ -153,7 +153,7 @@ namespace {
 
     constexpr int survived = 42;
 
-}
+} // namespace
 
 TEST_CASE("core::a_short_message_copied_onto_a_null_resource_is_refused") {
     resource_tracer_t producer;

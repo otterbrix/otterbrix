@@ -16,8 +16,7 @@ using namespace components::catalog;
 namespace {
     auto* g_resource = std::pmr::new_delete_resource();
 
-    core::result_wrapper_t<std::vector<catalog_write_t>>
-    build_unique(const std::vector<oid_t>& conkey_attoids) {
+    core::result_wrapper_t<std::vector<catalog_write_t>> build_unique(const std::vector<oid_t>& conkey_attoids) {
         return build_create_constraint_writes(g_resource,
                                               "users_u_key",
                                               /*table_oid=*/oid_t{20000},
@@ -57,7 +56,7 @@ namespace {
         }
         return {};
     }
-}
+} // namespace
 
 TEST_CASE("catalog::constraint_writes::an_unstamped_conkey_column_is_refused") {
     auto writes = build_unique({oid_t{20001}, INVALID_OID});

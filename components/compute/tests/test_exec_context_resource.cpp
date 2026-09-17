@@ -8,8 +8,8 @@
 #include <components/compute/function.hpp>
 #include <components/compute/kernel_signature.hpp>
 #include <components/vector/data_chunk.hpp>
-#include <core/pmr.hpp>
 #include <core/counting_resource.hpp>
+#include <core/pmr.hpp>
 
 #include <memory_resource>
 
@@ -59,7 +59,7 @@ TEST_CASE("components::compute::exec_context::executing_a_function_never_touches
     REQUIRE_FALSE(res.has_error());
     REQUIRE(res.value().data[0].data<int>()[0] == 42);
 
-    INFO("allocations taken from the process-global default resource: "
-         << probe.allocations() << " (" << probe.allocated_bytes() << " bytes)");
+    INFO("allocations taken from the process-global default resource: " << probe.allocations() << " ("
+                                                                        << probe.allocated_bytes() << " bytes)");
     REQUIRE(probe.allocations() == 0);
 }

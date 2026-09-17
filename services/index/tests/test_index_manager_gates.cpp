@@ -207,17 +207,17 @@ TEST_CASE("services::index::manager::a catchup record the registry cannot place 
     // No bootstrap_engine_sync for this oid: the registry cannot place the record.
     {
         std::pmr::vector<int64_t> row_ids(&resource);
-        auto fut = manager->apply_wal_record_for_index(
-            session,
-            kTableOid,
-            kIndexOid,
-            /*wal_record_id=*/3,
-            static_cast<uint8_t>(services::wal::wal_record_type::PHYSICAL_INSERT),
-            std::move(row_ids),
-            chunk_of(&resource, {10}),
-            /*physical_row_start=*/0,
-            build_txn,
-            core::date::timezone_offset_t{});
+        auto fut =
+            manager->apply_wal_record_for_index(session,
+                                                kTableOid,
+                                                kIndexOid,
+                                                /*wal_record_id=*/3,
+                                                static_cast<uint8_t>(services::wal::wal_record_type::PHYSICAL_INSERT),
+                                                std::move(row_ids),
+                                                chunk_of(&resource, {10}),
+                                                /*physical_row_start=*/0,
+                                                build_txn,
+                                                core::date::timezone_offset_t{});
         REQUIRE(fut.is_ready());
     }
 
@@ -270,17 +270,17 @@ TEST_CASE("services::index::manager::a staging record naming an unregistered ind
 
     {
         std::pmr::vector<int64_t> row_ids(&resource);
-        auto fut = manager->apply_wal_record_for_index(
-            session,
-            kTableOid,
-            kIndexOid + 7,
-            /*wal_record_id=*/11,
-            static_cast<uint8_t>(services::wal::wal_record_type::PHYSICAL_INSERT),
-            std::move(row_ids),
-            chunk_of(&resource, {10}),
-            /*physical_row_start=*/0,
-            build_txn,
-            core::date::timezone_offset_t{});
+        auto fut =
+            manager->apply_wal_record_for_index(session,
+                                                kTableOid,
+                                                kIndexOid + 7,
+                                                /*wal_record_id=*/11,
+                                                static_cast<uint8_t>(services::wal::wal_record_type::PHYSICAL_INSERT),
+                                                std::move(row_ids),
+                                                chunk_of(&resource, {10}),
+                                                /*physical_row_start=*/0,
+                                                build_txn,
+                                                core::date::timezone_offset_t{});
         REQUIRE(fut.is_ready());
     }
 
@@ -342,17 +342,17 @@ TEST_CASE("services::index::manager::a catchup staging the agent refused fails t
 
     {
         std::pmr::vector<int64_t> row_ids(&resource);
-        auto fut = manager->apply_wal_record_for_index(
-            session,
-            kTableOid,
-            kIndexOid,
-            /*wal_record_id=*/5,
-            static_cast<uint8_t>(services::wal::wal_record_type::PHYSICAL_INSERT),
-            std::move(row_ids),
-            chunk_of(&resource, {10}),
-            /*physical_row_start=*/0,
-            build_txn,
-            core::date::timezone_offset_t{});
+        auto fut =
+            manager->apply_wal_record_for_index(session,
+                                                kTableOid,
+                                                kIndexOid,
+                                                /*wal_record_id=*/5,
+                                                static_cast<uint8_t>(services::wal::wal_record_type::PHYSICAL_INSERT),
+                                                std::move(row_ids),
+                                                chunk_of(&resource, {10}),
+                                                /*physical_row_start=*/0,
+                                                build_txn,
+                                                core::date::timezone_offset_t{});
         settle(fut, agent);
     }
 

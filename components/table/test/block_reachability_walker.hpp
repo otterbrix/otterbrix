@@ -142,8 +142,7 @@ namespace otterbrix_test {
             storage::metadata_reader_t reader(load_mgr, root_ptr);
             auto scratch = components::table::data_table_t::load_from_disk(scratch_resource, bm, reader);
             if (scratch.has_error()) {
-                report.error = "scratch load from durable root failed: " +
-                               std::string(scratch.error().what.c_str());
+                report.error = "scratch load from durable root failed: " + std::string(scratch.error().what.c_str());
                 return report;
             }
             {

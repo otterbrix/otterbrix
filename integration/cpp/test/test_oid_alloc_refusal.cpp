@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -22,9 +22,7 @@ namespace {
     class oid_alloc_fault_scope_t final : public services::collection::executor::oid_alloc_interposer_t {
     public:
         oid_alloc_fault_scope_t() { services::collection::executor::dev_set_oid_alloc_interposer(this); }
-        ~oid_alloc_fault_scope_t() override {
-            services::collection::executor::dev_set_oid_alloc_interposer(nullptr);
-        }
+        ~oid_alloc_fault_scope_t() override { services::collection::executor::dev_set_oid_alloc_interposer(nullptr); }
 
         oid_alloc_fault_scope_t(const oid_alloc_fault_scope_t&) = delete;
         oid_alloc_fault_scope_t& operator=(const oid_alloc_fault_scope_t&) = delete;
@@ -122,8 +120,7 @@ TEST_CASE("integration::cpp::test_oid_alloc_refusal::create_table_refuses_when_t
     REQUIRE(test_helpers::exec(dispatcher, "SELECT * FROM oidshort.broken;")->is_error());
 
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE oidshort.broken (id bigint, payload text);")->is_success());
-    REQUIRE(
-        test_helpers::exec(dispatcher, "INSERT INTO oidshort.broken (id, payload) VALUES (7, 'g');")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO oidshort.broken (id, payload) VALUES (7, 'g');")->is_success());
     auto rows = test_helpers::exec(dispatcher, "SELECT payload FROM oidshort.broken;");
     REQUIRE(rows->is_success());
     REQUIRE(rows->size() == 1);

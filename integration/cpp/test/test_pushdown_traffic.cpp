@@ -1,8 +1,8 @@
 // Verifies pushdown shrinks agent->coordinator mailbox traffic; value correctness is asserted
 // separately, in test_aggregate_pushdown_e2e.
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <services/disk/agent_disk.hpp>
 #include <sstream>

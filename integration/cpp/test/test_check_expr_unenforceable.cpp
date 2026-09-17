@@ -1,7 +1,7 @@
 // A CHECK must be evaluated, or refused -- never accepted and ignored.
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <string>
@@ -15,7 +15,7 @@ namespace {
             config.log.level = log_t::level::off;
         }
     };
-}
+} // namespace
 
 #define MAKE_ENV(dirname)                                                                                              \
     env_t env(dirname);                                                                                                \

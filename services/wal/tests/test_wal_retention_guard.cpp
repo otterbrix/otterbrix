@@ -94,9 +94,7 @@ namespace {
         }
 
         // resource_ is declared FIRST so it outlives ~wal_env_t's teardown of manager_.
-        std::pmr::vector<data_chunk_t> make_insert_batch(size_t rows) {
-            return one_chunk(&resource_, rows);
-        }
+        std::pmr::vector<data_chunk_t> make_insert_batch(size_t rows) { return one_chunk(&resource_, rows); }
 
         auto send_insert(uint64_t txn_id, size_t rows, uint64_t row_start = 0) {
             auto [ns, fut] = actor_zeta::otterbrix::send(manager_->address(),

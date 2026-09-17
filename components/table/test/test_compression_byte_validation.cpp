@@ -57,13 +57,13 @@ namespace {
         tstorage::meta_block_pointer_t pointer;
         {
             tstorage::metadata_writer_t writer(manager);
-            writer.write<uint64_t>(11);        // row_start
-            writer.write<uint64_t>(3);         // tuple_count
-            writer.write<uint64_t>(42);        // block_pointer.block_id
-            writer.write<uint32_t>(0);         // block_pointer.offset
-            writer.write<uint8_t>(raw);        // compression
-            writer.write<uint64_t>(128);       // segment_size
-            writer.write<uint32_t>(0);         // overflow count
+            writer.write<uint64_t>(11);  // row_start
+            writer.write<uint64_t>(3);   // tuple_count
+            writer.write<uint64_t>(42);  // block_pointer.block_id
+            writer.write<uint32_t>(0);   // block_pointer.offset
+            writer.write<uint8_t>(raw);  // compression
+            writer.write<uint64_t>(128); // segment_size
+            writer.write<uint32_t>(0);   // overflow count
             pointer = writer.get_block_pointer();
             REQUIRE_FALSE(writer.flush().has_error());
         }
@@ -84,8 +84,8 @@ TEST_CASE("compression_byte: deserialize refuses a byte no reader understands", 
 
     CHECK_FALSE(roundtrip_compression_byte(env, static_cast<uint8_t>(tcompress::compression_type::UNCOMPRESSED))
                     .contains_error());
-    CHECK_FALSE(roundtrip_compression_byte(env, static_cast<uint8_t>(tcompress::compression_type::CONSTANT))
-                    .contains_error());
+    CHECK_FALSE(
+        roundtrip_compression_byte(env, static_cast<uint8_t>(tcompress::compression_type::CONSTANT)).contains_error());
     CHECK_FALSE(
         roundtrip_compression_byte(env, static_cast<uint8_t>(tcompress::compression_type::RLE)).contains_error());
     CHECK_FALSE(roundtrip_compression_byte(env, static_cast<uint8_t>(tcompress::compression_type::DICTIONARY))
@@ -183,8 +183,7 @@ TEST_CASE("compression_byte: a segment stamped with an unreadable compression re
         CHECK(state.fetch_error.contains_error());
     }
 
-    for (auto unreadable : {tcompress::compression_type::INVALID,
-                            tcompress::compression_type::VALIDITY_UNCOMPRESSED}) {
+    for (auto unreadable : {tcompress::compression_type::INVALID, tcompress::compression_type::VALIDITY_UNCOMPRESSED}) {
         segment.set_compression(unreadable);
         vector_t result(&env.resource, complex_logical_type(logical_type::BIGINT), ROWS);
         column_scan_state state;

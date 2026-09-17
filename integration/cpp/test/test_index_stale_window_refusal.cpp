@@ -70,7 +70,6 @@ namespace {
         return true;
     }
 
-
     std::string probe_sql(int64_t probe_id) {
         return "SELECT id FROM rdb.t WHERE k = " + std::to_string(10 * probe_id) + ";";
     }

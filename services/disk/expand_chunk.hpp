@@ -31,8 +31,7 @@ namespace services::disk::detail {
         for (std::size_t t = 0; t < table_columns.size(); t++) {
             bool found = false;
             for (uint64_t col = 0; col < data.column_count(); col++) {
-                if (!data.data[col].type().has_alias() ||
-                    data.data[col].type().alias() != table_columns[t].name() ||
+                if (!data.data[col].type().has_alias() || data.data[col].type().alias() != table_columns[t].name() ||
                     (is_computed && data.data[col].type().type() != table_columns[t].type().type())) {
                     continue;
                 }

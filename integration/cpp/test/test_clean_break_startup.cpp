@@ -3,8 +3,8 @@
 // disk-only manager_disk_t at a directory, doing DDL, killing it, and asserting a fresh
 // manager at the same directory observes the persisted state.
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
 
 #include <actor-zeta/spawn.hpp>

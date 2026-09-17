@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -165,8 +165,7 @@ namespace {
                 continue;
             }
             std::error_code inner_ec;
-            for (std::filesystem::directory_iterator f(db->path(), inner_ec), fend; f != fend;
-                 f.increment(inner_ec)) {
+            for (std::filesystem::directory_iterator f(db->path(), inner_ec), fend; f != fend; f.increment(inner_ec)) {
                 if (inner_ec) {
                     break;
                 }
@@ -279,9 +278,8 @@ namespace {
         return static_cast<bool>(ec);
     }
 
-    bool churn_until_an_automatic_round_completes(otterbrix::wrapper_dispatcher_t* d,
-                                                  int64_t& next_id,
-                                                  int max_statements) {
+    bool
+    churn_until_an_automatic_round_completes(otterbrix::wrapper_dispatcher_t* d, int64_t& next_id, int max_statements) {
         services::disk::reset_table_checkpoints();
         services::wal::reset_auto_checkpoint_rounds();
         for (int i = 0; i < max_statements && services::disk::table_checkpoints() == 0 &&

@@ -4,8 +4,8 @@
 // scalar-sub-queries reach create_plan_match_'s multi-table selection; JOIN lowers to
 // Filter-over-Seq-Scan first.
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
 
 #include <sstream>

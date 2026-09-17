@@ -105,9 +105,7 @@ namespace {
             manager_.reset();
         }
 
-        std::pmr::vector<data_chunk_t> make_insert_batch(size_t rows) {
-            return one_chunk(&resource_, rows);
-        }
+        std::pmr::vector<data_chunk_t> make_insert_batch(size_t rows) { return one_chunk(&resource_, rows); }
 
         auto send_insert(uint64_t txn_id, size_t rows, uint64_t row_start) {
             auto [ns, fut] = actor_zeta::otterbrix::send(manager_->address(),
@@ -267,7 +265,7 @@ namespace {
         return reader.page_count();
     }
 
-}
+} // namespace
 
 // The first id after a restart must not repeat one already in the journal.
 TEST_CASE("wal::reissue::the_first_id_after_a_crc_break_is_not_one_the_journal_already_holds") {

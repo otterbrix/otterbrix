@@ -65,7 +65,7 @@ namespace core {
         io_error,        // file create/open/header/read/write failure
         write_conflict,  // MVCC write-write conflict
         stale_index,     // index answered row ids minted before the table's last compact
-        
+
         actor_agent_missing,
     };
 
@@ -144,7 +144,8 @@ namespace core {
 #if not defined(NDEBUG)
             , error_origin(other.error_origin)
 #endif
-        {}
+        {
+        }
 
         static error_t no_error() { return error_t(); }
 

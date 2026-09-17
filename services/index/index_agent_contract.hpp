@@ -96,29 +96,41 @@ namespace services::index {
         std::same_as<typename agent_t::agent_ptr_t, std::unique_ptr<agent_t, actor_zeta::pmr::deleter_t>> &&
         std::same_as<std::remove_cv_t<decltype(agent_t::index_type_v)>, components::logical_plan::index_type> &&
         std::same_as<std::remove_cv_t<decltype(agent_t::supports_ordered_probe_v)>, bool> &&
-        requires(agent_t& agent,
+        requires(agent_t & agent,
                  index_agent_contract::session_id_t session,
                  uint64_t txn_id,
                  uint64_t commit_id,
                  std::vector<std::pair<index_agent_contract::value_t, size_t>> values,
                  index_agent_contract::value_t key,
                  actor_zeta::mailbox::message* msg) {
-        { agent.drop(session) } -> std::same_as<actor_zeta::unique_future<void>>;
-        { agent.clear(session) } -> std::same_as<actor_zeta::unique_future<core::error_t>>;
-        { agent.stage_inserts(session, txn_id, values) } -> std::same_as<actor_zeta::unique_future<core::error_t>>;
-        { agent.stage_deletes(session, txn_id, values) } -> std::same_as<actor_zeta::unique_future<core::error_t>>;
-        { agent.commit_inserts(session, txn_id, commit_id) } -> std::same_as<actor_zeta::unique_future<core::error_t>>;
-        { agent.commit_deletes(session, txn_id, commit_id) } -> std::same_as<actor_zeta::unique_future<core::error_t>>;
-        { agent.revert_inserts(session, txn_id) } -> std::same_as<actor_zeta::unique_future<core::error_t>>;
-        { agent.revert_deletes(session, txn_id) } -> std::same_as<actor_zeta::unique_future<core::error_t>>;
-        {
-            agent.read_rows(session, components::expressions::compare_type::eq, key, txn_id)
-            } -> std::same_as<actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<int64_t>>>>;
-        { agent.force_flush(session) } -> std::same_as<actor_zeta::unique_future<core::error_t>>;
-        { agent.table_oid() } -> std::same_as<components::catalog::oid_t>;
-        { agent.address() } -> std::same_as<actor_zeta::actor::address_t>;
-        { agent.behavior(msg) } -> std::same_as<actor_zeta::behavior_t>;
-        { agent.make_type() } -> std::same_as<const char*>;
+        { agent.drop(session) }
+        ->std::same_as<actor_zeta::unique_future<void>>;
+        { agent.clear(session) }
+        ->std::same_as<actor_zeta::unique_future<core::error_t>>;
+        { agent.stage_inserts(session, txn_id, values) }
+        ->std::same_as<actor_zeta::unique_future<core::error_t>>;
+        { agent.stage_deletes(session, txn_id, values) }
+        ->std::same_as<actor_zeta::unique_future<core::error_t>>;
+        { agent.commit_inserts(session, txn_id, commit_id) }
+        ->std::same_as<actor_zeta::unique_future<core::error_t>>;
+        { agent.commit_deletes(session, txn_id, commit_id) }
+        ->std::same_as<actor_zeta::unique_future<core::error_t>>;
+        { agent.revert_inserts(session, txn_id) }
+        ->std::same_as<actor_zeta::unique_future<core::error_t>>;
+        { agent.revert_deletes(session, txn_id) }
+        ->std::same_as<actor_zeta::unique_future<core::error_t>>;
+        { agent.read_rows(session, components::expressions::compare_type::eq, key, txn_id) }
+        ->std::same_as<actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<int64_t>>>>;
+        { agent.force_flush(session) }
+        ->std::same_as<actor_zeta::unique_future<core::error_t>>;
+        { agent.table_oid() }
+        ->std::same_as<components::catalog::oid_t>;
+        { agent.address() }
+        ->std::same_as<actor_zeta::actor::address_t>;
+        { agent.behavior(msg) }
+        ->std::same_as<actor_zeta::behavior_t>;
+        { agent.make_type() }
+        ->std::same_as<const char*>;
     };
 
 #ifdef DEV_MODE

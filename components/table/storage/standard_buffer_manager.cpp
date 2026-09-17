@@ -2,9 +2,9 @@
 
 #include <atomic>
 
+#include "block_manager.hpp"
 #include "buffer_handle.hpp"
 #include "buffer_pool.hpp"
-#include "block_manager.hpp"
 
 namespace components::table::storage {
 

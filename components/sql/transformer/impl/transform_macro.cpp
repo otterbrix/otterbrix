@@ -128,8 +128,7 @@ namespace components::sql::transform {
                                "nothing was created";
                         return core::error_t(core::error_code_t::unimplemented_yet, std::move(msg));
                     }
-                    if (!list->lst.empty() && list->lst.front().data &&
-                        nodeTag(list->lst.front().data) == T_String) {
+                    if (!list->lst.empty() && list->lst.front().data && nodeTag(list->lst.front().data) == T_String) {
                         body_sql = strVal(list->lst.front().data);
                     }
                 } else if (def->arg && nodeTag(def->arg) == T_String) {

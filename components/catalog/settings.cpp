@@ -49,9 +49,8 @@ namespace components::catalog {
             return std::pmr::string{std::to_string(parsed), resource};
         }
 
-        core::result_wrapper_t<std::pmr::string> canonical_boolean(std::string_view sql_name,
-                                                                    std::string_view raw,
-                                                                    std::pmr::memory_resource* resource) {
+        core::result_wrapper_t<std::pmr::string>
+        canonical_boolean(std::string_view sql_name, std::string_view raw, std::pmr::memory_resource* resource) {
             const auto lowered = to_lower(raw);
             if (lowered == "on" || lowered == "true" || lowered == "1") {
                 return std::pmr::string{"on", resource};
@@ -121,9 +120,9 @@ namespace components::catalog {
                 // Lowercase: timezone_to_offset only matches lowercase names.
                 const auto lowered = to_lower(raw);
                 if (!core::date::timezone_to_offset(lowered)) {
-                    return core::error_t(core::error_code_t::invalid_parameter,
-                                         std::pmr::string{"unrecognized timezone: '" + std::string(raw) + "'",
-                                                          resource});
+                    return core::error_t(
+                        core::error_code_t::invalid_parameter,
+                        std::pmr::string{"unrecognized timezone: '" + std::string(raw) + "'", resource});
                 }
                 return std::pmr::string{lowered.data(), lowered.size(), resource};
             }
@@ -134,12 +133,10 @@ namespace components::catalog {
             case setting_id::autocommit:
                 return canonical_boolean("autocommit", raw, resource);
         }
-        return core::error_t(core::error_code_t::invalid_parameter,
-                             std::pmr::string{"unknown setting", resource});
+        return core::error_t(core::error_code_t::invalid_parameter, std::pmr::string{"unknown setting", resource});
     }
 
-    core::error_t
-    validate_decimal_defaults(uint8_t width, uint8_t scale, std::pmr::memory_resource* resource) {
+    core::error_t validate_decimal_defaults(uint8_t width, uint8_t scale, std::pmr::memory_resource* resource) {
         if (!types::is_valid_decimal_spec(width, scale)) {
             return core::error_t(core::error_code_t::invalid_parameter,
                                  std::pmr::string{"decimal_width " + std::to_string(static_cast<unsigned>(width)) +
@@ -177,8 +174,7 @@ namespace components::catalog {
                 cache.autocommit = boolean_setting_value(value);
                 return core::error_t::no_error();
         }
-        return core::error_t(core::error_code_t::invalid_parameter,
-                             std::pmr::string{"unknown setting", resource});
+        return core::error_t(core::error_code_t::invalid_parameter, std::pmr::string{"unknown setting", resource});
     }
 
 } // namespace components::catalog

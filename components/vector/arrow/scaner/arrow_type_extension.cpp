@@ -126,9 +126,7 @@ namespace components::vector::arrow {
         return std::make_unique<arrow_type>(unique_type);
     }
 
-    arrow_type_extension_data_ptr arrow_type_extension_t::get_arrow_type_extension() const {
-        return type_extension_;
-    }
+    arrow_type_extension_data_ptr arrow_type_extension_t::get_arrow_type_extension() const { return type_extension_; }
 
     types::logical_type arrow_type_extension_t::logical_type() const { return type_extension_->unique_type().type(); }
 

@@ -2,10 +2,10 @@
 
 #include <actor-zeta/spawn.hpp>
 #include <algorithm>
-#include <cstdint>
 #include <components/vector/data_chunk.hpp>
 #include <core/executor.hpp>
 #include <core/file/local_file_system.hpp>
+#include <cstdint>
 #include <fstream>
 #include <services/dispatcher/dispatcher.hpp>
 #include <services/wal/record.hpp>
@@ -139,13 +139,12 @@ namespace services::index {
         return result;
     }
 
-    std::pmr::vector<components::index::index_description_t>
-    indexed_descriptions(const index_records_t& records, std::pmr::memory_resource* resource) {
+    std::pmr::vector<components::index::index_description_t> indexed_descriptions(const index_records_t& records,
+                                                                                  std::pmr::memory_resource* resource) {
         std::pmr::vector<components::index::index_description_t> result(resource);
         result.reserve(records.size());
         for (const auto& record : records) {
-            components::index::index_description_t desc{components::index::keys_base_storage_t(resource),
-                                                        record.type};
+            components::index::index_description_t desc{components::index::keys_base_storage_t(resource), record.type};
             for (const auto& key : record.keys) {
                 desc.keys.push_back(key);
             }
@@ -283,7 +282,7 @@ namespace services::index {
             std::pmr::list<in_flight_entry_t> in_flight(this->resource());
 
             while (loop_running_.load(std::memory_order_acquire)) {
-                    {
+                {
                     actor_zeta::mailbox::message* raw = nullptr;
                     while (inbox_.pop(raw)) {
                         in_flight.emplace_back();
@@ -819,8 +818,7 @@ namespace services::index {
         }
 
         // (keys, hash) beside (keys, single) is legal; index_create_fail not already_exists: test_index pins this code.
-        if (match_index_relid(it->second, index_oid) != nullptr ||
-            match_index(it->second, keys, type) != nullptr) {
+        if (match_index_relid(it->second, index_oid) != nullptr || match_index(it->second, keys, type) != nullptr) {
             co_return core::error_t{core::error_code_t::index_create_fail,
                                     std::pmr::string{"index already exists", resource_}};
         }
@@ -859,12 +857,8 @@ namespace services::index {
         }
         const auto agent = spawned.value();
 
-        it->second.push_back(index_record_t{index_oid,
-                                            std::move(keys),
-                                            agent.type,
-                                            agent.ordered,
-                                            agent.address,
-                                            built_compact_epoch});
+        it->second.push_back(
+            index_record_t{index_oid, std::move(keys), agent.type, agent.ordered, agent.address, built_compact_epoch});
         co_return core::error_t::no_error();
     }
 
@@ -876,8 +870,7 @@ namespace services::index {
               static_cast<unsigned>(index_oid),
               static_cast<unsigned>(table_oid));
 
-        if (auto marker_error = forget_rebuild_marker_entry_(table_oid, index_oid);
-            marker_error.contains_error()) {
+        if (auto marker_error = forget_rebuild_marker_entry_(table_oid, index_oid); marker_error.contains_error()) {
             error(log_,
                   "manager_index_t::drop_index: the rebuild guard still names index_oid={}: {}",
                   static_cast<unsigned>(index_oid),
@@ -932,11 +925,10 @@ namespace services::index {
 #ifdef DEV_MODE
             note_stage_insert_batch(this);
 #endif
-            auto [needs_sched, f] = actor_zeta::otterbrix::send<&index_agent_contract::stage_inserts>(
-                record.address,
-                ctx.session,
-                txn_id,
-                std::move(batch));
+            auto [needs_sched, f] = actor_zeta::otterbrix::send<&index_agent_contract::stage_inserts>(record.address,
+                                                                                                      ctx.session,
+                                                                                                      txn_id,
+                                                                                                      std::move(batch));
             schedule_agent(record.address, needs_sched);
             futures.emplace_back(std::move(f));
         }
@@ -971,11 +963,10 @@ namespace services::index {
             if (batch.empty()) {
                 continue;
             }
-            auto [needs_sched, f] = actor_zeta::otterbrix::send<&index_agent_contract::stage_deletes>(
-                record.address,
-                ctx.session,
-                txn_id,
-                std::move(batch));
+            auto [needs_sched, f] = actor_zeta::otterbrix::send<&index_agent_contract::stage_deletes>(record.address,
+                                                                                                      ctx.session,
+                                                                                                      txn_id,
+                                                                                                      std::move(batch));
             schedule_agent(record.address, needs_sched);
             futures.emplace_back(std::move(f));
         }
@@ -1016,25 +1007,24 @@ namespace services::index {
         for (const auto& record : it->second) {
             auto old_batch = collect_by_row_ids(resource_, record.keys, old_data, row_ids);
             if (!old_batch.empty()) {
-                auto [needs_sched, f] = actor_zeta::otterbrix::send<&index_agent_contract::stage_deletes>(
-                    record.address,
-                    ctx.session,
-                    txn_id,
-                    std::move(old_batch));
+                auto [needs_sched, f] =
+                    actor_zeta::otterbrix::send<&index_agent_contract::stage_deletes>(record.address,
+                                                                                      ctx.session,
+                                                                                      txn_id,
+                                                                                      std::move(old_batch));
                 schedule_agent(record.address, needs_sched);
                 futures.emplace_back(std::move(f));
             }
-            auto new_batch =
-                collect_contiguous(resource_, record.keys, new_data, new_start_row_id, row_ids.size());
+            auto new_batch = collect_contiguous(resource_, record.keys, new_data, new_start_row_id, row_ids.size());
             if (!new_batch.empty()) {
 #ifdef DEV_MODE
                 note_stage_insert_batch(this);
 #endif
-                auto [needs_sched, f] = actor_zeta::otterbrix::send<&index_agent_contract::stage_inserts>(
-                    record.address,
-                    ctx.session,
-                    txn_id,
-                    std::move(new_batch));
+                auto [needs_sched, f] =
+                    actor_zeta::otterbrix::send<&index_agent_contract::stage_inserts>(record.address,
+                                                                                      ctx.session,
+                                                                                      txn_id,
+                                                                                      std::move(new_batch));
                 schedule_agent(record.address, needs_sched);
                 futures.emplace_back(std::move(f));
             }
@@ -1153,16 +1143,14 @@ namespace services::index {
             if (it == indexes_per_oid_.end())
                 continue;
             for (const auto& record : it->second) {
-                deferred_deletes_.emplace_back(
-                    deferred_delete_t{table_oid, record.index_oid, txn_id, commit_id});
+                deferred_deletes_.emplace_back(deferred_delete_t{table_oid, record.index_oid, txn_id, commit_id});
             }
         }
 #ifdef DEV_MODE
         g_index_deferred_deletes.fetch_add(deferred_deletes_.size() - queued_before, std::memory_order_relaxed);
 #endif
 
-        if (was_empty && !deferred_deletes_.empty() &&
-            manager_dispatcher_ != actor_zeta::address_t::empty_address()) {
+        if (was_empty && !deferred_deletes_.empty() && manager_dispatcher_ != actor_zeta::address_t::empty_address()) {
             constexpr uint8_t INDEX_KIND = 2;
             pending_void_.emplace_back(std::move(
                 actor_zeta::otterbrix::send(manager_dispatcher_,
@@ -1175,12 +1163,11 @@ namespace services::index {
 
     void manager_index_t::forget_deferred_deletes(components::catalog::oid_t table_oid) {
         [[maybe_unused]] const auto queued_before = deferred_deletes_.size();
-        deferred_deletes_.erase(std::remove_if(deferred_deletes_.begin(),
-                                               deferred_deletes_.end(),
-                                               [table_oid](const deferred_delete_t& entry) {
-                                                   return entry.table_oid == table_oid;
-                                               }),
-                                deferred_deletes_.end());
+        deferred_deletes_.erase(
+            std::remove_if(deferred_deletes_.begin(),
+                           deferred_deletes_.end(),
+                           [table_oid](const deferred_delete_t& entry) { return entry.table_oid == table_oid; }),
+            deferred_deletes_.end());
 #ifdef DEV_MODE
         g_index_deferred_deletes.fetch_sub(queued_before - deferred_deletes_.size(), std::memory_order_relaxed);
 #endif
@@ -1192,8 +1179,7 @@ namespace services::index {
         deferred_deletes_.erase(std::remove_if(deferred_deletes_.begin(),
                                                deferred_deletes_.end(),
                                                [table_oid, index_oid](const deferred_delete_t& entry) {
-                                                   return entry.table_oid == table_oid &&
-                                                          entry.index_oid == index_oid;
+                                                   return entry.table_oid == table_oid && entry.index_oid == index_oid;
                                                }),
                                 deferred_deletes_.end());
 #ifdef DEV_MODE
@@ -1219,9 +1205,7 @@ namespace services::index {
         futures.reserve(it->second.size());
         for (const auto& record : it->second) {
             auto [needs_sched, f] =
-                actor_zeta::otterbrix::send<&index_agent_contract::revert_inserts>(record.address,
-                                                                                   ctx.session,
-                                                                                   txn_id);
+                actor_zeta::otterbrix::send<&index_agent_contract::revert_inserts>(record.address, ctx.session, txn_id);
             schedule_agent(record.address, needs_sched);
             futures.emplace_back(std::move(f));
         }
@@ -1246,9 +1230,7 @@ namespace services::index {
         futures.reserve(it->second.size());
         for (const auto& record : it->second) {
             auto [needs_sched, f] =
-                actor_zeta::otterbrix::send<&index_agent_contract::revert_deletes>(record.address,
-                                                                                   ctx.session,
-                                                                                   txn_id);
+                actor_zeta::otterbrix::send<&index_agent_contract::revert_deletes>(record.address, ctx.session, txn_id);
             schedule_agent(record.address, needs_sched);
             futures.emplace_back(std::move(f));
         }
@@ -1769,8 +1751,7 @@ namespace services::index {
             entry = deferred_deletes_.erase(entry);
         }
 #ifdef DEV_MODE
-        g_index_deferred_deletes.fetch_sub(queued_before_sweep - deferred_deletes_.size(),
-                                           std::memory_order_relaxed);
+        g_index_deferred_deletes.fetch_sub(queued_before_sweep - deferred_deletes_.size(), std::memory_order_relaxed);
 #endif
 
         auto drop_futures = send_drop_to_detached(dying, session_id_t{});
@@ -1863,8 +1844,7 @@ namespace services::index {
         }
 
         // UPDATE ships only the new chunk; its old-row half arrives separately as PHYSICAL_DELETE.
-        const bool is_delete_leg =
-            record_type == static_cast<uint8_t>(services::wal::wal_record_type::PHYSICAL_DELETE);
+        const bool is_delete_leg = record_type == static_cast<uint8_t>(services::wal::wal_record_type::PHYSICAL_DELETE);
         const bool is_insert_leg =
             record_type == static_cast<uint8_t>(services::wal::wal_record_type::PHYSICAL_INSERT) ||
             record_type == static_cast<uint8_t>(services::wal::wal_record_type::PHYSICAL_UPDATE);

@@ -19,23 +19,22 @@ TEST_CASE("catalog::settings::try_invalid_values") {
     const session_catalog_t before;
     session_catalog_t cache;
 
-    const std::pair<setting_id, std::string_view> refusals[] = {
-        {setting_id::timezone, "Not/A_Real_Zone_XYZ"},
-        {setting_id::timezone, ""},
-        // width must be at least 1
-        {setting_id::decimal_width, "0"},
-        // past DECIMAL_MAX_WIDTH
-        {setting_id::decimal_width, "39"},
-        // trailing garbage, not a prefix parse
-        {setting_id::decimal_width, "12x"},
-        {setting_id::decimal_width, "abc"},
-        {setting_id::decimal_width, ""},
-        {setting_id::decimal_width, "-1"},
-        {setting_id::decimal_scale, "39"},
-        {setting_id::decimal_scale, "two"},
-        {setting_id::autocommit, "yes"},
-        {setting_id::autocommit, "2"},
-        {setting_id::autocommit, ""}};
+    const std::pair<setting_id, std::string_view> refusals[] = {{setting_id::timezone, "Not/A_Real_Zone_XYZ"},
+                                                                {setting_id::timezone, ""},
+                                                                // width must be at least 1
+                                                                {setting_id::decimal_width, "0"},
+                                                                // past DECIMAL_MAX_WIDTH
+                                                                {setting_id::decimal_width, "39"},
+                                                                // trailing garbage, not a prefix parse
+                                                                {setting_id::decimal_width, "12x"},
+                                                                {setting_id::decimal_width, "abc"},
+                                                                {setting_id::decimal_width, ""},
+                                                                {setting_id::decimal_width, "-1"},
+                                                                {setting_id::decimal_scale, "39"},
+                                                                {setting_id::decimal_scale, "two"},
+                                                                {setting_id::autocommit, "yes"},
+                                                                {setting_id::autocommit, "2"},
+                                                                {setting_id::autocommit, ""}};
 
     for (const auto& [id, raw] : refusals) {
         CAPTURE(find_setting_by_id(id).sql_name, raw);

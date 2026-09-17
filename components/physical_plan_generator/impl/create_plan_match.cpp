@@ -52,8 +52,8 @@ namespace services::planner::impl {
                 const bool range = is_range_compare(comp.type());
                 if (context.has_index_on(table_oid, key) &&
                     (!range || context.has_index_on_with_other_type(table_oid,
-                                                                   key,
-                                                                   components::logical_plan::index_type::hashed))) {
+                                                                    key,
+                                                                    components::logical_plan::index_type::hashed))) {
                     key_on_left = true;
                     return true;
                 }

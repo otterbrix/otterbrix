@@ -56,8 +56,8 @@ namespace {
             manager->bootstrap_system_tables_sync();
         }
         ~fixture() {
-        // Destroy the manager first — its dtor joins the internal loop thread, which may still enqueue
-        // children onto the scheduler; only then is it safe to stop/delete the scheduler.
+            // Destroy the manager first — its dtor joins the internal loop thread, which may still enqueue
+            // children onto the scheduler; only then is it safe to stop/delete the scheduler.
             manager.reset();
             scheduler->stop();
             delete scheduler;
@@ -76,7 +76,9 @@ namespace {
         }
 
         components::execution_context_t ctx() {
-            return components::execution_context_t{session_id_t{}, components::table::transaction_data::committed(), {}};
+            return components::execution_context_t{session_id_t{},
+                                                   components::table::transaction_data::committed(),
+                                                   {}};
         }
 
         struct ns_table_t {

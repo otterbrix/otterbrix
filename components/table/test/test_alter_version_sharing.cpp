@@ -34,7 +34,8 @@ namespace {
 
     // Comma operator: remove stale file before naming it, ahead of the manager's open.
     const std::string& alter_version_sharing_fresh_db_path() {
-        static const std::string path = (std::remove(alter_version_sharing_db_path().c_str()), alter_version_sharing_db_path());
+        static const std::string path =
+            (std::remove(alter_version_sharing_db_path().c_str()), alter_version_sharing_db_path());
         return path;
     }
 

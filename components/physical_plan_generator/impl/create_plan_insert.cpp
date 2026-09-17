@@ -37,10 +37,10 @@ namespace services::planner::impl {
         components::logical_plan::insert_fill_list_t fill(context.resource);
         fill.reserve(node_insert->fill_list().size());
         for (const auto& column : node_insert->fill_list()) {
-            fill.push_back(components::logical_plan::insert_fill_column_t{
-                std::pmr::string{column.name.c_str(), context.resource},
-                column.type,
-                column.value});
+            fill.push_back(
+                components::logical_plan::insert_fill_column_t{std::pmr::string{column.name.c_str(), context.resource},
+                                                               column.type,
+                                                               column.value});
         }
         plan->set_fill_list(std::move(fill));
         plan->set_children(create_plan(context,

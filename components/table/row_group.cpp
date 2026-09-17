@@ -273,8 +273,10 @@ namespace components::table {
 #ifdef DEV_MODE
                 g_predicate_row_fetches.fetch_add(1, std::memory_order_relaxed);
 #endif
-                get_column(physical)
-                    .fetch_row(column_state, base_row + static_cast<int64_t>(row), rows.data[column], row);
+                get_column(physical).fetch_row(column_state,
+                                               base_row + static_cast<int64_t>(row),
+                                               rows.data[column],
+                                               row);
                 if (fetch_state.absorb_error(column_state)) {
                     return fetch_state.fetch_error;
                 }
@@ -649,8 +651,6 @@ namespace components::table {
         return true;
     }
 
-
-
     uint64_t row_group_t::committed_row_count() {
         auto* vi = version_info_.load();
         if (vi) {
@@ -934,13 +934,9 @@ namespace components::table {
         return columns_[c] ? columns_[c]->use_count() : 0;
     }
 
-    const row_version_manager_t* row_group_t::version_manager_identity() const {
-        return owned_version_info_.get();
-    }
+    const row_version_manager_t* row_group_t::version_manager_identity() const { return owned_version_info_.get(); }
 
-    const row_version_manager_t* row_group_t::version_manager_published() const {
-        return version_info_.load();
-    }
+    const row_version_manager_t* row_group_t::version_manager_published() const { return version_info_.load(); }
 
     uint64_t row_group_t::version_manager_owner_count() const {
         return owned_version_info_ ? static_cast<uint64_t>(owned_version_info_->use_count()) : 0;

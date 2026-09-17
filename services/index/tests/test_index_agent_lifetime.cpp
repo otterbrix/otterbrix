@@ -94,7 +94,7 @@ namespace {
         return keys;
     }
 
-}
+} // namespace
 
 TEST_CASE("services::index::drop_index keeps the agent alive under an outstanding read") {
     auto resource = core::pmr::otterbrix_resource();

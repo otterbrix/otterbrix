@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -61,14 +61,13 @@ namespace {
 
     bool await_deferred_deletes_at(uint64_t target) {
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-        while (services::index::index_deferred_deletes() > target &&
-               std::chrono::steady_clock::now() < deadline) {
+        while (services::index::index_deferred_deletes() > target && std::chrono::steady_clock::now() < deadline) {
             std::this_thread::yield();
         }
         return services::index::index_deferred_deletes() <= target;
     }
 
-}
+} // namespace
 
 // try_trigger_cleanup_if_horizon_advanced's `new_lowest > last_broadcast_horizon_` gate must
 // re-fire after the discard, or the deferred-delete queue never drains again.

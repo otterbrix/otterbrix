@@ -531,8 +531,7 @@ namespace components::sql::transform {
                     if (!cmd->name || cmd->name[0] == '\0') {
                         return core::error_t(
                             core::error_code_t::sql_parse_error,
-                            std::pmr::string{"ALTER TABLE ... DROP CONSTRAINT requires a constraint name",
-                                             resource_});
+                            std::pmr::string{"ALTER TABLE ... DROP CONSTRAINT requires a constraint name", resource_});
                     }
                     logical_plan::alter_table_subcommand_t sub;
                     sub.kind = logical_plan::alter_table_kind::drop_constraint;

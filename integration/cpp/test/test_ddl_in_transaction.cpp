@@ -14,18 +14,16 @@ namespace {
     constexpr std::int64_t B_BASE = 200'000;
     constexpr std::int64_t D_BASE = 400'000;
 
-    cursor_t_ptr run(otterbrix::wrapper_dispatcher_t* dispatcher,
-                     const otterbrix::session_id_t& session,
-                     const std::string& sql) {
+    cursor_t_ptr
+    run(otterbrix::wrapper_dispatcher_t* dispatcher, const otterbrix::session_id_t& session, const std::string& sql) {
         return dispatcher->execute_sql(session, sql);
     }
 
     // The statement and its error have to be reported from the assertion's own scope: a message
     // logged inside a helper is out of scope again before the caller's REQUIRE reports anything.
     std::string why(const cursor_t& cursor) {
-        return cursor.is_error()
-                   ? std::string{cursor.get_error().what.begin(), cursor.get_error().what.end()}
-                   : std::string{"<no error: statement reported success>"};
+        return cursor.is_error() ? std::string{cursor.get_error().what.begin(), cursor.get_error().what.end()}
+                                 : std::string{"<no error: statement reported success>"};
     }
 
     void seed(otterbrix::wrapper_dispatcher_t* dispatcher) {

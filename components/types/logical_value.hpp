@@ -95,19 +95,19 @@ namespace components::types {
         static logical_value_t create_variant(std::pmr::memory_resource* r, std::vector<logical_value_t> values);
 
         static core::result_wrapper_t<logical_value_t> sum(const logical_value_t& value1,
-                                                          const logical_value_t& value2);
+                                                           const logical_value_t& value2);
         static core::result_wrapper_t<logical_value_t> subtract(const logical_value_t& value1,
-                                                          const logical_value_t& value2);
+                                                                const logical_value_t& value2);
         static core::result_wrapper_t<logical_value_t> mult(const logical_value_t& value1,
-                                                          const logical_value_t& value2);
+                                                            const logical_value_t& value2);
         static core::result_wrapper_t<logical_value_t> divide(const logical_value_t& value1,
-                                                          const logical_value_t& value2);
+                                                              const logical_value_t& value2);
         static core::result_wrapper_t<logical_value_t> modulus(const logical_value_t& value1,
-                                                          const logical_value_t& value2);
+                                                               const logical_value_t& value2);
         static core::result_wrapper_t<logical_value_t> exponent(const logical_value_t& value1,
-                                                          const logical_value_t& value2);
+                                                                const logical_value_t& value2);
         static core::result_wrapper_t<logical_value_t> bit_and(const logical_value_t& value1,
-                                                          const logical_value_t& value2);
+                                                               const logical_value_t& value2);
 
     private:
         complex_logical_type type_;

@@ -21,9 +21,9 @@ namespace {
     }
 
     // Every literal these tests use is inside the window, so this asserts rather than propagates.
-    components::types::complex_logical_type
-    make_decimal(uint8_t width, uint8_t scale, std::string alias = "") {
-        auto created = components::types::complex_logical_type::create_decimal(decimal_resource(), width, scale, std::move(alias));
+    components::types::complex_logical_type make_decimal(uint8_t width, uint8_t scale, std::string alias = "") {
+        auto created =
+            components::types::complex_logical_type::create_decimal(decimal_resource(), width, scale, std::move(alias));
         REQUIRE_FALSE(created.has_error());
         return std::move(created.value());
     }
@@ -56,15 +56,33 @@ TEST_CASE("types::type_spec_codec::every_plain_scalar_roundtrips") {
     auto resource = core::pmr::otterbrix_resource();
 
     const logical_type scalars[] = {
-        logical_type::NA,        logical_type::ANY,          logical_type::BOOLEAN,
-        logical_type::TINYINT,   logical_type::SMALLINT,     logical_type::INTEGER,
-        logical_type::BIGINT,    logical_type::HUGEINT,      logical_type::DATE,
-        logical_type::TIME,      logical_type::TIME_TZ,      logical_type::TIMESTAMP,
-        logical_type::TIMESTAMP_TZ, logical_type::INTERVAL,  logical_type::FLOAT,
-        logical_type::DOUBLE,    logical_type::BLOB,         logical_type::UTINYINT,
-        logical_type::USMALLINT, logical_type::UINTEGER,     logical_type::UBIGINT,
-        logical_type::UHUGEINT,  logical_type::BIT,          logical_type::STRING_LITERAL,
-        logical_type::INTEGER_LITERAL, logical_type::POINTER, logical_type::VALIDITY,
+        logical_type::NA,
+        logical_type::ANY,
+        logical_type::BOOLEAN,
+        logical_type::TINYINT,
+        logical_type::SMALLINT,
+        logical_type::INTEGER,
+        logical_type::BIGINT,
+        logical_type::HUGEINT,
+        logical_type::DATE,
+        logical_type::TIME,
+        logical_type::TIME_TZ,
+        logical_type::TIMESTAMP,
+        logical_type::TIMESTAMP_TZ,
+        logical_type::INTERVAL,
+        logical_type::FLOAT,
+        logical_type::DOUBLE,
+        logical_type::BLOB,
+        logical_type::UTINYINT,
+        logical_type::USMALLINT,
+        logical_type::UINTEGER,
+        logical_type::UBIGINT,
+        logical_type::UHUGEINT,
+        logical_type::BIT,
+        logical_type::STRING_LITERAL,
+        logical_type::INTEGER_LITERAL,
+        logical_type::POINTER,
+        logical_type::VALIDITY,
         logical_type::UUID,
     };
     for (auto t : scalars) {
@@ -129,7 +147,9 @@ TEST_CASE("types::type_spec_codec::list_roundtrips_child_type") {
         // Non-default list metadata (field_id / required) round-trips too.
         auto typed = complex_logical_type(
             logical_type::LIST,
-            std::make_unique<list_logical_type_extension>(uint64_t{7}, complex_logical_type{logical_type::DOUBLE}, false));
+            std::make_unique<list_logical_type_extension>(uint64_t{7},
+                                                          complex_logical_type{logical_type::DOUBLE},
+                                                          false));
         auto back = roundtrip(&resource, typed);
         const auto* ext = back.extension_as<list_logical_type_extension>();
         REQUIRE(ext != nullptr);
@@ -149,7 +169,8 @@ TEST_CASE("types::type_spec_codec::array_roundtrips_size_and_child") {
     REQUIRE(ext->internal_type().type() == logical_type::DOUBLE);
 
     // Array of lists of strings — composite child.
-    auto nested = complex_logical_type::create_array(complex_logical_type::create_list(logical_type::STRING_LITERAL), 7);
+    auto nested =
+        complex_logical_type::create_array(complex_logical_type::create_list(logical_type::STRING_LITERAL), 7);
     auto nested_back = roundtrip(&resource, nested);
     const auto* nested_ext = nested_back.extension_as<array_logical_type_extension>();
     REQUIRE(nested_ext->size() == 7);
@@ -424,7 +445,8 @@ TEST_CASE("types::type_spec_codec::encode_refuses_what_decode_refuses") {
     {
         // create_decimal is the upstream half of the same window, so an out-of-window
         // DECIMAL cannot even be built to hand to the encoder.
-        for (const auto& [width, scale] : std::vector<std::pair<uint8_t, uint8_t>>{{0, 0}, {39, 0}, {5, 7}, {255, 255}}) {
+        for (const auto& [width, scale] :
+             std::vector<std::pair<uint8_t, uint8_t>>{{0, 0}, {39, 0}, {5, 7}, {255, 255}}) {
             INFO("DECIMAL(" << int(width) << "," << int(scale) << ")");
             auto created = complex_logical_type::create_decimal(&resource, width, scale);
             REQUIRE(created.has_error());

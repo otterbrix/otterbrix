@@ -19,9 +19,7 @@ namespace components::operators {
         checkpoint_repopulate_gate_t* g_checkpoint_repopulate_gate = nullptr;
     } // namespace
 
-    void dev_set_checkpoint_repopulate_gate(checkpoint_repopulate_gate_t* gate) {
-        g_checkpoint_repopulate_gate = gate;
-    }
+    void dev_set_checkpoint_repopulate_gate(checkpoint_repopulate_gate_t* gate) { g_checkpoint_repopulate_gate = gate; }
     checkpoint_repopulate_gate_t* dev_checkpoint_repopulate_gate() { return g_checkpoint_repopulate_gate; }
 #endif
 
@@ -106,13 +104,13 @@ namespace components::operators {
         // from the index (test_checkpoint_rebuild_snapshot.cpp). The driver's parameter type accepts only
         // committed_rows_snapshot(), so no caller can hand it a statement snapshot and compile.
         {
-            auto rebuild_error =
-                co_await services::index::repopulate_indexes_after_compaction(resource_,
-                                                                              ctx->disk_address,
-                                                                              ctx->index_address,
-                                                                              ctx->session,
-                                                                              services::index::committed_rows_snapshot(),
-                                                                              ctx->execution_context.timezone_offset);
+            auto rebuild_error = co_await services::index::repopulate_indexes_after_compaction(
+                resource_,
+                ctx->disk_address,
+                ctx->index_address,
+                ctx->session,
+                services::index::committed_rows_snapshot(),
+                ctx->execution_context.timezone_offset);
             if (rebuild_error.contains_error()) {
                 // Fail the CHECKPOINT loudly rather than leave behind a lying index, and leave the
                 // journal alone — the truncate that would trim it is below this return.

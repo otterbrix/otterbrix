@@ -8,8 +8,8 @@
 // Each case bumps streaming_pipeline_runs() to prove it routed through execute_pipeline, not the
 // legacy path -- reverting a leaf to role()==none makes the matching REQUIRE red.
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <services/collection/executor.hpp>
 

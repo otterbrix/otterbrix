@@ -228,13 +228,11 @@ TEST_CASE("failed_round: PROBE the residual of a persistent header-write failure
         WARN("[probe] failed round " << round << ": block_count " << before_blocks << " -> " << bm.total_blocks()
                                      << " file_size " << before_size << " -> " << file_size_of(path) << " (+"
                                      << (file_size_of(path) - before_size) << " B)"
-                                     << " issued=" << issued.size() << " orphaned_after_round="
-                                     << still_orphaned.size() << " | walker: durable_block_count="
-                                     << report.block_count << " chain=" << report.chain_blocks.size()
-                                     << " durable_data=" << report.durable_data.size()
-                                     << " registry=" << report.registry_live.size()
-                                     << " freelist=" << report.free_list_content.size()
-                                     << " unexplained=" << report.unexplained.size()
+                                     << " issued=" << issued.size() << " orphaned_after_round=" << still_orphaned.size()
+                                     << " | walker: durable_block_count=" << report.block_count << " chain="
+                                     << report.chain_blocks.size() << " durable_data=" << report.durable_data.size()
+                                     << " registry=" << report.registry_live.size() << " freelist="
+                                     << report.free_list_content.size() << " unexplained=" << report.unexplained.size()
                                      << " overlap=" << report.reachable_free_overlap.size());
     }
     REQUIRE(scan_and_count(*steady.table, env) == ROLLBACK_ROWS);
@@ -354,9 +352,8 @@ TEST_CASE("failed_round: a later round's compaction releases ids the round journ
             overlap.insert(id);
         }
     }
-    WARN("[a7.7 gate 2b] issued_since_commit=" << issued_since_commit.size()
-                                               << " pending_free=" << pending_after_compact.size()
-                                               << " intersection=" << overlap.size());
+    WARN("[a7.7 gate 2b] issued_since_commit=" << issued_since_commit.size() << " pending_free="
+                                               << pending_after_compact.size() << " intersection=" << overlap.size());
     CHECK_FALSE(overlap.empty());
 
     REQUIRE_FALSE(checkpoint_round(bm, *steady.table, &plan, true).committed);
@@ -398,9 +395,8 @@ TEST_CASE("failed_round: the walker reports zero unexplained after a failed roun
         REQUIRE(report.ok);
         INFO("failed round " << round << ": durable block_count=" << report.block_count
                              << " high_water=" << bm.total_blocks() << " chain=" << report.chain_blocks.size()
-                             << " durable_data=" << report.durable_data.size()
-                             << " registry=" << report.registry_live.size()
-                             << " freelist=" << report.free_list_content.size()
+                             << " durable_data=" << report.durable_data.size() << " registry="
+                             << report.registry_live.size() << " freelist=" << report.free_list_content.size()
                              << " unexplained=" << report.unexplained.size());
         CHECK(report.unexplained.empty());
         // Durably reachable AND published as free would be reissued over live data.

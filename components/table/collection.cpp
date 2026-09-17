@@ -1,9 +1,9 @@
 #include "collection.hpp"
 
+#include <algorithm>
 #include <components/table/storage/block_manager.hpp>
 #include <components/table/storage/partial_block_manager.hpp>
 #include <components/vector/data_chunk.hpp>
-#include <algorithm>
 #include <queue>
 
 #include "column_data.hpp"
@@ -11,7 +11,6 @@
 #include "row_version_manager.hpp"
 
 namespace components::table {
-
 
     row_group_segment_tree_t::row_group_segment_tree_t(collection_t& collection)
         : collection_(collection)

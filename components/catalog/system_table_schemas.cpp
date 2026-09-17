@@ -45,10 +45,8 @@ namespace components::catalog {
             c.emplace_back("oid", oid_col(), true);
             c.emplace_back("relname", str_col(), true);
             c.emplace_back("relnamespace", oid_col(), true);
-            c.emplace_back(
-                "relkind",
-                str_col(),
-                true); // see catalog_codes.hpp::relkind
+            c.emplace_back("relkind", str_col(),
+                           true); // see catalog_codes.hpp::relkind
             c.emplace_back("relstoragemode", str_col(), true);
             return c;
         }
@@ -58,15 +56,14 @@ namespace components::catalog {
             c.emplace_back("attoid", oid_col(), true); // stable column OID; FK target for constraints/indexes
             c.emplace_back("attrelid", oid_col(), true);
             c.emplace_back("attname", str_col(), true);
-            c.emplace_back("atttypid",
-                           oid_col(),
+            c.emplace_back("atttypid", oid_col(),
                            true); // builtin scalar only; complex types use atttypspec
             c.emplace_back("attnum", i32_col(), true);
             c.emplace_back("attnotnull", bool_col(), true);
             c.emplace_back("atthasdefault", bool_col(), true);
             c.emplace_back("attisdropped", bool_col(), true); // tombstone; attnum is never reused
-            c.emplace_back("atttypspec", str_col(), false); // non-empty only for ARRAY/DECIMAL/STRUCT/ENUM/UNKNOWN
-            c.emplace_back("attdefspec", str_col(), false); // hex-armoured default (encode_default_spec)
+            c.emplace_back("atttypspec", str_col(), false);   // non-empty only for ARRAY/DECIMAL/STRUCT/ENUM/UNKNOWN
+            c.emplace_back("attdefspec", str_col(), false);   // hex-armoured default (encode_default_spec)
             // MVCC: added_at_commit_id/dropped_at_commit_id (0=alive) gate visibility; attisdropped mirrors dropped>0.
             c.emplace_back("added_at_commit_id", i64_col(), true);
             c.emplace_back("dropped_at_commit_id", i64_col(), true);
@@ -87,10 +84,10 @@ namespace components::catalog {
             c.emplace_back("oid", oid_col(), true);
             c.emplace_back("proname", str_col(), true);
             c.emplace_back("pronamespace", oid_col(), true);
-            c.emplace_back("pronargs", i32_col(), false); // arity of the function's first signature
-            c.emplace_back("prouid", i64_col(), false); // opaque function_uid from register_udf
+            c.emplace_back("pronargs", i32_col(), false);       // arity of the function's first signature
+            c.emplace_back("prouid", i64_col(), false);         // opaque function_uid from register_udf
             c.emplace_back("proargmatchers", str_col(), false); // see encode_proargmatchers below
-            c.emplace_back("prorettype", str_col(), false); // see encode_prorettype below
+            c.emplace_back("prorettype", str_col(), false);     // see encode_prorettype below
             return c;
         }
 
@@ -109,7 +106,7 @@ namespace components::catalog {
             c.emplace_back("oid", oid_col(), true);
             c.emplace_back("conname", str_col(), true);
             c.emplace_back("conrelid", oid_col(), true);
-            c.emplace_back("contype", str_col(), true); // 'p','f','u','c','n'
+            c.emplace_back("contype", str_col(), true);    // 'p','f','u','c','n'
             c.emplace_back("confrelid", oid_col(), false); // 0 if not FK
             c.emplace_back("conkey", str_col(), false);
             c.emplace_back("confkey", str_col(), false);
@@ -129,8 +126,7 @@ namespace components::catalog {
             c.emplace_back("indisvalid",
                            bool_col(),
                            true); // false until backfill completes; planner ignores invalid indexes
-            c.emplace_back("indtype",
-                           str_col(),
+            c.emplace_back("indtype", str_col(),
                            true); // see catalog_codes.hpp::indtype
             return c;
         }
@@ -176,8 +172,7 @@ namespace components::catalog {
 
         std::vector<column_definition_t> pg_computed_column_columns() {
             std::vector<column_definition_t> c;
-            c.emplace_back("relid",
-                           oid_col(),
+            c.emplace_back("relid", oid_col(),
                            true); // always relkind='g' (generated/computing)
             c.emplace_back("attoid", oid_col(), true);
             c.emplace_back("attname", str_col(), true);
@@ -238,7 +233,6 @@ namespace components::catalog {
         }
         return nullptr;
     }
-
 
     // Flat-text type-spec grammar (recursive; scalar names match pg_type.typname):
     //   scalar → bool int1 int2 int4 int8 float4 float8 text timestamp bytea uuid
@@ -387,9 +381,9 @@ namespace components::catalog {
 
     // Mirrors type_spec_codec.cpp's checked_extension: an absent or GENERIC extension must not be
     // dereferenced here — that crashes or writes garbage.
-    static const types::logical_type_extension* checked_flat_extension(
-        const types::complex_logical_type& t,
-        types::logical_type_extension::extension_type expected) {
+    static const types::logical_type_extension*
+    checked_flat_extension(const types::complex_logical_type& t,
+                           types::logical_type_extension::extension_type expected) {
         const auto* ext = t.extension();
         return (ext != nullptr && ext->type() == expected) ? ext : nullptr;
     }
@@ -474,8 +468,8 @@ namespace components::catalog {
                 return flat_unpersistable(t.type());
             }
             const auto* ext = static_cast<const types::array_logical_type_extension*>(raw);
-            return "ARRAY(" + encode_type_nested(ext->internal_type(), depth + 1) + "," +
-                   std::to_string(ext->size()) + ")";
+            return "ARRAY(" + encode_type_nested(ext->internal_type(), depth + 1) + "," + std::to_string(ext->size()) +
+                   ")";
         }
         if (t.type() == LT::MAP) {
             const auto* raw = checked_flat_extension(t, types::logical_type_extension::extension_type::MAP);
@@ -886,8 +880,8 @@ namespace components::catalog {
             return corrupt(ctx.what);
         }
         if (ctx.pos != spec.size()) {
-            return corrupt("type spec: trailing bytes after a complete type (at offset " +
-                           std::to_string(ctx.pos) + ")");
+            return corrupt("type spec: trailing bytes after a complete type (at offset " + std::to_string(ctx.pos) +
+                           ")");
         }
         return parsed;
     }
@@ -1056,9 +1050,8 @@ namespace components::catalog {
         constexpr char kDefaultSpecNull = 'N';
         constexpr char kDefaultSpecValue = 'V';
 
-        core::error_t default_spec_error(std::pmr::memory_resource* resource,
-                                         core::error_code_t code,
-                                         const std::string& text) {
+        core::error_t
+        default_spec_error(std::pmr::memory_resource* resource, core::error_code_t code, const std::string& text) {
             return core::error_t{code, std::pmr::string{text.c_str(), resource}};
         }
 

@@ -64,11 +64,10 @@ namespace components::sql::transform {
             for (auto data : node.options->lst) {
                 auto def = pg_ptr_cast<DefElem>(data.data);
                 if (def->defname && std::string_view(def->defname) == "storage") {
-                    return core::error_t(
-                        core::error_code_t::sql_parse_error,
-                        std::pmr::string{"the WITH (storage = ...) option has been removed: "
-                                         "tables are always disk-backed",
-                                         resource_});
+                    return core::error_t(core::error_code_t::sql_parse_error,
+                                         std::pmr::string{"the WITH (storage = ...) option has been removed: "
+                                                          "tables are always disk-backed",
+                                                          resource_});
                 }
             }
             for (auto data : node.options->lst) {
@@ -122,8 +121,8 @@ namespace components::sql::transform {
                     // A key pointing back at the table being created has nothing to look up
                     // yet (both oids are minted by the same rewrite) — a lookup would read
                     // as "referenced relation does not exist".
-                    const bool self_ref = !tc.ref_collection.empty() && tc.ref_collection == qn.relname &&
-                                          ref_db == dbname;
+                    const bool self_ref =
+                        !tc.ref_collection.empty() && tc.ref_collection == qn.relname && ref_db == dbname;
                     cstr->set_self_reference(self_ref);
                     if (!self_ref && !tc.ref_collection.empty()) {
                         register_catalog_resolve_table(resource_, &catalog_resolves_, ref_db, tc.ref_collection);

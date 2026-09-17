@@ -197,10 +197,11 @@ namespace {
             m.kind = components::pg_attribute_commit_id_backfill_t::kind_t::added_at;
             markers.push_back(std::move(m));
         }
-        return fx.invoke(&manager_disk_t::update_pg_attribute_commit_id_fields,
-                         disk_test_helpers::auto_ctx(),
-                         std::move(markers),
-                         commit_id)
+        return fx
+            .invoke(&manager_disk_t::update_pg_attribute_commit_id_fields,
+                    disk_test_helpers::auto_ctx(),
+                    std::move(markers),
+                    commit_id)
             .refusal;
     }
 
@@ -209,7 +210,8 @@ namespace {
                                 catalog::oid_t table_oid,
                                 const std::pmr::vector<std::int64_t>& row_ids,
                                 components::vector::data_chunk_t& chunk) {
-        auto updated = fx.manager->update_sync(table_oid, row_ids, chunk, components::table::transaction_data::committed());
+        auto updated =
+            fx.manager->update_sync(table_oid, row_ids, chunk, components::table::transaction_data::committed());
         return updated.has_error() ? updated.error() : core::error_t::no_error();
     }
 } // namespace
@@ -328,8 +330,8 @@ TEST_CASE("services::disk::open::replayed_rows_with_nowhere_to_land_are_refused"
 
     const auto otbx = otbx_at(base, ns_oid, table_oid);
     std::filesystem::create_directories(otbx.parent_path());
-    REQUIRE_FALSE(fx.manager->create_storage_disk_sync(table_oid, ns_oid, cols, otbx, /*is_computed=*/false)
-                      .contains_error());
+    REQUIRE_FALSE(
+        fx.manager->create_storage_disk_sync(table_oid, ns_oid, cols, otbx, /*is_computed=*/false).contains_error());
     REQUIRE(fx.manager->has_storage(table_oid));
     components::vector::data_chunk_t empty(&fx.resource, types, 1);
     empty.set_cardinality(0);
@@ -378,8 +380,8 @@ TEST_CASE("services::disk::open::a_create_that_failed_is_not_reported_as_a_dupli
     }
     std::error_code rm_ec;
     std::filesystem::remove(otbx, rm_ec);
-    REQUIRE_FALSE(fx.manager->create_storage_disk_sync(table_oid, ns_oid, cols, otbx, /*is_computed=*/false)
-                      .contains_error());
+    REQUIRE_FALSE(
+        fx.manager->create_storage_disk_sync(table_oid, ns_oid, cols, otbx, /*is_computed=*/false).contains_error());
     REQUIRE(fx.manager->has_storage(table_oid));
 
     auto dup = fx.manager->create_storage_disk_sync(table_oid, ns_oid, cols, otbx, /*is_computed=*/false);
@@ -455,8 +457,10 @@ TEST_CASE("services::disk::open::rehydrate_states_the_divergence_it_cannot_close
         row.set_value(2, 0, static_cast<std::uint32_t>(ns_oid));
         row.set_value(3, 0, std::string_view("r"));
         row.set_value(4, 0, std::string_view("d"));
-        auto rng = append_ok(
-            fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), well_known_oid::pg_class_table, std::move(row)));
+        auto rng = append_ok(fx.invoke(&manager_disk_t::append_pg_catalog_row,
+                                       auto_ctx(),
+                                       well_known_oid::pg_class_table,
+                                       std::move(row)));
         std::vector<components::pg_catalog_append_range_t> appends{std::move(rng)};
         fx.invoke(&manager_disk_t::storage_publish_commits, rebuild_ctx(), std::uint64_t{1000}, std::move(appends));
     }
@@ -532,7 +536,6 @@ TEST_CASE("services::disk::open::an_unreadable_system_table_sidecar_is_not_a_bri
     cleanup_refusal_dir();
 }
 
-
 TEST_CASE("services::disk::open::rehydrate_does_not_create_over_a_file_that_did_not_load") {
     cleanup_refusal_dir();
     auto base = std::filesystem::path(refusal_dir());
@@ -583,7 +586,6 @@ TEST_CASE("services::disk::open::rehydrate_does_not_create_over_a_file_that_did_
 
     cleanup_refusal_dir();
 }
-
 
 TEST_CASE("services::disk::open::a_rehydrate_walk_that_could_not_run_says_so") {
     cleanup_refusal_dir();
@@ -679,7 +681,6 @@ TEST_CASE("services::disk::open::an_unreadable_relkind_does_not_open_a_document_
     cleanup_refusal_dir();
 }
 
-
 TEST_CASE("services::disk::open::a_refused_sidecar_publish_leaves_no_staging_file") {
     cleanup_refusal_dir();
     auto base = std::filesystem::path(refusal_dir());
@@ -749,7 +750,7 @@ TEST_CASE("services::disk::open::a_replayed_update_that_lost_a_value_restores_th
         std::pmr::vector<std::int64_t> ids(&fx.resource);
         ids.push_back(1);
 
-        auto upd = replay_update(fx, table_oid,  ids, wide);
+        auto upd = replay_update(fx, table_oid, ids, wide);
         INFO("a replayed update that cannot carry every journalled value must be refused");
         CHECK(upd.contains_error());
 
@@ -865,7 +866,7 @@ TEST_CASE("services::disk::open::a_replayed_update_with_mismatched_row_ids_is_re
             std::pmr::vector<std::int64_t> ghost_id(&fx.resource);
             ghost_id.push_back(std::int64_t{1} << 55); // MAX_ROW_ID (column_data.hpp)
             auto chunk = one_row_chunk(666);
-            auto err = replay_update(fx, table_oid,  ghost_id, chunk);
+            auto err = replay_update(fx, table_oid, ghost_id, chunk);
             INFO("a row id past MAX_ROW_ID names no row: the update must be refused, not silently dropped");
             CHECK(err.contains_error());
             CHECK(rows_where_value_is(fx, table_oid, 666) == 0);
@@ -918,7 +919,8 @@ TEST_CASE("services::disk::open::a_replayed_delete_that_deleted_less_than_named_
         {
             std::pmr::vector<std::int64_t> id(&fx.resource);
             id.push_back(1);
-            CHECK_FALSE(fx.manager->delete_sync(table_oid, id, 1, components::table::transaction_data::committed()).contains_error());
+            CHECK_FALSE(fx.manager->delete_sync(table_oid, id, 1, components::table::transaction_data::committed())
+                            .contains_error());
             CHECK(rows_where_value_is(fx, table_oid, 1) == 0);
         }
 
@@ -951,7 +953,8 @@ TEST_CASE("services::disk::open::a_replayed_delete_that_deleted_less_than_named_
 
         {
             std::pmr::vector<std::int64_t> no_ids(&fx.resource);
-            CHECK_FALSE(fx.manager->delete_sync(table_oid, no_ids, 0, components::table::transaction_data::committed()).contains_error());
+            CHECK_FALSE(fx.manager->delete_sync(table_oid, no_ids, 0, components::table::transaction_data::committed())
+                            .contains_error());
         }
 
         CHECK(rows_where_value_is(fx, table_oid, 0) == 1);
@@ -1109,13 +1112,13 @@ TEST_CASE("services::disk::open::a_refused_journal_record_cancels_the_backfill_p
         configuration::config_wal wal_config(wal_dir);
 
         open_fixture fx(base);
-        auto wal_manager = actor_zeta::spawn<services::wal::manager_wal_replicate_t>(
-            &fx.resource,
-            fx.scheduler,
-            wal_config,
-            fx.log,
-            components::pipeline::no_mailbox(),
-            components::pipeline::no_mailbox());
+        auto wal_manager =
+            actor_zeta::spawn<services::wal::manager_wal_replicate_t>(&fx.resource,
+                                                                      fx.scheduler,
+                                                                      wal_config,
+                                                                      fx.log,
+                                                                      components::pipeline::no_mailbox(),
+                                                                      components::pipeline::no_mailbox());
         fx.manager->set_manager_wal_sync(wal_manager->address());
 
         fx.manager->bootstrap_system_tables_sync();
@@ -1136,13 +1139,13 @@ TEST_CASE("services::disk::open::a_refused_journal_record_cancels_the_backfill_p
         configuration::config_wal wal_config(wal_dir);
 
         open_fixture fx(base);
-        auto wal_manager = actor_zeta::spawn<services::wal::manager_wal_replicate_t>(
-            &fx.resource,
-            fx.scheduler,
-            wal_config,
-            fx.log,
-            components::pipeline::no_mailbox(),
-            components::pipeline::no_mailbox());
+        auto wal_manager =
+            actor_zeta::spawn<services::wal::manager_wal_replicate_t>(&fx.resource,
+                                                                      fx.scheduler,
+                                                                      wal_config,
+                                                                      fx.log,
+                                                                      components::pipeline::no_mailbox(),
+                                                                      components::pipeline::no_mailbox());
         fx.manager->set_manager_wal_sync(wal_manager->address());
 
         fx.manager->bootstrap_system_tables_sync();

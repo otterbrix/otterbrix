@@ -162,8 +162,7 @@ TEST_CASE("services::disk::wal_seal::floor_pinned_by_deferred_table") {
 
         REQUIRE(fd.checkpoint_round(services::wal::id_t{400}) == services::wal::id_t{100});
 
-        auto peeked = fd.manager->peek_checkpoint_wal_id_from_disk(table_oid,
-                                                                    catalog::well_known_oid::main_database);
+        auto peeked = fd.manager->peek_checkpoint_wal_id_from_disk(table_oid, catalog::well_known_oid::main_database);
         REQUIRE_FALSE(peeked.has_error());
         REQUIRE(peeked.value() == services::wal::id_t{200});
     }
@@ -192,8 +191,7 @@ TEST_CASE("services::disk::wal_seal::no_seal_when_no_entry_reports_a_floor") {
     {
         fresh_disk fd(dir);
         REQUIRE(fd.checkpoint_round(services::wal::id_t{500}) == services::wal::id_t{0});
-        REQUIRE(fd.checkpoint_round(services::wal::id_t{500}) !=
-                std::numeric_limits<services::wal::id_t>::max());
+        REQUIRE(fd.checkpoint_round(services::wal::id_t{500}) != std::numeric_limits<services::wal::id_t>::max());
     }
 
     std::filesystem::remove_all(dir);

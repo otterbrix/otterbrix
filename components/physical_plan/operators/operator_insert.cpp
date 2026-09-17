@@ -201,10 +201,7 @@ namespace components::operators {
                     auto segments_r = co_await std::move(sf);
                     if (segments_r.has_error()) {
                         // Must fail rather than return empty RETURNING cells; the range travels with the error.
-                        co_return dml_detail::flush_outcome_t{segments_r.error(),
-                                                              true,
-                                                              appended.start_row,
-                                                              count};
+                        co_return dml_detail::flush_outcome_t{segments_r.error(), true, appended.start_row, count};
                     }
                     auto segments = std::move(segments_r.value());
                     for (auto& seg : segments) {
@@ -218,19 +215,13 @@ namespace components::operators {
                                                         ctx->execution_context,
                                                         &returning_graph_);
                         if (proj.has_error()) {
-                            co_return dml_detail::flush_outcome_t{proj.error(),
-                                                                  true,
-                                                                  appended.start_row,
-                                                                  count};
+                            co_return dml_detail::flush_outcome_t{proj.error(), true, appended.start_row, count};
                         }
                         returning_accum_.emplace_back(std::move(proj.value()));
                     }
                 }
 
-                co_return dml_detail::flush_outcome_t{core::error_t::no_error(),
-                                                      true,
-                                                      appended.start_row,
-                                                      count};
+                co_return dml_detail::flush_outcome_t{core::error_t::no_error(), true, appended.start_row, count};
             };
 
             auto outcome = co_await op(resource_);

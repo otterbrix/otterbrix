@@ -244,8 +244,8 @@ namespace components::operators {
                     }
                     msg += " — qualify it as <database>.";
                     msg += entry.relname;
-                    set_error(core::error_t{core::error_code_t::ambiguous_name,
-                                            std::pmr::string{std::move(msg), resource_}});
+                    set_error(
+                        core::error_t{core::error_code_t::ambiguous_name, std::pmr::string{std::move(msg), resource_}});
                     co_return;
                 }
             }
@@ -349,8 +349,8 @@ namespace components::operators {
                         std::string msg = "table resolution: pg_computed_column answered with ";
                         msg += std::to_string(chunk.column_count());
                         msg += " column(s), fewer than the ";
-                        msg += std::to_string(
-                            static_cast<std::size_t>(catalog::pg_computed_column_col::attrefcount) + 1);
+                        msg +=
+                            std::to_string(static_cast<std::size_t>(catalog::pg_computed_column_col::attrefcount) + 1);
                         msg += " this build reads — the columns of table \"";
                         msg += entry.relname;
                         msg += "\" cannot be decoded";
@@ -509,9 +509,8 @@ namespace components::operators {
                         std::string msg = "table resolution: pg_attribute answered with ";
                         msg += std::to_string(chunk.column_count());
                         msg += " column(s), fewer than the ";
-                        msg +=
-                            std::to_string(static_cast<std::size_t>(catalog::pg_attribute_col::dropped_at_commit_id) +
-                                           1);
+                        msg += std::to_string(
+                            static_cast<std::size_t>(catalog::pg_attribute_col::dropped_at_commit_id) + 1);
                         msg += " this build reads — the columns of table \"";
                         msg += entry.relname;
                         msg += "\" cannot be decoded";

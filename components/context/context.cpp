@@ -8,8 +8,7 @@ namespace components::pipeline {
         // -- default-constructed for polymorphic_allocator, i.e. the process-global resource,
         // invisible to resource_tracer_t. Rebuild entry by entry onto the source's own resource
         // instead, copying each value through logical_value_t's resource-carrying copy ctor.
-        logical_plan::storage_parameters
-        parameters_on_their_own_arena(const logical_plan::storage_parameters& source) {
+        logical_plan::storage_parameters parameters_on_their_own_arena(const logical_plan::storage_parameters& source) {
             logical_plan::storage_parameters copy{source.resource()};
             copy.parameters.reserve(source.parameters.size());
             for (const auto& entry : source.parameters) {

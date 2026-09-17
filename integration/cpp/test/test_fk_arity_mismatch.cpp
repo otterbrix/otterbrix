@@ -8,8 +8,8 @@
 // Refusal moved to the DDL (as PostgreSQL does it); these cases assert the ALTER is refused
 // AND that DML on the tables runs unimpeded afterwards (constraint did not half-land).
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <string>
 #include <vector>
@@ -19,9 +19,8 @@ using namespace components::cursor;
 
 namespace {
 
-    cursor_t_ptr run(otterbrix::wrapper_dispatcher_t* dispatcher,
-                     otterbrix::session_id_t& session,
-                     const std::string& sql) {
+    cursor_t_ptr
+    run(otterbrix::wrapper_dispatcher_t* dispatcher, otterbrix::session_id_t& session, const std::string& sql) {
         return dispatcher->execute_sql(session, sql);
     }
 
@@ -42,23 +41,21 @@ namespace {
         }
         {
             auto s = otterbrix::session_id_t();
-            REQUIRE(run(dispatcher, s, "CREATE TABLE FkArity.parent (id bigint, id2 bigint, val text);")
-                        ->is_success());
+            REQUIRE(run(dispatcher, s, "CREATE TABLE FkArity.parent (id bigint, id2 bigint, val text);")->is_success());
         }
         {
             auto s = otterbrix::session_id_t();
-            REQUIRE(run(dispatcher, s, "CREATE TABLE FkArity.child (id bigint, pid bigint, pid2 bigint);")
-                        ->is_success());
+            REQUIRE(
+                run(dispatcher, s, "CREATE TABLE FkArity.child (id bigint, pid bigint, pid2 bigint);")->is_success());
         }
         {
             auto s = otterbrix::session_id_t();
-            REQUIRE(run(dispatcher, s, "INSERT INTO FkArity.parent (id, id2, val) VALUES (1, 100, 'p1');")
-                        ->is_success());
+            REQUIRE(
+                run(dispatcher, s, "INSERT INTO FkArity.parent (id, id2, val) VALUES (1, 100, 'p1');")->is_success());
         }
         {
             auto s = otterbrix::session_id_t();
-            REQUIRE(run(dispatcher, s, "INSERT INTO FkArity.child (id, pid, pid2) VALUES (10, 1, 100);")
-                        ->is_success());
+            REQUIRE(run(dispatcher, s, "INSERT INTO FkArity.child (id, pid, pid2) VALUES (10, 1, 100);")->is_success());
         }
         {
             // TWO referencing columns, ONE referenced column.

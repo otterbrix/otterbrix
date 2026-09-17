@@ -104,9 +104,8 @@ namespace services::disk {
         return agents_[pool_idx]->delete_sync(table_oid, row_ids, count, txn);
     }
 
-    core::error_t manager_disk_t::commit_all_deletes_sync(catalog::oid_t table_oid,
-                                                          uint64_t txn_id,
-                                                          uint64_t commit_id) {
+    core::error_t
+    manager_disk_t::commit_all_deletes_sync(catalog::oid_t table_oid, uint64_t txn_id, uint64_t commit_id) {
         if (agents_.empty()) {
             return core::error_t{core::error_code_t::io_error,
                                  std::pmr::string{"commit_all_deletes_sync: no disk agents", resource()}};
@@ -143,7 +142,6 @@ namespace services::disk {
         }
         return agents_[pool_idx]->update_sync(table_oid, row_ids, new_data, txn);
     }
-
 
     core::error_t manager_disk_t::direct_add_column_sync(catalog::oid_t table_oid,
                                                          const components::vector::data_chunk_t& schema_chunk) {
@@ -281,9 +279,8 @@ namespace services::disk {
         co_return co_await std::move(fut);
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::storage_close_cursor(session_id_t session,
-                                                                            catalog::oid_t table_oid,
-                                                                            uint64_t cursor_id) {
+    manager_disk_t::unique_future<void>
+    manager_disk_t::storage_close_cursor(session_id_t session, catalog::oid_t table_oid, uint64_t cursor_id) {
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
             auto& agent = agents_[pool_idx];
@@ -312,8 +309,10 @@ namespace services::disk {
             co_return core::error_t{core::error_code_t::io_error,
                                     std::pmr::string{"storage_open_scan_hold: owning disk agent is null", resource()}};
         }
-        auto [needs_sched, fut] =
-            actor_zeta::otterbrix::send(agent->address(), &agent_disk_t::storage_open_scan_hold_inner, session, table_oid);
+        auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
+                                                              &agent_disk_t::storage_open_scan_hold_inner,
+                                                              session,
+                                                              table_oid);
         if (needs_sched) {
             scheduler_disk_->enqueue(agent.get());
         }
@@ -332,8 +331,10 @@ namespace services::disk {
             co_return core::error_t{core::error_code_t::io_error,
                                     std::pmr::string{"storage_compact_epoch: owning disk agent is null", resource()}};
         }
-        auto [needs_sched, fut] =
-            actor_zeta::otterbrix::send(agent->address(), &agent_disk_t::storage_compact_epoch_inner, session, table_oid);
+        auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
+                                                              &agent_disk_t::storage_compact_epoch_inner,
+                                                              session,
+                                                              table_oid);
         if (needs_sched) {
             scheduler_disk_->enqueue(agent.get());
         }
@@ -747,4 +748,4 @@ namespace services::disk {
         co_return;
     }
 
-}
+} // namespace services::disk

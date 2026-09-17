@@ -17,8 +17,8 @@
 #include <filesystem>
 #include <set>
 #include <string>
-#include <vector>
 #include <unistd.h>
+#include <vector>
 
 #include "block_reachability_walker.hpp"
 #include "fault_injection_file.hpp"
@@ -366,8 +366,7 @@ TEST_CASE("string_write_through: PROBE evictability and per-round cost", "[strin
     uint64_t next_row = ROWS;
 
     auto census = census_payload_segments(*table);
-    WARN("[stringwt probe] after append: payload segments total=" << census.total
-                                                                  << " persistent=" << census.persistent
+    WARN("[stringwt probe] after append: payload segments total=" << census.total << " persistent=" << census.persistent
                                                                   << " (was 0 of all before the fix)");
 
     checkpoint_production(bm, *table);
@@ -379,11 +378,10 @@ TEST_CASE("string_write_through: PROBE evictability and per-round cost", "[strin
         next_row += DELTA;
         bm.dev_reset_tracking();
         checkpoint_production(bm, *table);
-        WARN("[stringwt probe] same-process round " << round << ": blocks=" << bm.total_blocks()
-                                                    << " free=" << bm.free_blocks()
-                                                    << " issued=" << bm.dev_issued_ids().size()
-                                                    << " file=" << file_size_of(path)
-                                                    << " bytes/row=" << file_size_of(path) / next_row);
+        WARN("[stringwt probe] same-process round "
+             << round << ": blocks=" << bm.total_blocks() << " free=" << bm.free_blocks()
+             << " issued=" << bm.dev_issued_ids().size() << " file=" << file_size_of(path)
+             << " bytes/row=" << file_size_of(path) / next_row);
     }
     REQUIRE(verify_rows(*table, env) == next_row);
     remove_file(path);

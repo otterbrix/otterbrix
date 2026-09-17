@@ -18,8 +18,8 @@
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/expressions/compare_expression.hpp>
-#include <components/logical_plan/node_create_index.hpp>
 #include <components/log/log.hpp>
+#include <components/logical_plan/node_create_index.hpp>
 #include <components/session/session.hpp>
 
 #include <cstdint>
@@ -58,15 +58,14 @@ namespace services::index {
         // On failure the half-built agent is destroyed and the index stays unregistered (full scan
         // cost) rather than aborting the engine's start (see test_index_bootstrap_failure). index_oid
         // is pg_index.indexrelid; on-disk path is ${path_db}/${table_oid}/${index_oid}/.
-        [[nodiscard]] static core::result_wrapper_t<agent_ptr_t>
-        create(std::pmr::memory_resource* resource,
-               const path_t& path_db,
-               components::catalog::oid_t table_oid,
-               components::catalog::oid_t index_oid,
-               uint64_t flush_threshold,
-               uint64_t segment_record_limit,
-               log_t& log,
-               std::pmr::set<std::uint64_t> commit_ids);
+        [[nodiscard]] static core::result_wrapper_t<agent_ptr_t> create(std::pmr::memory_resource* resource,
+                                                                        const path_t& path_db,
+                                                                        components::catalog::oid_t table_oid,
+                                                                        components::catalog::oid_t index_oid,
+                                                                        uint64_t flush_threshold,
+                                                                        uint64_t segment_record_limit,
+                                                                        log_t& log,
+                                                                        std::pmr::set<std::uint64_t> commit_ids);
 
         // The ctor does no I/O so it cannot fail; open_store() below is the fallible half, called
         // only from create(). Public because actor_zeta::spawn placement-news the actor.

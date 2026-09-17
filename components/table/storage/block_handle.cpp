@@ -215,11 +215,8 @@ namespace components::table::storage {
             // against memory_usage_ (a user size) while construct_manager_buffer compares
             // allocations, so adopting it would compare two different units, and letting it go costs
             // one allocation on a path that has just done disk I/O.
-            auto restored =
-                buffer_manager.construct_manager_buffer(temp_user_size_, nullptr, buffer_type_);
-            if (!buffer_manager.buffer_pool().read_temporary(temp_slot_,
-                                                                           restored->internal_buffer(),
-                                                                           temp_size_)) {
+            auto restored = buffer_manager.construct_manager_buffer(temp_user_size_, nullptr, buffer_type_);
+            if (!buffer_manager.buffer_pool().read_temporary(temp_slot_, restored->internal_buffer(), temp_size_)) {
                 return core::error_t(core::error_code_t::io_error,
                                      std::pmr::string{"block_handle_t: spilled buffer could not be read back",
                                                       buffer_manager.resource()});

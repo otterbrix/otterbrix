@@ -4,8 +4,8 @@
 //      cursor status.
 // [D3] CREATE MATERIALIZED VIEW never populates data and REFRESH is not lowered, so implicit WITH DATA is refused.
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <set>
 #include <string>
@@ -19,9 +19,8 @@ namespace {
     void seed(otterbrix::wrapper_dispatcher_t* d) {
         REQUIRE(exec(d, "CREATE DATABASE vx;")->is_success());
         REQUIRE(exec(d, "CREATE TABLE vx.t (col_a STRING, col_b BIGINT);")->is_success());
-        REQUIRE(exec(d,
-                     "INSERT INTO vx.t (col_a, col_b) VALUES ('a', 5), ('b', 15), ('c', 20), ('d', 8);")
-                    ->is_success());
+        REQUIRE(
+            exec(d, "INSERT INTO vx.t (col_a, col_b) VALUES ('a', 5), ('b', 15), ('c', 20), ('d', 8);")->is_success());
         REQUIRE(exec(d, "CREATE VIEW vx.v AS SELECT col_a, col_b FROM vx.t WHERE col_b > 10;")->is_success());
     }
 

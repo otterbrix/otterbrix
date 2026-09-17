@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <filesystem>
@@ -96,8 +96,7 @@ TEST_CASE("integration::cpp::index_rebuild_crash::delete_all_then_crash_returns_
     test_clear_directory(config);
     config.log.level = log_t::level::off;
 
-    const std::filesystem::path crash_dir =
-        integration_fixture_path("test_index_rebuild_crash/crashed_all");
+    const std::filesystem::path crash_dir = integration_fixture_path("test_index_rebuild_crash/crashed_all");
 
     {
         test_spaces space(config);

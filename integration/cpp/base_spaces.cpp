@@ -10,6 +10,7 @@
 #include <core/file/file_handle.hpp>
 #include <core/file/local_file_system.hpp>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <services/disk/manager_disk.hpp>
 #include <services/dispatcher/dispatcher.hpp>
@@ -17,7 +18,6 @@
 #include <services/index/manager_index.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 #include <services/wal/wal_reader.hpp>
-#include <map>
 #include <set>
 #include <thread>
 
@@ -241,21 +241,18 @@ namespace otterbrix {
 
             // Legal only pre-scheduler-start (a running engine would corrupt snapshots); synthesis
             // mutates manager_disk_t::storages_ with no lock, and a parallel variant TSan-confirmed raced on it.
-            auto replay_one =
-                [&disk, &log = log_](components::catalog::oid_t table_oid,
-                                        components::catalog::oid_t ns_oid,
-                                        std::vector<services::wal::record_t*>& records) {
-                    std::map<std::uint64_t, std::uint64_t> pending_delete_commits;
-                    auto commit_delete_group =
-                        [&disk, &log](components::catalog::oid_t oid, std::uint64_t txn_id, std::uint64_t commit_id) {
-                            if (auto err = disk.commit_all_deletes_sync(oid, txn_id, commit_id);
-                                err.contains_error()) {
-                                error(log, "spaces::replay: {}", err.what);
-                            }
-                        };
-                    auto flush_delete_commit = [&](components::catalog::oid_t oid,
-                                                   std::uint64_t txn_id,
-                                                   std::uint64_t commit_id) {
+            auto replay_one = [&disk, &log = log_](components::catalog::oid_t table_oid,
+                                                   components::catalog::oid_t ns_oid,
+                                                   std::vector<services::wal::record_t*>& records) {
+                std::map<std::uint64_t, std::uint64_t> pending_delete_commits;
+                auto commit_delete_group =
+                    [&disk, &log](components::catalog::oid_t oid, std::uint64_t txn_id, std::uint64_t commit_id) {
+                        if (auto err = disk.commit_all_deletes_sync(oid, txn_id, commit_id); err.contains_error()) {
+                            error(log, "spaces::replay: {}", err.what);
+                        }
+                    };
+                auto flush_delete_commit =
+                    [&](components::catalog::oid_t oid, std::uint64_t txn_id, std::uint64_t commit_id) {
                         if (txn_id == 0) {
                             return;
                         }
@@ -265,270 +262,258 @@ namespace otterbrix {
                             pending_delete_commits.erase(it);
                         }
                     };
-                    for (auto* r : records) {
-                        switch (r->record_type) {
-                            case services::wal::wal_record_type::PHYSICAL_INSERT:
-                                if (!r->physical_data.empty()) {
-                                    if (!disk.has_storage(table_oid)) {
-                                        // A failed load isn't an absent file: don't overwrite committed rows.
-                                        if (auto load_err =
-                                                disk.load_storage_for_wal_replay_sync(table_oid, ns_oid);
-                                            load_err.contains_error()) {
-                                            error(log,
-                                                  "spaces::replay: table oid={} has a file that did not load ({}) — "
-                                                  "records for this table are NOT replayed, and no storage is "
-                                                  "created over it",
-                                                  static_cast<unsigned>(table_oid),
-                                                  load_err.what);
-                                            return;
-                                        }
-                                        if (!disk.has_storage(table_oid)) {
-                                            if (ns_oid == components::catalog::INVALID_OID) {
-                                                error(log,
-                                                      "spaces::replay: table oid={} has no pg_class.relnamespace; "
-                                                      "cannot place its .otbx and refusing to guess — records for "
-                                                      "this table are NOT replayed",
-                                                      static_cast<unsigned>(table_oid));
-                                                return;
-                                            }
-                                            auto types = r->physical_data.front().types();
-                                            std::vector<components::table::column_definition_t> cols;
-                                            cols.reserve(types.size());
-                                            for (const auto& t : types) {
-                                                cols.emplace_back(t.has_alias() ? t.alias() : std::string{}, t);
-                                            }
-                                            auto otbx = disk.path_db() /
-                                                        std::to_string(static_cast<unsigned>(ns_oid)) /
-                                                        std::to_string(static_cast<unsigned>(table_oid)) / "table.otbx";
-                                            std::filesystem::create_directories(otbx.parent_path());
-                                            // An unreadable relkind is refused, never defaulted to 'r'.
-                                            auto relkind_r = disk.relkind_for_oid_sync(table_oid);
-                                            if (relkind_r.has_error()) {
-                                                error(log,
-                                                      "spaces::replay: table oid={} has no readable relkind ({}) — "
-                                                      "refusing to synthesise a storage whose kind is a guess; "
-                                                      "records for this table are NOT replayed",
-                                                      static_cast<unsigned>(table_oid),
-                                                      relkind_r.error().what);
-                                                return;
-                                            }
-                                            const bool synth_computed =
-                                                relkind_r.value() == components::catalog::relkind::computed;
-                                            if (auto synth_err = disk.create_storage_disk_sync(table_oid,
-                                                                                                    ns_oid,
-                                                                                                    std::move(cols),
-                                                                                                    otbx,
-                                                                                                    synth_computed);
-                                                synth_err.contains_error()) {
-                                                error(log,
-                                                      "spaces::replay: table oid={} could not be synthesised ({}) — "
-                                                      "records for this table are NOT replayed",
-                                                      static_cast<unsigned>(table_oid),
-                                                      synth_err.what);
-                                                return;
-                                            }
-                                        }
-                                    }
-                                    for (auto& chunk : r->physical_data) {
-                                        const auto chunk_count = static_cast<uint64_t>(chunk.size());
-                                        auto append_r = disk.append_sync(
-                                            table_oid,
-                                            chunk,
-                                            components::table::transaction_data{r->transaction_id, 0});
-                                        if (append_r.has_error()) {
-                                            error(log,
-                                                  "spaces::replay: {} committed row(s) for table oid={} were not "
-                                                  "restored: {}",
-                                                  chunk.size(),
-                                                  static_cast<unsigned>(table_oid),
-                                                  append_r.error().what);
-                                            continue;
-                                        }
-                                        if (r->transaction_id == 0) {
-                                            continue;
-                                        }
-                                        if (auto committed =
-                                                disk.commit_append_sync(table_oid,
-                                                                        r->commit_id,
-                                                                        static_cast<int64_t>(append_r.value()),
-                                                                        chunk_count);
-                                            committed.contains_error()) {
-                                            error(log,
-                                                  "spaces::replay: {} row(s) for table oid={} were restored but "
-                                                  "their commit stamp was not applied: {}",
-                                                  chunk_count,
-                                                  static_cast<unsigned>(table_oid),
-                                                  committed.what);
-                                        }
-                                    }
-                                }
-                                break;
-                            case services::wal::wal_record_type::PHYSICAL_ADD_COLUMN:
-                                // Applies before the dependent PHYSICAL_INSERT (higher wal_id, replays after).
-                                if (!r->physical_data.empty()) {
-                                    if (!disk.has_storage(table_oid)) {
-                                        if (auto load_err =
-                                                disk.load_storage_for_wal_replay_sync(table_oid, ns_oid);
-                                            load_err.contains_error()) {
-                                            error(log,
-                                                  "spaces::replay: table oid={} has a file that did not load ({}) — "
-                                                  "records for this table are NOT replayed, and no storage is "
-                                                  "created over it",
-                                                  static_cast<unsigned>(table_oid),
-                                                  load_err.what);
-                                            return;
-                                        }
-                                        if (!disk.has_storage(table_oid)) {
-                                            if (ns_oid == components::catalog::INVALID_OID) {
-                                                error(log,
-                                                      "spaces::replay: table oid={} has no pg_class.relnamespace; "
-                                                      "cannot place its .otbx and refusing to guess — records for "
-                                                      "this table are NOT replayed",
-                                                      static_cast<unsigned>(table_oid));
-                                                return;
-                                            }
-                                            auto types = r->physical_data.front().types();
-                                            std::vector<components::table::column_definition_t> cols;
-                                            cols.reserve(types.size());
-                                            for (const auto& t : types) {
-                                                cols.emplace_back(t.has_alias() ? t.alias() : std::string{}, t);
-                                            }
-                                            auto otbx = disk.path_db() /
-                                                        std::to_string(static_cast<unsigned>(ns_oid)) /
-                                                        std::to_string(static_cast<unsigned>(table_oid)) / "table.otbx";
-                                            std::filesystem::create_directories(otbx.parent_path());
-                                            auto relkind_r = disk.relkind_for_oid_sync(table_oid);
-                                            if (relkind_r.has_error()) {
-                                                error(log,
-                                                      "spaces::replay: table oid={} has no readable relkind ({}) — "
-                                                      "refusing to synthesise a storage whose kind is a guess; "
-                                                      "records for this table are NOT replayed",
-                                                      static_cast<unsigned>(table_oid),
-                                                      relkind_r.error().what);
-                                                return;
-                                            }
-                                            const bool synth_computed =
-                                                relkind_r.value() == components::catalog::relkind::computed;
-                                            if (auto synth_err = disk.create_storage_disk_sync(table_oid,
-                                                                                                    ns_oid,
-                                                                                                    std::move(cols),
-                                                                                                    otbx,
-                                                                                                    synth_computed);
-                                                synth_err.contains_error()) {
-                                                error(log,
-                                                      "spaces::replay: table oid={} could not be synthesised ({}) — "
-                                                      "records for this table are NOT replayed",
-                                                      static_cast<unsigned>(table_oid),
-                                                      synth_err.what);
-                                                return;
-                                            }
-                                            break;
-                                        }
-                                    }
-                                    if (auto add_err =
-                                            disk.direct_add_column_sync(table_oid, r->physical_data.front());
-                                        add_err.contains_error()) {
-                                        error(log, "spaces::replay: {}", add_err.what);
-                                    }
-                                }
-                                break;
-                            case services::wal::wal_record_type::PHYSICAL_DELETE: {
-                                // No row chunk to synthesise from; a still-missing storage must be logged.
+                for (auto* r : records) {
+                    switch (r->record_type) {
+                        case services::wal::wal_record_type::PHYSICAL_INSERT:
+                            if (!r->physical_data.empty()) {
                                 if (!disk.has_storage(table_oid)) {
-                                    if (auto load_err =
-                                            disk.load_storage_for_wal_replay_sync(table_oid, ns_oid);
+                                    // A failed load isn't an absent file: don't overwrite committed rows.
+                                    if (auto load_err = disk.load_storage_for_wal_replay_sync(table_oid, ns_oid);
+                                        load_err.contains_error()) {
+                                        error(log,
+                                              "spaces::replay: table oid={} has a file that did not load ({}) — "
+                                              "records for this table are NOT replayed, and no storage is "
+                                              "created over it",
+                                              static_cast<unsigned>(table_oid),
+                                              load_err.what);
+                                        return;
+                                    }
+                                    if (!disk.has_storage(table_oid)) {
+                                        if (ns_oid == components::catalog::INVALID_OID) {
+                                            error(log,
+                                                  "spaces::replay: table oid={} has no pg_class.relnamespace; "
+                                                  "cannot place its .otbx and refusing to guess — records for "
+                                                  "this table are NOT replayed",
+                                                  static_cast<unsigned>(table_oid));
+                                            return;
+                                        }
+                                        auto types = r->physical_data.front().types();
+                                        std::vector<components::table::column_definition_t> cols;
+                                        cols.reserve(types.size());
+                                        for (const auto& t : types) {
+                                            cols.emplace_back(t.has_alias() ? t.alias() : std::string{}, t);
+                                        }
+                                        auto otbx = disk.path_db() / std::to_string(static_cast<unsigned>(ns_oid)) /
+                                                    std::to_string(static_cast<unsigned>(table_oid)) / "table.otbx";
+                                        std::filesystem::create_directories(otbx.parent_path());
+                                        // An unreadable relkind is refused, never defaulted to 'r'.
+                                        auto relkind_r = disk.relkind_for_oid_sync(table_oid);
+                                        if (relkind_r.has_error()) {
+                                            error(log,
+                                                  "spaces::replay: table oid={} has no readable relkind ({}) — "
+                                                  "refusing to synthesise a storage whose kind is a guess; "
+                                                  "records for this table are NOT replayed",
+                                                  static_cast<unsigned>(table_oid),
+                                                  relkind_r.error().what);
+                                            return;
+                                        }
+                                        const bool synth_computed =
+                                            relkind_r.value() == components::catalog::relkind::computed;
+                                        if (auto synth_err = disk.create_storage_disk_sync(table_oid,
+                                                                                           ns_oid,
+                                                                                           std::move(cols),
+                                                                                           otbx,
+                                                                                           synth_computed);
+                                            synth_err.contains_error()) {
+                                            error(log,
+                                                  "spaces::replay: table oid={} could not be synthesised ({}) — "
+                                                  "records for this table are NOT replayed",
+                                                  static_cast<unsigned>(table_oid),
+                                                  synth_err.what);
+                                            return;
+                                        }
+                                    }
+                                }
+                                for (auto& chunk : r->physical_data) {
+                                    const auto chunk_count = static_cast<uint64_t>(chunk.size());
+                                    auto append_r =
+                                        disk.append_sync(table_oid,
+                                                         chunk,
+                                                         components::table::transaction_data{r->transaction_id, 0});
+                                    if (append_r.has_error()) {
+                                        error(log,
+                                              "spaces::replay: {} committed row(s) for table oid={} were not "
+                                              "restored: {}",
+                                              chunk.size(),
+                                              static_cast<unsigned>(table_oid),
+                                              append_r.error().what);
+                                        continue;
+                                    }
+                                    if (r->transaction_id == 0) {
+                                        continue;
+                                    }
+                                    if (auto committed = disk.commit_append_sync(table_oid,
+                                                                                 r->commit_id,
+                                                                                 static_cast<int64_t>(append_r.value()),
+                                                                                 chunk_count);
+                                        committed.contains_error()) {
+                                        error(log,
+                                              "spaces::replay: {} row(s) for table oid={} were restored but "
+                                              "their commit stamp was not applied: {}",
+                                              chunk_count,
+                                              static_cast<unsigned>(table_oid),
+                                              committed.what);
+                                    }
+                                }
+                            }
+                            break;
+                        case services::wal::wal_record_type::PHYSICAL_ADD_COLUMN:
+                            // Applies before the dependent PHYSICAL_INSERT (higher wal_id, replays after).
+                            if (!r->physical_data.empty()) {
+                                if (!disk.has_storage(table_oid)) {
+                                    if (auto load_err = disk.load_storage_for_wal_replay_sync(table_oid, ns_oid);
+                                        load_err.contains_error()) {
+                                        error(log,
+                                              "spaces::replay: table oid={} has a file that did not load ({}) — "
+                                              "records for this table are NOT replayed, and no storage is "
+                                              "created over it",
+                                              static_cast<unsigned>(table_oid),
+                                              load_err.what);
+                                        return;
+                                    }
+                                    if (!disk.has_storage(table_oid)) {
+                                        if (ns_oid == components::catalog::INVALID_OID) {
+                                            error(log,
+                                                  "spaces::replay: table oid={} has no pg_class.relnamespace; "
+                                                  "cannot place its .otbx and refusing to guess — records for "
+                                                  "this table are NOT replayed",
+                                                  static_cast<unsigned>(table_oid));
+                                            return;
+                                        }
+                                        auto types = r->physical_data.front().types();
+                                        std::vector<components::table::column_definition_t> cols;
+                                        cols.reserve(types.size());
+                                        for (const auto& t : types) {
+                                            cols.emplace_back(t.has_alias() ? t.alias() : std::string{}, t);
+                                        }
+                                        auto otbx = disk.path_db() / std::to_string(static_cast<unsigned>(ns_oid)) /
+                                                    std::to_string(static_cast<unsigned>(table_oid)) / "table.otbx";
+                                        std::filesystem::create_directories(otbx.parent_path());
+                                        auto relkind_r = disk.relkind_for_oid_sync(table_oid);
+                                        if (relkind_r.has_error()) {
+                                            error(log,
+                                                  "spaces::replay: table oid={} has no readable relkind ({}) — "
+                                                  "refusing to synthesise a storage whose kind is a guess; "
+                                                  "records for this table are NOT replayed",
+                                                  static_cast<unsigned>(table_oid),
+                                                  relkind_r.error().what);
+                                            return;
+                                        }
+                                        const bool synth_computed =
+                                            relkind_r.value() == components::catalog::relkind::computed;
+                                        if (auto synth_err = disk.create_storage_disk_sync(table_oid,
+                                                                                           ns_oid,
+                                                                                           std::move(cols),
+                                                                                           otbx,
+                                                                                           synth_computed);
+                                            synth_err.contains_error()) {
+                                            error(log,
+                                                  "spaces::replay: table oid={} could not be synthesised ({}) — "
+                                                  "records for this table are NOT replayed",
+                                                  static_cast<unsigned>(table_oid),
+                                                  synth_err.what);
+                                            return;
+                                        }
+                                        break;
+                                    }
+                                }
+                                if (auto add_err = disk.direct_add_column_sync(table_oid, r->physical_data.front());
+                                    add_err.contains_error()) {
+                                    error(log, "spaces::replay: {}", add_err.what);
+                                }
+                            }
+                            break;
+                        case services::wal::wal_record_type::PHYSICAL_DELETE: {
+                            // No row chunk to synthesise from; a still-missing storage must be logged.
+                            if (!disk.has_storage(table_oid)) {
+                                if (auto load_err = disk.load_storage_for_wal_replay_sync(table_oid, ns_oid);
+                                    load_err.contains_error()) {
+                                    error(log, "spaces::replay: {}", load_err.what);
+                                }
+                            }
+                            flush_delete_commit(table_oid, r->transaction_id, r->commit_id);
+                            if (auto del_err =
+                                    disk.delete_sync(table_oid,
+                                                     r->physical_row_ids,
+                                                     r->physical_row_count,
+                                                     components::table::transaction_data{r->transaction_id, 0});
+                                del_err.contains_error()) {
+                                error(log, "spaces::replay: {}", del_err.what);
+                                break;
+                            }
+                            if (r->transaction_id != 0) {
+                                pending_delete_commits[r->transaction_id] = r->commit_id;
+                            }
+                            break;
+                        }
+                        case services::wal::wal_record_type::PHYSICAL_UPDATE:
+                            if (!r->physical_data.empty()) {
+                                if (!disk.has_storage(table_oid)) {
+                                    if (auto load_err = disk.load_storage_for_wal_replay_sync(table_oid, ns_oid);
                                         load_err.contains_error()) {
                                         error(log, "spaces::replay: {}", load_err.what);
                                     }
                                 }
-                                flush_delete_commit(table_oid, r->transaction_id, r->commit_id);
-                                if (auto del_err = disk.delete_sync(
-                                        table_oid,
-                                        r->physical_row_ids,
-                                        r->physical_row_count,
-                                        components::table::transaction_data{r->transaction_id, 0});
-                                    del_err.contains_error()) {
-                                    error(log, "spaces::replay: {}", del_err.what);
-                                    break;
-                                }
-                                if (r->transaction_id != 0) {
+                                // A torn record can name fewer ids than rows; truncate rather than misread.
+                                std::size_t id_base = 0;
+                                for (auto& chunk : r->physical_data) {
+                                    const std::size_t n = chunk.size();
+                                    const std::size_t have =
+                                        r->physical_row_ids.size() > id_base ? r->physical_row_ids.size() - id_base : 0;
+                                    const std::size_t take = std::min(n, have);
+                                    if (take < n) {
+                                        error(log,
+                                              "spaces::replay: PHYSICAL_UPDATE for table oid={} carries {} "
+                                              "row(s) in a chunk but only {} row id(s) for them; {} committed "
+                                              "row update(s) are NOT replayed",
+                                              static_cast<unsigned>(table_oid),
+                                              n,
+                                              take,
+                                              n - take);
+                                    }
+                                    id_base += n;
+                                    if (take == 0) {
+                                        continue;
+                                    }
+                                    std::pmr::vector<int64_t> ids(r->physical_row_ids.get_allocator().resource());
+                                    ids.reserve(take);
+                                    for (std::size_t i = 0; i < take; ++i) {
+                                        ids.push_back(r->physical_row_ids[id_base - n + i]);
+                                    }
+                                    if (take < n) {
+                                        chunk.set_cardinality(take);
+                                    }
+                                    flush_delete_commit(table_oid, r->transaction_id, r->commit_id);
+                                    auto upd_r =
+                                        disk.update_sync(table_oid,
+                                                         ids,
+                                                         chunk,
+                                                         components::table::transaction_data{r->transaction_id, 0});
+                                    if (upd_r.has_error()) {
+                                        error(log, "spaces::replay: {}", upd_r.error().what);
+                                        continue;
+                                    }
+                                    if (r->transaction_id == 0) {
+                                        continue;
+                                    }
                                     pending_delete_commits[r->transaction_id] = r->commit_id;
+                                    const auto upd = upd_r.value();
+                                    if (auto committed =
+                                            disk.commit_append_sync(table_oid, r->commit_id, upd.start_row, upd.count);
+                                        committed.contains_error()) {
+                                        error(log, "spaces::replay: {}", committed.what);
+                                    }
                                 }
-                                break;
                             }
-                            case services::wal::wal_record_type::PHYSICAL_UPDATE:
-                                if (!r->physical_data.empty()) {
-                                    if (!disk.has_storage(table_oid)) {
-                                        if (auto load_err =
-                                                disk.load_storage_for_wal_replay_sync(table_oid, ns_oid);
-                                            load_err.contains_error()) {
-                                            error(log, "spaces::replay: {}", load_err.what);
-                                        }
-                                    }
-                                    // A torn record can name fewer ids than rows; truncate rather than misread.
-                                    std::size_t id_base = 0;
-                                    for (auto& chunk : r->physical_data) {
-                                        const std::size_t n = chunk.size();
-                                        const std::size_t have = r->physical_row_ids.size() > id_base
-                                                                     ? r->physical_row_ids.size() - id_base
-                                                                     : 0;
-                                        const std::size_t take = std::min(n, have);
-                                        if (take < n) {
-                                            error(log,
-                                                  "spaces::replay: PHYSICAL_UPDATE for table oid={} carries {} "
-                                                  "row(s) in a chunk but only {} row id(s) for them; {} committed "
-                                                  "row update(s) are NOT replayed",
-                                                  static_cast<unsigned>(table_oid),
-                                                  n,
-                                                  take,
-                                                  n - take);
-                                        }
-                                        id_base += n;
-                                        if (take == 0) {
-                                            continue;
-                                        }
-                                        std::pmr::vector<int64_t> ids(r->physical_row_ids.get_allocator().resource());
-                                        ids.reserve(take);
-                                        for (std::size_t i = 0; i < take; ++i) {
-                                            ids.push_back(r->physical_row_ids[id_base - n + i]);
-                                        }
-                                        if (take < n) {
-                                            chunk.set_cardinality(take);
-                                        }
-                                        flush_delete_commit(table_oid, r->transaction_id, r->commit_id);
-                                        auto upd_r = disk.update_sync(
-                                            table_oid,
-                                            ids,
-                                            chunk,
-                                            components::table::transaction_data{r->transaction_id, 0});
-                                        if (upd_r.has_error()) {
-                                            error(log, "spaces::replay: {}", upd_r.error().what);
-                                            continue;
-                                        }
-                                        if (r->transaction_id == 0) {
-                                            continue;
-                                        }
-                                        pending_delete_commits[r->transaction_id] = r->commit_id;
-                                        const auto upd = upd_r.value();
-                                        if (auto committed =
-                                                disk.commit_append_sync(table_oid,
-                                                                        r->commit_id,
-                                                                        upd.start_row,
-                                                                        upd.count);
-                                            committed.contains_error()) {
-                                            error(log, "spaces::replay: {}", committed.what);
-                                        }
-                                    }
-                                }
-                                break;
-                            default:
-                                break;
-                        }
+                            break;
+                        default:
+                            break;
                     }
-                    for (const auto& [txn_id, commit_id] : pending_delete_commits) {
-                        commit_delete_group(table_oid, txn_id, commit_id);
-                    }
-                };
+                }
+                for (const auto& [txn_id, commit_id] : pending_delete_commits) {
+                    commit_delete_group(table_oid, txn_id, commit_id);
+                }
+            };
 
             for (auto& [oid, records] : system_by_oid) {
                 replay_one(oid, ns_for(oid), records);
@@ -610,9 +595,7 @@ namespace otterbrix {
             // on_horizon_advanced can't be called inline (not yet running); arm flags for the first commit.
             manager_dispatcher_->set_disk_has_dropped_sync(true);
             manager_dispatcher_->set_index_has_dropped_sync(true);
-            trace(log_,
-                  "spaces::PHASE 2c rebuilt {} dropped storage/index entries from pg_class",
-                  dropped_oids.size());
+            trace(log_, "spaces::PHASE 2c rebuilt {} dropped storage/index entries from pg_class", dropped_oids.size());
         }
 
         // Travels by value — legal only during this single-threaded bootstrap window.
@@ -718,9 +701,7 @@ namespace otterbrix {
                 continue;
             }
 
-            std::pmr::set<std::uint64_t> committed_for_agent(commit_ids.begin(),
-                                                             commit_ids.end(),
-                                                             &resource);
+            std::pmr::set<std::uint64_t> committed_for_agent(commit_ids.begin(), commit_ids.end(), &resource);
 
             auto wire_error = manager_index_->bootstrap_index_sync(row.table_oid,
                                                                    row.oid,

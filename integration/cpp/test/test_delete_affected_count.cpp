@@ -1,8 +1,8 @@
 // affected_rows_ counts SCAN-matched rows, not what storage marks: MVCC hides a transaction's
 // own prior deletes, so a re-DELETE always scans (and reports) 0 -- this is intended, not a gap.
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <string>

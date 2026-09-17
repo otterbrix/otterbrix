@@ -1,6 +1,6 @@
-#include <cstdio>
 #include "column_definition.hpp"
 #include "table_state.hpp"
+#include <cstdio>
 
 #include <cassert>
 #include <sstream>

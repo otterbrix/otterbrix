@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -469,9 +469,7 @@ TEST_CASE("integration::cpp::test_explain::renderer_registration_edges") {
     }
 
     INFO("a null renderer is rejected (reported failure, not silent success)");
-    {
-        REQUIRE(dispatcher->set_explain_renderer(5, nullptr).contains_error());
-    }
+    { REQUIRE(dispatcher->set_explain_renderer(5, nullptr).contains_error()); }
 
     INFO("out-of-range render_id resolves to slot 0 — the host's default, not the built-in");
     {

@@ -4,8 +4,8 @@
 // the catalog agent's write point, where mailbox serialization makes check-and-append atomic;
 // the second session's CREATE statement itself must fail, not its COMMIT.
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -25,7 +25,9 @@ namespace {
         return "success, size=" + std::to_string(c->size());
     }
 
-    std::size_t rows_named(otterbrix::wrapper_dispatcher_t* d, const std::string& table, const std::string& col,
+    std::size_t rows_named(otterbrix::wrapper_dispatcher_t* d,
+                           const std::string& table,
+                           const std::string& col,
                            const std::string& name) {
         auto cur = exec(d, "SELECT " + col + " FROM pg_catalog." + table + " WHERE " + col + " = '" + name + "';");
         INFO("catalog probe " << table << ": " << status_of(cur));

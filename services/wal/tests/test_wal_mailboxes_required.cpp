@@ -14,10 +14,14 @@ namespace {
     using scheduler_t = actor_zeta::scheduler_raw;
 
     template<typename T>
-    concept has_bootstrap_sync = requires { &T::sync; };
+    concept has_bootstrap_sync = requires {
+        &T::sync;
+    };
 
     template<typename T>
-    concept has_dispatcher_setter = requires(T& t, address_t a) { t.set_manager_dispatcher_sync(a); };
+    concept has_dispatcher_setter = requires(T& t, address_t a) {
+        t.set_manager_dispatcher_sync(a);
+    };
 
 } // namespace
 

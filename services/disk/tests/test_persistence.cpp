@@ -67,7 +67,9 @@ namespace {
         }
 
         components::execution_context_t ctx() {
-            return components::execution_context_t{session_id_t{}, components::table::transaction_data::committed(), {}};
+            return components::execution_context_t{session_id_t{},
+                                                   components::table::transaction_data::committed(),
+                                                   {}};
         }
 
         template<typename Fn, typename... Args>
@@ -756,7 +758,7 @@ TEST_CASE("services::disk::persistence::test_commit_clock_restored_across_restar
         }
         txn_mgr.seed_commit_clock(max_cid);
         auto& post = txn_mgr.begin_transaction(components::session::session_id_t::generate_uid(),
-                                                  components::table::transaction_scope_t::statement);
+                                               components::table::transaction_scope_t::statement);
         REQUIRE(post.start_time() > static_cast<std::uint64_t>(kPersistedCommitId));
         REQUIRE(txn_mgr.published_horizon() == max_cid);
 
@@ -815,8 +817,7 @@ TEST_CASE("services::disk::persistence::failed_checkpoint_does_not_advance_wal_i
 
     constexpr auto ns_table_oid = static_cast<unsigned>(catalog::well_known_oid::pg_namespace_table);
     constexpr auto db_oid = static_cast<unsigned>(catalog::well_known_oid::main_database);
-    const auto otbx =
-        std::filesystem::path(dir) / std::to_string(db_oid) / std::to_string(ns_table_oid) / "table.otbx";
+    const auto otbx = std::filesystem::path(dir) / std::to_string(db_oid) / std::to_string(ns_table_oid) / "table.otbx";
     const auto sidecar = std::filesystem::path(otbx.string() + ".wal_id");
 
     otterbrix_test::fault_plan_t plan;
@@ -846,8 +847,7 @@ TEST_CASE("services::disk::persistence::failed_checkpoint_does_not_advance_wal_i
     {
         fresh_disk fd2(dir);
         fd2.manager->bootstrap_system_tables_sync();
-        auto rr =
-            fd2.invoke(&manager_disk_t::resolve_namespace, fd2.ctx(), std::string("ns_one"));
+        auto rr = fd2.invoke(&manager_disk_t::resolve_namespace, fd2.ctx(), std::string("ns_one"));
         REQUIRE_FALSE(rr.has_error());
         CHECK(rr.value().found);
     }

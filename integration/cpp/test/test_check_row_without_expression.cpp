@@ -9,8 +9,8 @@
 // that lost the expression would leave (build_create_constraint_writes only writes conexpr
 // `if (is_check && !check_expr.empty())`).
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -111,8 +111,8 @@ TEST_CASE("integration::cpp::check_row_without_expression::a_check_row_with_no_e
     seed(d);
 
     auto ddl = create_table_with_check(d, "cur", "t", "chk_code", "");
-    INFO("CREATE TABLE with a CHECK carrying no expression: "
-         << (ddl->is_error() ? ddl->get_error().what : "accepted"));
+    INFO(
+        "CREATE TABLE with a CHECK carrying no expression: " << (ddl->is_error() ? ddl->get_error().what : "accepted"));
 
     auto ins = exec(d, "INSERT INTO cur.t (id, code) VALUES (1, 5);");
     INFO("INSERT under the unreadable CHECK: " << (ins->is_error() ? ins->get_error().what : "accepted"));

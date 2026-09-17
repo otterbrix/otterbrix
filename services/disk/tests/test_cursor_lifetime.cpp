@@ -100,8 +100,7 @@ namespace {
         constexpr uint64_t kRows = 3 * components::vector::DEFAULT_VECTOR_CAPACITY;
         uint64_t written = 0;
         while (written < kRows) {
-            const uint64_t rows =
-                std::min<uint64_t>(components::vector::DEFAULT_VECTOR_CAPACITY, kRows - written);
+            const uint64_t rows = std::min<uint64_t>(components::vector::DEFAULT_VECTOR_CAPACITY, kRows - written);
             std::pmr::vector<complex_logical_type> types(&fx.resource);
             complex_logical_type t{logical_type::BIGINT};
             t.set_alias("value");
@@ -142,7 +141,7 @@ namespace {
         return batch.cursor_id;
     }
 
-}
+} // namespace
 
 TEST_CASE("services::disk::cursor_lifetime::open_cursor_holds_the_compact_gate") {
     fixture fx;

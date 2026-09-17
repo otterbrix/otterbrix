@@ -85,8 +85,7 @@ TEST_CASE("parse_oid_csv: a lone trailing comma is an empty token, not an empty 
     REQUIRE_FALSE(ok);
 }
 
-TEST_CASE("parse_oid_csv: a token too large for an oid is reported, not folded onto another column",
-          "[oid_csv]") {
+TEST_CASE("parse_oid_csv: a token too large for an oid is reported, not folded onto another column", "[oid_csv]") {
     bool ok = true;
     const auto out = parse_oid_csv("4294967297", ok);
     REQUIRE_FALSE(ok);

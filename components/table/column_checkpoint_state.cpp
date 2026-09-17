@@ -185,8 +185,8 @@ namespace components::table {
                 storage::data_pointer_t dp;
                 dp.row_start = row_start;
                 dp.tuple_count = tuple_count;
-                dp.block_pointer = storage::block_pointer_t(segment.block->block_id(),
-                                                            static_cast<uint32_t>(segment.block_offset()));
+                dp.block_pointer =
+                    storage::block_pointer_t(segment.block->block_id(), static_cast<uint32_t>(segment.block_offset()));
                 dp.compression = loaded_compression;
                 dp.segment_size = segment.segment_size();
                 if (auto* state = segment.segment_state()) {
@@ -298,8 +298,8 @@ namespace components::table {
         if (disk_backed) {
             dp.row_start = row_start;
             dp.tuple_count = tuple_count;
-            dp.block_pointer = storage::block_pointer_t(segment.block->block_id(),
-                                                        static_cast<uint32_t>(segment.block_offset()));
+            dp.block_pointer =
+                storage::block_pointer_t(segment.block->block_id(), static_cast<uint32_t>(segment.block_offset()));
             dp.compression = compression::compression_type::UNCOMPRESSED;
             dp.segment_size = segment_size;
             data_pointers_.push_back(std::move(dp));

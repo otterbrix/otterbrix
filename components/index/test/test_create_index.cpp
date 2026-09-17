@@ -12,11 +12,8 @@ TEST_CASE("components::index::indtype_code_roundtrip") {
     using components::logical_plan::index_type;
     using components::logical_plan::index_type_from_indtype_code;
     using components::logical_plan::index_type_to_indtype_code;
-    for (auto t : {index_type::single,
-                   index_type::composite,
-                   index_type::multikey,
-                   index_type::hashed,
-                   index_type::wildcard}) {
+    for (auto t :
+         {index_type::single, index_type::composite, index_type::multikey, index_type::hashed, index_type::wildcard}) {
         const char code = index_type_to_indtype_code(t);
         REQUIRE(code != 0);
         REQUIRE(index_type_from_indtype_code(code) == t);

@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
 
 // A NULL operand makes a comparison UNKNOWN, not FALSE; UNKNOWN rows are excluded from WHERE /
@@ -94,7 +94,7 @@ TEST_CASE("integration::cpp::null_3vl::and_or_propagate_unknown") {
     // OR: UNKNOWN or TRUE = TRUE; UNKNOWN or FALSE = UNKNOWN (excluded).
     CHECK(run(d, "SELECT id FROM n3.t WHERE x = 0 OR x = 5;").rows == 2);
     CHECK(run(d, "SELECT id FROM n3.t WHERE x = 999 OR x = 5;").rows == 1);
-    CHECK(run(d, "SELECT id FROM n3.t WHERE x = 0 OR id = 2;").rows == 2);    // TRUE rescues it
+    CHECK(run(d, "SELECT id FROM n3.t WHERE x = 0 OR id = 2;").rows == 2); // TRUE rescues it
     CHECK(run(d, "SELECT id FROM n3.t WHERE x IS NULL OR x = 0;").rows == 2);
 
     // AND: UNKNOWN and TRUE = UNKNOWN (excluded); UNKNOWN and FALSE = FALSE.

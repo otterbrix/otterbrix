@@ -63,9 +63,7 @@ namespace components::table {
         // open path). The one failure mode: a corrupt big-string overflow list
         // (uncompressed_string_segment_state::register_block finds a duplicate id). Read by
         // column_data_t::initialize_column right after construction.
-        [[nodiscard]] bool has_construction_error() const noexcept {
-            return construction_error_.contains_error();
-        }
+        [[nodiscard]] bool has_construction_error() const noexcept { return construction_error_.contains_error(); }
         [[nodiscard]] const core::error_t& construction_error() const noexcept { return construction_error_; }
 
         void initialize_scan(column_scan_state& state);
@@ -96,12 +94,11 @@ namespace components::table {
         // marker in it: copy the payload through `pbm` into a fresh file block and rewrite the
         // marker to name it; allocated ids are appended to `out_blocks`. The LIVE segment is
         // untouched and stays readable through its existing blocks.
-        [[nodiscard]] core::result_wrapper_t<bool>
-        persist_string_overflow(std::byte* segment_copy,
-                                uint64_t segment_size,
-                                uint64_t tuple_count,
-                                storage::partial_block_manager_t& pbm,
-                                std::vector<uint64_t>& out_blocks);
+        [[nodiscard]] core::result_wrapper_t<bool> persist_string_overflow(std::byte* segment_copy,
+                                                                           uint64_t segment_size,
+                                                                           uint64_t tuple_count,
+                                                                           storage::partial_block_manager_t& pbm,
+                                                                           std::vector<uint64_t>& out_blocks);
 
         // A partially-filled STRING segment keeps its dictionary pressed against the END of the
         // allocation, leaving the unused middle as zero slack; persisting the whole allocation

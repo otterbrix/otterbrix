@@ -18,15 +18,12 @@ namespace components::table {
         std::atomic<uint64_t> g_table_scan_rows_streamed{0};
     } // namespace
     uint64_t table_scan_rows_streamed() noexcept { return g_table_scan_rows_streamed.load(std::memory_order_relaxed); }
-    void reset_table_scan_rows_streamed() noexcept {
-        g_table_scan_rows_streamed.store(0, std::memory_order_relaxed);
-    }
+    void reset_table_scan_rows_streamed() noexcept { g_table_scan_rows_streamed.store(0, std::memory_order_relaxed); }
 #endif
 
     namespace {
         // The only place turning a row_group_pointer_t into ids, shared by the checkpoint writer and load_from_disk.
-        void collect_pointer_blocks(const storage::column_data_pointers_t& node,
-                                    std::pmr::vector<uint64_t>& out) {
+        void collect_pointer_blocks(const storage::column_data_pointers_t& node, std::pmr::vector<uint64_t>& out) {
             for (const auto& segment : node.segments) {
                 out.push_back(segment.block_pointer.block_id);
                 for (uint64_t overflow : segment.overflow_blocks) {
@@ -116,7 +113,6 @@ namespace components::table {
 
         parent.is_root_ = false;
     }
-
 
     [[nodiscard]] std::pmr::vector<types::complex_logical_type> data_table_t::copy_types() const {
         std::pmr::vector<types::complex_logical_type> types(resource_);
@@ -219,7 +215,7 @@ namespace components::table {
         std::vector<storage_index_t> physical_ids;
         physical_ids.reserve(column_ids.size());
         for (const auto& id : column_ids) {
-           storage_index_t physical = id;
+            storage_index_t physical = id;
             if (!id.is_row_id_column()) {
                 const auto index = id.primary_index();
                 assert(index < visible.size() && "to_physical_columns: the id names a column this transaction "
@@ -548,9 +544,9 @@ namespace components::table {
     }
 
     core::result_wrapper_t<uint64_t> data_table_t::delete_rows(table_delete_state&,
-                                                              vector::vector_t& row_identifiers,
-                                                              uint64_t count,
-                                                              uint64_t transaction_id) {
+                                                               vector::vector_t& row_identifiers,
+                                                               uint64_t count,
+                                                               uint64_t transaction_id) {
         assert(row_identifiers.type().type() == types::logical_type::BIGINT);
         if (count == 0) {
             return core::result_wrapper_t<uint64_t>{uint64_t{0}};
@@ -581,7 +577,6 @@ namespace components::table {
         }
         return core::result_wrapper_t<uint64_t>{delete_count};
     }
-
 
     uint64_t data_table_t::column_count() const { return column_definitions_.size(); }
 

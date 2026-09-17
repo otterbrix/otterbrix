@@ -22,10 +22,8 @@ namespace otterbrix_test {
     // Scans committed rows [row_start, row_start + count) of `table`, handing each
     // ≤DEFAULT_VECTOR_CAPACITY chunk to `function(vector::data_chunk_t&)`.
     template<typename Callback>
-    void scan_table_segment(components::table::data_table_t& table,
-                            int64_t row_start,
-                            uint64_t count,
-                            Callback&& function) {
+    void
+    scan_table_segment(components::table::data_table_t& table, int64_t row_start, uint64_t count, Callback&& function) {
         if (count == 0) {
             return;
         }
@@ -53,8 +51,8 @@ namespace otterbrix_test {
                                                 row_start + static_cast<int64_t>(count));
         // vector_index is stamped in collection-absolute space, so vector_index*CAP is already
         // the absolute start row — do NOT re-add row_group start (double-counts the group origin).
-        auto row_start_aligned = static_cast<int64_t>(state.table_state.vector_index *
-                                                      components::vector::DEFAULT_VECTOR_CAPACITY);
+        auto row_start_aligned =
+            static_cast<int64_t>(state.table_state.vector_index * components::vector::DEFAULT_VECTOR_CAPACITY);
 
         int64_t current_row = row_start_aligned;
         while (current_row < end) {

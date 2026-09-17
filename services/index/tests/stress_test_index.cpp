@@ -49,10 +49,9 @@ namespace {
     // Empty committed set: the segment-only fixtures below never recover a
     // txn-log, so the recover gate is never consulted — an empty set is the
     // correct value, not a fallback (a fresh dir has no txn-log to gate).
-    bitcask_index_disk_t
-    make_test_index(const std::filesystem::path& path,
-                    std::pmr::memory_resource* resource,
-                    std::pmr::set<std::uint64_t> commit_ids = std::pmr::set<std::uint64_t>{}) {
+    bitcask_index_disk_t make_test_index(const std::filesystem::path& path,
+                                         std::pmr::memory_resource* resource,
+                                         std::pmr::set<std::uint64_t> commit_ids = std::pmr::set<std::uint64_t>{}) {
         return bitcask_index_disk_t(path,
                                     resource,
                                     test_flush_threshold,

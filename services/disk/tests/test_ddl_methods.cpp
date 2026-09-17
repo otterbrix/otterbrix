@@ -26,7 +26,6 @@
 #include <thread>
 #include <unistd.h>
 
-
 using namespace services::disk;
 using namespace disk_test_helpers;
 namespace catalog = components::catalog;
@@ -115,7 +114,9 @@ namespace {
         }
 
         components::execution_context_t ctx() {
-            return components::execution_context_t{session_id_t{}, components::table::transaction_data::committed(), {}};
+            return components::execution_context_t{session_id_t{},
+                                                   components::table::transaction_data::committed(),
+                                                   {}};
         }
     };
 } // namespace
@@ -653,7 +654,10 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
               /*is_computed=*/true);
 
     auto append_ctx = [&](catalog::oid_t toid) {
-        return components::execution_context_t{session_id_t{}, components::table::transaction_data::committed(), {}, toid};
+        return components::execution_context_t{session_id_t{},
+                                               components::table::transaction_data::committed(),
+                                               {},
+                                               toid};
     };
 
     auto build_chunk = [&](std::vector<std::pair<std::string, complex_logical_type>> cols,
@@ -771,7 +775,10 @@ TEST_CASE("services::disk::ddl::drop_storage_many_erases_n") {
         chunk->set_cardinality(1);
         chunk->set_value(0, 0, kval);
         chunk->set_value(1, 0, std::int64_t{kval * 10});
-        components::execution_context_t append_ctx{session_id_t{}, components::table::transaction_data::committed(), {}, oid};
+        components::execution_context_t append_ctx{session_id_t{},
+                                                   components::table::transaction_data::committed(),
+                                                   {},
+                                                   oid};
         std::ignore =
             fx.invoke(&manager_disk_t::storage_append, append_ctx, oid, to_batch(&fx.resource, std::move(chunk)));
     };
@@ -1041,8 +1048,8 @@ TEST_CASE("services::disk::ddl::replay_mutations_refuse_when_the_owner_has_no_st
     const auto otbx = std::filesystem::path(ddl_dir()) / std::to_string(static_cast<unsigned>(ns_oid)) /
                       std::to_string(static_cast<unsigned>(table_oid)) / "table.otbx";
     std::filesystem::create_directories(otbx.parent_path());
-    REQUIRE_FALSE(fx.manager->create_storage_disk_sync(table_oid, ns_oid, cols, otbx, /*is_computed=*/false)
-                      .contains_error());
+    REQUIRE_FALSE(
+        fx.manager->create_storage_disk_sync(table_oid, ns_oid, cols, otbx, /*is_computed=*/false).contains_error());
     REQUIRE(fx.manager->has_storage(table_oid));
     CHECK(fx.manager->direct_add_column_sync(table_oid, schema_chunk).type == core::error_code_t::none);
 }

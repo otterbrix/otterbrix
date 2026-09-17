@@ -3,8 +3,8 @@
 // name list is empty -- so the declared constraint simply never existed. PostgreSQL instead resolves the
 // omitted list to the referenced table's primary key, or refuses the DDL if it has none.
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <string>
@@ -23,9 +23,7 @@ namespace {
         return out;
     }
 
-    void require_ids(otterbrix::wrapper_dispatcher_t* d,
-                     const std::string& table,
-                     const std::vector<int64_t>& ids) {
+    void require_ids(otterbrix::wrapper_dispatcher_t* d, const std::string& table, const std::vector<int64_t>& ids) {
         auto cur = exec(d, "SELECT id FROM " + table + " ORDER BY id;");
         INFO(table << " read error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
@@ -156,4 +154,3 @@ TEST_CASE("integration::cpp::fk_omitted_ref_columns::arity_against_primary_key_i
     const std::string what{cur->get_error().what};
     REQUIRE(what.find("column count") != std::string::npos);
 }
-

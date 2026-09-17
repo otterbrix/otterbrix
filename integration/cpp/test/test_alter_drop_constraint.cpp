@@ -1,8 +1,8 @@
 // DROP CONSTRAINT finds the pg_constraint row and cascades its pg_depend edges through the same
 // dynamic-cascade machinery DROP TABLE uses (seed = (pg_constraint, conoid)).
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <string>

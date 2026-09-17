@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/sql/transformer/utils.hpp>
@@ -16,7 +16,6 @@ namespace {
         return idx.value();
     }
 } // namespace
-
 
 // promote_column rebuilds a whole column, cell by cell through logical_value_t, whenever a later
 // row widens that column's type (the shape usually called quadratic promotion); a workload with

@@ -47,9 +47,8 @@ namespace components::compute::detail {
         }
 
         [[nodiscard]] core::error_t not_accumulating() const {
-            return core::error_t(
-                core::error_code_t::kernel_error,
-                std::pmr::string{"this kernel does not accumulate across chunks", error_resource()});
+            return core::error_t(core::error_code_t::kernel_error,
+                                 std::pmr::string{"this kernel does not accumulate across chunks", error_resource()});
         }
 
         vector_t prepare_vector_output(size_t length) {
@@ -59,10 +58,10 @@ namespace components::compute::detail {
 
         [[nodiscard]] core::error_t check_kernel() const {
             if (!kernel_ctx_) {
-                return core::error_t(core::error_code_t::kernel_error,
+                return core::error_t(
+                    core::error_code_t::kernel_error,
 
-                                     std::pmr::string{"Kernel context is null, init() method must be called first!",
-                                                      error_resource()});
+                    std::pmr::string{"Kernel context is null, init() method must be called first!", error_resource()});
             }
 
             if (!kernel_) {

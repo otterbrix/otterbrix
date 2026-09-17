@@ -452,7 +452,7 @@ namespace components::catalog {
         // Depends on the source table so a future DROP TABLE can detect a dangling matview.
         if (source_table_oid != INVALID_OID) {
             {
-            const auto& def = system_table(pg_depend_oid);
+                const auto& def = system_table(pg_depend_oid);
                 auto chunk =
                     make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
                         set_oid(c, 0, 0, well_known_oid::pg_class_table);
@@ -479,12 +479,12 @@ namespace components::catalog {
         // WRITER-SIDE GATE, the conkey gate's twin (see build_create_constraint_writes).
         for (std::size_t i = 0; i < column_attoids.size(); ++i) {
             if (column_attoids[i] == INVALID_OID) {
-                return core::error_t{
-                    core::error_code_t::invalid_constraint,
-                    std::pmr::string{"index '" + index_name + "': indkey column #" + std::to_string(i) +
-                                         " has no attoid; the row would claim a column without a "
-                                         "dependency edge",
-                                     resource}};
+                return core::error_t{core::error_code_t::invalid_constraint,
+                                     std::pmr::string{"index '" + index_name + "': indkey column #" +
+                                                          std::to_string(i) +
+                                                          " has no attoid; the row would claim a column without a "
+                                                          "dependency edge",
+                                                      resource}};
             }
         }
 
@@ -684,13 +684,13 @@ namespace components::catalog {
             for (std::size_t i = 0; i < list->size(); ++i) {
                 if ((*list)[i] == INVALID_OID) {
                     const bool own = (list == &fk_column_attoids);
-                    return core::error_t{
-                        core::error_code_t::invalid_constraint,
-                        std::pmr::string{"constraint '" + constraint_name + "': " +
-                                             (own ? "conkey" : "confkey") + " column #" + std::to_string(i) +
-                                             " has no attoid; the row would claim a column without a "
-                                             "dependency edge",
-                                         resource}};
+                    return core::error_t{core::error_code_t::invalid_constraint,
+                                         std::pmr::string{"constraint '" + constraint_name +
+                                                              "': " + (own ? "conkey" : "confkey") + " column #" +
+                                                              std::to_string(i) +
+                                                              " has no attoid; the row would claim a column without a "
+                                                              "dependency edge",
+                                                          resource}};
                 }
             }
         }

@@ -18,9 +18,9 @@ namespace {
     }
 
     // Every width/scale used in this file is in-window, so the check below never fires.
-    components::types::complex_logical_type
-    make_decimal(uint8_t width, uint8_t scale, std::string alias = "") {
-        auto created = components::types::complex_logical_type::create_decimal(decimal_resource(), width, scale, std::move(alias));
+    components::types::complex_logical_type make_decimal(uint8_t width, uint8_t scale, std::string alias = "") {
+        auto created =
+            components::types::complex_logical_type::create_decimal(decimal_resource(), width, scale, std::move(alias));
         REQUIRE_FALSE(created.has_error());
         return std::move(created.value());
     }

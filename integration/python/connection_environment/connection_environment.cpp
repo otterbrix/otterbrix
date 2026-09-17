@@ -32,9 +32,8 @@ namespace otterbrix {
         // (base_otterbrix_t::resource, integration/cpp/base_spaces.hpp) and every refusal
         // below returns before make_otterbrix builds one. `resource` is owned by the module
         // (main.cpp's PYBIND11_MODULE body) and passed in by `connect`; unused on success.
-        core::error_t path_error(std::pmr::memory_resource* resource,
-                                 core::error_code_t code,
-                                 const std::string& what) {
+        core::error_t
+        path_error(std::pmr::memory_resource* resource, core::error_code_t code, const std::string& what) {
             return core::error_t{code, std::pmr::string{what, resource}};
         }
 

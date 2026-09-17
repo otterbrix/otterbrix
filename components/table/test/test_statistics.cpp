@@ -1,8 +1,5 @@
 #include <catch2/catch_approx.hpp>
 
-#include <cstdio>
-#include <string>
-#include <unistd.h>
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/base_statistics.hpp>
 #include <components/table/column_data.hpp>
@@ -13,6 +10,9 @@
 #include <components/table/storage/standard_buffer_manager.hpp>
 #include <components/vector/vector.hpp>
 #include <core/file/local_file_system.hpp>
+#include <cstdio>
+#include <string>
+#include <unistd.h>
 
 namespace {
     const std::string& statistics_db_path() {

@@ -163,9 +163,8 @@ namespace services::disk {
             }
             const auto stamped_range = stamped.value();
             if (stamped_range.count > 0) {
-                appended.push_back(components::pg_catalog_append_range_t{pg_attr_oid,
-                                                                         stamped_range.start_row,
-                                                                         stamped_range.count});
+                appended.push_back(
+                    components::pg_catalog_append_range_t{pg_attr_oid, stamped_range.start_row, stamped_range.count});
             }
         }
 

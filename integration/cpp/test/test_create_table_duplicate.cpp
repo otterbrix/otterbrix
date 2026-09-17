@@ -2,8 +2,8 @@
 // (enrich_logical_plan.cpp) skipped it and check_collection_exists always answered "does not
 // exist", letting a second CREATE TABLE append a duplicate pg_class row under the same name.
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

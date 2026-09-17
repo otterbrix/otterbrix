@@ -18,9 +18,7 @@ namespace components::catalog {
         cascade_ = 1,
     };
 
-    inline constexpr bool refuses_on_dependency(drop_behavior_t b) noexcept {
-        return b == drop_behavior_t::restrict_;
-    }
+    inline constexpr bool refuses_on_dependency(drop_behavior_t b) noexcept { return b == drop_behavior_t::restrict_; }
 
     enum class ddl_status : std::uint8_t
     {

@@ -1,7 +1,6 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
-
 
 // TODO: edge case with connecting query and it's subquery
 /*
@@ -74,7 +73,6 @@ namespace {
     bool contains(const std::string& hay, const std::string& needle) { return hay.find(needle) != std::string::npos; }
 
 } // namespace
-
 
 TEST_CASE("integration::cpp::test_subqueries::where_clause") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/where_clause"));
@@ -371,7 +369,6 @@ TEST_CASE("integration::cpp::test_subqueries::correlated_exists_semi_anti") {
 // NOTE: NOT IN is deliberately not routed to an anti-join — a plain anti-join can't reproduce SQL
 // three-valued logic (a NULL in the subquery makes `x NOT IN (S)` never TRUE), so it keeps the membership-test path.
 
-
 TEST_CASE("integration::cpp::test_subqueries::select_list_and_from") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/select_list_and_from"));
     test_clear_directory(config);
@@ -482,7 +479,6 @@ TEST_CASE("integration::cpp::test_subqueries::select_list_and_from") {
     }
 }
 
-
 TEST_CASE("integration::cpp::test_subqueries::join") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/join"));
     test_clear_directory(config);
@@ -540,7 +536,6 @@ TEST_CASE("integration::cpp::test_subqueries::join") {
     }
 }
 
-
 TEST_CASE("integration::cpp::test_subqueries::having") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/having"));
     test_clear_directory(config);
@@ -588,7 +583,6 @@ TEST_CASE("integration::cpp::test_subqueries::having") {
         REQUIRE(cur->size() == 5);
     }
 }
-
 
 TEST_CASE("integration::cpp::test_subqueries::nested") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/nested"));
@@ -726,7 +720,6 @@ TEST_CASE("integration::cpp::test_subqueries::nested") {
     }
 }
 
-
 TEST_CASE("integration::cpp::test_subqueries::dml") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/dml"));
     test_clear_directory(config);
@@ -838,7 +831,6 @@ TEST_CASE("integration::cpp::test_subqueries::dml") {
     }
 }
 
-
 TEST_CASE("integration::cpp::test_subqueries::cte") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/cte"));
     test_clear_directory(config);
@@ -938,7 +930,6 @@ TEST_CASE("integration::cpp::test_subqueries::cte") {
         }
     }
 }
-
 
 TEST_CASE("integration::cpp::test_subqueries::union") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/union"));
@@ -1109,7 +1100,6 @@ TEST_CASE("integration::cpp::test_subqueries::union_group_limit_offset") {
         REQUIRE(cur->value(0, 1).value<int64_t>() == 3);
     }
 }
-
 
 TEST_CASE("integration::cpp::test_subqueries::union_complex_types") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/union_complex_types"));
@@ -1851,7 +1841,6 @@ TEST_CASE("integration::cpp::test_subqueries::distinct_limit_offset") {
 
     INFO("setup");
     { setup_subquery_db(dispatcher); }
-
 
     INFO("SELECT DISTINCT dept_id LIMIT 3 returns exactly 3 distinct rows (was < 3: scan capped pre-dedup)");
     {

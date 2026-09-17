@@ -4,8 +4,8 @@
 // pins the SQL route. catalog::deptype::blocks_restrict is exactly `dt == 'n'`
 // (components/catalog/dependency_walker.hpp).
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -80,9 +80,10 @@ namespace {
     }
 
     catalog::oid_t table_oid_named(restrict_spaces_t& space, const std::string& name) {
-        auto batches =
-            catalog_chunks_with(space, catalog::well_known_oid::pg_class_table, catalog::pg_class_col::relname,
-                                std::string_view{name});
+        auto batches = catalog_chunks_with(space,
+                                           catalog::well_known_oid::pg_class_table,
+                                           catalog::pg_class_col::relname,
+                                           std::string_view{name});
         REQUIRE_FALSE(batches.has_error());
         for (const auto& chunk : batches.value()) {
             for (uint64_t i = 0; i < chunk.size(); ++i) {
@@ -159,12 +160,11 @@ namespace {
 
     // Same node transform_drop builds (transform_table.cpp, wrap_one), plus
     // the one call it omits: set_behavior.
-    components::cursor::cursor_t_ptr drop_table_restrict(otterbrix::wrapper_dispatcher_t* d,
-                                                         const std::string& database,
-                                                         const std::string& relname) {
+    components::cursor::cursor_t_ptr
+    drop_table_restrict(otterbrix::wrapper_dispatcher_t* d, const std::string& database, const std::string& relname) {
         auto* resource = d->resource();
-        auto node = components::logical_plan::make_node_drop(resource,
-                                                             components::logical_plan::drop_target_kind::collection);
+        auto node =
+            components::logical_plan::make_node_drop(resource, components::logical_plan::drop_target_kind::collection);
         node->set_dbname(database);
         node->set_relname(relname);
         node->set_behavior(components::catalog::drop_behavior_t::restrict_);

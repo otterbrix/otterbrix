@@ -47,11 +47,10 @@ namespace components::operators {
 
     } // namespace
 
-    operator_unique_constraint_t::operator_unique_constraint_t(
-        std::pmr::memory_resource* resource,
-        log_t log,
-        catalog::oid_t table_oid,
-        std::vector<std::vector<std::string>> unique_groups)
+    operator_unique_constraint_t::operator_unique_constraint_t(std::pmr::memory_resource* resource,
+                                                               log_t log,
+                                                               catalog::oid_t table_oid,
+                                                               std::vector<std::vector<std::string>> unique_groups)
         : read_write_operator_t(resource, std::move(log), operator_type::unique_constraint)
         , table_oid_(table_oid)
         , unique_groups_(std::move(unique_groups)) {}
@@ -116,16 +115,12 @@ namespace components::operators {
             const std::vector<size_t> no_owned_columns;
             for (auto& chunk : in_chunks) {
                 const uint64_t n = chunk.size();
-                components::vector::data_chunk_t keys_chunk(resource_,
-                                                            key_types,
-                                                            no_owned_columns,
-                                                            n == 0 ? 1 : n);
+                components::vector::data_chunk_t keys_chunk(resource_, key_types, no_owned_columns, n == 0 ? 1 : n);
                 for (std::size_t j = 0; j < sources.size(); ++j) {
                     // Every chunk is read at the front chunk's positions, so a layout/type mismatch would read
                     // past the array or the wrong column in silence. Same per-chunk guard as
                     // operator_fk_cascade_t's width check.
-                    if (sources[j] >= chunk.column_count() ||
-                        chunk.data[sources[j]].type().alias() != group[j] ||
+                    if (sources[j] >= chunk.column_count() || chunk.data[sources[j]].type().alias() != group[j] ||
                         chunk.data[sources[j]].type() != key_types[j]) {
                         std::pmr::string what{"UNIQUE constraint: key column \"", resource_};
                         what.append(group[j].c_str());
@@ -229,11 +224,11 @@ namespace components::operators {
             // than skip the stored-row scan. Both splice sites (planner.cpp rewrite_insert / rewrite_update) get
             // their oid from catalog_resolves_t::constraints_for, which never emits groups for INVALID_OID.
             if (table_oid_ == catalog::INVALID_OID) {
-                set_error(core::error_t{
-                    core::error_code_t::invalid_constraint,
-                    std::pmr::string{"UNIQUE constraint: the table it is declared on did not resolve — "
-                                     "stored rows cannot be checked",
-                                     resource_}});
+                set_error(
+                    core::error_t{core::error_code_t::invalid_constraint,
+                                  std::pmr::string{"UNIQUE constraint: the table it is declared on did not resolve — "
+                                                   "stored rows cannot be checked",
+                                                   resource_}});
                 co_return;
             }
 

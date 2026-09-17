@@ -169,11 +169,10 @@ TEST_CASE("services::index::bitcask_index_agent_t refuses writes after its drop"
     REQUIRE(stage_error.contains_error());
     REQUIRE(stage_error.type == core::error_code_t::index_not_exists);
 
-    auto [txn_sched, txn_future] =
-        actor_zeta::otterbrix::send<&index_agent_contract::commit_inserts>(agent->address(),
-                                                                           session,
-                                                                           uint64_t{99},
-                                                                           commit_id_of(99));
+    auto [txn_sched, txn_future] = actor_zeta::otterbrix::send<&index_agent_contract::commit_inserts>(agent->address(),
+                                                                                                      session,
+                                                                                                      uint64_t{99},
+                                                                                                      commit_id_of(99));
     agent->resume(1);
     REQUIRE(txn_future.is_ready());
     auto txn_error = std::move(txn_future).take_ready();

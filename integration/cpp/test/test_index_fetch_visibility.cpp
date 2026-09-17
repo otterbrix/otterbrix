@@ -1,7 +1,7 @@
 // The index answers a SUPERSET filter, not a visibility one; the table decides what a reader may see.
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
 
 using namespace components;
@@ -12,9 +12,8 @@ namespace {
     constexpr unsigned kSeedRows = 2000;
     constexpr int64_t kLateId = 500000;
 
-    cursor_t_ptr exec(otterbrix::wrapper_dispatcher_t* dispatcher,
-                      otterbrix::session_id_t& session,
-                      const std::string& sql) {
+    cursor_t_ptr
+    exec(otterbrix::wrapper_dispatcher_t* dispatcher, otterbrix::session_id_t& session, const std::string& sql) {
         return dispatcher->execute_sql(session, sql);
     }
 

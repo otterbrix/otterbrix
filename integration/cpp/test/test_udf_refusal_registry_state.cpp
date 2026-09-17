@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -119,9 +119,7 @@ namespace {
         services::disk::manager_disk_t* disk() noexcept { return manager_disk_.get(); }
     };
 
-    core::error_t probe_exec_unary(compute::kernel_context&,
-                                   const vector::data_chunk_t& in,
-                                   vector::vector_t& out) {
+    core::error_t probe_exec_unary(compute::kernel_context&, const vector::data_chunk_t& in, vector::vector_t& out) {
         const auto* source = in.data[0].data<int64_t>();
         auto* destination = out.data<int64_t>();
         for (uint64_t row = 0; row < in.size(); ++row) {

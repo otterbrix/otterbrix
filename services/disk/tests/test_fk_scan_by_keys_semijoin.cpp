@@ -72,7 +72,9 @@ namespace {
             return inner_.append(d, txn);
         }
         core::result_wrapper_t<components::storage::appended_range_t>
-        update(vector_t& ids, data_chunk_t& d, transaction_data txn) override { return inner_.update(ids, d, txn); }
+        update(vector_t& ids, data_chunk_t& d, transaction_data txn) override {
+            return inner_.update(ids, d, txn);
+        }
         core::result_wrapper_t<uint64_t> delete_rows(vector_t& ids, uint64_t c, uint64_t txn_id) override {
             return inner_.delete_rows(ids, c, txn_id);
         }
@@ -126,8 +128,7 @@ namespace {
     // fresh file, though the semi-join under test always reads through the same storage adapter.
     std::filesystem::path semijoin_otbx() {
         static const std::filesystem::path path =
-            std::filesystem::path("/tmp") /
-            ("test_otterbrix_fk_semijoin_" + std::to_string(::getpid()) + ".otbx");
+            std::filesystem::path("/tmp") / ("test_otterbrix_fk_semijoin_" + std::to_string(::getpid()) + ".otbx");
         return path;
     }
 

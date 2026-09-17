@@ -88,8 +88,8 @@ namespace components::compute {
         // need lambda -> stateless_fn_t -> type_resolver_fn, two user-defined conversions in one
         // implicit sequence (ill-formed). Deducing F and casting inline spends only one.
         template<typename F>
-        requires(!std::is_same_v<std::remove_cvref_t<F>, type_resolver_fn> &&
-                 std::is_convertible_v<F, stateless_fn_t>) type_resolver_fn(F&& fn) noexcept
+        requires(!std::is_same_v<std::remove_cvref_t<F>, type_resolver_fn> && std::is_convertible_v<F, stateless_fn_t>)
+            type_resolver_fn(F&& fn) noexcept
             : stateless_(static_cast<stateless_fn_t>(fn)) {}
 
         type_resolver_fn(indexed_fn_t fn, size_t input_index) noexcept

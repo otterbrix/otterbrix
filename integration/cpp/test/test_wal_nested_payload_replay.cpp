@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -22,9 +22,7 @@ namespace {
     constexpr std::size_t ARRAY_LENGTH = 40;
     constexpr std::size_t INSERT_BATCH = 512;
 
-    int64_t array_element(std::size_t row, std::size_t index) {
-        return static_cast<int64_t>(row * 100 + index);
-    }
+    int64_t array_element(std::size_t row, std::size_t index) { return static_cast<int64_t>(row * 100 + index); }
 
     void run_sql(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& sql) {
         auto session = otterbrix::session_id_t();
@@ -139,8 +137,8 @@ TEST_CASE("integration::cpp::test_wal_nested_payload_replay::array_payload_survi
             }
         }
 
-        INFO("first divergence: row " << first_bad_row << " element " << first_bad_index << " read "
-                                      << first_bad_value << ", written " << first_bad_expected);
+        INFO("first divergence: row " << first_bad_row << " element " << first_bad_index << " read " << first_bad_value
+                                      << ", written " << first_bad_expected);
         INFO("mismatched elements: " << mismatched_cells << " of " << (TOTAL_ROWS * ARRAY_LENGTH));
         INFO("rows with the wrong element count: " << wrong_cardinality_rows);
         INFO("elements that came back NULL: " << null_cells);

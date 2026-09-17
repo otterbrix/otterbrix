@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -139,8 +139,7 @@ namespace {
 
     // Every system table sits under the fixed system directory oid, so excluding it leaves this db's one user table.
     std::filesystem::path user_table_sidecar(const std::filesystem::path& db_root) {
-        const auto system_dir =
-            std::to_string(static_cast<unsigned>(services::disk::manager_disk_t::system_dir_oid()));
+        const auto system_dir = std::to_string(static_cast<unsigned>(services::disk::manager_disk_t::system_dir_oid()));
         std::vector<std::filesystem::path> found;
         for (const auto& ns : std::filesystem::directory_iterator(db_root)) {
             if (!ns.is_directory() || ns.path().filename().string() == system_dir) {
@@ -176,8 +175,7 @@ TEST_CASE("integration::cpp::checkpoint_rebuild_before_truncate::a_refused_trunc
     // Far above anything this case writes, so an automatic round can't fire mid-case and repair the state under test.
     config.wal.auto_checkpoint_threshold_bytes = 1024ull * 1024ull * 1024ull;
 
-    const std::filesystem::path crash_dir =
-        integration_fixture_path("test_checkpoint_rebuild_before_truncate/crashed");
+    const std::filesystem::path crash_dir = integration_fixture_path("test_checkpoint_rebuild_before_truncate/crashed");
 
     wal_open_refusal_t fault;
 

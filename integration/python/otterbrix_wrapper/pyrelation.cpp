@@ -23,13 +23,11 @@ namespace otterbrix {
         // Names the source vector's own resource explicitly: std::pmr::vector's copy
         // constructor doesn't propagate the source allocator, so a plain copy here would
         // rebuild the schema on the default resource on every chaining hop.
-        built_relation_t
-        relation_input(const components::logical_plan::node_ptr& node,
-                       const std::pmr::vector<components::table::column_definition_t>& schema) {
-            return built_relation_t{node,
-                                    std::pmr::vector<components::table::column_definition_t>(
-                                        schema,
-                                        schema.get_allocator().resource())};
+        built_relation_t relation_input(const components::logical_plan::node_ptr& node,
+                                        const std::pmr::vector<components::table::column_definition_t>& schema) {
+            return built_relation_t{
+                node,
+                std::pmr::vector<components::table::column_definition_t>(schema, schema.get_allocator().resource())};
         }
 
         std::optional<logical_plan::join_type> parse_join_type(const std::string& name) {
@@ -102,10 +100,9 @@ namespace otterbrix {
         return *env;
     }
 
-    static cursor::cursor_t_ptr
-    PyExecuteRelation(const std::shared_ptr<py_connection_t>& env,
-                      const logical_plan::node_ptr& node,
-                      bool optimize = false) {
+    static cursor::cursor_t_ptr PyExecuteRelation(const std::shared_ptr<py_connection_t>& env,
+                                                  const logical_plan::node_ptr& node,
+                                                  bool optimize = false) {
         assert(py::gil_check());
         py::gil_scoped_release release;
         return env->execute(node, optimize);
@@ -126,8 +123,7 @@ namespace otterbrix {
             fields.push_back(py_expr->get_expression());
         }
         return std::make_unique<py_relation_t>(env,
-                                              conn.select_relation(relation_input(node_, schema_),
-                                                                   std::move(fields)));
+                                               conn.select_relation(relation_input(node_, schema_), std::move(fields)));
     }
 
     std::unique_ptr<py_relation_t> py_relation_t::filter(const py::object& condition) {
@@ -174,9 +170,9 @@ namespace otterbrix {
                 order_nodes.push_back(std::move(sorted.value()));
             }
         }
-        return std::make_unique<py_relation_t>(env,
-                                              conn.sort_relation(relation_input(node_, schema_),
-                                                                 std::move(order_nodes)));
+        return std::make_unique<py_relation_t>(
+            env,
+            conn.sort_relation(relation_input(node_, schema_), std::move(order_nodes)));
     }
 
     std::unique_ptr<py_relation_t> py_relation_t::group(const py::args& args) {
@@ -194,8 +190,7 @@ namespace otterbrix {
             }
         }
         return std::make_unique<py_relation_t>(env,
-                                              conn.group_relation(relation_input(node_, schema_),
-                                                                  std::move(fields)));
+                                               conn.group_relation(relation_input(node_, schema_), std::move(fields)));
     }
 
     std::unique_ptr<py_relation_t>
@@ -226,12 +221,11 @@ namespace otterbrix {
         } else {
             exprs.push_back(conn.true_expression());
         }
-        return std::make_unique<py_relation_t>(
-            env,
-            conn.join_relation(relation_input(node_, schema_),
-                               relation_input(other.node_, other.schema_),
-                               exprs,
-                               dtype));
+        return std::make_unique<py_relation_t>(env,
+                                               conn.join_relation(relation_input(node_, schema_),
+                                                                  relation_input(other.node_, other.schema_),
+                                                                  exprs,
+                                                                  dtype));
     }
 
     std::unique_ptr<py_relation_t> py_relation_t::cross(const py_relation_t& other) {

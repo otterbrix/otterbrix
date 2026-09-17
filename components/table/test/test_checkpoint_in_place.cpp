@@ -21,8 +21,8 @@
 #include <filesystem>
 #include <set>
 #include <string>
-#include <vector>
 #include <unistd.h>
+#include <vector>
 
 #include "block_reachability_walker.hpp"
 
@@ -78,15 +78,13 @@ namespace {
         return s;
     }
 
-    std::unique_ptr<data_table_t>
-    make_fixed_table(inplace_env_t& env, tstorage::single_file_block_manager_t& bm) {
+    std::unique_ptr<data_table_t> make_fixed_table(inplace_env_t& env, tstorage::single_file_block_manager_t& bm) {
         std::vector<column_definition_t> columns;
         columns.emplace_back("value", logical_type::BIGINT);
         return std::make_unique<data_table_t>(&env.resource, bm, std::move(columns), "inplace_fixed");
     }
 
-    std::unique_ptr<data_table_t>
-    make_string_table(inplace_env_t& env, tstorage::single_file_block_manager_t& bm) {
+    std::unique_ptr<data_table_t> make_string_table(inplace_env_t& env, tstorage::single_file_block_manager_t& bm) {
         std::vector<column_definition_t> columns;
         columns.emplace_back("id", logical_type::BIGINT);
         columns.emplace_back("payload", logical_type::STRING_LITERAL);
@@ -227,7 +225,7 @@ namespace {
         return missing;
     }
 
-}
+} // namespace
 
 TEST_CASE("checkpoint_in_place: unchanged fixed-size segments are named, not copied", "[inplace]") {
     const auto path = inplace_db_path("fixed");
@@ -354,11 +352,10 @@ TEST_CASE("checkpoint_in_place: PROBE steady-state garbage per round", "[inplace
             checkpoint_production(bm, *table);
             auto report = otterbrix_test::walk_blocks(bm, path, &env.resource);
             REQUIRE(report.ok);
-            WARN("[probe A] reopened round " << round << ": blocks=" << bm.total_blocks()
-                                             << " free=" << bm.free_blocks()
-                                             << " published=" << report.free_list_content.size()
-                                             << " file=" << file_size_of(path)
-                                             << " bytes/row=" << file_size_of(path) / next_row);
+            WARN("[probe A] reopened round "
+                 << round << ": blocks=" << bm.total_blocks() << " free=" << bm.free_blocks()
+                 << " published=" << report.free_list_content.size() << " file=" << file_size_of(path)
+                 << " bytes/row=" << file_size_of(path) / next_row);
         }
         {
             inplace_env_t env;
@@ -386,10 +383,9 @@ TEST_CASE("checkpoint_in_place: PROBE steady-state garbage per round", "[inplace
             append_string_rows(*table, env, next_row, DELTA);
             next_row += DELTA;
             checkpoint_production(bm, *table);
-            WARN("[probe B] same-process string round " << round << ": blocks=" << bm.total_blocks()
-                                                        << " free=" << bm.free_blocks()
-                                                        << " file=" << file_size_of(path)
-                                                        << " bytes/row=" << file_size_of(path) / next_row);
+            WARN("[probe B] same-process string round "
+                 << round << ": blocks=" << bm.total_blocks() << " free=" << bm.free_blocks()
+                 << " file=" << file_size_of(path) << " bytes/row=" << file_size_of(path) / next_row);
         }
         REQUIRE(verify_string_rows(*table, env) == next_row);
         remove_file(path);
@@ -409,9 +405,9 @@ TEST_CASE("checkpoint_in_place: PROBE steady-state garbage per round", "[inplace
         for (int round = 1; round <= 3; ++round) {
             bm.dev_reset_tracking();
             checkpoint_production(bm, *table);
-            WARN("[probe C] fixed-size round " << round << ": blocks=" << bm.total_blocks()
-                                               << " free=" << bm.free_blocks() << " issued="
-                                               << bm.dev_issued_ids().size() << " file=" << file_size_of(path));
+            WARN("[probe C] fixed-size round "
+                 << round << ": blocks=" << bm.total_blocks() << " free=" << bm.free_blocks()
+                 << " issued=" << bm.dev_issued_ids().size() << " file=" << file_size_of(path));
         }
         REQUIRE(verify_fixed_rows(*table, env) == 300000);
         remove_file(path);

@@ -93,8 +93,8 @@ namespace components::operators {
         }
 
         // Registry-based; failures here must abandon_build. frame_resource must stay real (argless lambda aborts).
-        auto abandon_build = [this, ctx]([[maybe_unused]] std::pmr::memory_resource* frame_resource)
-            -> actor_zeta::unique_future<void> {
+        auto abandon_build =
+            [this, ctx]([[maybe_unused]] std::pmr::memory_resource* frame_resource) -> actor_zeta::unique_future<void> {
             auto [_d, df] = actor_zeta::otterbrix::send(ctx->index_address,
                                                         &services::index::manager_index_t::drop_index,
                                                         ctx->session,
@@ -111,16 +111,15 @@ namespace components::operators {
             // renumbers ids stamped below); held, never advanced, across the whole read.
             uint64_t gate_cursor_id = 0;
             {
-                auto [_g, gf] =
-                    actor_zeta::otterbrix::send(ctx->disk_address,
-                                                &services::disk::manager_disk_t::storage_fetch_next_batch,
-                                                ctx->session,
-                                                table_oid_,
-                                                uint64_t{0},
-                                                std::unique_ptr<components::table::table_filter_t>(nullptr),
-                                                int64_t{-1},
-                                                std::vector<size_t>{0},
-                                                ctx->txn);
+                auto [_g, gf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                            &services::disk::manager_disk_t::storage_fetch_next_batch,
+                                                            ctx->session,
+                                                            table_oid_,
+                                                            uint64_t{0},
+                                                            std::unique_ptr<components::table::table_filter_t>(nullptr),
+                                                            int64_t{-1},
+                                                            std::vector<size_t>{0},
+                                                            ctx->txn);
                 auto gate_r = co_await std::move(gf);
                 if (gate_r.has_error()) {
                     set_error(gate_r.error());
@@ -130,9 +129,9 @@ namespace components::operators {
                 }
                 gate_cursor_id = gate_r.value().cursor_id;
             }
-            auto close_gate = [this, ctx, gate_cursor_id](
-                                  [[maybe_unused]] std::pmr::memory_resource* frame_resource)
-                -> actor_zeta::unique_future<void> {
+            auto close_gate =
+                [this, ctx, gate_cursor_id](
+                    [[maybe_unused]] std::pmr::memory_resource* frame_resource) -> actor_zeta::unique_future<void> {
                 auto [_c, cf] = actor_zeta::otterbrix::send(ctx->disk_address,
                                                             &services::disk::manager_disk_t::storage_close_cursor,
                                                             ctx->session,
@@ -165,12 +164,12 @@ namespace components::operators {
                 const uint64_t count =
                     std::min<uint64_t>(components::vector::DEFAULT_VECTOR_CAPACITY, total_rows - base);
                 // create_data, but no zeroing: every one of `count` slots is written right below.
-                components::vector::vector_t fetch_ids(resource_,
-                                                       components::types::complex_logical_type{
-                                                           components::types::logical_type::BIGINT},
-                                                       /*create_data=*/true,
-                                                       /*zero_data=*/false,
-                                                       count);
+                components::vector::vector_t fetch_ids(
+                    resource_,
+                    components::types::complex_logical_type{components::types::logical_type::BIGINT},
+                    /*create_data=*/true,
+                    /*zero_data=*/false,
+                    count);
                 for (uint64_t k = 0; k < count; ++k) {
                     fetch_ids.data<int64_t>()[k] = static_cast<int64_t>(base + k);
                 }

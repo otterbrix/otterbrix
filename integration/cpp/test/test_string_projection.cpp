@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
@@ -44,7 +44,7 @@ namespace {
 } // namespace
 
 #define STRPROJ_ENV(dirname)                                                                                           \
-    auto config = test_create_config(integration_fixture_path("test_string_projection/" dirname));                    \
+    auto config = test_create_config(integration_fixture_path("test_string_projection/" dirname));                     \
     test_clear_directory(config);                                                                                      \
     config.log.level = log_t::level::off;                                                                              \
     test_spaces space(config);                                                                                         \

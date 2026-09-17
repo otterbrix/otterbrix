@@ -65,10 +65,10 @@ namespace services::wal {
             if (it == commits_by_txn.end()) {
                 continue;
             }
-            const auto marker = std::upper_bound(it->second.begin(),
-                                                 it->second.end(),
-                                                 r.id,
-                                                 [](id_t probe, const commit_marker_t& m) { return probe < m.wal_id; });
+            const auto marker =
+                std::upper_bound(it->second.begin(), it->second.end(), r.id, [](id_t probe, const commit_marker_t& m) {
+                    return probe < m.wal_id;
+                });
             if (marker == it->second.end()) {
                 continue;
             }

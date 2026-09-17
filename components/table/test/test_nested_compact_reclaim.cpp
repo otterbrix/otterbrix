@@ -104,11 +104,8 @@ namespace {
 
     std::string row_name(uint64_t row) { return "nested_row_payload_padding_" + std::to_string(row); }
 
-    void append_nested_rows(data_table_t& table,
-                            nested_env_t& env,
-                            nested_kind_t kind,
-                            uint64_t start,
-                            uint64_t count) {
+    void
+    append_nested_rows(data_table_t& table, nested_env_t& env, nested_kind_t kind, uint64_t start, uint64_t count) {
         auto struct_type = nested_struct_type(env);
         auto types = table.copy_types();
         uint64_t offset = 0;

@@ -59,10 +59,11 @@ namespace components::table {
         // collection_scan_state &scan_state, vector::data_chunk_t &scan_chunk);
         // Refuses (out_of_memory) rather than assert-and-break: a successor whose new column is SHORTER
         // than count would let every scan read past its end (and the assert itself vanishes under NDEBUG).
-        [[nodiscard]] core::result_wrapper_t<std::unique_ptr<row_group_t>> add_column(collection_t* collection,
-                                                column_definition_t& new_column,
-                                                const std::optional<types::logical_value_t>& default_value,
-                                                vector::vector_t& intermediate);
+        [[nodiscard]] core::result_wrapper_t<std::unique_ptr<row_group_t>>
+        add_column(collection_t* collection,
+                   column_definition_t& new_column,
+                   const std::optional<types::logical_value_t>& default_value,
+                   vector::vector_t& intermediate);
         std::unique_ptr<row_group_t> remove_column(collection_t* collection, uint64_t removed_column);
 
         void initialize_empty(const std::pmr::vector<types::complex_logical_type>& types);

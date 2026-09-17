@@ -45,12 +45,11 @@ namespace components::operators {
         }
 
         if (ctx->disk_address == actor_zeta::address_t::empty_address()) {
-            set_error(core::error_t{
-                core::error_code_t::physical_plan_error,
-                std::pmr::string{"set " + std::string(setting_def.sql_name) +
-                                     ": no disk actor is wired — the pg_settings row cannot be "
-                                     "written, so the setting would not survive this process",
-                                 this->resource()}});
+            set_error(core::error_t{core::error_code_t::physical_plan_error,
+                                    std::pmr::string{"set " + std::string(setting_def.sql_name) +
+                                                         ": no disk actor is wired — the pg_settings row cannot be "
+                                                         "written, so the setting would not survive this process",
+                                                     this->resource()}});
             mark_failed();
             co_return;
         }
@@ -58,12 +57,11 @@ namespace components::operators {
         const auto* settings_def =
             components::catalog::find_system_table(components::catalog::well_known_oid::pg_settings_table);
         if (settings_def == nullptr) {
-            set_error(core::error_t{
-                core::error_code_t::physical_plan_error,
-                std::pmr::string{"set " + std::string(setting_def.sql_name) +
-                                     ": the pg_settings schema is missing from the system-table "
-                                     "registry — the setting cannot be persisted",
-                                 this->resource()}});
+            set_error(core::error_t{core::error_code_t::physical_plan_error,
+                                    std::pmr::string{"set " + std::string(setting_def.sql_name) +
+                                                         ": the pg_settings schema is missing from the system-table "
+                                                         "registry — the setting cannot be persisted",
+                                                     this->resource()}});
             mark_failed();
             co_return;
         }

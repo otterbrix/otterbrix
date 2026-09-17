@@ -3,13 +3,14 @@
 namespace components::sort {
 
     columnar_sorter_t::columnar_sorter_t(std::pmr::memory_resource* resource,
-                                        size_t index,
-                                        order order_,
-                                        null_order null_order_) {
+                                         size_t index,
+                                         order order_,
+                                         null_order null_order_) {
         add(resource, index, order_, null_order_);
     }
 
-    void columnar_sorter_t::add(std::pmr::memory_resource* resource, size_t index, order order_, null_order null_order_) {
+    void
+    columnar_sorter_t::add(std::pmr::memory_resource* resource, size_t index, order order_, null_order null_order_) {
         std::pmr::vector<size_t> path{resource};
         path.push_back(index);
         keys_.push_back({std::move(path), order_, null_order_});

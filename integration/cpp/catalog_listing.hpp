@@ -15,7 +15,6 @@ namespace otterbrix {
 
     // USER tables: oid >= FIRST_USER_OID and relkind == 'r'. A failed query is an error, never an empty list.
     core::result_wrapper_t<std::pmr::vector<std::pmr::string>>
-    user_table_names_from_pg_class(std::pmr::memory_resource* resource,
-                                   const components::cursor::cursor_t_ptr& cursor);
+    user_table_names_from_pg_class(std::pmr::memory_resource* resource, const components::cursor::cursor_t_ptr& cursor);
 
 } // namespace otterbrix

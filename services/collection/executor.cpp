@@ -11,14 +11,18 @@
 #include <services/disk/manager_disk.hpp>
 #include <services/index/manager_index.hpp>
 
+#include <components/catalog/system_table_schemas.hpp>
+#include <components/catalog/table_id.hpp>
 #include <components/logical_plan/effective_table_oid.hpp>
 #include <components/logical_plan/forward.hpp>
+#include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_allocate_oids.hpp>
 #include <components/logical_plan/node_alter_column.hpp>
 #include <components/logical_plan/node_alter_table.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/node_create_collection.hpp>
 #include <components/logical_plan/node_create_constraint.hpp>
+#include <components/logical_plan/node_create_database.hpp>
 #include <components/logical_plan/node_create_index.hpp>
 #include <components/logical_plan/node_create_macro.hpp>
 #include <components/logical_plan/node_create_matview.hpp>
@@ -28,24 +32,20 @@
 #include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/node_delete.hpp>
 #include <components/logical_plan/node_drop.hpp>
+#include <components/logical_plan/node_extension.hpp>
 #include <components/logical_plan/node_insert.hpp>
+#include <components/logical_plan/node_join.hpp>
+#include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/node_register_cast.hpp>
 #include <components/logical_plan/node_sequence.hpp>
 #include <components/logical_plan/node_set_setting.hpp>
+#include <components/logical_plan/node_transaction.hpp>
 #include <components/logical_plan/node_update.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
-#include <core/executor.hpp>
-#include <components/catalog/system_table_schemas.hpp>
-#include <components/catalog/table_id.hpp>
-#include <components/logical_plan/node_aggregate.hpp>
-#include <components/logical_plan/node_create_database.hpp>
-#include <components/logical_plan/node_extension.hpp>
-#include <components/logical_plan/node_join.hpp>
-#include <components/logical_plan/node_match.hpp>
-#include <components/logical_plan/node_transaction.hpp>
 #include <components/planner/optimizer.hpp>
 #include <components/planner/view_expansion.hpp>
+#include <core/executor.hpp>
 #include <services/dispatcher/dispatcher.hpp>
 #include <services/dispatcher/enrich_logical_plan.hpp>
 #include <services/dispatcher/resolve_type.hpp>
@@ -435,11 +435,10 @@ namespace services::collection::executor {
                 if (!sub_node->has_output_types()) {
                     co_return execute_result_t{make_cursor(
                         resource(),
-                        core::error_t{
-                            core::error_code_t::sql_parse_error,
-                            std::pmr::string{"argument of WHERE/HAVING must be type boolean: the sub-query's "
-                                             "output type could not be resolved from the schema",
-                                             resource()}})};
+                        core::error_t{core::error_code_t::sql_parse_error,
+                                      std::pmr::string{"argument of WHERE/HAVING must be type boolean: the sub-query's "
+                                                       "output type could not be resolved from the schema",
+                                                       resource()}})};
                 }
                 const auto out_type = sub_node->output_types().front().type();
                 if (out_type != components::types::logical_type::BOOLEAN &&
@@ -517,8 +516,7 @@ namespace services::collection::executor {
         const bool needs_dml_txn =
             !is_plan_only_explain && (original_type == node_type::insert_t || original_type == node_type::update_t ||
                                       original_type == node_type::delete_t);
-        const bool needs_commit_txn =
-            original_type == node_type::set_setting_t || original_type == node_type::vacuum_t;
+        const bool needs_commit_txn = original_type == node_type::set_setting_t || original_type == node_type::vacuum_t;
 
         auto run_resolve_subplan = [this, session, resolve_txn, &session_ctx, &context_storage, &plan](
                                        [[maybe_unused]] executor_t* self,
@@ -602,9 +600,7 @@ namespace services::collection::executor {
                         co_return execute_result_t{make_cursor(resource(), std::move(err))};
                     }
                     if (body.resolves) {
-                        services::dispatcher::merge_catalog_resolves(resource(),
-                                                                     plan.catalog_resolves,
-                                                                     *body.resolves);
+                        services::dispatcher::merge_catalog_resolves(resource(), plan.catalog_resolves, *body.resolves);
                     }
                 }
                 if (services::catalog_resolve::has_unresolved_entries(plan.catalog_resolves)) {
@@ -1005,20 +1001,20 @@ namespace services::collection::executor {
                     static_cast<const components::logical_plan::node_alter_table_t*>(plan.sub_queries.back().get());
                 if (components::catalog::is_catalog_table(alter_node->table_oid())) {
                     // System catalog shape is fixed at bootstrap; altering it desyncs positional column readers.
-                    error = make_cursor(
-                        resource(),
-                        core::error_t{core::error_code_t::sql_parse_error,
-                                      std::pmr::string{"cannot alter a system catalog table", resource()}});
+                    error =
+                        make_cursor(resource(),
+                                    core::error_t{core::error_code_t::sql_parse_error,
+                                                  std::pmr::string{"cannot alter a system catalog table", resource()}});
                     break;
                 }
                 for (const auto& cmd : alter_node->subcommands()) {
                     if (cmd.kind != components::logical_plan::alter_table_kind::add_column) {
                         continue;
                     }
-                    if (auto type_err = services::dispatcher::gate_persistable_type(resource(),
-                                                                                    "column '" + cmd.column.name() +
-                                                                                        "'",
-                                                                                    cmd.column.type());
+                    if (auto type_err =
+                            services::dispatcher::gate_persistable_type(resource(),
+                                                                        "column '" + cmd.column.name() + "'",
+                                                                        cmd.column.type());
                         type_err.contains_error()) {
                         error = make_cursor(resource(), type_err);
                         break;
@@ -1097,14 +1093,14 @@ namespace services::collection::executor {
                 break;
             }
             case node_type::create_index_t: {
-                const auto* index_node = static_cast<const components::logical_plan::node_create_index_t*>(
-                    plan.sub_queries.back().get());
+                const auto* index_node =
+                    static_cast<const components::logical_plan::node_create_index_t*>(plan.sub_queries.back().get());
                 if (components::catalog::is_catalog_table(index_node->table_oid())) {
-                    error = make_cursor(
-                        resource(),
-                        core::error_t{
-                            core::error_code_t::sql_parse_error,
-                            std::pmr::string{"cannot create an index on a system catalog table", resource()}});
+                    error =
+                        make_cursor(resource(),
+                                    core::error_t{core::error_code_t::sql_parse_error,
+                                                  std::pmr::string{"cannot create an index on a system catalog table",
+                                                                   resource()}});
                     break;
                 }
                 [[fallthrough]];
@@ -1213,11 +1209,9 @@ namespace services::collection::executor {
 
             // DDL OID-batch allocation via node_allocate_oids_t; `self` for the same reason as run_resolve_subplan.
             // Must not `co_return {}` on failure — that reads as success and stamps a garbage identity.
-            auto allocate_oids_inline =
-                [this, session, &context_storage](
-                    [[maybe_unused]] executor_t* self,
-                    std::size_t count) -> executor_t::unique_future<
-                    core::result_wrapper_t<std::vector<components::catalog::oid_t>>> {
+            auto allocate_oids_inline = [this, session, &context_storage]([[maybe_unused]] executor_t* self,
+                                                                          std::size_t count)
+                -> executor_t::unique_future<core::result_wrapper_t<std::vector<components::catalog::oid_t>>> {
                 auto node = components::logical_plan::make_node_allocate_oids(resource(), count);
                 components::compute::function_registry_t local_fn_registry{resource()};
                 services::context_storage_t cstor{resource(), log_.clone(), context_storage.execution_context};
@@ -1411,9 +1405,9 @@ namespace services::collection::executor {
                 }
                 components::planner::planner_t ddl_planner;
                 auto rewritten = ddl_planner.create_plan(resource(),
-                                                        std::move(plan.sub_queries.back()),
-                                                        std::move(allocated_oids),
-                                                        need);
+                                                         std::move(plan.sub_queries.back()),
+                                                         std::move(allocated_oids),
+                                                         need);
                 if (rewritten.has_error()) {
                     co_return execute_result_t{make_cursor(resource(), rewritten.error())};
                 }
@@ -1428,8 +1422,7 @@ namespace services::collection::executor {
                             create_index_oid = ci->index_oid();
                         }
                     }
-                }
-                else if (original_type == node_type::alter_table_t) {
+                } else if (original_type == node_type::alter_table_t) {
                     {
                         std::pmr::vector<components::logical_plan::node_t*> pending{resource()};
                         std::pmr::vector<components::logical_plan::node_alter_column_t*> add_nodes{resource()};
@@ -1573,7 +1566,10 @@ namespace services::collection::executor {
                 std::pmr::vector<actor_zeta::unique_future<void>> revert_index_futures{resource()};
                 revert_index_futures.reserve(revert_insert_oids.size() + revert_delete_oids.size());
                 for (auto oid : revert_insert_oids) {
-                    components::execution_context_t abort_ctx{session, resolve_txn, session_ctx.settings.timezone_offset, oid};
+                    components::execution_context_t abort_ctx{session,
+                                                              resolve_txn,
+                                                              session_ctx.settings.timezone_offset,
+                                                              oid};
                     auto [_ri, rif] = actor_zeta::otterbrix::send(index_address_,
                                                                   &services::index::manager_index_t::revert_insert,
                                                                   abort_ctx,
@@ -1581,7 +1577,10 @@ namespace services::collection::executor {
                     revert_index_futures.push_back(std::move(rif));
                 }
                 for (auto oid : revert_delete_oids) {
-                    components::execution_context_t abort_ctx{session, resolve_txn, session_ctx.settings.timezone_offset, oid};
+                    components::execution_context_t abort_ctx{session,
+                                                              resolve_txn,
+                                                              session_ctx.settings.timezone_offset,
+                                                              oid};
                     auto [_rd, rdf] = actor_zeta::otterbrix::send(index_address_,
                                                                   &services::index::manager_index_t::revert_delete,
                                                                   abort_ctx,
@@ -2274,18 +2273,17 @@ namespace services::collection::executor {
             }
 
             // Post-append reconciliation against the LIVE index: a concurrent CREATE INDEX can predate this stamp.
-            if (!pipeline_context.dml_appends.empty() &&
-                index_address_ != actor_zeta::address_t::empty_address()) {
-                auto reconcile = [this, session, &pipeline_context](std::pmr::memory_resource* res)
-                    -> actor_zeta::unique_future<core::error_t> {
+            if (!pipeline_context.dml_appends.empty() && index_address_ != actor_zeta::address_t::empty_address()) {
+                auto reconcile = [this, session, &pipeline_context](
+                                     std::pmr::memory_resource* res) -> actor_zeta::unique_future<core::error_t> {
                     std::pmr::unordered_map<components::catalog::oid_t,
                                             std::pmr::vector<services::index::index_row_range_t>>
                         by_oid(res);
                     for (const auto& app : pipeline_context.dml_appends) {
                         by_oid.try_emplace(app.table_oid)
-                            .first->second.push_back(services::index::index_row_range_t{
-                                static_cast<uint64_t>(app.row_start),
-                                app.row_count});
+                            .first->second.push_back(
+                                services::index::index_row_range_t{static_cast<uint64_t>(app.row_start),
+                                                                   app.row_count});
                     }
                     for (auto& [oid, ranges] : by_oid) {
                         components::execution_context_t exec_ctx{session,
@@ -2322,14 +2320,13 @@ namespace services::collection::executor {
                             if (rows_r.has_error()) {
                                 co_return rows_r.error();
                             }
-                            auto [_s, sf] =
-                                actor_zeta::otterbrix::send(index_address_,
-                                                            &services::index::manager_index_t::insert_rows,
-                                                            exec_ctx,
-                                                            oid,
-                                                            std::move(rows_r.value()),
-                                                            gap.row_start,
-                                                            gap.row_count);
+                            auto [_s, sf] = actor_zeta::otterbrix::send(index_address_,
+                                                                        &services::index::manager_index_t::insert_rows,
+                                                                        exec_ctx,
+                                                                        oid,
+                                                                        std::move(rows_r.value()),
+                                                                        gap.row_start,
+                                                                        gap.row_count);
                             auto stage_err = co_await std::move(sf);
                             if (stage_err.contains_error()) {
                                 co_return stage_err;

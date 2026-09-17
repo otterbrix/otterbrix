@@ -2,8 +2,8 @@
 // one batch + index state) instead of materializing the whole table; these tests cover batching,
 // post-commit visibility, abort atomicity, and correct row-id mapping across a mid-table gap.
 
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <components/physical_plan/operators/operator_create_index_backfill.hpp>
 

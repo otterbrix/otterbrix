@@ -74,12 +74,7 @@ namespace services::index {
                                 uint64_t flush_threshold,
                                 log_t& log) {
         // Unlike bitcask, the tree opens in the ctor initializer list: btree_t::load() has no recoverable failure.
-        return actor_zeta::spawn<btree_index_agent_t>(resource,
-                                                      path_db,
-                                                      table_oid,
-                                                      index_oid,
-                                                      flush_threshold,
-                                                      log);
+        return actor_zeta::spawn<btree_index_agent_t>(resource, path_db, table_oid, index_oid, flush_threshold, log);
     }
 
     btree_index_agent_t::btree_index_agent_t(std::pmr::memory_resource* resource,
@@ -255,15 +250,13 @@ namespace services::index {
         if (!decode_ok) {
             return core::error_t{
                 core::error_code_t::data_corruption,
-                std::pmr::string{"btree_index_agent_t: a staged key could not be decoded for publication",
-                                 resource()}};
+                std::pmr::string{"btree_index_agent_t: a staged key could not be decoded for publication", resource()}};
         }
         return store_.force_flush();
     }
 
-    btree_index_agent_t::unique_future<core::error_t> btree_index_agent_t::commit_inserts(session_id_t session,
-                                                                                          uint64_t txn_id,
-                                                                                          uint64_t commit_id) {
+    btree_index_agent_t::unique_future<core::error_t>
+    btree_index_agent_t::commit_inserts(session_id_t session, uint64_t txn_id, uint64_t commit_id) {
         trace(log_,
               "btree_index_agent_t::commit_inserts, txn_id: {}, commit_id: {}, session: {}",
               txn_id,
@@ -280,9 +273,8 @@ namespace services::index {
         });
     }
 
-    btree_index_agent_t::unique_future<core::error_t> btree_index_agent_t::commit_deletes(session_id_t session,
-                                                                                          uint64_t txn_id,
-                                                                                          uint64_t commit_id) {
+    btree_index_agent_t::unique_future<core::error_t>
+    btree_index_agent_t::commit_deletes(session_id_t session, uint64_t txn_id, uint64_t commit_id) {
         trace(log_,
               "btree_index_agent_t::commit_deletes, txn_id: {}, commit_id: {}, session: {}",
               txn_id,

@@ -78,14 +78,13 @@ namespace {
         }
 
         components::execution_context_t ctx() {
-            return components::execution_context_t{session_id_t{}, components::table::transaction_data::committed(), {}};
+            return components::execution_context_t{session_id_t{},
+                                                   components::table::transaction_data::committed(),
+                                                   {}};
         }
 
         void checkpoint(services::wal::id_t wal_id) {
-            invoke(&manager_disk_t::checkpoint_all,
-                   session_id_t{},
-                   wal_id,
-                   std::numeric_limits<uint64_t>::max());
+            invoke(&manager_disk_t::checkpoint_all, session_id_t{}, wal_id, std::numeric_limits<uint64_t>::max());
         }
 
         void vacuum() {

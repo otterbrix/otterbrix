@@ -73,9 +73,9 @@ namespace services::wal {
         id_t page_lsn_{0};
         id_t page_end_lsn_{0};
         uint16_t page_flags_{PAGE_NORMAL};
-        size_t file_size_{0};  // total bytes written to file so far
-        bool has_data_{false};   // whether current page has any data
-        bool torn_tail_{false};  // an orphan PARTIAL_CONT span sits at the end of the file
+        size_t file_size_{0};   // total bytes written to file so far
+        bool has_data_{false};  // whether current page has any data
+        bool torn_tail_{false}; // an orphan PARTIAL_CONT span sits at the end of the file
         core::error_t open_error_;
         core::error_t last_error_;
     };

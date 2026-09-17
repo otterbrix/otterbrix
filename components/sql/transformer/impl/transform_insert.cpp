@@ -306,9 +306,9 @@ namespace {
                     col.set_null(true);
                     chunk.data.emplace_back(std::move(col));
                 } else if (chunk.data[i].type() != want) {
-                    VALUE_OR_RETURN(auto promoted_col,
-                                    promote_column(resource, chunk.data[i], chunk.size(), want.type(),
-                                                   chunk.capacity()));
+                    VALUE_OR_RETURN(
+                        auto promoted_col,
+                        promote_column(resource, chunk.data[i], chunk.size(), want.type(), chunk.capacity()));
                     chunk.data[i] = std::move(promoted_col);
                 }
             }
@@ -427,10 +427,10 @@ namespace components::sql::transform {
                                 return column.type().alias() == field_name;
                             });
                         if (it_column == chunk.data.end()) {
-                            vector::vector_t placeholder(resource_,
-                                                         types::complex_logical_type{types::logical_type::NA,
-                                                                                     field_name},
-                                                         chunk.capacity());
+                            vector::vector_t placeholder(
+                                resource_,
+                                types::complex_logical_type{types::logical_type::NA, field_name},
+                                chunk.capacity());
                             placeholder.set_null(true);
                             chunk.data.emplace_back(std::move(placeholder));
                         }
@@ -506,28 +506,23 @@ namespace components::sql::transform {
                                 // Rows carry differently shaped arrays; a fixed-ARRAY vector can't hold both.
                                 auto elem_type = value.type().child_type();
                                 if (col_type == types::logical_type::ARRAY) {
-                                    VALUE_OR_RETURN(auto list_col,
-                                                    promote_array_to_list(resource_,
-                                                                          *it,
-                                                                          chunk_row,
-                                                                          elem_type,
-                                                                          chunk.capacity()));
+                                    VALUE_OR_RETURN(
+                                        auto list_col,
+                                        promote_array_to_list(resource_, *it, chunk_row, elem_type, chunk.capacity()));
                                     chunk.data[column_index] = std::move(list_col);
                                 }
                                 chunk.set_value(column_index, chunk_row, to_list_value(resource_, value, elem_type));
                             } else if (col_type == types::logical_type::NA && !value.is_null()) {
                                 // Column came from a leading NULL literal; promote it now or set_value asserts.
-                                VALUE_OR_RETURN(
-                                    auto na_promoted,
-                                    promote_column(resource_, *it, chunk_row, val_type, chunk.capacity()));
+                                VALUE_OR_RETURN(auto na_promoted,
+                                                promote_column(resource_, *it, chunk_row, val_type, chunk.capacity()));
                                 chunk.data[column_index] = std::move(na_promoted);
                                 chunk.set_value(column_index, chunk_row, std::move(value));
                             } else {
                                 chunk.set_value(column_index, chunk_row, std::move(value));
                             }
                         }
-                        if (auto digits = fractional_literal_text(pg_ptr_cast<Node>(it_value->data));
-                            !digits.empty()) {
+                        if (auto digits = fractional_literal_text(pg_ptr_cast<Node>(it_value->data)); !digits.empty()) {
                             literal_digits.push_back(logical_plan::insert_literal_digits_t{
                                 global_row,
                                 column_index,

@@ -118,9 +118,7 @@ namespace components::table {
 
         const std::vector<storage_index_t>& column_ids();
 
-        [[nodiscard]] const std::vector<uint64_t>& visible_to_physical() const noexcept {
-            return visible_to_physical_;
-        }
+        [[nodiscard]] const std::vector<uint64_t>& visible_to_physical() const noexcept { return visible_to_physical_; }
         void set_visible_to_physical(std::vector<uint64_t> map) { visible_to_physical_ = std::move(map); }
 
     private:

@@ -130,9 +130,9 @@ namespace components::table {
         state.row_index = row_idx;
         if (!state.current) {
             state.initialized = false;
-            state.scan_error = core::error_t(
-                core::error_code_t::invalid_parameter,
-                std::pmr::string("column scan: the seek row names no segment of this column", resource_));
+            state.scan_error =
+                core::error_t(core::error_code_t::invalid_parameter,
+                              std::pmr::string("column scan: the seek row names no segment of this column", resource_));
             return;
         }
         state.internal_index = state.current->start;
@@ -146,8 +146,7 @@ namespace components::table {
         return scan(state, result, target_count);
     }
 
-    uint64_t
-    column_data_t::scan_committed(uint64_t vector_index, column_scan_state& state, vector::vector_t& result) {
+    uint64_t column_data_t::scan_committed(uint64_t vector_index, column_scan_state& state, vector::vector_t& result) {
         auto target_count = vector_count(vector_index);
         return scan_committed(state, result, target_count);
     }
@@ -320,9 +319,8 @@ namespace components::table {
         uint64_t segment_index;
         if (!data_.try_segment_index(l, start_row, segment_index)) {
             // Names a row the tree doesn't bracket; truncating nearby would manufacture the desync revert undoes.
-            return core::error_t(
-                core::error_code_t::data_corruption,
-                std::pmr::string("column revert: no segment brackets the revert row", resource_));
+            return core::error_t(core::error_code_t::data_corruption,
+                                 std::pmr::string("column revert: no segment brackets the revert row", resource_));
         }
         auto segment = data_.segment_at(l, static_cast<int64_t>(segment_index));
         auto& transient = *segment;
@@ -342,9 +340,9 @@ namespace components::table {
         state.current = data_.get_segment(state.row_index);
         if (!state.current) {
             // get_segment's miss (null) rides the scan state's error channel every fetch() caller reads.
-            state.scan_error = core::error_t(
-                core::error_code_t::invalid_parameter,
-                std::pmr::string("column fetch: the row id names no segment of this column", resource_));
+            state.scan_error =
+                core::error_t(core::error_code_t::invalid_parameter,
+                              std::pmr::string("column fetch: the row id names no segment of this column", resource_));
             return 0;
         }
         state.internal_index = state.current->start;
@@ -355,16 +353,14 @@ namespace components::table {
     column_data_t::fetch_row(column_fetch_state& state, int64_t row_id, vector::vector_t& result, uint64_t result_idx) {
         auto segment = data_.get_segment(row_id);
         if (!segment) {
-            state.fetch_error = core::error_t(
-                core::error_code_t::invalid_parameter,
-                std::pmr::string("column fetch: the row id names no segment of this column", resource_));
+            state.fetch_error =
+                core::error_t(core::error_code_t::invalid_parameter,
+                              std::pmr::string("column fetch: the row id names no segment of this column", resource_));
             return;
         }
 
         segment->fetch_row(state, row_id, result, result_idx);
     }
-
-
 
     void column_data_t::get_column_segment_info(uint64_t row_group_index,
                                                 std::vector<uint64_t> col_path,
@@ -668,9 +664,9 @@ namespace components::table {
         if (!state.initialized) {
             if (!state.current) {
                 if (!state.has_error()) {
-                    state.scan_error = core::error_t(
-                        core::error_code_t::invalid_parameter,
-                        std::pmr::string("column scan: no current segment to scan", resource_));
+                    state.scan_error =
+                        core::error_t(core::error_code_t::invalid_parameter,
+                                      std::pmr::string("column scan: no current segment to scan", resource_));
                 }
                 return 0;
             }
@@ -768,9 +764,8 @@ namespace components::table {
         for (uint32_t i = 0; i < persistent_data.data_pointers.size(); i++) {
             const auto& dp = persistent_data.data_pointers[i];
             if (dp.segment_size > block_manager_.block_size()) {
-                return core::error_t(
-                    core::error_code_t::data_corruption,
-                    std::pmr::string("column load: segment_size exceeds the block size", resource_));
+                return core::error_t(core::error_code_t::data_corruption,
+                                     std::pmr::string("column load: segment_size exceeds the block size", resource_));
             }
             auto block_handle = block_manager_.register_block(dp.block_pointer.block_id);
             // Without persisted overflow blocks, a reloaded big-string marker can't resolve, aborting the process.

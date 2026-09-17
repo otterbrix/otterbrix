@@ -281,8 +281,7 @@ namespace components::types {
         absl::MakeInt128(0x785EE10D5DA46D9, 0xF436A000000000),
         // 10^38 must stay: decimal_length() and int_to_decimal() both index POWERS_OF_TEN[38]
         // for the legal NUMERIC(38,0).
-        absl::MakeInt128(0x4B3B4CA85A86C47A, 0x98A224000000000)
-    };
+        absl::MakeInt128(0x4B3B4CA85A86C47A, 0x98A224000000000)};
 
     // double supports up to 15 decimal places, so we stop there
     static constexpr std::string_view FORMAT_PRECISION[]{"{:.0f}",

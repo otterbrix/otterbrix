@@ -38,8 +38,8 @@ namespace {
             auto projected = run_ok(dispatcher, "SELECT extra FROM TestDatabase.t;");
             REQUIRE(projected->size() == rows);
             const auto& cell = projected->value(0, 0);
-            predicate = cell.is_null() ? std::string{"extra IS NULL"}
-                                       : "extra = " + std::to_string(cell.value<int64_t>());
+            predicate =
+                cell.is_null() ? std::string{"extra IS NULL"} : "extra = " + std::to_string(cell.value<int64_t>());
         }
         INFO("the projection leg answers: " << predicate);
         auto matched = run_ok(dispatcher, "SELECT a FROM TestDatabase.t WHERE " + predicate + ";");

@@ -978,9 +978,7 @@ namespace components::vector {
                 }
                 // The declared type, not one inferred from the fields: a NULL field carries
                 // logical_type::NA, which would answer STRUCT<BIGINT, NA> instead.
-                return types::logical_value_t::create_struct(vector->resource(),
-                                                             vector->type_,
-                                                             std::move(children));
+                return types::logical_value_t::create_struct(vector->resource(), vector->type_, std::move(children));
             }
             case types::logical_type::LIST: {
                 auto offlen = reinterpret_cast<types::list_entry_t*>(vector->data_)[index];

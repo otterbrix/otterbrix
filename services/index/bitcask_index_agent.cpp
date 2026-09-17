@@ -253,8 +253,7 @@ namespace services::index {
 
     // ONE bucket, not bucket 0 too (pinned by test_index_agent_commit_retry.cpp).
     template<typename ApplyFn>
-    core::error_t
-    bitcask_index_agent_t::publish_buckets(pending_txn_map_t& buckets, uint64_t txn_id, ApplyFn&& apply) {
+    core::error_t bitcask_index_agent_t::publish_buckets(pending_txn_map_t& buckets, uint64_t txn_id, ApplyFn&& apply) {
         // Refused rather than published: an NA key would hash like any other and answer a probe nobody made.
         bool decode_ok = true;
         if (auto it = buckets.find(txn_id); it != buckets.end()) {
@@ -392,8 +391,8 @@ namespace services::index {
         co_return pay_merge_debt(std::move(publish_error));
     }
 
-    bitcask_index_agent_t::unique_future<core::error_t>
-    bitcask_index_agent_t::revert_inserts(session_id_t session, uint64_t txn_id) {
+    bitcask_index_agent_t::unique_future<core::error_t> bitcask_index_agent_t::revert_inserts(session_id_t session,
+                                                                                              uint64_t txn_id) {
         trace(log_, "bitcask_index_agent_t::revert_inserts, txn_id: {}, session: {}", txn_id, session.data());
         if (is_dropped_) {
             co_return core::error_t{
@@ -405,8 +404,8 @@ namespace services::index {
         co_return core::error_t::no_error();
     }
 
-    bitcask_index_agent_t::unique_future<core::error_t>
-    bitcask_index_agent_t::revert_deletes(session_id_t session, uint64_t txn_id) {
+    bitcask_index_agent_t::unique_future<core::error_t> bitcask_index_agent_t::revert_deletes(session_id_t session,
+                                                                                              uint64_t txn_id) {
         trace(log_, "bitcask_index_agent_t::revert_deletes, txn_id: {}, session: {}", txn_id, session.data());
         if (is_dropped_) {
             co_return core::error_t{

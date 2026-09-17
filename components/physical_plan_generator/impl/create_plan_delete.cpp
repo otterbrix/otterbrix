@@ -131,7 +131,8 @@ namespace services::planner::impl {
                                                                                         table_oid,
                                                                                         std::move(returning)));
             plan->set_table_has_indexes(node->table_has_indexes());
-            auto scan = create_plan_match(context, node_match, limit, delete_projection(context, node_delete, has_returning));
+            auto scan =
+                create_plan_match(context, node_match, limit, delete_projection(context, node_delete, has_returning));
             // A refused scan child must refuse the DELETE: set_children would swallow
             // the null into the same childless-sink success-without-deleting shape.
             if (!scan) {

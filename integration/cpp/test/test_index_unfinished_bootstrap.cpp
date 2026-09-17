@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -39,8 +39,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::index_unfinished_bootstrap::an_unopenable_index_is_counted_as_its_own_event") {
-    const auto base = integration_fixture_path("test_index_unfinished_bootstrap") /
-                      std::to_string(::getpid());
+    const auto base = integration_fixture_path("test_index_unfinished_bootstrap") / std::to_string(::getpid());
     auto config = test_create_config(base);
     test_clear_directory(config);
     config.log.level = log_t::level::off;

@@ -1,5 +1,5 @@
-#include "test_config.hpp"
 #include "integration_fixture_path.hpp"
+#include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <services/disk/agent_disk.hpp>
@@ -16,9 +16,8 @@ using namespace components;
 using namespace components::cursor;
 
 namespace {
-    cursor_t_ptr run(otterbrix::wrapper_dispatcher_t* dispatcher,
-                     const otterbrix::session_id_t& session,
-                     const std::string& sql) {
+    cursor_t_ptr
+    run(otterbrix::wrapper_dispatcher_t* dispatcher, const otterbrix::session_id_t& session, const std::string& sql) {
         auto cursor = dispatcher->execute_sql(session, sql);
         INFO("statement: " << sql);
         return cursor;
@@ -179,12 +178,8 @@ TEST_CASE("integration::cpp::autocommit::a_statement_refused_before_planning_fai
     create_table(dispatcher);
 
     std::string refused_statement;
-    SECTION("a syntax error") {
-        refused_statement = "SELEC id FROM TestDatabase.marks;";
-    }
-    SECTION("a statement the transformer refuses") {
-        refused_statement = "SAVEPOINT before_the_end;";
-    }
+    SECTION("a syntax error") { refused_statement = "SELEC id FROM TestDatabase.marks;"; }
+    SECTION("a statement the transformer refuses") { refused_statement = "SAVEPOINT before_the_end;"; }
 
     auto writer = otterbrix::session_id_t();
     REQUIRE(run(dispatcher, writer, "BEGIN;")->is_success());
@@ -522,9 +517,10 @@ TEST_CASE("integration::cpp::autocommit::failed_statement_leaves_no_aftereffects
     create_source_table(dispatcher);
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher
-                    ->execute_sql(session, "ALTER TABLE TestDatabase.marks ADD CONSTRAINT below_limit CHECK (id < 3000);")
-                    ->is_success());
+        REQUIRE(
+            dispatcher
+                ->execute_sql(session, "ALTER TABLE TestDatabase.marks ADD CONSTRAINT below_limit CHECK (id < 3000);")
+                ->is_success());
     }
 
     // Most source rows pass the check; the ones that do not must take the whole statement with them.
@@ -546,9 +542,10 @@ TEST_CASE("integration::cpp::autocommit::failed_update_leaves_no_aftereffects") 
     create_source_table(dispatcher);
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher
-                    ->execute_sql(session, "ALTER TABLE TestDatabase.marks ADD CONSTRAINT below_limit CHECK (id < 4000);")
-                    ->is_success());
+        REQUIRE(
+            dispatcher
+                ->execute_sql(session, "ALTER TABLE TestDatabase.marks ADD CONSTRAINT below_limit CHECK (id < 4000);")
+                ->is_success());
     }
     auto session = otterbrix::session_id_t();
     REQUIRE(run(dispatcher, session, "INSERT INTO TestDatabase.marks (id) SELECT id FROM TestDatabase.source;")

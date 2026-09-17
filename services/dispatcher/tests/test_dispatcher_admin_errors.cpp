@@ -38,7 +38,7 @@ using components::types::logical_type;
 
 namespace {
 
-    // Same shape as test_wave_exec_dispatcher.cpp's wave_dir: ::getpid() in the path so two
+    // Same shape as test_dispatcher_execution.cpp's dispatcher_dir: ::getpid() in the path so two
     // ctest shards (or two build directories) never boot a catalog out of each other's files.
     std::string admin_dir(const char* leaf) {
         return "/tmp/test_dispatcher_admin_errors_" + std::to_string(::getpid()) + "/" + leaf;

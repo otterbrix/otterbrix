@@ -35,7 +35,7 @@ set(${PROJECT_NAME}_SOURCES
         test_collection_ownership.cpp
         test_wide_decimal_storage.cpp
         test_block_accounting_bounds.cpp
-        test_wave_table.cpp
+        test_table_error_paths.cpp
         test_segment_tree_reinitialize.cpp
         test_column_identity_restamp.cpp
         test_column_visibility.cpp

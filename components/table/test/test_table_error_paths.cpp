@@ -23,13 +23,13 @@ using namespace components::table;
 
 namespace {
 
-    std::string wave_db_path(const std::string& name) {
-        std::string path = "/tmp/test_otterbrix_wave_table_" + name + "_" + std::to_string(::getpid()) + ".otbx";
+    std::string table_db_path(const std::string& name) {
+        std::string path = "/tmp/test_otterbrix_table_error_paths_" + name + "_" + std::to_string(::getpid()) + ".otbx";
         std::remove(path.c_str());
         return path;
     }
 
-    struct wave_env {
+    struct table_env {
         core::pmr::otterbrix_resource resource;
         core::filesystem::local_file_system_t fs;
         storage::buffer_pool_t buffer_pool;
@@ -37,18 +37,18 @@ namespace {
         std::string path;
         storage::single_file_block_manager_t block_manager;
 
-        explicit wave_env(const std::string& name)
+        explicit table_env(const std::string& name)
             : buffer_pool(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24)
             , buffer_manager(&resource, fs, buffer_pool)
-            , path(wave_db_path(name))
+            , path(table_db_path(name))
             , block_manager(buffer_manager, fs, path) {
             REQUIRE_FALSE(block_manager.create_new_database().has_error());
         }
 
-        ~wave_env() { std::remove(path.c_str()); }
+        ~table_env() { std::remove(path.c_str()); }
     };
 
-    void append_bigint_rows(data_table_t& table, wave_env& env, int64_t start, uint64_t count) {
+    void append_bigint_rows(data_table_t& table, table_env& env, int64_t start, uint64_t count) {
         auto types = table.copy_types();
         table_append_state state(&env.resource);
         REQUIRE_FALSE(table.append_lock(state).has_error());
@@ -67,11 +67,8 @@ namespace {
 
 } // namespace
 
-// block_handle_t::load() отвечал ПУСТЫМ buffer_handle_t без ошибки для блока, который
-// загрузить нечем (UNLOADED, без temp-копии, block_id >= MAXIMUM_BLOCK), а
-// standard_buffer_manager_t::pin затем разыменовывал нулевой буфер. Без фикса: SIGSEGV в pin.
-TEST_CASE("components::table::wave::pin_of_an_unloadable_block_reports_an_error") {
-    wave_env env("unloadable_pin");
+TEST_CASE("components::table::pin_of_an_unloadable_block_reports_an_error") {
+    table_env env("unloadable_pin");
     auto handle = std::make_shared<storage::block_handle_t>(env.block_manager,
                                                             storage::MAXIMUM_BLOCK + 7,
                                                             storage::memory_tag::BASE_TABLE);
@@ -79,23 +76,20 @@ TEST_CASE("components::table::wave::pin_of_an_unloadable_block_reports_an_error"
     REQUIRE(pinned.has_error());
 }
 
-// unload_and_take_block ассертит «байты либо на диске, либо в спилле», а под NDEBUG молча
-// выбрасывает буфер, которого больше нигде нет. Без фикса (Debug): SIGABRT на этом assert.
-TEST_CASE("components::table::wave::unload_of_a_spill_less_transient_refuses") {
-    wave_env env("unload_refusal");
+TEST_CASE("components::table::unload_of_a_spill_less_transient_refuses") {
+    table_env env("unload_refusal");
     auto allocated = env.buffer_manager.allocate(storage::memory_tag::BASE_TABLE, 4096, false);
     REQUIRE_FALSE(allocated.has_error());
     auto block = allocated.value().block_handle()->shared_from_this();
-    // Заполняем узнаваемым узором, пока pin жив.
     auto* payload = allocated.value().ptr();
     for (uint64_t i = 0; i < 128; i++) {
         payload[i] = static_cast<std::byte>(i * 3 + 1);
     }
-    { auto dropped = std::move(allocated.value()); } // отпустить pin: readers -> 0
+    { auto dropped = std::move(allocated.value()); }
 
     {
         auto lock = block->get_lock();
-        block->unload(lock); // до фикса: SIGABRT; после: громкий отказ, буфер жив
+        block->unload(lock);
     }
 
     auto repinned = env.buffer_manager.pin(block);
@@ -105,11 +99,8 @@ TEST_CASE("components::table::wave::unload_of_a_spill_less_transient_refuses") {
     }
 }
 
-// initialize_column молча реконструировал счётчик строк из суммы сегментов при персистентном
-// count == 0: два несогласных числа на диске примирялись тихо. Без фикса: успех с
-// реконструированным count() == 5 вместо data_corruption.
-TEST_CASE("components::table::wave::a_zero_count_with_rows_on_disk_is_corruption") {
-    wave_env env("count_mismatch");
+TEST_CASE("components::table::a_zero_count_with_rows_on_disk_is_corruption") {
+    table_env env("count_mismatch");
 
     auto column = column_data_t::create_column(&env.resource,
                                                env.block_manager,
@@ -119,10 +110,10 @@ TEST_CASE("components::table::wave::a_zero_count_with_rows_on_disk_is_corruption
 
     auto make_pcd = [&](uint64_t seg_size) {
         persistent_column_data_t pcd(&env.resource);
-        pcd.count = 0; // писатель заявляет: строк нет
+        pcd.count = 0;
         storage::data_pointer_t dp;
         dp.row_start = 0;
-        dp.tuple_count = 5; // а сегмент заявляет: строк пять
+        dp.tuple_count = 5;
         dp.block_pointer.block_id = 1;
         dp.block_pointer.offset = 0;
         dp.segment_size = seg_size;
@@ -130,8 +121,6 @@ TEST_CASE("components::table::wave::a_zero_count_with_rows_on_disk_is_corruption
         pcd.data_pointers.push_back(std::move(dp));
         return pcd;
     };
-    // Обе ноги (своя колонка + validity) намеренно короткие: единственное противоречие —
-    // count == 0 при сумме сегментов 5.
     auto persistent = make_pcd(40);
     persistent.child_columns.push_back(std::make_unique<persistent_column_data_t>(make_pcd(64)));
 
@@ -139,10 +128,8 @@ TEST_CASE("components::table::wave::a_zero_count_with_rows_on_disk_is_corruption
     REQUIRE(loaded.has_error());
 }
 
-// base_statistics_t::update не имел ветки HUGEINT/UHUGEINT/DECIMAL: широкая DECIMAL-колонка
-// получала только счётчики NULL, без min/max (has_stats() == false).
-TEST_CASE("components::table::wave::hugeint_and_decimal_columns_get_minmax_statistics") {
-    wave_env env("stats_wide");
+TEST_CASE("components::table::hugeint_and_decimal_columns_get_minmax_statistics") {
+    table_env env("stats_wide");
 
     SECTION("HUGEINT min/max") {
         base_statistics_t stats(&env.resource, logical_type::HUGEINT);
@@ -204,30 +191,21 @@ TEST_CASE("components::table::wave::hugeint_and_decimal_columns_get_minmax_stati
     }
 }
 
-// До фикса add_column гасил OOM бэкфилла ассертами (под NDEBUG наследник тихо получал
-// КОРОТКУЮ колонку при полном count); теперь ошибка едет по каналу (row_group.cpp) и
-// наследник громко отказывает в записи, родитель остаётся корнем.
-TEST_CASE("components::table::wave::a_failed_add_column_backfill_refuses_loudly") {
-    wave_env env("addcol_oom");
+TEST_CASE("components::table::a_failed_add_column_backfill_refuses_loudly") {
+    table_env env("addcol_oom");
     std::vector<column_definition_t> columns;
     columns.emplace_back("value", complex_logical_type(logical_type::BIGINT));
     auto table = std::make_unique<data_table_t>(&env.resource, env.block_manager, std::move(columns), "t");
     append_bigint_rows(*table, env, 0, 3000);
 
-    // Детерминированный отказ бэкфилла: default-строка больше блока не имеет
-    // представимой on-disk формы, и append новой колонки обязан отказать
-    // (write_string_memory: "string value ... exceeds the maximum storable string size").
     column_definition_t new_column("added", complex_logical_type(logical_type::STRING_LITERAL));
     new_column.set_default_value(logical_value_t(&env.resource, std::string(300 * 1024, 'x')));
     auto extended = std::make_unique<data_table_t>(*table, new_column);
 
-    // Отказ защёлкнут и виден; родитель остался корнем (DDL не случился) и пишется.
     REQUIRE(extended->has_construction_error());
-    CHECK(extended->column_count() == 1); // фантомной колонки в определениях нет
+    CHECK(extended->column_count() == 1);
     append_bigint_rows(*table, env, 3000, 8);
 
-    // Наследник обязан отказывать в записи, а не притворяться целым. После защёлки его
-    // схема — родительская (без фантомной колонки), так что чанк одноколоночный.
     {
         auto types = extended->copy_types();
         REQUIRE(types.size() == 1);

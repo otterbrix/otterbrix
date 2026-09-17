@@ -546,18 +546,21 @@ namespace components::sql::transform {
         }
         // A SETOP_* node has a null targetList, so the loop below would SIGSEGV without this bail-out.
         // For a UNION, positional `ORDER BY <n>` resolves against the first arm's list (PostgreSQL).
-        auto positional_sort_field =
-            [&](List* target_list, int64_t n, const name_collection_t& nm, column_ref_t& out) -> core::error_t {
+        // The n-th (1-based) entry of a select list, or nullptr when `n` addresses nothing.
+        auto positional_target = [](List* target_list, int64_t n) -> ResTarget* {
             int64_t count = 0;
-            ResTarget* res = nullptr;
             if (target_list) {
                 for (auto t : target_list->lst) {
                     if (++count == n) {
-                        res = pg_ptr_cast<ResTarget>(t.data);
-                        break;
+                        return pg_ptr_cast<ResTarget>(t.data);
                     }
                 }
             }
+            return nullptr;
+        };
+        auto positional_sort_field =
+            [&](List* target_list, int64_t n, const name_collection_t& nm, column_ref_t& out) -> core::error_t {
+            ResTarget* res = positional_target(target_list, n);
             if (res == nullptr) {
                 return core::error_t(
                     core::error_code_t::sql_parse_error,
@@ -894,24 +897,15 @@ namespace components::sql::transform {
                                 break;
                             }
                         }
-                        // Falling through would hand this to get_value, reading `lexpr` as a value every row.
-                        if (cast->arg && nodeTag(cast->arg) != T_A_Const && nodeTag(cast->arg) != T_ParamRef) {
-                            has_non_star = true;
-                            VALUE_OR_RETURN(auto target_type_res, get_type(resource_, cast->typeName));
-                            logical_plan::node_ptr sel_node = select_node;
-                            VALUE_OR_RETURN(auto operand, resolve_select_operand(cast->arg, names, plan, sel_node));
-                            auto conversion = make_cast_expression(resource_,
-                                                                   std::move(operand),
-                                                                   target_type_res,
-                                                                   casts::cast_t{},
-                                                                   cast->try_cast ? casts::cast_kind::try_cast
-                                                                                  : casts::cast_kind::cast);
-                            conversion->key() =
-                                expressions::key_t{resource_, res->name ? std::string{res->name} : std::string{"cast"}};
-                            select_node->append_expression(conversion);
-                            break;
+                        has_non_star = true;
+                        logical_plan::node_ptr cast_node = select_node;
+                        VALUE_OR_RETURN(auto cast_operand, resolve_select_operand(res->val, names, plan, cast_node));
+                        auto cast_expr = as_expression(std::move(cast_operand));
+                        if (res->name) {
+                            cast_expr->key() = expressions::key_t{resource_, res->name};
                         }
-                        [[fallthrough]];
+                        select_node->append_expression(std::move(cast_expr));
+                        break;
                     }
                     case T_A_Const: {
                         has_non_star = true;
@@ -1202,19 +1196,54 @@ namespace components::sql::transform {
 
         bool has_group_by = node.groupClause && !node.groupClause->lst.empty();
 
+        // The grouping keys that compute something, in declaration order.
+        std::pmr::vector<expression_ptr> computed_group_keys{resource_};
+
         if (has_group_by) {
             // TODO: check GROUP BY & SELECT field correctness: every non-agg, non-const field must be in GROUP BY.
             for (auto field : node.groupClause->lst) {
-                if (nodeTag(field.data) != T_ColumnRef) {
+                // Unary plus is the identity, exactly as in ORDER BY.
+                Node* key_node = strip_unary_plus(pg_ptr_cast<Node>(field.data));
+                if (!key_node) {
                     return core::error_t(core::error_code_t::sql_parse_error,
-                                         std::pmr::string{"Unknown node type in group by clause: " +
-                                                              node_tag_to_string(nodeTag(field.data)),
-                                                          resource_});
+                                         std::pmr::string{"GROUP BY operator is missing its operand", resource_});
                 }
-
-                VALUE_OR_RETURN(auto key, columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(field.data), names));
-                group->append_expression(
-                    make_scalar_expression(resource_, scalar_type::group_field, std::move(key.field)));
+                // `GROUP BY <n>` groups by the n-th output expression instead of computing n.
+                if (nodeTag(key_node) == T_A_Const && nodeTag(&pg_ptr_cast<A_Const>(key_node)->val) == T_Integer) {
+                    const int64_t position = intVal(&pg_ptr_cast<A_Const>(key_node)->val);
+                    ResTarget* target = positional_target(node.targetList, position);
+                    if (target == nullptr) {
+                        return core::error_t(
+                            core::error_code_t::sql_parse_error,
+                            std::pmr::string{"GROUP BY position " + std::to_string(position) + " is not in select list",
+                                             resource_});
+                    }
+                    key_node = strip_unary_plus(target->val);
+                    if (!key_node) {
+                        return core::error_t(core::error_code_t::sql_parse_error,
+                                             std::pmr::string{"GROUP BY operator is missing its operand", resource_});
+                    }
+                }
+                // Everything else is an ordinary expression
+                logical_plan::node_ptr key_scope = group;
+                VALUE_OR_RETURN(auto operand, resolve_select_operand(key_node, names, plan, key_scope));
+                if (std::holds_alternative<expressions::key_t>(operand)) {
+                    group->append_expression(make_scalar_expression(resource_,
+                                                                    scalar_type::group_field,
+                                                                    std::get<expressions::key_t>(std::move(operand))));
+                    continue;
+                }
+                // The marker's own name is how a hidden HAVING / ORDER BY output addresses the
+                // key; it is deliberately NOT put on the operand, whose identity is what a
+                // projected copy of the same expression is matched against.
+                auto marker =
+                    make_scalar_expression(resource_,
+                                           scalar_type::group_field,
+                                           expressions::key_t{resource_, group_key_alias(computed_group_keys.size())});
+                auto key_expr = as_expression(std::move(operand));
+                computed_group_keys.push_back(key_expr);
+                marker->append_param(param_storage{std::move(key_expr)});
+                group->append_expression(std::move(marker));
             }
         }
 
@@ -1237,6 +1266,10 @@ namespace components::sql::transform {
                 if (key_scalar->type() != scalar_type::group_field) {
                     continue;
                 }
+                if (!key_scalar->params().empty()) {
+                    // A computed key names no column of the table, so `*` cannot project it
+                    continue;
+                }
                 group->append_expression(make_scalar_expression(resource_, scalar_type::get_field, key_scalar->key()));
             }
         }
@@ -1247,7 +1280,8 @@ namespace components::sql::transform {
         size_t visible_group_count = group->expressions().size();
         expression_ptr having_expr;
         if (node.havingClause) {
-            VALUE_OR_RETURN(having_expr, transform_having_expr(node.havingClause, names, plan, group));
+            VALUE_OR_RETURN(having_expr,
+                            transform_having_expr(node.havingClause, names, plan, group, &computed_group_keys));
         }
         size_t hidden_having_count = group->expressions().size() - visible_group_count;
 
@@ -1340,7 +1374,8 @@ namespace components::sql::transform {
                     continue;
                 }
                 logical_plan::node_ptr sort_scope = group;
-                VALUE_OR_RETURN(auto operand, resolve_select_operand(sort_node, names, plan, sort_scope));
+                VALUE_OR_RETURN(auto operand,
+                                resolve_select_operand(sort_node, names, plan, sort_scope, &computed_group_keys));
                 if (!std::holds_alternative<expressions::key_t>(operand)) {
                     operand = param_storage{as_expression(std::move(operand))};
                 }
@@ -1370,21 +1405,31 @@ namespace components::sql::transform {
                                                   "an aggregate function",
                                                   resource_});
         }
-        if (hidden_having_count > 0) {
+        // ORDER BY is transformed after HAVING and can hoist a grouping key of its own, so what
+        // the group grew by is only settled here.
+        const size_t hidden_group_count = group->expressions().size() - visible_group_count;
+        if (hidden_group_count > 0) {
             // Only the visible_group_count columns are re-added; internal_aggregate_count stays 0
             // (>0 makes the validator drop the __having_* column the HAVING match resolves against).
             select_node->expressions().clear();
+            size_t output_ordinal = 0;
             for (size_t i = 0; i < visible_group_count; ++i) {
                 const auto& ge = group->expressions()[i];
                 if (ge->group() == expression_group::scalar &&
                     static_cast<const scalar_expression_t*>(ge.get())->type() == scalar_type::group_field) {
                     continue;
                 }
-                select_node->append_expression(make_scalar_expression(resource_, scalar_type::get_field, ge->key()));
+                // Addressed by ORDINAL
+                expressions::key_t column = ge->key();
+                std::pmr::vector<size_t> path{resource_};
+                path.push_back(output_ordinal);
+                column.set_path(std::move(path));
+                select_node->append_expression(make_scalar_expression(resource_, scalar_type::get_field, column));
+                output_ordinal++;
             }
         }
         // TODO: do we even need it anymore?
-        if (has_non_star || hidden_having_count > 0) {
+        if (has_non_star || hidden_group_count > 0) {
             agg->append_child(select_node);
         }
 

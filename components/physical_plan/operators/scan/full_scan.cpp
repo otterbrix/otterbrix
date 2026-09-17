@@ -86,28 +86,6 @@ namespace components::operators {
         if (!opened_) {
             opened_ = true;
 
-            if (expression_ && expression_->type() == expressions::compare_type::all_false) {
-                drained_ = true;
-                co_return make_drain_chunk(std::pmr::vector<types::complex_logical_type>{resource_});
-            }
-
-            // Short-circuit: null parameter in a scalar comparison — SQL NULL semantics.
-            // col OP NULL → always false → empty. col OP ALL(empty) is vacuously true → scan all.
-            bool null_param_skip_filter = false;
-            if (expression_ && !expression_->is_union() && expression_->type() != expressions::compare_type::is_null &&
-                expression_->type() != expressions::compare_type::is_not_null &&
-                std::holds_alternative<core::parameter_id_t>(expression_->right())) {
-                auto pid = std::get<core::parameter_id_t>(expression_->right());
-                auto it = ctx->parameters.parameters.find(pid);
-                if (it != ctx->parameters.parameters.end() && it->second.is_null()) {
-                    if (expression_->type() != expressions::compare_type::all) {
-                        drained_ = true;
-                        co_return make_drain_chunk(std::pmr::vector<types::complex_logical_type>{resource_});
-                    }
-                    null_param_skip_filter = true;
-                }
-            }
-
             // Cached for the no-data empty-guard below: answering a refusal with an empty type list
             // would build the filter against a table with no columns and shape the guard chunk wrong.
             auto [_t, tf] = actor_zeta::otterbrix::send(ctx->disk_address,
@@ -121,6 +99,30 @@ namespace components::operators {
                 co_return types_result.convert_error<vector::data_chunk_t>();
             }
             guard_types_ = std::move(types_result.value());
+
+            if (expression_ && expression_->type() == expressions::compare_type::all_false) {
+                drained_ = true;
+                emitted_any_ = true;
+                co_return make_drain_chunk(guard_types_);
+            }
+
+            // Short-circuit: null parameter in a scalar comparison — SQL NULL semantics.
+            // col OP NULL → always false → empty. col OP ALL(empty) is vacuously true → scan all.
+            bool null_param_skip_filter = false;
+            if (expression_ && !expression_->is_union() && expression_->type() != expressions::compare_type::is_null &&
+                expression_->type() != expressions::compare_type::is_not_null &&
+                std::holds_alternative<core::parameter_id_t>(expression_->right())) {
+                auto pid = std::get<core::parameter_id_t>(expression_->right());
+                auto it = ctx->parameters.parameters.find(pid);
+                if (it != ctx->parameters.parameters.end() && it->second.is_null()) {
+                    if (expression_->type() != expressions::compare_type::all) {
+                        drained_ = true;
+                        emitted_any_ = true;
+                        co_return make_drain_chunk(guard_types_);
+                    }
+                    null_param_skip_filter = true;
+                }
+            }
 
             std::unique_ptr<table::table_filter_t> filter;
             if (!null_param_skip_filter) {

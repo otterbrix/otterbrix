@@ -349,7 +349,11 @@ namespace components::planner::optimizer {
             void walk_group_scalar(scalar_expression_t* s) {
                 switch (s->type()) {
                     case scalar_type::group_field:
-                        remap_key(s->key());
+                        if (!s->params().empty()) {
+                            walk_params(s->params());
+                        } else {
+                            remap_key(s->key());
+                        }
                         break;
                     case scalar_type::get_field:
                         if (!s->params().empty() && is_key(s->params().front())) {

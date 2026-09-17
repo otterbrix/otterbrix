@@ -562,7 +562,7 @@ TEST_CASE("default casts: two DECIMALs promote to their deduced supertype") {
     }
 }
 
-TEST_CASE("default casts: DECIMAL <-> string round-trips, rounds, handles specials (explicit-only)") {
+TEST_CASE("default casts: DECIMAL <-> string round-trips, rounds, handles specials") {
     auto* resource = std::pmr::get_default_resource();
     cast_registry_t registry{resource};
     register_default_casts(registry);
@@ -633,7 +633,7 @@ TEST_CASE("default casts: DECIMAL <-> string round-trips, rounds, handles specia
     }
 }
 
-TEST_CASE("default casts: string conversions are explicit-only and non-throwing") {
+TEST_CASE("default casts: string conversions are not implicit and non-throwing") {
     auto* resource = std::pmr::get_default_resource();
     cast_registry_t registry{resource};
     register_default_casts(registry);
@@ -716,7 +716,7 @@ TEST_CASE("default casts: date/time conversions, string parse/format, and to_str
     const complex_logical_type timestamp_type{logical_type::TIMESTAMP};
     const complex_logical_type timestamptz_type{logical_type::TIMESTAMP_TZ};
 
-    // type<->type is implicit, string<->datetime is explicit-only; DATE widens to TIMESTAMP as their common type.
+    // type<->type is implicit, string<->datetime is assignment; DATE widens to TIMESTAMP as their common type.
     {
         const cast_entry* date_to_ts = registry.find(date_type, timestamp_type);
         const cast_entry* str_to_date = registry.find(string_type, date_type);
@@ -1599,7 +1599,7 @@ TEST_CASE("cast_registry: level_of passes containers through and takes structs a
     REQUIRE(registry.level_of(i32, i64) == std::optional<level>{level::implicit});
     REQUIRE(registry.level_of(i64, i32) == std::optional<level>{level::assignment});
     REQUIRE(registry.level_of(i32, str) == std::optional<level>{level::assignment});
-    REQUIRE(registry.level_of(str, i32) == std::optional<level>{level::explicit_only});
+    REQUIRE(registry.level_of(str, i32) == std::optional<level>{level::assignment});
 
     REQUIRE(registry.level_of(complex_logical_type::create_list(i32), complex_logical_type::create_list(i64)) ==
             std::optional<level>{level::implicit});
@@ -2050,7 +2050,7 @@ TEST_CASE("cast_registry: a shape-changing container cast is capped at assignmen
     const complex_logical_type array2_str =
         complex_logical_type::create_array(complex_logical_type{logical_type::STRING_LITERAL}, 2);
     REQUIRE(registry.level_of(list_str, complex_logical_type::create_array(i32, 2)) ==
-            std::optional<level>{level::explicit_only});
+            std::optional<level>{level::assignment});
     REQUIRE(registry.level_of(list_i32, array2_str) == std::optional<level>{level::assignment});
 
     REQUIRE_FALSE(registry.cost_of(list_i32, array2_i32).has_value());
@@ -2087,12 +2087,12 @@ TEST_CASE("cast_registry: the requested coercion level gates what resolve() retu
     REQUIRE(registry.resolve(i32, str, level::assignment).has_value());
 
     REQUIRE_FALSE(registry.resolve(str, i32, level::implicit).has_value());
-    REQUIRE_FALSE(registry.resolve(str, i32, level::assignment).has_value());
+    REQUIRE(registry.resolve(str, i32, level::assignment).has_value());
     REQUIRE(registry.resolve(str, i32, level::explicit_only).has_value());
 
     const complex_logical_type list_str = complex_logical_type::create_list(str);
     const complex_logical_type list_i32 = complex_logical_type::create_list(i32);
-    REQUIRE_FALSE(registry.resolve(list_str, list_i32, level::assignment).has_value());
+    REQUIRE(registry.resolve(list_str, list_i32, level::assignment).has_value());
     REQUIRE(registry.resolve(list_str, list_i32, level::explicit_only).has_value());
 }
 

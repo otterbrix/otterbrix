@@ -170,6 +170,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_star_join_e2e.cpp
         test_returning.cpp
         test_expression_matrix.cpp
+        test_group_by_expressions.cpp
         test_parser_extension.cpp
         test_engine_lifecycle.cpp
         test_parameterized_queries.cpp
@@ -194,6 +195,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_pushed_reduce_scan_lateral.cpp
         test_jsonb_support.cpp
         test_select_intermediate.cpp
+        test_empty_result_schema.cpp
         test_create_table_duplicate.cpp
         test_create_table_with_options.cpp
         test_alter_drop_constraint.cpp

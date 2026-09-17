@@ -485,12 +485,9 @@ TEST_CASE("integration::cpp::test_jsonb_support::clean_rejections") {
     seed(d);
 
     const char* rejected[] = {
-        // not accepted as a GROUP key (unlike a sort key -- see the pins below).
-        "SELECT t #>> 'a.b' AS k, COUNT(*) FROM jp.t GROUP BY t #>> 'a.b';",
         "CREATE INDEX ix ON jp.t (t #>> 'a.b');",
         "SELECT id FROM jp.t WHERE t #>> 'a.b' IN (10, 30);",
         "SELECT id FROM jp.t WHERE t ->> 'x' LIKE 'p%';",
-        "SELECT upper(t ->> 'x') AS v FROM jp.t;",
         "SELECT id FROM jp.t WHERE t #- 'a.b' = 1;",
         "DELETE FROM jp.t WHERE id = 3 RETURNING t - 'x';",
         "SELECT t -> 'a' FROM jp.t UNION SELECT t -> 'nokey' FROM jp.t;",

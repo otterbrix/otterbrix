@@ -194,6 +194,7 @@ namespace components::operators {
             state_ = operator_state::created;
             output_ = nullptr;
             constraint_input_ = nullptr;
+            emitted_ = false;
         }
         void clear(); //todo: replace by copy
 
@@ -221,6 +222,10 @@ namespace components::operators {
             s.begin(type(), oid, analyze_rows_, analyze_time_, analyze_loops_);
         }
 
+        // Prevents constant creation of empty chunks just to pass its schema
+        void note_emitted() noexcept { emitted_ = true; }
+        [[nodiscard]] bool emitted() const noexcept { return emitted_; }
+
         std::pmr::memory_resource* resource_;
         log_t log_;
 
@@ -247,6 +252,7 @@ namespace components::operators {
         operator_state state_{operator_state::created};
         bool root{false};
         bool prepared_{false};
+        bool emitted_{false};
         core::error_t error_;
         uint64_t analyze_rows_{0};
         std::chrono::nanoseconds analyze_time_{std::chrono::nanoseconds::zero()};

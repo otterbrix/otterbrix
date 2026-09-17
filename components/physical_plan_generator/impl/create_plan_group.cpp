@@ -115,12 +115,13 @@ namespace services::planner::impl {
             if (scalar_expr->type() != scalar_type::group_field) {
                 continue;
             }
-            const auto& path = scalar_expr->key().path();
-            components::operators::group_key_t key(plan_resource);
-            key.name = std::pmr::string(scalar_expr->key().storage().back(), plan_resource);
-            key.type = components::operators::group_key_t::kind::column;
-            key.full_path = path;
-            group->add_key(std::move(key));
+            // A key is a named expression: the column it addresses, or whatever it computes
+            components::expressions::param_storage operand =
+                scalar_expr->params().empty() ? components::expressions::param_storage{scalar_expr->key()}
+                                              : scalar_expr->params().front();
+            group->add_key(components::operators::projected_column_t{plan_resource,
+                                                                     scalar_expr->key().storage().back(),
+                                                                     std::move(operand)});
         }
 
         // Pass 2 — the output list, in target-list order.

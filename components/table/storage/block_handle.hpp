@@ -213,7 +213,7 @@ namespace components::table::storage {
 
         // Null exactly when there is no file behind this block. The file-facing paths below are
         // gated on block_id_ < MAXIMUM_BLOCK, which is the stronger test: a disk manager can also
-        // hand out ids above it (see components/table/test/test_wave_table.cpp).
+        // hand out ids above it (see components/table/test/test_table_error_paths.cpp).
         block_manager_t* file_manager() const noexcept { return file_manager_; }
 
     private:

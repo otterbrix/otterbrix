@@ -5,8 +5,14 @@
 #include <components/vector/vector.hpp>
 #include <core/result_wrapper.hpp>
 
+#include <compare>
+
 // While we do not have proper operator registry, this is a place for default operators (comparison and arithmetics)
 namespace components::vector::operations {
+
+    // both have to be of the same type and comparable
+    [[nodiscard]] std::partial_ordering
+    compare_cells(const vector_t& left, uint64_t left_row, const vector_t& right, uint64_t right_row);
 
     [[nodiscard]] core::error_t apply_binary(operators::operator_code code,
                                              const vector_t& left,

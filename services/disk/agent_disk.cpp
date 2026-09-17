@@ -602,10 +602,26 @@ namespace services::disk {
                                     ? ctx.database_oid
                                     : components::catalog::well_known_oid::main_database;
 
-            // Sent before PHYSICAL_INSERT so replay re-adds the column first, but not awaited here — a second
-            // suspending cross-actor await in one handler is a lost-wakeup.
-            unique_future<core::result_wrapper_t<wal::id_t>> add_column_future;
-            if (!wal_added_columns.empty()) {
+            // CREATE INDEX backfill uses start_row as the row-id base, so it must match the materialized start.
+            components::vector::data_chunk_t wal_chunk(resource(), data->types(), data->size());
+            data->copy(wal_chunk, 0);
+            std::pmr::vector<components::vector::data_chunk_t> wal_chunks(resource());
+            wal_chunks.emplace_back(std::move(wal_chunk));
+
+            // One journal write and one await: a second suspending cross-actor await in a handler is a lost wakeup.
+            unique_future<core::result_wrapper_t<wal::id_t>> wal_future;
+            if (wal_added_columns.empty()) {
+                auto [_w, wf] = actor_zeta::otterbrix::send(manager_wal_addr_,
+                                                            &wal::manager_wal_replicate_t::write_physical_insert,
+                                                            ctx.session,
+                                                            table_oid,
+                                                            std::move(wal_chunks),
+                                                            start_row,
+                                                            actual_count,
+                                                            txn.transaction_id,
+                                                            db_oid);
+                wal_future = std::move(wf);
+            } else {
                 std::pmr::vector<components::types::complex_logical_type> col_types(resource());
                 col_types.reserve(wal_added_columns.size());
                 for (const auto& col : wal_added_columns) {
@@ -615,36 +631,24 @@ namespace services::disk {
                 }
                 auto schema_chunk = std::make_unique<components::vector::data_chunk_t>(resource(), col_types, 0);
                 schema_chunk->set_cardinality(0);
-                auto [_sc, scf] = actor_zeta::otterbrix::send(manager_wal_addr_,
-                                                              &wal::manager_wal_replicate_t::write_physical_add_column,
-                                                              ctx.session,
-                                                              table_oid,
-                                                              std::move(schema_chunk),
-                                                              static_cast<std::uint64_t>(wal_added_columns.size()),
-                                                              txn.transaction_id,
-                                                              db_oid);
-                add_column_future = std::move(scf);
+                auto [_g, gf] = actor_zeta::otterbrix::send(manager_wal_addr_,
+                                                            &wal::manager_wal_replicate_t::write_physical_grow,
+                                                            ctx.session,
+                                                            table_oid,
+                                                            std::move(schema_chunk),
+                                                            static_cast<std::uint64_t>(wal_added_columns.size()),
+                                                            std::move(wal_chunks),
+                                                            start_row,
+                                                            actual_count,
+                                                            txn.transaction_id,
+                                                            db_oid);
+                wal_future = std::move(gf);
             }
-
-            // CREATE INDEX backfill uses start_row as the row-id base, so it must match the materialized start.
-            components::vector::data_chunk_t wal_chunk(resource(), data->types(), data->size());
-            data->copy(wal_chunk, 0);
-            std::pmr::vector<components::vector::data_chunk_t> wal_chunks(resource());
-            wal_chunks.emplace_back(std::move(wal_chunk));
-            auto [_w, wf] = actor_zeta::otterbrix::send(manager_wal_addr_,
-                                                        &wal::manager_wal_replicate_t::write_physical_insert,
-                                                        ctx.session,
-                                                        table_oid,
-                                                        std::move(wal_chunks),
-                                                        start_row,
-                                                        actual_count,
-                                                        txn.transaction_id,
-                                                        db_oid);
-            auto wal_result = co_await std::move(wf);
+            auto wal_result = co_await std::move(wal_future);
             if (wal_result.has_error()) {
                 error(log_,
-                      "agent_disk[{}]::storage_append_inner: the PHYSICAL_INSERT did not reach the journal for "
-                      "oid={}, the rows are NOT appended: {}",
+                      "agent_disk[{}]::storage_append_inner: the rows did not reach the journal for oid={}, they are "
+                      "NOT appended: {}",
                       pool_idx_,
                       static_cast<unsigned>(table_oid),
                       wal_result.error().what);
@@ -652,29 +656,9 @@ namespace services::disk {
             }
             if (wal_result.value() == wal::id_t{}) {
                 trace(log_,
-                      "agent_disk[{}]::storage_append_inner: physical_insert WAL returned zero id for oid={}",
+                      "agent_disk[{}]::storage_append_inner: WAL returned zero id for oid={}",
                       pool_idx_,
                       static_cast<unsigned>(table_oid));
-            }
-
-            if (add_column_future.valid()) {
-                auto add_column_result = co_await std::move(add_column_future);
-                if (add_column_result.has_error()) {
-                    error(log_,
-                          "agent_disk[{}]::storage_append_inner: the PHYSICAL_ADD_COLUMN did not reach the "
-                          "journal for oid={}, the rows are NOT appended: {}",
-                          pool_idx_,
-                          static_cast<unsigned>(table_oid),
-                          add_column_result.error().what);
-                    co_return add_column_result.convert_error<components::storage::appended_range_t>();
-                }
-                if (add_column_result.value() == wal::id_t{}) {
-                    trace(log_,
-                          "agent_disk[{}]::storage_append_inner: physical_add_column WAL returned zero id for "
-                          "oid={}",
-                          pool_idx_,
-                          static_cast<unsigned>(table_oid));
-                }
             }
         }
 
@@ -1080,11 +1064,9 @@ namespace services::disk {
         // No HAVING / DISTINCT / computed columns — the optimizer never stamps those.
         ops::operator_hash_group_t group{resource, log.clone()};
         for (const auto& gk : spec.group_keys) {
-            ops::group_key_t key{resource};
-            key.name.assign(gk.name.begin(), gk.name.end());
-            key.type = ops::group_key_t::kind::column;
-            key.full_path.assign(gk.path.begin(), gk.path.end());
-            group.add_key(std::move(key));
+            components::expressions::key_t field{resource, std::string{gk.name}};
+            field.set_path(std::pmr::vector<size_t>{gk.path.begin(), gk.path.end(), resource});
+            group.add_key(ops::projected_column_t{resource, gk.name, components::expressions::param_storage{field}});
         }
         for (const auto& agg : spec.aggregates) {
             group.add_value(agg.alias, agg.result_type);

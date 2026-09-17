@@ -109,6 +109,17 @@ namespace services::wal {
                               components::catalog::oid_t database_oid);
 
         unique_future<core::result_wrapper_t<wal::id_t>>
+        write_physical_grow(session_id_t session,
+                            components::catalog::oid_t table_oid,
+                            std::unique_ptr<components::vector::data_chunk_t> schema_chunk,
+                            uint64_t column_count,
+                            std::pmr::vector<components::vector::data_chunk_t> chunks,
+                            uint64_t row_start,
+                            uint64_t row_count,
+                            uint64_t txn_id,
+                            components::catalog::oid_t database_oid);
+
+        unique_future<core::result_wrapper_t<wal::id_t>>
         write_physical_add_column(session_id_t session,
                                   components::catalog::oid_t table_oid,
                                   std::unique_ptr<components::vector::data_chunk_t> schema_chunk,
@@ -125,6 +136,7 @@ namespace services::wal {
                                                        &manager_wal_replicate_t::write_physical_insert,
                                                        &manager_wal_replicate_t::write_physical_delete,
                                                        &manager_wal_replicate_t::write_physical_update,
+                                                       &manager_wal_replicate_t::write_physical_grow,
                                                        &manager_wal_replicate_t::write_physical_add_column>;
 
         wal::id_t next_wal_id();

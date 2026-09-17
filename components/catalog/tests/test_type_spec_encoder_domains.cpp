@@ -119,7 +119,6 @@ TEST_CASE("catalog::encoder_domains::a_bare_UNKNOWN_is_written_without_inventing
 TEST_CASE("catalog::encoder_domains::a_column_alias_must_not_be_written_as_a_type_name") {
     complex_logical_type aliased{logical_type::UNKNOWN};
     aliased.set_alias("mycol");
-    REQUIRE(aliased.type_name() == "mycol"); // type_name() is overloaded to also carry the alias
     REQUIRE(gate_accepts(aliased));
     REQUIRE(encode_type_spec(aliased) == "UNKNOWN()");
     bool ok = false;

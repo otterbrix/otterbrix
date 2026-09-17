@@ -518,16 +518,6 @@ TEST_CASE("services::dispatcher::null_source_column::insert_select_names_the_typ
         CHECK(what.find("column_segment_t::append") == std::string::npos);
     }
 
-    // CAST doesn't help either — it still resolves to NA, so the refusal must not suggest a cast as the fix.
-    REQUIRE(run("CREATE TABLE nsc.d3();")->is_success());
-    {
-        auto refused = run("INSERT INTO nsc.d3 (x, y) SELECT a, CAST(NULL AS BIGINT) FROM nsc.src;");
-        REQUIRE_FALSE(refused->is_success());
-        const std::string what{refused->get_error().what.c_str()};
-        INFO("refusal text: " << what);
-        CHECK(what.find("column_segment_t::append") == std::string::npos);
-    }
-
     // A projection of NULL is legal; only writing it into a dynamic-schema table is refused.
     {
         auto plain = run("SELECT a, NULL FROM nsc.src;");

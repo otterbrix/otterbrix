@@ -35,6 +35,7 @@ namespace components::sql::transform {
 
         expression_placement_t aggregates = expression_placement_t::call;
         logical_plan::node_ptr group = nullptr;
+        const std::pmr::vector<expressions::expression_ptr>* group_keys = nullptr;
         // Temp placeholder, because documents still use casts as column selection
         bool cast_annotates_key = false;
         // Set when an operand is ARRAY(SELECT ...)
@@ -165,6 +166,12 @@ namespace components::sql::transform {
 
         core::result_wrapper_t<expressions::param_storage> transform_expression(Node* node,
                                                                                 const expression_context_t& context);
+        // transform_expression wraps it with the grouping-key substitution
+        // so every operand, at every nesting level, meets the same rule.
+        core::result_wrapper_t<expressions::param_storage>
+        transform_expression_impl(Node* node, const expression_context_t& context);
+        // The name the group emits its n-th computed key under.
+        static std::string group_key_alias(size_t index);
 
         // A param_storage in expression position.
         expressions::expression_ptr as_expression(expressions::param_storage operand);
@@ -194,10 +201,12 @@ namespace components::sql::transform {
         transform_returning(List* returning_list, const name_collection_t& names, logical_plan::execution_plan_t* plan);
 
         // Resolve SELECT operand — aggregates become separate group expressions
-        core::result_wrapper_t<expressions::param_storage> resolve_select_operand(Node* node,
-                                                                                  const name_collection_t& names,
-                                                                                  logical_plan::execution_plan_t* plan,
-                                                                                  logical_plan::node_ptr& group);
+        core::result_wrapper_t<expressions::param_storage>
+        resolve_select_operand(Node* node,
+                               const name_collection_t& names,
+                               logical_plan::execution_plan_t* plan,
+                               logical_plan::node_ptr& group,
+                               const std::pmr::vector<expressions::expression_ptr>* group_keys = nullptr);
 
         core::result_wrapper_t<expressions::expression_ptr>
         transform_a_expr_func(FuncCall* node, const name_collection_t& names, logical_plan::execution_plan_t* plan);
@@ -216,10 +225,12 @@ namespace components::sql::transform {
                                logical_plan::execution_plan_t* plan);
 
         // HAVING clause: resolve aggregate references to aliases from group node
-        core::result_wrapper_t<expressions::expression_ptr> transform_having_expr(Node* node,
-                                                                                  const name_collection_t& names,
-                                                                                  logical_plan::execution_plan_t* plan,
-                                                                                  const logical_plan::node_ptr& group);
+        core::result_wrapper_t<expressions::expression_ptr>
+        transform_having_expr(Node* node,
+                              const name_collection_t& names,
+                              logical_plan::execution_plan_t* plan,
+                              const logical_plan::node_ptr& group,
+                              const std::pmr::vector<expressions::expression_ptr>* group_keys);
 
         // Handle T_CaseExpr in SELECT target list
         core::error_t transform_select_case_expr(CaseExpr* node,
@@ -236,10 +247,12 @@ namespace components::sql::transform {
                                                                                 logical_plan::node_ptr group);
 
         // Resolve a HAVING operand: FuncCall → aggregate alias key
-        core::result_wrapper_t<expressions::param_storage> resolve_having_operand(Node* node,
-                                                                                  const name_collection_t& names,
-                                                                                  logical_plan::execution_plan_t* plan,
-                                                                                  const logical_plan::node_ptr& group);
+        core::result_wrapper_t<expressions::param_storage>
+        resolve_having_operand(Node* node,
+                               const name_collection_t& names,
+                               logical_plan::execution_plan_t* plan,
+                               const logical_plan::node_ptr& group,
+                               const std::pmr::vector<expressions::expression_ptr>* group_keys);
 
         core::result_wrapper_t<expressions::expression_ptr>
         transform_a_indirection(A_Indirection* node,

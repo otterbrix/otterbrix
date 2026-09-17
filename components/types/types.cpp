@@ -360,7 +360,9 @@ namespace components::types {
         } else if (extension_->type() == logical_type_extension::extension_type::ENUM) {
             return static_cast<enum_logical_type_extension*>(extension_.get())->type_name();
         }
-        return extension_->alias();
+        // A builtin has no type name of its own
+        static const std::string no_type_name;
+        return no_type_name;
     }
 
     // A STRUCT-tagged type that never went through create_struct may carry no struct

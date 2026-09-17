@@ -5,6 +5,7 @@ namespace otterbrix {
     class connection_t {
     public:
         explicit connection_t(boost::intrusive_ptr<otterbrix_t> instance);
+        ~connection_t();
         connection_t(const connection_t&) = delete;
         connection_t& operator=(const connection_t&) = delete;
 
@@ -14,6 +15,7 @@ namespace otterbrix {
         void close();
 
     private:
+        const session_id_t session_{};
         boost::intrusive_ptr<otterbrix_t> instance_;
         components::cursor::cursor_t_ptr cursor_store_{nullptr};
     };

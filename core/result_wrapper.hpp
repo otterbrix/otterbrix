@@ -67,6 +67,7 @@ namespace core {
         stale_index,     // index answered row ids minted before the table's last compact
 
         actor_agent_missing,
+        connection_closed,
     };
 
     struct [[nodiscard]] error_t {

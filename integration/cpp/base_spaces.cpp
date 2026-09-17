@@ -571,7 +571,7 @@ namespace otterbrix {
 
         // Re-derives a column drop a crash discarded; must run before bootstrap_indexes_sync opens
         // index stores against this schema.
-        disk.rearm_dropped_column_blocks_sync();
+        disk.reconcile_storage_with_catalog_sync();
 
         disk.restore_oid_generator_sync();
 

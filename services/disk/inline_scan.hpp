@@ -54,7 +54,7 @@ namespace services::disk::detail {
             }
 
             components::table::table_scan_state state(resource);
-            table.initialize_scan(state, col_ids);
+            table.initialize_scan(state, col_ids, components::table::transaction_data::committed());
             // initialize_scan resets both states to the default snapshot; re-stamp txn
             // after it (same pattern as table_storage_adapter_t's txn-aware scans).
             state.table_state.txn = txn;

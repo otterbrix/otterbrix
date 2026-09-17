@@ -763,15 +763,19 @@ TEST_CASE("services::disk::open::a_replayed_update_that_lost_a_value_restores_th
         no_rows.set_cardinality(0);
         CHECK_FALSE(replay_update(fx, table_oid, no_ids, no_rows).contains_error());
 
+        // A NULL in the column the storage does not have is refused just the same. It used to pass, because
+        // the adapter synthesised that column on every read and a round-tripped row carried it back; with
+        // ALTER materializing the column instead, nothing synthesises it, so a payload naming it is foreign
+        // whatever it holds.
         components::vector::data_chunk_t wide_but_empty(&fx.resource, wide_types, 1);
         wide_but_empty.set_cardinality(1);
         wide_but_empty.set_value(0, 0, static_cast<std::int64_t>(778));
         wide_but_empty.data[1].validity().set_invalid(0);
         std::pmr::vector<std::int64_t> one_id(&fx.resource);
         one_id.push_back(1);
-        CHECK_FALSE(replay_update(fx, table_oid, one_id, wide_but_empty).contains_error());
-        CHECK(rows_where_value_is(fx, table_oid, 778) == 1);
-        CHECK(rows_where_value_is(fx, table_oid, 777) == 0);
+        CHECK(replay_update(fx, table_oid, one_id, wide_but_empty).contains_error());
+        CHECK(rows_where_value_is(fx, table_oid, 778) == 0);
+        CHECK(rows_where_value_is(fx, table_oid, 1) == 1);
 
         fx.checkpoint(services::wal::id_t{100});
     }

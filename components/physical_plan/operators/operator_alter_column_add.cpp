@@ -165,10 +165,29 @@ namespace components::operators {
                 // catalog to read the answer from otherwise.
                 components::pg_attribute_commit_id_backfill_t::added_column_type_t{column_.type(), defspec}});
         }
+        {
+            components::table::column_definition_t stored{std::string(column_.name()),
+                                                          column_.type(),
+                                                          column_.is_not_null(),
+                                                          column_.default_value_opt()};
+            stored.set_attoid(static_cast<std::uint32_t>(attoid));
+            stored.set_atttypid(static_cast<std::uint32_t>(atttypid));
+            components::execution_context_t add_ctx{ctx->session,
+                                                    ctx->txn,
+                                                    ctx->execution_context.timezone_offset,
+                                                    table_oid_};
+            auto [_a, af] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                        &services::disk::manager_disk_t::add_storage_column,
+                                                        add_ctx,
+                                                        table_oid_,
+                                                        std::move(stored));
+            if (auto added = co_await std::move(af); added.contains_error()) {
+                set_error(added);
+                mark_failed();
+                co_return;
+            }
+        }
 
-        // resolve_table rebuilds columns from pg_attribute on each call, so
-        // subsequent statements see the new column. A DML in the same txn
-        // would need a fresh resolve to refresh its plan-tree metadata.
         mark_executed();
     }
 

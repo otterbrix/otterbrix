@@ -11,23 +11,18 @@ namespace components::storage {
     // Presents columns ALTER TABLE ADD COLUMN published but no INSERT has materialized yet as trailing DEFAULT/NULL.
     class table_storage_adapter_t final : public storage_t {
     public:
-        // `unmaterialized` is borrowed (may be null), owned by the storage entry that outlives every adapter it builds.
-        explicit table_storage_adapter_t(table::data_table_t& table,
-                                         std::pmr::memory_resource* resource,
-                                         const std::vector<table::column_definition_t>* unmaterialized = nullptr)
+        explicit table_storage_adapter_t(table::data_table_t& table, std::pmr::memory_resource* resource)
             : table_(table)
-            , resource_(resource)
-            , unmaterialized_(unmaterialized) {}
+            , resource_(resource) {}
 
-        std::pmr::vector<types::complex_logical_type> types() const override {
-            auto t = table_.copy_types();
-            for (const auto& col : unmaterialized_columns()) {
-                t.push_back(col.type());
-            }
-            return t;
+        std::pmr::vector<types::complex_logical_type> types(const table::transaction_data& txn) const override {
+            return table_.visible_types(txn);
         }
 
-        // PHYSICAL, deliberately not widened: append must see an unmaterialized column as absent to materialize it.
+        std::pmr::vector<types::complex_logical_type> types() const override {
+            return table_.copy_types();
+        }
+
         const std::vector<table::column_definition_t>& columns() const override { return table_.columns(); }
 
         size_t column_count() const override { return table_.column_count(); }
@@ -42,44 +37,39 @@ namespace components::storage {
         uint64_t calculate_size() override { return table_.calculate_size(); }
 
         void scan(vector::data_chunk_t& output, const table::table_filter_t* filter, int64_t limit) override {
-            auto column_indices = begin_read(nullptr);
+            auto column_indices = begin_read(nullptr, table::transaction_data::committed());
             table::table_scan_state state(resource_);
-            table_.initialize_scan(state, column_indices, filter);
+            table_.initialize_scan(state, column_indices, table::transaction_data::committed(), filter);
             table_.scan(output, state);
             if (limit >= 0) {
                 output.set_cardinality(std::min(output.size(), static_cast<uint64_t>(limit)));
             }
-            fill_unmaterialized(output, output.size());
         }
 
         void scan(vector::data_chunk_t& output,
                   const table::table_filter_t* filter,
                   int64_t limit,
                   table::transaction_data txn) override {
-            auto column_indices = begin_read(nullptr);
+            auto column_indices = begin_read(nullptr, txn);
             table::table_scan_state state(resource_);
-            table_.initialize_scan(state, column_indices, filter);
-            state.table_state.txn = txn;
-            state.local_state.txn = txn;
+            table_.initialize_scan(state, column_indices, txn, filter);
             table_.scan(output, state);
             if (limit >= 0) {
                 output.set_cardinality(std::min(output.size(), static_cast<uint64_t>(limit)));
             }
-            fill_unmaterialized(output, output.size());
         }
 
         void scan_projected(vector::data_chunk_t& output,
                             const table::table_filter_t* filter,
                             int limit,
                             const std::vector<size_t>& projected_cols) override {
-            auto column_indices = begin_read(&projected_cols);
+            auto column_indices = begin_read(&projected_cols, table::transaction_data::committed());
             table::table_scan_state state(resource_);
-            table_.initialize_scan(state, column_indices, filter);
+            table_.initialize_scan(state, column_indices, table::transaction_data::committed(), filter);
             table_.scan(output, state);
             if (limit >= 0) {
                 output.set_cardinality(std::min(output.size(), static_cast<uint64_t>(limit)));
             }
-            fill_unmaterialized(output, output.size());
         }
 
         void scan_projected(vector::data_chunk_t& output,
@@ -87,16 +77,13 @@ namespace components::storage {
                             int limit,
                             const std::vector<size_t>& projected_cols,
                             table::transaction_data txn) override {
-            auto column_indices = begin_read(&projected_cols);
+            auto column_indices = begin_read(&projected_cols, txn);
             table::table_scan_state state(resource_);
-            table_.initialize_scan(state, column_indices, filter);
-            state.table_state.txn = txn;
-            state.local_state.txn = txn;
+            table_.initialize_scan(state, column_indices, txn, filter);
             table_.scan(output, state);
             if (limit >= 0) {
                 output.set_cardinality(std::min(output.size(), static_cast<uint64_t>(limit)));
             }
-            fill_unmaterialized(output, output.size());
         }
 
         [[nodiscard]] core::result_wrapper_t<bool> scan_batched(std::pmr::vector<vector::data_chunk_t>& batches,
@@ -104,11 +91,9 @@ namespace components::storage {
                                                                 int64_t limit,
                                                                 const std::vector<size_t>* projected_cols,
                                                                 table::transaction_data txn) override {
-            auto column_indices = begin_read(projected_cols);
+            auto column_indices = begin_read(projected_cols, txn);
             table::table_scan_state state(resource_);
-            table_.initialize_scan(state, column_indices, filter);
-            state.table_state.txn = txn;
-            state.local_state.txn = txn;
+            table_.initialize_scan(state, column_indices, txn, filter);
             auto chunk_types = types();
             table_.scan_batched(chunk_types, projected_cols, batches, state, resource_);
             // scan_batched stays void; errors land in state.table_state.scan_error, surfaced here as a value.
@@ -139,9 +124,6 @@ namespace components::storage {
                 }
                 batches.erase(batches.begin() + static_cast<std::ptrdiff_t>(keep), batches.end());
             }
-            for (auto& batch : batches) {
-                fill_unmaterialized(batch, batch.size());
-            }
             return true;
         }
 
@@ -155,13 +137,12 @@ namespace components::storage {
                 pos.drained = true;
                 return true;
             }
-            auto column_indices = begin_read(projected_cols);
+            auto column_indices = begin_read(projected_cols, txn);
             auto read =
                 table_.fetch_next_batch(output, column_indices, filter, txn, pos.next_row, pos.max_row, pos.drained);
             if (read.has_error()) {
                 return read;
             }
-            fill_unmaterialized(output, output.size());
             return read;
         }
 
@@ -196,7 +177,6 @@ namespace components::storage {
             if (state.fetch_error.contains_error()) {
                 return state.fetch_error;
             }
-            fill_unmaterialized(output, output.size());
             return true;
         }
 
@@ -227,8 +207,13 @@ namespace components::storage {
             if (count == 0)
                 return appended_range_t{0, 0};
 
-            if (auto trimmed = trim_unmaterialized_payload(data); trimmed.contains_error()) {
-                return trimmed;
+            if (data.column_count() > table_.column_count()) {
+                std::pmr::string what{"update: the payload carries ", resource_};
+                what.append(std::to_string(data.column_count()).c_str());
+                what.append(" column(s) and the table holds ");
+                what.append(std::to_string(table_.column_count()).c_str());
+                what.append(" — it names a column this storage does not have");
+                return core::error_t{core::error_code_t::schema_error, std::move(what)};
             }
 
             auto delete_state = table_.initialize_delete({});
@@ -288,93 +273,34 @@ namespace components::storage {
         table::data_table_t& table() { return table_; }
 
     private:
-        static inline const std::vector<table::column_definition_t> no_unmaterialized_columns_{};
-
-        const std::vector<table::column_definition_t>& unmaterialized_columns() const noexcept {
-            return unmaterialized_ != nullptr ? *unmaterialized_ : no_unmaterialized_columns_;
-        }
-
-        // Trailing columns are dropped; a value equal to DEFAULT is fill_unmaterialized's fill read back, not a write.
-        [[nodiscard]] core::error_t trim_unmaterialized_payload(vector::data_chunk_t& data) const {
-            const size_t physical = table_.column_count();
-            if (data.column_count() <= physical) {
-                return core::error_t::no_error();
-            }
-            const auto& declared = unmaterialized_columns();
-            for (size_t i = physical; i < data.column_count(); i++) {
-                const size_t declared_idx = i - physical;
-                const auto* published =
-                    declared_idx < declared.size() ? &declared[declared_idx].default_value_opt() : nullptr;
-                for (uint64_t row = 0; row < data.size(); row++) {
-                    if (data.is_null(i, row)) {
-                        continue;
-                    }
-                    if (published != nullptr && published->has_value() && data.data[i].value(row) == **published) {
-                        continue;
-                    }
-                    std::pmr::string what{"UPDATE writes column '", resource_};
-                    what.append(declared_idx < declared.size() ? declared[declared_idx].name().c_str() : "?");
-                    what.append("', which ALTER TABLE ADD COLUMN has published in the catalog and no INSERT "
-                                "has materialized in the storage yet; insert a row carrying it first");
-                    return core::error_t{core::error_code_t::unimplemented_yet, std::move(what)};
-                }
-            }
-            // erase, not resize: vector_t is not default-constructible, so resize() does not compile.
-            data.data.erase(data.data.begin() + static_cast<std::ptrdiff_t>(physical), data.data.end());
-            return core::error_t::no_error();
-        }
-
-        // Replay-side mirror of the trim above: columns are dropped unconditionally; the answer names what was lost.
-
-        // Also publishes the dropped ordinals so the pushed-down predicate answers them the same as the projection.
-        std::vector<table::storage_index_t> begin_read(const std::vector<size_t>* projected_cols) const {
-            table_.row_group()->publish_unmaterialized_columns(&unmaterialized_columns());
-            return storage_indices(projected_cols);
+        std::vector<table::storage_index_t> begin_read(const std::vector<size_t>* projected_cols,
+                                                       const table::transaction_data& txn) const {
+            return storage_indices(projected_cols, txn);
         }
 
         // nullptr means every materialized column; the result may legitimately come back EMPTY, not an error.
-        std::vector<table::storage_index_t> storage_indices(const std::vector<size_t>* projected_cols) const {
+        std::vector<table::storage_index_t> storage_indices(const std::vector<size_t>* projected_cols,
+                                                            const table::transaction_data& txn) const {
             std::vector<table::storage_index_t> out;
-            const size_t physical = table_.column_count();
+            const size_t visible = table_.visible_columns(txn).size();
             if (projected_cols != nullptr) {
                 out.reserve(projected_cols->size());
                 for (size_t idx : *projected_cols) {
-                    if (idx < physical) {
+                    if (idx < visible) {
                         out.emplace_back(static_cast<int64_t>(idx));
                     }
                 }
                 return out;
             }
-            out.reserve(physical);
-            for (size_t i = 0; i < physical; i++) {
+            out.reserve(visible);
+            for (size_t i = 0; i < visible; i++) {
                 out.emplace_back(static_cast<int64_t>(i));
             }
             return out;
         }
 
-        // Same device as PostgreSQL's pg_attribute.attmissingval: the constant is what add_column later backfills.
-        void fill_unmaterialized(vector::data_chunk_t& chunk, uint64_t rows) const {
-            const auto& declared = unmaterialized_columns();
-            if (declared.empty() || rows == 0) {
-                return;
-            }
-            const size_t physical = table_.column_count();
-            for (size_t i = 0; i < declared.size(); i++) {
-                const size_t idx = physical + i;
-                if (idx >= chunk.column_count()) {
-                    break;
-                }
-                auto& column = chunk.data[idx];
-                if (column.data() == nullptr && column.auxiliary() == nullptr) {
-                    continue;
-                }
-                table::fill_published_default(column, &declared[i], rows);
-            }
-        }
-
         table::data_table_t& table_;
         std::pmr::memory_resource* resource_;
-        const std::vector<table::column_definition_t>* unmaterialized_;
     };
 
 } // namespace components::storage

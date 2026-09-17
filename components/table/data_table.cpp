@@ -129,6 +129,80 @@ namespace components::table {
 
     const std::vector<column_definition_t>& data_table_t::columns() const { return column_definitions_; }
 
+    std::vector<uint64_t> data_table_t::visible_columns(const transaction_data& txn) const {
+        std::vector<uint64_t> positions;
+        positions.reserve(column_definitions_.size());
+        for (uint64_t position = 0; position < column_definitions_.size(); position++) {
+            if (column_definitions_[position].visible_to(txn)) {
+                positions.push_back(position);
+            }
+        }
+        return positions;
+    }
+
+    void data_table_t::stamp_column_identity(uint64_t position, std::uint32_t attoid) {
+        assert(position < column_definitions_.size() && "stamp_column_identity: no such column");
+        column_definitions_[position].set_attoid(attoid);
+        mark_modified();
+    }
+
+    void data_table_t::stamp_column_added(uint64_t position, uint64_t stamp) {
+        assert(position < column_definitions_.size() && "stamp_column_added: no such column");
+        column_definitions_[position].set_added_at(stamp);
+        mark_modified();
+    }
+
+    void data_table_t::stamp_column_dropped(uint64_t position, uint64_t stamp) {
+        assert(position < column_definitions_.size() && "stamp_column_dropped: no such column");
+        column_definitions_[position].set_dropped_at(stamp);
+        mark_modified();
+    }
+
+    uint64_t data_table_t::publish_column_stamps(uint64_t txn_id, uint64_t commit_id) {
+        if (txn_id == 0) {
+            return 0;
+        }
+        uint64_t published = 0;
+        for (auto& column : column_definitions_) {
+            if (column.added_at() == txn_id) {
+                column.set_added_at(commit_id);
+                ++published;
+            }
+            if (column.dropped_at() == txn_id) {
+                column.set_dropped_at(commit_id);
+                ++published;
+            }
+        }
+        if (published != 0) {
+            mark_modified();
+        }
+        return published;
+    }
+
+    uint64_t data_table_t::find_visible_column(const transaction_data& txn, std::uint32_t attoid) const {
+        if (attoid == 0) {
+            return storage::INVALID_INDEX;
+        }
+        for (uint64_t position = 0; position < column_definitions_.size(); position++) {
+            const auto& column = column_definitions_[position];
+            if (column.attoid() == attoid && column.visible_to(txn)) {
+                return position;
+            }
+        }
+        return storage::INVALID_INDEX;
+    }
+
+    std::pmr::vector<types::complex_logical_type> data_table_t::visible_types(const transaction_data& txn) const {
+        std::pmr::vector<types::complex_logical_type> types(resource_);
+        types.reserve(column_definitions_.size());
+        for (const auto& column : column_definitions_) {
+            if (column.visible_to(txn)) {
+                types.push_back(column.type());
+            }
+        }
+        return types;
+    }
+
     // Adopted columns carry no pg_attribute.attoid: this only runs on a schema-less table (relkind='g').
     void data_table_t::adopt_schema(const std::pmr::vector<types::complex_logical_type>& types) {
         assert(column_definitions_.empty() && "adopt_schema can only be called on schema-less table");
@@ -140,18 +214,43 @@ namespace components::table {
         mark_modified();
     }
 
+    std::vector<storage_index_t> data_table_t::to_physical_columns(const std::vector<storage_index_t>& column_ids,
+                                                                   const std::vector<uint64_t>& visible) const {
+        std::vector<storage_index_t> physical_ids;
+        physical_ids.reserve(column_ids.size());
+        for (const auto& id : column_ids) {
+           storage_index_t physical = id;
+            if (!id.is_row_id_column()) {
+                const auto index = id.primary_index();
+                assert(index < visible.size() && "to_physical_columns: the id names a column this transaction "
+                                                 "cannot see");
+                physical.set_index(visible[index]);
+            }
+            physical_ids.push_back(std::move(physical));
+        }
+        return physical_ids;
+    }
+
     void data_table_t::initialize_scan(table_scan_state& state,
                                        const std::vector<storage_index_t>& column_ids,
+                                       transaction_data txn,
                                        const table_filter_t* filter) {
+        state.set_visible_to_physical(visible_columns(txn));
         state.initialize(column_ids, filter);
+        state.table_state.txn = txn;
+        state.local_state.txn = txn;
         row_groups_->initialize_scan(state.table_state, column_ids);
     }
 
     void data_table_t::initialize_scan_with_offset(table_scan_state& state,
                                                    const std::vector<storage_index_t>& column_ids,
+                                                   transaction_data txn,
                                                    int64_t start_row,
                                                    int64_t end_row) {
+        state.set_visible_to_physical(visible_columns(txn));
         state.initialize(column_ids);
+        state.table_state.txn = txn;
+        state.local_state.txn = txn;
         row_groups_->initialize_scan_with_offset(state.table_state, column_ids, start_row, end_row);
     }
 
@@ -211,7 +310,10 @@ namespace components::table {
             }
 
             table_scan_state state(resource_);
-            initialize_scan_with_offset(state, column_ids, 0, static_cast<int64_t>(total));
+            state.initialize(column_ids);
+            state.table_state.txn = transaction_data::committed();
+            state.local_state.txn = transaction_data::committed();
+            row_groups_->initialize_scan_with_offset(state.table_state, column_ids, 0, static_cast<int64_t>(total));
 
             auto scan_types = copy_types();
             vector::data_chunk_t chunk(resource_, scan_types, vector::DEFAULT_VECTOR_CAPACITY);
@@ -279,10 +381,8 @@ namespace components::table {
         while (next_row < max_row) {
             // Transient per-batch scan state: released when `state` destructs, so nothing pinned crosses the mailbox.
             table_scan_state state(resource_);
-            initialize_scan_with_offset(state, column_ids, next_row, max_row);
+            initialize_scan_with_offset(state, column_ids, txn, next_row, max_row);
             state.filter = filter;
-            state.table_state.txn = txn;
-            state.local_state.txn = txn;
             auto& css = state.table_state;
 
             // Capture the seeked group's absolute end before the read, so the advance stays within its bounds.
@@ -361,7 +461,8 @@ namespace components::table {
                              const std::vector<size_t>& projected_cols,
                              const transaction_data& txn,
                              fetch_visibility_t visibility) {
-        row_groups_->fetch(result, column_ids, row_identifiers, fetch_count, state, projected_cols, txn, visibility);
+        const auto physical_ids = to_physical_columns(column_ids, visible_columns(txn));
+        row_groups_->fetch(result, physical_ids, row_identifiers, fetch_count, state, projected_cols, txn, visibility);
     }
 
     std::unique_ptr<constraint_state> data_table_t::initialize_constraint_state(
@@ -514,6 +615,8 @@ namespace components::table {
             writer.write<uint8_t>(col.is_not_null() ? 1 : 0);
             // Identity (attoid), not name: a rename can race the catalog ahead of the next checkpoint.
             writer.write<uint32_t>(col.attoid());
+            writer.write<uint64_t>(col.added_at());
+            writer.write<uint64_t>(col.dropped_at());
         }
 
         writer.write<uint32_t>(static_cast<uint32_t>(row_group_pointers.size()));
@@ -554,8 +657,10 @@ namespace components::table {
             type_spec.resize(spec_size);
             reader.read_data(type_spec.data(), spec_size);
             auto not_null = reader.read<uint8_t>() != 0;
-            // 0 means the column never learned its attoid; not refused here (rearm_dropped_column_blocks_sync).
+            // 0 means the column never learned its attoid; not refused here (reconcile_storage_with_catalog_sync).
             const auto attoid = reader.read<uint32_t>();
+            const auto added_at = reader.read<uint64_t>();
+            const auto dropped_at = reader.read<uint64_t>();
             if (reader.has_error()) {
                 return core::error_t(reader.error());
             }
@@ -566,6 +671,8 @@ namespace components::table {
             }
             columns.emplace_back(std::move(col_name), std::move(col_type.value()), not_null);
             columns.back().set_attoid(attoid);
+            columns.back().set_added_at(added_at);
+            columns.back().set_dropped_at(dropped_at);
         }
 
         auto table = std::make_unique<data_table_t>(resource, block_manager, std::move(columns), std::move(name));

@@ -87,13 +87,14 @@ namespace components::operators {
             }
         }
 
-        // dropped_at markers carry the physical column release; split out before the move below empties
-        // swap_backfills. Both this and the rename list are consumed past the publish barrier.
-        std::pmr::vector<components::pg_attribute_commit_id_backfill_t> column_releases{resource_};
+        // Tables whose COLUMN SET this transaction changed
+        std::pmr::set<components::catalog::oid_t> column_stamped_tables{resource_};
         for (const auto& b : swap_backfills) {
-            if (b.kind == components::pg_attribute_commit_id_backfill_t::kind_t::dropped_at &&
-                !b.release_attname.empty() && b.release_table_oid != components::catalog::INVALID_OID) {
-                column_releases.push_back(b);
+            const bool stamps_a_column =
+                b.kind == components::pg_attribute_commit_id_backfill_t::kind_t::dropped_at ||
+                b.kind == components::pg_attribute_commit_id_backfill_t::kind_t::added_at;
+            if (stamps_a_column && b.release_table_oid != components::catalog::INVALID_OID) {
+                column_stamped_tables.insert(b.release_table_oid);
             }
         }
         // RENAME markers are kept OUT of the batch below: renaming preserves added_at_commit_id.
@@ -294,27 +295,20 @@ namespace components::operators {
             }
         }
 
-        // Mirrors the table DROP above: irreversible, so it waits for the pg_attribute tombstone to be durable.
-        if (commit_id_ > 0 && !column_releases.empty() &&
+        if (commit_id_ > 0 && !column_stamped_tables.empty() &&
             ctx->disk_address != actor_zeta::address_t::empty_address()) {
-            for (const auto& release : column_releases) {
-                auto [_rc, rcf] = actor_zeta::otterbrix::send(ctx->disk_address,
-                                                              &services::disk::manager_disk_t::drop_storage_column,
-                                                              ctx->session,
-                                                              release.release_table_oid,
-                                                              release.release_attname);
-                auto released = co_await std::move(rcf);
-                if (released.has_error()) {
-                    set_error(released.error());
-                    co_return;
-                }
-                trace(log_,
-                      "operator_commit_transaction: released column '{}' of oid {} — {} (commit_id {})",
-                      release.release_attname,
-                      static_cast<unsigned>(release.release_table_oid),
-                      released.value() ? "storage rebuilt without it" : "storage never carried it",
-                      commit_id_);
-            }
+            const auto tables = column_stamped_tables.size();
+            components::execution_context_t stamp_ctx{ctx->session, txn_data, {}};
+            auto [_cs, csf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                          &services::disk::manager_disk_t::publish_column_stamps,
+                                                          stamp_ctx,
+                                                          commit_id_,
+                                                          std::move(column_stamped_tables));
+            co_await std::move(csf);
+            trace(log_,
+                  "operator_commit_transaction: published the column stamps of {} table(s) at commit_id {}",
+                  tables,
+                  commit_id_);
         }
 
         // Storage indexes columns BY NAME, so the copy must be renamed too or the next INSERT hits a stale name.

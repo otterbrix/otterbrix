@@ -333,12 +333,18 @@ namespace services::disk {
         unique_future<void> mark_storage_dropped_many_inner(std::pmr::vector<components::catalog::oid_t> table_oids,
                                                             uint64_t dropped_at_commit_id);
 
-        // Also parks the column's TYPE AND DEFAULT (encoded; decoded here) for table_storage_adapter_t.
-        unique_future<void>
-        note_column_identity_inner(components::catalog::oid_t table_oid,
-                                   std::string attname,
-                                   std::uint32_t attoid,
-                                   components::pg_attribute_commit_id_backfill_t::added_column_type_t type);
+        unique_future<core::error_t> add_storage_column_inner(execution_context_t ctx,
+                                                              components::catalog::oid_t table_oid,
+                                                              components::table::column_definition_t column);
+
+        unique_future<core::error_t> stamp_column_dropped_inner(components::catalog::oid_t table_oid,
+                                                                components::catalog::oid_t attoid,
+                                                                components::table::transaction_data txn);
+
+        unique_future<void> publish_column_stamps_inner(uint64_t txn_id,
+                                                        uint64_t commit_id,
+                                                        std::pmr::vector<components::catalog::oid_t> tables);
+
 
         void set_manager_dispatcher_sync(actor_zeta::address_t address);
 
@@ -375,7 +381,9 @@ namespace services::disk {
                                                             &agent_disk_t::drop_storage_column_inner,
                                                             &agent_disk_t::rename_storage_column_inner,
                                                             &agent_disk_t::mark_storage_dropped_many_inner,
-                                                            &agent_disk_t::note_column_identity_inner,
+                                                            &agent_disk_t::add_storage_column_inner,
+                                                            &agent_disk_t::stamp_column_dropped_inner,
+                                                            &agent_disk_t::publish_column_stamps_inner,
                                                             &agent_disk_t::create_storage_disk_inner,
                                                             // Appended LAST — positional msg ids.
                                                             &agent_disk_t::storage_open_scan_hold_inner,

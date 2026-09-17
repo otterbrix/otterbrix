@@ -49,6 +49,8 @@ namespace {
         // into the production interface just for this test double's sake.
         using storage_t::delete_rows;
         using storage_t::scan;
+        // Overriding the physical types() would otherwise hide the per-transaction overload beside it.
+        using storage_t::types;
 
         std::pmr::vector<complex_logical_type> types() const override { return inner_.types(); }
         const std::vector<column_definition_t>& columns() const override { return inner_.columns(); }

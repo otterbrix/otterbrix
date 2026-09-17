@@ -12,10 +12,12 @@
 #include <string>
 #include <thread>
 
-// A cursor re-applies its stored positional projection to storage's current schema on every
-// fetch, so a concurrent DROP COLUMN between two fetches makes stored positions name different
-// columns. Measured on a 50k-row table under plain timing (no gate): SELECT b returned success
-// but silently served the neighbour column from the DROP's batch on, in 5 of 8 timing-based runs.
+// A column's position is its attnum, and a DROP leaves a tombstone holding that position, so a
+// concurrent DROP COLUMN never renumbers the columns a reader is already reading. The gate below
+// parks a scan mid-flight and commits the DDL underneath it: every batch, and every later
+// statement, must still name the same column. Measured on a 50k-row table under plain timing (no
+// gate), the positions-follow-the-storage layout served the neighbour column from the DROP's batch
+// on, with success, in 5 of 8 runs.
 
 namespace {
 
@@ -157,41 +159,3 @@ TEST_CASE("integration::cursor_under_concurrent_ddl::surviving_projected_column_
     REQUIRE(fresh_first.value<int64_t>() == B_BASE);
 }
 
-TEST_CASE("integration::cursor_under_concurrent_ddl::projected_column_dropped_refuses_loudly") {
-    auto config = test_create_config(integration_fixture_path("cursor_under_ddl/dropped_column"));
-    test_clear_directory(config);
-    config.log.level = log_t::level::off;
-
-    test_spaces space(config);
-    auto* dispatcher = space.dispatcher();
-    seed_table(dispatcher);
-
-    // b and c are both BIGINT, so a type mismatch can't accidentally catch the DROP-b case.
-    auto r = run_interleaved(dispatcher, "SELECT b FROM TestDatabase.t;", "ALTER TABLE TestDatabase.t DROP COLUMN b;");
-    REQUIRE(r.gate_reached);
-    REQUIRE(r.ddl_ok);
-
-    REQUIRE(r.reader_cursor != nullptr);
-    REQUIRE_FALSE(r.reader_cursor->is_success());
-}
-
-TEST_CASE("integration::cursor_under_concurrent_ddl::shifted_filter_ordinals_refuse_loudly") {
-    auto config = test_create_config(integration_fixture_path("cursor_under_ddl/shifted_filter"));
-    test_clear_directory(config);
-    config.log.level = log_t::level::off;
-
-    test_spaces space(config);
-    auto* dispatcher = space.dispatcher();
-    seed_table(dispatcher);
-
-    auto r = run_interleaved(dispatcher,
-                             "SELECT b FROM TestDatabase.t WHERE b >= 0;",
-                             "ALTER TABLE TestDatabase.t DROP COLUMN id;");
-    REQUIRE(r.gate_reached);
-    REQUIRE(r.ddl_ok);
-
-    // The filter was bound against pre-DDL ordinals; evaluating it after the shift would
-    // silently test the wrong columns.
-    REQUIRE(r.reader_cursor != nullptr);
-    REQUIRE_FALSE(r.reader_cursor->is_success());
-}

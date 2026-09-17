@@ -169,34 +169,6 @@ namespace services::disk {
             }
         }
 
-        std::pmr::vector<unique_future<void>> note_futures{resource()};
-        note_futures.reserve(backfills.size());
-        for (const auto& b : backfills) {
-            if (b.kind != components::pg_attribute_commit_id_backfill_t::kind_t::added_at ||
-                b.release_attname.empty() || b.release_table_oid == components::catalog::INVALID_OID ||
-                b.attoid == components::catalog::INVALID_OID) {
-                continue;
-            }
-            const std::size_t owner_idx = pool_idx_for_oid(b.release_table_oid, agents_.size());
-            if (owner_idx >= agents_.size() || agents_[owner_idx] == nullptr) {
-                continue;
-            }
-            auto& owner = agents_[owner_idx];
-            auto [owner_sched, note_fut] = actor_zeta::otterbrix::send(owner->address(),
-                                                                       &agent_disk_t::note_column_identity_inner,
-                                                                       b.release_table_oid,
-                                                                       b.release_attname,
-                                                                       static_cast<std::uint32_t>(b.attoid),
-                                                                       b.added_column_type);
-            note_futures.push_back(std::move(note_fut));
-            if (owner_sched) {
-                scheduler_disk_->enqueue(owner.get());
-            }
-        }
-        for (auto& note : note_futures) {
-            co_await std::move(note);
-        }
-
         components::pg_attribute_backfill_result_t out;
         out.appended = std::move(appended);
         if (refused_count > 0) {
@@ -235,29 +207,91 @@ namespace services::disk {
         co_return 0;
     }
 
-    // Not folded into compact_relkind_g_storage (SUBTRACTIVE: a caller's gap there drops a SURVIVING column).
-    manager_disk_t::unique_future<core::result_wrapper_t<bool>>
-    manager_disk_t::drop_storage_column(session_id_t /*session*/,
-                                        components::catalog::oid_t table_oid,
-                                        std::string attname) {
+    manager_disk_t::unique_future<core::error_t>
+    manager_disk_t::add_storage_column(execution_context_t ctx,
+                                       components::catalog::oid_t table_oid,
+                                       components::table::column_definition_t column) {
         if (!agents_.empty()) {
             const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
             auto& agent = agents_[idx];
             if (agent != nullptr) {
                 auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
-                                                                      &agent_disk_t::drop_storage_column_inner,
+                                                                      &agent_disk_t::add_storage_column_inner,
+                                                                      ctx,
                                                                       table_oid,
-                                                                      std::move(attname));
+                                                                      std::move(column));
                 if (needs_sched) {
                     scheduler_disk_->enqueue(agent.get());
                 }
                 co_return co_await std::move(fut);
             }
         }
-        // The caller's tombstone is already durable, so "done" here would hide the column forever.
-        std::pmr::string msg{"manager_disk::drop_storage_column: no disk agent owns table oid ", resource()};
+        std::pmr::string msg{"manager_disk::add_storage_column: no disk agent owns table oid ", resource()};
         msg += std::pmr::string{std::to_string(static_cast<unsigned>(table_oid)), resource()};
-        co_return core::result_wrapper_t<bool>(core::error_t{core::error_code_t::other_error, std::move(msg)});
+        co_return core::error_t{core::error_code_t::actor_agent_missing, std::move(msg)};
+    }
+
+    manager_disk_t::unique_future<core::error_t>
+    manager_disk_t::stamp_column_dropped(execution_context_t ctx,
+                                         components::catalog::oid_t table_oid,
+                                         components::catalog::oid_t attoid) {
+        if (!agents_.empty()) {
+            const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
+            auto& agent = agents_[idx];
+            if (agent != nullptr) {
+                auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
+                                                                      &agent_disk_t::stamp_column_dropped_inner,
+                                                                      table_oid,
+                                                                      attoid,
+                                                                      ctx.txn);
+                if (needs_sched) {
+                    scheduler_disk_->enqueue(agent.get());
+                }
+                co_return co_await std::move(fut);
+            }
+        }
+        std::pmr::string msg{"manager_disk::stamp_column_dropped: no disk agent owns table oid ", resource()};
+        msg += std::pmr::string{std::to_string(static_cast<unsigned>(table_oid)), resource()};
+        co_return core::error_t{core::error_code_t::actor_agent_missing, std::move(msg)};
+    }
+
+    manager_disk_t::unique_future<void>
+    manager_disk_t::publish_column_stamps(execution_context_t ctx,
+                                          uint64_t commit_id,
+                                          std::pmr::set<components::catalog::oid_t> tables) {
+        const auto txn_id = ctx.txn.transaction_id;
+        if (txn_id == 0 || agents_.empty()) {
+            co_return;
+        }
+        std::pmr::vector<std::pmr::vector<components::catalog::oid_t>> per_agent{resource()};
+        per_agent.reserve(agents_.size());
+        for (std::size_t i = 0; i < agents_.size(); ++i) {
+            per_agent.emplace_back();
+        }
+        for (const auto& table_oid : tables) {
+            per_agent[pool_idx_for_oid(table_oid, agents_.size())].push_back(table_oid);
+        }
+        std::pmr::vector<unique_future<void>> agent_futures{resource()};
+        agent_futures.reserve(per_agent.size());
+        for (std::size_t i = 0; i < per_agent.size(); ++i) {
+            if (per_agent[i].empty() || agents_[i] == nullptr) {
+                continue;
+            }
+            auto& agent = agents_[i];
+            auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
+                                                                  &agent_disk_t::publish_column_stamps_inner,
+                                                                  txn_id,
+                                                                  commit_id,
+                                                                  std::move(per_agent[i]));
+            if (needs_sched) {
+                scheduler_disk_->enqueue(agent.get());
+            }
+            agent_futures.push_back(std::move(fut));
+        }
+        for (auto& fut : agent_futures) {
+            co_await std::move(fut);
+        }
+        co_return;
     }
 
     // The storage's column name caches the catalog's, so a rename it never saw is repaired at the
@@ -285,7 +319,7 @@ namespace services::disk {
         // "Done" here would leave storage on the OLD name, the divergence bootstrap reads as a DROP.
         std::pmr::string msg{"manager_disk::rename_storage_column: no disk agent owns table oid ", resource()};
         msg += std::pmr::string{std::to_string(static_cast<unsigned>(table_oid)), resource()};
-        co_return core::result_wrapper_t<bool>(core::error_t{core::error_code_t::other_error, std::move(msg)});
+        co_return core::result_wrapper_t<bool>(core::error_t{core::error_code_t::actor_agent_missing, std::move(msg)});
     }
 
 } // namespace services::disk

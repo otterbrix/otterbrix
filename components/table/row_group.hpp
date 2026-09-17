@@ -74,7 +74,11 @@ namespace components::table {
         void scan_committed(collection_scan_state& state, vector::data_chunk_t& result, table_scan_type type);
 
         core::result_wrapper_t<vector::vector_t>
-        evaluate_predicate(const table_filter_t& filter, int64_t base_row, uint64_t count);
+        // Indexed by the column number the filter names, holding the row group's index for that column.
+        evaluate_predicate(const table_filter_t& filter,
+                           int64_t base_row,
+                           uint64_t count,
+                           const std::vector<uint64_t>& column_indices);
 
         void fetch_row(column_fetch_state& state,
                        const std::vector<storage_index_t>& column_ids,
@@ -159,7 +163,8 @@ namespace components::table {
                              const table_filter_t* filter,
                              uint64_t vector_count,
                              uint64_t& approved_tuple_count,
-                             core::error_t& error);
+                             core::error_t& error,
+                             const std::vector<uint64_t>& column_indices);
 
         template<table_scan_type TYPE>
         void templated_scan(collection_scan_state& state, vector::data_chunk_t& result);

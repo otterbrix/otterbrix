@@ -139,11 +139,20 @@ namespace services::disk {
                                                                            components::catalog::oid_t table_oid,
                                                                            std::set<std::string> live_attnames);
 
-        // Unlike compact_relkind_g_storage (SUBTRACTIVE), this is ADDITIVE: a gap can never drop a surviving column.
-        actor_zeta::unique_future<core::result_wrapper_t<bool>>
-        drop_storage_column(session_id_t session, components::catalog::oid_t table_oid, std::string attname);
+        actor_zeta::unique_future<core::error_t> add_storage_column(execution_context_t ctx,
+                                                                    components::catalog::oid_t table_oid,
+                                                                    components::table::column_definition_t column);
 
-        // rearm_dropped_column_blocks_sync matches by ATTOID, so a missed rename reads as a stale name, not a drop.
+        actor_zeta::unique_future<core::error_t>
+        stamp_column_dropped(execution_context_t ctx,
+                             components::catalog::oid_t table_oid,
+                             components::catalog::oid_t attoid);
+
+        actor_zeta::unique_future<void> publish_column_stamps(execution_context_t ctx,
+                                                              uint64_t commit_id,
+                                                              std::pmr::set<components::catalog::oid_t> tables);
+
+        // reconcile_storage_with_catalog_sync matches by ATTOID, so a missed rename reads as a stale name, not a drop.
         actor_zeta::unique_future<core::result_wrapper_t<bool>> rename_storage_column(
             session_id_t session,
             components::catalog::oid_t table_oid,
@@ -287,7 +296,9 @@ namespace services::disk {
                                                             &disk_contract::read_chunks_by_key,
                                                             &disk_contract::read_chunks_by_keys,
                                                             &disk_contract::compact_relkind_g_storage,
-                                                            &disk_contract::drop_storage_column,
+                                                            &disk_contract::add_storage_column,
+                                                            &disk_contract::stamp_column_dropped,
+                                                            &disk_contract::publish_column_stamps,
                                                             &disk_contract::rename_storage_column,
                                                             &disk_contract::on_horizon_advanced,
                                                             &disk_contract::mark_storage_dropped_many,

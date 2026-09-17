@@ -402,8 +402,24 @@ namespace components::operators {
             co_return;
         }
         ctx->pg_catalog_appends.push_back(std::move(rng));
-        // This operator only marks the drop: the physical column release is irreversible while the tombstone
-        // is still revertable by ROLLBACK, so operator_commit_transaction_t defers it past the WAL commit marker.
+
+        {
+            components::execution_context_t stamp_ctx{ctx->session,
+                                                      ctx->txn,
+                                                      ctx->execution_context.timezone_offset,
+                                                      table_oid_};
+            auto [_s, sf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                        &services::disk::manager_disk_t::stamp_column_dropped,
+                                                        stamp_ctx,
+                                                        table_oid_,
+                                                        static_cast<components::catalog::oid_t>(attoid));
+            if (auto stamped = co_await std::move(sf); stamped.contains_error()) {
+                set_error(stamped);
+                mark_failed();
+                co_return;
+            }
+        }
+
         ctx->pg_attribute_commit_id_backfills.push_back(components::pg_attribute_commit_id_backfill_t{
             attoid,
             components::pg_attribute_commit_id_backfill_t::kind_t::dropped_at,

@@ -113,7 +113,7 @@ TEST_CASE("components::table::predicate::two_long_string_columns_in_one_predicat
     column_ids.emplace_back(0);
     column_ids.emplace_back(1);
     table_scan_state scan_state(&env.resource);
-    table->initialize_scan(scan_state, column_ids, &filter);
+    table->initialize_scan(scan_state, column_ids, transaction_data::committed(), &filter);
 
     size_t produced = 0;
     for (;;) {

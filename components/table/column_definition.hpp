@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <unordered_map>
 
+#include "row_version_manager.hpp"
 #include "storage/file_buffer.hpp"
 
 #include <optional>
@@ -60,6 +61,15 @@ namespace components::table {
         std::uint32_t atttypid() const noexcept { return atttypid_; }
         void set_atttypid(std::uint32_t v) noexcept { atttypid_ = v; }
 
+        [[nodiscard]] uint64_t added_at() const noexcept { return added_at_; }
+        void set_added_at(uint64_t stamp) noexcept { added_at_ = stamp; }
+        [[nodiscard]] uint64_t dropped_at() const noexcept { return dropped_at_; }
+        void set_dropped_at(uint64_t stamp) noexcept { dropped_at_ = stamp; }
+
+        [[nodiscard]] bool visible_to(const transaction_data& txn) const noexcept {
+            return version_visible(txn, added_at_) && !version_visible(txn, dropped_at_);
+        }
+
     private:
         std::string name_;
         types::complex_logical_type type_;
@@ -67,6 +77,8 @@ namespace components::table {
         uint64_t oid_ = storage::INVALID_INDEX;
         std::uint32_t attoid_{0};   // catalog::INVALID_OID; not included via header to avoid cycle.
         std::uint32_t atttypid_{0}; // catalog::INVALID_OID; resolved by the CREATE TABLE pipeline.
+        uint64_t added_at_{0};
+        uint64_t dropped_at_{NOT_DELETED_ID};
         bool not_null_{false};
         std::optional<types::logical_value_t> default_value_;
         std::unordered_map<std::string, std::string> tags_;

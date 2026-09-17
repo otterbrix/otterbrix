@@ -209,7 +209,7 @@ namespace {
 
         std::vector<storage_index_t> column_ids{storage_index_t(0), storage_index_t(1)};
         table_scan_state state(&env.resource);
-        table->initialize_scan(state, column_ids, nullptr);
+        table->initialize_scan(state, column_ids, transaction_data::committed(), nullptr);
         auto types = table->copy_types();
         data_chunk_t chunk(&env.resource, types, DEFAULT_VECTOR_CAPACITY);
         std::set<uint64_t> ids;

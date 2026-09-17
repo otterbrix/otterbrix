@@ -95,7 +95,7 @@ namespace {
         column_ids.emplace_back(0);
 
         table_scan_state scan_state(&env.resource);
-        table.initialize_scan(scan_state, column_ids);
+        table.initialize_scan(scan_state, column_ids, transaction_data::committed());
 
         auto types = table.copy_types();
         auto result = data_chunk_t(&env.resource, types, DEFAULT_VECTOR_CAPACITY);
@@ -110,8 +110,7 @@ namespace {
         column_ids.emplace_back(0);
 
         table_scan_state scan_state(&env.resource);
-        table.initialize_scan(scan_state, column_ids);
-        scan_state.table_state.txn = txn;
+        table.initialize_scan(scan_state, column_ids, txn);
 
         auto types = table.copy_types();
         auto result = data_chunk_t(&env.resource, types, DEFAULT_VECTOR_CAPACITY);
@@ -175,7 +174,7 @@ TEST_CASE("components::table::mvcc::append_revert_across_row_groups") {
         std::vector<storage_index_t> column_ids;
         column_ids.emplace_back(0);
         table_scan_state scan_state(&env.resource);
-        table->initialize_scan(scan_state, column_ids);
+        table->initialize_scan(scan_state, column_ids, transaction_data::committed());
         auto types = table->copy_types();
         auto result = data_chunk_t(&env.resource, types, DEFAULT_VECTOR_CAPACITY);
         uint64_t total = 0;
@@ -518,8 +517,7 @@ namespace {
         column_ids.emplace_back(0);
 
         table_scan_state scan_state(&env.resource);
-        table.initialize_scan(scan_state, column_ids);
-        scan_state.table_state.txn = txn;
+        table.initialize_scan(scan_state, column_ids, txn);
 
         auto types = table.copy_types();
         std::set<int64_t> values;
@@ -688,7 +686,7 @@ namespace {
         column_ids.emplace_back(1);
 
         table_scan_state scan_state(&env.resource);
-        table.initialize_scan(scan_state, column_ids);
+        table.initialize_scan(scan_state, column_ids, transaction_data::committed());
 
         auto types = table.copy_types();
         std::vector<std::pair<int64_t, int64_t>> rows;
@@ -799,7 +797,7 @@ TEST_CASE("components::table::mvcc::aborted_update_revert_restores_row") {
         column_ids.emplace_back(0);
         column_ids.emplace_back(1);
         table_scan_state scan_state(&env.resource);
-        table->initialize_scan(scan_state, column_ids);
+        table->initialize_scan(scan_state, column_ids, transaction_data::committed());
         scan_state.table_state.txn = transaction_data{reader_txn, reader_start};
         auto result = data_chunk_t(&env.resource, types, DEFAULT_VECTOR_CAPACITY);
         table->scan(result, scan_state);
@@ -994,7 +992,7 @@ namespace {
         column_ids.emplace_back(0);
         column_ids.emplace_back(1);
         table_scan_state scan_state(&env.resource);
-        table.initialize_scan(scan_state, column_ids);
+        table.initialize_scan(scan_state, column_ids, transaction_data::committed());
         auto types = table.copy_types();
         uint64_t row = 0;
         while (true) {
@@ -1022,7 +1020,7 @@ namespace {
         column_ids.emplace_back(0);
         column_ids.emplace_back(1);
         table_scan_state scan_state(&env.resource);
-        table.initialize_scan(scan_state, column_ids);
+        table.initialize_scan(scan_state, column_ids, transaction_data::committed());
         auto types = table.copy_types();
         uint64_t row = 0;
         while (true) {
@@ -1120,7 +1118,7 @@ namespace {
         column_ids.emplace_back(0);
 
         table_scan_state scan_state(&env.resource);
-        table.initialize_scan(scan_state, column_ids);
+        table.initialize_scan(scan_state, column_ids, transaction_data::committed());
 
         auto types = table.copy_types();
         std::vector<int64_t> values;

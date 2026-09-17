@@ -72,6 +72,8 @@ namespace components::table {
         // Plain std::vector, not pmr: pmr allocators don't propagate on copy/move assignment.
         std::vector<uint64_t> in_flight_snapshot;
     };
+    [[nodiscard]] bool version_visible(const transaction_data& txn, uint64_t stamp) noexcept;
+
     enum class chunk_info_type : uint8_t
     {
         CONSTANT_INFO,

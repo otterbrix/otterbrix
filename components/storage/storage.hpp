@@ -33,6 +33,9 @@ namespace components::storage {
         virtual ~storage_t() = default;
 
         virtual std::pmr::vector<types::complex_logical_type> types() const = 0;
+        virtual std::pmr::vector<types::complex_logical_type> types(const table::transaction_data&) const {
+            return types();
+        }
         virtual const std::vector<table::column_definition_t>& columns() const = 0;
         virtual size_t column_count() const = 0;
         virtual bool has_schema() const = 0;

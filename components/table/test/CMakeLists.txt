@@ -38,6 +38,7 @@ set(${PROJECT_NAME}_SOURCES
         test_wave_table.cpp
         test_segment_tree_reinitialize.cpp
         test_column_identity_restamp.cpp
+        test_column_visibility.cpp
         test_predicate_fetch_state.cpp
         test_string_write_through.cpp
         test_compression_byte_validation.cpp

@@ -469,7 +469,7 @@ namespace services::disk {
             std::vector<components::table::storage_index_t> col_indices;
             col_indices.emplace_back(static_cast<int64_t>(id_col));
             components::table::table_scan_state scan_state(&scan_resource);
-            table.initialize_scan(scan_state, col_indices);
+            table.initialize_scan(scan_state, col_indices, components::table::transaction_data::committed());
 
             const auto& all_cols = table.columns();
             std::pmr::vector<components::types::complex_logical_type> all_types(&scan_resource);
@@ -650,7 +650,7 @@ namespace services::disk {
             col_indices.emplace_back(static_cast<int64_t>(2));
             col_indices.emplace_back(static_cast<int64_t>(3));
             components::table::table_scan_state scan_state(&scan_resource);
-            cls_table.initialize_scan(scan_state, col_indices);
+            cls_table.initialize_scan(scan_state, col_indices, components::table::transaction_data::committed());
             const auto& all_cols = cls_table.columns();
             std::pmr::vector<components::types::complex_logical_type> all_types(&scan_resource);
             all_types.reserve(all_cols.size());
@@ -772,7 +772,7 @@ namespace services::disk {
     // (several columns pack per 256 KiB block), so a column must leave via table_storage_t::drop_column before
     // its blocks are armed. Compared by attoid, never name: a RENAME's catalog half is durable at the WAL commit
     // marker, its storage half only at the table's next checkpoint.
-    void manager_disk_t::rearm_dropped_column_blocks_sync() {
+    void manager_disk_t::reconcile_storage_with_catalog_sync() {
         if (agents_.empty() || agents_[0] == nullptr) {
             return;
         }
@@ -795,7 +795,7 @@ namespace services::disk {
         auto cols_by_relid = collect_catalog_columns_sync(wanted);
         if (cols_by_relid.empty()) {
             error(log_,
-                  "manager_disk_t::rearm_dropped_column_blocks_sync: pg_attribute resolved NO columns for "
+                  "manager_disk_t::reconcile_storage_with_catalog_sync: pg_attribute resolved NO columns for "
                   "{} loaded user table(s) — refusing to treat that as a drop; blocks released by a "
                   "pre-crash ALTER stay leaked until the catalog reads again",
                   ordered.size());
@@ -819,7 +819,7 @@ namespace services::disk {
             auto it = cols_by_relid.find(oid);
             if (it == cols_by_relid.end() || it->second.empty()) {
                 error(log_,
-                      "manager_disk_t::rearm_dropped_column_blocks_sync: oid={} is a live 'r'/'m' table with "
+                      "manager_disk_t::reconcile_storage_with_catalog_sync: oid={} is a live 'r'/'m' table with "
                       "{} storage column(s) but NO live pg_attribute column — refusing to read that as a "
                       "drop; nothing was released",
                       static_cast<unsigned>(oid),
@@ -841,7 +841,7 @@ namespace services::disk {
             }
             if (catalog_unidentified != 0) {
                 error(log_,
-                      "manager_disk_t::rearm_dropped_column_blocks_sync: oid={} has {} of {} live "
+                      "manager_disk_t::reconcile_storage_with_catalog_sync: oid={} has {} of {} live "
                       "pg_attribute column(s) with NO attoid — refusing to reconcile a catalog whose "
                       "columns are not identified; nothing was released",
                       static_cast<unsigned>(oid),
@@ -850,24 +850,39 @@ namespace services::disk {
                 continue;
             }
 
-            // attoid==0 on a loaded column is refused here, not at load — aborting the load would brick the database.
-            const auto& storage_columns = owned->table_storage.table().columns();
+            // A loaded column with no attoid is can be repaired
+            auto& loaded_table = owned->table_storage.table();
             std::vector<std::string> unidentified;
-            for (const auto& column : storage_columns) {
-                if (column.attoid() == 0) {
-                    unidentified.push_back(column.name());
+            for (uint64_t position = 0; position < loaded_table.columns().size(); position++) {
+                if (loaded_table.columns()[position].attoid() != 0) {
+                    continue;
                 }
+                const auto& name = loaded_table.columns()[position].name();
+                const auto match = std::find_if(it->second.begin(), it->second.end(), [&name](const auto& def) {
+                    return def.name() == name;
+                });
+                if (match == it->second.end() || match->attoid() == 0) {
+                    unidentified.push_back(name);
+                    continue;
+                }
+                loaded_table.stamp_column_identity(position, match->attoid());
+                trace(log_,
+                      "manager_disk_t::reconcile_storage_column_names_sync: oid={} column '{}' relearned "
+                      "attoid={} from the catalog",
+                      static_cast<unsigned>(oid),
+                      name,
+                      static_cast<unsigned>(match->attoid()));
             }
             if (!unidentified.empty()) {
                 error(log_,
-                      "manager_disk_t::rearm_dropped_column_blocks_sync: oid={} has {} storage column(s) "
-                      "carrying NO pg_attribute.attoid (first: '{}') — refusing to reconcile a schema whose "
-                      "columns are not identified; nothing was released",
+                      "manager_disk_t::reconcile_storage_column_names_sync: oid={} has {} storage column(s) "
+                      "the catalog cannot identify (first: '{}') — the storage schema is left as it loaded",
                       static_cast<unsigned>(oid),
                       unidentified.size(),
                       unidentified.front());
                 continue;
             }
+            const auto& storage_columns = loaded_table.columns();
 
             struct storage_rename_t {
                 std::string from;
@@ -892,7 +907,7 @@ namespace services::disk {
             if (to_drop.size() >= owned->table_storage.table().column_count() && !to_drop.empty()) {
                 // Sharing NO attoid with the catalog is a schema mismatch, not a DROP COLUMN.
                 error(log_,
-                      "manager_disk_t::rearm_dropped_column_blocks_sync: oid={} shares NO column attoid with "
+                      "manager_disk_t::reconcile_storage_with_catalog_sync: oid={} shares NO column attoid with "
                       "its {} live pg_attribute column(s) — refusing to drop all {} storage columns",
                       static_cast<unsigned>(oid),
                       it->second.size(),
@@ -900,30 +915,11 @@ namespace services::disk {
                 continue;
             }
 
-            for (const auto& def : it->second) {
-                bool in_storage = false;
-                for (const auto& column : storage_columns) {
-                    if (column.attoid() == def.attoid()) {
-                        in_storage = true;
-                        break;
-                    }
-                }
-                if (!in_storage) {
-                    owned->note_column_identity(def.name(), def.attoid(), def.type());
-                    trace(log_,
-                          "manager_disk_t::rearm_dropped_column_blocks_sync: oid={} published identity "
-                          "attoid={} for catalog-only column '{}'",
-                          static_cast<unsigned>(oid),
-                          static_cast<unsigned>(def.attoid()),
-                          def.name());
-                }
-            }
-
             for (const auto& r : to_rename) {
                 auto renamed = owned->rename_column(r.from, r.to);
                 if (renamed.has_error()) {
                     error(log_,
-                          "manager_disk_t::rearm_dropped_column_blocks_sync: oid={} could not repair the "
+                          "manager_disk_t::reconcile_storage_with_catalog_sync: oid={} could not repair the "
                           "storage name of column '{}' to '{}': {} — the column and its data are untouched",
                           static_cast<unsigned>(oid),
                           r.from,
@@ -932,7 +928,7 @@ namespace services::disk {
                     continue;
                 }
                 trace(log_,
-                      "manager_disk_t::rearm_dropped_column_blocks_sync: oid={} repaired the storage name "
+                      "manager_disk_t::reconcile_storage_with_catalog_sync: oid={} repaired the storage name "
                       "'{}' -> '{}' from the catalog (a RENAME whose storage half a crash discarded)",
                       static_cast<unsigned>(oid),
                       r.from,
@@ -946,14 +942,14 @@ namespace services::disk {
             for (const auto& attname : to_drop) {
                 if (!owned->drop_column(attname, resource())) {
                     error(log_,
-                          "manager_disk_t::rearm_dropped_column_blocks_sync: oid={} column '{}' is in the "
+                          "manager_disk_t::reconcile_storage_with_catalog_sync: oid={} column '{}' is in the "
                           "storage schema but drop_column refused it — its blocks stay leaked",
                           static_cast<unsigned>(oid),
                           attname);
                     continue;
                 }
                 trace(log_,
-                      "manager_disk_t::rearm_dropped_column_blocks_sync: oid={} re-armed the release of "
+                      "manager_disk_t::reconcile_storage_with_catalog_sync: oid={} re-armed the release of "
                       "column '{}' dropped before the crash",
                       static_cast<unsigned>(oid),
                       attname);
@@ -996,7 +992,7 @@ namespace services::disk {
                 col_indices.emplace_back(static_cast<int64_t>(c));
             }
             components::table::table_scan_state scan_state(&scan_resource);
-            attr_table.initialize_scan(scan_state, col_indices);
+            attr_table.initialize_scan(scan_state, col_indices, components::table::transaction_data::committed());
             std::pmr::vector<components::types::complex_logical_type> all_types(&scan_resource);
             all_types.reserve(all_cols.size());
             for (const auto& c : all_cols) {
@@ -1144,7 +1140,7 @@ namespace services::disk {
         col_indices.emplace_back(static_cast<int64_t>(0));
         col_indices.emplace_back(static_cast<int64_t>(3));
         components::table::table_scan_state scan_state(&scan_resource);
-        table.initialize_scan(scan_state, col_indices);
+        table.initialize_scan(scan_state, col_indices, components::table::transaction_data::committed());
         const auto& all_cols = table.columns();
         std::pmr::vector<components::types::complex_logical_type> all_types(&scan_resource);
         all_types.reserve(all_cols.size());
@@ -1214,7 +1210,7 @@ namespace services::disk {
         col_indices.emplace_back(static_cast<int64_t>(0));
         col_indices.emplace_back(static_cast<int64_t>(3));
         components::table::table_scan_state scan_state(&scan_resource);
-        table.initialize_scan(scan_state, col_indices);
+        table.initialize_scan(scan_state, col_indices, components::table::transaction_data::committed());
         const auto& all_cols = table.columns();
         std::pmr::vector<components::types::complex_logical_type> all_types(&scan_resource);
         all_types.reserve(all_cols.size());
@@ -1263,7 +1259,7 @@ namespace services::disk {
         col_indices.emplace_back(static_cast<int64_t>(0));
         col_indices.emplace_back(static_cast<int64_t>(2));
         components::table::table_scan_state scan_state(&scan_resource);
-        table.initialize_scan(scan_state, col_indices);
+        table.initialize_scan(scan_state, col_indices, components::table::transaction_data::committed());
         const auto& all_cols = table.columns();
         std::pmr::vector<components::types::complex_logical_type> all_types(&scan_resource);
         all_types.reserve(all_cols.size());
@@ -1326,7 +1322,7 @@ namespace services::disk {
             col_indices.emplace_back(static_cast<int64_t>(3));
             col_indices.emplace_back(static_cast<int64_t>(4));
             components::table::table_scan_state scan_state(&scan_resource);
-            idx_table.initialize_scan(scan_state, col_indices);
+            idx_table.initialize_scan(scan_state, col_indices, components::table::transaction_data::committed());
             std::pmr::vector<components::types::complex_logical_type> types(&scan_resource);
             for (std::size_t idx : {0u, 1u, 2u, 3u, 4u}) {
                 types.push_back(idx_table.columns()[idx].type());
@@ -1399,7 +1395,7 @@ namespace services::disk {
                 col_indices.emplace_back(static_cast<int64_t>(catalog::pg_attribute_col::attoid));
                 col_indices.emplace_back(static_cast<int64_t>(catalog::pg_attribute_col::attname));
                 components::table::table_scan_state scan_state(&scan_resource);
-                attr_table.initialize_scan(scan_state, col_indices);
+                attr_table.initialize_scan(scan_state, col_indices, components::table::transaction_data::committed());
                 const auto& all_cols = attr_table.columns();
                 std::pmr::vector<components::types::complex_logical_type> all_types(&scan_resource);
                 all_types.reserve(all_cols.size());
@@ -1470,7 +1466,7 @@ namespace services::disk {
         std::vector<components::table::storage_index_t> col_indices;
         col_indices.emplace_back(static_cast<int64_t>(0));
         components::table::table_scan_state scan_state(&scan_resource);
-        table.initialize_scan(scan_state, col_indices);
+        table.initialize_scan(scan_state, col_indices, components::table::transaction_data::committed());
         std::pmr::vector<components::types::complex_logical_type> types(&scan_resource);
         types.push_back(table.columns()[0].type());
         while (true) {
@@ -1513,7 +1509,7 @@ namespace services::disk {
         std::unordered_map<components::catalog::oid_t, components::catalog::oid_t> ns_by_user_oid;
         {
             components::table::table_scan_state scan_state(&scan_resource);
-            table.initialize_scan(scan_state, col_indices);
+            table.initialize_scan(scan_state, col_indices, components::table::transaction_data::committed());
             const auto& all_cols = table.columns();
             std::pmr::vector<components::types::complex_logical_type> all_types(&scan_resource);
             all_types.reserve(all_cols.size());
@@ -1590,7 +1586,7 @@ namespace services::disk {
         col_indices.emplace_back(static_cast<int64_t>(0));  // name column, then setting column
         col_indices.emplace_back(static_cast<int64_t>(1));
         components::table::table_scan_state scan_state(&scan_resource);
-        table.initialize_scan(scan_state, col_indices);
+        table.initialize_scan(scan_state, col_indices, components::table::transaction_data::committed());
         std::pmr::vector<components::types::complex_logical_type> types(&scan_resource);
         types.push_back(table.columns()[0].type());
         types.push_back(table.columns()[1].type());

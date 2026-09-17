@@ -132,7 +132,7 @@ namespace components::table {
         for (uint64_t i = 0; i < column_ids.size(); i++) {
             const auto& column = column_ids[i];
             if (!column.is_row_id_column()) {
-                auto& column_data = get_column(column);
+                auto& column_data = get_column(state.physical_column(column.primary_index()));
                 column_data.initialize_scan_with_offset(state.column_scans[i], row_number);
             } else {
                 state.column_scans[i].current = nullptr;
@@ -152,7 +152,7 @@ namespace components::table {
         for (uint64_t i = 0; i < column_ids.size(); i++) {
             auto column = column_ids[i];
             if (!column.is_row_id_column()) {
-                auto& column_data = get_column(column);
+                auto& column_data = get_column(state.physical_column(column.primary_index()));
                 column_data.initialize_scan(state.column_scans[i]);
             } else {
                 state.column_scans[i].current = nullptr;
@@ -228,17 +228,17 @@ namespace components::table {
             if (column.is_row_id_column()) {
                 continue;
             }
-            get_column(column).skip(state.column_scans[i]);
+            get_column(state.physical_column(column.primary_index())).skip(state.column_scans[i]);
         }
     }
 
     // The decision is indexed by vector offset, so a caller holding a visibility selection reads straight into it.
     core::result_wrapper_t<vector::vector_t>
-    row_group_t::evaluate_predicate(const table_filter_t& filter, int64_t base_row, uint64_t count) {
+    row_group_t::evaluate_predicate(const table_filter_t& filter,
+                                    int64_t base_row,
+                                    uint64_t count,
+                                    const std::vector<uint64_t>& column_indices) {
         auto* res = collection_->resource();
-        // A bound ordinal past the last materialized column is legal (ALTER TABLE ADD COLUMN not yet backfilled);
-        // such a column reads its catalog DEFAULT via fill_published_default instead of get_column().
-        const size_t materialized = get_column_count();
         std::vector<size_t> referenced;
         size_t width = 0;
         std::pmr::vector<types::complex_logical_type> chunk_types(res);
@@ -250,7 +250,7 @@ namespace components::table {
             }
             chunk_types[binding.column] = filter.graph->slot_type(binding.slot);
         }
-        for (size_t column = 0; column < width && column < materialized; column++) {
+        for (size_t column = 0; column < width && column < get_column_count(); column++) {
             bool bound = false;
             for (size_t r : referenced) {
                 if (r == column) {
@@ -259,7 +259,7 @@ namespace components::table {
                 }
             }
             if (!bound) {
-                chunk_types[column] = get_column(column).type();
+                chunk_types[column] = get_column(column_indices[column]).type();
             }
         }
         vector::data_chunk_t rows{res, chunk_types, referenced, count};
@@ -268,15 +268,12 @@ namespace components::table {
         size_t child_slot = 0;
         for (size_t column : referenced) {
             auto& column_state = fetch_state.child(child_slot++);
-            if (column >= materialized) {
-                fill_published_default(rows.data[column], collection_->published_column(column - materialized), count);
-                continue;
-            }
+            const size_t physical = column_indices[column];
             for (uint64_t row = 0; row < count; row++) {
 #ifdef DEV_MODE
                 g_predicate_row_fetches.fetch_add(1, std::memory_order_relaxed);
 #endif
-                get_column(column)
+                get_column(physical)
                     .fetch_row(column_state, base_row + static_cast<int64_t>(row), rows.data[column], row);
                 if (fetch_state.absorb_error(column_state)) {
                     return fetch_state.fetch_error;
@@ -300,9 +297,10 @@ namespace components::table {
                                       const table_filter_t* filter,
                                       uint64_t vector_count,
                                       uint64_t& approved_tuple_count,
-                                      core::error_t& error) {
+                                      core::error_t& error,
+                                      const std::vector<uint64_t>& column_indices) {
         const int64_t base_row = static_cast<int64_t>(vector_index * vector::DEFAULT_VECTOR_CAPACITY);
-        auto decided = evaluate_predicate(*filter, base_row, vector_count);
+        auto decided = evaluate_predicate(*filter, base_row, vector_count, column_indices);
         if (decided.has_error()) {
             error = decided.error();
             return;
@@ -359,7 +357,7 @@ namespace components::table {
                         assert(result.data[out_idx].type().type() == types::logical_type::BIGINT);
                         result.data[out_idx].sequence(static_cast<int64_t>(start + current_row), 1, count);
                     } else {
-                        auto& col_data = get_column(column);
+                        auto& col_data = get_column(state.physical_column(column.primary_index()));
                         if (TYPE == table_scan_type::REGULAR) {
                             col_data.scan(state.vector_index, state.column_scans[i], result.data[out_idx]);
                         } else {
@@ -389,7 +387,8 @@ namespace components::table {
                                     filter,
                                     max_count,
                                     approved_tuple_count,
-                                    state.scan_error);
+                                    state.scan_error,
+                                    state.visible_to_physical());
                     if (state.has_error()) {
                         return;
                     }
@@ -418,7 +417,7 @@ namespace components::table {
                                 start + current_row + static_cast<int64_t>(indexing.get_index(indexing_idx));
                         }
                     } else {
-                        auto& col_data = get_column(column);
+                        auto& col_data = get_column(state.physical_column(column.primary_index()));
                         if (TYPE == table_scan_type::REGULAR) {
                             // Selective filter: gather only surviving rows via fetch_row instead of scanning+slicing
                             // (measured ~7x fewer decompressed rows at 0.2% survival; per-row gather wins below ~20%

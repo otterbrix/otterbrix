@@ -102,7 +102,7 @@ namespace {
     uint64_t scan_a_column(data_table_t& table, std::pmr::memory_resource* resource) {
         std::vector<storage_index_t> column_ids{storage_index_t(0)};
         table_scan_state state(resource);
-        table.initialize_scan(state, column_ids, nullptr);
+        table.initialize_scan(state, column_ids, transaction_data::committed(), nullptr);
         auto types = table.copy_types();
         data_chunk_t chunk(resource, types, DEFAULT_VECTOR_CAPACITY);
         uint64_t seen = 0;
@@ -156,7 +156,7 @@ TEST_CASE("services::disk::table_storage::append_and_scan") {
     data_chunk_t result(&resource, types, DEFAULT_VECTOR_CAPACITY);
     table_scan_state scan_state(&resource);
     auto column_indices = make_column_indices(ts.table().column_count());
-    ts.table().initialize_scan(scan_state, column_indices);
+    ts.table().initialize_scan(scan_state, column_indices, transaction_data::committed());
     ts.table().scan(result, scan_state);
     REQUIRE(result.size() == 100);
 
@@ -200,7 +200,7 @@ TEST_CASE("services::disk::table_storage::disk_checkpoint_and_load") {
         data_chunk_t result(&resource, types, DEFAULT_VECTOR_CAPACITY);
         table_scan_state scan_state(&resource);
         auto column_indices = make_column_indices(table.column_count());
-        table.initialize_scan(scan_state, column_indices);
+        table.initialize_scan(scan_state, column_indices, transaction_data::committed());
         table.scan(result, scan_state);
         REQUIRE(result.size() == static_cast<uint64_t>(std::min(NUM_ROWS, uint64_t(DEFAULT_VECTOR_CAPACITY))));
 
@@ -301,7 +301,7 @@ TEST_CASE("services::disk::table_storage::checkpoint_preserves_multi_column") {
         data_chunk_t result(&resource, types, DEFAULT_VECTOR_CAPACITY);
         table_scan_state scan_state(&resource);
         auto column_indices = make_column_indices(ts.table().column_count());
-        ts.table().initialize_scan(scan_state, column_indices);
+        ts.table().initialize_scan(scan_state, column_indices, transaction_data::committed());
         ts.table().scan(result, scan_state);
         REQUIRE(result.size() == NUM_ROWS);
 
@@ -362,7 +362,7 @@ TEST_CASE("services::disk::table_storage::drop_column_keeps_surviving_data") {
         data_chunk_t result(&resource, types, DEFAULT_VECTOR_CAPACITY);
         table_scan_state scan_state(&resource);
         auto column_indices = make_column_indices(ts.table().column_count());
-        ts.table().initialize_scan(scan_state, column_indices);
+        ts.table().initialize_scan(scan_state, column_indices, transaction_data::committed());
         ts.table().scan(result, scan_state);
         REQUIRE(result.size() == NUM_ROWS);
         for (uint64_t i = 0; i < result.size(); ++i) {

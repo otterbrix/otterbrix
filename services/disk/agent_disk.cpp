@@ -139,7 +139,7 @@ namespace services::disk {
         } else if (sidecar_wal_id > wal::id_t{0}) {
             entry->table_storage.set_checkpoint_wal_id(sidecar_wal_id);
         }
-        entry->adopt_catalog_columns(catalog_columns);
+        entry->adopt_catalog_columns(catalog_columns, resource());
         return storages_.try_emplace(oid, std::move(entry)).second;
     }
 
@@ -327,11 +327,6 @@ namespace services::disk {
                 continue;
             }
             components::table::column_definition_t def(name, ctype);
-            // Must read the parked DEFAULT before take_column_identity — that call consumes it.
-            if (const auto* published = entry->find_unmaterialized(name); published != nullptr) {
-                def.set_default_value(published->default_value_opt());
-            }
-            def.set_attoid(entry->take_column_identity(name));
             entry->add_column(def, resource());
             s = entry->storage.get();
             if (s == nullptr) {
@@ -463,8 +458,16 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::rename_storage_column_inner, msg);
                 break;
             }
-            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::note_column_identity_inner>: {
-                co_await actor_zeta::dispatch(this, &agent_disk_t::note_column_identity_inner, msg);
+            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::add_storage_column_inner>: {
+                co_await actor_zeta::dispatch(this, &agent_disk_t::add_storage_column_inner, msg);
+                break;
+            }
+            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::stamp_column_dropped_inner>: {
+                co_await actor_zeta::dispatch(this, &agent_disk_t::stamp_column_dropped_inner, msg);
+                break;
+            }
+            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::publish_column_stamps_inner>: {
+                co_await actor_zeta::dispatch(this, &agent_disk_t::publish_column_stamps_inner, msg);
                 break;
             }
             case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::mark_storage_dropped_many_inner>: {
@@ -548,10 +551,6 @@ namespace services::disk {
             }
             if (!new_columns.empty()) {
                 for (auto& col : new_columns) {
-                    if (const auto* published = entry->find_unmaterialized(col.name()); published != nullptr) {
-                        col.set_default_value(published->default_value_opt());
-                    }
-                    col.set_attoid(entry->take_column_identity(col.name()));
                     entry->add_column(col, resource());
                     wal_added_columns.push_back(col);
                 }
@@ -867,6 +866,19 @@ namespace services::disk {
             what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
             co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
         }
+        // data was constructed based on visible columns to a specific transactions
+        // but table might have all columns for all transactions
+        const auto& table_columns = entry->storage->columns();
+        if (!table_columns.empty() && data->column_count() < table_columns.size()) {
+            if (auto expanded = detail::expand_chunk_to_columns(resource(),
+                                                                table_oid,
+                                                                table_columns,
+                                                                *data,
+                                                                /*is_computed=*/false);
+                expanded.contains_error()) {
+                co_return expanded;
+            }
+        }
         co_return entry->storage->update(row_ids, *data, txn);
     }
 
@@ -1140,11 +1152,8 @@ namespace services::disk {
                                    std::vector<active_scan_t::open_column_t>& out) {
             const auto& physical = entry.table_storage.table().columns();
             out.clear();
-            out.reserve(physical.size() + entry.unmaterialized_columns.size());
+            out.reserve(physical.size());
             for (const auto& c : physical) {
-                out.push_back(active_scan_t::open_column_t{c.attoid(), c.name()});
-            }
-            for (const auto& c : entry.unmaterialized_columns) {
                 out.push_back(active_scan_t::open_column_t{c.attoid(), c.name()});
             }
         };
@@ -1198,16 +1207,16 @@ namespace services::disk {
         }
         auto* storage = storage_it->second->storage.get();
 
+        // Not all columns are visible to all transactions
         auto all_types = storage->types();
+        auto visible_types = storage->types(scan.txn);
         const bool schema_unchanged = [&] {
             const auto& physical = storage_it->second->table_storage.table().columns();
-            const auto& unmaterialized = storage_it->second->unmaterialized_columns;
-            if (physical.size() + unmaterialized.size() != scan.open_columns.size() ||
-                all_types.size() != scan.open_types.size()) {
+            if (physical.size() != scan.open_columns.size() || all_types.size() != scan.open_types.size()) {
                 return false;
             }
             for (size_t i = 0; i < scan.open_columns.size(); ++i) {
-                const auto& live = i < physical.size() ? physical[i] : unmaterialized[i - physical.size()];
+                const auto& live = physical[i];
                 if (live.attoid() != scan.open_columns[i].attoid || live.name() != scan.open_columns[i].name ||
                     !(all_types[i] == scan.open_types[i])) {
                     return false;
@@ -1299,11 +1308,11 @@ namespace services::disk {
         auto batch =
             projected_ptr
                 ? std::make_unique<components::vector::data_chunk_t>(resource(),
-                                                                     all_types,
+                                                                     visible_types,
                                                                      *projected_ptr,
                                                                      components::vector::DEFAULT_VECTOR_CAPACITY)
                 : std::make_unique<components::vector::data_chunk_t>(resource(),
-                                                                     all_types,
+                                                                     visible_types,
                                                                      components::vector::DEFAULT_VECTOR_CAPACITY);
         auto fetch_r = storage->fetch_next_batch(*batch, scan.pos, scan.filter.get(), projected_ptr, scan.txn);
         if (fetch_r.has_error()) {
@@ -2909,7 +2918,7 @@ namespace services::disk {
             std::pmr::string msg{"agent_disk::drop_storage_column: no materialized storage for table oid ",
                                  resource()};
             msg += std::pmr::string{std::to_string(static_cast<unsigned>(table_oid)), resource()};
-            co_return core::result_wrapper_t<bool>(core::error_t{core::error_code_t::other_error, std::move(msg)});
+            co_return core::result_wrapper_t<bool>(core::error_t{core::error_code_t::missing_table, std::move(msg)});
         }
         const bool dropped = it->second->drop_column(attname, resource());
         trace(log_,
@@ -2932,7 +2941,7 @@ namespace services::disk {
             std::pmr::string msg{"agent_disk::rename_storage_column: no materialized storage for table oid ",
                                  resource()};
             msg += std::pmr::string{std::to_string(static_cast<unsigned>(table_oid)), resource()};
-            co_return core::result_wrapper_t<bool>(core::error_t{core::error_code_t::other_error, std::move(msg)});
+            co_return core::result_wrapper_t<bool>(core::error_t{core::error_code_t::missing_table, std::move(msg)});
         }
         auto renamed = it->second->rename_column(old_attname, new_attname);
         if (renamed.has_error()) {
@@ -2976,38 +2985,111 @@ namespace services::disk {
         co_return;
     }
 
-    agent_disk_t::unique_future<void>
-    agent_disk_t::note_column_identity_inner(components::catalog::oid_t table_oid,
-                                             std::string attname,
-                                             std::uint32_t attoid,
-                                             components::pg_attribute_commit_id_backfill_t::added_column_type_t type) {
+    agent_disk_t::unique_future<core::error_t>
+    agent_disk_t::add_storage_column_inner(execution_context_t ctx,
+                                           components::catalog::oid_t table_oid,
+                                           components::table::column_definition_t column) {
         auto it = storages_.find(table_oid);
-        if (it == storages_.end() || it->second == nullptr) {
-            trace(log_,
-                  "agent_disk[{}]::note_column_identity_inner: oid {} not owned by this agent — no-op",
-                  pool_idx_,
-                  static_cast<unsigned>(table_oid));
-            co_return;
+        if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
+            std::pmr::string what{"add_storage_column: no materialized storage for table oid ", resource()};
+            what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
+            co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
         }
-        // Decoded on this agent's resource(): logical_value_t's copy ctor carries the source resource pointer,
-        // so a caller-local arena would dangle. Loud, not fatal — every later load re-derives the value.
-        std::optional<components::types::logical_value_t> default_value;
-        if (!type.default_spec.empty()) {
-            auto ec =
-                components::catalog::decode_default_spec(resource(), type.type, type.default_spec, default_value);
-            if (ec.contains_error()) {
-                error(log_,
-                      "agent_disk[{}]::note_column_identity_inner: oid {} column '{}' attdefspec is unreadable "
-                      "({}); the column is published WITHOUT its DEFAULT and reads NULL until the next load",
-                      pool_idx_,
-                      static_cast<unsigned>(table_oid),
-                      attname,
-                      ec.what.c_str());
-                default_value.reset();
+
+        // Journal BEFORE the column exists, so replay re-adds it ahead of anything written into it. The
+        // record carries this transaction's id, so a rollback simply never commits it and replay drops it.
+        if (manager_wal_addr_ != actor_zeta::address_t::empty_address()) {
+            std::pmr::vector<components::types::complex_logical_type> col_types(resource());
+            auto type = column.type();
+            type.set_alias(column.name());
+            col_types.push_back(std::move(type));
+            auto schema_chunk = std::make_unique<components::vector::data_chunk_t>(resource(), col_types, 0);
+            schema_chunk->set_cardinality(0);
+            auto [_w, wf] = actor_zeta::otterbrix::send(manager_wal_addr_,
+                                                        &wal::manager_wal_replicate_t::write_physical_add_column,
+                                                        ctx.session,
+                                                        table_oid,
+                                                        std::move(schema_chunk),
+                                                        std::uint64_t{1},
+                                                        ctx.txn.transaction_id,
+                                                        components::catalog::well_known_oid::main_database);
+            auto journalled = co_await std::move(wf);
+            if (journalled.has_error()) {
+                co_return core::error_on(resource(), journalled.error());
             }
         }
-        it->second->note_column_identity(std::move(attname), attoid, type.type, default_value);
+
+        auto& entry = *it->second;
+        entry.add_column(column, resource());
+        auto& table = entry.table_storage.table();
+        if (table.has_construction_error()) {
+            co_return core::error_on(resource(), table.construction_error());
+        }
+        // ADD appends, so the new column is the last one; nothing before it moves.
+        const auto position = table.column_count() - 1;
+        table.stamp_column_added(position, ctx.txn.transaction_id);
+        trace(log_,
+              "agent_disk[{}]::add_storage_column_inner: oid={} column='{}' position={} txn={}",
+              pool_idx_,
+              static_cast<unsigned>(table_oid),
+              column.name(),
+              position,
+              ctx.txn.transaction_id);
+        co_return core::error_t::no_error();
+    }
+
+    agent_disk_t::unique_future<core::error_t>
+    agent_disk_t::stamp_column_dropped_inner(components::catalog::oid_t table_oid,
+                                             components::catalog::oid_t attoid,
+                                             components::table::transaction_data txn) {
+        auto it = storages_.find(table_oid);
+        if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
+            std::pmr::string what{"stamp_column_dropped: no materialized storage for table oid ", resource()};
+            what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
+            co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
+        }
+        auto& table = it->second->table_storage.table();
+        const auto position = table.find_visible_column(txn, static_cast<std::uint32_t>(attoid));
+        if (position == components::table::storage::INVALID_INDEX) {
+            std::pmr::string what{"stamp_column_dropped: no storage column with attoid ", resource()};
+            what.append(std::to_string(static_cast<unsigned>(attoid)).c_str());
+            what.append(" in table oid ");
+            what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
+            co_return core::error_t{core::error_code_t::field_not_exists, std::move(what)};
+        }
+        // The transaction's own id: its later statements stop seeing the column, every other snapshot
+        // keeps it until this transaction commits and publish_column_stamps rewrites the stamp.
+        table.stamp_column_dropped(position, txn.transaction_id);
+        trace(log_,
+              "agent_disk[{}]::stamp_column_dropped_inner: oid={} attoid={} position={} txn={}",
+              pool_idx_,
+              static_cast<unsigned>(table_oid),
+              static_cast<unsigned>(attoid),
+              position,
+              txn.transaction_id);
+        co_return core::error_t::no_error();
+    }
+
+    agent_disk_t::unique_future<void>
+    agent_disk_t::publish_column_stamps_inner(uint64_t txn_id,
+                                              uint64_t commit_id,
+                                              std::pmr::vector<components::catalog::oid_t> tables) {
+        for (const auto& table_oid : tables) {
+            auto it = storages_.find(table_oid);
+            if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
+                report_publish_revert_miss(log_, pool_idx_, "publish_column_stamps_inner", table_oid);
+                continue;
+            }
+            const auto published = it->second->table_storage.table().publish_column_stamps(txn_id, commit_id);
+            trace(log_,
+                  "agent_disk[{}]::publish_column_stamps_inner: oid={} published={} stamp(s) at commit_id={}",
+                  pool_idx_,
+                  static_cast<unsigned>(table_oid),
+                  published,
+                  commit_id);
+        }
         co_return;
     }
+
 
 } //namespace services::disk

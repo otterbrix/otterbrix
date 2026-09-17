@@ -12,19 +12,6 @@
 
 namespace components::table {
 
-    void fill_published_default(vector::vector_t& target, const column_definition_t* published, uint64_t rows) {
-        if (rows == 0) {
-            return;
-        }
-        if (published == nullptr || !published->has_default_value() || published->default_value().is_null()) {
-            target.validity().set_all_invalid(rows);
-            return;
-        }
-        const auto& fill = published->default_value();
-        for (uint64_t row = 0; row < rows; row++) {
-            target.set_value(row, fill);
-        }
-    }
 
     row_group_segment_tree_t::row_group_segment_tree_t(collection_t& collection)
         : collection_(collection)

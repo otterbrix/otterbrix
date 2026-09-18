@@ -107,6 +107,10 @@ namespace services::wal {
                 co_await actor_zeta::dispatch(this, &wal_worker_t::write_physical_grow, msg);
                 break;
             }
+            case actor_zeta::msg_id<wal_worker_t, &wal_worker_t::write_physical_add_column>: {
+                co_await actor_zeta::dispatch(this, &wal_worker_t::write_physical_add_column, msg);
+                break;
+            }
             default:
                 break;
         }
@@ -496,7 +500,7 @@ namespace services::wal {
 
         // filter_committed_records must stay the one shared filter with bootstrap replay, or a recycled txn id's
         // backfill could pass uncommitted.
-        std::vector<record_t> result = filter_committed_records(std::move(all_records), nullptr);
+        std::vector<record_t> result = filter_committed_records(std::move(all_records));
 
         std::sort(result.begin(), result.end(), [](const record_t& a, const record_t& b) { return a.id < b.id; });
 

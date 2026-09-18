@@ -62,13 +62,12 @@ namespace {
     // "the read refused" — distinct from every honest row count, including zero.
     constexpr std::size_t kReadRefused = static_cast<std::size_t>(-1);
 
-    // `snapshot_horizon = max` is "see every COMMITTED row"; a bare transaction_data{0, 0} would hide some.
+    // Reads the catalog as a snapshot that sees every COMMITTED row.
     template<typename Key>
     core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>
     catalog_chunks_with(delete_refusal_spaces_t& space, catalog::oid_t table_oid, std::uint64_t key_col, Key key) {
         auto* resource = space.disk()->resource();
-        table::transaction_data td{0, 0};
-        td.snapshot_horizon = std::numeric_limits<uint64_t>::max();
+        auto td = table::transaction_data::committed();
         execution_context_t exec_ctx{otterbrix::session_id_t{}, td, {}};
         std::pmr::vector<std::uint64_t> key_cols(resource);
         key_cols.emplace_back(key_col);
@@ -418,12 +417,9 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::a_dropped_columns_tomb
     CHECK(rows.dropped_at_commit_id > added.added_at_commit_id);
 }
 
-// The stamp must survive a RESTART, not only the commit: checkpoint never flushes
-// update_segment_t's updates_, so a same-session assertion would pass even for an unjournalled,
-// uncheckpointed patch. ~base_otterbrix_t CHECKPOINTs on clean shutdown, so this pins the
-// direct_update_sync leg, not the WAL-replay leg (that needs an UNCLEAN restart, a
-// crash-injection case of its own). Measured, not assumed: with write_physical_update stubbed
-// out this case still passes; with the ctx.txn scan reverted it fails at phase 1 with `0 != 0`.
+// The stamp must survive a RESTART, not only the commit. ~base_otterbrix_t CHECKPOINTs on clean
+// shutdown, so this pins the checkpointed leg, not the WAL-replay leg (that needs an UNCLEAN
+// restart, a crash-injection case of its own).
 TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_added_columns_commit_id_survives_a_restart") {
     const std::filesystem::path dir = integration_fixture_path("test_catalog_delete_refusal/added_at_restart");
     auto config = test_helpers::make_test_config(dir);

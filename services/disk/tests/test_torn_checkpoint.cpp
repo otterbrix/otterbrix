@@ -58,7 +58,7 @@ namespace {
         REQUIRE_FALSE(init_result.has_error());
         auto append_result = table.append(chunk, state);
         REQUIRE_FALSE(append_result.has_error());
-        table.finalize_append(state, transaction_data{0, 0});
+        table.finalize_append(state, transaction_data::committed());
     }
 
     void append_range(data_table_t& table, std::pmr::memory_resource* res, int64_t first, int64_t count) {
@@ -71,7 +71,7 @@ namespace {
         std::vector<int64_t> out;
         std::vector<storage_index_t> column_ids{storage_index_t(0)};
         table_scan_state state(res);
-        ts.table().initialize_scan(state, column_ids, nullptr);
+        ts.table().initialize_scan(state, column_ids, transaction_data::committed(), nullptr);
         auto types = ts.table().copy_types();
         data_chunk_t chunk(res, types, DEFAULT_VECTOR_CAPACITY);
         while (true) {

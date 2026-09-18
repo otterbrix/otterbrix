@@ -569,6 +569,22 @@ namespace services::dispatcher {
         return core::error_t::no_error();
     }
 
+    core::error_t check_column_names_unique(std::pmr::memory_resource* resource,
+                                            const std::vector<components::table::column_definition_t>& columns) {
+        for (std::size_t later = 1; later < columns.size(); ++later) {
+            for (std::size_t earlier = 0; earlier < later; ++earlier) {
+                if (columns[earlier].name() != columns[later].name()) {
+                    continue;
+                }
+                std::pmr::string msg{"column \"", resource};
+                msg.append(columns[later].name().c_str());
+                msg.append("\" specified more than once");
+                return core::error_t{core::error_code_t::duplicate_field, std::move(msg)};
+            }
+        }
+        return core::error_t::no_error();
+    }
+
     namespace {
         core::error_t check_dml_target_not_catalog(std::pmr::memory_resource* resource,
                                                    const components::logical_plan::node_t* node) {

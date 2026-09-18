@@ -204,7 +204,7 @@ struct dispatcher_fixture : actor_zeta::actor::actor_mixin<dispatcher_fixture> {
     }
 
     components::execution_context_t read_ctx() {
-        return components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}};
+        return components::execution_context_t{session_id_t{}, components::table::transaction_data::committed(), {}};
     }
 
     void seed_pg_proc_row(const std::string& fname) {

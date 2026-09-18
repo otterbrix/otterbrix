@@ -92,7 +92,7 @@ namespace {
             REQUIRE_FALSE(table.append_lock(state).has_error());
             REQUIRE_FALSE(table.initialize_append(state).has_error());
             REQUIRE_FALSE(table.append(chunk, state).has_error());
-            table.finalize_append(state, transaction_data{0, 0});
+            table.finalize_append(state, transaction_data::committed());
         }
     }
 
@@ -157,9 +157,9 @@ TEST_CASE("components::table::fetch_visibility::uncommitted_delete_hides_only_fr
 
     transaction_manager_t mgr(&env.resource);
     auto deleter_session = components::session::session_id_t::generate_uid();
-    const auto deleter = mgr.begin_transaction(deleter_session).data();
+    const auto deleter = mgr.begin_transaction(deleter_session, transaction_scope_t::statement).data();
     auto reader_session = components::session::session_id_t::generate_uid();
-    const auto reader = mgr.begin_transaction(reader_session).data();
+    const auto reader = mgr.begin_transaction(reader_session, transaction_scope_t::statement).data();
 
     std::pmr::vector<int64_t> one(&env.resource);
     one.push_back(kProbe);
@@ -199,7 +199,7 @@ TEST_CASE("components::table::fetch_visibility::raw_still_reads_committed_delete
 
     transaction_manager_t mgr(&env.resource);
     auto session = components::session::session_id_t::generate_uid();
-    const auto txn_id = mgr.begin_transaction(session).data().transaction_id;
+    const auto txn_id = mgr.begin_transaction(session, transaction_scope_t::statement).data().transaction_id;
     delete_row(*table, env, kProbe, txn_id);
     const auto commit_id = mgr.commit(session);
     mgr.publish(commit_id);
@@ -211,13 +211,13 @@ TEST_CASE("components::table::fetch_visibility::raw_still_reads_committed_delete
     INFO("SNAPSHOT with an EMPTY transaction_data still honours the committed delete");
     {
         // Pre-fix this returned rows==1: the committed tombstone was never consulted.
-        auto got = fetch_rows(storage, env, *table, one, transaction_data{}, fetch_visibility_t::SNAPSHOT);
+        auto got = fetch_rows(storage, env, *table, one, transaction_data::committed(), fetch_visibility_t::SNAPSHOT);
         REQUIRE(got.rows == 0);
     }
 
     INFO("RAW reads the deleted row anyway — the CREATE INDEX backfill depends on this");
     {
-        auto got = fetch_rows(storage, env, *table, one, transaction_data{}, fetch_visibility_t::RAW);
+        auto got = fetch_rows(storage, env, *table, one, transaction_data::committed(), fetch_visibility_t::RAW);
         REQUIRE(got.rows == 1);
         REQUIRE(got.row_ids.front() == kProbe);
         REQUIRE(got.values.front() == kProbe);
@@ -236,7 +236,7 @@ TEST_CASE("components::table::fetch_visibility::the_answer_names_the_rows_it_car
 
     transaction_manager_t mgr(&env.resource);
     auto session = components::session::session_id_t::generate_uid();
-    const auto txn_id = mgr.begin_transaction(session).data().transaction_id;
+    const auto txn_id = mgr.begin_transaction(session, transaction_scope_t::statement).data().transaction_id;
     delete_row(*table, env, kProbe, txn_id);
     const auto commit_id = mgr.commit(session);
     mgr.publish(commit_id);
@@ -249,7 +249,7 @@ TEST_CASE("components::table::fetch_visibility::the_answer_names_the_rows_it_car
     // Past the end of the table: it resolves to no row group at all.
     request.push_back(static_cast<int64_t>(kRows) + 10);
 
-    auto got = fetch_rows(storage, env, *table, request, transaction_data{}, fetch_visibility_t::SNAPSHOT);
+    auto got = fetch_rows(storage, env, *table, request, transaction_data::committed(), fetch_visibility_t::SNAPSHOT);
     // Pre-fix: cardinality 3 (tombstoned row survived) with row_ids memcpy'd from the request,
     // so slot 1 named a row the chunk did not actually carry.
     REQUIRE(got.rows == 2);

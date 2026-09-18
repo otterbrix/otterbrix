@@ -2,8 +2,10 @@
 
 #include <components/catalog/catalog_oids.hpp>
 #include <components/types/types.hpp>
+#include <core/result_wrapper.hpp>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace components {
 
@@ -45,6 +47,11 @@ namespace components {
         std::string release_attname;
         std::string rename_to_attname;
         added_column_type_t added_column_type;
+    };
+
+    struct pg_attribute_backfill_result_t {
+        std::vector<pg_catalog_append_range_t> appended;
+        core::error_t refusal{core::error_t::no_error()};
     };
 
 } // namespace components

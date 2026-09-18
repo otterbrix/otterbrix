@@ -121,7 +121,7 @@ namespace services::collection {
                 case ops::operator_type::alter_column_drop:
                 case ops::operator_type::dynamic_cascade_delete:
                 case ops::operator_type::checkpoint:
-                case ops::operator_type::set_timezone:
+                case ops::operator_type::set_setting:
                 case ops::operator_type::vacuum:
                 case ops::operator_type::register_udf:
                 case ops::operator_type::unregister_udf:

@@ -147,7 +147,7 @@ namespace {
             REQUIRE_FALSE(table.append_lock(state).has_error());
             REQUIRE_FALSE(table.initialize_append(state).has_error());
             REQUIRE_FALSE(table.append(chunk, state).has_error());
-            table.finalize_append(state, transaction_data{0, 0});
+            table.finalize_append(state, transaction_data::committed());
             offset += batch;
         }
     }
@@ -182,7 +182,7 @@ namespace {
     uint64_t scan_and_verify(data_table_t& table, nested_env_t& env, nested_kind_t kind) {
         std::vector<storage_index_t> column_ids{storage_index_t(0)};
         table_scan_state state(&env.resource);
-        table.initialize_scan(state, column_ids, nullptr);
+        table.initialize_scan(state, column_ids, transaction_data::committed(), nullptr);
         auto types = table.copy_types();
         data_chunk_t chunk(&env.resource, types, DEFAULT_VECTOR_CAPACITY);
         uint64_t seen = 0;
@@ -232,7 +232,7 @@ namespace {
     void delete_first_rows(data_table_t& table, nested_env_t& env, uint64_t delete_count) {
         transaction_manager_t mgr(&env.resource);
         auto session = components::session::session_id_t::generate_uid();
-        auto& txn = mgr.begin_transaction(session);
+        auto& txn = mgr.begin_transaction(session, transaction_scope_t::statement);
         auto txn_id = txn.data().transaction_id;
         std::pmr::vector<complex_logical_type> id_type(&env.resource);
         id_type.emplace_back(logical_type::BIGINT);

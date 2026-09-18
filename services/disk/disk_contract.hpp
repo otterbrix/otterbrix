@@ -19,6 +19,7 @@
 #include <components/physical_plan/operators/operator_write_data.hpp>
 #include <components/physical_plan/pushed_aggregate_spec.hpp> // aggregate-pushdown reduce spec
 #include <components/session/session.hpp>
+#include <components/storage/storage.hpp>
 #include <components/table/column_definition.hpp>
 #include <components/table/column_state.hpp>
 #include <components/table/row_version_manager.hpp>
@@ -94,8 +95,8 @@ namespace services::disk {
         actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<std::uint64_t>>>
         delete_pg_catalog_rows_many(execution_context_t ctx, std::pmr::vector<pg_catalog_delete_spec_t> specs);
 
-        // Sits below the durable commit marker, so a refusal here can only report, never take it back.
-        actor_zeta::unique_future<core::error_t>
+        // Sits ABOVE the durable commit marker, so a refusal here can still abort the commit.
+        actor_zeta::unique_future<components::pg_attribute_backfill_result_t>
         update_pg_attribute_commit_id_fields(execution_context_t ctx,
                                              std::pmr::vector<components::pg_attribute_commit_id_backfill_t> backfills,
                                              std::uint64_t commit_id);
@@ -138,11 +139,19 @@ namespace services::disk {
                                                                            components::catalog::oid_t table_oid,
                                                                            std::set<std::string> live_attnames);
 
-        // Unlike compact_relkind_g_storage (SUBTRACTIVE), this is ADDITIVE: a gap can never drop a surviving column.
-        actor_zeta::unique_future<core::result_wrapper_t<bool>>
-        drop_storage_column(session_id_t session, components::catalog::oid_t table_oid, std::string attname);
+        actor_zeta::unique_future<core::error_t> add_storage_column(execution_context_t ctx,
+                                                                    components::catalog::oid_t table_oid,
+                                                                    components::table::column_definition_t column);
 
-        // rearm_dropped_column_blocks_sync matches by ATTOID, so a missed rename reads as a stale name, not a drop.
+        actor_zeta::unique_future<core::error_t> stamp_column_dropped(execution_context_t ctx,
+                                                                      components::catalog::oid_t table_oid,
+                                                                      components::catalog::oid_t attoid);
+
+        actor_zeta::unique_future<void> publish_column_stamps(execution_context_t ctx,
+                                                              uint64_t commit_id,
+                                                              std::pmr::set<components::catalog::oid_t> tables);
+
+        // reconcile_storage_with_catalog_sync matches by ATTOID, so a missed rename reads as a stale name, not a drop.
         actor_zeta::unique_future<core::result_wrapper_t<bool>>
         rename_storage_column(session_id_t session,
                               components::catalog::oid_t table_oid,
@@ -193,13 +202,13 @@ namespace services::disk {
                       uint64_t expected_compact_epoch);
 
         // Reply wraps (start_row, count); an empty batch is a (0,0) success, an unowned oid is not.
-        actor_zeta::unique_future<core::result_wrapper_t<std::pair<uint64_t, uint64_t>>>
+        actor_zeta::unique_future<core::result_wrapper_t<components::storage::appended_range_t>>
         storage_append(execution_context_t ctx,
                        components::catalog::oid_t table_oid,
                        std::pmr::vector<components::vector::data_chunk_t> data);
 
         // Reply wraps (updated, appended); an empty request answers (0,0) and stays a success.
-        actor_zeta::unique_future<core::result_wrapper_t<std::pair<int64_t, uint64_t>>>
+        actor_zeta::unique_future<core::result_wrapper_t<components::storage::appended_range_t>>
         storage_update(execution_context_t ctx,
                        components::catalog::oid_t table_oid,
                        std::pmr::vector<components::vector::vector_t> row_ids,
@@ -285,7 +294,9 @@ namespace services::disk {
                                                             &disk_contract::read_chunks_by_key,
                                                             &disk_contract::read_chunks_by_keys,
                                                             &disk_contract::compact_relkind_g_storage,
-                                                            &disk_contract::drop_storage_column,
+                                                            &disk_contract::add_storage_column,
+                                                            &disk_contract::stamp_column_dropped,
+                                                            &disk_contract::publish_column_stamps,
                                                             &disk_contract::rename_storage_column,
                                                             &disk_contract::on_horizon_advanced,
                                                             &disk_contract::mark_storage_dropped_many,

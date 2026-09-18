@@ -65,6 +65,9 @@ namespace core {
         io_error,        // file create/open/header/read/write failure
         write_conflict,  // MVCC write-write conflict
         stale_index,     // index answered row ids minted before the table's last compact
+
+        actor_agent_missing,
+        connection_closed,
     };
 
     struct [[nodiscard]] error_t {

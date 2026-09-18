@@ -360,7 +360,7 @@ TEST_CASE("components::table::data_table") {
             }
             REQUIRE_FALSE(data_table->append(chunk, state).has_error());
         }
-        data_table->finalize_append(state, transaction_data{0, 0});
+        data_table->finalize_append(state, transaction_data::committed());
     }
     INFO("Fetch");
     {
@@ -385,7 +385,7 @@ TEST_CASE("components::table::data_table") {
                               count,
                               state,
                               std::vector<size_t>{},
-                              transaction_data{},
+                              transaction_data::committed(),
                               fetch_visibility_t::SNAPSHOT);
             REQUIRE(result.size() == count);
             for (size_t local = 0; local < count; local++) {
@@ -401,7 +401,7 @@ TEST_CASE("components::table::data_table") {
             column_indices.emplace_back(static_cast<int64_t>(i));
         }
         table_scan_state state(&resource);
-        data_table->initialize_scan(state, column_indices);
+        data_table->initialize_scan(state, column_indices, transaction_data::committed());
         scan_and_check(*data_table, state, base_layout, test_size, [](size_t produced) { return produced; });
     }
     INFO("Scan with predicates");
@@ -438,7 +438,7 @@ TEST_CASE("components::table::data_table") {
                               components::graph_execution_context{},
                               std::move(built.value()),
                               expr::condition_kind::computed};
-        data_table->initialize_scan(state, column_indices, &filter);
+        data_table->initialize_scan(state, column_indices, transaction_data::committed(), &filter);
         scan_and_check(*data_table, state, base_layout, row_range.second - row_range.first, [&](size_t produced) {
             return row_range.first + produced;
         });
@@ -461,7 +461,7 @@ TEST_CASE("components::table::data_table") {
             column_indices.emplace_back(static_cast<int64_t>(i));
         }
         table_scan_state state(&resource);
-        data_table->initialize_scan(state, column_indices);
+        data_table->initialize_scan(state, column_indices, transaction_data::committed());
         REQUIRE(data_table->calculate_size() == test_size / 2);
         // Even rows were deleted, so surviving rows are the odd indices: 1, 3, 5, ...
         scan_and_check(*data_table, state, base_layout, test_size / 2, [](size_t produced) {
@@ -476,19 +476,6 @@ TEST_CASE("components::table::data_table") {
         {
             column_definition_t new_column{"temp_column_name7", logical_type::SMALLINT, int16_t(0)};
             extended_table = std::make_unique<data_table_t>(*data_table, new_column);
-
-            // Update values in new column
-            // Since row mask is applied to every column at once, in update we have to fill whole column
-            // or manually calculate ids where set is needed
-            vector_t v(&resource, logical_type::BIGINT, test_size / 2);
-            data_chunk_t chunk(&resource, {logical_type::SMALLINT}, test_size / 2);
-            chunk.set_cardinality(test_size / 2);
-            for (size_t i = 0; i < test_size / 2; i++) {
-                v.set_value(i, int64_t(i * 2 + 1));
-                chunk.set_value(0, i, int16_t(i * 2 + 1));
-            }
-            auto update_result = extended_table->update_column(v, {8}, chunk);
-            REQUIRE_FALSE(update_result.has_error());
         }
         // Scan after extension: base columns plus the new SMALLINT at index 8.
         {
@@ -498,8 +485,10 @@ TEST_CASE("components::table::data_table") {
                 column_indices.emplace_back(static_cast<int64_t>(i));
             }
             table_scan_state state(&resource);
-            extended_table->initialize_scan(state, column_indices);
-            const col_layout extended_layout{0, 1, 2, 3, 4, 5, 6, 7, 8};
+            extended_table->initialize_scan(state, column_indices, transaction_data::committed());
+            // The added column is never written here, so only the base columns are checked:
+            // populating it needed the update overlay, which no longer exists.
+            const col_layout extended_layout{0, 1, 2, 3, 4, 5, 6, 7, absent};
             scan_and_check(*extended_table, state, extended_layout, test_size / 2, [](size_t produced) {
                 return produced * 2 + 1;
             });
@@ -517,8 +506,8 @@ TEST_CASE("components::table::data_table") {
                 column_indices.emplace_back(static_cast<int64_t>(i));
             }
             table_scan_state state(&resource);
-            short_table->initialize_scan(state, column_indices);
-            const col_layout short_layout{absent, 0, 1, 2, 3, 4, 5, 6, 7};
+            short_table->initialize_scan(state, column_indices, transaction_data::committed());
+            const col_layout short_layout{absent, 0, 1, 2, 3, 4, 5, 6, absent};
             scan_and_check(*short_table, state, short_layout, test_size / 2, [](size_t produced) {
                 return produced * 2 + 1;
             });

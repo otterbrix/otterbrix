@@ -1,9 +1,11 @@
 #pragma once
 
 #include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/session_catalog.hpp>
 #include <components/context/pg_catalog_swap.hpp>
 #include <components/table/transaction.hpp>
 #include <core/date/date_types.hpp>
+#include <core/result_wrapper.hpp>
 
 #include <set>
 #include <vector>
@@ -20,18 +22,14 @@ namespace services::dispatcher {
     // transaction_data (row_version_manager.hpp) — a pmr container anchored to
     // an actor-local arena must not cross the actor boundary.
 
-    // Session context bundle returned by txn_begin_session_msg. One round-trip
-    // at plan start gives the executor everything it needs:
-    //   txn      — the (idempotently begun) active txn snapshot for the session;
-    //              shared MVCC scope for resolve + the operator pipeline.
-    //   session_tz — dispatcher-owned session timezone (feeds context_storage_t).
-    //   is_explicit — whether a prior SQL BEGIN marked this txn explicit; the
-    //              executor's DML tail uses it to pick accumulate-vs-publish.
+    // What the dispatcher resolved for a statement before sending it to an executor:
+    //   txn      — snapshot of the transaction the statement runs in; shared MVCC
+    //              scope for resolve + the operator pipeline.
+    //   settings — dispatcher-owned settings cache (feeds context_storage_t).
     //   lowest_active_start_time — VACUUM/MVCC GC gate value for pipeline ctx.
     struct txn_session_context_t {
         components::table::transaction_data txn{0, 0};
-        core::date::timezone_offset_t session_tz{};
-        bool is_explicit{false};
+        components::catalog::session_catalog_t settings{};
         uint64_t lowest_active_start_time{0};
     };
 

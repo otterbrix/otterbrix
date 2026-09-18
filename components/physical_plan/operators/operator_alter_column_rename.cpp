@@ -231,7 +231,7 @@ namespace components::operators {
 
         // Arms a commit-time storage rename rather than renaming inline: an inline rename couldn't be undone by
         // ROLLBACK, and a reverted catalog with storage already renamed would be misread as a drop by
-        // manager_disk_t::rearm_dropped_column_blocks_sync (keyed on attoid, not name).
+        // manager_disk_t::reconcile_storage_with_catalog_sync (keyed on attoid, not name).
         ctx->pg_attribute_commit_id_backfills.push_back(components::pg_attribute_commit_id_backfill_t{
             attoid,
             components::pg_attribute_commit_id_backfill_t::kind_t::storage_rename,

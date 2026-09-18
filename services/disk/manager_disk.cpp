@@ -62,7 +62,9 @@ namespace services::disk {
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::read_chunks_by_key>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::read_chunks_by_keys>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::compact_relkind_g_storage>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::drop_storage_column>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::add_storage_column>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::stamp_column_dropped>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::publish_column_stamps>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::rename_storage_column>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::on_horizon_advanced>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::mark_storage_dropped_many>,
@@ -210,18 +212,6 @@ namespace services::disk {
         checkpoint_wal_id_known_ = true;
     }
 
-    bool table_storage_t::has_pending_update_overlay() {
-        if (!table_) {
-            return false;
-        }
-        for (const auto& info : table_->get_column_segment_info()) {
-            if (info.has_updates) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     bool table_storage_t::has_versions_above(uint64_t watermark) const {
         if (!table_) {
             return false;
@@ -346,7 +336,7 @@ namespace services::disk {
                                  pending_released_blocks_.get_allocator().resource()};
             msg += std::pmr::string{old_attname, pending_released_blocks_.get_allocator().resource()};
             msg += std::pmr::string{"'", pending_released_blocks_.get_allocator().resource()};
-            return core::error_t{core::error_code_t::other_error, std::move(msg)};
+            return core::error_t{core::error_code_t::missing_table, std::move(msg)};
         }
         return table_->rename_column(old_attname, new_attname);
     }
@@ -631,8 +621,16 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::compact_relkind_g_storage, msg);
                 break;
             }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::drop_storage_column>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::drop_storage_column, msg);
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::add_storage_column>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::add_storage_column, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::stamp_column_dropped>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::stamp_column_dropped, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::publish_column_stamps>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::publish_column_stamps, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::rename_storage_column>: {

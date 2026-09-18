@@ -20,7 +20,6 @@ namespace components::sql::parser {
 } // namespace components::sql::parser
 
 namespace components::sql::transform {
-
     // There are some differences for expression parsing, depending on where it is placed
     enum class expression_placement_t
     {
@@ -352,7 +351,7 @@ namespace components::sql::transform {
                                                                      logical_plan::parameter_node_t* params);
 
         core::result_wrapper_t<logical_plan::node_ptr> transform_from_element(Node* item,
-                                                                              qualified_name& slot_name,
+                                                                              qualified_name_t& slot_name,
                                                                               std::string& slot_alias,
                                                                               name_collection_t& names,
                                                                               logical_plan::node_join_ptr& node_join,

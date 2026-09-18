@@ -1,5 +1,6 @@
 #include "operator_register_udf.hpp"
 
+#include "catalog_util.hpp"
 #include "single_oid_round.hpp"
 
 #include <components/base/collection_full_name.hpp>
@@ -16,8 +17,19 @@
 #include <vector>
 
 namespace components::operators {
-
     namespace catalog = components::catalog;
+    namespace {
+        bool function_exists(const std::string& name) {
+            const auto* registry = components::compute::function_registry_t::get_default();
+            if (registry == nullptr) {
+                return true;
+            }
+            const auto functions = registry->get_functions();
+            return std::any_of(functions.begin(), functions.end(), [&name](const auto& function) {
+                return function.first == name;
+            });
+        }
+    } // namespace
 
     operator_register_udf_t::operator_register_udf_t(std::pmr::memory_resource* resource,
                                                      log_t log,
@@ -55,8 +67,11 @@ namespace components::operators {
 
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
-        // 1. Cross-namespace conflict detection: bail on any pre-existing pg_proc
-        //    row with this function name, in any namespace (user or pg_catalog).
+        // 1. Cross-namespace conflict detection: a pg_proc row with this function name, in any namespace, is
+        //    a conflict — unless it is a leftover: outside pg_catalog, whose rows the engine seeds, while no
+        //    function of that name is live. A UDF's code lives in its client, so the row a previous
+        //    process wrote outlives the function - it is replaced below rather than refusing the name for good.
+        std::pmr::vector<catalog::oid_t> overwritten_funcs(resource_);
         if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
             auto [_rfbn, rfbnf] = actor_zeta::otterbrix::send(ctx->disk_address,
                                                               &services::disk::manager_disk_t::resolve_function_by_name,
@@ -70,7 +85,11 @@ namespace components::operators {
                 mark_failed();
                 co_return;
             }
-            if (!matches_r.value().empty()) {
+            const auto& matches = matches_r.value();
+            const bool engine_row = std::any_of(matches.begin(), matches.end(), [](const auto& m) {
+                return m.namespace_oid == catalog::well_known_oid::pg_catalog_namespace;
+            });
+            if (!matches.empty() && (engine_row || function_exists(func_name))) {
                 // A pg_proc row with this name already exists in SOME namespace. Name it:
                 // "collision" and "the catalog write failed" are different accidents and the
                 // caller has to be able to tell them apart.
@@ -80,6 +99,9 @@ namespace components::operators {
                                      resource_}});
                 mark_failed();
                 co_return;
+            }
+            for (const auto& m : matches) {
+                overwritten_funcs.push_back(m.oid);
             }
         }
 
@@ -180,6 +202,32 @@ namespace components::operators {
                 prorettype = catalog::encode_prorettype(outs);
             }
 
+            if (!overwritten_funcs.empty()) {
+                std::pmr::vector<std::size_t> pg_proc_specs(resource_);
+                auto specs = stage_function_deletes(resource_, ctx, overwritten_funcs, pg_proc_specs);
+                auto [_d, df] =
+                    actor_zeta::otterbrix::send(ctx->disk_address,
+                                                &services::disk::manager_disk_t::delete_pg_catalog_rows_many,
+                                                exec_ctx,
+                                                std::move(specs));
+                auto deleted_r = co_await std::move(df);
+                if (deleted_r.has_error()) {
+                    set_error(deleted_r.error());
+                    mark_failed();
+                    co_return;
+                }
+                if (auto ec = confirm_function_deletes(resource_,
+                                                       deleted_r.value(),
+                                                       pg_proc_specs,
+                                                       "register_udf",
+                                                       func_name);
+                    ec.contains_error()) {
+                    set_error(std::move(ec));
+                    mark_failed();
+                    co_return;
+                }
+            }
+
             auto fn_writes = catalog::build_create_function_writes(resource_,
                                                                    func_name,
                                                                    target_ns,
@@ -244,5 +292,4 @@ namespace components::operators {
         output_ = nullptr;
         mark_executed();
     }
-
 } // namespace components::operators

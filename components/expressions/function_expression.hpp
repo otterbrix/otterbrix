@@ -1,12 +1,12 @@
 #pragma once
 
 #include "expression.hpp"
+#include <components/base/collection_full_name.hpp>
 #include <components/compute/function.hpp>
 
 #include <memory_resource>
 
 namespace components::expressions {
-
     class function_expression_t;
     using function_expression_ptr = boost::intrusive_ptr<function_expression_t>;
 
@@ -16,12 +16,13 @@ namespace components::expressions {
         function_expression_t(function_expression_t&&) noexcept = default;
         ~function_expression_t() override = default;
 
-        function_expression_t(std::pmr::memory_resource* resource, std::string&& name);
+        function_expression_t(std::pmr::memory_resource* resource, qualified_name_t&& name);
         function_expression_t(std::pmr::memory_resource* resource,
-                              std::string&& name,
+                              qualified_name_t&& name,
                               std::pmr::vector<param_storage>&& args);
 
         const std::string& name() const noexcept;
+        const qualified_name_t& full_name() const noexcept;
         std::pmr::vector<param_storage>& args() noexcept;
         const std::pmr::vector<param_storage>& args() const noexcept;
         void add_function_uid(compute::function_uid uid);
@@ -36,7 +37,7 @@ namespace components::expressions {
         bool has_star_argument() const noexcept;
 
     private:
-        std::string name_;
+        qualified_name_t name_;
         std::pmr::vector<param_storage> args_;
         bool distinct_{false};
         bool star_argument_{false};
@@ -47,9 +48,8 @@ namespace components::expressions {
         bool equal_impl(const expression_i* rhs) const override;
     };
 
-    function_expression_ptr make_function_expression(std::pmr::memory_resource* resource, std::string&& name);
+    function_expression_ptr make_function_expression(std::pmr::memory_resource* resource, qualified_name_t&& name);
     function_expression_ptr make_function_expression(std::pmr::memory_resource* resource,
-                                                     std::string&& name,
+                                                     qualified_name_t&& name,
                                                      std::pmr::vector<param_storage>&& args);
-
 } // namespace components::expressions

@@ -24,6 +24,9 @@ struct qualified_name_t {
     collection_name_t collection;
     qualified_name_t() = default;
 
+    explicit qualified_name_t(const collection_name_t& collection)
+        : collection(collection) {}
+
     qualified_name_t(const database_name_t& database, const collection_name_t& collection)
         : database(database)
         , collection(collection) {}
@@ -43,13 +46,17 @@ struct qualified_name_t {
         , collection(collection) {}
 
     inline std::string to_string() const {
-        std::stringstream s;
-        if (empty()) {
-            s << "NonCollectionData";
-        } else {
-            s << database << "." << collection;
+        std::string written;
+        for (const auto* slot : {&unique_identifier, &database, &schema, &collection}) {
+            if (slot->empty()) {
+                continue;
+            }
+            if (!written.empty()) {
+                written += '.';
+            }
+            written += *slot;
         }
-        return s.str();
+        return written;
     }
 
     bool empty() const noexcept {

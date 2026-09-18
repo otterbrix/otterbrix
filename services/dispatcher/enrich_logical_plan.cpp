@@ -52,7 +52,6 @@
 #include <unordered_map>
 
 namespace services::dispatcher { namespace {
-
     using components::logical_plan::catalog_resolves_t;
 
     void fill_not_null(const components::logical_plan::resolved_table_metadata_t& md, std::vector<std::string>& out) {
@@ -287,7 +286,7 @@ namespace services::dispatcher { namespace {
         node->set_array_size_reqs(collect_array_size_reqs(*md));
     }
 
-}} // namespace services::dispatcher::
+}} // namespace services::dispatcher
 
 namespace services::catalog_resolve {
 
@@ -1308,10 +1307,52 @@ namespace services::dispatcher { namespace {
         }
         co_return core::error_t::no_error();
     }
-
-}} // namespace services::dispatcher::
+}} // namespace services::dispatcher
 
 namespace services::dispatcher {
+    namespace {
+        std::string_view statement_of(components::logical_plan::node_type type) noexcept {
+            using components::logical_plan::node_type;
+            switch (type) {
+                case node_type::create_collection_t:
+                    return "CREATE TABLE";
+                case node_type::create_view_t:
+                    return "CREATE VIEW";
+                case node_type::create_matview_t:
+                    return "CREATE MATERIALIZED VIEW";
+                case node_type::create_sequence_t:
+                    return "CREATE SEQUENCE";
+                case node_type::create_index_t:
+                    return "CREATE INDEX";
+                case node_type::drop_t:
+                    return "DROP";
+                case node_type::alter_table_t:
+                    return "ALTER TABLE";
+                case node_type::insert_t:
+                    return "INSERT";
+                case node_type::update_t:
+                    return "UPDATE";
+                case node_type::delete_t:
+                    return "DELETE";
+                default:
+                    return "write";
+            }
+        }
+
+        core::error_t refuse_invalid_targets(std::pmr::memory_resource* resource,
+                                             const components::logical_plan::catalog_resolves_t& resolves) {
+            if (resolves.invalid_targets.empty()) {
+                return core::error_t::no_error();
+            }
+            const auto& target = resolves.invalid_targets.front();
+            std::pmr::string msg{statement_of(target.type), resource};
+            msg += " target \"";
+            msg += target.name.to_string();
+            msg += "\" names a uid or schema segment, which this catalog has no place for: a relation lives in a "
+                   "database — write it as [database.]name; nothing was changed";
+            return core::error_t{core::error_code_t::invalid_parameter, std::move(msg)};
+        }
+    } // namespace
 
     actor_zeta::unique_future<core::error_t> enrich_plan(std::pmr::memory_resource* resource,
                                                          components::logical_plan::node_ptr root,
@@ -1322,6 +1363,9 @@ namespace services::dispatcher {
         if (!root)
             co_return core::error_t::no_error();
         if (resolves) {
+            if (auto refusal = refuse_invalid_targets(resource, *resolves); refusal.contains_error()) {
+                co_return refusal;
+            }
             bind_catalog_data(root.get(), *resolves);
         }
         auto err = co_await enrich_node(resource, root, ctx, resolves);
@@ -1364,5 +1408,4 @@ namespace services::dispatcher {
         }
         co_return core::error_t::no_error();
     }
-
 } // namespace services::dispatcher

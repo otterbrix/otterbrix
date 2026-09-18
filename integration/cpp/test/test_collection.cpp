@@ -20,7 +20,7 @@ namespace {
                           components::expressions::side_t::left);
         args.emplace_back(pattern);
         return components::expressions::expression_ptr{
-            components::expressions::make_function_expression(resource, "regexp_like", std::move(args))};
+            components::expressions::make_function_expression(resource, qualified_name_t{"regexp_like"}, std::move(args))};
     }
 } // namespace
 

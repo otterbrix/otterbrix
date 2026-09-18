@@ -3,7 +3,6 @@
 #include <sstream>
 
 namespace components::expressions {
-
     template<class OStream>
     OStream& operator<<(OStream& stream, const aggregate_expression_t* expr) {
         if (expr->params().empty()) {
@@ -12,7 +11,7 @@ namespace components::expressions {
             if (!expr->key().is_null()) {
                 stream << expr->key() << ": ";
             }
-            stream << "{$" << expr->function_name() << ": ";
+            stream << "{$" << expr->full_name().to_string() << ": ";
             if (expr->params().size() > 1) {
                 stream << "[";
                 bool is_first = true;
@@ -37,7 +36,7 @@ namespace components::expressions {
                                                    const std::string& function_name,
                                                    const key_t& key)
         : expression_i(expression_group::aggregate, key)
-        , child_(make_function_expression(resource, std::string(function_name))) {}
+        , child_(make_function_expression(resource, qualified_name_t{function_name})) {}
 
     aggregate_expression_t::aggregate_expression_t(const expression_ptr& call, const key_t& key)
         : expression_i(expression_group::aggregate, key)
@@ -52,6 +51,8 @@ namespace components::expressions {
     }
 
     const std::string& aggregate_expression_t::function_name() const { return call()->name(); }
+
+    const qualified_name_t& aggregate_expression_t::full_name() const { return call()->full_name(); }
 
     void aggregate_expression_t::add_function_uid(compute::function_uid uid) { call()->add_function_uid(uid); }
 
@@ -107,5 +108,4 @@ namespace components::expressions {
         expr->append_param(field);
         return expr;
     }
-
 } // namespace components::expressions

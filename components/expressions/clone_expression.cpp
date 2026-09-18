@@ -10,9 +10,7 @@
 #include <cassert>
 
 namespace components::expressions {
-
     namespace {
-
         // key_t is rebuilt on `resource` (not a plain copy) so the clone doesn't stay bound to the source arena it's meant to outlive.
         param_storage clone_param(std::pmr::memory_resource* resource, const param_storage& param) {
             if (is_expr(param)) {
@@ -23,7 +21,6 @@ namespace components::expressions {
             }
             return param;
         }
-
     } // namespace
 
     expression_ptr clone_expression(std::pmr::memory_resource* resource, const expression_ptr& expr) {
@@ -62,7 +59,8 @@ namespace components::expressions {
             }
             case expression_group::aggregate: {
                 const auto* src = static_cast<const aggregate_expression_t*>(expr.get());
-                auto dst = make_aggregate_expression(resource, src->function_name(), src->key());
+                auto dst = make_aggregate_over(make_function_expression(resource, qualified_name_t{src->full_name()}),
+                                               src->key());
                 dst->add_function_uid(src->function_uid());
                 dst->set_distinct(src->is_distinct());
                 dst->set_mergeable(src->is_mergeable());
@@ -88,7 +86,7 @@ namespace components::expressions {
                 for (const auto& arg : src->args()) {
                     args.push_back(clone_param(resource, arg));
                 }
-                auto dst = make_function_expression(resource, std::string{src->name()}, std::move(args));
+                auto dst = make_function_expression(resource, qualified_name_t{src->full_name()}, std::move(args));
                 dst->set_key(src->key());
                 dst->add_function_uid(src->function_uid());
                 copy = std::move(dst);
@@ -113,5 +111,4 @@ namespace components::expressions {
         copy->set_result_type(expr->result_type());
         return copy;
     }
-
 } // namespace components::expressions

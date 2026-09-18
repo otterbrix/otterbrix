@@ -26,7 +26,6 @@
 using namespace components::expressions;
 
 namespace components::sql::transform {
-
     namespace {
         // False on non-integer text or a value outside int64 range; caller reports its own refusal.
         bool exact_int64_literal(Value* value, int64_t& out) {
@@ -81,19 +80,21 @@ namespace components::sql::transform {
             return has_using_join(join->larg) || has_using_join(join->rarg);
         }
 
-        std::string range_function_name(RangeFunction& node) {
+        core::result_wrapper_t<std::string> range_function_name(std::pmr::memory_resource* resource,
+                                                                RangeFunction& node) {
             if (!node.functions || node.functions->lst.empty()) {
-                return {};
+                return std::string{};
             }
             auto* list = pg_ptr_cast<List>(node.functions->lst.front().data);
             if (!list || list->lst.empty()) {
-                return {};
+                return std::string{};
             }
             auto* call = pg_ptr_cast<FuncCall>(list->lst.front().data);
-            if (!call || !call->funcname || call->funcname->lst.empty()) {
-                return {};
+            if (!call) {
+                return std::string{};
             }
-            return strVal(call->funcname->lst.front().data);
+            VALUE_OR_RETURN(auto called, called_function(resource, call->funcname));
+            return std::move(called.collection);
         }
     } // namespace
 
@@ -133,40 +134,40 @@ namespace components::sql::transform {
 
     core::result_wrapper_t<logical_plan::node_ptr>
     transformer::transform_from_element(Node* item,
-                                        qualified_name& slot_name,
+                                        qualified_name_t& slot_name,
                                         std::string& slot_alias,
                                         name_collection_t& names,
                                         logical_plan::node_join_ptr& node_join,
                                         logical_plan::execution_plan_t* plan) {
-        slot_name = qualified_name{};
+        slot_name = qualified_name_t{};
         slot_alias.clear();
         switch (nodeTag(item)) {
             case T_RangeVar: {
                 auto* table = pg_ptr_cast<RangeVar>(item);
                 auto written = rangevar_to_qualified_name(table);
                 slot_alias = construct_alias(table->alias);
-                const std::string& visible = slot_alias.empty() ? written.relname : slot_alias;
-                const bool unqualified = written.dbname.empty() && written.schemaname.empty() && written.uuid.empty();
+                const std::string& visible = slot_alias.empty() ? written.collection : slot_alias;
+                const bool unqualified = written.database.empty() && written.schema.empty() && written.unique_identifier.empty();
                 if (unqualified) {
-                    if (auto cte = cte_queries_.find(written.relname); cte != cte_queries_.end()) {
-                        slot_name.relname = written.relname;
+                    if (auto cte = cte_queries_.find(written.collection); cte != cte_queries_.end()) {
+                        slot_name.collection = written.collection;
                         auto agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
                         VALUE_OR_RETURN(auto body, transform_select(*cte->second, plan));
                         agg->append_child(std::move(body));
                         agg->children().back()->set_result_alias(visible);
                         return agg;
                     }
-                    if (recursive_cte_queries_.count(written.relname)) {
-                        slot_name.relname = written.relname;
-                        VALUE_OR_RETURN(auto agg, build_recursive_cte_ref(written.relname, visible, plan));
+                    if (recursive_cte_queries_.count(written.collection)) {
+                        slot_name.collection = written.collection;
+                        VALUE_OR_RETURN(auto agg, build_recursive_cte_ref(written.collection, visible, plan));
                         return agg;
                     }
                 }
                 slot_name = std::move(written);
                 auto agg = logical_plan::make_node_aggregate(resource_,
-                                                             core::uid_t{slot_name.uuid},
-                                                             core::dbname_t{slot_name.dbname},
-                                                             core::relname_t{slot_name.relname});
+                                                             core::uid_t{slot_name.unique_identifier},
+                                                             core::dbname_t{slot_name.database},
+                                                             core::relname_t{slot_name.collection});
                 if (!slot_alias.empty()) {
                     agg->set_result_alias(slot_alias);
                 }
@@ -224,7 +225,7 @@ namespace components::sql::transform {
                 auto* func = pg_ptr_cast<RangeFunction>(item);
                 slot_alias = construct_alias(func->alias);
                 if (slot_alias.empty()) {
-                    slot_name.relname = range_function_name(*func);
+                    VALUE_OR_RETURN(slot_name.collection, range_function_name(resource_, *func));
                 }
                 VALUE_OR_RETURN(auto element,
                                 node_join ? transform_from_function(*func, names, node_join, plan)
@@ -261,8 +262,8 @@ namespace components::sql::transform {
         if (nodeTag(join->larg) == T_JoinExpr) {
             name_collection_t inner;
             RETURN_IF_ERROR(join_dfs(resource, pg_ptr_cast<JoinExpr>(join->larg), node_join, inner, plan));
-            auto carry = [&](const qualified_name& nm, const std::string& alias) {
-                if (!nm.relname.empty() || !alias.empty()) {
+            auto carry = [&](const qualified_name_t& nm, const std::string& alias) {
+                if (!nm.collection.empty() || !alias.empty()) {
                     names.extra_left.push_back({nm, alias});
                 }
             };
@@ -735,7 +736,7 @@ namespace components::sql::transform {
                         auto func = pg_ptr_cast<FuncCall>(res->val);
                         RETURN_IF_ERROR(refuse_dropped_call_decorations(resource_, *func));
 
-                        auto funcname = std::string{strVal(linitial(func->funcname))};
+                        VALUE_OR_RETURN(auto called, called_function(resource_, func->funcname));
                         std::pmr::vector<param_storage> args{resource_};
                         args.reserve(func->args->lst.size());
                         for (const auto& arg : func->args->lst) {
@@ -752,10 +753,10 @@ namespace components::sql::transform {
                         if (res->name) {
                             expr_name = res->name;
                         } else {
-                            expr_name = funcname;
+                            expr_name = called.collection;
                         }
 
-                        auto expr = make_function_expression(resource_, std::move(funcname), std::move(args));
+                        auto expr = make_function_expression(resource_, std::move(called), std::move(args));
                         expr->set_key(expressions::key_t{resource_, std::move(expr_name)});
                         if (func->agg_distinct) {
                             expr->set_distinct(true);
@@ -797,9 +798,9 @@ namespace components::sql::transform {
                         has_non_star = true;
                         {
                             VALUE_OR_RETURN(auto col, columnref_to_field(resource_, col_ref, names));
-                            if (nodeTag(col_ref->fields->lst.back().data) == T_A_Star && !col.table.empty()) {
+                            if (nodeTag(col_ref->fields->lst.back().data) == T_A_Star && col.is_qualified()) {
                                 std::pmr::vector<std::pmr::string> star_path{resource_};
-                                star_path.emplace_back(std::pmr::string{col.table, resource_});
+                                star_path.emplace_back(std::pmr::string{col.table.collection, resource_});
                                 star_path.emplace_back(std::pmr::string{"*", resource_});
                                 if (res->name) {
                                     return core::error_t(

@@ -8,7 +8,6 @@
 using namespace components::expressions;
 
 namespace components::sql::transform {
-
     namespace {
         logical_plan::index_type index_type_of(const char* method) {
             if (std::strcmp(method, "hash") == 0) {
@@ -23,8 +22,7 @@ namespace components::sql::transform {
     } // namespace
 
     core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_create_index(IndexStmt& node) {
-        if (!(node.relation && node.relation->relname && node.relation->catalogname && node.idxname &&
-              node.accessMethod)) {
+        if (!(node.relation && node.relation->relname && node.idxname && node.accessMethod)) {
             return core::error_t(core::error_code_t::sql_parse_error,
                                  std::pmr::string{"incorrect create index arguments", resource_});
         }
@@ -63,8 +61,8 @@ namespace components::sql::transform {
         }
 
         auto qn = rangevar_to_qualified_name(node.relation);
-        const std::string dbname_for_resolve = qn.dbname;
-        const std::string relname_for_resolve = qn.relname;
+        const std::string dbname_for_resolve = qn.database;
+        const std::string relname_for_resolve = qn.collection;
         auto create_index =
             logical_plan::make_node_create_index(resource_, core::indexname_t{std::string(node.idxname)}, type);
         for (auto key : node.indexParams->lst) {
@@ -83,6 +81,7 @@ namespace components::sql::transform {
         // resolved entry by name and stamps ns_oid + table_oid + columns from there.
         create_index->set_dbname(dbname_for_resolve);
         create_index->set_relname(relname_for_resolve);
+        mark_invalid_target(&catalog_resolves_, *create_index, qn);
         // Two targets, same as DROP INDEX (transform_table.cpp): the table and the new
         // index name. A miss on the second is the normal case (name free); a hit stamps
         // name_conflict_oid so the planner refuses the taken name.
@@ -92,5 +91,4 @@ namespace components::sql::transform {
         register_catalog_resolve_tables(resource_, &catalog_resolves_, targets);
         return create_index;
     }
-
 } // namespace components::sql::transform

@@ -7,7 +7,6 @@
 #include <utility>
 
 namespace services::dispatcher {
-
     using components::graph_execution_context;
     using components::casts::allowed_in;
     using components::casts::cast_cost;
@@ -20,6 +19,52 @@ namespace services::dispatcher {
     using components::types::logical_type;
 
     namespace {
+        enum class function_scope : uint8_t
+        {
+            any,
+            builtins,
+            client,
+        };
+
+        core::result_wrapper_t<function_scope> scope_of(std::pmr::memory_resource* resource,
+                                                        const qualified_name_t& name) {
+            if (!name.unique_identifier.empty() || !name.schema.empty()) {
+                return core::error_t(core::error_code_t::invalid_parameter,
+                                     std::pmr::string{"function '" + name.to_string() +
+                                                          "' names a uid or schema segment, which this catalog has no "
+                                                          "place for: call it as [namespace.]name",
+                                                      resource});
+            }
+            if (name.database.empty()) {
+                return function_scope::any;
+            }
+            if (name.database == "pg_catalog") {
+                return function_scope::builtins;
+            }
+            if (name.database == "public") {
+                return function_scope::client;
+            }
+            return core::error_t(core::error_code_t::unimplemented_yet,
+                                 std::pmr::string{"function '" + name.to_string() +
+                                                      "': a function created in a database cannot be called yet; "
+                                                      "pg_catalog and public hold the callable ones",
+                                                  resource});
+        }
+
+        bool in_scope(function_scope scope, components::compute::function_uid uid) {
+            const bool builtin = std::any_of(components::compute::DEFAULT_FUNCTIONS.begin(),
+                                             components::compute::DEFAULT_FUNCTIONS.end(),
+                                             [uid](const auto& entry) { return entry.second == uid; });
+            switch (scope) {
+                case function_scope::any:
+                    return true;
+                case function_scope::builtins:
+                    return builtin;
+                case function_scope::client:
+                    return !builtin;
+            }
+            return false;
+        }
 
         bool is_null_argument(const complex_logical_type& type) noexcept { return type.type() == logical_type::NA; }
 
@@ -230,7 +275,6 @@ namespace services::dispatcher {
             }
             return out;
         }
-
     } // namespace
 
     core::result_wrapper_t<resolved_function_t>
@@ -238,9 +282,12 @@ namespace services::dispatcher {
                      const cast_registry_t& cast_registry,
                      const graph_execution_context& context,
                      const function_registry_t& function_registry,
-                     std::string_view name,
+                     const qualified_name_t& name,
                      const std::pmr::vector<complex_logical_type>& arguments,
                      components::compute::function_types_mask allowed_function_types) {
+        VALUE_OR_RETURN(const auto scope, scope_of(resource, name));
+        const std::string written = name.to_string();
+
         bool name_exists = false;
         bool rejected_by_context = false;
         bool ambiguous = false;
@@ -248,7 +295,7 @@ namespace services::dispatcher {
         std::optional<total_cost_t> best_cost;
 
         for (const auto& [registered_name, uid] : function_registry.get_functions()) {
-            if (registered_name != name) {
+            if (registered_name != name.collection || !in_scope(scope, uid)) {
                 continue;
             }
             name_exists = true;
@@ -286,28 +333,26 @@ namespace services::dispatcher {
 
         if (!name_exists) {
             return core::error_t(core::error_code_t::unrecognized_function,
-                                 std::pmr::string{"unrecognized function '" + std::string(name) + "'", resource});
+                                 std::pmr::string{"unrecognized function '" + written + "'", resource});
         }
         if (!best.has_value() && rejected_by_context) {
             return core::error_t(
                 core::error_code_t::incorrect_function_argument,
-                std::pmr::string{"function '" + std::string(name) + "' is not allowed in this part of the statement",
-                                 resource});
+                std::pmr::string{"function '" + written + "' is not allowed in this part of the statement", resource});
         }
         if (!best.has_value()) {
-            return core::error_t(core::error_code_t::incorrect_function_argument,
-                                 std::pmr::string{"function '" + std::string(name) + "' does not accept (" +
-                                                      describe_arguments(arguments) + ")",
-                                                  resource});
+            return core::error_t(
+                core::error_code_t::incorrect_function_argument,
+                std::pmr::string{"function '" + written + "' does not accept (" + describe_arguments(arguments) + ")",
+                                 resource});
         }
         if (ambiguous) {
             return core::error_t(core::error_code_t::incorrect_function_argument,
-                                 std::pmr::string{"call to function '" + std::string(name) + "' with (" +
+                                 std::pmr::string{"call to function '" + written + "' with (" +
                                                       describe_arguments(arguments) +
                                                       ") is ambiguous between equally costly overloads",
                                                   resource});
         }
         return std::move(best.value());
     }
-
 } // namespace services::dispatcher

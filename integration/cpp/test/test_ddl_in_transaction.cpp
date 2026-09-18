@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 
 using namespace components::cursor;
 
@@ -35,6 +36,15 @@ namespace {
                     "INSERT INTO TestDatabase.t (a, b) VALUES (" + std::to_string(A_BASE) + ", " +
                         std::to_string(B_BASE) + ");")
                     ->is_success());
+    }
+
+    std::string plan_text(const cursor_t& plan) {
+        std::string text;
+        for (std::size_t row = 0; row < plan.size(); ++row) {
+            text += std::string(plan.value(0, row).value<std::string_view>());
+            text += '\n';
+        }
+        return text;
     }
 
     // A fresh session, so it reads what is committed rather than the writer's own work.
@@ -185,6 +195,31 @@ TEST_CASE("integration::cpp::ddl_in_transaction") {
             auto cur = run(dispatcher, reader, "SELECT a FROM TestDatabase.t;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->value(0, 0).value<std::int64_t>() == A_BASE);
+        }
+    }
+
+    SECTION("an index created in a transaction holds the table's rows after COMMIT") {
+        auto writer = otterbrix::session_id_t();
+        REQUIRE(run(dispatcher, writer, "BEGIN;")->is_success());
+        REQUIRE(run(dispatcher, writer, "CREATE INDEX ix_a ON TestDatabase.t (a);")->is_success());
+        REQUIRE(run(dispatcher, writer, "COMMIT;")->is_success());
+
+        const std::string point_query = "SELECT b FROM TestDatabase.t WHERE a = " + std::to_string(A_BASE) + ";";
+        auto reader = otterbrix::session_id_t();
+        INFO("the lookup must go through the index, or a sequential scan answers it whatever the index holds");
+        {
+            auto plan = run(dispatcher, reader, "EXPLAIN " + point_query);
+            REQUIRE(plan->is_success());
+            const auto text = plan_text(*plan);
+            INFO("plan:\n" << text);
+            REQUIRE(text.find("Index Scan") != std::string::npos);
+        }
+        {
+            auto cur = run(dispatcher, reader, point_query);
+            INFO(point_query << ": " << why(*cur));
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->value(0, 0).value<std::int64_t>() == B_BASE);
         }
     }
 }

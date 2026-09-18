@@ -29,6 +29,7 @@ namespace components::operators {
         std::vector<components::pg_catalog_append_range_t> base_appends;
         std::set<components::catalog::oid_t> base_delete_tables;
         std::vector<components::catalog::oid_t> dropped_storage_oids;
+        std::vector<components::table::created_index_t> created_indexes;
         if (ctx->current_message_sender != actor_zeta::address_t::empty_address()) {
             auto [_dr, drf] =
                 actor_zeta::otterbrix::send(ctx->current_message_sender,
@@ -43,6 +44,7 @@ namespace components::operators {
             base_appends = std::move(drain.base_appends);
             base_delete_tables = std::move(drain.base_delete_tables);
             dropped_storage_oids = std::move(drain.dropped_storage_oids);
+            created_indexes = std::move(drain.created_indexes);
             commit_id_ = drain.commit_id;
         }
 
@@ -62,16 +64,22 @@ namespace components::operators {
                                                                             base_delete_tables.end(),
                                                                             resource_};
 
+        std::pmr::set<components::catalog::oid_t> index_commit_oid_set{append_oid_set.begin(),
+                                                                       append_oid_set.end(),
+                                                                       resource_};
+        for (const auto& created : created_indexes) {
+            index_commit_oid_set.insert(created.table_oid);
+        }
         if (ctx->index_address != actor_zeta::address_t::empty_address() && txn_data.transaction_id != 0 &&
-            commit_id_ > 0 && !base_append_oids.empty()) {
-            std::pmr::vector<components::catalog::oid_t> append_oids{base_append_oids.begin(),
-                                                                     base_append_oids.end(),
-                                                                     resource_};
+            commit_id_ > 0 && !index_commit_oid_set.empty()) {
+            std::pmr::vector<components::catalog::oid_t> index_commit_oids{index_commit_oid_set.begin(),
+                                                                           index_commit_oid_set.end(),
+                                                                           resource_};
             auto [_ic, icf] = actor_zeta::otterbrix::send(
                 ctx->index_address,
                 &services::index::manager_index_t::commit_inserts,
                 components::execution_context_t{ctx->session, txn_data, ctx->execution_context.timezone_offset},
-                std::move(append_oids),
+                std::move(index_commit_oids),
                 commit_id_);
             core::error_t result = co_await std::move(icf);
             if (result.contains_error()) {
@@ -320,8 +328,16 @@ namespace components::operators {
                                                               rename.rename_to_attname);
                 auto renamed = co_await std::move(rnf);
                 if (renamed.has_error()) {
-                    set_error(renamed.error());
-                    co_return;
+                    error(log_,
+                          "operator_commit_transaction: renaming column '{}' -> '{}' of oid {} in the storage failed "
+                          "for commit_id {} ({}); the commit is already durable and published, so refusing would "
+                          "report a committed transaction as failed",
+                          rename.release_attname,
+                          rename.rename_to_attname,
+                          static_cast<unsigned>(rename.release_table_oid),
+                          commit_id_,
+                          renamed.error().what);
+                    continue;
                 }
                 trace(log_,
                       "operator_commit_transaction: renamed column '{}' -> '{}' of oid {} — {} (commit_id {})",

@@ -1781,28 +1781,6 @@ namespace services::collection::executor {
                         co_await undo_create_index(this, create_index_table_oid, create_index_oid);
                     }
                 }
-                if (commit_result.commit_id > 0 && original_type == node_type::create_index_t &&
-                    index_address_ != actor_zeta::address_t::empty_address()) {
-                    trace(log_,
-                          "executor::execute_plan_full: CREATE INDEX backfill commit — oid={}, commit_id={}",
-                          static_cast<unsigned>(create_index_table_oid),
-                          commit_result.commit_id);
-                    if (create_index_table_oid != components::catalog::INVALID_OID) {
-                        components::execution_context_t swap_ctx{session, resolve_txn, {}};
-                        std::pmr::vector<components::catalog::oid_t> commit_oids{resource()};
-                        commit_oids.push_back(create_index_table_oid);
-                        auto [_ci, cif] = actor_zeta::otterbrix::send(index_address_,
-                                                                      &services::index::manager_index_t::commit_inserts,
-                                                                      swap_ctx,
-                                                                      std::move(commit_oids),
-                                                                      commit_result.commit_id);
-                        auto ci_result = co_await std::move(cif);
-                        if (ci_result.contains_error()) {
-                            exec_result.cursor = make_cursor(resource(), ci_result);
-                            co_await undo_create_index(this, create_index_table_oid, create_index_oid);
-                        }
-                    }
-                }
             }
         } else if (needs_ddl_txn && exec_result.cursor->is_error()) {
             trace(log_,

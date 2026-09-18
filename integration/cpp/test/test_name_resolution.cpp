@@ -1006,7 +1006,7 @@ namespace {
         return read(sql::transform::pg_ptr_cast<SelectStmt>(&node), &resource);
     }
 
-    sql::transform::qualified_name from_slots(const std::string& sql) {
+    qualified_name_t from_slots(const std::string& sql) {
         return with_parsed(sql, [](SelectStmt* select, std::pmr::memory_resource*) {
             auto* item = sql::transform::pg_ptr_cast<Node>(select->fromClause->lst.front().data);
             return sql::transform::rangevar_to_qualified_name(sql::transform::pg_ptr_cast<RangeVar>(item));
@@ -1019,7 +1019,7 @@ namespace {
 
     reference_slots_t reference_slots(const std::string& sql) {
         sql::transform::name_collection_t names;
-        names.left_name = sql::transform::qualified_name{"d", "t", "s", "u"};
+        names.left_name = qualified_name_t{"u", "d", "s", "t"};
         return with_parsed(sql, [&names](SelectStmt* select, std::pmr::memory_resource* resource) {
             auto* target = sql::transform::pg_ptr_cast<ResTarget>(select->targetList->lst.front().data);
             auto parsed = sql::transform::columnref_to_field(resource,
@@ -1027,7 +1027,11 @@ namespace {
                                                              names);
             REQUIRE_FALSE(parsed.has_error());
             const auto& ref = parsed.value();
-            return reference_slots_t{ref.uid, ref.db, ref.schema, ref.table, ref.field.as_string()};
+            return reference_slots_t{ref.table.unique_identifier,
+                                     ref.table.database,
+                                     ref.table.schema,
+                                     ref.table.collection,
+                                     ref.field.as_string()};
         });
     }
 } // namespace
@@ -1036,31 +1040,31 @@ TEST_CASE("name_resolution::from_name::from_arities_fill_the_slots") {
     // The shorter forms drop the middle slots: two segments are db.relname, not schema.relname.
     {
         auto name = from_slots("SELECT 1 FROM t;");
-        CHECK(name.relname == "t");
-        CHECK(name.dbname.empty());
-        CHECK(name.schemaname.empty());
-        CHECK(name.uuid.empty());
+        CHECK(name.collection == "t");
+        CHECK(name.database.empty());
+        CHECK(name.schema.empty());
+        CHECK(name.unique_identifier.empty());
     }
     {
         auto name = from_slots("SELECT 1 FROM d.t;");
-        CHECK(name.dbname == "d");
-        CHECK(name.relname == "t");
-        CHECK(name.schemaname.empty());
-        CHECK(name.uuid.empty());
+        CHECK(name.database == "d");
+        CHECK(name.collection == "t");
+        CHECK(name.schema.empty());
+        CHECK(name.unique_identifier.empty());
     }
     {
         auto name = from_slots("SELECT 1 FROM d.s.t;");
-        CHECK(name.dbname == "d");
-        CHECK(name.schemaname == "s");
-        CHECK(name.relname == "t");
-        CHECK(name.uuid.empty());
+        CHECK(name.database == "d");
+        CHECK(name.schema == "s");
+        CHECK(name.collection == "t");
+        CHECK(name.unique_identifier.empty());
     }
     {
         auto name = from_slots("SELECT 1 FROM u.d.s.t;");
-        CHECK(name.uuid == "u");
-        CHECK(name.dbname == "d");
-        CHECK(name.schemaname == "s");
-        CHECK(name.relname == "t");
+        CHECK(name.unique_identifier == "u");
+        CHECK(name.database == "d");
+        CHECK(name.schema == "s");
+        CHECK(name.collection == "t");
     }
 }
 

@@ -23,11 +23,11 @@
 namespace components::sql::transform {
     namespace {
         struct element_view_t {
-            const qualified_name* name;
+            const qualified_name_t* name;
             const std::string* alias;
             expressions::side_t side;
 
-            bool exists() const noexcept { return !name->relname.empty() || !alias->empty(); }
+            bool exists() const noexcept { return !name->collection.empty() || !alias->empty(); }
             const std::string& visible_name() const noexcept { return transform::visible_name(*name, *alias); }
         };
 
@@ -48,36 +48,20 @@ namespace components::sql::transform {
             };
 
             if (!element.alias->empty()) {
-                return ref.uid.empty() && ref.db.empty() && ref.schema.empty() && ref.table == *element.alias;
+                return ref.table == qualified_name_t{*element.alias};
             }
-            return slot_answers(ref.uid, element.name->uuid) && slot_answers(ref.db, element.name->dbname) &&
-                   slot_answers(ref.schema, element.name->schemaname) && slot_answers(ref.table, element.name->relname);
-        }
-
-        std::string dotted(std::initializer_list<const std::string*> slots) {
-            std::string text;
-            for (const std::string* slot : slots) {
-                if (slot->empty()) {
-                    continue;
-                }
-                if (!text.empty()) {
-                    text += '.';
-                }
-                text += *slot;
-            }
-            return text;
-        }
-
-        std::string spell(const qualified_name& name) {
-            return dotted({&name.uuid, &name.dbname, &name.schemaname, &name.relname});
+            return slot_answers(ref.table.unique_identifier, element.name->unique_identifier) &&
+                   slot_answers(ref.table.database, element.name->database) &&
+                   slot_answers(ref.table.schema, element.name->schema) &&
+                   slot_answers(ref.table.collection, element.name->collection);
         }
 
         std::string spell(const element_view_t& element) {
-            return element.alias->empty() ? spell(*element.name) : *element.alias;
+            return element.alias->empty() ? element.name->to_string() : *element.alias;
         }
 
         std::string spell(const column_ref_t& ref) {
-            const std::string qualification = dotted({&ref.uid, &ref.db, &ref.schema, &ref.table});
+            const std::string qualification = ref.table.to_string();
             const std::string column = ref.field.as_string();
             return qualification.empty() ? column : qualification + "." + column;
         }
@@ -230,18 +214,18 @@ namespace components::sql::transform {
         }
 
         for (const auto& element : elements) {
-            if (element.exists() && !element.alias->empty() && *element.alias == ref.table) {
+            if (element.exists() && !element.alias->empty() && *element.alias == ref.table.collection) {
                 return refusal(resource, ref, refusal_reason::alias_is_not_qualifiable, *element.alias);
             }
         }
         for (const auto& element : elements) {
-            if (!element.exists() || element.name->relname != ref.table) {
+            if (!element.exists() || element.name->collection != ref.table.collection) {
                 continue;
             }
             if (!element.alias->empty()) {
                 return refusal(resource, ref, refusal_reason::hidden_by_alias, *element.alias);
             }
-            return refusal(resource, ref, refusal_reason::qualification_differs, spell(*element.name));
+            return refusal(resource, ref, refusal_reason::qualification_differs, element.name->to_string());
         }
         return refusal(resource, ref, refusal_reason::no_such_name, {});
     }
@@ -256,9 +240,9 @@ namespace components::sql::transform {
                 if (!inner->exists() || inner->visible_name() != outer->visible_name()) {
                     continue;
                 }
-                const bool same_qualification = outer->name->uuid == inner->name->uuid &&
-                                                outer->name->dbname == inner->name->dbname &&
-                                                outer->name->schemaname == inner->name->schemaname;
+                const bool same_qualification = outer->name->unique_identifier == inner->name->unique_identifier &&
+                                                outer->name->database == inner->name->database &&
+                                                outer->name->schema == inner->name->schema;
                 if (!outer->alias->empty() || !inner->alias->empty() || same_qualification) {
                     return core::error_t{core::error_code_t::ambiguous_name,
                                          std::pmr::string{"table name \"" + outer->visible_name() +
@@ -296,22 +280,22 @@ namespace components::sql::transform {
         };
         switch (segments.size()) {
             case 5:
-                take(out.uid);
-                take(out.db);
-                take(out.schema);
-                take(out.table);
+                take(out.table.unique_identifier);
+                take(out.table.database);
+                take(out.table.schema);
+                take(out.table.collection);
                 break;
             case 4:
-                take(out.db);
-                take(out.schema);
-                take(out.table);
+                take(out.table.database);
+                take(out.table.schema);
+                take(out.table.collection);
                 break;
             case 3:
-                take(out.db);
-                take(out.table);
+                take(out.table.database);
+                take(out.table.collection);
                 break;
             case 2:
-                take(out.table);
+                take(out.table.collection);
                 break;
             default:
                 break;
@@ -339,7 +323,7 @@ namespace components::sql::transform {
             }
             return out;
         }
-        out.field.set_qualifier(out.table);
+        out.field.set_qualifier(out.table.collection);
         VALUE_OR_RETURN(auto side, names.resolve(resource, out));
         out.field.set_side(side);
         return out;
@@ -1846,6 +1830,40 @@ namespace components::sql::transform {
             entry.dbname = "public";
             entry.type_name = name;
             node.add(std::move(entry));
+        }
+    }
+
+    core::result_wrapper_t<qualified_name_t> called_function(std::pmr::memory_resource* resource, const List* funcname) {
+        if (!funcname || funcname->lst.empty()) {
+            return qualified_name_t{};
+        }
+        std::vector<std::string> parts;
+        for (const auto& part : funcname->lst) {
+            if (!part.data || nodeTag(part.data) != T_String) {
+                return core::error_t(core::error_code_t::sql_parse_error,
+                                     std::pmr::string{"malformed function name", resource});
+            }
+            parts.emplace_back(strVal(part.data));
+        }
+        switch (parts.size()) {
+            case 1:
+                return qualified_name_t{parts[0]};
+            case 2:
+                return qualified_name_t{parts[0], parts[1]};
+            case 3:
+                return qualified_name_t{parts[0], parts[1], parts[2]};
+            case 4:
+                return qualified_name_t{parts[0], parts[1], parts[2], parts[3]};
+            default: {
+                std::pmr::string msg{"function \"", resource};
+                msg += parts.front();
+                for (auto part = std::next(parts.begin()); part != parts.end(); ++part) {
+                    msg += '.';
+                    msg += *part;
+                }
+                msg += "\": improper qualified name (too many dotted names)";
+                return core::error_t(core::error_code_t::sql_parse_error, std::move(msg));
+            }
         }
     }
 

@@ -1,5 +1,7 @@
 #include "operator_unregister_udf.hpp"
 
+#include "catalog_util.hpp"
+
 #include <components/base/collection_full_name.hpp>
 #include <components/compute/function.hpp>
 #include <components/context/context.hpp>
@@ -12,7 +14,6 @@
 #include <vector>
 
 namespace components::operators {
-
     operator_unregister_udf_t::operator_unregister_udf_t(std::pmr::memory_resource* resource,
                                                          log_t log,
                                                          std::string function_name,
@@ -74,30 +75,14 @@ namespace components::operators {
                 mark_failed();
                 co_return;
             }
-            auto& matches = matches_r.value();
-            constexpr components::catalog::oid_t pg_proc_coll = components::catalog::well_known_oid::pg_proc_table;
-            constexpr components::catalog::oid_t pg_depend_coll = components::catalog::well_known_oid::pg_depend_table;
-            // Collect every (table, col, oid) delete across all matches into one
-            // batched call. matches was already awaited above, so no spec here
-            // depends on an intervening read.
-            std::pmr::vector<services::disk::pg_catalog_delete_spec_t> specs(resource_);
-            specs.reserve(matches.size() * 3);
-            // pg_depend rows are optional (zero deleted is healthy); pg_proc rows are not -- each was
-            // just READ under this same snapshot, so a delete matching none left the row in place. An
-            // EMPTY spec list is different and legitimate: a builtin or catalog-less mirror has
-            // nothing to scrub.
-            std::pmr::vector<std::size_t> pg_proc_specs(resource_);
-            pg_proc_specs.reserve(matches.size());
-            for (auto& m : matches) {
-                pg_proc_specs.push_back(specs.size());
-                specs.push_back({pg_proc_coll, std::int64_t{0}, m.oid});
-                specs.push_back({pg_depend_coll, std::int64_t{1}, m.oid});
-                specs.push_back({pg_depend_coll, std::int64_t{3}, m.oid});
-                if (ctx->txn.transaction_id != 0) {
-                    ctx->pg_catalog_delete_tables.insert(pg_proc_coll);
-                    ctx->pg_catalog_delete_tables.insert(pg_depend_coll);
-                }
+            std::pmr::vector<components::catalog::oid_t> function_oids(resource_);
+            for (const auto& m : matches_r.value()) {
+                function_oids.push_back(m.oid);
             }
+            // pg_depend rows are optional (zero deleted is healthy); pg_proc rows are not. An EMPTY spec
+            // list is legitimate: a builtin or catalog-less mirror has nothing to scrub.
+            std::pmr::vector<std::size_t> pg_proc_specs(resource_);
+            auto specs = stage_function_deletes(resource_, ctx, function_oids, pg_proc_specs);
             if (!specs.empty()) {
                 auto [_d, df] =
                     actor_zeta::otterbrix::send(ctx->disk_address,
@@ -112,17 +97,15 @@ namespace components::operators {
                     mark_failed();
                     co_return;
                 }
-                const auto& deleted = deleted_r.value();
-                for (const auto i : pg_proc_specs) {
-                    if (i < deleted.size() && deleted[i] == 0) {
-                        set_error(core::error_t{core::error_code_t::other_error,
-                                                std::pmr::string{"unregister_udf: no pg_proc row was deleted for '" +
-                                                                     function_name_ +
-                                                                     "' — the function is still in the catalog",
-                                                                 resource_}});
-                        mark_failed();
-                        co_return;
-                    }
+                if (auto ec = confirm_function_deletes(resource_,
+                                                       deleted_r.value(),
+                                                       pg_proc_specs,
+                                                       "unregister_udf",
+                                                       function_name_);
+                    ec.contains_error()) {
+                    set_error(std::move(ec));
+                    mark_failed();
+                    co_return;
                 }
             }
         }
@@ -144,5 +127,4 @@ namespace components::operators {
         output_ = nullptr;
         mark_executed();
     }
-
 } // namespace components::operators

@@ -8,7 +8,6 @@
 #include <memory_resource>
 
 namespace components::expressions {
-
     class aggregate_expression_t;
     using aggregate_expression_ptr = boost::intrusive_ptr<aggregate_expression_t>;
 
@@ -26,6 +25,7 @@ namespace components::expressions {
         const expression_ptr& child() const noexcept { return child_; }
 
         const std::string& function_name() const;
+        const qualified_name_t& full_name() const;
         void add_function_uid(compute::function_uid uid);
         compute::function_uid function_uid() const;
         std::pmr::vector<param_storage>& params();
@@ -61,5 +61,4 @@ namespace components::expressions {
                                                        const key_t& name,
                                                        const key_t& key);
     aggregate_expression_ptr make_aggregate_over(const expression_ptr& call, const key_t& key);
-
 } // namespace components::expressions

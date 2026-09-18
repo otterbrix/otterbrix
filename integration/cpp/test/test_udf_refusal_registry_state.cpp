@@ -128,9 +128,9 @@ namespace {
         return core::error_t::no_error();
     }
 
-    compute::function_ptr make_probe_unary(std::pmr::memory_resource* resource) {
+    compute::function_ptr make_probe_unary(std::pmr::memory_resource* resource, const std::string& name = kFuncName) {
         compute::function_doc doc{"short_doc", "full_doc", {"arg"}, false};
-        auto fn = std::make_unique<compute::vector_function>(kFuncName, compute::arity::unary(), doc, 1);
+        auto fn = std::make_unique<compute::vector_function>(name, compute::arity::unary(), doc, 1);
         compute::kernel_signature_t sig(compute::function_type_t::vector,
                                         {compute::parameter_type::exact(types::logical_type::BIGINT)},
                                         {compute::output_type::fixed(types::logical_type::BIGINT)});
@@ -272,4 +272,81 @@ TEST_CASE("integration::cpp::test_udf_refusal_registry_state::a_healthy_registra
     REQUIRE_FALSE(ok.contains_error());
     CHECK(default_registry_has(kFuncName));
     CHECK(pg_proc_rows_named(space, kFuncName) == 1);
+}
+
+TEST_CASE("integration::cpp::test_udf_refusal_registry_state::a_registration_left_by_a_previous_process_is_replaced") {
+    const std::filesystem::path dir = integration_fixture_path("test_udf_refusal_registry_state/leftover_replaced");
+    std::filesystem::remove_all(dir);
+    auto config = test_helpers::make_test_config(dir);
+    config.log.level = log_t::level::off;
+
+    {
+        udf_refusal_spaces_t space(config);
+        auto* dispatcher = space.dispatcher();
+        REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE d;")->is_success());
+        REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE d.t (id BIGINT);")->is_success());
+        REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO d.t (id) VALUES (1), (2), (3);")->is_success());
+        REQUIRE_FALSE(dispatcher->register_udf(otterbrix::session_id_t(), make_probe_unary(dispatcher->resource()))
+                          .contains_error());
+        REQUIRE(pg_proc_rows_named(space, kFuncName) == 1);
+    }
+
+    udf_refusal_spaces_t restarted(config);
+    auto* dispatcher = restarted.dispatcher();
+    REQUIRE_FALSE(default_registry_has(kFuncName));
+    REQUIRE(pg_proc_rows_named(restarted, kFuncName) == 1);
+
+    auto again = dispatcher->register_udf(otterbrix::session_id_t(), make_probe_unary(dispatcher->resource()));
+    INFO("re-registration after a restart: " << again.what.c_str());
+    REQUIRE_FALSE(again.contains_error());
+    CHECK(default_registry_has(kFuncName));
+    CHECK(pg_proc_rows_named(restarted, kFuncName) == 1);
+
+    auto called = test_helpers::exec(dispatcher, "SELECT " + kFuncName + "(id) FROM d.t ORDER BY id;");
+    INFO("call after re-registration: " << (called->is_error() ? called->get_error().what.c_str() : "<ok>"));
+    REQUIRE(called->is_success());
+    REQUIRE(called->size() == 3);
+    CHECK(called->value(0, 0).value<int64_t>() == 2);
+}
+
+TEST_CASE("integration::cpp::test_udf_refusal_registry_state::a_seeded_builtin_row_is_not_taken_for_a_leftover") {
+    const std::filesystem::path dir = integration_fixture_path("test_udf_refusal_registry_state/seeded_builtin");
+    std::filesystem::remove_all(dir);
+    auto config = test_helpers::make_test_config(dir);
+    config.log.level = log_t::level::off;
+
+    { udf_refusal_spaces_t space(config); }
+
+    udf_refusal_spaces_t restarted(config);
+    auto* dispatcher = restarted.dispatcher();
+    REQUIRE(pg_proc_rows_named(restarted, "count") == 1);
+
+    auto refused =
+        dispatcher->register_udf(otterbrix::session_id_t(), make_probe_unary(dispatcher->resource(), "count"));
+    INFO("register_udf over the seeded count: " << refused.what.c_str());
+    CHECK(refused.contains_error());
+    CHECK(pg_proc_rows_named(restarted, "count") == 1);
+}
+
+TEST_CASE("integration::cpp::test_udf_refusal_registry_state::a_leftover_is_replaced_not_unregistered") {
+    const std::filesystem::path dir = integration_fixture_path("test_udf_refusal_registry_state/leftover_unregister");
+    std::filesystem::remove_all(dir);
+    auto config = test_helpers::make_test_config(dir);
+    config.log.level = log_t::level::off;
+
+    {
+        udf_refusal_spaces_t space(config);
+        auto* dispatcher = space.dispatcher();
+        REQUIRE_FALSE(dispatcher->register_udf(otterbrix::session_id_t(), make_probe_unary(dispatcher->resource()))
+                          .contains_error());
+    }
+
+    udf_refusal_spaces_t restarted(config);
+    auto* dispatcher = restarted.dispatcher();
+    auto refused = dispatcher->unregister_udf(otterbrix::session_id_t(), kFuncName, {types::logical_type::BIGINT});
+    INFO("unregister_udf of a leftover: " << refused.what.c_str());
+    REQUIRE(refused.contains_error());
+    CHECK(refused.type == core::error_code_t::unrecognized_function);
+    CHECK(std::string{refused.what.c_str()}.find("previous process") != std::string::npos);
+    CHECK(pg_proc_rows_named(restarted, kFuncName) == 1);
 }

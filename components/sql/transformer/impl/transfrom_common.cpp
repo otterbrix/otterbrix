@@ -14,17 +14,17 @@
 using namespace components::expressions;
 
 namespace components::sql::transform {
-
     namespace {
-        // Matches the DISTINCT flag too: ignoring it would bind `HAVING count(DISTINCT x)` to a plain count(x).
+        // Matches qualifier and DISTINCT flag too: ignoring either would bind `HAVING d.count(x)` or
+        // `HAVING count(DISTINCT x)` to a plain count(x).
         const expressions::expression_i* find_call(const expressions::expression_i* expr,
-                                                   const std::string& name,
+                                                   const qualified_name_t& name,
                                                    const std::pmr::vector<expressions::param_storage>& args,
                                                    bool args_comparable,
                                                    bool distinct);
 
         const expressions::expression_i* find_call_in(const expressions::param_storage& param,
-                                                      const std::string& name,
+                                                      const qualified_name_t& name,
                                                       const std::pmr::vector<expressions::param_storage>& args,
                                                       bool args_comparable,
                                                       bool distinct) {
@@ -36,7 +36,7 @@ namespace components::sql::transform {
         }
 
         const expressions::expression_i* find_call(const expressions::expression_i* expr,
-                                                   const std::string& name,
+                                                   const qualified_name_t& name,
                                                    const std::pmr::vector<expressions::param_storage>& args,
                                                    bool args_comparable,
                                                    bool distinct) {
@@ -46,7 +46,7 @@ namespace components::sql::transform {
             switch (expr->group()) {
                 case expression_group::aggregate: {
                     const auto* agg = static_cast<const aggregate_expression_t*>(expr);
-                    if (agg->function_name() == name && agg->is_distinct() == distinct &&
+                    if (agg->full_name() == name && agg->is_distinct() == distinct &&
                         (!args_comparable || agg->params() == args)) {
                         return expr;
                     }
@@ -59,7 +59,7 @@ namespace components::sql::transform {
                 }
                 case expression_group::function: {
                     const auto* call = static_cast<const function_expression_t*>(expr);
-                    if (call->name() == name && call->is_distinct() == distinct &&
+                    if (call->full_name() == name && call->is_distinct() == distinct &&
                         (!args_comparable || call->args() == args)) {
                         return expr;
                     }
@@ -180,7 +180,7 @@ namespace components::sql::transform {
             }
             return core::error_t(core::error_code_t::sql_parse_error, std::pmr::string{spelling, resource_});
         }
-        auto call = make_function_expression(resource_, std::string{function.name});
+        auto call = make_function_expression(resource_, qualified_name_t{std::string{function.name}});
         if (has_left) {
             VALUE_OR_RETURN(auto lhs, transform_expression(node->lexpr, context));
             call->args().push_back(std::move(lhs));
@@ -250,9 +250,9 @@ namespace components::sql::transform {
                                                                                    expressions::key_t{resource_})}};
                     }
                     VALUE_OR_RETURN(auto star_col, columnref_to_field(resource_, col_ref, names));
-                    if (!star_col.table.empty()) {
+                    if (star_col.is_qualified()) {
                         std::pmr::vector<std::pmr::string> star_path{resource_};
-                        star_path.emplace_back(std::pmr::string{star_col.table, resource_});
+                        star_path.emplace_back(std::pmr::string{star_col.table.collection, resource_});
                         star_path.emplace_back(std::pmr::string{"*", resource_});
                         return param_storage{
                             expression_ptr{make_scalar_expression(resource_,
@@ -401,7 +401,7 @@ namespace components::sql::transform {
                     VALUE_OR_RETURN(auto call, transform_a_expr_func(func, names, context.plan));
                     return param_storage{std::move(call)};
                 }
-                auto funcname = std::string{strVal(linitial(func->funcname))};
+                VALUE_OR_RETURN(auto called, called_function(resource_, func->funcname));
                 std::pmr::vector<param_storage> args(resource_);
                 if (!func->agg_star && func->args) {
                     expression_context_t argument_context = context;
@@ -415,7 +415,7 @@ namespace components::sql::transform {
                 }
                 VALUE_OR_RETURN(args, apply_aggregate_filter(func->agg_filter, std::move(args), names, context.plan));
                 if (context.aggregates == expression_placement_t::select) {
-                    auto call = make_function_expression(resource_, std::move(funcname), std::move(args));
+                    auto call = make_function_expression(resource_, std::move(called), std::move(args));
                     call->set_star_argument(func->agg_star);
                     call->set_distinct(func->agg_distinct);
                     return param_storage{expression_ptr{call}};
@@ -425,12 +425,13 @@ namespace components::sql::transform {
                 });
                 for (const auto& expr : context.group->expressions()) {
                     if (const auto* found =
-                            find_call(expr.get(), funcname, args, args_comparable, func->agg_distinct)) {
+                            find_call(expr.get(), called, args, args_comparable, func->agg_distinct)) {
                         return found->key();
                     }
                 }
-                std::string alias = "__having_" + funcname + "_" + std::to_string(aggregate_counter_++);
-                auto agg_expr = make_aggregate_expression(resource_, funcname, expressions::key_t{resource_, alias});
+                std::string alias = "__having_" + called.collection + "_" + std::to_string(aggregate_counter_++);
+                auto agg_expr = make_aggregate_over(make_function_expression(resource_, std::move(called)),
+                                                    expressions::key_t{resource_, alias});
                 for (auto& arg : args) {
                     agg_expr->append_param(arg);
                 }
@@ -465,7 +466,7 @@ namespace components::sql::transform {
                 }
                 return param_storage{expression_ptr{make_function_expression(
                     resource_,
-                    expr->op == MinMaxOp::IS_GREATEST ? std::string{"greatest"} : std::string{"least"},
+                    qualified_name_t{expr->op == MinMaxOp::IS_GREATEST ? "greatest" : "least"},
                     std::move(args))}};
             }
             case T_SubLink: {
@@ -814,7 +815,7 @@ namespace components::sql::transform {
                     args.emplace_back(key_left.field);
                     args.emplace_back(param_id);
                     args.emplace_back(plan->parameters->add_parameter(types::logical_value_t(resource_, flags)));
-                    return make_function_expression(resource_, "regexp_like", std::move(args));
+                    return make_function_expression(resource_, qualified_name_t{"regexp_like"}, std::move(args));
                 }
 
                 if (op_str == "?" || op_str == "?|" || op_str == "?&") {
@@ -1075,7 +1076,7 @@ namespace components::sql::transform {
                                                                               logical_plan::execution_plan_t* plan) {
         RETURN_IF_ERROR(refuse_dropped_call_decorations(resource_, *node));
         auto* params = plan->parameters.get();
-        std::string funcname = strVal(node->funcname->lst.front().data);
+        VALUE_OR_RETURN(auto called, called_function(resource_, node->funcname));
         std::pmr::vector<param_storage> args;
         args.reserve(node->args->lst.size());
         // create_value_getter rejects a still-undefined side, so default to left when there's no right table.
@@ -1115,7 +1116,7 @@ namespace components::sql::transform {
                 args.emplace_back(param);
             }
         }
-        auto expr = make_function_expression(resource_, std::move(funcname), std::move(args));
+        auto expr = make_function_expression(resource_, std::move(called), std::move(args));
         expr->set_distinct(node->agg_distinct);
         return expr;
     }
@@ -1346,7 +1347,7 @@ namespace components::sql::transform {
         }
         auto list = pg_ptr_cast<List>(node.functions->lst.front().data);
         auto func_call = pg_ptr_cast<FuncCall>(list->lst.front().data);
-        std::string funcname = strVal(func_call->funcname->lst.front().data);
+        VALUE_OR_RETURN(auto called, called_function(resource_, func_call->funcname));
         std::pmr::vector<param_storage> args{resource_};
         // func_call->args is null for a zero-argument call (e.g. `FROM foo()`); don't deref it.
         if (func_call->args) {
@@ -1365,14 +1366,14 @@ namespace components::sql::transform {
                 }
             }
         }
-        return logical_plan::make_node_function(resource_, std::move(funcname), std::move(args));
+        return logical_plan::make_node_function(resource_, std::move(called), std::move(args));
     }
 
     core::result_wrapper_t<logical_plan::node_ptr>
     transformer::transform_function(FuncCall& node,
                                     const name_collection_t& names,
                                     logical_plan::parameter_node_t* params) {
-        std::string funcname = strVal(node.funcname->lst.front().data);
+        VALUE_OR_RETURN(auto called, called_function(resource_, node.funcname));
         std::pmr::vector<param_storage> args;
         args.reserve(node.args->lst.size());
         for (const auto& arg : node.args->lst) {
@@ -1384,7 +1385,7 @@ namespace components::sql::transform {
                 args.emplace_back(param);
             }
         }
-        return logical_plan::make_node_function(resource_, std::move(funcname), std::move(args));
+        return logical_plan::make_node_function(resource_, std::move(called), std::move(args));
     }
 
     core::result_wrapper_t<expression_ptr> transformer::case_expr_to_scalar(CaseExpr* node,
@@ -1605,5 +1606,4 @@ namespace components::sql::transform {
         VALUE_OR_RETURN(out.expr, transform_predicate(predicate, names, &plan));
         return out;
     }
-
 } // namespace components::sql::transform

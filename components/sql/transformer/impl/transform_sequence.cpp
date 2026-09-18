@@ -7,9 +7,7 @@
 #include <string_view>
 
 namespace components::sql::transform {
-
     namespace {
-
         // NumericOnly (gram.y) builds T_Integer for an int32-sized literal, else T_Float with
         // the original digits in the SAME union slot as T_Integer's `ival` — naive intVal()
         // on `MAXVALUE 9223372036854775807` would read that char* as a number. Reading a
@@ -61,7 +59,7 @@ namespace components::sql::transform {
 
     core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_create_sequence(CreateSeqStmt& node) {
         auto qn = rangevar_to_qualified_name(node.sequence);
-        const std::string db_for_resolve = qn.dbname;
+        const std::string db_for_resolve = target_dbname(qn);
 
         int64_t start = 1;
         int64_t increment = 1;
@@ -152,7 +150,7 @@ namespace components::sql::transform {
         }
 
         auto seq = logical_plan::make_node_create_sequence(resource_,
-                                                           core::seqname_t{std::move(qn.relname)},
+                                                           core::seqname_t{qn.collection},
                                                            start,
                                                            increment,
                                                            min_value,
@@ -160,8 +158,8 @@ namespace components::sql::transform {
         // The target namespace stays ON the node so enrich's create_sequence_t case
         // can bind it by name and stamp ns_oid.
         seq->set_dbname(db_for_resolve);
+        mark_invalid_target(&catalog_resolves_, *seq, qn);
         register_catalog_resolve_namespace(resource_, &catalog_resolves_, db_for_resolve);
         return seq;
     }
-
 } // namespace components::sql::transform

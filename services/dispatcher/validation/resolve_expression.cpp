@@ -19,13 +19,11 @@
 #include <utility>
 
 namespace services::dispatcher::validation {
-
     using namespace components::types;
     using namespace components::expressions;
     using components::logical_plan::storage_parameters;
 
     namespace {
-
         const complex_logical_type invalid_type{logical_type::INVALID};
         const complex_logical_type boolean_type{logical_type::BOOLEAN};
 
@@ -256,7 +254,7 @@ namespace services::dispatcher::validation {
                                                  context_.cast_registry,
                                                  context_.execution_context,
                                                  context_.function_registry,
-                                                 "regexp_like",
+                                                 qualified_name_t{"regexp_like"},
                                                  arguments,
                                                  context_.allowed_functions);
                 if (resolved.has_error()) {
@@ -434,7 +432,7 @@ namespace services::dispatcher::validation {
                                      context_.cast_registry,
                                      context_.execution_context,
                                      context_.function_registry,
-                                     aggregate->function_name(),
+                                     aggregate->full_name(),
                                      argument_types,
                                      components::compute::create_mask(components::compute::function_type_t::aggregate));
                 if (resolved.has_error()) {
@@ -480,7 +478,7 @@ namespace services::dispatcher::validation {
                                                  context_.cast_registry,
                                                  context_.execution_context,
                                                  context_.function_registry,
-                                                 call->name(),
+                                                 call->full_name(),
                                                  argument_types,
                                                  allowed_functions);
                 if (resolved.has_error()) {
@@ -746,7 +744,6 @@ namespace services::dispatcher::validation {
                 return true;
             }
         };
-
     } // namespace
 
     core::error_t
@@ -772,5 +769,4 @@ namespace services::dispatcher::validation {
         expression = std::get<expression_ptr>(required);
         return core::error_t::no_error();
     }
-
 } // namespace services::dispatcher::validation

@@ -2,12 +2,12 @@
 
 #include <components/casts/cast_registry.hpp>
 #include <components/compute/function.hpp>
+#include <components/base/collection_full_name.hpp>
 #include <components/types/types.hpp>
 
 #include <string_view>
 
 namespace services::dispatcher {
-
     struct resolved_argument_t {
         //! Empty when the argument already fits
         components::casts::cast_t cast;
@@ -30,8 +30,7 @@ namespace services::dispatcher {
                      const components::casts::cast_registry_t& cast_registry,
                      const components::graph_execution_context& graph_execution_context,
                      const components::compute::function_registry_t& function_registry,
-                     std::string_view name,
+                     const qualified_name_t& name,
                      const std::pmr::vector<components::types::complex_logical_type>& arguments,
                      components::compute::function_types_mask allowed_function_types);
-
 } // namespace services::dispatcher

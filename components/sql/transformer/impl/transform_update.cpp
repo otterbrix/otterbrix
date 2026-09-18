@@ -10,7 +10,6 @@
 using namespace components::expressions;
 
 namespace components::sql::transform {
-
     core::result_wrapper_t<expressions::expression_ptr>
     transformer::transform_update_expr(Node* node,
                                        const name_collection_t& names,
@@ -77,25 +76,26 @@ namespace components::sql::transform {
             VALUE_OR_RETURN(auto where_res, transform_predicate(node.whereClause, names, plan));
             expressions::expression_ptr where_expr = std::move(where_res);
             match = logical_plan::make_node_match(resource_,
-                                                  core::dbname_t{names.left_name.dbname},
-                                                  core::relname_t{names.left_name.relname},
+                                                  core::dbname_t{names.left_name.database},
+                                                  core::relname_t{names.left_name.collection},
                                                   where_expr);
         } else {
             match = logical_plan::make_node_match(resource_,
-                                                  core::dbname_t{names.left_name.dbname},
-                                                  core::relname_t{names.left_name.relname},
+                                                  core::dbname_t{names.left_name.database},
+                                                  core::relname_t{names.left_name.collection},
                                                   make_compare_expression(resource_, compare_type::all_true));
         }
 
         VALUE_OR_RETURN(auto upd_limit_res,
                         build_dml_limit(node.limitCount,
-                                        core::dbname_t{names.left_name.dbname},
-                                        core::relname_t{names.left_name.relname},
+                                        core::dbname_t{names.left_name.database},
+                                        core::relname_t{names.left_name.collection},
                                         plan));
         auto upd_limit = std::move(upd_limit_res);
         auto upd = logical_plan::make_node_update(resource_, match, upd_limit, updates, false);
-        upd->set_dbname(names.left_name.dbname);
-        upd->set_relname(names.left_name.relname);
+        upd->set_dbname(names.left_name.database);
+        mark_invalid_target(&catalog_resolves_, *upd, names.left_name);
+        upd->set_relname(names.left_name.collection);
         // The FROM source is a child sub-plan (the RIGHT side of the update join).
         // Its scans self-resolve by name during enrich, so no table_oid_from / sibling
         // resolve_table splice is needed.
@@ -110,8 +110,8 @@ namespace components::sql::transform {
         // operator_resolve_constraint_t.
         register_catalog_resolve_table(resource_,
                                        &catalog_resolves_,
-                                       names.left_name.dbname,
-                                       names.left_name.relname,
+                                       names.left_name.database,
+                                       names.left_name.collection,
                                        constraint_resolve_kind::outgoing);
         return upd;
     }

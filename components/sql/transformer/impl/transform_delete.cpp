@@ -19,18 +19,19 @@ namespace components::sql::transform {
             auto qn = rangevar_to_qualified_name(node.relation);
             VALUE_OR_RETURN(
                 auto del_limit,
-                build_dml_limit(node.limitCount, core::dbname_t{qn.dbname}, core::relname_t{qn.relname}, plan));
+                build_dml_limit(node.limitCount, core::dbname_t{qn.database}, core::relname_t{qn.collection}, plan));
             auto del = logical_plan::make_node_delete(
                 resource_,
                 logical_plan::make_node_match(resource_,
-                                              core::dbname_t{qn.dbname},
-                                              core::relname_t{qn.relname},
+                                              core::dbname_t{qn.database},
+                                              core::relname_t{qn.collection},
                                               make_compare_expression(resource_, compare_type::all_true)),
                 del_limit);
             // The target identity stays ON the node: enrich binds it to a resolved
             // entry by name and stamps table_oid() + table_metadata() from there.
-            del->set_dbname(qn.dbname);
-            del->set_relname(qn.relname);
+            del->set_dbname(qn.database);
+            del->set_relname(qn.collection);
+            mark_invalid_target(&catalog_resolves_, *del, qn);
             if (node.returningList) {
                 name_collection_t rnames;
                 rnames.left_name = qn;
@@ -41,8 +42,8 @@ namespace components::sql::transform {
             // constraint gather, so enrich reads the descendant FKs.
             register_catalog_resolve_table(resource_,
                                            &catalog_resolves_,
-                                           qn.dbname,
-                                           qn.relname,
+                                           qn.database,
+                                           qn.collection,
                                            constraint_resolve_kind::referencing);
             return del;
         }
@@ -72,20 +73,21 @@ namespace components::sql::transform {
         }
         VALUE_OR_RETURN(auto del_limit,
                         build_dml_limit(node.limitCount,
-                                        core::dbname_t{names.left_name.dbname},
-                                        core::relname_t{names.left_name.relname},
+                                        core::dbname_t{names.left_name.database},
+                                        core::relname_t{names.left_name.collection},
                                         plan));
         auto del =
             logical_plan::make_node_delete(resource_,
                                            logical_plan::make_node_match(resource_,
-                                                                         core::dbname_t{names.left_name.dbname},
-                                                                         core::relname_t{names.left_name.relname},
+                                                                         core::dbname_t{names.left_name.database},
+                                                                         core::relname_t{names.left_name.collection},
                                                                          where_expr),
                                            del_limit);
         // The target identity stays ON the node: enrich binds it to a resolved
         // entry by name and stamps table_oid() + table_metadata() from there.
-        del->set_dbname(names.left_name.dbname);
-        del->set_relname(names.left_name.relname);
+        del->set_dbname(names.left_name.database);
+        del->set_relname(names.left_name.collection);
+        mark_invalid_target(&catalog_resolves_, *del, names.left_name);
         // The USING source is a child sub-plan (the RIGHT side of the delete join);
         // its scans self-resolve by name, so no table_oid_from splice is needed.
         if (source_child) {
@@ -98,8 +100,8 @@ namespace components::sql::transform {
         // constraints for FK cascade enrich.
         register_catalog_resolve_table(resource_,
                                        &catalog_resolves_,
-                                       names.left_name.dbname,
-                                       names.left_name.relname,
+                                       names.left_name.database,
+                                       names.left_name.collection,
                                        constraint_resolve_kind::referencing);
         return del;
     }

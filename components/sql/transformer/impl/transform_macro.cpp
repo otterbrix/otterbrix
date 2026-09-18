@@ -5,7 +5,6 @@
 #include <string_view>
 
 namespace components::sql::transform {
-
     namespace {
         // Every func_name part the grammar builds is T_String; strVal() on anything else
         // reads the wrong union member. Same tag-check discipline as transform_table's any_name_list.
@@ -45,15 +44,15 @@ namespace components::sql::transform {
             return core::error_t(core::error_code_t::sql_parse_error,
                                  std::pmr::string{"CREATE FUNCTION names no function", resource_});
         }
-        qualified_name qn;
+        qualified_name_t qn;
         auto& name_parts = node.funcname->lst;
         VALUE_OR_RETURN(std::pmr::string dotted, dotted_name_of(resource_, node.funcname));
         if (name_parts.size() == 1) {
-            qn.relname = strVal(name_parts.front().data);
+            qn.collection = strVal(name_parts.front().data);
         } else if (name_parts.size() == 2) {
             auto it = name_parts.begin();
-            qn.dbname = strVal(it++->data);
-            qn.relname = strVal(it->data);
+            qn.database = strVal(it++->data);
+            qn.collection = strVal(it->data);
         } else {
             std::pmr::string msg{"CREATE FUNCTION ", resource_};
             msg += dotted;
@@ -151,14 +150,13 @@ namespace components::sql::transform {
             return core::error_t(core::error_code_t::unimplemented_yet, std::move(msg));
         }
 
-        const std::string db_for_resolve = qn.dbname;
+        const std::string db_for_resolve = target_dbname(qn);
         auto m = logical_plan::make_node_create_macro(resource_,
-                                                      core::macroname_t{std::move(qn.relname)},
+                                                      core::macroname_t{std::move(qn.collection)},
                                                       std::move(params),
                                                       core::body_sql_t{std::move(body_sql)});
         m->set_dbname(db_for_resolve);
         register_catalog_resolve_namespace(resource_, &catalog_resolves_, db_for_resolve);
         return m;
     }
-
 } // namespace components::sql::transform

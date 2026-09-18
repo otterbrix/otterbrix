@@ -85,6 +85,10 @@ TEST_CASE("components::sql::table") {
         }(transformer.transform(pg_cell_to_node_cast(create)).finalize()));
         REQUIRE(result.sub_queries.back()->type() == node_type::create_collection_t);
         REQUIRE(entry_count(result.catalog_resolves.namespaces) == 1);
+        // uid and schema have no catalog home, enrich refuses it.
+        REQUIRE(result.catalog_resolves.invalid_targets.size() == 1);
+        CHECK(result.catalog_resolves.invalid_targets.front().name.to_string() == "uuid.db_name.schema.table_name");
+        CHECK(result.catalog_resolves.invalid_targets.front().type == node_type::create_collection_t);
     }
 
     SECTION("create with schema") {
@@ -95,10 +99,12 @@ TEST_CASE("components::sql::table") {
         }(transformer.transform(pg_cell_to_node_cast(create)).finalize()));
         REQUIRE(result.sub_queries.back()->type() == node_type::create_collection_t);
         REQUIRE(entry_count(result.catalog_resolves.namespaces) == 1);
+        REQUIRE(result.catalog_resolves.invalid_targets.size() == 1);
+        CHECK(result.catalog_resolves.invalid_targets.front().name.to_string() == "db_name.schema.table_name");
     }
 
     TEST_TRANSFORMER_OK("CREATE TABLE db_name.table_name()", node_type::create_collection_t, 1, 0);
-    TEST_TRANSFORMER_OK("CREATE TABLE table_name()", node_type::create_collection_t, 0, 0);
+    TEST_TRANSFORMER_OK("CREATE TABLE table_name()", node_type::create_collection_t, 1, 0);
 
     // DROP TABLE registers a namespace + table lookup; the drop node carries the
     // names and gets namespace_oid + table_oid pasted on by enrich.
@@ -120,6 +126,9 @@ TEST_CASE("components::sql::table") {
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(drop)).finalize()));
         REQUIRE(result.sub_queries.back()->type() == node_type::drop_t);
+        REQUIRE(result.catalog_resolves.invalid_targets.size() == 1);
+        CHECK(result.catalog_resolves.invalid_targets.front().name.to_string() == "db_name.schema.table_name");
+        CHECK(result.catalog_resolves.invalid_targets.front().type == node_type::drop_t);
         REQUIRE(entry_count(result.catalog_resolves.namespaces) == 1);
         REQUIRE(entry_count(result.catalog_resolves.tables) == 1);
     }
@@ -323,8 +332,8 @@ TEST_CASE("components::sql::types") {
     // DROP TYPE is wrapped in sequence_t(resolve_ns, resolve_type, drop_type).
     TEST_TRANSFORMER_OK("DROP TYPE custom_type_name", node_type::drop_t, 1, 0);
 
-    // CREATE TABLE with a custom type is wrapped in sequence_t(resolve_type, create_collection).
-    TEST_TRANSFORMER_OK("CREATE TABLE table_ (custom_type_name custom_type);", node_type::create_collection_t, 0, 0);
+    // CREATE TABLE with a custom type is wrapped in sequence_t(resolve_ns, resolve_type, create_collection).
+    TEST_TRANSFORMER_OK("CREATE TABLE table_ (custom_type_name custom_type);", node_type::create_collection_t, 1, 0);
 
     // INSERT is wrapped in sequence_t(resolve_table, resolve_constraint,
     // insert) — no dbname so no resolve_namespace.
@@ -553,7 +562,7 @@ TEST_CASE("components::sql::create_function_shape_is_carried_or_refused") {
         REQUIRE(node->type() == node_type::create_macro_t);
         auto& macro = reinterpret_cast<node_create_macro_ptr&>(node);
         CHECK(macro->macroname() == "solo");
-        CHECK(macro->dbname().empty());
+        CHECK(macro->dbname() == "public");
     }
 }
 

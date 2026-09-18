@@ -2,6 +2,7 @@
 
 #include <core/result_wrapper.hpp>
 
+#include <components/base/collection_full_name.hpp>
 #include <components/catalog/results/ddl_result.hpp>
 #include <components/expressions/forward.hpp>
 #include <components/expressions/key.hpp>
@@ -53,30 +54,34 @@ namespace components::sql::transform {
     // Refuses FuncCall decorations nothing downstream reads: OVER, VARIADIC, aggregate ORDER BY/WITHIN GROUP.
     core::error_t refuse_dropped_call_decorations(std::pmr::memory_resource* resource, const FuncCall& call);
 
-    // The four name components a qualified table reference may carry; name resolution compares slots by position.
-    struct qualified_name {
-        std::string dbname;
-        std::string relname;
-        std::string schemaname;
-        std::string uuid;
-
-        bool empty() const noexcept { return dbname.empty() && relname.empty() && schemaname.empty() && uuid.empty(); }
-    };
-
-    inline qualified_name rangevar_to_qualified_name(RangeVar* table) {
-        std::string dbname = construct(table->catalogname);
-        std::string schema = construct(table->schemaname);
-        std::string rel = construct(table->relname);
-        std::string uuid = construct(table->uid);
-        return {std::move(dbname), std::move(rel), std::move(schema), std::move(uuid)};
+    inline qualified_name_t rangevar_to_qualified_name(RangeVar* table) {
+        return qualified_name_t{construct(table->uid),
+                                construct(table->catalogname),
+                                construct(table->schemaname),
+                                construct(table->relname)};
     }
 
-    inline const std::string& visible_name(const qualified_name& name, const std::string& alias) noexcept {
-        return alias.empty() ? name.relname : alias;
+    inline std::string target_dbname(const qualified_name_t& name) {
+        return name.database.empty() ? "public" : name.database;
+    }
+
+    // uid and schema are federation slots; the catalog holds a relname and a relnamespace and
+    // nothing else. A write target carrying either is recorded here and refused by enrich
+    // (catalog_resolves_t::invalid_targets).
+    inline void mark_invalid_target(logical_plan::catalog_resolves_t* resolves,
+                                    const logical_plan::node_t& node,
+                                    const qualified_name_t& name) {
+        if (!name.unique_identifier.empty() || !name.schema.empty()) {
+            resolves->invalid_targets.push_back({name, node.type()});
+        }
+    }
+
+    inline const std::string& visible_name(const qualified_name_t& name, const std::string& alias) noexcept {
+        return alias.empty() ? name.collection : alias;
     }
 
     struct from_element_t {
-        qualified_name name;
+        qualified_name_t name;
         std::string alias;
 
         const std::string& visible_name() const noexcept { return transform::visible_name(name, alias); }
@@ -85,9 +90,9 @@ namespace components::sql::transform {
     struct column_ref_t;
 
     struct name_collection_t {
-        qualified_name left_name;
+        qualified_name_t left_name;
         std::string left_alias;
-        qualified_name right_name;
+        qualified_name_t right_name;
         std::string right_alias;
         std::vector<from_element_t> extra_left; // FROM elements that belong to left but came in through a nested join
 
@@ -108,10 +113,8 @@ namespace components::sql::transform {
     };
 
     struct column_ref_t {
-        std::string uid;
-        std::string db;
-        std::string schema;
-        std::string table;
+        // The relation the column is qualified with, as written; empty for a bare column.
+        qualified_name_t table;
         expressions::key_t field;
 
         explicit column_ref_t(std::pmr::memory_resource* resource)
@@ -119,7 +122,7 @@ namespace components::sql::transform {
         explicit column_ref_t(expressions::key_t field)
             : field(std::move(field)) {}
 
-        bool is_qualified() const noexcept { return !table.empty(); }
+        bool is_qualified() const noexcept { return !table.collection.empty(); }
     };
 
     core::result_wrapper_t<column_ref_t>
@@ -352,6 +355,8 @@ namespace components::sql::transform {
     void register_catalog_resolve_types(std::pmr::memory_resource* resource,
                                         logical_plan::catalog_resolves_t* resolves,
                                         const std::vector<std::string>& type_names);
+
+    core::result_wrapper_t<qualified_name_t> called_function(std::pmr::memory_resource* resource, const List* funcname);
 
     void register_catalog_resolve_namespace(std::pmr::memory_resource* resource,
                                             logical_plan::catalog_resolves_t* resolves,

@@ -11,9 +11,7 @@
 #include <cassert>
 
 namespace components::expressions {
-
     namespace {
-
         bool same_expression(const expression_i* lhs,
                              const expression_i* rhs,
                              const types::parameter_map_t& parameters,
@@ -48,6 +46,14 @@ namespace components::expressions {
                    std::equal(lhs.begin(), lhs.end(), rhs.begin(), [&parameters](const auto& left, const auto& right) {
                        return same_param(left, right, parameters);
                    });
+        }
+
+        bool same_function(const function_expression_t* lhs, const function_expression_t* rhs) {
+            if (lhs->function_uid() != compute::invalid_function_uid &&
+                rhs->function_uid() != compute::invalid_function_uid) {
+                return lhs->function_uid() == rhs->function_uid();
+            }
+            return lhs->full_name() == rhs->full_name();
         }
 
         // Nodes whose key() carries identity rather than an output label
@@ -112,14 +118,15 @@ namespace components::expressions {
                     const auto* left = static_cast<const aggregate_expression_t*>(lhs);
                     const auto* right = static_cast<const aggregate_expression_t*>(rhs);
                     // DISTINCT is part of the value
-                    return left->function_name() == right->function_name() &&
+                    return same_function(static_cast<const function_expression_t*>(left->child().get()),
+                                         static_cast<const function_expression_t*>(right->child().get())) &&
                            left->is_distinct() == right->is_distinct() &&
                            same_params(left->params(), right->params(), parameters);
                 }
                 case expression_group::function: {
                     const auto* left = static_cast<const function_expression_t*>(lhs);
                     const auto* right = static_cast<const function_expression_t*>(rhs);
-                    return left->name() == right->name() && same_params(left->args(), right->args(), parameters);
+                    return same_function(left, right) && same_params(left->args(), right->args(), parameters);
                 }
                 case expression_group::sort: {
                     const auto* left = static_cast<const sort_expression_t*>(lhs);
@@ -148,5 +155,4 @@ namespace components::expressions {
     same_computation(const expression_ptr& lhs, const expression_ptr& rhs, const types::parameter_map_t& parameters) {
         return same_expression(lhs.get(), rhs.get(), parameters, true);
     }
-
 } // namespace components::expressions

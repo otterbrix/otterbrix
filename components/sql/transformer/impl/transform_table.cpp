@@ -45,7 +45,7 @@ namespace components::sql::transform {
         VALUE_OR_RETURN(auto col_defs, get_column_definitions(resource_, *coldefs));
 
         auto qn = rangevar_to_qualified_name(node.relation);
-        const std::string dbname = qn.dbname;
+        const std::string dbname = target_dbname(qn);
 
         // Column-level (`code bigint UNIQUE`) and table-level (`UNIQUE (code)`) constraints
         // land in one list, column-level first in declaration order; downstream treats them identically.
@@ -81,7 +81,7 @@ namespace components::sql::transform {
         }
 
         logical_plan::node_ptr created = logical_plan::make_node_create_collection(resource_,
-                                                                                   core::relname_t{qn.relname},
+                                                                                   core::relname_t{qn.collection},
                                                                                    std::move(col_defs),
                                                                                    std::move(constraints),
                                                                                    node.if_not_exists);
@@ -103,7 +103,7 @@ namespace components::sql::transform {
                 const std::string ref_db = tc.ref_database.empty() ? dbname : tc.ref_database;
                 auto cstr = logical_plan::make_node_create_constraint(resource_,
                                                                       dbname,
-                                                                      qn.relname,
+                                                                      qn.collection,
                                                                       core::constraint_name_t{tc.name},
                                                                       kind,
                                                                       ref_db);
@@ -122,7 +122,7 @@ namespace components::sql::transform {
                     // yet (both oids are minted by the same rewrite) — a lookup would read
                     // as "referenced relation does not exist".
                     const bool self_ref =
-                        !tc.ref_collection.empty() && tc.ref_collection == qn.relname && ref_db == dbname;
+                        !tc.ref_collection.empty() && tc.ref_collection == qn.collection && ref_db == dbname;
                     cstr->set_self_reference(self_ref);
                     if (!self_ref && !tc.ref_collection.empty()) {
                         register_catalog_resolve_table(resource_, &catalog_resolves_, ref_db, tc.ref_collection);
@@ -151,6 +151,7 @@ namespace components::sql::transform {
         // The target namespace stays ON the node: enrich binds it to a resolved
         // namespace entry by name and stamps namespace_oid() from there.
         cn->set_dbname(dbname);
+        mark_invalid_target(&catalog_resolves_, *cn, qn);
         register_catalog_resolve_namespace(resource_, &catalog_resolves_, dbname);
         // Probe the "public" namespace by default (resolve_one_type's first hit).
         // pg_catalog builtins are not in udt_names since walk_user_type_refs only
@@ -216,6 +217,9 @@ namespace components::sql::transform {
             register_catalog_resolve_table(resource_, &catalog_resolves_, db, rel);
             return n;
         };
+        // The catalog holds a relname and a relnamespace, so the arms below plan at most those two (and
+        // an index name). A table spelled with uid or schema is recorded for enrich to refuse, the same
+        // way a CREATE is — see mark_invalid_target.
         switch (node.removeType) {
             case OBJECT_TABLE: {
                 auto drop_name = reinterpret_cast<List*>(node.objects->lst.front().data)->lst;
@@ -234,21 +238,22 @@ namespace components::sql::transform {
                         return wrap_one(database, collection, std::move(n));
                     }
                     case database_schema_table: {
-                        // Schema part isn't modelled; skip the cell rather than bind then discard it.
                         auto it = drop_name.begin();
                         std::string database = strVal(it++->data);
-                        ++it; // schema
+                        std::string schema = strVal(it++->data);
                         std::string collection = strVal(it->data);
                         auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::collection);
+                        mark_invalid_target(&catalog_resolves_, *n, qualified_name_t{database, schema, collection});
                         return wrap_one(database, collection, std::move(n));
                     }
                     case uuid_database_schema_table: {
                         auto it = drop_name.begin();
-                        ++it; // uuid
+                        std::string uuid = strVal(it++->data);
                         std::string database = strVal(it++->data);
-                        ++it; // schema
+                        std::string schema = strVal(it++->data);
                         std::string collection = strVal(it->data);
                         auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::collection);
+                        mark_invalid_target(&catalog_resolves_, *n, qualified_name_t{uuid, database, schema, collection});
                         return wrap_one(database, collection, std::move(n));
                     }
                     default:
@@ -294,23 +299,24 @@ namespace components::sql::transform {
                         return wrap_index(database, collection, name, std::move(n));
                     }
                     case database_schema_table: {
-                        // Unmodelled name parts are skipped rather than bound then discarded.
                         auto it = drop_name.begin();
                         std::string database = strVal(it++->data);
-                        ++it; // schema
+                        std::string schema = strVal(it++->data);
                         std::string collection = strVal(it++->data);
                         std::string name = strVal(it->data);
                         auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::index);
+                        mark_invalid_target(&catalog_resolves_, *n, qualified_name_t{database, schema, collection});
                         return wrap_index(database, collection, name, std::move(n));
                     }
                     case uuid_database_schema_table: {
                         auto it = drop_name.begin();
-                        ++it; // uuid
+                        std::string uuid = strVal(it++->data);
                         std::string database = strVal(it++->data);
-                        ++it; // schema
+                        std::string schema = strVal(it++->data);
                         std::string collection = strVal(it++->data);
                         std::string name = strVal(it->data);
                         auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::index);
+                        mark_invalid_target(&catalog_resolves_, *n, qualified_name_t{uuid, database, schema, collection});
                         return wrap_index(database, collection, name, std::move(n));
                     }
                     default:
@@ -405,5 +411,4 @@ namespace components::sql::transform {
                                      std::pmr::string{"Unsupported removeType", resource_});
         }
     }
-
 } // namespace components::sql::transform

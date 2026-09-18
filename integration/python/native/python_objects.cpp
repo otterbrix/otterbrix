@@ -47,7 +47,7 @@ namespace otterbrix {
     }
 
     bool py_decimal_t::try_get_type(std::pmr::memory_resource* resource, complex_logical_type& type) {
-        int32_t width = digits.size();
+        int32_t width = static_cast<int32_t>(digits.size());
 
         if (!exponent_recognized) {
             // Failed to convert decimal.Decimal value, exponent type is unknown
@@ -57,7 +57,7 @@ namespace otterbrix {
         switch (exponent_type) {
             case py_decimal_exponent_type_t::EXPONENT_SCALE: {
                 case py_decimal_exponent_type_t::EXPONENT_POWER: {
-                    auto scale = exponent_value;
+                    uint8_t scale = static_cast<uint8_t>(exponent_value);
                     if (exponent_type == py_decimal_exponent_type_t::EXPONENT_POWER) {
                         width += scale;
                     }
@@ -139,7 +139,7 @@ namespace otterbrix {
         return OP::template Operation<int64_t>(r, decimal.signed_value, decimal.digits, type, scale);
     }
 
-    // Wont fit in a DECIMAL, fall back to DOUBLE
+    // Won't fit in a DECIMAL, fall back to DOUBLE
     static logical_value_t cast_to_double(std::pmr::memory_resource* r, py::handle& obj) {
         return logical_value_t(r, py::cast<double>(obj));
     }
@@ -148,13 +148,13 @@ namespace otterbrix {
         if (!exponent_recognized) {
             return make_error(r, "Failed to convert decimal.Decimal value, exponent type is unknown");
         }
-        int32_t width = digits.size();
+        int32_t width = static_cast<int32_t>(digits.size());
         if (!width_fits_in_decimal(width)) {
             return cast_to_double(r, obj);
         }
         switch (exponent_type) {
             case py_decimal_exponent_type_t::EXPONENT_SCALE: {
-                uint8_t scale = exponent_value;
+                uint8_t scale = static_cast<uint8_t>(exponent_value);
                 assert(width_fits_in_decimal(width));
                 if (scale > width) {
                     // Values like '0.001'
@@ -168,7 +168,7 @@ namespace otterbrix {
                 return PyDecimalCastSwitch<py_decimal_scale_converter_t>(r, *this, scale_type, scale);
             }
             case py_decimal_exponent_type_t::EXPONENT_POWER: {
-                uint8_t scale = exponent_value;
+                uint8_t scale = static_cast<uint8_t>(exponent_value);
                 width += scale;
                 if (!width_fits_in_decimal(width)) {
                     return cast_to_double(r, obj);

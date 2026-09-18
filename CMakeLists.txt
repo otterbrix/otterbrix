@@ -17,6 +17,11 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     add_compile_options(-fcoroutines)
 endif()
 
+# Sized deallocation for Clang (GCC enables it by default since C++14)
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    add_compile_options(-fsized-deallocation)
+endif()
+
 message (STATUS "CMAKE_BUILD_TYPE = ${CMAKE_BUILD_TYPE}")
 message (STATUS "CXX_STANDARD = ${CMAKE_CXX_STANDARD}")
 message(STATUS "ARCH : ${CMAKE_SYSTEM_NAME}")

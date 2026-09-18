@@ -19,7 +19,7 @@ namespace components::logical_plan {
 
     struct id_result_mapping {
         subquery_compacter compacter = nullptr;
-        core::parameter_id_t id;
+        core::parameter_id_t id{};
         // A bare boolean-context scalar sub-query: `WHERE (SELECT ...)` /
         // `HAVING (SELECT ...)`. PostgreSQL requires the argument of WHERE/HAVING to be
         // type boolean, so the executor rejects a non-boolean static output type before
@@ -29,7 +29,7 @@ namespace components::logical_plan {
         // A scalar-equality against ARRAY(SELECT ...): `col = ARRAY(SELECT ...)`. Only this form needs a
         // 0-row result rebuilt as a typed empty array `{}` (so `col = {}` compares against a real empty
         // array); IN / ANY / ALL keep the NA-null sentinel (their empty-set semantics rely on it). false
-        // for every other form. Kept last: the emplace_back sites aggregate-initialize (compacter, id)
+        // for every other form. Kept last: the push_back sites aggregate-initialize (compacter, id)
         // and rely on the trailing bools' defaults.
         bool array_equality = false;
     };

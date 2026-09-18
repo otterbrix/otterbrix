@@ -155,6 +155,8 @@ namespace otterbrix {
         wal.set_manager_dispatcher_sync(manager_dispatcher_->address());
 
         disk.bootstrap_system_tables_sync();
+        // Restore stored timezone
+        manager_dispatcher_->seed_default_timezone_sync(disk.read_setting_sync("TimeZone"));
         disk.load_user_table_storages_sync();
         // A .otbx can be lost after crash even though its pg_class row survived (its directory entry
         // isn't fsynced); unrehydrated, a reopened CREATE TABLE IF NOT EXISTS finds the table

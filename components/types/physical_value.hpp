@@ -25,6 +25,7 @@ namespace components::types {
         template<typename T>
         requires(!core::IsBufferLike<T>) explicit physical_value(T value)
             : type_(physical_value::get_type_<T>()) {
+            (void) memory_ownership;
             if constexpr (sizeof(T) == 16) {
                 // absl::int128 is a CLASS with private words, so its halves come from its own
                 // API. Splitting it by memcpy assumed low-word-first and is what gcc refuses

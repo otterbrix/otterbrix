@@ -20,7 +20,9 @@ namespace otterbrix {
         , resource_(resource)
         , manager_dispatcher_(manager_dispatcher)
         , scheduler_(scheduler)
-        , log_(log.clone()) {}
+        , log_(log.clone()) {
+        (void) scheduler_;
+    }
 
     wrapper_dispatcher_t::~wrapper_dispatcher_t() { trace(log_, "delete wrapper_dispatcher_t"); }
 

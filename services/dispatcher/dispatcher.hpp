@@ -97,6 +97,9 @@ namespace services::dispatcher {
         // Direct sync call, safe only because the scheduler has not started yet; idempotent.
         void seed_commit_clock_sync(uint64_t high_water);
 
+        // Restore default_tz_cat_ from the TimeZone persisted in pg_settings
+        void seed_default_timezone_sync(std::string_view name);
+
         // Sync twin of on_drop_resource_marked(), for use before scheduler.start. Idempotent.
         void set_disk_has_dropped_sync(bool value) noexcept { disk_has_dropped_ = value; }
         void set_index_has_dropped_sync(bool value) noexcept { index_has_dropped_ = value; }

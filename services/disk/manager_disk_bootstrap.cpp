@@ -217,7 +217,9 @@ namespace services::disk {
 
         std::unordered_set<catalog::oid_t> freshly_created;
 
-        // pg_settings must bootstrap first — seeding elsewhere reads the timezone via direct_append_sync.
+        // Bootstrap pg_settings FIRST so stored_catalog_ carries the persisted TimeZone
+        // before the rest of startup reads it (base_spaces hands it to the dispatcher's
+        // default_tz_cat_ once this returns).
         if (const auto* settings_def = catalog::find_system_table(pg_settings_oid)) {
             if (bootstrap_one(*settings_def)) {
                 freshly_created.insert(catalog::well_known_oid::pg_settings_table);

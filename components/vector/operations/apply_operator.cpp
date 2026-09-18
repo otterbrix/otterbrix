@@ -425,14 +425,6 @@ namespace components::vector::operations {
             return wrapped;
         }
 
-        core::date::interval_t scale_interval(core::date::interval_t interval, double factor) noexcept {
-            return {core::date::microseconds{std::llround(static_cast<double>(interval.time.count()) * factor)},
-                    core::date::days{
-                        static_cast<int32_t>(std::llround(static_cast<double>(interval.day.count()) * factor))},
-                    core::date::months{
-                        static_cast<int32_t>(std::llround(static_cast<double>(interval.month.count()) * factor))}};
-        }
-
         // Scaling an interval applies one factor to all three components
         double numeric_at(const vector_t& vector, uint64_t row) noexcept {
             switch (vector.type().to_physical_type()) {
@@ -497,9 +489,7 @@ namespace components::vector::operations {
                 const bool divide = code == operator_code::divide;
                 return each_row(left, right, output, count, active, [&](uint64_t row) {
                     const double scale = numeric_at(factor, row);
-                    output->set_value(
-                        row,
-                        scale_interval(interval.get_value<date::interval_t>(row), divide ? 1.0 / scale : scale));
+                    output->set_value(row, interval.get_value<date::interval_t>(row) * (divide ? 1.0 / scale : scale));
                 });
             }
 

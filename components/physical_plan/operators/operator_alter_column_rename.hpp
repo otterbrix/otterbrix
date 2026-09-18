@@ -7,20 +7,10 @@
 
 namespace components::operators {
 
-    // ALTER TABLE ... RENAME COLUMN old TO new — single clause.
-    //
-    // Steps (in await_async_and_resume):
-    //   1. read_rows_by_key on pg_attribute (attoid=attoid_) — keyed single-row
-    //      lookup. attoid_ is pre-stamped by enrich_logical_plan from the
-    //      resolved column metadata.
-    //   2. delete_pg_catalog_rows on the matched attoid (idx=0).
-    //   3. build_pg_attribute_row reusing attoid/attnum/atttypid but with attname=new_name
-    //      and append_pg_catalog_row.
-    //
-    // No in-memory schema rename hook exists today; the change becomes visible
-    // on subsequent resolve_table operator runs (which read pg_attribute fresh).
-    //
-    // old_name_ is retained for trace/error display only — routing is by attoid_.
+    // Matches the live row by (attrelid, attname), not attoid_: node_alter_column_t::set_attoid has
+    // no callers, so attoid_ is always INVALID. Re-appends the row carrying over
+    // attoid/attnum/atttypid/added_at_commit_id (rename is identity-preserving); the storage-side
+    // rename applies AFTER the WAL commit marker, so an ABORT never has anything to undo.
     class operator_alter_column_rename_t final : public read_write_operator_t {
     public:
         operator_alter_column_rename_t(std::pmr::memory_resource* resource,
@@ -30,10 +20,7 @@ namespace components::operators {
                                        std::string old_name,
                                        std::string new_name);
 
-        // Sourceless SINK leaf (no data pipeline, no children): the executor
-        // admits it as a streaming sink-root and drives await_async_and_resume via
-        // the bottom-up needs_async_finalize pass. push()/finalize() inherit the
-        // no-op defaults.
+        // Sourceless sink leaf driven via the bottom-up needs_async_finalize pass; push()/finalize() default to no-ops.
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;

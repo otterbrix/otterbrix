@@ -2,9 +2,9 @@
 
 #include <atomic>
 
+#include "block_manager.hpp"
 #include "buffer_handle.hpp"
 #include "buffer_pool.hpp"
-#include "in_memory_block_manager.hpp"
 
 namespace components::table::storage {
 
@@ -24,7 +24,6 @@ namespace components::table::storage {
         , fs_(fs)
         , buffer_pool_(buffer_pool)
         , temp_id_(MAXIMUM_BLOCK) {
-        temp_block_manager_ = std::make_unique<in_memory_block_manager_t>(*this, DEFAULT_BLOCK_ALLOC_SIZE);
         for (uint64_t i = 0; i < static_cast<uint64_t>(memory_tag::MEMORY_TAG_COUNT); i++) {
             evicted_data_per_tag_[i] = 0;
         }
@@ -50,11 +49,11 @@ namespace components::table::storage {
 
     buffer_pool_t& standard_buffer_manager_t::buffer_pool() const { return buffer_pool_; }
 
-    uint64_t standard_buffer_manager_t::block_allocation_size() const {
-        return temp_block_manager_->block_allocation_size();
-    }
+    uint64_t standard_buffer_manager_t::block_allocation_size() const { return DEFAULT_BLOCK_ALLOC_SIZE; }
 
-    uint64_t standard_buffer_manager_t::block_size() const { return temp_block_manager_->block_size(); }
+    uint64_t standard_buffer_manager_t::block_size() const {
+        return DEFAULT_BLOCK_ALLOC_SIZE - DEFAULT_BLOCK_HEADER_SIZE;
+    }
 
     core::result_wrapper_t<temp_buffer_pool_reservation_t>
     standard_buffer_manager_t::evict_blocks_or_error(memory_tag tag,
@@ -73,10 +72,10 @@ namespace components::table::storage {
         assert(size <= block_size);
 
         if (size < block_size) {
-            return register_small_memory(memory_tag::IN_MEMORY_TABLE, size);
+            return register_small_memory(memory_tag::TRANSIENT_TABLE, size);
         }
 
-        auto buffer_handle = allocate(memory_tag::IN_MEMORY_TABLE, size, false);
+        auto buffer_handle = allocate(memory_tag::TRANSIENT_TABLE, size, false);
         if (buffer_handle.has_error()) {
             return buffer_handle.convert_error<std::shared_ptr<block_handle_t>>();
         }
@@ -103,7 +102,8 @@ namespace components::table::storage {
 
         auto buffer = construct_manager_buffer(size, nullptr, file_buffer_type::TINY_BUFFER);
 
-        auto result = std::make_shared<block_handle_t>(*temp_block_manager_,
+        auto result = std::make_shared<block_handle_t>(*this,
+                                                       DEFAULT_BLOCK_ALLOC_SIZE,
                                                        ++temp_id_,
                                                        tag,
                                                        std::move(buffer),
@@ -126,7 +126,8 @@ namespace components::table::storage {
         auto buffer = construct_manager_buffer(block_size, std::move(reusable_buffer));
         destroy_buffer_condition destroy_buffer_condition =
             can_destroy ? destroy_buffer_condition::EVICTION : destroy_buffer_condition::BLOCK;
-        return std::make_shared<block_handle_t>(*temp_block_manager_,
+        return std::make_shared<block_handle_t>(*this,
+                                                DEFAULT_BLOCK_ALLOC_SIZE,
                                                 ++temp_id_,
                                                 tag,
                                                 std::move(buffer),
@@ -190,14 +191,23 @@ namespace components::table::storage {
                                           const std::map<uint64_t, uint64_t>& load_map,
                                           uint64_t first_block,
                                           uint64_t last_block) {
-        auto& block_manager = handles[0]->block_manager;
+        // Only prefetch() calls this, and prefetch() has no callers at all; a handle with no file
+        // behind it therefore never reaches here.
+        assert(handles[0]->file_manager() != nullptr);
+        auto& block_manager = *handles[0]->file_manager();
         uint64_t block_count = last_block - first_block + 1;
 
         auto intermediate_buffer = allocate(memory_tag::BASE_TABLE, block_count * block_manager.block_size());
         if (intermediate_buffer.has_error()) {
             return intermediate_buffer.convert_error<bool>();
         }
-        block_manager.read_blocks(intermediate_buffer.value().file_buffer(), first_block, block_count);
+        // A failed batch read leaves the intermediate buffer holding whatever was in
+        // it, and the loop below then copies those bytes into every block handle as if they had
+        // come off the disk. Dropping this answer turned an I/O error into silently wrong data.
+        if (auto read = block_manager.read_blocks(intermediate_buffer.value().file_buffer(), first_block, block_count);
+            read.has_error()) {
+            return read; // io_error / data_corruption
+        }
 
         for (uint64_t block_idx = 0; block_idx < block_count; block_idx++) {
             uint64_t block_id = first_block + block_idx;
@@ -379,17 +389,22 @@ namespace components::table::storage {
         return result;
     }
 
-    void standard_buffer_manager_t::reserve_memory(uint64_t size) {
+    core::result_wrapper_t<bool> standard_buffer_manager_t::reserve_memory_impl(uint64_t size) {
         if (size == 0) {
-            return;
+            return true; // nothing to reserve is trivially reserved
         }
-        // void signature (base virtual; currently no callers). On OOM this no-ops rather than throwing;
-        // evict_blocks_or_error released nothing in that case.
         auto reservation = evict_blocks_or_error(memory_tag::EXTENSION, size, nullptr);
         if (reservation.has_error()) {
-            return;
+            // Nothing was reserved: evict_blocks could not free enough and rolled its own
+            // temporary reservation back to zero. Swallowing this is what made "granted" and
+            // "refused" the same event to every caller — say which one happened.
+            return reservation.convert_error<bool>();
         }
+        // Detach the reservation from the RAII object: the bytes stay charged to the pool
+        // until free_reserved_memory gives them back. That is what "reserve" means here, and
+        // it is only correct on the path that answers true.
         reservation.value().size = 0;
+        return true;
     }
 
     void standard_buffer_manager_t::free_reserved_memory(uint64_t size) {

@@ -28,16 +28,37 @@ namespace otterbrix {
             return std::move(result.value());
         }
     } // namespace
+    // space_/env_ own their own copies (not borrowed from `conn`): the space's arena
+    // (base_otterbrix_t::resource) must outlive `expr`, even if Python drops `conn` first.
+    // See the member comments in pyexpression.hpp.
     py_expression_t::py_expression_t(expression_wrapper_t expr, py_connection_t& conn)
-        : expr(std::move(expr))
-        , factory(&conn) {}
+        : space_(conn.space_ptr())
+        , env_(conn.shared_from_this())
+        , expr(std::move(expr)) {
+        // Unreachable from the static entry points below (each refuses a closed
+        // connection first), but a null space here means the expression stands on an arena
+        // nobody holds, and nothing above dereferences it before this check runs.
+        if (!space_) {
+            throw std::runtime_error("expression: the connection is closed");
+        }
+    }
 
-    py_expression_t::py_expression_t(expression_wrapper_t expr, expression_factory_t* factory)
-        : expr(std::move(expr))
-        , factory(factory) {}
+    py_expression_t::py_expression_t(expression_wrapper_t expr, const py_expression_t& source)
+        : space_(source.space_)
+        , env_(source.env_)
+        , expr(std::move(expr)) {}
 
     py_expression_t::~py_expression_t() = default;
 
+    py_connection_t& py_expression_t::live_env() const {
+        env_->refuse_if_closed();
+        return *env_;
+    }
+
+    expression_factory_t& py_expression_t::factory() const { return *env_; }
+
+    // refuse_if_closed() first, because a closed connection has no space to allocate the key
+    // out of -- the same refusal every other door of this class gives.
     pyexpr_ptr
     py_expression_t::column_expression(const std::string& column_name, py_connection_t& conn, const std::string& side) {
         auto side_val = components::expressions::side_t::undefined;
@@ -46,13 +67,15 @@ namespace otterbrix {
         } else if (side == "right") {
             side_val = components::expressions::side_t::right;
         }
+        conn.refuse_if_closed();
         return std::make_shared<py_expression_t>(
-            components::expressions::key_t(std::pmr::get_default_resource(), column_name, side_val),
+            components::expressions::key_t(conn.space_ptr()->dispatcher()->resource(), column_name, side_val),
             conn);
     }
 
     pyexpr_ptr py_expression_t::constant_expression(const py::object& value, py_connection_t& conn) {
-        auto val = transform_python_value(std::pmr::get_default_resource(), value);
+        conn.refuse_if_closed();
+        auto val = transform_python_value(conn.space_ptr()->dispatcher()->resource(), value);
         if (val.has_error()) {
             throw std::runtime_error(std::string(val.error().what));
         }
@@ -60,11 +83,16 @@ namespace otterbrix {
     }
 
     pyexpr_ptr py_expression_t::count_expression(py_connection_t& conn) {
+        // The third door, and it was the one left unlocked: make_count_expression() dereferences
+        // expression_factory_t::space, which close() nulls, one frame down.
+        conn.refuse_if_closed();
         return std::make_shared<py_expression_t>(conn.make_count_expression(), conn);
     }
 
+    // No open check: convert_to_string touches none of the space, so an expression stays
+    // printable after its connection closes (`space_` keeps the bytes alive).
     std::string py_expression_t::to_string() const {
-        auto result = factory->convert_to_string(expr);
+        auto result = factory().convert_to_string(expr);
         if (result.has_error()) {
             throw std::runtime_error(std::string(result.error().what));
         }
@@ -93,12 +121,15 @@ namespace otterbrix {
     pyexpr_ptr py_expression_t::abs() { return scalar_unary_expression(expressions::scalar_type::abs, *this); }
 
     pyexpr_ptr py_expression_t::negate() {
+        // Live_env() first, so the -1 below allocates from a connection that still
+        // has a space, rather than surfacing a closed connection inside multiply().
+        auto& conn = live_env();
         auto value = py::int_(-1);
-        auto val = transform_python_value(std::pmr::get_default_resource(), value);
+        auto val = transform_python_value(conn.space_ptr()->dispatcher()->resource(), value);
         if (val.has_error()) {
             throw std::runtime_error(std::string(val.error().what));
         }
-        auto expr = std::make_shared<py_expression_t>(factory->make_constant(std::move(val.value())), factory);
+        auto expr = std::make_shared<py_expression_t>(conn.make_constant(std::move(val.value())), *this);
         return multiply(*expr);
     }
 
@@ -157,13 +188,13 @@ namespace otterbrix {
     }
 
     pyexpr_ptr py_expression_t::set_alias(const std::string& alias) {
-        return std::make_shared<py_expression_t>(unwrap(factory->expression_with_alias(expr, alias)), factory);
+        return std::make_shared<py_expression_t>(unwrap(live_env().expression_with_alias(expr, alias)), *this);
     }
 
     // AND, OR and NOT
 
     pyexpr_ptr py_expression_t::not_() {
-        return std::make_shared<py_expression_t>(unwrap(factory->comparison_not_expression(this->expr)), factory);
+        return std::make_shared<py_expression_t>(unwrap(live_env().comparison_not_expression(this->expr)), *this);
     }
 
     pyexpr_ptr py_expression_t::and_(const py_expression_t& other) {
@@ -184,41 +215,41 @@ namespace otterbrix {
 
     pyexpr_ptr py_expression_t::aggregation_expression(const std::string& function_name, const py_expression_t& expr) {
         return std::make_shared<py_expression_t>(
-            unwrap(expr.factory->aggregation_unary_expression(function_name, expr.expr)),
-            expr.factory);
+            unwrap(expr.live_env().aggregation_unary_expression(function_name, expr.expr)),
+            expr);
     }
 
     pyexpr_ptr py_expression_t::scalar_binary_expression(components::expressions::scalar_type type,
                                                          const py_expression_t& left,
                                                          const py_expression_t& right) {
         return std::make_shared<py_expression_t>(
-            unwrap(left.factory->scalar_binary_expression(type, left.expr, right.expr)),
-            left.factory);
+            unwrap(left.live_env().scalar_binary_expression(type, left.expr, right.expr)),
+            left);
     }
 
     pyexpr_ptr py_expression_t::scalar_unary_expression(components::expressions::scalar_type type,
                                                         const py_expression_t& expr) {
-        return std::make_shared<py_expression_t>(expr.factory->scalar_unary_expression(type, expr.expr), expr.factory);
+        return std::make_shared<py_expression_t>(expr.live_env().scalar_unary_expression(type, expr.expr), expr);
     }
 
     pyexpr_ptr py_expression_t::comparison_expression(components::expressions::compare_type type,
                                                       const py_expression_t& left,
                                                       const py_expression_t& right) {
         return std::make_shared<py_expression_t>(
-            unwrap(left.factory->comparison_expression(type, left.expr, right.expr)),
-            left.factory);
+            unwrap(left.live_env().comparison_expression(type, left.expr, right.expr)),
+            left);
     }
 
     pyexpr_ptr py_expression_t::comparison_union_expression(expressions::compare_type type,
                                                             const py_expression_t& left,
                                                             const py_expression_t& right) {
         return std::make_shared<py_expression_t>(
-            unwrap(left.factory->comparison_union_expression(type, left.expr, right.expr)),
-            left.factory);
+            unwrap(left.live_env().comparison_union_expression(type, left.expr, right.expr)),
+            left);
     }
 
     pyexpr_ptr py_expression_t::sort_expression(components::expressions::sort_order type, const py_expression_t& expr) {
-        return std::make_shared<py_expression_t>(unwrap(expr.factory->sort_expression(expr.expr, type)), expr.factory);
+        return std::make_shared<py_expression_t>(unwrap(expr.live_env().sort_expression(expr.expr, type)), expr);
     }
 
 } // namespace otterbrix

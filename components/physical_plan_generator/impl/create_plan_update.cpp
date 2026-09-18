@@ -15,24 +15,7 @@ namespace services::planner::impl {
                        const components::logical_plan::node_ptr& node,
                        const components::logical_plan::storage_parameters* params) {
         const auto* node_update = static_cast<const components::logical_plan::node_update_t*>(node.get());
-        auto returning = build_returning_columns(context.resource, node_update->returning(), params);
-
-        // Forward the plan-resolved RETURNING output types (stamped on the update node by
-        // validate_schema) onto the RETURNING projection columns, mirroring the SELECT path
-        // (create_plan_aggregate -> operator_select_t::set_output_types). evaluate_projection
-        // reads select_column_t::result_type AUTHORITATIVELY for coalesce/case_when/deep-field
-        // columns, so a RETURNING projection over zero affected rows stays correctly typed
-        // instead of collapsing to an untyped (NA) column. No RETURNING -> output_types() empty
-        // -> guard skips (no-op). Column order is aligned by construction: build_returning_columns
-        // walks node_update->returning() in order producing one select_column_t per scalar expr,
-        // and validate_schema resolves/expands the SAME returning() vector in the SAME order, so
-        // returning[i] corresponds to output_types()[i]. No data-derived fallback (rule 6).
-        if (node->has_output_types()) {
-            const auto& output_types = node->output_types();
-            for (size_t i = 0; i < returning.size() && i < output_types.size(); ++i) {
-                returning[i].result_type = output_types[i];
-            }
-        }
+        auto returning = build_returning_columns(context.resource, node_update->returning());
 
         components::logical_plan::node_ptr node_match = nullptr;
         components::logical_plan::node_ptr node_limit = nullptr;
@@ -52,6 +35,14 @@ namespace services::planner::impl {
         }
         auto limit = static_cast<components::logical_plan::node_limit_t*>(node_limit.get())->limit();
         auto table_oid = node->table_oid();
+        // The update target is always a NAMED table; a target the context cannot vouch
+        // for is a table that never resolved. Validation refuses this before plan
+        // generation; if that refusal is ever lost again, lowering anyway builds a sink
+        // with no table behind it — an UPDATE that changes nothing and reports SUCCESS.
+        // A null root surfaces as create_physical_plan_error instead.
+        if (!context.has_table_oid(table_oid)) {
+            return nullptr;
+        }
         if (!node_source) {
             auto plan = boost::intrusive_ptr(new components::operators::operator_update(context.resource,
                                                                                         context.log.clone(),
@@ -60,7 +51,13 @@ namespace services::planner::impl {
                                                                                         node_update->upsert(),
                                                                                         std::move(returning)));
             plan->set_table_has_indexes(node->table_has_indexes());
-            plan->set_children(create_plan_match(context, node_match, limit));
+            auto scan = create_plan_match(context, node_match, limit);
+            // A refused scan child must refuse the UPDATE: set_children would swallow
+            // the null into a childless-sink success-without-updating shape.
+            if (!scan) {
+                return nullptr;
+            }
+            plan->set_children(std::move(scan));
 
             return plan;
         }
@@ -76,13 +73,20 @@ namespace services::planner::impl {
                                                                                     node_match->expressions()[0],
                                                                                     limit.limit()));
         plan->set_table_has_indexes(node->table_has_indexes());
+        auto source_op =
+            create_plan(context, function_registry, node_source, components::logical_plan::limit_t::unlimit(), params);
+        // A refused FROM source must refuse the UPDATE: set_children would swallow the
+        // null and the semi-join would run against a missing side.
+        if (!source_op) {
+            return nullptr;
+        }
         plan->set_children(
             boost::intrusive_ptr(new components::operators::full_scan(context.resource,
                                                                       context.log.clone(),
                                                                       table_oid,
                                                                       nullptr,
                                                                       components::logical_plan::limit_t::unlimit())),
-            create_plan(context, function_registry, node_source, components::logical_plan::limit_t::unlimit(), params));
+            std::move(source_op));
         return plan;
     }
 

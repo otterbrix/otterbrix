@@ -116,15 +116,15 @@ TEST_CASE("components::planner::sort") {
     auto resource = core::pmr::otterbrix_resource();
     {
         std::vector<expression_ptr> expressions;
-        expressions.emplace_back(new sort_expression_t{key(&resource, "key"), sort_order::asc});
+        expressions.emplace_back(new sort_expression_t{&resource, key(&resource, "key"), sort_order::asc});
         auto node_sort =
             make_node_sort(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, expressions);
         REQUIRE(node_sort->to_string() == R"_($sort: {key: 1})_");
     }
     {
         std::vector<expression_ptr> expressions;
-        expressions.emplace_back(new sort_expression_t{key(&resource, "key1"), sort_order::asc});
-        expressions.emplace_back(new sort_expression_t{key(&resource, "key2"), sort_order::desc});
+        expressions.emplace_back(new sort_expression_t{&resource, key(&resource, "key1"), sort_order::asc});
+        expressions.emplace_back(new sort_expression_t{&resource, key(&resource, "key2"), sort_order::desc});
         auto node_sort =
             make_node_sort(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, expressions);
         REQUIRE(node_sort->to_string() == R"_($sort: {key1: 1, key2: -1})_");
@@ -157,8 +157,8 @@ TEST_CASE("components::planner::aggregate") {
     }
     {
         std::vector<expression_ptr> expressions;
-        expressions.emplace_back(new sort_expression_t{key(&resource, "name"), sort_order::asc});
-        expressions.emplace_back(new sort_expression_t{key(&resource, "count"), sort_order::desc});
+        expressions.emplace_back(new sort_expression_t{&resource, key(&resource, "name"), sort_order::asc});
+        expressions.emplace_back(new sort_expression_t{&resource, key(&resource, "count"), sort_order::desc});
         aggregate->append_child(
             make_node_sort(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, expressions));
     }
@@ -205,7 +205,7 @@ TEST_CASE("components::planner::aggregate_having") {
     // $sort: ORDER BY k
     {
         std::vector<expression_ptr> expressions;
-        expressions.emplace_back(new sort_expression_t{key(&resource, "k"), sort_order::asc});
+        expressions.emplace_back(new sort_expression_t{&resource, key(&resource, "k"), sort_order::asc});
         aggregate->append_child(
             make_node_sort(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, expressions));
     }
@@ -335,5 +335,53 @@ TEST_CASE("components::planner::update") {
         auto node_update = planner.create_plan(&resource, node);
         REQUIRE(node_update->to_string() ==
                 R"_($update: <oid:0> {$upsert: 0, $match: {"key": {$eq: #1}}, $limit: 1})_");
+    }
+}
+
+// At plan time every OID is still INVALID_OID, so node_drop_t::hash_impl must key on the
+// written names/missing_ok/behavior too — hashing only enrich-stamped OIDs would make
+// `DROP TABLE a`, `DROP TABLE b` and `DROP TABLE IF EXISTS a` collide.
+TEST_CASE("components::planner::node_drop_hash_folds_names_and_flags") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto base = [&]() {
+        auto n = make_node_drop(&resource, drop_target_kind::collection);
+        n->set_dbname("db");
+        n->set_relname("t");
+        return n;
+    };
+
+    auto a = base();
+
+    SECTION("a different relname hashes differently") {
+        auto b = base();
+        b->set_relname("u");
+        REQUIRE(a->hash() != b->hash());
+    }
+    SECTION("a different dbname hashes differently") {
+        auto b = base();
+        b->set_dbname("other");
+        REQUIRE(a->hash() != b->hash());
+    }
+    SECTION("IF EXISTS hashes differently from the loud form") {
+        auto b = base();
+        b->set_missing_ok(true);
+        REQUIRE(a->hash() != b->hash());
+    }
+    SECTION("RESTRICT hashes differently from CASCADE") {
+        auto b = base();
+        // The node default is restrict_, so the differing side is CASCADE.
+        b->set_behavior(components::catalog::drop_behavior_t::cascade_);
+        REQUIRE(a->hash() != b->hash());
+    }
+    SECTION("a different index name hashes differently") {
+        auto i1 = make_node_drop(&resource, drop_target_kind::index);
+        i1->set_dbname("db");
+        i1->set_relname("t");
+        i1->set_index_name("idx1");
+        auto i2 = make_node_drop(&resource, drop_target_kind::index);
+        i2->set_dbname("db");
+        i2->set_relname("t");
+        i2->set_index_name("idx2");
+        REQUIRE(i1->hash() != i2->hash());
     }
 }

@@ -11,10 +11,10 @@ namespace services::planner::impl {
         return boost::intrusive_ptr(new components::operators::operator_alter_column_drop_t(context.resource,
                                                                                             context.log.clone(),
                                                                                             n->table_oid(),
-                                                                                            n->namespace_oid(),
                                                                                             n->column_name(),
                                                                                             n->attoid(),
-                                                                                            n->behavior()));
+                                                                                            n->behavior(),
+                                                                                            n->missing_ok()));
     }
 
 } // namespace services::planner::impl

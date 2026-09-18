@@ -8,24 +8,52 @@
 #include <components/sql/transformer/utils.hpp>
 #include <integration/cpp/base_spaces.hpp>
 
+#include "integration_fixture_path.hpp"
+
+#include <catch2/catch_test_macros.hpp>
+
+#include <filesystem>
 #include <sstream>
 #include <string>
+#include <system_error>
 
-inline configuration::config test_create_config(const std::filesystem::path& path = std::filesystem::current_path()) {
+// `path` has no default (once deleted a test's cwd) and must be pre-qualified against the shared fixture root.
+inline configuration::config test_create_config(const std::filesystem::path& path) {
+    if (!integration_fixture_path_is_qualified(path)) {
+        FAIL("test_create_config: '" << path.string()
+                                     << "' is an unqualified fixture root: it sits directly under the shared '"
+                                     << integration_fixture_shared_root().string()
+                                     << "', where every test binary running at once clears and reseeds it. Build the "
+                                        "path with integration_fixture_path(\"<leaf>\") -- this process's root is '"
+                                     << integration_fixture_root().string() << "'.");
+    }
     return configuration::config::create_config(path);
     // To change log level
     // config.log.level =log_t::level::trace;
 }
 
-inline void test_clear_directory(const configuration::config& config) {
-    std::filesystem::remove_all(config.main_path);
-    std::filesystem::create_directories(config.main_path);
+// Reports I/O failure via std::error_code instead of throwing, so it doesn't read as an engine defect.
+[[nodiscard]] inline std::error_code test_try_clear_directory(const configuration::config& config) {
+    std::error_code ec;
+    std::filesystem::remove_all(config.main_path, ec);
+    if (ec) {
+        return ec;
+    }
+    // create_directories answers "already there" with false and no error code — only `ec` says something went wrong.
+    std::filesystem::create_directories(config.main_path, ec);
+    return ec;
 }
 
-// Name a DML node's target the way the SQL transformer does. The executor's
-// register_plan_targets picks the name up and registers the catalog lookup, so a
-// hand-built test plan resolves exactly like a transformed one. Returns the node
-// so it drops straight into an execution_plan_t.
+// Fatal to the case on failure; names the path and reason instead of an unhandled exception.
+inline void test_clear_directory(const configuration::config& config) {
+    const std::error_code ec = test_try_clear_directory(config);
+    if (ec) {
+        FAIL("test_clear_directory: could not make '" << config.main_path.string()
+                                                      << "' a clean directory: " << ec.message());
+    }
+}
+
+// Names a DML target as the transformer would, so register_plan_targets resolves it like a transformed plan.
 inline components::logical_plan::node_ptr
 test_dml_target(components::logical_plan::node_ptr node, const std::string& database, const std::string& collection) {
     using namespace components::logical_plan;
@@ -55,11 +83,7 @@ test_dml_target(components::logical_plan::node_ptr node, const std::string& data
     return node;
 }
 
-// Test-side CREATE TABLE: builds the same logical plan the SQL transformer
-// emits and sends it through the single client channel, execute_plan. The
-// namespace lookup is registered on the plan, exactly as the transformer does;
-// the executor's top-up would also cover it, but naming it here keeps the test
-// plan a faithful copy of a transformed one.
+// Registers the namespace lookup here too, redundantly, so this stays a faithful copy of a transformed plan.
 inline components::cursor::cursor_t_ptr
 test_create_collection(otterbrix::wrapper_dispatcher_t* dispatcher,
                        const otterbrix::session_id_t& session,
@@ -82,47 +106,48 @@ test_create_collection(otterbrix::wrapper_dispatcher_t* dispatcher,
 
 class test_spaces final : public otterbrix::base_otterbrix_t {
 public:
-    // create_plan_rule / optimizer_pass: host customization hooks forwarded to the
-    // engine through the constructor chain (physgen lowering of node_extension /
-    // custom nodes; a final optimizer pass). Null Objects for non-federation tests.
+    // Host customization hooks forwarded to the engine ctor chain; Null Objects here for non-federation tests.
     test_spaces(const configuration::config& config,
                 services::planner::create_plan_rule_t create_plan_rule = &services::planner::no_custom_lowering,
                 components::planner::optimizer_pass_t optimizer_pass = &components::planner::no_op_pass)
         : otterbrix::base_otterbrix_t(config, create_plan_rule, optimizer_pass) {
-        // Isolate the process-global UDF registry between test cases: each test
-        // gets a fresh builtins-only default registry so user functions from a
-        // previous test don't leak into this one (which crashed test_batch_join
-        // when run after test_batch_where — a stale aggregate UDF resolved to a
-        // null function at plan-gen).
+        // Resets the UDF registry per test — a stale one once crashed test_batch_join after test_batch_where.
         components::compute::function_registry_t::reset_default();
     }
 };
 
-// Shared integration-test helpers. Kept in a NAMED namespace (not global) so
-// they never collide with the anonymous-namespace `exec`/`seed` helpers that
-// several on-main test files still define locally — a global `exec` overload
-// with the same signature would make every unqualified call in those files
-// ambiguous. New test files opt in with `using namespace test_helpers;`.
+// Named, not global, so it can't collide with anonymous-namespace exec/seed helpers other test files define.
 namespace test_helpers {
 
-    // Run one SQL statement on a fresh session and return the cursor.
     inline components::cursor::cursor_t_ptr exec(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& sql) {
         return dispatcher->execute_sql(otterbrix::session_id_t(), sql);
     }
 
-    // create_config + clear_directory + disk/wal flags in one call.
-    inline configuration::config
-    make_test_config(const std::filesystem::path& path, bool disk_on = false, bool wal_on = false) {
+    constexpr std::size_t kExecutorPool = 4; // dispatcher.hpp executor_pool_size_
+
+    inline std::size_t executor_of(const otterbrix::session_id_t& session) {
+        return std::hash<otterbrix::session_id_t>{}(session) % kExecutorPool;
+    }
+
+    // Use to get session bound to different executor
+    inline otterbrix::session_id_t session_avoiding_executor(std::size_t executor_idx) {
+        for (;;) {
+            otterbrix::session_id_t candidate{};
+            if (executor_of(candidate) != executor_idx) {
+                return candidate;
+            }
+        }
+    }
+
+    // No disk flag and no wal flag: every table is disk-backed and every write is journalled,
+    // so `path` is where the data goes, full stop.
+    inline configuration::config make_test_config(const std::filesystem::path& path) {
         auto config = test_create_config(path);
         test_clear_directory(config);
-        config.disk.on = disk_on;
-        config.wal.on = wal_on;
         return config;
     }
 
-    // Emit `INSERT INTO <table> (<cols>) VALUES <row(0)>, <row(1)>, ...;` for `n`
-    // rows, where `row(i)` returns the parenthesized tuple text for row i, and run
-    // it. Callers assert on the returned cursor (success + affected size).
+    // `row(i)` returns row i's already-parenthesized tuple text.
     template<typename RowFn>
     inline components::cursor::cursor_t_ptr seed_rows(otterbrix::wrapper_dispatcher_t* dispatcher,
                                                       const std::string& table,

@@ -12,9 +12,7 @@
 
 namespace components::table {
 
-    // DML range parked by an explicit BEGIN..COMMIT txn so COMMIT can publish all
-    // statements in one atomic batch. Implicit (per-statement) txns publish inline
-    // and never use these.
+    // Parked by an explicit BEGIN..COMMIT txn so COMMIT publishes all statements atomically; implicit txns skip these.
     struct dml_append_range_t {
         catalog::oid_t table_oid;
         int64_t row_start;
@@ -25,28 +23,21 @@ namespace components::table {
         uint64_t txn_id;
     };
 
-    // An index a CREATE INDEX in this txn brought into being, identified by the
-    // owning table oid + index name. Parked until COMMIT publishes it / ABORT
-    // un-marks it (the rollback path drops the still-uncommitted index). Mirrors
-    // dml_delete_range_t's shape — a plain value struct that crosses no mailbox
-    // itself but rides the txn accumulate/drain payloads.
+    // An index CREATE INDEX made (table oid + pg_index.indexrelid); parked until COMMIT/ABORT resolves it.
     struct created_index_t {
         components::catalog::oid_t table_oid;
-        std::string name;
+        components::catalog::oid_t index_oid;
     };
 
     class transaction_t {
     public:
-        // resource is REQUIRED, not defaulted: the per-txn pmr containers allocate
-        // from it, and a global/null default would leak across the txn boundary.
+        // resource is required, not defaulted, so allocations can't leak across the txn boundary via a global default.
         transaction_t(uint64_t transaction_id,
                       uint64_t start_time,
                       session::session_id_t session,
                       std::pmr::memory_resource* resource);
 
-        // Value-copy of the cached snapshot so reads avoid re-locking the manager
-        // (the snapshot is captured once in begin_transaction). Copy is O(in-flight
-        // commits), typically <100.
+        // Value-copy of the cached snapshot, so reads avoid re-locking; O(in-flight commits) to copy, typically <100.
         transaction_data data() const {
             return transaction_data(transaction_id_, start_time_, snapshot_horizon_, in_flight_snapshot_);
         }
@@ -63,15 +54,13 @@ namespace components::table {
         void mark_committed();
         void mark_aborted();
 
-        // Called by transaction_manager during begin_transaction after capturing
-        // the snapshot under its lock; in_flight is moved in.
+        // Called by transaction_manager during begin_transaction, after capturing the snapshot under its lock.
         void set_snapshot(uint64_t horizon, std::pmr::vector<uint64_t> in_flight) {
             snapshot_horizon_ = horizon;
             in_flight_snapshot_ = std::move(in_flight);
         }
 
-        // The executor's commit phase reads is_explicit() to choose per-statement
-        // publish (implicit) vs accumulate-until-COMMIT (explicit).
+        // The executor's commit phase reads this to choose per-statement publish vs accumulate-until-COMMIT.
         void mark_explicit() noexcept { is_explicit_ = true; }
         bool is_explicit() const noexcept { return is_explicit_; }
 
@@ -89,8 +78,7 @@ namespace components::table {
             return out;
         }
 
-        // pg_catalog accumulation for explicit txns: park append-ranges and
-        // delete-tables so COMMIT drains them into one batched publish.
+        // For explicit txns: parks appends/delete-tables so COMMIT drains them into one batched publish.
         void accumulate_pg_catalog_pending(std::vector<components::pg_catalog_append_range_t>&& appends,
                                            std::set<components::catalog::oid_t>&& delete_tables) {
             for (auto& a : appends) {
@@ -108,8 +96,7 @@ namespace components::table {
             pg_catalog_delete_tables.clear();
         }
 
-        // ALTER COLUMN backfill markers parked inside an explicit txn;
-        // operator_commit_transaction_t drains them post-commit_id and patches the rows.
+        // ALTER COLUMN backfill markers; operator_commit_transaction_t drains them post-commit_id.
         void accumulate_pg_attribute_commit_id_backfills(
             std::vector<components::pg_attribute_commit_id_backfill_t>&& backfills) {
             for (auto& b : backfills) {
@@ -122,10 +109,7 @@ namespace components::table {
             return out;
         }
 
-        // Storage oids whose backing files a DROP TABLE / DROP INDEX in this txn
-        // retired. Parked until COMMIT so the GC-remap (operator_commit_transaction)
-        // can stamp them with the real commit_id; ABORT drains them too. Mirrors
-        // the accumulate/drain pairs above.
+        // Storage oids a DROP retired; parked so the GC-remap can stamp them with the real commit_id.
         void accumulate_dropped_storage(components::catalog::oid_t oid) { dropped_storage_oids_.push_back(oid); }
         std::vector<components::catalog::oid_t> drain_dropped_storages() {
             std::vector<components::catalog::oid_t> out(std::move(dropped_storage_oids_));
@@ -133,11 +117,7 @@ namespace components::table {
             return out;
         }
 
-        // Storage oids whose backing files a CREATE TABLE / CREATE INDEX in this
-        // txn brought into being, and the indexes those statements created.
-        // Parked until COMMIT publishes them; ABORT drains them to drop the
-        // still-uncommitted storage / index (a CREATE inside a txn must be
-        // revertible until COMMIT). Mirror the dropped_storage_oids_ pair above.
+        // Storage oids/indexes a CREATE made; ABORT drains them to drop still-uncommitted artifacts.
         void accumulate_created_storage(components::catalog::oid_t oid) { created_storage_oids_.push_back(oid); }
         std::vector<components::catalog::oid_t> drain_created_storages() {
             std::vector<components::catalog::oid_t> out(std::move(created_storage_oids_));
@@ -151,11 +131,7 @@ namespace components::table {
             return out;
         }
 
-        // True when ANY accumulator parked by this txn is non-empty: pending base
-        // appends/deletes, pg_catalog appends/delete-tables, backfills, or dropped
-        // storage oids. The commit-drain handler reads it to ABORT an empty COMMIT
-        // (a bare COMMIT, a read-only explicit txn, or zero-row DML) instead of
-        // allocating a commit_id and advancing the horizon for a no-op.
+        // Lets the commit-drain handler ABORT an empty COMMIT instead of allocating a commit_id for a no-op.
         bool has_accumulated() const {
             return !pending_base_appends_.empty() || !pending_base_deletes_.empty() || !pg_catalog_appends.empty() ||
                    !pg_catalog_delete_tables.empty() || !pg_attribute_commit_id_backfills.empty() ||
@@ -169,17 +145,10 @@ namespace components::table {
         void add_append(int64_t row_start, uint64_t count);
         const std::vector<append_info>& appends() const { return appends_; }
 
-        // Aggregated across executor statements; drained by the commit/abort
-        // operators before commit()/abort() to drive storage_publish/revert.
-        //
-        // THREADING INVARIANT: this transaction_t BODY (these plain containers) is
-        // single-owner-thread per session. transaction_manager_t::lock_ guards only
-        // the session map; find_transaction() hands back this object raw. The
-        // executor worker (accumulate_*) and the dispatcher loop thread (merge/drain)
-        // both mutate it but NEVER concurrently: the dispatcher co_awaits the
-        // executor result before touching the txn (release/acquire), and wait_future
-        // serializes statements per session. Concurrent mutation is FORBIDDEN —
-        // route new cross-thread writes through a txn_*_msg mailbox handler.
+        // THREADING INVARIANT: transaction_manager_t::lock_ guards only the session map, not this raw
+        // object; the executor worker and the dispatcher loop never touch it concurrently, because the
+        // dispatcher co_awaits the executor result first and wait_future serializes per session. A new
+        // cross-thread writer must route through a txn_*_msg mailbox handler instead.
         std::vector<components::pg_catalog_append_range_t> pg_catalog_appends;
         std::set<components::catalog::oid_t> pg_catalog_delete_tables;
         // Drained by operator_commit_transaction_t at COMMIT.
@@ -195,27 +164,16 @@ namespace components::table {
         bool is_explicit_{false};
         std::vector<append_info> appends_;
 
-        // ProcArray cached snapshot — set once by transaction_manager during
-        // begin_transaction, never mutated after; returned by value from data().
-        // The pmr members below have no default initializer on purpose: the sole
-        // ctor inits them from its required resource, so none binds to a global default.
+        // ProcArray cached snapshot: set once during begin_transaction, never mutated after.
         uint64_t snapshot_horizon_{0};
         std::pmr::vector<uint64_t> in_flight_snapshot_;
 
-        // Explicit txns park DML ranges here until COMMIT drains them in one
-        // atomic publish batch; implicit txns never touch them.
         std::pmr::vector<dml_append_range_t> pending_base_appends_;
         std::pmr::vector<dml_delete_range_t> pending_base_deletes_;
 
-        // Storage oids retired by DROP in this txn; plain std::vector — it crosses
-        // no mailbox itself, but matches the catalog-oid sibling accumulators and
-        // is drained into txn_commit_drain_t / txn_abort_drain_t (plain std too).
+        // Plain std::vector, not pmr: crosses no mailbox, drains into txn_commit_drain_t / txn_abort_drain_t.
         std::vector<components::catalog::oid_t> dropped_storage_oids_;
 
-        // Storage oids / indexes brought into being by CREATE in this txn; plain
-        // std (sibling style to dropped_storage_oids_). Drained into
-        // txn_commit_drain_t / txn_abort_drain_t so COMMIT publishes them and
-        // ABORT drops the still-uncommitted artifacts.
         std::vector<components::catalog::oid_t> created_storage_oids_;
         std::vector<created_index_t> created_indexes_;
     };

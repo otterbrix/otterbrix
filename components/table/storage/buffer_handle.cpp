@@ -37,7 +37,7 @@ namespace components::table::storage {
         if (!handle_ || !is_valid()) {
             return;
         }
-        handle_->block_manager.buffer_manager.unpin(handle_);
+        handle_->buffer_manager.unpin(handle_);
         handle_ = nullptr;
         node_ = nullptr;
         owned_block_.reset();

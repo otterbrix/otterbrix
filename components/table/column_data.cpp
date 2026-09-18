@@ -2,6 +2,7 @@
 
 #include <atomic>
 
+#include <cstdio>
 #include <cstring>
 
 #include <components/types/types.hpp>
@@ -62,12 +63,10 @@ namespace components::table {
         if (statistics_.min_value().is_null() || statistics_.max_value().is_null()) {
             return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
         }
-        // Stats may be stale after updates — skip pruning if column has updates
-        if (has_updates()) {
+        if (has_update_segment()) {
             return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
         }
-        // The comparison used to come from a constant filter's (column, op, constant); a graph does
-        // not expose one yet, so nothing can be intersected with [min, max] here.
+        // Pruning needs a constant filter's (column, op, constant); a filter graph doesn't expose one.
         return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
     }
 
@@ -79,7 +78,6 @@ namespace components::table {
         if (!seg_stats.has_stats() || seg_stats.min_value().is_null() || seg_stats.max_value().is_null()) {
             return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
         }
-        // See check_zonemap above — no bound to intersect with [min, max] while a filter is a graph.
         return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
     }
 
@@ -92,7 +90,11 @@ namespace components::table {
             segment.start = start_ + static_cast<int64_t>(offset);
             offset += segment.count;
         }
-        data_.reinitialize();
+        if (!data_.reinitialize()) {
+            std::fprintf(stderr,
+                         "components::table::column_data_t::set_start: segment starts are not contiguous after "
+                         "re-basing; the row_start map was left untouched\n");
+        }
     }
 
     const types::complex_logical_type& column_data_t::root_type() const {
@@ -102,14 +104,17 @@ namespace components::table {
         return type_;
     }
 
-    bool column_data_t::has_updates() const { return updates_.get(); }
+    bool column_data_t::has_update_segment() const { return updates_.get(); }
 
     scan_vector_type
     column_data_t::get_vector_scan_type(column_scan_state& state, uint64_t scan_count, vector::vector_t& result) {
         if (result.get_vector_type() != vector::vector_type::FLAT) {
             return scan_vector_type::SCAN_ENTIRE_VECTOR;
         }
-        if (has_updates()) {
+        if (has_update_segment()) {
+            return scan_vector_type::SCAN_FLAT_VECTOR;
+        }
+        if (!state.current) {
             return scan_vector_type::SCAN_FLAT_VECTOR;
         }
         uint64_t remaining_in_segment =
@@ -131,6 +136,13 @@ namespace components::table {
     void column_data_t::initialize_scan_with_offset(column_scan_state& state, int64_t row_idx) {
         state.current = data_.get_segment(row_idx);
         state.row_index = row_idx;
+        if (!state.current) {
+            state.initialized = false;
+            state.scan_error =
+                core::error_t(core::error_code_t::invalid_parameter,
+                              std::pmr::string("column scan: the seek row names no segment of this column", resource_));
+            return;
+        }
         state.internal_index = state.current->start;
         state.initialized = false;
         state.scan_state.reset();
@@ -169,28 +181,12 @@ namespace components::table {
         }
     }
 
-    void column_data_t::scan_committed_range(uint64_t row_group_start,
-                                             uint64_t offset_in_row_group,
-                                             uint64_t count,
-                                             vector::vector_t& result) {
-        column_scan_state child_state;
-        initialize_scan_with_offset(child_state, static_cast<int64_t>(row_group_start + offset_in_row_group));
-        auto scan_count = scan_vector(child_state, result, count, scan_vector_type::SCAN_FLAT_VECTOR);
-        if (has_updates()) {
-            assert(result.get_vector_type() == vector::vector_type::FLAT);
-            result.flatten(scan_count);
-            updates_->fetch_committed_range(static_cast<int64_t>(offset_in_row_group), count, result);
-        }
-    }
+    // Deliberately no scan_committed_range: it read through a scan_state whose scan_error nobody checked.
 
     uint64_t column_data_t::scan_count(column_scan_state& state, vector::vector_t& result, uint64_t count) {
         if (count == 0) {
             return 0;
         }
-        // Apply the committed-update overlay. This is the base leaf of the virtual scan_count family,
-        // so it makes complex-column fetch_row (array/struct child scans and their validity children)
-        // updates-aware — a late-materialization gather can then read a column that carries an update
-        // overlay. When updates_ is null this reduces to the plain scan_vector path.
         return scan_count_with_updates(state, result, count);
     }
 
@@ -199,10 +195,7 @@ namespace components::table {
         if (count == 0) {
             return 0;
         }
-        // Capture the write base and the column-relative range start before scanning:
-        // scan_vector writes flat values starting at state.result_offset and advances
-        // state.row_index. The committed-update overlay is then applied over the same
-        // span at the same positions.
+        // Capture result_offset/row_index before scanning: scan_vector advances both.
         const uint64_t result_offset = state.result_offset;
         const int64_t range_start = state.row_index - start_;
         auto scanned = scan_vector(state, result, count, scan_vector_type::SCAN_FLAT_VECTOR);
@@ -262,17 +255,8 @@ namespace components::table {
             }
         }
         auto segment = data_.last_segment(l);
-        // A disk-loaded segment is READ-ONLY: its in-memory buffer is the shared, reloadable
-        // disk block it was loaded from. Appending into it would write new rows over that buffer,
-        // corrupting both this column AND every other column packed into the same partial block.
-        //
-        // block_offset()==0 is not enough to rule a segment out: the checkpointer packs the FIRST
-        // narrow column at offset 0 of the shared partial block, so a disk-loaded segment can have
-        // block_offset()==0 and still be shared/read-only (an offset-only guard let the append land
-        // directly in the shared block's buffer -> reopen corruption). is_reloadable() is true for any
-        // registered disk block, so it forces a fresh appendable transient for EVERY disk-loaded
-        // segment regardless of offset. The offset!=0 check stays as a belt-and-braces for
-        // non-reloadable shared blocks.
+        // A disk-loaded segment is READ-ONLY (shared buffer); is_reloadable(), not block_offset()==0,
+        // is the real test -- the checkpointer can pack the first column at offset 0 too.
         const bool is_disk_loaded = segment->block && segment->block->is_reloadable();
         if (is_disk_loaded || segment->block_offset() != 0) {
             auto created = apend_transient_segment(l, segment->start + static_cast<int64_t>(segment->count));
@@ -291,13 +275,9 @@ namespace components::table {
 
     core::result_wrapper_t<bool>
     column_data_t::append(column_append_state& state, vector::vector_t& vector, uint64_t count) {
-        // ONE statistics pass over the vector, not two: the column-wide and the per-segment
-        // statistics are the same computation over the same rows, so the batch is computed once and
-        // merged into both — merge() accumulates null_count and folds min/max exactly as update() would.
         base_statistics_t batch_stats(resource_, type_.type());
         batch_stats.update(vector, count);
         statistics_.merge(batch_stats);
-        // Per-segment statistics (conservative: full vector stats go to current segment)
         if (state.current) {
             if (state.current->segment_statistics().has_stats()) {
                 auto merged = state.current->segment_statistics();
@@ -316,17 +296,11 @@ namespace components::table {
     column_data_t::append_data(column_append_state& state, vector::unified_vector_format& uvf, uint64_t append_count) {
         uint64_t offset = 0;
         this->count_ += append_count;
-        // Own a partial_block_manager so any segments filled (and re-pointed to disk) during this append are
-        // PACKED into shared blocks via the same allocator the checkpoint path uses. A FILLED segment is a
-        // whole 256 KiB block, so the allocator gives it a dedicated block (offset 0) -- packing does not
-        // change its placement -- but routing it through the pbm keeps a single write-through code path. We
-        // flush at the END of this append so every re-pointed filled segment's block is durable BEFORE the
-        // append returns (and so before the row-group close / any scan or eviction of it): flush-before-evict.
-        // No-op for in-memory tables (transition_segment_to_disk early-returns; nothing is buffered).
+        // A local partial_block_manager packs filled segments via the checkpoint's own allocator,
+        // flushed at the end so every re-pointed block is durable before the append returns.
         storage::partial_block_manager_t pbm(block_manager_);
         bool any_transitioned = false;
         while (true) {
-            // append may raise out_of_memory when a string-overflow allocate fails.
             auto appended = state.current->append(state, uvf, offset, append_count);
             if (appended.has_error()) {
                 return appended.convert_error<bool>();
@@ -338,29 +312,16 @@ namespace components::table {
 
             {
                 auto l = data_.lock();
-                // The just-filled segment is at the current tail; capture its index BEFORE appending the next
-                // segment so we can re-point it to disk. state.current is moved to the new segment below, so the
-                // filled segment is no longer referenced by the append state.
+                // Capture the filled segment's index before appending the next one: state.current moves off it below.
                 const uint64_t filled_index = data_.segment_count(l) - 1;
+                // Release the pin before the swap frees its block_handle_t, or it unpins through
+                // freed memory (see the [appendpin] test).
+                state.handle.reset();
                 auto created =
                     apend_transient_segment(l, state.current->start + static_cast<int64_t>(state.current->count));
                 if (created.has_error()) {
                     return created; // out_of_memory
                 }
-                // Write the now-complete segment through to the data file and swap it for a disk-backed,
-                // evictable+reloadable segment (disk tables only; no-op for in-memory). A write/alloc failure
-                // surfaces as io_error/out_of_memory and aborts the append cleanly.
-#ifdef DEV_MODE
-                // Does the append state's pin on the filled segment's block outlive the handoff to
-                // the swap below? See transition_segment_to_disk for why that is fatal.
-                {
-                    auto* filled = data_.segment_at(l, static_cast<int64_t>(filled_index));
-                    g_segment_transitions.fetch_add(1, std::memory_order_relaxed);
-                    if (filled && filled->block && filled->block->readers() > 0) {
-                        g_transitions_with_live_pin.fetch_add(1, std::memory_order_relaxed);
-                    }
-                }
-#endif
                 auto transitioned = transition_segment_to_disk(l, filled_index, pbm);
                 if (transitioned.has_error()) {
                     return transitioned;
@@ -375,21 +336,30 @@ namespace components::table {
             offset += copied_elements;
             append_count -= copied_elements;
         }
-        // Make every re-pointed filled segment's packed block durable before returning (flush-before-evict).
         if (any_transitioned) {
-            pbm.flush_partial_blocks();
+            if (auto flushed = pbm.flush_partial_blocks(); flushed.has_error()) {
+                return flushed; // io_error
+            }
         }
         return true;
     }
 
-    void column_data_t::revert_append(int64_t start_row) {
+    core::result_wrapper_t<bool> column_data_t::revert_append(int64_t start_row) {
         auto l = data_.lock();
         auto last_segment = data_.last_segment(l);
+        if (!last_segment) {
+            return true; // no segments -> nothing was appended -> nothing to revert
+        }
         if (start_row >= last_segment->start + static_cast<int64_t>(last_segment->count)) {
             assert(start_row == last_segment->start + static_cast<int64_t>(last_segment->count));
-            return;
+            return true;
         }
-        uint64_t segment_index = data_.segment_index(l, start_row);
+        uint64_t segment_index;
+        if (!data_.try_segment_index(l, start_row, segment_index)) {
+            // Names a row the tree doesn't bracket; truncating nearby would manufacture the desync revert undoes.
+            return core::error_t(core::error_code_t::data_corruption,
+                                 std::pmr::string("column revert: no segment brackets the revert row", resource_));
+        }
         auto segment = data_.segment_at(l, static_cast<int64_t>(segment_index));
         auto& transient = *segment;
 
@@ -397,7 +367,7 @@ namespace components::table {
 
         count_ = static_cast<uint64_t>(start_row - start_);
         segment->next = nullptr;
-        transient.revert_append(static_cast<uint64_t>(start_row));
+        return transient.revert_append(static_cast<uint64_t>(start_row));
     }
 
     uint64_t column_data_t::fetch(column_scan_state& state, int64_t row_id, vector::vector_t& result) {
@@ -406,6 +376,13 @@ namespace components::table {
         state.row_index = start_ + (row_id - start_) / static_cast<int64_t>(vector::DEFAULT_VECTOR_CAPACITY *
                                                                             vector::DEFAULT_VECTOR_CAPACITY);
         state.current = data_.get_segment(state.row_index);
+        if (!state.current) {
+            // get_segment's miss (null) rides the scan state's error channel every fetch() caller reads.
+            state.scan_error =
+                core::error_t(core::error_code_t::invalid_parameter,
+                              std::pmr::string("column fetch: the row id names no segment of this column", resource_));
+            return 0;
+        }
         state.internal_index = state.current->start;
         return scan_vector(state, result, vector::DEFAULT_VECTOR_CAPACITY, scan_vector_type::SCAN_FLAT_VECTOR);
     }
@@ -413,6 +390,12 @@ namespace components::table {
     void
     column_data_t::fetch_row(column_fetch_state& state, int64_t row_id, vector::vector_t& result, uint64_t result_idx) {
         auto segment = data_.get_segment(row_id);
+        if (!segment) {
+            state.fetch_error =
+                core::error_t(core::error_code_t::invalid_parameter,
+                              std::pmr::string("column fetch: the row id names no segment of this column", resource_));
+            return;
+        }
 
         segment->fetch_row(state, row_id, result, result_idx);
 
@@ -426,6 +409,10 @@ namespace components::table {
         vector::vector_t base_vector(resource_, type_, count_);
         column_scan_state state;
         auto fetch_count = fetch(state, row_ids[0], base_vector);
+        // Pre-image is prior version for update_internal; unread on failure, rollback would materialise "" silently.
+        if (state.has_error()) {
+            return state.scan_error;
+        }
 
         base_vector.flatten(fetch_count);
         return update_internal(column_index, update_vector, row_ids, update_count, base_vector);
@@ -463,7 +450,11 @@ namespace components::table {
             column_info.segment_idx = segment_idx;
             column_info.segment_start = segment->start;
             column_info.segment_count = segment->count;
-            column_info.has_updates = has_updates();
+            column_info.has_updates = has_update_segment();
+            const bool disk_backed = segment->block && segment->block->is_reloadable();
+            column_info.segment_type = disk_backed ? "PERSISTENT" : "TRANSIENT";
+            column_info.block_id = disk_backed ? static_cast<uint32_t>(segment->block_id()) : 0;
+            column_info.block_offset = segment->block_offset();
             auto segment_state = segment->segment_state();
             if (segment_state) {
                 column_info.segment_info = segment_state->segment_info();
@@ -474,6 +465,31 @@ namespace components::table {
             segment_idx++;
             segment = data_.next_segment(segment);
         }
+    }
+
+    core::error_t column_data_t::validate_column_type(const types::complex_logical_type& type,
+                                                      std::pmr::memory_resource* resource) {
+        // Checked before any node exists (a constructor can't refuse); STRUCT must be named, UNION is exempt
+        // because create_union deliberately leaves the alias empty.
+        const auto physical = type.to_physical_type();
+        if (physical == types::physical_type::STRUCT) {
+            if (type.type() != types::logical_type::UNION && type.is_unnamed()) {
+                return core::error_t(
+                    core::error_code_t::invalid_parameter,
+                    std::pmr::string("a table column cannot be built from an unnamed struct type", resource));
+            }
+            // child_types() is an unchecked cast on non-struct extensions, valid only under the STRUCT test above.
+            for (const auto& child : type.child_types()) {
+                if (auto err = validate_column_type(child, resource); err.contains_error()) {
+                    return err;
+                }
+            }
+            return core::error_t::no_error();
+        }
+        if (physical == types::physical_type::LIST || physical == types::physical_type::ARRAY) {
+            return validate_column_type(type.child_type(), resource);
+        }
+        return core::error_t::no_error();
     }
 
     std::unique_ptr<column_data_t> column_data_t::create_column(std::pmr::memory_resource* resource,
@@ -509,19 +525,13 @@ namespace components::table {
         const auto block_size = block_manager_.block_size();
         const auto type_size = type_.size();
 
-        // Size the segment to what it can actually hold, not to a whole block. A row group holds
-        // DEFAULT_VECTOR_CAPACITY rows (collection_t's default), so a column's segment inside it
-        // never takes more than that many values — 8 KiB of data for a BIGINT column, against a
-        // 256 KiB block that would be 97% empty. Sizing by the block instead fills the buffer pool
-        // at a fixed ~16k blocks no matter how little data they hold: a 17-column table ran out of
-        // its 4 GiB at 492 500 rows while holding only 493 MiB on disk.
+        // Sized to what a segment holds, not a whole block: 8 KiB for BIGINT vs 256 KiB (97% empty). A
+        // 17-column table sized-by-block ran out of its 4 GiB pool at 492 500 rows holding only 493 MiB.
         const auto vector_segment_size = vector::DEFAULT_VECTOR_CAPACITY * type_size;
 
         uint64_t segment_size = block_size < vector_segment_size ? block_size : vector_segment_size;
         auto new_segment =
             column_segment_t::create_segment(block_manager_.buffer_manager, type_, start_row, segment_size, block_size);
-        // create_segment returns an out_of_memory error_t when register_transient_memory fails.
-        // Propagate it up the append chain instead of corrupting the segment tree.
         if (new_segment.has_error()) {
             return new_segment.convert_error<bool>();
         }
@@ -533,20 +543,11 @@ namespace components::table {
     core::result_wrapper_t<bool> column_data_t::transition_segment_to_disk(std::unique_lock<std::mutex>& l,
                                                                            uint64_t segment_index,
                                                                            storage::partial_block_manager_t& pbm) {
-        // In-memory tables have no backing store, so their segments must stay managed (no disk copy ->
-        // clean OOM, never a crash). No-op.
-        if (block_manager_.in_memory()) {
-            return true;
-        }
-
         auto* segment = data_.segment_at(l, static_cast<int64_t>(segment_index));
         if (!segment) {
             return true;
         }
 
-        // Only re-point UNCOMPRESSED, fully-in-memory (managed) segments whose payload is a self-contained raw
-        // block at offset 0: a byte copy round-trips losslessly for them. Skip a segment that is already
-        // disk-backed (is_reloadable() true), shares a block (block_offset != 0), or is compressed.
         if (segment->block && segment->block->is_reloadable()) {
             return true; // already disk-backed
         }
@@ -556,32 +557,19 @@ namespace components::table {
         if (segment->compression() != compression::compression_type::UNCOMPRESSED) {
             return true;
         }
-        // Re-pointable iff the segment's payload is a self-contained raw block at offset 0 that round-trips
-        // through a byte copy: fixed-width physical types AND validity bitmaps (BIT). STRING carries overflow
-        // blocks / a dictionary in segment_state; STRUCT/ARRAY/LIST keep their payload in child columns -- those
-        // stay managed. BIT is included: a validity bitmap is a raw block at offset 0, and a disk-backed
-        // validity segment reloads its bitmap from the file like any other block (the 0xFF-initialize in the
-        // column_segment_t ctor only fires for INVALID_BLOCK transient segments, not for a registered disk
-        // block).
+        // STRUCT/ARRAY/LIST/INVALID own no storage of their own here -- nothing to re-point.
         const auto phys = segment->type.to_physical_type();
-        const bool is_raw_copyable = (phys != types::physical_type::STRING && phys != types::physical_type::INVALID &&
-                                      phys != types::physical_type::STRUCT && phys != types::physical_type::ARRAY &&
-                                      phys != types::physical_type::LIST);
-        if (!is_raw_copyable) {
+        if (phys == types::physical_type::INVALID || phys == types::physical_type::STRUCT ||
+            phys == types::physical_type::ARRAY || phys == types::physical_type::LIST) {
             return true;
         }
 
-        // An EMPTY segment (no rows yet -- e.g. the freshly-opened tail of a row group) has nothing to write
-        // through: re-pointing it would pack a 0-byte payload and persist a segment_size==0 disk segment,
-        // a degenerate on-disk shape the checkpoint/reload path does not expect. Leave it managed; it stays
-        // appendable and will be re-pointed once it fills (append on-fill path) or by a later checkpoint once
-        // it holds rows. (Pre-B2 this re-pointed to a full-block dedicated segment; B2's tight packing makes
-        // the empty case degenerate, so skip it explicitly.)
+        // An EMPTY segment is left managed rather than persist a degenerate segment_size==0 disk segment.
         if (segment->count.load() == 0) {
             return true;
         }
 
-        // Snapshot the segment metadata BEFORE touching the pin: the segment is destroyed by the swap below.
+        // Snapshot the segment metadata before touching the pin: the segment is destroyed by the swap below.
         const int64_t seg_start = segment->start;
         const uint64_t seg_count = segment->count.load();
         const uint64_t alloc_segment_size = segment->segment_size();
@@ -591,16 +579,66 @@ namespace components::table {
         base_statistics_t seg_stats =
             has_stats ? segment->segment_statistics() : base_statistics_t(resource_, type_.type());
 
-        // The transient segment was allocated for a WHOLE block (segment_size() == block_size) but is filled with
-        // only `seg_count` rows. Packing must place the USED payload, not the full allocated block, or every
-        // segment would exceed 0.8*block_size and grab a dedicated block (no packing at all). Compute the
-        // tightly-used byte extent for this segment's physical layout -- this is exactly the byte range the
-        // scan/fetch read paths address (handle.ptr()+block_offset, indexed by row), so copying it round-trips
-        // losslessly:
-        //   * validity bitmaps (BIT): one STANDARD_MASK_SIZE chunk per DEFAULT_VECTOR_CAPACITY rows (the
-        //     layout validity_append writes);
-        //   * other raw-copyable fixed-width types: seg_count * type_size.
-        // Clamp to the allocated size as a safety net (used can never exceed the segment's own allocation).
+        // STRING isn't a raw prefix copy: its dictionary grows down from the end of the allocation, so
+        // it re-serializes through the checkpoint's own pipeline instead, byte-identical to a checkpoint copy.
+        if (phys == types::physical_type::STRING) {
+            std::pmr::vector<std::byte> rewritten(alloc_segment_size, std::byte{0}, resource_);
+            {
+                auto pinned = block_manager_.buffer_manager.pin(segment->block);
+                if (pinned.has_error()) {
+                    return pinned.convert_error<bool>();
+                }
+                std::memcpy(rewritten.data(), pinned.value().ptr() + block_offset, alloc_segment_size);
+            }
+            auto compacted = segment->compact_string_dictionary(rewritten.data(), alloc_segment_size, seg_count);
+            if (compacted.has_error()) {
+                return compacted.convert_error<bool>(); // data_corruption
+            }
+            const uint64_t tight_size = compacted.value();
+            std::vector<uint64_t> overflow_ids;
+            if (segment->references_string_overflow(rewritten.data(), tight_size, seg_count)) {
+                auto persisted =
+                    segment->persist_string_overflow(rewritten.data(), tight_size, seg_count, pbm, overflow_ids);
+                if (persisted.has_error()) {
+                    return persisted; // out_of_memory / data_corruption
+                }
+            }
+            const auto string_alloc = pbm.get_block_allocation(tight_size);
+            pbm.write_to_block(string_alloc.block_id, string_alloc.offset_in_block, rewritten.data(), tight_size);
+            auto string_block_handle = block_manager_.register_block(string_alloc.block_id);
+            // Adopted markers name real file blocks, kept alive by the reload constructor's registration
+            // (test_string_write_through gate H).
+            std::unique_ptr<column_segment_state> overflow_state;
+            if (!overflow_ids.empty()) {
+                overflow_state = std::make_unique<column_segment_state>();
+                overflow_state->blocks = std::move(overflow_ids);
+            }
+            auto disk_segment = std::make_unique<column_segment_t>(string_block_handle,
+                                                                   type_,
+                                                                   seg_start,
+                                                                   seg_count,
+                                                                   static_cast<uint32_t>(string_alloc.block_id),
+                                                                   string_alloc.offset_in_block,
+                                                                   tight_size,
+                                                                   std::move(overflow_state));
+            if (disk_segment->has_construction_error()) {
+                return core::error_t(disk_segment->construction_error());
+            }
+            disk_segment->set_compression(compression::compression_type::UNCOMPRESSED);
+            if (has_stats) {
+                disk_segment->set_segment_statistics(std::move(seg_stats));
+            }
+#ifdef DEV_MODE
+            g_segment_transitions.fetch_add(1, std::memory_order_relaxed);
+            if (segment->block && segment->block->readers() > 0) {
+                g_transitions_with_live_pin.fetch_add(1, std::memory_order_relaxed);
+            }
+#endif
+            data_.replace_segment_at_index(l, segment_index, std::move(disk_segment));
+            return true;
+        }
+
+        // Tightly-used extent, not the full block, or packing would exceed 0.8*block_size.
         uint64_t used_bytes;
         if (phys == types::physical_type::BIT) {
             const uint64_t vectors =
@@ -614,23 +652,9 @@ namespace components::table {
         }
         const uint64_t segment_size = used_bytes;
 
-        // Allocate a COMPACT block placement via the partial-block allocator (segment packing): a segment
-        // larger than 0.8*block_size gets a dedicated whole block (offset 0), a smaller one is PACKED into a
-        // shared partial block at a (possibly non-zero) offset alongside other re-pointed segments. This is
-        // the SAME mechanism the checkpoint path uses (row_group_t::write_to_disk -> column flush), so narrow
-        // column segments no longer each consume a dedicated 256 KiB block.
         const auto alloc = pbm.get_block_allocation(segment_size);
 
-        // Pin the filled managed segment to read its payload and copy it INTO the partial block's in-memory
-        // buffer at the allocated offset. NOTHING reaches the data file here: pbm.write_to_block only fills a
-        // zeroed in-memory block buffer; the block is flushed by the caller's pbm.flush_partial_blocks() BEFORE
-        // any eviction/reload of the re-pointed segment (flush-before-evict). The pin is released at the end of
-        // this scope, BEFORE the swap drops the old segment's block_handle -- otherwise the pin's raw handle
-        // would dangle. A pin OOM surfaces as an error_t.
-        //
-        // On pin OOM we DO NOT free alloc.block_id: a packed block may be SHARED by already-placed segments, so
-        // freeing its id would corrupt them. We just return the error; a few reserved bytes in a partial block
-        // leak until restart, matching the leak-not-corrupt policy of collect_disk_block_ids below.
+        // On pin OOM, alloc.block_id stays allocated (a packed block may be shared); freeing it would corrupt others.
         {
             auto& buffer_manager = block_manager_.buffer_manager;
             auto pinned = buffer_manager.pin(segment->block);
@@ -641,11 +665,6 @@ namespace components::table {
             pbm.write_to_block(alloc.block_id, alloc.offset_in_block, payload, segment_size);
         }
 
-        // Build a NEW disk-backed segment over the packed block at the allocated offset. register_block dedupes
-        // by block_id (weak_ptr registry): segments packed into the SAME block share ONE block_handle, so the
-        // pool evicts/reloads the shared block once. The handle is UNLOADED and is_reloadable() is true: the
-        // pool can evict it and block_handle::load() reloads it from the data file (after the caller flushes).
-        // The new segment's segment_size is the TIGHT used size; scan/fetch read seg_count rows from it.
         auto block_handle = block_manager_.register_block(alloc.block_id);
         auto new_segment = std::make_unique<column_segment_t>(block_handle,
                                                               type_,
@@ -659,42 +678,31 @@ namespace components::table {
             new_segment->set_segment_statistics(std::move(seg_stats));
         }
 
-        // Swap the live segment for the disk-backed one under the tree lock. The old managed
-        // column_segment_t / block_handle is then unreferenced -> its in-memory buffer is released; the
-        // pool can later evict+reload the new disk-backed block. MVCC version info is keyed by row position
-        // (unchanged: same start/count) so visibility is preserved.
-        // Releasing our own pin above does not cover anybody else's: the append state holds a
-        // buffer_handle_t on this same block across the whole call, and the swap below frees the
-        // block_handle_t it points at.
+#ifdef DEV_MODE
+        g_segment_transitions.fetch_add(1, std::memory_order_relaxed);
+        if (segment->block && segment->block->readers() > 0) {
+            g_transitions_with_live_pin.fetch_add(1, std::memory_order_relaxed);
+        }
+#endif
         data_.replace_segment_at_index(l, segment_index, std::move(new_segment));
         return true;
     }
 
     void column_data_t::collect_disk_block_ids(std::pmr::vector<uint64_t>& out) const {
-        // Collect the ids of disk blocks owned by this column's segments so the SOLE caller
-        // (data_table_t::compact's free-list reclaim) can return them to the block manager once the WHOLE
-        // collection these segments belong to is being torn down (replaced by the compacted one). Because
-        // the entire owning collection is discarded, EVERY reloadable disk block it references is freeable,
-        // INCLUDING packed/shared partial blocks: a block packed with several of this collection's segments
-        // at distinct offsets is referenced ONLY by this (about-to-drop) collection, so freeing its id once
-        // is safe -- no live segment elsewhere points at it, and the compacted collection allocated FRESH,
-        // disjoint ids via the write-through allocator.
-        //
-        // B2 made packing the COMMON case (narrow column segments share blocks), so the previous
-        // dedicated-block-only discriminator (block_offset()==0 && segment_size() > 0.8*block) leaked nearly
-        // every block on each compaction -> unbounded file growth. We now emit one entry per reloadable
-        // segment; the caller DEDUPES before freeing (multiple packed segments report the SAME block id).
+        // One entry per reloadable segment, not per dedicated block -- packing shares blocks; the caller dedupes.
         for (auto& segment : const_cast<segment_tree_t<column_segment_t>&>(data_).segments()) {
             if (segment.block && segment.block->is_reloadable()) {
                 out.push_back(segment.block->block_id());
+            }
+            if (auto* state = segment.segment_state()) {
+                for (uint64_t extra_id : state->additional_blocks()) {
+                    out.push_back(extra_id);
+                }
             }
         }
     }
 
     core::result_wrapper_t<bool> column_data_t::transition_to_disk(storage::partial_block_manager_t& pbm) {
-        if (block_manager_.in_memory()) {
-            return true; // no backing store -> segments stay managed (clean OOM, never a crash)
-        }
         auto l = data_.lock();
         const uint64_t count = data_.segment_count(l);
         for (uint64_t i = 0; i < count; i++) {
@@ -711,14 +719,23 @@ namespace components::table {
                                         uint64_t remaining,
                                         scan_vector_type scan_type) {
         if (scan_type == scan_vector_type::SCAN_FLAT_VECTOR && result.get_vector_type() != vector::vector_type::FLAT) {
-            throw std::logic_error("scan_vector called with SCAN_FLAT_VECTOR but result is not a flat vector");
+            // Unreachable today (callers only pass flat results); kept as a live guard, not a comment.
+            state.scan_error = core::error_t(
+                core::error_code_t::invalid_parameter,
+                std::pmr::string("column scan: a flat-vector scan was asked for a non-flat result", resource_));
+            return 0;
         }
         state.previous_states.clear();
         if (!state.initialized) {
-            assert(state.current);
+            if (!state.current) {
+                if (!state.has_error()) {
+                    state.scan_error =
+                        core::error_t(core::error_code_t::invalid_parameter,
+                                      std::pmr::string("column scan: no current segment to scan", resource_));
+                }
+                return 0;
+            }
             state.current->initialize_scan(state);
-            // initialize_scan records a pin OOM in state.scan_error. Bail with nothing scanned;
-            // row_group_t aggregates scan_error and the scan loops stop.
             if (state.has_error()) {
                 return 0;
             }
@@ -740,12 +757,8 @@ namespace components::table {
                                                static_cast<uint64_t>(state.row_index));
             uint64_t result_offset = state.result_offset + initial_remaining - remaining;
             if (scan_count > 0) {
-                // scan() fills the whole [result_offset, result_offset + scan_count) range in one
-                // pass; do NOT precede it with a per-row fetch_row loop — its output is overwritten
-                // here, and each row costs a pin+unpin of the segment's block (two mutex
-                // acquisitions plus an eviction-queue node) and a fresh column_fetch_state that
-                // defeats the handle cache `state` exists to provide: 400 578 pins to scan
-                // 200 000 rows across 195 segments.
+                // Not a per-row fetch_row loop: that defeats the handle cache `state` provides -- 400 578
+                // pins to scan 200 000 rows across 195 segments.
                 state.current->scan(state, scan_count, result, result_offset, scan_type);
 
                 state.row_index += static_cast<int64_t>(scan_count);
@@ -782,12 +795,13 @@ namespace components::table {
         auto scan_count = scan_vector(state, result, target_scan, scan_type);
         if (scan_type != scan_vector_type::SCAN_ENTIRE_VECTOR) {
             auto update_index = vector_index - static_cast<uint64_t>(start_) / vector::DEFAULT_VECTOR_CAPACITY;
-            fetch_updates(update_index, result, state.result_offset, scan_count, ALLOW_UPDATES, SCAN_COMMITTED);
+            fetch_updates(state, update_index, result, state.result_offset, scan_count, ALLOW_UPDATES, SCAN_COMMITTED);
         }
         return scan_count;
     }
 
-    void column_data_t::fetch_updates(uint64_t vector_index,
+    void column_data_t::fetch_updates(column_scan_state& state,
+                                      uint64_t vector_index,
                                       vector::vector_t& result,
                                       uint64_t result_offset,
                                       uint64_t scan_count,
@@ -797,7 +811,11 @@ namespace components::table {
             return;
         }
         if (!allow_updates) {
-            throw std::logic_error("Cannot create index with outstanding updates");
+            // A snapshot with no update overlay was requested, but this column carries one (caller: create_index_scan).
+            state.scan_error =
+                core::error_t(core::error_code_t::index_create_fail,
+                              std::pmr::string("index build scan: the column has outstanding updates", resource_));
+            return;
         }
         result.flatten(scan_count);
         if (scan_committed) {
@@ -838,102 +856,82 @@ namespace components::table {
         if (persistent.has_error()) {
             return persistent;
         }
-        // Re-point the still-managed LIVE segments (the open tail that was not filled during append, and
-        // so never went through the on-fill write-through) to disk-backed, evictable blocks so the
-        // post-checkpoint live table stays bounded. The on-disk metadata returned above is independent of
-        // the live tree (it references the partial_block_manager's allocations), so the re-point cannot
-        // corrupt the checkpoint. No-op for in-memory tables and for already-disk-backed segments. A
-        // write/alloc failure surfaces as io_error/out_of_memory.
-        //
-        // Use a SEPARATE short-lived partial_block_manager (NOT the checkpoint's `partial_block_manager`,
-        // which collection_t::checkpoint already flushed): the re-point packs the live tail's segments into
-        // their own shared blocks, and we flush HERE so every re-pointed live segment's block is durable
-        // before the post-checkpoint table is scanned/evicted (flush-before-evict).
+        // Own entry count: nested nodes without own segments can't re-derive it on load.
+        persistent.value().count = count_.load();
+        // NVI hook (no-op for flat columns); without it the checkpoint silently dropped list/struct/array elements.
+        auto children = checkpoint_children(partial_block_manager, persistent.value());
+        if (children.has_error()) {
+            return children.convert_error<persistent_column_data_t>();
+        }
+        // A separate, short-lived partial_block_manager re-points the live tail and flushes here (flush-before-evict).
         storage::partial_block_manager_t repoint_pbm(block_manager_);
         auto repointed = transition_to_disk(repoint_pbm);
         if (repointed.has_error()) {
             return repointed.convert_error<persistent_column_data_t>();
         }
-        repoint_pbm.flush_partial_blocks();
+        if (auto flushed = repoint_pbm.flush_partial_blocks(); flushed.has_error()) {
+            return flushed.convert_error<persistent_column_data_t>(); // io_error
+        }
         return persistent;
     }
 
-    void column_data_t::initialize_column(const persistent_column_data_t& persistent_data) {
+    core::result_wrapper_t<bool>
+    column_data_t::checkpoint_children(storage::partial_block_manager_t& /*partial_block_manager*/,
+                                       persistent_column_data_t& /*persistent*/) {
+        return true; // flat column: no child columns to persist
+    }
+
+    core::result_wrapper_t<bool> column_data_t::initialize_column(const persistent_column_data_t& persistent_data) {
         auto l = data_.lock();
         for (uint32_t i = 0; i < persistent_data.data_pointers.size(); i++) {
             const auto& dp = persistent_data.data_pointers[i];
+            if (dp.segment_size > block_manager_.block_size()) {
+                return core::error_t(core::error_code_t::data_corruption,
+                                     std::pmr::string("column load: segment_size exceeds the block size", resource_));
+            }
             auto block_handle = block_manager_.register_block(dp.block_pointer.block_id);
-
+            // Without persisted overflow blocks, a reloaded big-string marker can't resolve, aborting the process.
+            std::unique_ptr<column_segment_state> overflow_state;
+            if (!dp.overflow_blocks.empty()) {
+                overflow_state = std::make_unique<column_segment_state>();
+                overflow_state->blocks = dp.overflow_blocks;
+            }
             auto segment = std::make_unique<column_segment_t>(block_handle,
                                                               type_,
                                                               static_cast<int64_t>(dp.row_start),
                                                               dp.tuple_count,
                                                               static_cast<uint32_t>(dp.block_pointer.block_id),
                                                               dp.block_pointer.offset,
-                                                              dp.segment_size);
+                                                              dp.segment_size,
+                                                              std::move(overflow_state));
+            // The reload ctor's only failure (a corrupt overflow list) has no return channel; it latches here.
+            if (segment->has_construction_error()) {
+                return core::error_t(segment->construction_error());
+            }
             segment->set_compression(dp.compression);
             if (i < persistent_data.segment_statistics.size() && persistent_data.segment_statistics[i].has_stats()) {
                 segment->set_segment_statistics(persistent_data.segment_statistics[i]);
             }
             data_.append_segment(l, std::move(segment));
         }
-        if (!persistent_data.data_pointers.empty()) {
+        // The persisted count is authoritative: disagreement with the segment sum is data_corruption, not adopted.
+        if (persistent_data.count == 0) {
             uint64_t total = 0;
             for (const auto& dp : persistent_data.data_pointers) {
                 total += dp.tuple_count;
             }
-            count_ = total;
+            if (total != 0) {
+                return core::error_t(
+                    core::error_code_t::data_corruption,
+                    std::pmr::string("column load: the persisted row count is zero but the segments carry rows",
+                                     resource_));
+            }
         }
+        count_ = persistent_data.count;
         if (persistent_data.statistics.has_stats()) {
             statistics_ = persistent_data.statistics;
         }
-    }
-
-    void column_data_t::initialize_column_validity(const persistent_column_data_t& persistent_data) {
-        // Validity is not persisted separately (a checkpoint flushes only the main column's
-        // segments); on reopen the bitmap is implicitly all-valid. We materialize one validity
-        // segment per main-column data pointer and, on a DISK-backed table, write each all-valid
-        // bitmap THROUGH to the data file and swap it for a disk-backed (reloadable) segment via
-        // transition_segment_to_disk -- the same mechanism used on the append fill path. Without
-        // this the reopen-rebuilt validity segments stay managed (block_id >= MAXIMUM_BLOCK), so
-        // the eviction guard pins them all resident and reopening a large table under a small pool
-        // exhausts it. The transient segment's column_segment_t ctor 0xFF-fills the bitmap
-        // (all-valid) before the transition copies it to disk, so reloaded validity reads all-valid.
-        //
-        // Own a partial_block_manager so the all-valid validity segments are PACKED into shared blocks
-        // (segment packing) and flush it at the end of the loop -- the flush is the flush-before-evict
-        // guarantee: every re-pointed validity segment's block is durable before the reopened table is
-        // scanned/evicted.
-        storage::partial_block_manager_t pbm(block_manager_);
-        auto l = data_.lock();
-        for (const auto& dp : persistent_data.data_pointers) {
-            // Disk-load path: segments are sized for known on-disk tuple counts. An OOM here
-            // is not threaded to an agent boundary; assert and skip the row on exhaustion.
-            auto created = apend_transient_segment(l, static_cast<int64_t>(dp.row_start));
-            assert(!created.has_error() && "initialize_column_validity: transient segment OOM");
-            if (created.has_error()) {
-                continue;
-            }
-            const uint64_t seg_index = data_.segment_count(l) - 1;
-            auto* seg = data_.last_segment(l);
-            if (seg) {
-                seg->count = dp.tuple_count;
-            }
-            // Write the all-valid bitmap through to disk and re-point the live segment to a
-            // disk-backed, evictable+reloadable block (no-op for in-memory tables). A write/alloc
-            // failure surfaces as io_error/out_of_memory; the disk-load path is not threaded to an
-            // agent boundary, so assert and keep the managed segment on failure.
-            auto transitioned = transition_segment_to_disk(l, seg_index, pbm);
-            assert(!transitioned.has_error() && "initialize_column_validity: write-through failed");
-        }
-        pbm.flush_partial_blocks();
-        if (!persistent_data.data_pointers.empty()) {
-            uint64_t total = 0;
-            for (const auto& dp : persistent_data.data_pointers) {
-                total += dp.tuple_count;
-            }
-            count_ = total;
-        }
+        return true;
     }
 
 } // namespace components::table

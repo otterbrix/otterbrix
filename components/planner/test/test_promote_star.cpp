@@ -340,8 +340,8 @@ TEST_CASE("optimizer::promote_star::fact_last_star_reordered_fact_first") {
 
     // ORDER BY d_year, c_nation  (resolved against the GROUP OUTPUT schema)
     std::vector<expression_ptr> sort_exprs;
-    sort_exprs.emplace_back(make_sort_expression(bare_key(res, "d_year"), sort_order::asc));
-    sort_exprs.emplace_back(make_sort_expression(bare_key(res, "c_nation"), sort_order::asc));
+    sort_exprs.emplace_back(make_sort_expression(res, bare_key(res, "d_year"), sort_order::asc));
+    sort_exprs.emplace_back(make_sort_expression(res, bare_key(res, "c_nation"), sort_order::asc));
     auto sort = make_node_sort(res, core::dbname_t{}, core::relname_t{}, sort_exprs);
 
     auto agg = make_node_aggregate(res, core::dbname_t{}, core::relname_t{});
@@ -373,8 +373,8 @@ TEST_CASE("optimizer::promote_star::fact_last_star_reordered_fact_first") {
     // NOT merged indices. Capture them to prove the reorder leaves them untouched.
     auto* srt_dyear = static_cast<sort_expression_t*>(sort->expressions()[0].get());
     auto* srt_cnat = static_cast<sort_expression_t*>(sort->expressions()[1].get());
-    const size_t sort_dyear_before = srt_dyear->key().path()[0];
-    const size_t sort_cnat_before = srt_cnat->key().path()[0];
+    const size_t sort_dyear_before = as_key(srt_dyear->operand()).path()[0];
+    const size_t sort_cnat_before = as_key(srt_cnat->operand()).path()[0];
     // Group output schema is [d_year(0), c_nation(1), profit(2)]; the sort keys
     // index THAT, not the merged join schema (merged d_year/c_nation would be 4/21).
     REQUIRE(sort_dyear_before == 0);
@@ -457,8 +457,10 @@ TEST_CASE("optimizer::promote_star::fact_last_star_reordered_fact_first") {
     // --- GROUP-OUTPUT loci UNCHANGED --------------------------------------------
     auto sort_after = find_child_by_type(agg_after, node_type::sort_t);
     REQUIRE(sort_after);
-    CHECK(static_cast<sort_expression_t*>(sort_after->expressions()[0].get())->key().path()[0] == sort_dyear_before);
-    CHECK(static_cast<sort_expression_t*>(sort_after->expressions()[1].get())->key().path()[0] == sort_cnat_before);
+    CHECK(as_key(static_cast<sort_expression_t*>(sort_after->expressions()[0].get())->operand()).path()[0] ==
+          sort_dyear_before);
+    CHECK(as_key(static_cast<sort_expression_t*>(sort_after->expressions()[1].get())->operand()).path()[0] ==
+          sort_cnat_before);
 }
 
 // ----------------------------------------------------------------------------

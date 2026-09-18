@@ -19,7 +19,9 @@ namespace components::table {
     public:
         column_data_checkpointer_t(column_data_t& column_data, storage::partial_block_manager_t& partial_block_manager);
 
-        // Returns out_of_memory when a segment pin fails during flush; persistent data on success.
+        // Returns persistent data on success, out_of_memory on a segment pin failure, and
+        // unimplemented_yet when the column still carries a committed-update overlay (see the
+        // definition — folding it in is data_table_t::compact's job, not this walk's).
         [[nodiscard]] core::result_wrapper_t<persistent_column_data_t> checkpoint();
 
     private:

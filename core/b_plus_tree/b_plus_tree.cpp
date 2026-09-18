@@ -8,7 +8,20 @@ using file_lock_type = core::filesystem::file_lock_type;
 
 namespace core::b_plus_tree {
 
-    /* base node */
+#ifdef DEV_MODE
+    namespace {
+        size_t g_max_leaf_nodes_override = 0;
+    } // namespace
+
+    void dev_set_max_leaf_nodes(size_t limit) noexcept { g_max_leaf_nodes_override = limit; }
+    size_t max_leaf_nodes() noexcept {
+        return g_max_leaf_nodes_override != 0 ? g_max_leaf_nodes_override : MAX_LEAF_NODES;
+    }
+#else
+    namespace {
+        constexpr size_t max_leaf_nodes() noexcept { return MAX_LEAF_NODES; }
+    } // namespace
+#endif
 
     btree_t::base_node_t::base_node_t(std::pmr::memory_resource* resource,
                                       size_t min_node_capacity,
@@ -24,8 +37,6 @@ namespace core::b_plus_tree {
     void btree_t::base_node_t::lock_exclusive() { node_mutex_.lock(); }
 
     void btree_t::base_node_t::unlock_exclusive() { node_mutex_.unlock(); }
-
-    /* inner node */
 
     btree_t::inner_node_t::inner_node_t(std::pmr::memory_resource* resource,
                                         size_t min_node_capacity,
@@ -65,7 +76,6 @@ namespace core::b_plus_tree {
         auto it = std::lower_bound(nodes_, nodes_end_, index, [](base_node_t* n, const index_t& index) {
             return n->min_index() < index;
         });
-        // some edge cases around begin and end
         if (it == nodes_end_) {
             return *(--it);
         } else if (it != nodes_) {
@@ -137,7 +147,7 @@ namespace core::b_plus_tree {
     void btree_t::inner_node_t::balance(base_node_t* neighbour) {
         assert((left_node_ == neighbour || right_node_ == neighbour) && "balance_node requires neighbouring nodes");
         assert(min_index() > neighbour->max_index() || max_index() < neighbour->min_index());
-        // easier to check it where it is needed, then to add 2 new cases for it
+        // Caller must pass the smaller node first; handling both orders here would add 2 more cases.
         assert(count() < neighbour->count());
 
         inner_node_t* other = static_cast<inner_node_t*>(neighbour);
@@ -156,7 +166,7 @@ namespace core::b_plus_tree {
         other->nodes_end_ -= rebalance_size;
     }
 
-    void btree_t::inner_node_t::merge(base_node_t* neighbour) {
+    bool btree_t::inner_node_t::merge(base_node_t* neighbour) {
         assert((left_node_ == neighbour || right_node_ == neighbour) && "merge requires neighbouring nodes");
         assert(min_index() > neighbour->max_index() || max_index() < neighbour->min_index());
         assert(count() != 0 && neighbour->count() != 0);
@@ -172,6 +182,8 @@ namespace core::b_plus_tree {
         }
         nodes_end_ += delta_count;
         other->nodes_end_ -= delta_count;
+        // Children are pointers already in memory, so nothing here can refuse to move.
+        return true;
     }
 
     void btree_t::inner_node_t::build(btree_t::inner_node_t::base_node_t** nodes, size_t count) {
@@ -192,16 +204,15 @@ namespace core::b_plus_tree {
         return (nodes_ != nodes_end_) ? (*(nodes_end_ - 1))->max_index() : std::numeric_limits<index_t>::max();
     }
 
-    /* leaf node */
-
     btree_t::leaf_node_t::leaf_node_t(std::pmr::memory_resource* resource,
-                                      std::unique_ptr<filesystem::file_handle_t> file,
+                                      filesystem::local_file_system_t& fs,
+                                      filesystem::path_t file_path,
                                       index_t (*func)(const item_data&),
                                       uint64_t segment_tree_id,
                                       size_t min_node_capacity,
                                       size_t max_node_capacity)
         : btree_t::base_node_t(resource, min_node_capacity, max_node_capacity)
-        , segment_tree_(std::make_unique<segment_tree_t>(resource, func, std::move(file)))
+        , segment_tree_(std::make_unique<segment_tree_t>(resource, func, fs, std::move(file_path)))
         , segment_tree_id_(segment_tree_id) {}
 
     btree_t::leaf_node_t::leaf_node_t(std::pmr::memory_resource* resource,
@@ -223,13 +234,15 @@ namespace core::b_plus_tree {
     }
     bool btree_t::leaf_node_t::remove_index(const index_t& index) { return segment_tree_->remove_index(index); }
 
-    btree_t::leaf_node_t* btree_t::leaf_node_t::split(std::unique_ptr<filesystem::file_handle_t> file,
-                                                      uint64_t segment_tree_id) {
-        return new leaf_node_t(resource_,
-                               segment_tree_->split(std::move(file)),
-                               segment_tree_id,
-                               min_node_capacity_,
-                               max_node_capacity_);
+    btree_t::leaf_node_t* btree_t::leaf_node_t::split(filesystem::path_t file_path, uint64_t segment_tree_id) {
+        auto* node = new leaf_node_t(resource_,
+                                     segment_tree_->split(std::move(file_path)),
+                                     segment_tree_id,
+                                     min_node_capacity_,
+                                     max_node_capacity_);
+        // The split-off half reports where its parent reports, or it would be the one leaf nothing above could hear.
+        node->set_failure_channel(segment_tree_->failure_channel());
+        return node;
     }
 
     void btree_t::leaf_node_t::balance(base_node_t* neighbour) {
@@ -241,9 +254,9 @@ namespace core::b_plus_tree {
         }
     }
 
-    void btree_t::leaf_node_t::merge(base_node_t* neighbour) {
+    bool btree_t::leaf_node_t::merge(base_node_t* neighbour) {
         assert((left_node_ == neighbour || right_node_ == neighbour) && "merge requires neighbouring nodes");
-        segment_tree_->merge(static_cast<leaf_node_t*>(neighbour)->segment_tree_);
+        return segment_tree_->merge(static_cast<leaf_node_t*>(neighbour)->segment_tree_);
     }
 
     bool btree_t::leaf_node_t::contains_index(const index_t& index) { return segment_tree_->contains_index(index); }
@@ -264,8 +277,6 @@ namespace core::b_plus_tree {
     uint64_t btree_t::leaf_node_t::segment_tree_id() const { return segment_tree_id_; }
     bool btree_t::leaf_node_t::flush() const { return segment_tree_->flush(); }
     void btree_t::leaf_node_t::load() { segment_tree_->lazy_load(); }
-
-    /* btree */
 
     btree_t::btree_t(std::pmr::memory_resource* resource,
                      filesystem::local_file_system_t& fs,
@@ -298,19 +309,21 @@ namespace core::b_plus_tree {
             uint64_t segment_tree_id = get_unique_id_();
             std::filesystem::path file_name = storage_directory_;
             file_name /= std::filesystem::path(std::string(segment_tree_name_) + std::to_string(segment_tree_id));
-            std::unique_ptr<core::filesystem::file_handle_t> file =
-                open_file(fs_, file_name, file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE);
             root_ = static_cast<base_node_t*>(new leaf_node_t(resource_,
-                                                              std::move(file),
+                                                              fs_,
+                                                              std::move(file_name),
                                                               key_func_,
                                                               segment_tree_id,
                                                               min_node_capacity_,
                                                               max_node_capacity_));
-            reinterpret_cast<leaf_node_t*>(root_)->append(index, item);
+            static_cast<leaf_node_t*>(root_)->set_failure_channel(&failures_);
+            const bool stored = static_cast<leaf_node_t*>(root_)->append(index, item);
             leaf_nodes_count_++;
-            item_count_++;
+            if (stored) {
+                item_count_++;
+            }
             tree_mutex_.unlock();
-            return true;
+            return stored;
         } else if (root_->is_leaf_node()) {
             assert(root_->unique_entry_count() != 0);
             bool result;
@@ -320,9 +333,8 @@ namespace core::b_plus_tree {
                 uint64_t segment_tree_id = get_unique_id_();
                 std::filesystem::path file_name = storage_directory_;
                 file_name /= std::filesystem::path(std::string(segment_tree_name_) + std::to_string(segment_tree_id));
-                std::unique_ptr<core::filesystem::file_handle_t> file =
-                    open_file(fs_, file_name, file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE);
-                leaf_node_t* splited_node = static_cast<leaf_node_t*>(root_)->split(std::move(file), segment_tree_id);
+                leaf_node_t* splited_node =
+                    static_cast<leaf_node_t*>(root_)->split(std::move(file_name), segment_tree_id);
                 leaf_nodes_count_++;
                 if (splited_node->min_index() < index) {
                     result = splited_node->append(index, item);
@@ -345,10 +357,8 @@ namespace core::b_plus_tree {
         base_node_t* parent_node = nullptr;
         std::deque<base_node_t*> modified_nodes;
         bool record_nodes = current_node->unique_entry_count() == max_node_capacity_;
-        // traversing down and maintaining a stack of pointers
         while (current_node->is_inner_node()) {
             if (current_node->unique_entry_count() < max_node_capacity_) {
-                // if there are any marked nodes, they won't be affected by changes to that one. clear modified_nodes stack
                 release_locks_(modified_nodes);
                 record_nodes = false;
             }
@@ -363,25 +373,16 @@ namespace core::b_plus_tree {
             }
         }
 
-        if (!record_nodes || modified_nodes.front()->unique_entry_count() != max_node_capacity_ ||
-            current_node->unique_entry_count() < max_node_capacity_) {
-            tree_mutex_.unlock();
-        }
-
         bool result;
         if (current_node->unique_entry_count() < max_node_capacity_) {
-            // safely append item, modified_nodes will not be affected
             release_locks_(modified_nodes);
             result = static_cast<leaf_node_t*>(current_node)->append(index, item);
         } else {
-            // append to this node will require node split, which may cause appends and splits inside modified_nodes
             uint64_t segment_tree_id = get_unique_id_();
             std::filesystem::path file_name = storage_directory_;
             file_name /= std::filesystem::path(std::string(segment_tree_name_) + std::to_string(segment_tree_id));
-            std::unique_ptr<core::filesystem::file_handle_t> file =
-                open_file(fs_, file_name, file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE);
             leaf_node_t* splited_node =
-                static_cast<leaf_node_t*>(current_node)->split(std::move(file), segment_tree_id);
+                static_cast<leaf_node_t*>(current_node)->split(std::move(file_name), segment_tree_id);
             leaf_nodes_count_++;
 
             if (splited_node->min_index() <= index) {
@@ -392,7 +393,7 @@ namespace core::b_plus_tree {
 
             base_node_t* insert_node = static_cast<base_node_t*>(splited_node);
             inner_node_t* node = nullptr;
-            // all nodes in modified_nodes list (exept first one) are full, split each of them, insert splited one in node above
+            // Every recorded node but the first is full, so the split cascades up to the node above.
             while (!modified_nodes.empty()) {
                 node = static_cast<inner_node_t*>(modified_nodes.back());
                 modified_nodes.pop_back();
@@ -415,15 +416,14 @@ namespace core::b_plus_tree {
             }
 
             if (insert_node && node == root_) {
-                // this is above the actual root
                 inner_node_t* new_root = new inner_node_t(resource_, min_node_capacity_, max_node_capacity_);
                 new_root->initialize(root_, insert_node);
                 root_ = static_cast<base_node_t*>(new_root);
-                tree_mutex_.unlock();
             }
             node->unlock_exclusive();
         }
         current_node->unlock_exclusive();
+        tree_mutex_.unlock();
         if (result) {
             item_count_++;
         }
@@ -458,10 +458,8 @@ namespace core::b_plus_tree {
         base_node_t* parent_node = nullptr;
         std::deque<base_node_t*> modified_nodes;
         bool record_nodes = current_node->unique_entry_count() == 1;
-        // traversing down and maintaining a stack of pointers
         while (current_node->is_inner_node()) {
             if (current_node->unique_entry_count() > min_node_capacity_) {
-                // if there are any marked nodes, they won't be affected by changes to that one. clear modified_nodes stack
                 release_locks_(modified_nodes);
                 record_nodes = false;
             }
@@ -485,23 +483,16 @@ namespace core::b_plus_tree {
 
         bool result;
         if (current_node->unique_entry_count() > min_node_capacity_) {
-            // safely remove item, modified_nodes will not be affected
             release_locks_(modified_nodes);
             result = static_cast<leaf_node_t*>(current_node)->remove(index, item);
             tree_mutex_.unlock();
         } else {
-            // merge into current node can only be performed within parent node
-            // but merging current node into neighbour can be done anytime
-            // share could be done with any neighbour
-            // merge puts node further from lower and upper rebalancing point, so it is preferable
             // TODO: do some test to check if it is the right approach or "first share then merge" approach will be faster
 
             assert((current_node->left_node_ || current_node->right_node_) && "not a root node has no neighbours");
-            // guaranteed that at least one neighbour exist
 
             result = static_cast<leaf_node_t*>(current_node)->remove(index, item);
             if (current_node->unique_entry_count() > min_node_capacity_) {
-                // safely remove item, modified_nodes will not be affected
                 release_locks_(modified_nodes);
                 result = static_cast<leaf_node_t*>(current_node)->remove(index, item);
                 tree_mutex_.unlock();
@@ -515,14 +506,25 @@ namespace core::b_plus_tree {
                 if (current_node->right_node_ &&
                     current_node->right_node_->unique_entry_count() <= merge_share_boundary_) {
                     current_node->right_node_->lock_exclusive();
-                    current_node->right_node_->merge(current_node);
+                    const bool merged = current_node->right_node_->merge(current_node);
                     current_node->right_node_->unlock_exclusive();
+                    if (!merged) {
+                        // Nothing moved (see the failure channel), so leave it under-full rather
+                        // than delete it and drop its rows.
+                        release_locks_(modified_nodes);
+                        parent_node->unlock_exclusive();
+                        break;
+                    }
                 } else if (current_node->left_node_ && current_node->left_node_->count() <= merge_share_boundary_) {
                     current_node->left_node_->lock_exclusive();
-                    current_node->left_node_->merge(current_node);
+                    const bool merged = current_node->left_node_->merge(current_node);
                     current_node->left_node_->unlock_exclusive();
+                    if (!merged) {
+                        release_locks_(modified_nodes);
+                        parent_node->unlock_exclusive();
+                        break;
+                    }
                 } else {
-                    // cannot merge with anyone
                     if (current_node->right_node_) {
                         current_node->right_node_->lock_exclusive();
                         current_node->balance(current_node->right_node_);
@@ -603,10 +605,8 @@ namespace core::b_plus_tree {
         base_node_t* parent_node = nullptr;
         std::deque<base_node_t*> modified_nodes;
         bool record_nodes = current_node->unique_entry_count() == 1;
-        // traversing down and maintaining a stack of pointers
         while (current_node->is_inner_node()) {
             if (current_node->unique_entry_count() > min_node_capacity_) {
-                // if there are any marked nodes, they won't be affected by changes to that one. clear modified_nodes stack
                 release_locks_(modified_nodes);
                 record_nodes = false;
             }
@@ -631,19 +631,13 @@ namespace core::b_plus_tree {
         bool result;
         size_t count_delta = static_cast<leaf_node_t*>(current_node)->item_count(index);
         if (current_node->unique_entry_count() > min_node_capacity_) {
-            // safely remove item, modified_nodes will not be affected
             release_locks_(modified_nodes);
             result = static_cast<leaf_node_t*>(current_node)->remove_index(index);
             tree_mutex_.unlock();
         } else {
-            // merge into current node can only be performed within parent node
-            // but merging current node into neighbour can be done anytime
-            // share could be done with any neighbour
-            // merge puts node further from lower and upper rebalancing point, so it is preferable
             // TODO: do some test to check if it is the right approach or "first share then merge" approach will be faster
 
             assert((current_node->left_node_ || current_node->right_node_) && "not a root node has no neighbours");
-            // guaranteed that at least one neighbour exist
 
             result = static_cast<leaf_node_t*>(current_node)->remove_index(index);
 
@@ -655,15 +649,24 @@ namespace core::b_plus_tree {
                 if (current_node->right_node_ &&
                     current_node->right_node_->unique_entry_count() <= merge_share_boundary_) {
                     current_node->right_node_->lock_exclusive();
-                    current_node->right_node_->merge(current_node);
+                    const bool merged = current_node->right_node_->merge(current_node);
                     current_node->right_node_->unlock_exclusive();
+                    if (!merged) {
+                        release_locks_(modified_nodes);
+                        parent_node->unlock_exclusive();
+                        break;
+                    }
                 } else if (current_node->left_node_ &&
                            current_node->left_node_->unique_entry_count() <= merge_share_boundary_) {
                     current_node->left_node_->lock_exclusive();
-                    current_node->left_node_->merge(current_node);
+                    const bool merged = current_node->left_node_->merge(current_node);
                     current_node->left_node_->unlock_exclusive();
+                    if (!merged) {
+                        release_locks_(modified_nodes);
+                        parent_node->unlock_exclusive();
+                        break;
+                    }
                 } else {
-                    // cannot merge with anyone
                     if (current_node->right_node_) {
                         current_node->right_node_->lock_exclusive();
                         current_node->balance(current_node->right_node_);
@@ -673,7 +676,6 @@ namespace core::b_plus_tree {
                         current_node->balance(current_node->left_node_);
                         current_node->left_node_->unlock_exclusive();
                     }
-                    // amount of nodes did not change, so there is no need to check modified_nodes
                     release_locks_(modified_nodes);
                     parent_node->unlock_exclusive();
                     break;
@@ -686,7 +688,6 @@ namespace core::b_plus_tree {
                 static_cast<inner_node_t*>(parent_node)->remove(current_node);
                 current_node = nullptr;
                 if (parent_node->unique_entry_count() == 1) {
-                    // parent is a root node
                     base_node_t* new_root = static_cast<inner_node_t*>(parent_node)->deinitialize();
                     delete parent_node;
                     root_ = new_root;
@@ -719,18 +720,23 @@ namespace core::b_plus_tree {
     }
 
     void btree_t::list_indices(std::vector<index_t>& result) {
+        tree_mutex_.lock_shared();
         auto first_leaf = find_leaf_node_(std::numeric_limits<index_t>::min());
         if (!first_leaf) {
+            tree_mutex_.unlock_shared();
             return;
         }
 
-        tree_mutex_.lock_shared();
         first_leaf->unlock_shared();
 
         result.reserve(item_count_);
         while (first_leaf) {
             for (auto block = first_leaf->begin(); block != first_leaf->end(); block++) {
-                for (auto it = block->begin(); it != block->end(); it++) {
+                const auto* blk = block.get();
+                if (!blk) {
+                    continue;
+                }
+                for (auto it = blk->begin(); it != blk->end(); it++) {
                     result.push_back(it->index);
                 }
             }
@@ -742,12 +748,7 @@ namespace core::b_plus_tree {
     }
 
     bool btree_t::flush() {
-        // An emptied tree MUST still be written. Returning here left the previous metadata file and
-        // every leaf file exactly as the last non-empty flush wrote them, and the next load()
-        // rebuilt the whole pre-delete tree — deleting every row of an indexed table and restarting
-        // brought every deleted key back. The leaf files themselves are not unlinked here: the
-        // metadata no longer names them, so load() ignores them, and removing files is a separate
-        // step that must not run before the new metadata is durable.
+        // An emptied tree MUST still be written, or the next load() resurrects every deleted key from stale metadata.
         if (leaf_nodes_count_ == 0) {
             std::filesystem::path empty_name = storage_directory_;
             empty_name /= std::filesystem::path(metadata_file_name_);
@@ -776,7 +777,6 @@ namespace core::b_plus_tree {
         file_name /= std::filesystem::path(metadata_file_name_);
         tree_mutex_.lock();
 
-        // got root mutex, no need to lock nodes or save parent node
         base_node_t* current_node = root_;
         while (current_node->is_inner_node()) {
             current_node = static_cast<inner_node_t*>(current_node)->find_node(std::numeric_limits<index_t>::min());
@@ -786,33 +786,46 @@ namespace core::b_plus_tree {
         leaf_node_t* node = first_leaf;
 
         size_t* buffer = static_cast<size_t*>(resource_->allocate(METADATA_SIZE));
-        // The whole buffer is written to the metadata file, but only two counters and one id per
-        // leaf are filled in; the tail would otherwise be uninitialised heap on disk.
         std::memset(static_cast<void*>(buffer), 0, METADATA_SIZE);
         *buffer = item_count_;
-        *(buffer + 1) = leaf_nodes_count_;
         uint64_t* buffer_writer = reinterpret_cast<uint64_t*>(buffer + 2);
+        // Bounds the id-writing loop below so a tree that outgrew MAX_LEAF_NODES doesn't write past the allocation.
+        const uint64_t* const buffer_end =
+            reinterpret_cast<const uint64_t*>(buffer) + (METADATA_SIZE / sizeof(uint64_t));
+        const size_t leaf_ceiling = max_leaf_nodes();
 
-        // save each segment tree
         bool ok = true;
+        size_t written_ids = 0;
         while (node) {
             ok = node->flush() && ok;
+            if (written_ids == leaf_ceiling || buffer_writer == buffer_end) {
+                // Reports not-durable rather than silently naming only the first leaves and dropping the rest.
+                // TODO: grow the metadata file past one METADATA_SIZE region and lift the ceiling.
+                ok = false;
+                node = static_cast<leaf_node_t*>(node->right_node_);
+                continue;
+            }
             *buffer_writer = node->segment_tree_id();
             buffer_writer++;
+            written_ids++;
             node = static_cast<leaf_node_t*>(node->right_node_);
+        }
+        // written_ids, not leaf_nodes_count_: the two agree only while nothing has gone wrong.
+        *(buffer + 1) = written_ids;
+        if (!ok) {
+            // A named-but-missing leaf makes load() empty the WHOLE tree, so keep the last-good metadata instead.
+            tree_mutex_.unlock();
+            resource_->deallocate(static_cast<void*>(buffer), METADATA_SIZE);
+            return false;
         }
         std::unique_ptr<core::filesystem::file_handle_t> file =
             open_file(fs_, file_name, file_flags::WRITE | file_flags::FILE_CREATE);
         if (file == nullptr) {
-            // open_file reports failure by returning nullptr, not by throwing: an unwritable
-            // directory or an exhausted descriptor table lands here.
             ok = false;
         } else {
             if (!file->write(static_cast<void*>(buffer), METADATA_SIZE, 0)) {
                 ok = false;
             }
-            // The leaves are fsynced individually; without this the list that names them stayed in
-            // the page cache, so a crash could leave leaf files no metadata refers to.
             if (!file->sync()) {
                 ok = false;
             }
@@ -835,9 +848,15 @@ namespace core::b_plus_tree {
             root_ = nullptr;
         }
         std::unique_ptr<core::filesystem::file_handle_t> file = open_file(fs_, file_name, file_flags::READ);
+        if (file == nullptr) {
+            failures_.report(load_failure_t::io_error);
+            tree_mutex_.unlock();
+            return;
+        }
         size_t* buffer = static_cast<size_t*>(resource_->allocate(METADATA_SIZE));
         std::memset(static_cast<void*>(buffer), 0, METADATA_SIZE);
         if (!file->read(static_cast<void*>(buffer), METADATA_SIZE, 0)) {
+            failures_.report(load_failure_t::io_error);
             resource_->deallocate(static_cast<void*>(buffer), METADATA_SIZE);
             tree_mutex_.unlock();
             return;
@@ -845,9 +864,17 @@ namespace core::b_plus_tree {
 
         item_count_ = *buffer;
         leaf_nodes_count_ = *(buffer + 1);
+        if (leaf_nodes_count_ > MAX_LEAF_NODES) {
+            // A torn counter sizes an over-large read/allocation, so refuse it instead of risking std::bad_alloc.
+            failures_.report(load_failure_t::data_corruption);
+            item_count_ = 0;
+            leaf_nodes_count_ = 0;
+            root_ = nullptr;
+            resource_->deallocate(static_cast<void*>(buffer), METADATA_SIZE);
+            tree_mutex_.unlock();
+            return;
+        }
         if (leaf_nodes_count_ == 0) {
-            // Nothing to rebuild. Falling through would allocate a zero-length node array and then
-            // read *nodes_layer out of it.
             root_ = nullptr;
             resource_->deallocate(static_cast<void*>(buffer), METADATA_SIZE);
             tree_mutex_.unlock();
@@ -855,7 +882,6 @@ namespace core::b_plus_tree {
         }
         uint64_t* buffer_reader = reinterpret_cast<uint64_t*>(buffer + 2);
 
-        // with some index manipulations, all could be done in one layer
         base_node_t** nodes_layer =
             static_cast<base_node_t**>(resource_->allocate(leaf_nodes_count_ * sizeof(base_node_t*)));
         base_node_t* left_node = nullptr;
@@ -868,6 +894,8 @@ namespace core::b_plus_tree {
             std::filesystem::path leaf_file_name = storage_directory_;
             leaf_file_name /= std::filesystem::path(std::string(segment_tree_name_) + std::to_string(segment_tree_id));
             if (!file_exists(fs_, leaf_file_name)) {
+                // Opening empty here would silently drop every OTHER leaf's rows too (a SUBSET), so report it instead.
+                failures_.report(load_failure_t::io_error);
                 for (size_t j = 0; j < i; j++) {
                     delete *(nodes_layer + j);
                 }
@@ -878,15 +906,15 @@ namespace core::b_plus_tree {
                 tree_mutex_.unlock();
                 return;
             }
-            std::unique_ptr<core::filesystem::file_handle_t> leaf_file =
-                open_file(fs_, leaf_file_name, file_flags::READ | file_flags::WRITE);
             base_node_t* node = static_cast<base_node_t*>(new leaf_node_t(resource_,
-                                                                          std::move(leaf_file),
+                                                                          fs_,
+                                                                          std::move(leaf_file_name),
                                                                           key_func_,
                                                                           segment_tree_id,
                                                                           min_node_capacity_,
                                                                           max_node_capacity_));
 
+            static_cast<leaf_node_t*>(node)->set_failure_channel(&failures_);
             static_cast<leaf_node_t*>(node)->load();
             *(nodes_layer + i) = node;
             if (left_node) {
@@ -904,7 +932,6 @@ namespace core::b_plus_tree {
         while (layer_count > 1) {
             while (layer_index < layer_count) {
                 inner_node_t* node = new inner_node_t(resource_, min_node_capacity_, max_node_capacity_);
-                // check if after creating an upper node there would be enough left for the next one
                 if (layer_count - layer_index >= inner_node_pack_size + min_node_capacity_) {
                     node->build(nodes_layer + layer_index, inner_node_pack_size);
                     layer_index += inner_node_pack_size;
@@ -935,81 +962,72 @@ namespace core::b_plus_tree {
     }
 
     bool btree_t::contains_index(const index_t& index) {
-        if (root_ == nullptr) {
-            return false;
-        }
-
+        tree_mutex_.lock_shared();
         auto node = find_leaf_node_(index);
         bool result = false;
         if (node) {
             result = node->contains_index(index);
             node->unlock_shared();
         }
+        tree_mutex_.unlock_shared();
         return result;
     }
 
     bool btree_t::contains(const index_t& index, item_data item) {
-        if (root_ == nullptr) {
-            return false;
-        }
-
+        tree_mutex_.lock_shared();
         auto node = find_leaf_node_(index);
         bool result = false;
         if (node) {
             result = node->contains(index, item);
             node->unlock_shared();
         }
+        tree_mutex_.unlock_shared();
         return result;
     }
 
     size_t btree_t::item_count(const index_t& index) {
-        if (root_ == nullptr) {
-            return 0;
-        }
-
+        tree_mutex_.lock_shared();
         auto node = find_leaf_node_(index);
         size_t result = 0;
         if (node) {
             result = node->item_count(index);
             node->unlock_shared();
         }
+        tree_mutex_.unlock_shared();
         return result;
     }
 
     btree_t::item_data btree_t::get_item(const index_t& index, size_t position) {
-        if (root_ == nullptr) {
-            return {nullptr, 0};
-        }
-
+        tree_mutex_.lock_shared();
         auto node = find_leaf_node_(index);
         item_data result = {nullptr, 0};
         if (node) {
             result = node->get_item(index, position);
             node->unlock_shared();
         }
+        tree_mutex_.unlock_shared();
         return result;
     }
 
     void btree_t::get_items(std::vector<item_data>& result, const index_t& index) {
-        if (root_ == nullptr) {
-            return;
-        }
-
+        tree_mutex_.lock_shared();
         auto node = find_leaf_node_(index);
         if (node) {
             node->get_items(result, index);
             node->unlock_shared();
         }
+        tree_mutex_.unlock_shared();
     }
     size_t btree_t::size() const { return item_count_; }
 
     size_t btree_t::unique_indices_count() {
+        tree_mutex_.lock_shared();
         auto first_leaf = find_leaf_node_(std::numeric_limits<index_t>::min());
         if (!first_leaf) {
+            tree_mutex_.unlock_shared();
             return 0;
         }
 
-        tree_mutex_.lock_shared();
         first_leaf->unlock_shared();
 
         size_t result = 0;
@@ -1023,21 +1041,15 @@ namespace core::b_plus_tree {
     }
 
     btree_t::leaf_node_t* btree_t::find_leaf_node_(const index_t& index) {
-        tree_mutex_.lock_shared();
-
         if (root_ == nullptr) {
-            tree_mutex_.unlock_shared();
             return nullptr;
         }
 
         base_node_t* current_node = root_;
         base_node_t* parent = nullptr;
 
-        // Get the shared latch of next node, release the root_latch
         current_node->lock_shared();
-        tree_mutex_.unlock_shared();
 
-        // Traversing Down to the right leaf node
         while (current_node->is_inner_node()) {
             if (parent) {
                 parent->unlock_shared();

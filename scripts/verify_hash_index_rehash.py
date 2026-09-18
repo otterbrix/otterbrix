@@ -26,6 +26,9 @@ from pathlib import Path
 
 PAGE_SIZE = 4096
 INDEX_NAME = "idx_id_hash"
+# benchmark_runner puts every artefact under one named base dir
+# (benchmark/runner/benchmark_runner.cpp make_config), not bare ./wal.
+RUNNER_DATA_DIR = "otterbrix_benchmark_data"
 TABLE_NAME = "kv"
 DEFAULT_BUCKET_COUNT = 1024
 MAX_LOAD_FACTOR = 0.75
@@ -67,7 +70,7 @@ def read_hash_index_header(path: Path) -> tuple[int, int, int, int]:
 
 
 def find_hash_index_bin(work_dir: Path) -> Path | None:
-    wal_root = work_dir / "wal"
+    wal_root = work_dir / RUNNER_DATA_DIR / "wal"
     if not wal_root.is_dir():
         return None
     matches = sorted(wal_root.rglob("hash_index.bin"))
@@ -90,7 +93,7 @@ def write_csv(path: Path, rows: int) -> None:
 def write_setup(db_name: str) -> str:
     return (
         f"-- @database {db_name}\n"
-        f"CREATE TABLE {TABLE_NAME} (id INTEGER, payload STRING) WITH (storage = 'disk');\n"
+        f"CREATE TABLE {TABLE_NAME} (id INTEGER, payload STRING) ;\n"
         f"CREATE INDEX {INDEX_NAME} ON {db_name}.{TABLE_NAME} USING hash (id);\n"
         f"-- @load_csv data.csv {TABLE_NAME} ,\n"
     )
@@ -101,7 +104,7 @@ def write_lookup(db_name: str, key: int) -> str:
 
 
 def run_runner(runner: Path, cwd: Path, sql_file: str, *, load_only: bool, checkpoint_mb: int = 0) -> None:
-    cmd = [str(runner), f"--file={sql_file}", "--disk", "--runs=1", "--timeout=0"]
+    cmd = [str(runner), f"--file={sql_file}", "--runs=1", "--timeout=0"]
     if load_only:
         cmd.append("--load-only")
     if checkpoint_mb > 0:
@@ -166,12 +169,12 @@ def main() -> None:
             f"(target load factor ~= {TARGET_LOAD_FACTOR:.2f}, "
             "not rounded to a power of two)"
         )
-        print("Running load-only (--disk, CHECKPOINT at end)...")
+        print("Running load-only (CHECKPOINT at end)...")
         run_runner(runner, work_dir, "lookup.sql", load_only=True, checkpoint_mb=args.checkpoint_mb)
 
         hash_bin = find_hash_index_bin(work_dir)
         if hash_bin is None:
-            die(f"hash_index.bin not found under {work_dir / 'wal'}")
+            die(f"hash_index.bin not found under {work_dir / RUNNER_DATA_DIR / 'wal'}")
 
         page_size, bucket_count, next_overflow, file_pages = read_hash_index_header(hash_bin)
         load_factor = args.rows / bucket_count if bucket_count else float("inf")

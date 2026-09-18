@@ -1,12 +1,41 @@
 #include "operations_helper.hpp"
+#include <array>
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <components/types/logical_value.hpp>
 #include <components/types/physical_value.hpp>
+#include <core/counting_resource.hpp>
 #include <core/operations_helper.hpp>
+#include <core/pmr.hpp>
+#include <cstddef>
 #include <memory_resource>
 #include <random>
+#include <string_view>
 
 using namespace components::types;
+
+namespace {
+    // Not the process-global resource: create_decimal's refusal message needs a caller-owned arena.
+    std::pmr::memory_resource* decimal_resource() {
+        static core::pmr::otterbrix_resource arena;
+        return &arena;
+    }
+
+    core::result_wrapper_t<components::types::complex_logical_type>
+    try_make_decimal(uint8_t width, uint8_t scale, std::string alias = "") {
+        return components::types::complex_logical_type::create_decimal(decimal_resource(),
+                                                                       width,
+                                                                       scale,
+                                                                       std::move(alias));
+    }
+
+    // Every literal these tests use is inside the window, so this asserts rather than propagates.
+    components::types::complex_logical_type make_decimal(uint8_t width, uint8_t scale, std::string alias = "") {
+        auto created = try_make_decimal(width, scale, std::move(alias));
+        REQUIRE_FALSE(created.has_error());
+        return std::move(created.value());
+    }
+} // namespace
 
 TEST_CASE("components::types::physical_value") {
     std::vector<physical_value> values;
@@ -98,23 +127,15 @@ TEST_CASE("components::types::decimal") {
     SECTION("int16_t") {
         static constexpr uint8_t width = 3;
         static constexpr uint8_t scale = 1;
-        // verify storage size
-        REQUIRE(complex_logical_type::create_decimal(width, scale).to_physical_type() == physical_type::INT16);
+        REQUIRE(make_decimal(width, scale).to_physical_type() == physical_type::INT16);
 
         SECTION("convert") {
-            // round up
             check_conversion.operator()<int16_t, double>(1.27, width, scale, "1.3");
-            // round down
             check_conversion.operator()<int16_t, double>(1.21, width, scale, "1.2");
-            // from int
             check_conversion.operator()<int16_t, int64_t>(1, width, scale, "1.0");
-            // round up
             check_conversion.operator()<int16_t, double>(-1.27, width, scale, "-1.3");
-            // round down
             check_conversion.operator()<int16_t, double>(-1.21, width, scale, "-1.2");
-            // from int
             check_conversion.operator()<int16_t, int64_t>(-1, width, scale, "-1.0");
-            // special_values
             check_conversion.operator()<int16_t, double>(10000000, width, scale, "Infinity");
             check_conversion.operator()<int16_t, double>(-10000000, width, scale, "-Infinity");
             check_conversion.operator()<int16_t, double>(std::numeric_limits<double>::quiet_NaN(), width, scale, "NaN");
@@ -122,7 +143,6 @@ TEST_CASE("components::types::decimal") {
             check_conversion.operator()<int16_t, int64_t>(-10000000, width, scale, "-Infinity");
         }
         SECTION("convert an divide by 10") {
-            // round up
             check_arithmetics.operator()<int16_t, double>(1.27, width, scale, "0.1");
             check_arithmetics.operator()<int16_t, double>(1.21, width, scale, "0.1");
             check_arithmetics.operator()<int16_t, int64_t>(1, width, scale, "0.1");
@@ -135,23 +155,15 @@ TEST_CASE("components::types::decimal") {
     SECTION("int32_t") {
         static constexpr uint8_t width = 8;
         static constexpr uint8_t scale = 2;
-        // verify storage size
-        REQUIRE(complex_logical_type::create_decimal(width, scale).to_physical_type() == physical_type::INT32);
+        REQUIRE(make_decimal(width, scale).to_physical_type() == physical_type::INT32);
 
         SECTION("convert") {
-            // round up
             check_conversion.operator()<int32_t, double>(502.215, width, scale, "502.22");
-            // round down
             check_conversion.operator()<int32_t, double>(502.214, width, scale, "502.21");
-            // from int
             check_conversion.operator()<int32_t, int64_t>(502, width, scale, "502.00");
-            // round up
             check_conversion.operator()<int32_t, double>(-502.215, width, scale, "-502.22");
-            // round down
             check_conversion.operator()<int32_t, double>(-502.214, width, scale, "-502.21");
-            // from int
             check_conversion.operator()<int32_t, int64_t>(-502, width, scale, "-502.00");
-            // special_values
             check_conversion.operator()<int32_t, double>(10000000000, width, scale, "Infinity");
             check_conversion.operator()<int32_t, double>(-10000000000, width, scale, "-Infinity");
             check_conversion.operator()<int32_t, double>(std::numeric_limits<double>::quiet_NaN(), width, scale, "NaN");
@@ -171,23 +183,15 @@ TEST_CASE("components::types::decimal") {
     SECTION("int64_t") {
         static constexpr uint8_t width = 12;
         static constexpr uint8_t scale = 3;
-        // verify storage size
-        REQUIRE(complex_logical_type::create_decimal(width, scale).to_physical_type() == physical_type::INT64);
+        REQUIRE(make_decimal(width, scale).to_physical_type() == physical_type::INT64);
 
         SECTION("convert") {
-            // round up
             check_conversion.operator()<int64_t, double>(502.2157, width, scale, "502.216");
-            // round down
             check_conversion.operator()<int64_t, double>(502.2151, width, scale, "502.215");
-            // from int
             check_conversion.operator()<int64_t, int64_t>(502, width, scale, "502.000");
-            // round up
             check_conversion.operator()<int64_t, double>(-502.2157, width, scale, "-502.216");
-            // round down
             check_conversion.operator()<int64_t, double>(-502.2151, width, scale, "-502.215");
-            // from int
             check_conversion.operator()<int64_t, int64_t>(-502, width, scale, "-502.000");
-            // special_values
             check_conversion.operator()<int64_t, double>(10000000000000, width, scale, "Infinity");
             check_conversion.operator()<int64_t, double>(-10000000000000, width, scale, "-Infinity");
             check_conversion.operator()<int64_t, double>(std::numeric_limits<double>::quiet_NaN(), width, scale, "NaN");
@@ -208,23 +212,15 @@ TEST_CASE("components::types::decimal") {
     {
         static constexpr uint8_t width = 20;
         static constexpr uint8_t scale = 4;
-        // verify storage size
-        REQUIRE(complex_logical_type::create_decimal(width, scale).to_physical_type() == physical_type::INT128);
+        REQUIRE(make_decimal(width, scale).to_physical_type() == physical_type::INT128);
 
         SECTION("convert") {
-            // round up
             check_conversion.operator()<int128_t, double>(502.21575, width, scale, "502.2158");
-            // round down
             check_conversion.operator()<int128_t, double>(502.21572, width, scale, "502.2157");
-            // from int
             check_conversion.operator()<int128_t, int64_t>(502, width, scale, "502.0000");
-            // round up
             check_conversion.operator()<int128_t, double>(-502.21575, width, scale, "-502.2158");
-            // round down
             check_conversion.operator()<int128_t, double>(-502.21572, width, scale, "-502.2157");
-            // from int
             check_conversion.operator()<int128_t, int64_t>(-502, width, scale, "-502.0000");
-            // special_values
             check_conversion.operator()<int128_t, double>(1e30, width, scale, "Infinity");
             check_conversion.operator()<int128_t, double>(-1e30, width, scale, "-Infinity");
             check_conversion.operator()<int128_t, double>(std::numeric_limits<double>::quiet_NaN(),
@@ -245,14 +241,11 @@ TEST_CASE("components::types::decimal") {
     }
 }
 TEST_CASE("components::types::logical_value::null_children_safe") {
-    // Regression: children() on a NULL (NA-typed) value dereferenced the null
-    // payload pointer. NULL nested values are ordinary result-set data, so
-    // reading them through the children() idiom must be safe.
+    // children() must not dereference the null payload of a NULL (NA-typed) value.
     auto* resource = std::pmr::get_default_resource();
     logical_value_t null_value(resource, complex_logical_type{logical_type::NA});
     REQUIRE(null_value.is_null());
     CHECK(null_value.children().empty());
-    // A non-null nested value keeps returning its real elements.
     auto list =
         logical_value_t::create_list(resource,
                                      complex_logical_type{logical_type::BIGINT},
@@ -262,10 +255,7 @@ TEST_CASE("components::types::logical_value::null_children_safe") {
 }
 
 TEST_CASE("components::types::logical_value::cast_as_null_returns_error") {
-    // Regression: cast_as() on a NULL/NA-typed value used to dispatch into the scalar physical-type
-    // switch whose `default:` arm threw std::logic_error. Under the executor's -fno-exceptions
-    // coroutine that becomes unhandled_exception() -> assert(false) -> SIGABRT. It must instead
-    // surface a conversion_failure through result_wrapper_t.
+    // Must surface conversion_failure, not throw into the default: arm -- under -fno-exceptions that is a SIGABRT.
     std::pmr::monotonic_buffer_resource resource;
 
     logical_value_t null_value(&resource, complex_logical_type{logical_type::NA});
@@ -275,9 +265,357 @@ TEST_CASE("components::types::logical_value::cast_as_null_returns_error") {
     REQUIRE(casted.has_error());
     CHECK(casted.error().type == core::error_code_t::conversion_failure);
 
-    // A well-typed numeric cast still succeeds and yields the converted value.
     logical_value_t int_value(&resource, int32_t{7});
     auto ok = int_value.cast_as(complex_logical_type{logical_type::BIGINT}, {});
     REQUIRE_FALSE(ok.has_error());
     CHECK(ok.value().value<int64_t>() == 7);
+}
+
+// A bare assert(false) here SIGABRTs in Debug and silently returns NA under NDEBUG; these pin the value, not the crash.
+TEST_CASE("components::types::logical_value::cast_to_decimal_answers_every_numeric_width") {
+    std::pmr::monotonic_buffer_resource resource;
+    const auto decimal_type = make_decimal(10, 2);
+
+    SECTION("the 8-bit widths are the ones the switch forgot") {
+        logical_value_t tiny(&resource, int8_t{7});
+        auto casted = tiny.cast_as(decimal_type, {});
+        REQUIRE_FALSE(casted.has_error());
+        CHECK(casted.value().type().type() == logical_type::DECIMAL);
+        CHECK(casted.value().value<int64_t>() == 700);
+
+        logical_value_t utiny(&resource, uint8_t{7});
+        auto ucasted = utiny.cast_as(decimal_type, {});
+        REQUIRE_FALSE(ucasted.has_error());
+        CHECK(ucasted.value().value<int64_t>() == 700);
+
+        // 255 read as int8_t is -1, and -128 has no unsigned reading -- one arm can't cover both.
+        for (const auto& [source, scaled] :
+             std::initializer_list<std::pair<int8_t, int64_t>>{{-128, -12800}, {127, 12700}}) {
+            auto edge = logical_value_t(&resource, source).cast_as(decimal_type, {});
+            REQUIRE_FALSE(edge.has_error());
+            CHECK(edge.value().value<int64_t>() == scaled);
+        }
+        auto full_byte = logical_value_t(&resource, uint8_t{255}).cast_as(decimal_type, {});
+        REQUIRE_FALSE(full_byte.has_error());
+        CHECK(full_byte.value().value<int64_t>() == 25500);
+    }
+
+    SECTION("BOOLEAN reaches the branch and has no decimal reading") {
+        logical_value_t flag(&resource, true);
+        auto casted = flag.cast_as(decimal_type, {});
+        REQUIRE(casted.has_error());
+        CHECK(casted.error().type == core::error_code_t::conversion_failure);
+    }
+}
+
+TEST_CASE("components::types::logical_value::cast_struct_keeps_null_fields_and_refuses_a_shape_change") {
+    std::pmr::monotonic_buffer_resource resource;
+
+    SECTION("a NULL field stays a NULL slot, as it already does inside ARRAY and LIST") {
+        std::vector<logical_value_t> fields;
+        fields.emplace_back(&resource, int32_t{1});
+        fields.emplace_back(&resource, complex_logical_type{logical_type::NA});
+        auto source = logical_value_t::create_struct(&resource, "src", fields);
+
+        std::pmr::vector<complex_logical_type> target_fields(&resource);
+        target_fields.emplace_back(logical_type::BIGINT);
+        target_fields.emplace_back(logical_type::BIGINT);
+        auto target = complex_logical_type::create_struct("dst", target_fields);
+
+        auto casted = source.cast_as(target, {});
+        REQUIRE_FALSE(casted.has_error());
+        REQUIRE(casted.value().children().size() == 2);
+        CHECK(casted.value().children()[0].value<int64_t>() == 1);
+        CHECK(casted.value().children()[1].is_null());
+    }
+
+    SECTION("a different field count refuses instead of asserting") {
+        std::vector<logical_value_t> fields;
+        fields.emplace_back(&resource, int32_t{1});
+        fields.emplace_back(&resource, int32_t{2});
+        auto source = logical_value_t::create_struct(&resource, "src", fields);
+
+        std::pmr::vector<complex_logical_type> target_fields(&resource);
+        target_fields.emplace_back(logical_type::BIGINT);
+        auto target = complex_logical_type::create_struct("dst", target_fields);
+
+        auto casted = source.cast_as(target, {});
+        REQUIRE(casted.has_error());
+        CHECK(casted.error().type == core::error_code_t::conversion_failure);
+    }
+}
+
+// create_union builds every member slot through this same constructor, so a nested UNION/VARIANT member works too.
+TEST_CASE("logical_value: a UNION built through the plain constructor is well formed") {
+    std::pmr::monotonic_buffer_resource resource;
+
+    SECTION("UNION") {
+        logical_value_t value(&resource, complex_logical_type{logical_type::UNION});
+        CHECK(value.type().type() == logical_type::UNION);
+        CHECK_FALSE(value.is_null());
+        CHECK(value.children().empty());
+    }
+
+    SECTION("VARIANT") {
+        logical_value_t value(&resource, complex_logical_type{logical_type::VARIANT});
+        CHECK(value.type().type() == logical_type::VARIANT);
+        CHECK(value.children().empty());
+    }
+
+    SECTION("a union whose member type is itself a union -- the factory's own path") {
+        std::pmr::vector<complex_logical_type> inner_types(&resource);
+        inner_types.emplace_back(logical_type::BIGINT);
+        auto inner = complex_logical_type::create_union(inner_types);
+
+        std::pmr::vector<complex_logical_type> types(&resource);
+        types.emplace_back(logical_type::BIGINT);
+        types.emplace_back(inner);
+
+        auto value = logical_value_t::create_union(&resource, types, 0, logical_value_t(&resource, int64_t{7}));
+        CHECK(value.type().type() == logical_type::UNION);
+        REQUIRE(value.children().size() == 3); // the tag slot plus one per member type
+        CHECK(value.children()[1].value<int64_t>() == 7);
+        CHECK(value.children()[2].type().type() == logical_type::UNION);
+        CHECK(value.children()[2].children().empty());
+    }
+}
+
+// Arithmetic/bit entry points run with exceptions off, so `2.0 ^ 3.0` etc. must answer an error, not throw.
+TEST_CASE("logical_value: an unsupported operand type is a refusal, not a throw") {
+    std::pmr::monotonic_buffer_resource resource;
+
+    const logical_value_t two_point_oh(&resource, double{2.0});
+    const logical_value_t three(&resource, int64_t{3});
+
+    SECTION("modulus over a floating operand") {
+        auto result = logical_value_t::modulus(two_point_oh, two_point_oh);
+        REQUIRE(result.has_error());
+        CHECK(result.error().type == core::error_code_t::arithmetics_failure);
+    }
+
+    SECTION("exponent has no floating arm at all") {
+        auto result = logical_value_t::exponent(two_point_oh, two_point_oh);
+        REQUIRE(result.has_error());
+        CHECK(result.error().type == core::error_code_t::arithmetics_failure);
+    }
+
+    SECTION("bit_and over a floating operand") {
+        auto result = logical_value_t::bit_and(two_point_oh, two_point_oh);
+        REQUIRE(result.has_error());
+        CHECK(result.error().type == core::error_code_t::arithmetics_failure);
+    }
+
+    SECTION("a supported pair still answers with the value") {
+        auto sum = logical_value_t::sum(three, three);
+        REQUIRE_FALSE(sum.has_error());
+        CHECK(sum.value().value<int64_t>() == 6);
+
+        auto product = logical_value_t::mult(two_point_oh, two_point_oh);
+        REQUIRE_FALSE(product.has_error());
+        CHECK(product.value().value<double>() == Catch::Approx(4.0));
+    }
+}
+
+// A miss in the entry table must refuse, not answer NA (PostgreSQL: `invalid input value for enum`).
+TEST_CASE("logical_value: cast of a string that is not an enum entry is a refusal") {
+    std::pmr::monotonic_buffer_resource resource;
+
+    std::vector<logical_value_t> entries;
+    {
+        logical_value_t happy(&resource, int32_t{0});
+        happy.set_alias("happy");
+        entries.push_back(std::move(happy));
+        logical_value_t sad(&resource, int32_t{7});
+        sad.set_alias("sad");
+        entries.push_back(std::move(sad));
+    }
+    auto mood = complex_logical_type::create_enum("mood", std::move(entries));
+
+    const logical_value_t absent(&resource, std::string("angry"));
+    auto result = absent.cast_as(mood, {});
+    REQUIRE(result.has_error());
+    CHECK(result.error().type == core::error_code_t::conversion_failure);
+
+    const logical_value_t present(&resource, std::string("sad"));
+    auto ok = present.cast_as(mood, {});
+    REQUIRE_FALSE(ok.has_error());
+    CHECK(ok.value().value<int32_t>() == 7);
+
+    const logical_value_t bad_ordinal(&resource, int32_t{99});
+    auto ordinal_result = bad_ordinal.cast_as(mood, {});
+    REQUIRE(ordinal_result.has_error());
+    CHECK(ordinal_result.error().type == core::error_code_t::conversion_failure);
+
+    const logical_value_t good_ordinal(&resource, int32_t{7});
+    auto good = good_ordinal.cast_as(mood, {});
+    REQUIRE_FALSE(good.has_error());
+    CHECK(good.value().value<int32_t>() == 7);
+}
+
+// int_to_decimal signals width overflow via Int128Max/Min sentinels; passing one on would silently store garbage.
+TEST_CASE("logical_value: numeric overflow into DECIMAL is a refusal") {
+    std::pmr::monotonic_buffer_resource resource;
+
+    const auto decimal_3_1 = make_decimal(3, 1);
+
+    SECTION("positive overflow") {
+        const logical_value_t big(&resource, int64_t{10000});
+        auto result = big.cast_as(decimal_3_1, {});
+        REQUIRE(result.has_error());
+        CHECK(result.error().type == core::error_code_t::conversion_failure);
+    }
+
+    SECTION("negative overflow") {
+        const logical_value_t big(&resource, int64_t{-10000});
+        auto result = big.cast_as(decimal_3_1, {});
+        REQUIRE(result.has_error());
+        CHECK(result.error().type == core::error_code_t::conversion_failure);
+    }
+
+    SECTION("floating NaN and overflow") {
+        const logical_value_t nan_val(&resource, std::numeric_limits<double>::quiet_NaN());
+        auto nan_result = nan_val.cast_as(decimal_3_1, {});
+        REQUIRE(nan_result.has_error());
+
+        const logical_value_t huge(&resource, double{1e30});
+        auto huge_result = huge.cast_as(decimal_3_1, {});
+        REQUIRE(huge_result.has_error());
+    }
+
+    SECTION("a fitting value still casts") {
+        const logical_value_t fits(&resource, int64_t{99});
+        auto result = fits.cast_as(decimal_3_1, {});
+        REQUIRE_FALSE(result.has_error());
+    }
+}
+
+TEST_CASE("components::types::logical_value::decimal_to_integer_overflow_is_a_refusal") {
+    std::pmr::monotonic_buffer_resource resource;
+
+    auto dec = logical_value_t(&resource, int64_t{1000}).cast_as(make_decimal(10, 0), {});
+    REQUIRE_FALSE(dec.has_error());
+    REQUIRE(dec.value().type().type() == logical_type::DECIMAL);
+
+    SECTION("descale overflow refuses instead of answering NA") {
+        auto back = dec.value().cast_as(complex_logical_type{logical_type::TINYINT}, {});
+        REQUIRE(back.has_error());
+        CHECK(back.error().type == core::error_code_t::conversion_failure);
+    }
+
+    SECTION("a negative value cannot descale into an unsigned width") {
+        auto neg = logical_value_t(&resource, int64_t{-5}).cast_as(make_decimal(10, 0), {});
+        REQUIRE_FALSE(neg.has_error());
+        auto back = neg.value().cast_as(complex_logical_type{logical_type::UTINYINT}, {});
+        REQUIRE(back.has_error());
+        CHECK(back.error().type == core::error_code_t::conversion_failure);
+    }
+
+    SECTION("an in-range descale still answers the value") {
+        auto small = logical_value_t(&resource, int64_t{42}).cast_as(make_decimal(10, 0), {});
+        REQUIRE_FALSE(small.has_error());
+        auto back = small.value().cast_as(complex_logical_type{logical_type::TINYINT}, {});
+        REQUIRE_FALSE(back.has_error());
+        CHECK(back.value().value<int8_t>() == 42);
+    }
+}
+
+// Unguarded, BIGINT+STRING would read the string's heap pointer as an int64 payload.
+TEST_CASE("components::types::logical_value::mixed_operand_arithmetic_refuses") {
+    std::pmr::monotonic_buffer_resource resource;
+    const logical_value_t str(&resource, std::string{"a"});
+    const logical_value_t num(&resource, int64_t{1});
+
+    SECTION("string + number refuses (used to throw)") {
+        auto r = logical_value_t::sum(str, num);
+        REQUIRE(r.has_error());
+    }
+    SECTION("number + string refuses (used to answer pointer bits)") {
+        auto r = logical_value_t::sum(num, str);
+        REQUIRE(r.has_error());
+    }
+    SECTION("string - number refuses") {
+        auto r = logical_value_t::subtract(str, num);
+        REQUIRE(r.has_error());
+    }
+    SECTION("number * string refuses") {
+        auto r = logical_value_t::mult(num, str);
+        REQUIRE(r.has_error());
+    }
+    SECTION("number % string refuses") {
+        auto r = logical_value_t::modulus(num, str);
+        REQUIRE(r.has_error());
+    }
+    SECTION("number ^ string refuses") {
+        auto r = logical_value_t::exponent(num, str);
+        REQUIRE(r.has_error());
+    }
+    SECTION("number & string refuses") {
+        auto r = logical_value_t::bit_and(num, str);
+        REQUIRE(r.has_error());
+    }
+    SECTION("mixed NUMERIC pairs still promote and answer") {
+        auto r = logical_value_t::sum(logical_value_t(&resource, int32_t{2}), num);
+        REQUIRE_FALSE(r.has_error());
+        CHECK(r.value().value<int64_t>() == 3);
+    }
+}
+
+TEST_CASE("components::types::complex_logical_type::create_decimal_reports_on_the_caller_arena") {
+    // The refusal message is built and still live on the caller's arena after the result is moved --
+    // error_t's copy assignment re-anchors onto the default resource, so a correct build can still fail.
+    std::array<std::byte, 4096> storage{};
+    std::pmr::monotonic_buffer_resource stack_arena{storage.data(), storage.size(), std::pmr::null_memory_resource()};
+    core::pmr::counting_resource_t arena{&stack_arena};
+
+    INFO("an out-of-window DECIMAL reports on the arena it was handed");
+    auto refused = complex_logical_type::create_decimal(&arena, 39, 0);
+    REQUIRE(refused.has_error());
+    CHECK(refused.error().type == core::error_code_t::invalid_parameter);
+    CHECK(arena.allocations() >= 1);
+    CHECK(refused.error().what.get_allocator().resource() == &arena);
+    CHECK(std::string_view{refused.error().what}.find("DECIMAL(39,0)") != std::string_view::npos);
+
+    INFO("a second refusal on a second arena does not drift back to the first");
+    std::array<std::byte, 4096> other_storage{};
+    std::pmr::monotonic_buffer_resource other_stack{other_storage.data(),
+                                                    other_storage.size(),
+                                                    std::pmr::null_memory_resource()};
+    core::pmr::counting_resource_t other{&other_stack};
+    const size_t first_arena_allocations = arena.allocations();
+    auto refused_elsewhere = complex_logical_type::create_decimal(&other, 5, 7);
+    REQUIRE(refused_elsewhere.has_error());
+    CHECK(other.allocations() >= 1);
+    CHECK(refused_elsewhere.error().what.get_allocator().resource() == &other);
+    CHECK(arena.allocations() == first_arena_allocations);
+
+    INFO("an in-window DECIMAL costs the arena nothing");
+    const size_t before = arena.allocations();
+    auto built = complex_logical_type::create_decimal(&arena, 18, 4);
+    REQUIRE_FALSE(built.has_error());
+    CHECK(built.value().type() == logical_type::DECIMAL);
+    CHECK(arena.allocations() == before);
+}
+
+TEST_CASE("components::types::complex_logical_type::decimal_helpers_name_an_arena_of_their_own") {
+    auto* helper_arena = decimal_resource();
+
+    INFO("the helper's arena is not the process-global one");
+    const std::pmr::string process_anchored;
+    CHECK(helper_arena != process_anchored.get_allocator().resource());
+
+    INFO("and a refusal routed through the HELPER's own call lands there and stays there");
+    auto refused = try_make_decimal(39, 0);
+    REQUIRE(refused.has_error());
+    CHECK(refused.error().type == core::error_code_t::invalid_parameter);
+    CHECK(refused.error().what.get_allocator().resource() == helper_arena);
+    CHECK(std::string_view{refused.error().what}.find("DECIMAL(39,0)") != std::string_view::npos);
+
+    INFO("the same arena is the one the in-window helper path actually uses");
+    const auto built = make_decimal(38, 20, "d");
+    REQUIRE(built.type() == logical_type::DECIMAL);
+    const auto* ext = built.extension_as<decimal_logical_type_extension>();
+    REQUIRE(ext != nullptr);
+    CHECK(ext->width() == 38);
+    CHECK(ext->scale() == 20);
+    CHECK(decimal_resource() == helper_arena);
 }

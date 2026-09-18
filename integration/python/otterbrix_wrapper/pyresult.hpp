@@ -6,21 +6,33 @@
 
 #include <common/typedefs.hpp>
 
+#include <boost/smart_ptr/intrusive_ptr.hpp>
 #include <components/cursor/cursor.hpp>
 #include <components/table/column_definition.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
+#include <cstddef>
 #include <vector>
 
 namespace otterbrix {
     class py_connection_t;
+    class otterbrix_t;
 
+    // The rows a statement produced, as Python sees them (`OtterBrixPyConnection.execute` return type).
     class py_result_t {
     public:
         py_result_t(py_connection_t* env,
                     components::cursor::cursor_t_ptr result,
                     const std::vector<components::table::column_definition_t>& columns);
         ~py_result_t();
+
+        static void initialize(py::handle& m);
+
+        // Names/types come from cursor->type_data(), the same source wrapper_cursor::description
+        // reads. Empty for a statement with no result set (INSERT/UPDATE/DDL).
+        static std::vector<components::table::column_definition_t>
+        columns_of(const components::cursor::cursor_t_ptr& cursor);
+
         py_optional_t<py::tuple> fetchone();
 
         py::list fetchmany(idx_t size);
@@ -29,12 +41,20 @@ namespace otterbrix {
 
         pandas_data_frame_t fetch_df();
 
+        // Rows the statement produced (SELECT) or wrote (INSERT/UPDATE/DELETE).
+        std::size_t size() const;
+
         void close();
 
         bool is_closed() const;
 
     private:
-        py_connection_t* env;
+        // No back-pointer to the connection: a raw one could outlive what it points at.
+
+        // The result batch is pmr-allocated from space's memory resource, and closing the
+        // connection can drop the last reference to it, so the result holds its own.
+        // Declared before `result` so it outlives it during destruction.
+        boost::intrusive_ptr<otterbrix_t> space;
 
         components::cursor::cursor_t_ptr result;
         std::vector<components::table::column_definition_t> columns;

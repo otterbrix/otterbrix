@@ -392,7 +392,7 @@ void sql_benchmark_t::load_csv_file(benchmark_state_t& state, const sql_csv_entr
         return;
     }
     if (state.io.csv_checkpoint_interval_bytes == 0 || bytes_since_checkpoint > 0) {
-        checkpoint_if_disk(state, "after CSV file");
+        checkpoint_now(state, "after CSV file");
         if (state.failed) {
             return;
         }

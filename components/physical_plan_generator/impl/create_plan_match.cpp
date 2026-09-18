@@ -24,14 +24,14 @@ namespace services::planner::impl {
                    type == expr::compare_type::gt || type == expr::compare_type::gte;
         }
 
-        // Check if this compare expression can use an index scan
-        [[maybe_unused]] bool
-        can_use_index(const context_storage_t& context, const expr::compare_expression_t& comp, bool& key_on_left) {
-            // Skip union conditions
+        // Index info is scoped per table_oid; another table's indexes from the same statement never apply.
+        [[maybe_unused]] bool can_use_index(const context_storage_t& context,
+                                            components::catalog::oid_t table_oid,
+                                            const expr::compare_expression_t& comp,
+                                            bool& key_on_left) {
             if (expr::is_union_compare_condition(comp.type())) {
                 return false;
             }
-            // Only simple comparisons (not regex, any, all, etc.)
             switch (comp.type()) {
                 case expr::compare_type::eq:
                 case expr::compare_type::lt:
@@ -42,31 +42,30 @@ namespace services::planner::impl {
                 default:
                     return false;
             }
-            // Need parameters to resolve the value
             if (!context.parameters) {
                 return false;
             }
 
-            // Check key_t on left, parameter_id_t on right
             if (std::holds_alternative<expr::key_t>(comp.left()) &&
                 std::holds_alternative<core::parameter_id_t>(comp.right())) {
                 const auto& key = std::get<expr::key_t>(comp.left());
                 const bool range = is_range_compare(comp.type());
-                if (context.has_index_on(key) &&
-                    (!range ||
-                     context.has_index_on_with_other_type(key, components::logical_plan::index_type::hashed))) {
+                if (context.has_index_on(table_oid, key) &&
+                    (!range || context.has_index_on_with_other_type(table_oid,
+                                                                    key,
+                                                                    components::logical_plan::index_type::hashed))) {
                     key_on_left = true;
                     return true;
                 }
             }
-            // Check key_t on right, parameter_id_t on left (symmetric)
             if (std::holds_alternative<core::parameter_id_t>(comp.left()) &&
                 std::holds_alternative<expr::key_t>(comp.right())) {
                 const auto& key = std::get<expr::key_t>(comp.right());
                 const bool range = is_range_compare(comp.type());
-                if (context.has_index_on(key) &&
-                    (!range ||
-                     context.has_index_on_with_other_type(key, components::logical_plan::index_type::hashed))) {
+                if (context.has_index_on(table_oid, key) &&
+                    (!range || context.has_index_on_with_other_type(table_oid,
+                                                                    key,
+                                                                    components::logical_plan::index_type::hashed))) {
                     key_on_left = false;
                     return true;
                 }
@@ -80,10 +79,7 @@ namespace services::planner::impl {
                 return false;
             }
             auto comp_expr = reinterpret_cast<const compare_expression_ptr&>(expr);
-            // A regex leaf (LIKE / ILIKE, pattern pre-converted by like_to_regex) is pushable to disk:
-            // constant_filter_t compares it via RE2 (case-insensitively when regex_icase). It still needs the
-            // `column OP constant` shape enforced below; an exotic non-key/expression operand falls back to
-            // operator_match. do_not_fold() (correlated / sub-query-array compares) stays in-memory.
+            // do_not_fold() (correlated / sub-query-array compares) must stay in-memory, never pushed to disk.
             if (comp_expr->do_not_fold()) {
                 return false;
             }
@@ -93,30 +89,19 @@ namespace services::planner::impl {
                 }
             }
 
-            // A LEAF compare (not a union AND/OR of sub-compares) is pushable into a disk
-            // table_filter_t only in the shapes (A)/(B)/(C) checked below; any other shape
-            // MUST be evaluated by operator_match instead. (union compare expressions carry
-            // nullptr in the left/right slots — handled above.)
+            // Union compare expressions carry nullptr in left/right (handled above).
             if (!is_union_compare_condition(comp_expr->type())) {
-                // param_storage is variant<parameter_id_t, key_t, expression_ptr>: a bound
-                // parameter is the alternative that is neither a key nor a nested expression. Uses the
-                // is_key/is_expr/is_parameter accessors, not std::holds_alternative.
+                // param_storage is variant<key_t, expression_ptr, parameter_id_t>; no_expr leaves the
+                // operand as a key or a bound parameter.
                 const bool no_expr = !is_expr(comp_expr->left()) && !is_expr(comp_expr->right());
-                // (A) column OP constant: exactly one operand a key, the other a bound parameter.
                 const bool col_op_const = no_expr && (is_key(comp_expr->left()) != is_key(comp_expr->right()));
-                // (B) column-vs-column: both operands columns, a plain comparison -> a column_column_filter_t
-                // (fetch both values, compare per row). regex/any/all with two keys are NOT this shape.
                 const auto t = comp_expr->type();
                 const bool plain_cmp = t == compare_type::eq || t == compare_type::ne || t == compare_type::lt ||
                                        t == compare_type::lte || t == compare_type::gt || t == compare_type::gte;
                 const bool col_op_col = no_expr && plain_cmp && is_key(comp_expr->left()) && is_key(comp_expr->right());
-                // (C) f(column...) OP constant-or-column: one operand a function / arithmetic / cast
-                // expression over column(s), the other a bound parameter OR another column -> an
-                // expression_filter_t carrying the compare and a graph, evaluated per row on the agent.
-                // The other side may be a column because that filter ships the WHOLE comparison and
-                // collects the referenced paths from BOTH sides — `WHERE CAST(ts AS TIME) = tm` is this
-                // shape. Only when UDF-free (the disk agent cannot resolve a UDF, see
-                // components/expressions/udf_references.hpp).
+                // The non-expression operand may be a column too: this filter resolves paths on both
+                // sides, not just the expression side. UDF-free only — the disk agent can't resolve a
+                // UDF (components/expressions/udf_references.hpp).
                 const bool expr_op_other = ((is_expr(comp_expr->left()) && !is_expr(comp_expr->right())) ||
                                             (is_expr(comp_expr->right()) && !is_expr(comp_expr->left()))) &&
                                            !expr::param_references_udf(comp_expr->left()) &&
@@ -128,6 +113,26 @@ namespace services::planner::impl {
             return true;
         }
 
+        // Where the indexed column lands in a fetched chunk, so index_scan can re-read it off the row
+        // and re-apply the comparison the index answered. -1 when the table's columns were not
+        // resolved into this context, or the key names none of them (a path into a nested value):
+        // the scan then runs without the recheck rather than refusing every answer.
+        int64_t indexed_chunk_position(const context_storage_t& context,
+                                       components::catalog::oid_t table_oid,
+                                       const components::expressions::key_t& key) {
+            const auto* metadata = context.table_metadata_for(table_oid);
+            if (metadata == nullptr) {
+                return -1;
+            }
+            const auto name = key.as_string();
+            for (const auto& column : metadata->columns) {
+                if (column.chunk_position >= 0 && column.attname == name) {
+                    return column.chunk_position;
+                }
+            }
+            return -1;
+        }
+
         components::operators::operator_ptr create_plan_match_(const context_storage_t& context,
                                                                components::catalog::oid_t table_oid,
                                                                const components::expressions::expression_ptr& expr,
@@ -137,26 +142,27 @@ namespace services::planner::impl {
                 // TODO: function_expr in scans
                 if (is_pure_compare(expr)) {
                     auto comp_expr = reinterpret_cast<const expr::compare_expression_ptr&>(expr);
-                    // Index selection: detect if an index is available for this predicate.
                     if (!comp_expr->is_union()) {
                         bool key_on_left = true;
-                        if (can_use_index(context, *comp_expr, key_on_left)) {
+                        if (can_use_index(context, table_oid, *comp_expr, key_on_left)) {
                             auto& key = key_on_left ? std::get<expr::key_t>(comp_expr->left())
                                                     : std::get<expr::key_t>(comp_expr->right());
                             auto param_id = key_on_left ? std::get<core::parameter_id_t>(comp_expr->right())
                                                         : std::get<core::parameter_id_t>(comp_expr->left());
                             auto& value = get_parameter(context.parameters, param_id);
                             auto ctype = key_on_left ? comp_expr->type() : mirror_compare(comp_expr->type());
-                            auto preferred_index_type = context.preferred_index_type_for_compare(key, ctype);
-                            return boost::intrusive_ptr(new components::operators::index_scan(context.resource,
-                                                                                              context.log.clone(),
-                                                                                              table_oid,
-                                                                                              key,
-                                                                                              value,
-                                                                                              ctype,
-                                                                                              preferred_index_type,
-                                                                                              limit,
-                                                                                              projected_cols));
+                            auto preferred_index_type = context.preferred_index_type_for_compare(table_oid, key, ctype);
+                            return boost::intrusive_ptr(
+                                new components::operators::index_scan(context.resource,
+                                                                      context.log.clone(),
+                                                                      table_oid,
+                                                                      key,
+                                                                      value,
+                                                                      ctype,
+                                                                      preferred_index_type,
+                                                                      limit,
+                                                                      projected_cols,
+                                                                      indexed_chunk_position(context, table_oid, key)));
                         }
                     }
 
@@ -167,13 +173,10 @@ namespace services::planner::impl {
                                                                                      limit,
                                                                                      projected_cols));
                 } else {
-                    // Non-pushable predicate (column-vs-column, a function, a non-representable
-                    // shape): the inner full_scan reads ALL raw rows (unlimit) because the filter
-                    // runs ABOVE it in operator_match; capping the inner scan at the read-cap
-                    // could starve the filter of matching rows. operator_match carries the
-                    // read-cap and bounds the FILTERED (matched) stream — for SELECT it is an
-                    // advisory hint under operator_limit, for DML …WHERE f(x) LIMIT n it is the
-                    // AUTHORITATIVE affected-row bound (no operator_limit over a DML root).
+                    // The inner full_scan is unlimited because operator_match filters above it; capping
+                    // here could starve the filter of matching rows. operator_match's own limit is an
+                    // advisory hint under operator_limit for SELECT, but the authoritative affected-row
+                    // bound for DML (no operator_limit over a DML root).
                     auto match_operator =
                         boost::intrusive_ptr(new components::operators::operator_match_t(context.resource,
                                                                                          context.log.clone(),
@@ -206,9 +209,8 @@ namespace services::planner::impl {
                                                           components::logical_plan::limit_t limit,
                                                           const std::vector<size_t>& projected_cols) {
         if (node->expressions().empty()) {
-            // Build projected_cols (storage chunk indices). For relkind='g' read
-            // live columns by their chunk_position (resolved at resolve-table time).
-            // For relkind='r' use caller's projected_cols (column_pruning output).
+            // relkind::computed ('g') columns are read live by chunk_position, resolved at resolve-table
+            // time; relkind::regular ('r') tables use the caller's projected_cols (column_pruning output).
             std::vector<size_t> effective_cols;
             if (const auto* md = context.table_metadata_for(node->table_oid())) {
                 if (md->relkind == components::catalog::relkind::computed) {
@@ -227,17 +229,26 @@ namespace services::planner::impl {
                                                                                      node->table_oid(),
                                                                                      limit,
                                                                                      std::move(effective_cols)));
-            } else {
-                // No-table sentinel scan (INVALID_OID, e.g. a no-FROM SELECT). It is a
-                // SOURCE that emits one synthetic 1-row placeholder batch (see
-                // transfer_scan::source_next), so it needs a VALID resource to allocate
-                // that batch on — use the logical node's own resource (mirrors
-                // create_plan_aggregate's no-table fallback), not nullptr.
-                return boost::intrusive_ptr(new components::operators::transfer_scan(node->resource(),
-                                                                                     node->table_oid(),
-                                                                                     limit,
-                                                                                     std::move(effective_cols)));
             }
+            // node->source() — not the oid, which is INVALID_OID either way — says which absent-table
+            // case this is. No default arm: a new match_source value must get a case here or the build stops.
+            switch (static_cast<const components::logical_plan::node_match_t*>(node.get())->source()) {
+                case components::logical_plan::match_source::none:
+                    // Emits a synthetic 1-row placeholder batch (transfer_scan::source_next), so it needs a
+                    // valid resource — the node's own, as create_plan_aggregate's no-table fallback also
+                    // does — not nullptr.
+                    return boost::intrusive_ptr(new components::operators::transfer_scan(node->resource(),
+                                                                                         node->table_oid(),
+                                                                                         limit,
+                                                                                         std::move(effective_cols)));
+                case components::logical_plan::match_source::table:
+                    // Validation should refuse a named table with an unresolved oid before plan generation;
+                    // returning nullptr here (not the `none` sentinel) stops a regression from silently
+                    // answering a synthetic row for a nonexistent table. A null root surfaces as
+                    // create_physical_plan_error downstream.
+                    return nullptr;
+            }
+            return nullptr; // unreachable: the switch above covers every match_source
         } else {
             const auto* match_node = static_cast<const components::logical_plan::node_match_t*>(node.get());
             return create_plan_match_(context,
@@ -248,9 +259,9 @@ namespace services::planner::impl {
         }
     }
 
-    // Lower a node_having_t to a dedicated operator_having_t filtering the group's output. HAVING
-    // has no window of its own (the outer operator_limit is the sole window), so no limit parameter.
-    // context.resource is always non-null and outlives the operator, so no null-resource sentinel.
+    // HAVING has no window of its own (the outer operator_limit is the sole window), so
+    // create_plan_having takes no limit parameter. context.resource is always non-null and
+    // outlives the operator, so there's no null-resource sentinel here.
     components::operators::operator_ptr create_plan_having(const context_storage_t& context,
                                                            const components::logical_plan::node_ptr& node) {
         if (node->expressions().empty()) {

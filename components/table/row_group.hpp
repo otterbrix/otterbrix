@@ -2,6 +2,7 @@
 #include "column_data.hpp"
 #include "row_version_manager.hpp"
 #include "storage/data_pointer.hpp"
+#include <boost/smart_ptr/intrusive_ptr.hpp>
 #include <optional>
 
 namespace components::vector {
@@ -11,11 +12,7 @@ namespace components::vector {
 namespace components::table {
 
 #ifdef DEV_MODE
-    // Test-observable count of STRING cells the late-materialisation gather would leave BORROWED
-    // from a pin that dies with the gather while the result chunk outlives it (see the guard on
-    // result_outlives_pins in row_group.cpp). Must stay at zero.
     uint64_t gathered_borrowed_strings() noexcept;
-    // Per-row fetches issued by the in-memory predicate evaluation.
     uint64_t predicate_row_fetches() noexcept;
     uint64_t string_materializations() noexcept;
     uint64_t gather_rows_fetched() noexcept;
@@ -45,10 +42,11 @@ namespace components::table {
 
     private:
         collection_t* collection_;
+        // version_info_ is a non-owning cache; SHARED with ALTER successors, so the last row group to die frees it.
         std::atomic<row_version_manager_t*> version_info_ = nullptr;
-        std::shared_ptr<row_version_manager_t> owned_version_info_;
+        boost::intrusive_ptr<row_version_manager_t> owned_version_info_;
         uint64_t current_version_ = 0;
-        std::vector<std::shared_ptr<column_data_t>> columns_;
+        std::vector<boost::intrusive_ptr<column_data_t>> columns_;
 
     public:
         void move_to_collection(collection_t* collection, int64_t new_start);
@@ -59,10 +57,13 @@ namespace components::table {
         // TODO: type casting
         // std::unique_ptr<row_group_t> alter_type(collection_t* collection, const types::complex_logical_type &target_type, uint64_t changed_idx,
         // collection_scan_state &scan_state, vector::data_chunk_t &scan_chunk);
-        std::unique_ptr<row_group_t> add_column(collection_t* collection,
-                                                column_definition_t& new_column,
-                                                const std::optional<types::logical_value_t>& default_value,
-                                                vector::vector_t& intermediate);
+        // Refuses (out_of_memory) rather than assert-and-break: a successor whose new column is SHORTER
+        // than count would let every scan read past its end (and the assert itself vanishes under NDEBUG).
+        [[nodiscard]] core::result_wrapper_t<std::unique_ptr<row_group_t>>
+        add_column(collection_t* collection,
+                   column_definition_t& new_column,
+                   const std::optional<types::logical_value_t>& default_value,
+                   vector::vector_t& intermediate);
         std::unique_ptr<row_group_t> remove_column(collection_t* collection, uint64_t removed_column);
 
         void initialize_empty(const std::pmr::vector<types::complex_logical_type>& types);
@@ -73,8 +74,6 @@ namespace components::table {
         void scan(collection_scan_state& state, vector::data_chunk_t& result);
         void scan_committed(collection_scan_state& state, vector::data_chunk_t& result, table_scan_type type);
 
-        // Run the filter's graph over one vector's rows and return the per-row decision, indexed by
-        // vector offset. `error` carries an out_of_memory error_t when a pin fails mid-materialisation.
         core::result_wrapper_t<vector::vector_t>
         evaluate_predicate(const table_filter_t& filter, int64_t base_row, uint64_t count);
 
@@ -85,10 +84,16 @@ namespace components::table {
                        uint64_t result_idx,
                        const std::vector<size_t>& projected_cols);
 
+        // Point-fetch visibility gate asked BEFORE fetch_row gathers; no version manager means every row is visible.
+        bool is_visible(const transaction_data& txn, int64_t row_id);
+
+        uint64_t delete_stamp(int64_t row_id);
+
         void append_version_info(transaction_data txn, uint64_t count);
 
         void commit_append(uint64_t commit_id, uint64_t row_group_start, uint64_t count);
-        void revert_append(uint64_t row_group_start);
+        // The count shrinks even on a column refusal: an untruncated count over a truncated column would over-read.
+        [[nodiscard]] core::result_wrapper_t<bool> revert_append(uint64_t row_group_start);
 
         uint64_t delete_rows(uint64_t vector_idx, int64_t rows[], uint64_t count);
         uint64_t delete_rows(data_table_t& table, int64_t* row_ids, uint64_t count, uint64_t transaction_id);
@@ -97,46 +102,38 @@ namespace components::table {
         void revert_all_deletes(uint64_t txn_id);
 
         uint64_t committed_row_count();
-        // True when any version stamp in this row group is above `watermark`
-        // (pending txn id or commit id newer than the visible-to-all horizon).
         bool has_version_above(uint64_t watermark);
 
-        // The append chain returns out_of_memory when a column segment allocation fails;
-        // true on success.
         [[nodiscard]] core::result_wrapper_t<bool> initialize_append(row_group_append_state& append_state);
         [[nodiscard]] core::result_wrapper_t<bool>
         append(row_group_append_state& append_state, vector::data_chunk_t& chunk, uint64_t append_count);
 
-        // Update path returns write_conflict / out_of_memory; true on success.
+        // NOT write_conflict -- that refusal lives one level up, on data_table_t::update's is_root_ predicate.
         [[nodiscard]] core::result_wrapper_t<bool> update(vector::data_chunk_t& updates,
                                                           int64_t* ids,
                                                           uint64_t offset,
                                                           uint64_t count,
                                                           const std::vector<uint64_t>& column_ids);
+        // column_path[0] is this row group's own column ordinal; depth 1+ is struct field k (0 = validity).
         [[nodiscard]] core::result_wrapper_t<bool> update_column(vector::data_chunk_t& updates,
                                                                  vector::vector_t& row_ids,
-                                                                 const std::vector<uint64_t>& column_path);
+                                                                 const std::vector<uint64_t>& column_path,
+                                                                 uint64_t offset,
+                                                                 uint64_t count);
 
         void get_column_segment_info(uint64_t row_group_index, std::vector<column_segment_info>& result);
 
-        // Append the ids of disk blocks exclusively owned by this row group's columns (and their
-        // sub-columns) to `out`, so a compacting caller can free them after swapping the collection.
         void collect_disk_block_ids(std::pmr::vector<uint64_t>& out);
 
-        // The checkpoint chain returns out_of_memory when a column flush pin fails;
-        // the row group pointer on success.
+        // Caller (table_storage_t::drop_column) must name the outgoing column's blocks BEFORE the rebuild destroys it.
+        void collect_column_disk_block_ids(uint64_t column_index, std::pmr::vector<uint64_t>& out);
+
         [[nodiscard]] core::result_wrapper_t<storage::row_group_pointer_t>
         write_to_disk(storage::partial_block_manager_t& partial_block_manager);
-        void create_from_pointer(const storage::row_group_pointer_t& pointer);
+        // A malformed pointer is data_corruption; the load fails loudly instead of returning a half-valid table.
+        [[nodiscard]] core::result_wrapper_t<bool> create_from_pointer(const storage::row_group_pointer_t& pointer);
 
-        // Write-through: re-point every COMPLETE managed column segment of this row group to a
-        // disk-backed segment (call once the row group is closed -> its segments are final). No-op for
-        // in-memory tables. Returns io_error/out_of_memory on failure; true on success.
-        //
-        // Owns a short-lived partial_block_manager_t so this closed row group's column segments are PACKED
-        // into shared blocks (segment packing) and flushed to disk BEFORE returning -- the flush is the
-        // flush-before-evict guarantee: once transition_to_disk returns, every re-pointed segment's block is
-        // durable, so a later scan/eviction can safely load() it.
+        // Flushes every re-pointed segment's block before returning, so a later scan/eviction can safely load() it.
         [[nodiscard]] core::result_wrapper_t<bool> transition_to_disk();
 
         uint64_t allocation_size() const { return allocation_size_; }
@@ -145,22 +142,31 @@ namespace components::table {
 
         uint64_t row_group_size() const;
         row_version_manager_t& get_or_create_version_info();
-        std::shared_ptr<row_version_manager_t> get_or_create_version_info_ptr();
+        boost::intrusive_ptr<row_version_manager_t> get_or_create_version_info_ptr();
 
         uint64_t calculate_size();
+
+#ifdef DEV_MODE
+        const column_data_t* column_identity(uint64_t c) const;
+        uint64_t column_owner_count(uint64_t c) const;
+
+        const row_version_manager_t* version_manager_identity() const;
+        const row_version_manager_t* version_manager_published() const;
+        uint64_t version_manager_owner_count() const;
+#endif
 
     private:
         uint64_t indexing_vector(transaction_data txn,
                                  uint64_t vector_idx,
                                  vector::indexing_vector_t& indexing_vector,
                                  uint64_t max_count);
-        std::shared_ptr<row_version_manager_t> get_or_create_version_info_internal();
+        boost::intrusive_ptr<row_version_manager_t> get_or_create_version_info_internal();
         row_version_manager_t* version_info();
-        void set_version_info(std::shared_ptr<row_version_manager_t> version);
+        void set_version_info(boost::intrusive_ptr<row_version_manager_t> version);
         column_data_t& get_column(uint64_t c);
         column_data_t& get_column(const storage_index_t& c);
         uint64_t get_column_count() const;
-        std::vector<std::shared_ptr<column_data_t>>& columns();
+        std::vector<boost::intrusive_ptr<column_data_t>>& columns();
 
         void filter_indexing(std::pmr::memory_resource* resource,
                              uint64_t vector_index,
@@ -173,13 +179,8 @@ namespace components::table {
         template<table_scan_type TYPE>
         void templated_scan(collection_scan_state& state, vector::data_chunk_t& result);
 
-        bool has_unloaded_deletes() const;
-
-        // Single-owner: see the proof on data_table_t (components/table/data_table.hpp).
         std::vector<storage::meta_block_pointer_t> column_pointers_;
         std::unique_ptr<std::atomic<bool>[]> is_loaded_;
-        std::vector<storage::meta_block_pointer_t> deletes_pointers_;
-        std::atomic<bool> deletes_is_loaded_;
         uint64_t allocation_size_;
     };
 } // namespace components::table

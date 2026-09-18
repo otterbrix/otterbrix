@@ -10,8 +10,16 @@
 namespace components::catalog {
 
     // Parse a comma-separated string of OID integers (e.g. pg_constraint.conkey / confkey).
-    // Skips malformed tokens. Returns empty vector for empty input.
-    std::vector<oid_t> parse_oid_csv(const std::string& s);
+    // Returns an empty vector for empty input.
+    //
+    // `ok` is false for a malformed OID CSV: an unreadable token, trailing garbage, a value
+    // that doesn't FIT an oid_t (2^32 + N is not "column N"), or an empty token (which
+    // encode_oid_csv, the inverse, never produces). Swallowing such a token instead would
+    // leave a caller with a SHORTER vector indistinguishable from a list written short --
+    // and since these lists are read POSITIONALLY as ordered tuples, a silently shortened
+    // conkey would enforce a DIFFERENT constraint (or none at all) while reporting success.
+    // `ok` is not defaulted: every caller has to answer it.
+    std::vector<oid_t> parse_oid_csv(const std::string& s, bool& ok);
 
     // Encode a vector of OIDs as a comma-separated string — the inverse of parse_oid_csv.
     // Used when writing pg_constraint.conkey / confkey rows to pg_catalog.
@@ -69,6 +77,7 @@ namespace components::catalog {
         constexpr std::uint64_t indrelid = 1;
         constexpr std::uint64_t indkey = 2;
         constexpr std::uint64_t indisvalid = 3;
+        constexpr std::uint64_t indtype = 4;
     } // namespace pg_index_col
     namespace pg_computed_column_col {
         constexpr std::uint64_t relid = 0;

@@ -1,0 +1,433 @@
+// clang-format off
+// <actor-zeta/spawn.hpp> requires std::unique_ptr, but does not include it itself
+#include <memory>
+#include <memory_resource>
+#include <actor-zeta/spawn.hpp>
+// clang-format on
+
+#include <catch2/catch_test_macros.hpp>
+#include <components/context/context.hpp>
+
+#include <algorithm>
+#include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <string>
+#include <thread>
+#include <vector>
+#include <unistd.h>
+
+#include <components/catalog/catalog_oids.hpp>
+#include <components/configuration/configuration.hpp>
+#include <components/log/log.hpp>
+#include <components/session/session.hpp>
+#include <components/tests/generaty.hpp>
+#include <core/config.hpp>
+#include <core/executor.hpp>
+#include <core/pmr.hpp>
+#include <services/wal/manager_wal_replicate.hpp>
+#include <services/wal/wal_page.hpp>
+#include <services/wal/wal_page_reader.hpp>
+
+// load's answer for (after, high_water] must be WHOLE or refused, never a subset with a silent gap in the middle.
+
+using namespace services;
+using namespace services::wal;
+namespace catalog = components::catalog;
+
+namespace {
+
+    using session_id_t = components::session::session_id_t;
+    using data_chunk_t = components::vector::data_chunk_t;
+
+    constexpr auto kMainDb = catalog::well_known_oid::main_database;
+    constexpr catalog::oid_t kTestTableOid = 16713;
+
+    std::filesystem::path base_path() {
+        static std::filesystem::path p =
+            std::filesystem::temp_directory_path() / ("test_wal_load_hole_" + std::to_string(::getpid()));
+        return p;
+    }
+
+    template<typename F>
+    decltype(auto) await_ready(F& fut) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::yield();
+        }
+        REQUIRE(fut.is_ready());
+        return std::move(fut).take_ready();
+    }
+
+    std::pmr::vector<data_chunk_t> one_chunk(std::pmr::memory_resource* arena, size_t rows) {
+        std::pmr::vector<data_chunk_t> chunks(arena);
+        chunks.emplace_back(gen_data_chunk(rows, arena));
+        return chunks;
+    }
+
+    std::string segment_name(uint32_t index) {
+        std::string suffix = std::to_string(index);
+        suffix.insert(suffix.begin(), 6 - suffix.size(), '0');
+        return "wal_" + std::to_string(static_cast<unsigned>(kMainDb)) + "_" + suffix;
+    }
+
+    std::filesystem::path db_dir_of(const std::filesystem::path& base) {
+        return base / "wal" / std::to_string(static_cast<unsigned>(kMainDb));
+    }
+
+    configuration::config_wal fresh_config(const std::filesystem::path& path) {
+        std::filesystem::create_directories(path);
+        configuration::config_wal config(path);
+        return config;
+    }
+
+    // No restart in this file: load() opens a fresh reader each call, so a live manager sees any flipped byte.
+    struct wal_env_t {
+        explicit wal_env_t(const std::filesystem::path& path, size_t max_segment_size = 0)
+            : log_(initialization_logger("python", "/tmp/docker_logs/"))
+            , scheduler_(new actor_zeta::shared_work(2, 1000))
+            , config_(fresh_config(path))
+            , manager_(nullptr, actor_zeta::pmr::deleter_t(&resource_)) {
+            if (max_segment_size != 0) {
+                config_.max_segment_size = max_segment_size;
+            }
+            manager_ = actor_zeta::spawn<manager_wal_replicate_t>(&resource_,
+                                                                  scheduler_.get(),
+                                                                  config_,
+                                                                  log_,
+                                                                  components::pipeline::no_mailbox(),
+                                                                  components::pipeline::no_mailbox());
+            scheduler_->start();
+        }
+
+        ~wal_env_t() {
+            scheduler_->stop();
+            manager_.reset();
+        }
+
+        // resource_ is declared first so it outlives ~wal_env_t's teardown of manager_.
+        std::pmr::vector<data_chunk_t> make_insert_batch(size_t rows) { return one_chunk(&resource_, rows); }
+
+        auto send_insert(uint64_t txn_id, size_t rows, uint64_t row_start) {
+            auto [ns, fut] = actor_zeta::otterbrix::send(manager_->address(),
+                                                         &manager_wal_replicate_t::write_physical_insert,
+                                                         session_id_t::generate_uid(),
+                                                         kTestTableOid,
+                                                         make_insert_batch(rows),
+                                                         row_start,
+                                                         static_cast<uint64_t>(rows),
+                                                         txn_id,
+                                                         kMainDb);
+            return std::move(fut);
+        }
+
+        auto send_commit(uint64_t txn_id) {
+            auto [ns, fut] = actor_zeta::otterbrix::send(manager_->address(),
+                                                         &manager_wal_replicate_t::commit_txn,
+                                                         session_id_t::generate_uid(),
+                                                         txn_id,
+                                                         wal_sync_mode::NORMAL,
+                                                         kMainDb,
+                                                         uint64_t{0});
+            return std::move(fut);
+        }
+
+        auto send_load(wal::id_t after_wal_id) {
+            auto [ns, fut] = actor_zeta::otterbrix::send(manager_->address(),
+                                                         &manager_wal_replicate_t::load,
+                                                         session_id_t::generate_uid(),
+                                                         after_wal_id);
+            return std::move(fut);
+        }
+
+        wal::id_t commit_one(uint64_t txn_id, uint64_t row_start) {
+            auto ins = send_insert(txn_id, 4, row_start);
+            auto ins_result = await_ready(ins);
+            REQUIRE_FALSE(ins_result.has_error());
+            auto cm = send_commit(txn_id);
+            auto cm_result = await_ready(cm);
+            REQUIRE_FALSE(cm_result.has_error());
+            return cm_result.value();
+        }
+
+        core::pmr::otterbrix_resource resource_;
+        log_t log_;
+        actor_zeta::scheduler_ptr scheduler_;
+        configuration::config_wal config_;
+        std::unique_ptr<manager_wal_replicate_t, actor_zeta::pmr::deleter_t> manager_;
+    };
+
+    std::vector<std::filesystem::path> segment_files(const std::filesystem::path& db_dir) {
+        std::vector<std::filesystem::path> result;
+        for (const auto& entry : std::filesystem::directory_iterator(db_dir)) {
+            if (!entry.is_regular_file()) {
+                continue;
+            }
+            const auto name = entry.path().filename().string();
+            if (name.size() >= 4 && name.compare(0, 4, "wal_") == 0) {
+                result.push_back(entry.path());
+            }
+        }
+        std::sort(result.begin(), result.end());
+        return result;
+    }
+
+    wal::id_t on_disk_max_of(std::pmr::memory_resource* res, const std::filesystem::path& seg) {
+        wal::id_t max_id = 0;
+        wal_page_reader_t reader(res, seg);
+        REQUIRE(reader.is_open());
+        for (size_t p = 1; p <= reader.page_count(); ++p) {
+            if (!reader.verify_page_checksum(p)) {
+                continue;
+            }
+            const auto hdr = reader.read_page_header(p);
+            if (hdr.page_end_lsn > max_id) {
+                max_id = hdr.page_end_lsn;
+            }
+        }
+        return max_id;
+    }
+
+    wal::id_t on_disk_max_wal_id(std::pmr::memory_resource* res, const std::filesystem::path& db_dir) {
+        wal::id_t max_id = 0;
+        for (const auto& seg : segment_files(db_dir)) {
+            max_id = std::max(max_id, on_disk_max_of(res, seg));
+        }
+        return max_id;
+    }
+
+    std::vector<record_t> readable_records_of(std::pmr::memory_resource* res, const std::filesystem::path& seg) {
+        wal_page_reader_t reader(res, seg);
+        REQUIRE(reader.is_open());
+        auto records = reader.read_all_records(0);
+        REQUIRE_FALSE(records.has_error());
+        return std::move(records.value());
+    }
+
+    std::vector<wal::id_t> readable_ids_of(std::pmr::memory_resource* res, const std::filesystem::path& seg) {
+        std::vector<wal::id_t> ids;
+        for (const auto& r : readable_records_of(res, seg)) {
+            if (r.is_valid()) {
+                ids.push_back(r.id);
+            }
+        }
+        return ids;
+    }
+
+    std::vector<wal::id_t> readable_commit_ids_of(std::pmr::memory_resource* res, const std::filesystem::path& seg) {
+        std::vector<wal::id_t> ids;
+        for (const auto& r : readable_records_of(res, seg)) {
+            if (r.is_valid() && r.is_commit_marker()) {
+                ids.push_back(r.id);
+            }
+        }
+        return ids;
+    }
+
+    std::vector<wal::id_t> ids_of(const std::vector<record_t>& records) {
+        std::vector<wal::id_t> ids;
+        ids.reserve(records.size());
+        for (const auto& r : records) {
+            ids.push_back(r.id);
+        }
+        return ids;
+    }
+
+    bool contains(const std::vector<wal::id_t>& ids, wal::id_t id) {
+        return std::find(ids.begin(), ids.end(), id) != ids.end();
+    }
+
+    wal::id_t max_of(const std::vector<wal::id_t>& ids) {
+        wal::id_t m = 0;
+        for (auto id : ids) {
+            if (id > m) {
+                m = id;
+            }
+        }
+        return m;
+    }
+
+    // Data page N sits at file offset N * PAGE_SIZE (page 0 is the file header).
+    void break_page_crc(const std::filesystem::path& seg, size_t data_page_index) {
+        std::fstream file(seg, std::ios::in | std::ios::out | std::ios::binary);
+        REQUIRE(file.is_open());
+        const auto offset = static_cast<std::streamoff>(data_page_index * PAGE_SIZE + PAGE_HEADER_SIZE + 7);
+        file.seekg(offset);
+        char byte = 0;
+        file.read(&byte, 1);
+        REQUIRE(file.good());
+        byte = static_cast<char>(byte ^ 0x5a);
+        file.seekp(offset);
+        file.write(&byte, 1);
+        file.flush();
+        REQUIRE(file.good());
+    }
+
+    size_t data_page_count(std::pmr::memory_resource* res, const std::filesystem::path& seg) {
+        wal_page_reader_t reader(res, seg);
+        REQUIRE(reader.is_open());
+        return reader.page_count();
+    }
+
+    constexpr size_t kSmallSegment = 4 * PAGE_SIZE;
+
+} // namespace
+
+TEST_CASE("wal::load_hole::an_interior_break_must_not_be_answered_with_the_segments_behind_it") {
+    const auto path = base_path() / "interior_break";
+    std::filesystem::remove_all(path);
+    const auto db_dir = db_dir_of(path);
+    core::pmr::otterbrix_resource witness;
+
+    wal_env_t env(path, kSmallSegment);
+    for (uint64_t t = 1; t <= 9; ++t) {
+        env.commit_one(t, (t - 1) * 4);
+    }
+
+    const auto segments = segment_files(db_dir);
+    REQUIRE(segments.size() >= 2);
+    const auto seg0 = db_dir / segment_name(0);
+    REQUIRE(std::filesystem::exists(seg0));
+    REQUIRE(data_page_count(&witness, seg0) >= 3);
+
+    // Page 2 of 3 is corrupted, leaving a prefix in front and live pages behind it -- the only partial-answer shape.
+    break_page_crc(seg0, 2);
+
+    const auto prefix_max = max_of(readable_ids_of(&witness, seg0));
+    const auto seg0_on_disk = on_disk_max_of(&witness, seg0);
+    const auto on_disk = on_disk_max_wal_id(&witness, db_dir);
+    INFO("segment 000000 reaches " << prefix_max << " , physically holds up to " << seg0_on_disk
+                                   << " , the journal holds up to " << on_disk);
+    REQUIRE(prefix_max > 0);
+    REQUIRE(seg0_on_disk > prefix_max);
+    REQUIRE(on_disk > seg0_on_disk);
+
+    auto fut = env.send_load(0);
+    auto answer = await_ready(fut);
+
+    const auto answered = answer.has_error() ? std::vector<wal::id_t>{} : ids_of(answer.value());
+    INFO("load answered " << answered.size() << " records reaching id " << max_of(answered) << " while everything past "
+                          << prefix_max << " up to " << seg0_on_disk << " is unreachable");
+    REQUIRE((answer.has_error() || max_of(answered) <= prefix_max));
+}
+
+// The break sits entirely below `after`, so stopping at the first break (like replay) would wrongly refuse this.
+TEST_CASE("wal::load_hole::a_break_below_the_watermark_is_read_straight_through") {
+    const auto path = base_path() / "break_below_watermark";
+    std::filesystem::remove_all(path);
+    const auto db_dir = db_dir_of(path);
+    core::pmr::otterbrix_resource witness;
+
+    wal_env_t env(path, kSmallSegment);
+    for (uint64_t t = 1; t <= 9; ++t) {
+        env.commit_one(t, (t - 1) * 4);
+    }
+
+    const auto segments = segment_files(db_dir);
+    REQUIRE(segments.size() >= 2);
+    const auto seg0 = db_dir / segment_name(0);
+    REQUIRE(data_page_count(&witness, seg0) >= 2);
+    break_page_crc(seg0, 1);
+
+    const auto after = on_disk_max_of(&witness, seg0);
+    REQUIRE(after > 0);
+
+    std::vector<wal::id_t> expected;
+    for (const auto& seg : segments) {
+        if (seg == seg0) {
+            continue;
+        }
+        for (auto id : readable_commit_ids_of(&witness, seg)) {
+            if (id > after) {
+                expected.push_back(id);
+            }
+        }
+    }
+    REQUIRE_FALSE(expected.empty());
+
+    auto fut = env.send_load(after);
+    auto answer = await_ready(fut);
+
+    INFO("load(after=" << after << ") over a journal whose damage is entirely below it: "
+                       << (answer.has_error() ? answer.error().what.c_str() : "no error"));
+    REQUIRE_FALSE(answer.has_error());
+
+    const auto answered = ids_of(answer.value());
+    for (auto id : expected) {
+        INFO("commit marker " << id << " lives past the watermark and must be in the answer");
+        REQUIRE(contains(answered, id));
+    }
+}
+
+// The break is on the last page of the last segment, so nothing is hidden: an ordinary crash leaves this shape.
+TEST_CASE("wal::load_hole::a_torn_tail_is_not_a_hole_and_is_not_refused") {
+    const auto path = base_path() / "torn_tail";
+    std::filesystem::remove_all(path);
+    const auto db_dir = db_dir_of(path);
+    core::pmr::otterbrix_resource witness;
+
+    wal_env_t env(path, kSmallSegment);
+    for (uint64_t t = 1; t <= 9; ++t) {
+        env.commit_one(t, (t - 1) * 4);
+    }
+
+    const auto segments = segment_files(db_dir);
+    REQUIRE(segments.size() >= 2);
+    const auto last_seg = segments.back();
+    const auto last_pages = data_page_count(&witness, last_seg);
+    REQUIRE(last_pages >= 1);
+    break_page_crc(last_seg, last_pages);
+
+    auto fut = env.send_load(0);
+    auto answer = await_ready(fut);
+
+    INFO("a torn tail must still answer: " << (answer.has_error() ? answer.error().what.c_str() : "no error"));
+    REQUIRE_FALSE(answer.has_error());
+    REQUIRE_FALSE(answer.value().empty());
+}
+
+// The break is segment 000000's last page, but the following segment reads in full -- the hole must carry across it.
+TEST_CASE("wal::load_hole::a_break_at_a_segment_boundary_is_still_a_hole") {
+    const auto path = base_path() / "boundary_break";
+    std::filesystem::remove_all(path);
+    const auto db_dir = db_dir_of(path);
+    core::pmr::otterbrix_resource witness;
+
+    wal_env_t env(path, kSmallSegment);
+    for (uint64_t t = 1; t <= 9; ++t) {
+        env.commit_one(t, (t - 1) * 4);
+    }
+
+    const auto segments = segment_files(db_dir);
+    REQUIRE(segments.size() >= 2);
+    const auto seg0 = db_dir / segment_name(0);
+    const auto seg0_pages = data_page_count(&witness, seg0);
+    REQUIRE(seg0_pages >= 1);
+    break_page_crc(seg0, seg0_pages);
+
+    const auto prefix_max = max_of(readable_ids_of(&witness, seg0));
+    const auto seg0_on_disk = on_disk_max_of(&witness, seg0);
+    INFO("segment 000000 reaches " << prefix_max << " and physically held up to " << seg0_on_disk);
+    REQUIRE(seg0_on_disk >= prefix_max);
+
+    auto fut = env.send_load(0);
+    auto answer = await_ready(fut);
+
+    const auto answered = answer.has_error() ? std::vector<wal::id_t>{} : ids_of(answer.value());
+    INFO("load answered up to " << max_of(answered) << " with the ids after " << prefix_max
+                                << " on the last page of segment 000000 skipped");
+    REQUIRE((answer.has_error() || max_of(answered) <= prefix_max));
+}
+
+// The batch is unobservable after send, so the assertion is made on make_insert_batch's own output instead.
+TEST_CASE("wal::load_hole::the_insert_payload_is_built_on_the_fixture_arena") {
+    const auto path = base_path() / "payload_arena";
+    std::filesystem::remove_all(path);
+    std::filesystem::create_directories(path);
+    wal_env_t env(path);
+
+    auto batch = env.make_insert_batch(4);
+    REQUIRE(batch.size() == 1);
+    REQUIRE(batch.get_allocator().resource() == &env.resource_);
+    REQUIRE(batch.front().resource() == &env.resource_);
+}

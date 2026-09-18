@@ -1,3 +1,4 @@
+#include "integration_fixture_path.hpp"
 #include "test_config.hpp"
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -130,7 +131,7 @@ namespace {
 } // namespace
 
 TEST_CASE("group by over node_data: integer key (control, passes)") {
-    auto config = test_create_config("/tmp/otterbrix_group_by_node_data_int");
+    auto config = test_create_config(integration_fixture_path("otterbrix_group_by_node_data_int"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -166,7 +167,7 @@ TEST_CASE("group by over node_data: integer key (control, passes)") {
 }
 
 TEST_CASE("group by over node_data: string key (SIGSEGV before the fix)") {
-    auto config = test_create_config("/tmp/otterbrix_group_by_node_data_str");
+    auto config = test_create_config(integration_fixture_path("otterbrix_group_by_node_data_str"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();

@@ -18,7 +18,7 @@ namespace services::collection {
 
         // Map operator_type to a PostgreSQL-style label. EXHAUSTIVE over operator_type with NO
         // `default`: -Wswitch (Linux CI -Werror) then forces any newly-added op to be given a label,
-        // so nothing silently blanks out and there is no fallback branch (Rule 6). The
+        // so nothing silently blanks out and there is no fallback branch. The
         // proven-unreachable ops (they never sit on an EXPLAINed SELECT/DML spine) share
         // one grouped "?" arm whose label is never actually emitted.
         std::pmr::string pg_label(std::pmr::memory_resource* mr, const explain_plan_node& n) {

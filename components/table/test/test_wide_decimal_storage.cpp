@@ -1,0 +1,194 @@
+// column_segment_t::scan/scan_partial must handle INT128/UINT128, or an uncaught std::logic_error
+// crosses a coroutine's empty unhandled_exception() and aborts the process (pre-checkpoint compact scan).
+
+#include <catch2/catch_test_macros.hpp>
+#include <components/table/data_table.hpp>
+#include <components/table/storage/buffer_pool.hpp>
+#include <components/table/storage/metadata_manager.hpp>
+#include <components/table/storage/metadata_reader.hpp>
+#include <components/table/storage/metadata_writer.hpp>
+#include <components/table/storage/single_file_block_manager.hpp>
+#include <components/table/storage/standard_buffer_manager.hpp>
+#include <core/file/local_file_system.hpp>
+
+#include <limits>
+#include <string>
+#include <unistd.h>
+
+#include "table_segment_scan.hpp"
+
+namespace {
+
+    std::string test_db_path() {
+        static std::string path = "/tmp/test_otterbrix_wide_decimal_" + std::to_string(::getpid()) + ".otbx";
+        return path;
+    }
+
+    void cleanup_test_file() { std::remove(test_db_path().c_str()); }
+
+    struct test_env_t {
+        core::pmr::otterbrix_resource resource;
+        core::filesystem::local_file_system_t fs;
+        components::table::storage::buffer_pool_t buffer_pool;
+        components::table::storage::standard_buffer_manager_t buffer_manager;
+
+        test_env_t()
+            : buffer_pool(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24)
+            , buffer_manager(&resource, fs, buffer_pool) {}
+    };
+
+    components::types::int128_t pow10_128(uint8_t exponent) {
+        components::types::int128_t result = 1;
+        for (uint8_t i = 0; i < exponent; ++i) {
+            result *= 10;
+        }
+        return result;
+    }
+
+    components::types::int128_t decimal_payload(uint64_t row, uint8_t width) {
+        using components::types::int128_t;
+        const int128_t largest = pow10_128(width) - 1;
+        switch (row) {
+            case 0:
+                return int128_t{0};
+            case 1:
+                return int128_t{1};
+            case 2:
+                return int128_t{-1};
+            case 3:
+                return largest;
+            case 4:
+                return -largest;
+            case 5:
+                return largest / 2;
+            case 6:
+                return -(largest / 2);
+            default: {
+                const int128_t stepped = largest - static_cast<int128_t>(row) * 1000003;
+                return (row % 2 == 0) ? stepped : -stepped;
+            }
+        }
+    }
+
+    bool is_null_row(uint64_t row) { return row % 13 == 12; }
+
+    constexpr uint64_t ROW_COUNT = 3000;
+    constexpr uint64_t BATCH = 250;
+    constexpr uint64_t WATERMARK = std::numeric_limits<uint64_t>::max();
+
+    void append_decimal_rows(components::table::data_table_t& table,
+                             std::pmr::memory_resource* resource,
+                             const components::types::complex_logical_type& decimal_type,
+                             uint8_t width) {
+        using namespace components::types;
+        using namespace components::vector;
+        using namespace components::table;
+
+        auto types = table.copy_types();
+        for (uint64_t offset = 0; offset < ROW_COUNT; offset += BATCH) {
+            const uint64_t batch = std::min(BATCH, ROW_COUNT - offset);
+            data_chunk_t chunk(resource, types, batch);
+            chunk.set_cardinality(batch);
+            for (uint64_t i = 0; i < batch; i++) {
+                const uint64_t row = offset + i;
+                if (is_null_row(row)) {
+                    chunk.set_value(0, i, logical_value_t{resource, nullptr});
+                } else {
+                    chunk.set_value(
+                        0,
+                        i,
+                        logical_value_t::create_decimal(resource, decimal_type, decimal_payload(row, width)));
+                }
+            }
+            table_append_state state(resource);
+            REQUIRE_FALSE(table.append_lock(state).has_error());
+            REQUIRE_FALSE(table.initialize_append(state).has_error());
+            REQUIRE_FALSE(table.append(chunk, state).has_error());
+            table.finalize_append(state, transaction_data{0, 0});
+        }
+    }
+
+    void verify_decimal_rows(components::table::data_table_t& table, uint8_t width, const char* stage) {
+        using namespace components::vector;
+        uint64_t scanned = 0;
+        otterbrix_test::scan_table_segment(table, 0, ROW_COUNT, [&](data_chunk_t& chunk) {
+            for (uint64_t i = 0; i < chunk.size(); i++) {
+                const uint64_t row = scanned + i;
+                INFO(stage << ": row " << row);
+                const auto value = chunk.data[0].value(i);
+                REQUIRE(value.is_null() == is_null_row(row));
+                if (!is_null_row(row)) {
+                    REQUIRE(value.type().type() == components::types::logical_type::DECIMAL);
+                    REQUIRE(value.value<components::types::int128_t>() == decimal_payload(row, width));
+                }
+            }
+            scanned += chunk.size();
+        });
+        REQUIRE(scanned == ROW_COUNT);
+    }
+
+    void run_wide_decimal_round_trip(uint8_t width, uint8_t scale) {
+        using namespace components::table;
+        using namespace components::table::storage;
+        using namespace components::types;
+
+        cleanup_test_file();
+        test_env_t env;
+        auto decimal_type_result = complex_logical_type::create_decimal(&env.resource, width, scale);
+        REQUIRE_FALSE(decimal_type_result.has_error());
+        const auto decimal_type = decimal_type_result.value();
+        REQUIRE(decimal_type.to_physical_type() == physical_type::INT128);
+
+        meta_block_pointer_t table_pointer;
+        {
+            single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+            REQUIRE_FALSE(bm.create_new_database().has_error());
+
+            std::vector<column_definition_t> columns;
+            columns.emplace_back("v", decimal_type);
+            auto table = std::make_unique<data_table_t>(&env.resource, bm, std::move(columns), "wide_decimal");
+
+            append_decimal_rows(*table, &env.resource, decimal_type, width);
+            REQUIRE(table->calculate_size() == ROW_COUNT);
+
+            verify_decimal_rows(*table, width, "after append");
+
+            REQUIRE(table->compact(WATERMARK));
+            REQUIRE(table->calculate_size() == ROW_COUNT);
+            verify_decimal_rows(*table, width, "after compact");
+
+            metadata_manager_t meta_mgr(bm);
+            metadata_writer_t writer(meta_mgr);
+            REQUIRE_FALSE(table->checkpoint(writer).has_error());
+            table_pointer = writer.get_block_pointer();
+            database_header_t header{};
+            header.initialize();
+            REQUIRE_FALSE(bm.write_header(header).has_error());
+        }
+
+        {
+            single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+            REQUIRE_FALSE(bm.load_existing_database().has_error());
+            metadata_manager_t meta_mgr(bm);
+            metadata_reader_t reader(meta_mgr, table_pointer);
+            auto loaded = data_table_t::load_from_disk(&env.resource, bm, reader);
+            REQUIRE_FALSE(loaded.has_error());
+            REQUIRE(loaded.value()->calculate_size() == ROW_COUNT);
+            verify_decimal_rows(*loaded.value(), width, "after reopen");
+        }
+
+        cleanup_test_file();
+    }
+
+} // namespace
+
+// NUMERIC(38,4) is the width the bug report names: the widest practical money/measure type.
+TEST_CASE("wide_decimal: NUMERIC(38,4) round-trips scan, compact and reopen element by element") {
+    run_wide_decimal_round_trip(38, 4);
+}
+
+// One digit narrower and the column would take the INT64 arm that always existed; NUMERIC(19,0) is the exact seam.
+TEST_CASE("wide_decimal: NUMERIC(19,0) is the first width past int64 storage") { run_wide_decimal_round_trip(19, 0); }
+
+// Every digit a fraction digit, so the payload is still a full-width 128-bit integer while the value is < 1.
+TEST_CASE("wide_decimal: NUMERIC(38,38) carries the maximum scale") { run_wide_decimal_round_trip(38, 38); }

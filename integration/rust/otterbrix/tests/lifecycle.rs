@@ -26,9 +26,6 @@ fn open_with_config_builder() {
         .wal_path(format!("{base}/wal"))
         .disk_path(format!("{base}/disk"))
         .main_path(format!("{base}/main"))
-        .wal_on(false)
-        .disk_on(false)
-        .sync_to_disk(false)
         .build();
     let _db = Database::open(config).expect("open with Config::builder");
 }
@@ -43,9 +40,6 @@ fn open_with_explicit_log_level() {
         .wal_path(format!("{base}/wal"))
         .disk_path(format!("{base}/disk"))
         .main_path(format!("{base}/main"))
-        .wal_on(false)
-        .disk_on(false)
-        .sync_to_disk(false)
         .build();
     let db = Database::open(config).expect("open with explicit log level");
     db.execute("CREATE DATABASE leveldb;").unwrap();

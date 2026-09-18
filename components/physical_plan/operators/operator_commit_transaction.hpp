@@ -7,38 +7,24 @@
 
 namespace components::operators {
 
-    // COMMIT TRANSACTION operator.
-    //
-    // RPC mode (default): one txn_commit_drain_msg round-trip to the dispatcher
-    // (sole owner of transaction_manager_t) returns the snapshotted txn_data,
-    // the drained swap-info and the allocated commit_id; then
-    // storage_publish_commits / storage_publish_deletes flip MVCC state, and a
-    // final txn_publish_msg advances the ProcArray barrier.
-    //
-    // DDL-commit mode (set_ddl_commit): prepends a flush durability barrier and
-    // a WAL commit_txn record (with commit_id=0, since it isn't allocated yet)
-    // before the RPC-mode body.
-    //
-    // commit_id() exposes the result for the dispatcher's unique_future API.
+    // Step order is an invariant: no step that can fail may run after the one that stamps commit_id
+    // (full step table atop the .cpp's await_async_and_resume). DDL-commit mode emits its WAL
+    // marker at step 2, not before, so a restart can't resurrect a rejected commit.
     class operator_commit_transaction_t final : public read_write_operator_t {
     public:
         operator_commit_transaction_t(std::pmr::memory_resource* resource, log_t log);
 
-        // Configure DDL-commit mode (default is RPC mode).
+        // Default is RPC mode.
         void set_ddl_commit(std::uint64_t txn_id, components::catalog::oid_t database_oid) noexcept {
             is_ddl_commit_ = true;
             txn_id_ = txn_id;
             database_oid_ = database_oid;
         }
 
-        // Result accessor; valid only after the operator reports is_executed().
+        // For the dispatcher's unique_future API; valid only after is_executed().
         std::uint64_t commit_id() const noexcept { return commit_id_; }
 
-        // Sourceless SINK leaf (no data pipeline, no children): the executor
-        // admits it as a streaming sink-root and drives await_async_and_resume via
-        // the bottom-up needs_async_finalize pass. push()/finalize() inherit the
-        // no-op defaults. All commit work — the dispatcher drain, storage publishes,
-        // WAL marker, ProcArray barrier — runs in await_async_and_resume.
+        // Sourceless sink leaf; push()/finalize() inherit the no-op defaults.
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
     private:

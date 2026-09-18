@@ -7,26 +7,20 @@
 
 namespace components::operators {
 
-    // Drops one column from a relkind='g' (computing / Mongo-style
-    // dynamic-schema) table by appending a new pg_computed_column row
-    // carrying attrefcount = 0 (a tombstone). The reader filters refcount<=0
-    // so the column disappears on the next resolve.
-    //
-    // Choosing append-tombstone (over a delete_pg_catalog_rows physical
-    // delete) keeps the audit trail of every (column, version) pair, mirroring
-    // the row-versioning style the rest of the catalog uses for relkind='g'.
+    // Drops a relkind='g' column by appending a pg_computed_column tombstone row (attrefcount = 0)
+    // rather than a delete_pg_catalog_rows physical delete, keeping the audit trail of every
+    // (column, version) pair -- the row-versioning style the rest of the catalog uses for relkind='g'.
     class operator_computed_field_unregister_t final : public read_write_operator_t {
     public:
         operator_computed_field_unregister_t(std::pmr::memory_resource* resource,
                                              log_t log,
                                              components::catalog::oid_t table_oid,
                                              components::catalog::oid_t attoid,
-                                             std::string column_name);
+                                             std::string column_name,
+                                             bool missing_ok);
 
-        // Sourceless SINK leaf (no data pipeline, no children): the executor
-        // admits it as a streaming sink-root and drives await_async_and_resume via
-        // the bottom-up needs_async_finalize pass. push()/finalize() inherit the
-        // no-op defaults.
+        // The executor admits this sourceless sink leaf as a streaming sink-root, driving
+        // await_async_and_resume via the bottom-up needs_async_finalize pass.
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
@@ -35,6 +29,8 @@ namespace components::operators {
         components::catalog::oid_t table_oid_;
         components::catalog::oid_t attoid_;
         std::string column_name_;
+        // Same node field the regular pg_attribute drop reads -- only IF EXISTS accepts a missing column.
+        bool missing_ok_;
     };
 
 } // namespace components::operators

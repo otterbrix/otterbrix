@@ -18,6 +18,10 @@ namespace components::table {
         explicit persistent_column_data_t(std::pmr::memory_resource* resource)
             : statistics(resource) {}
 
+        // The column node's own entry count. Persisted because it is NOT always derivable
+        // from data_pointers: STRUCT/ARRAY nodes own no segments, and a LIST child's entry
+        // count is the sum of list lengths, not the table row count.
+        uint64_t count{0};
         std::vector<storage::data_pointer_t> data_pointers;
         std::vector<std::unique_ptr<persistent_column_data_t>> child_columns;
         base_statistics_t statistics;

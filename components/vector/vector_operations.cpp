@@ -1,6 +1,9 @@
 #include "vector_operations.hpp"
 #include <cmath>
 #include <components/types/operations_helper.hpp>
+#include <cstdlib>
+#include <limits>
+#include <optional>
 #include <stdexcept>
 
 namespace components::vector::vector_ops {
@@ -52,7 +55,7 @@ namespace components::vector::vector_ops {
             for (uint64_t i = 0; i < copy_count; i++) {
                 auto source_idx = indexing.get_index(source_offset + i);
                 if (source_idx == std::numeric_limits<uint64_t>::max()) {
-                    // there is a null written here, skip it
+                    // A max() index marks a null entry; skip it.
                     continue;
                 }
                 tdata[target_offset + i] = ldata[source_idx];
@@ -116,8 +119,7 @@ namespace components::vector::vector_ops {
             }
         }
 
-        // An NA vector is CONSTANT, carries no data and is null in every row, so the whole
-        // column hashes as the one NULL_HASH.
+        // An NA vector is CONSTANT and null in every row, so the whole column hashes as one NULL_HASH.
         static void na_loop_hash(vector_t& result) {
             result.set_vector_type(vector_type::CONSTANT);
             *result.data<uint64_t>() = hasher_t::NULL_HASH;
@@ -136,11 +138,7 @@ namespace components::vector::vector_ops {
             }
         }
 
-        // 128-bit hash: std::hash is not portably specialised for absl::[u]int128, so
-        // hash the two 64-bit halves of the two's-complement representation and combine
-        // them. The bit pattern is sign-independent (int128 -> uint128 preserves the raw
-        // bits), so it agrees with cells_equal's value comparison — equal values hash
-        // equal, which is the only invariant the hash+verify dedup relies on.
+        // std::hash has no portable specialization for absl::[u]int128; hash the raw two's-complement halves.
         template<class T128>
         static uint64_t hash_128_value(T128 v, bool is_null) {
             if (is_null) {
@@ -152,8 +150,6 @@ namespace components::vector::vector_ops {
             return combine_hash_scalar(std::hash<uint64_t>{}(lo), std::hash<uint64_t>{}(hi));
         }
 
-        // FIRST-hash leg for a 128-bit column (mirrors templated_loop_hash, but hashes
-        // via hash_128_value instead of std::hash<T>).
         template<bool HAS_RINDEXING, class T128>
         static void
         templated_loop_hash_128(vector_t& input, vector_t& result, const indexing_vector_t* rindexing, uint64_t count) {
@@ -175,7 +171,6 @@ namespace components::vector::vector_ops {
             }
         }
 
-        // COMBINE leg for a 128-bit column (mirrors templated_loop_combine_hash).
         template<bool HAS_RINDEXING, class T128>
         static void templated_loop_combine_hash_128(vector_t& input,
                                                     vector_t& hashes,
@@ -661,9 +656,6 @@ namespace components::vector::vector_ops {
               uint64_t source_offset,
               uint64_t target_offset,
               uint64_t copy_count) {
-        // An NA vector holds no data at all: it is CONSTANT, unallocated, and null at every row.
-        // So copying INTO one has nothing to write, and copying one OUT is exactly "every target
-        // row is null".
         if (target.type().type() == types::logical_type::NA) {
             return;
         }
@@ -674,20 +666,12 @@ namespace components::vector::vector_ops {
             return;
         }
 
-        // A projected-out (placeholder) source column carries type info but NO data buffer:
-        // data_chunk_t's projected constructor allocates real buffers only for the
-        // column_pruning-selected storage columns and leaves the rest as placeholders
-        // (data_ == nullptr, no auxiliary) that no operator is meant to read. A generic
-        // full-chunk copier (operator_sort's row gather, distinct, join) still iterates
-        // every column, so copying such a slot would dereference a null data pointer.
-        // Skipping is semantically correct — the target slot is likewise a non-projected
-        // column downstream never reads. A real (materialized) column always has either a
-        // data buffer or an auxiliary buffer, so this never suppresses a live copy.
+        // A non-projected placeholder column has no data buffer; skipping it is safe since downstream never
+        // reads that slot either.
         if (source.get_vector_type() == vector_type::FLAT && source.data() == nullptr && !source.auxiliary()) {
             return;
         }
 
-        // Not allocated if not needed
         indexing_vector_t owned_indexing(source.resource());
         const indexing_vector_t* indexing_ptr = &indexing;
 
@@ -696,10 +680,8 @@ namespace components::vector::vector_ops {
         while (!finished) {
             switch (source_ptr->get_vector_type()) {
                 case vector_type::DICTIONARY: {
-                    // dictionary vector: merge indexing vectors
                     auto& child = source_ptr->child();
                     auto& dict_indexing = source_ptr->indexing();
-                    // merge the indexing vectors and verify the child
                     auto new_buffer = dict_indexing.slice(source_ptr->resource(), *indexing_ptr, source_count);
                     owned_indexing = indexing_vector_t(new_buffer);
                     indexing_ptr = &owned_indexing;
@@ -854,7 +836,6 @@ namespace components::vector::vector_ops {
                 for (uint64_t i = 0; i < copy_count; i++) {
                     auto source_idx = indexing_ptr->get_index(source_offset + i);
                     if (source_idx == std::numeric_limits<uint64_t>::max()) {
-                        // there is a null written here, skip it
                         continue;
                     }
                     auto target_idx = target_offset + i;
@@ -872,9 +853,7 @@ namespace components::vector::vector_ops {
                 auto& target_children = target.entries();
                 assert(source_children.size() == target_children.size());
                 for (uint64_t i = 0; i < source_children.size(); i++) {
-                    // Struct children may themselves be DICTIONARY (from slice()),
-                    // so pass the original indexing — each child resolves its own
-                    // DICTIONARY in the recursive call's while-loop.
+                    // Struct children may be DICTIONARY; pass the original indexing so each resolves its own.
                     copy(*source_children[i],
                          *target_children[i],
                          indexing,
@@ -899,7 +878,6 @@ namespace components::vector::vector_ops {
                 for (uint64_t i = 0; i < copy_count; i++) {
                     auto source_idx = indexing_ptr->get_index(source_offset + i);
                     if (source_idx == std::numeric_limits<uint64_t>::max()) {
-                        // there is a null written here, skip it
                         continue;
                     }
                     for (uint64_t j = 0; j < array_size; j++) {
@@ -928,7 +906,6 @@ namespace components::vector::vector_ops {
                     }
                     auto source_idx = indexing_ptr->get_index(source_offset);
                     if (source_idx == std::numeric_limits<uint64_t>::max()) {
-                        // there is a null written here, skip it
                         break;
                     }
                     auto& source_entry = sdata[source_idx];
@@ -947,7 +924,6 @@ namespace components::vector::vector_ops {
                         if (tmask.row_is_valid(target_offset + i)) {
                             auto source_idx = indexing_ptr->get_index(source_offset + i);
                             if (source_idx == std::numeric_limits<uint64_t>::max()) {
-                                // there is a null written here, skip it
                                 continue;
                             }
                             auto& source_entry = sdata[source_idx];
@@ -968,7 +944,6 @@ namespace components::vector::vector_ops {
                     for (uint64_t i = 0; i < copy_count; i++) {
                         auto source_idx = indexing_ptr->get_index(source_offset + i);
                         if (source_idx == std::numeric_limits<uint64_t>::max()) {
-                            // there is a null written here, skip it
                             continue;
                         }
                         auto& source_entry = sdata[source_idx];
@@ -999,7 +974,10 @@ namespace components::vector::vector_ops {
               uint64_t source_offset,
               uint64_t target_offset) {
         assert(source_offset <= source_count);
+        // LOGICAL equality, not physical: physical-agree/logical-differ copies the wrong VALUE (fk_hash_semijoin's
+        // key normalization hit this: SIGABRT in Debug, silent mis-answer in Release).
         assert(source.type() == target.type());
+        // Stricter than the 7-arg overload, which gives NA an explicit meaning; refused here, in Debug only.
         uint64_t copy_count = source_count - source_offset;
         copy(source, target, indexing, source_count, source_offset, target_offset, copy_count);
     }
@@ -1034,10 +1012,95 @@ namespace components::vector::vector_ops {
                     }
                 }
             } else {
-                assert(false && "copy_strided_target: string type not supported");
+                // Must go through set_value, not a raw element copy, or an ARRAY-string UPDATE silently changes
+                // nothing under NDEBUG.
+                auto sdata = source.data<std::string_view>();
+                auto& smask = source.validity();
+                auto& tmask = target.validity();
+                for (uint64_t i = 0; i < count; ++i) {
+                    uint64_t tpos = i * stride + offset;
+                    if (smask.row_is_valid(i)) {
+                        target.set_value(tpos, std::string_view{sdata[i]});
+                    } else {
+                        tmask.set(tpos, false);
+                    }
+                }
             }
         }
     };
+
+    template<typename T>
+    inline constexpr bool cast_is_int128_family_v =
+        std::is_same_v<T, types::int128_t> || std::is_same_v<T, types::uint128_t>;
+
+    template<typename T>
+    inline constexpr bool cast_is_signed_v = std::is_signed_v<T> || std::is_same_v<T, types::int128_t>;
+
+    // Widen a narrow unsigned limit to int first: gcc refuses the int128(unsigned int) overload directly.
+    template<typename T>
+    constexpr auto widen_narrow_limit(T v) noexcept {
+        if constexpr (std::is_integral_v<T> && sizeof(T) < sizeof(int)) {
+            if constexpr (std::is_signed_v<T>) {
+                return static_cast<int>(v);
+            } else {
+                return static_cast<unsigned int>(v);
+            }
+        } else {
+            return v;
+        }
+    }
+
+    template<typename DstType, typename SrcType>
+    bool cast_value_fits(SrcType value) {
+        if constexpr (std::is_same_v<DstType, SrcType> || std::is_same_v<DstType, bool> ||
+                      std::is_same_v<SrcType, bool>) {
+            return true;
+        } else if constexpr (std::is_same_v<DstType, double>) {
+            return true;
+        } else if constexpr (std::is_same_v<DstType, float>) {
+            const double d = static_cast<double>(value);
+            if constexpr (std::is_floating_point_v<SrcType>) {
+                if (!std::isfinite(d)) {
+                    return true; // inf/NaN map to inf/NaN, no truncation involved
+                }
+            }
+            return d >= -static_cast<double>(std::numeric_limits<float>::max()) &&
+                   d <= static_cast<double>(std::numeric_limits<float>::max());
+        } else if constexpr (std::is_floating_point_v<SrcType>) {
+            const double d = static_cast<double>(value);
+            if (!std::isfinite(d)) {
+                return false;
+            }
+            const double upper = std::ldexp(1.0, std::numeric_limits<DstType>::digits);
+            if constexpr (cast_is_signed_v<DstType>) {
+                return d >= -upper && d < upper;
+            } else {
+                return d > -1.0 && d < upper;
+            }
+        } else if constexpr (cast_is_signed_v<SrcType> == cast_is_signed_v<DstType>) {
+            if constexpr (sizeof(DstType) >= sizeof(SrcType)) {
+                return true;
+            } else {
+                return value >= static_cast<SrcType>(widen_narrow_limit(std::numeric_limits<DstType>::min())) &&
+                       value <= static_cast<SrcType>(widen_narrow_limit(std::numeric_limits<DstType>::max()));
+            }
+        } else if constexpr (cast_is_signed_v<SrcType>) {
+            if (value < SrcType{0}) {
+                return false;
+            }
+            if constexpr (sizeof(DstType) >= sizeof(SrcType)) {
+                return true;
+            } else {
+                return value <= static_cast<SrcType>(widen_narrow_limit(std::numeric_limits<DstType>::max()));
+            }
+        } else {
+            if constexpr (sizeof(DstType) > sizeof(SrcType)) {
+                return true;
+            } else {
+                return value <= static_cast<SrcType>(widen_narrow_limit(std::numeric_limits<DstType>::max()));
+            }
+        }
+    }
 
     template<typename T = void>
     struct cast_vector_callback_t;
@@ -1045,7 +1108,7 @@ namespace components::vector::vector_ops {
     template<>
     struct cast_vector_callback_t<void> {
         template<typename DstType, typename SrcType>
-        void operator()(const vector_t& source, vector_t& target, uint64_t count) const {
+        std::optional<uint64_t> operator()(const vector_t& source, vector_t& target, uint64_t count) const {
             if constexpr (!std::is_same_v<SrcType, std::string_view> && !std::is_same_v<DstType, std::string_view>) {
                 auto sdata = source.data<SrcType>();
                 auto tdata = target.data<DstType>();
@@ -1055,6 +1118,10 @@ namespace components::vector::vector_ops {
                     bool valid = smask.row_is_valid(i);
                     tmask.set(i, valid);
                     if (valid) {
+                        // A bare static_cast truncates silently, so an out-of-range value must be a refusal.
+                        if (!cast_value_fits<DstType, SrcType>(sdata[i])) {
+                            return i;
+                        }
                         if constexpr (std::is_same_v<DstType, bool> && std::is_floating_point_v<SrcType>) {
                             tdata[i] = (sdata[i] < SrcType{0} || sdata[i] > SrcType{0});
                         } else if constexpr ((std::is_same_v<DstType, types::int128_t> ||
@@ -1068,8 +1135,11 @@ namespace components::vector::vector_ops {
                         }
                     }
                 }
+                return std::nullopt;
             } else {
-                assert(false && "cast_vector: string type not supported");
+                // Unreachable: cast_vector guards string pairs first (operations_helper.hpp precedent).
+                assert(false && "cast_vector: string pair dispatched into the numeric callback");
+                std::abort();
             }
         }
     };
@@ -1086,17 +1156,93 @@ namespace components::vector::vector_ops {
                                                                     offset);
     }
 
-    vector_t cast_vector(std::pmr::memory_resource* resource,
-                         const vector_t& source,
-                         const types::complex_logical_type& target_type,
-                         uint64_t count) {
+    namespace {
+        // Minus STRING (cast_vector handles that); anything else must be refused HERE — an invariant abort.
+        bool is_simple_numeric_physical_type(types::physical_type type) {
+            switch (type) {
+                case types::physical_type::BOOL:
+                case types::physical_type::UINT8:
+                case types::physical_type::INT8:
+                case types::physical_type::UINT16:
+                case types::physical_type::INT16:
+                case types::physical_type::UINT32:
+                case types::physical_type::INT32:
+                case types::physical_type::UINT64:
+                case types::physical_type::INT64:
+                case types::physical_type::UINT128:
+                case types::physical_type::INT128:
+                case types::physical_type::FLOAT:
+                case types::physical_type::DOUBLE:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        core::error_t cast_vector_error(std::pmr::memory_resource* resource,
+                                        const char* what,
+                                        const types::complex_logical_type& source_type,
+                                        const types::complex_logical_type& target_type) {
+            std::pmr::string message{resource};
+            message.append("cast_vector: ");
+            message.append(what);
+            message.append(" (logical types ");
+            message.append(std::to_string(static_cast<int>(source_type.type())).c_str());
+            message.append(" -> ");
+            message.append(std::to_string(static_cast<int>(target_type.type())).c_str());
+            message.append(")");
+            return core::error_t{core::error_code_t::conversion_failure, std::move(message)};
+        }
+    } // namespace
+
+    core::result_wrapper_t<vector_t> cast_vector(std::pmr::memory_resource* resource,
+                                                 const vector_t& source,
+                                                 const types::complex_logical_type& target_type,
+                                                 uint64_t count) {
         assert(source.get_vector_type() == vector_type::FLAT);
+        const auto source_physical = source.type().to_physical_type();
+        const auto target_physical = target_type.to_physical_type();
+
+        // String pairs are separated out BEFORE the switch — its string leg is `assert(false)` with no else,
+        // so under NDEBUG it would answer with an UNINITIALISED vector as if it were valid.
+        if (source_physical == types::physical_type::STRING && target_physical == types::physical_type::STRING) {
+            vector_t target(resource, target_type, count);
+            auto sdata = source.data<std::string_view>();
+            auto& smask = source.validity();
+            auto& tmask = target.validity();
+            for (uint64_t i = 0; i < count; ++i) {
+                if (smask.row_is_valid(i)) {
+                    target.set_value(i, std::string_view{sdata[i]});
+                } else {
+                    tmask.set(i, false);
+                }
+            }
+            return target;
+        }
+        if (source_physical == types::physical_type::STRING || target_physical == types::physical_type::STRING) {
+            return cast_vector_error(resource, "string casts are not supported", source.type(), target_type);
+        }
+        if (!is_simple_numeric_physical_type(source_physical) || !is_simple_numeric_physical_type(target_physical)) {
+            return cast_vector_error(resource, "physical type is not castable", source.type(), target_type);
+        }
+
         vector_t target(resource, target_type, count);
-        types::double_simple_physical_type_switch<cast_vector_callback_t>(target_type.to_physical_type(),
-                                                                          source.type().to_physical_type(),
-                                                                          source,
-                                                                          target,
-                                                                          count);
+        auto failed_row = types::double_simple_physical_type_switch<cast_vector_callback_t>(target_physical,
+                                                                                            source_physical,
+                                                                                            source,
+                                                                                            target,
+                                                                                            count);
+        if (failed_row.has_value()) {
+            std::pmr::string message{resource};
+            message.append("cast_vector: value at row ");
+            message.append(std::to_string(failed_row.value()).c_str());
+            message.append(" does not fit the target type (logical types ");
+            message.append(std::to_string(static_cast<int>(source.type().type())).c_str());
+            message.append(" -> ");
+            message.append(std::to_string(static_cast<int>(target_type.type())).c_str());
+            message.append(")");
+            return core::error_t{core::error_code_t::conversion_failure, std::move(message)};
+        }
         return target;
     }
 
@@ -1180,10 +1326,15 @@ namespace components::vector::vector_ops {
         }
     };
 
-    vector_t apply_unary_vector_op(std::pmr::memory_resource* resource,
-                                   unary_vector_op op,
-                                   const vector_t& src,
-                                   uint64_t count) {
+    core::result_wrapper_t<vector_t> apply_unary_vector_op(std::pmr::memory_resource* resource,
+                                                           unary_vector_op op,
+                                                           const vector_t& src,
+                                                           uint64_t count) {
+        // Refuses the type up front — both callbacks' string leg was `assert(false)`, UNINITIALIZED under NDEBUG.
+        if (src.type().to_physical_type() == types::physical_type::STRING) {
+            std::pmr::string msg{"apply_unary_vector_op: string operand has no numeric reading", resource};
+            return core::error_t{core::error_code_t::invalid_parameter, std::move(msg)};
+        }
         const bool to_double =
             op == unary_vector_op::sqr_root || op == unary_vector_op::cube_root || op == unary_vector_op::factorial;
         vector_t result(resource,
@@ -1269,18 +1420,24 @@ namespace components::vector::vector_ops {
         }
     };
 
-    vector_t apply_binary_vector_op(std::pmr::memory_resource* resource,
-                                    binary_vector_op op,
-                                    const vector_t& lhs,
-                                    const vector_t& rhs,
-                                    uint64_t count) {
+    core::result_wrapper_t<vector_t> apply_binary_vector_op(std::pmr::memory_resource* resource,
+                                                            binary_vector_op op,
+                                                            const vector_t& lhs,
+                                                            const vector_t& rhs,
+                                                            uint64_t count) {
         if (op == binary_vector_op::exp) {
             const auto dbl_type = types::complex_logical_type(types::logical_type::DOUBLE);
             auto lhs_d = cast_vector(resource, lhs, dbl_type, count);
+            if (lhs_d.has_error()) {
+                return lhs_d.error();
+            }
             auto rhs_d = cast_vector(resource, rhs, dbl_type, count);
+            if (rhs_d.has_error()) {
+                return rhs_d.error();
+            }
             vector_t result(resource, dbl_type, count);
-            const auto* l = lhs_d.data<double>();
-            const auto* r = rhs_d.data<double>();
+            const auto* l = lhs_d.value().data<double>();
+            const auto* r = rhs_d.value().data<double>();
             auto* d = result.data<double>();
             const auto& lv = lhs.validity();
             const auto& rv = rhs.validity();
@@ -1295,10 +1452,26 @@ namespace components::vector::vector_ops {
         }
 
         const auto lhs_phys = lhs.type().to_physical_type();
+        // Bitwise/shift ops are integer/BOOL only — the legs below were `assert(false)`, refuse up front.
+        const bool integral_lhs = lhs_phys == types::physical_type::BOOL || lhs_phys == types::physical_type::INT8 ||
+                                  lhs_phys == types::physical_type::INT16 || lhs_phys == types::physical_type::INT32 ||
+                                  lhs_phys == types::physical_type::INT64 || lhs_phys == types::physical_type::INT128 ||
+                                  lhs_phys == types::physical_type::UINT8 || lhs_phys == types::physical_type::UINT16 ||
+                                  lhs_phys == types::physical_type::UINT32 ||
+                                  lhs_phys == types::physical_type::UINT64 || lhs_phys == types::physical_type::UINT128;
+        if (!integral_lhs) {
+            std::pmr::string msg{"apply_binary_vector_op: bitwise/shift ops are defined for integer types only",
+                                 resource};
+            return core::error_t{core::error_code_t::invalid_parameter, std::move(msg)};
+        }
         std::optional<vector_t> rhs_casted;
         const vector_t* rhs_ptr = &rhs;
         if (lhs_phys != rhs.type().to_physical_type()) {
-            rhs_casted.emplace(cast_vector(resource, rhs, lhs.type(), count));
+            auto casted = cast_vector(resource, rhs, lhs.type(), count);
+            if (casted.has_error()) {
+                return casted.error();
+            }
+            rhs_casted.emplace(std::move(casted.value()));
             rhs_ptr = &rhs_casted.value();
         }
         vector_t result(resource, lhs.type(), count);
@@ -1306,7 +1479,6 @@ namespace components::vector::vector_ops {
         return result;
     }
 
-    // Mirrors the dispatch in hash_type_switch
     bool is_hashable(const types::complex_logical_type& type) {
         switch (type.to_physical_type()) {
             case types::physical_type::BOOL:

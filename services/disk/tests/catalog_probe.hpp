@@ -1,29 +1,9 @@
 #pragma once
 
-// Test-only catalog-read oracle.
-//
-// Production resolves catalog objects via physical-plan operators that call
-// manager_disk_t::read_chunks_by_key. The disk-layer methods resolve_table /
-// resolve_type / resolve_function used to provide the same lookups as a single
-// mailbox call and were kept ONLY because disk tests used them as a convenient
-// read oracle. Those methods have been deleted; this header reproduces the exact
-// lookup logic they performed, but issues every catalog read through the live
-// read_chunks_by_key path (the same boundary production uses).
-//
-// Each probe_* function mirrors a former resolve_*_result_t (plain std fields the
-// tests assert) and reproduces the former filtering rules:
-//   - probe_table  : pg_class scan by (relnamespace, relname); then pg_attribute
-//                    columns with the same MVCC visibility filter (added_at /
-//                    dropped_at vs ctx.txn.start_time) + attnum sort, OR the
-//                    pg_computed_column branch (max-version-per-name, refcount>0,
-//                    attoid-ASC order) for relkind='g' tables.
-//   - probe_type   : pg_type scan by (typnamespace, typname); composite fallback
-//                    via pg_class (relkind='c') + pg_attribute fields.
-//   - probe_function : pg_proc scan by (pronamespace, proname).
-//
-// Reads route through the fixture's invoke mechanism (fx.invoke / fx.invoke_async),
-// so this header is fixture-agnostic: both the disk-test `fixture` and the
-// integration `fresh_disk` expose a compatible invoke template.
+// Test-only catalog-read oracle: production resolves catalog objects via physical-plan operators
+// calling manager_disk_t::read_chunks_by_key; the disk layer has no resolve_table/resolve_type
+// shortcut of its own, so each probe_* function below reproduces one resolve_*'s filtering over
+// that same read path. Works with both the disk-test `fixture` and the integration `fresh_disk`.
 
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
@@ -37,6 +17,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <limits>
 #include <memory_resource>
 #include <string>
 #include <unordered_map>
@@ -46,7 +27,17 @@ namespace services::disk::test_probe {
 
     namespace catalog = components::catalog;
 
-    // --- test-local result structs (mirror the deleted resolve_*_result_t) ---
+    // transaction_data{0, 0} (what most probe fixtures pass) sees rows fine but judges column
+    // visibility against start_time == 0, hiding a column an ALTER ... ADD COLUMN added later; a
+    // fixture whose test drives that backfill must use this instead. This is a real production gap,
+    // not just a test quirk: operator_resolve_table.cpp judges column visibility against start_time
+    // while row visibility is judged against snapshot_horizon, so resolve_table can admit a column
+    // whose row reads still reject — reachable only once added_at stops being a permanent 0.
+    inline components::table::transaction_data probe_see_all_txn() {
+        return components::table::transaction_data{0, std::numeric_limits<std::uint64_t>::max()};
+    }
+
+    // test-local result structs (mirror the deleted resolve_*_result_t).
 
     struct probe_column_info_t {
         std::string attname;
@@ -88,11 +79,8 @@ namespace services::disk::test_probe {
         bool found{false};
     };
 
-    // --- local key-chunk builder (mirrors components::operators::make_key_chunk) ---
-    //
-    // Disk tests do not link physical_plan/operators, so the 1-row columnar key
-    // carrier for read_chunks_by_key is built here. Column j carries values[j]'s own
-    // type so the cell is written without a cast; cardinality is set to 1.
+    // Local key-chunk builder (mirrors components::operators::make_key_chunk): disk tests do not
+    // link physical_plan/operators, so the 1-row columnar key carrier is rebuilt here.
     inline components::vector::data_chunk_t
     build_key_chunk(std::pmr::memory_resource* resource, std::pmr::vector<components::types::logical_value_t> values) {
         std::pmr::vector<components::types::complex_logical_type> types(resource);
@@ -108,9 +96,8 @@ namespace services::disk::test_probe {
         return chunk;
     }
 
-    // Issue a single-key read against `table_oid` filtering key_cols[j] == key_vals[j].
-    // Returns the batched data chunks the owning agent's slice yields (txn-visible
-    // rows per ctx.txn), exactly as the production read path would observe them.
+    // Issue a single-key read against `table_oid` filtering key_cols[j] == key_vals[j], exactly as
+    // the production read path would observe the rows.
     template<typename Fx>
     std::pmr::vector<components::vector::data_chunk_t>
     probe_read(Fx& fx,
@@ -120,10 +107,8 @@ namespace services::disk::test_probe {
                std::pmr::vector<components::types::logical_value_t> key_vals,
                bool committed_scan = true) {
         auto keys = build_key_chunk(&fx.resource, std::move(key_vals));
-        // committed_scan=true (default) mirrors the deleted resolve_* disk path: scan the
-        // catalog committed-only (transaction_data{}) so a txn's own uncommitted catalog
-        // writes are invisible; the caller still filters by ctx.txn.start_time.
-        // committed_scan=false uses the caller's REAL ctx.txn — the PRODUCTION
+        // committed_scan=true (default) scans committed-only (transaction_data{}), mirroring the deleted
+        // resolve_* disk path; committed_scan=false uses the caller's real ctx.txn, matching production
         // operator_resolve_* semantics (read-your-own-uncommitted-catalog-writes).
         if (committed_scan) {
             ctx.txn = components::table::transaction_data{};
@@ -134,15 +119,13 @@ namespace services::disk::test_probe {
                            std::move(key_cols),
                            std::move(keys),
                            std::pmr::vector<std::uint64_t>{&fx.resource});
-        // A probe read that could not be performed is a broken probe, not "no rows":
-        // returning an empty vector here would make every caller below silently assert
-        // "not found". Assert loudly instead — no test in this suite expects a failure.
+        // A probe read that could not be performed is a broken probe, not "no rows" — an empty vector
+        // here would make every caller below silently read as "not found", so assert loudly instead.
         assert(!r.has_error() && "catalog_probe::probe_read: keyed catalog read failed");
         return std::move(r.value());
     }
 
     // --- probe_table ---------------------------------------------------------
-    //
     // pg_class layout: oid(0), relname(1), relnamespace(2), relkind(3).
     // pg_attribute layout: attoid(0), attrelid(1), attname(2), atttypid(3),
     //   attnum(4), attnotnull(5), atthasdefault(6), attisdropped(7), atttypspec(8),
@@ -162,7 +145,6 @@ namespace services::disk::test_probe {
         constexpr catalog::oid_t pg_attribute = catalog::well_known_oid::pg_attribute_table;
         constexpr catalog::oid_t pg_computed_column = catalog::well_known_oid::pg_computed_column_table;
 
-        // pg_class scan by (relnamespace, relname).
         {
             std::pmr::vector<std::uint64_t> keys{&fx.resource};
             keys.emplace_back(catalog::pg_class_col::relnamespace);
@@ -199,9 +181,8 @@ namespace services::disk::test_probe {
             return out;
 
         if (out.relkind == catalog::relkind::computed) {
-            // pg_computed_column: collect ALL rows for relid (incl. tombstones),
-            // pick max-version per attname, drop names whose max-version row has
-            // refcount<=0, then order surviving columns by attoid ASC.
+            // pg_computed_column: collect ALL rows for relid (incl. tombstones), pick max-version per
+            // attname, drop names whose max-version row has refcount<=0, order survivors by attoid ASC.
             struct cc_row_t {
                 catalog::oid_t attoid{catalog::INVALID_OID};
                 std::string attname;
@@ -274,8 +255,8 @@ namespace services::disk::test_probe {
             return out;
         }
 
-        // pg_attribute: columns for attrelid == out.oid, with column-level MVCC
-        // visibility (added_at / dropped_at vs ctx.txn.start_time) + attnum sort.
+        // pg_attribute: columns for attrelid == out.oid, with column-level MVCC visibility
+        // (added_at / dropped_at vs ctx.txn.start_time) + attnum sort.
         {
             const auto snapshot_start_time = ctx.txn.start_time;
             std::vector<probe_column_info_t> rows;
@@ -338,11 +319,9 @@ namespace services::disk::test_probe {
         return out;
     }
 
-    // --- probe_type ----------------------------------------------------------
-    //
     // pg_type layout: oid(0), typname(1), typnamespace(2), typdefspec(3).
-    // Composite fallback: pg_class (relkind='c') by (relnamespace, relname), then
-    // pg_attribute fields by attrelid, encoded as a STRUCT type spec.
+    // Composite fallback: pg_class (relkind='c') by (relnamespace, relname), then pg_attribute fields
+    // by attrelid, encoded as a STRUCT type spec.
     template<typename Fx>
     probe_type_result_t
     probe_type(Fx& fx, components::execution_context_t ctx, catalog::oid_t namespace_oid, std::string name) {
@@ -353,7 +332,6 @@ namespace services::disk::test_probe {
         constexpr catalog::oid_t pg_class = catalog::well_known_oid::pg_class_table;
         constexpr catalog::oid_t pg_attribute = catalog::well_known_oid::pg_attribute_table;
 
-        // pg_type scan by (typnamespace, typname).
         {
             std::pmr::vector<std::uint64_t> keys{&fx.resource};
             keys.emplace_back(catalog::pg_type_col::typnamespace);
@@ -386,7 +364,6 @@ namespace services::disk::test_probe {
         if (out.found)
             return out;
 
-        // Composite fallback via pg_class relkind='c'.
         catalog::oid_t composite_oid = catalog::INVALID_OID;
         {
             std::pmr::vector<std::uint64_t> keys{&fx.resource};
@@ -460,15 +437,23 @@ namespace services::disk::test_probe {
         std::pmr::vector<components::types::complex_logical_type> child_types(&fx.resource);
         child_types.reserve(fields.size());
         for (auto& f : fields) {
-            components::types::complex_logical_type ft =
-                f.atttypspec.empty() ? components::types::complex_logical_type{catalog::oid_to_builtin_type(f.atttypid)}
-                                     : catalog::decode_type_spec(&fx.resource, f.atttypspec);
+            components::types::complex_logical_type ft{components::types::logical_type::UNKNOWN};
+            if (f.atttypspec.empty()) {
+                ft = components::types::complex_logical_type{catalog::oid_to_builtin_type(f.atttypid)};
+            } else {
+                auto ft_r = catalog::decode_type_spec(&fx.resource, f.atttypspec);
+                assert(!ft_r.has_error());
+                ft = std::move(ft_r.value());
+            }
             if (ft.type() == components::types::logical_type::UNKNOWN) {
                 std::string ref_name(ft.type_name());
                 if (!ref_name.empty()) {
                     auto nested = probe_type(fx, ctx, namespace_oid, ref_name);
-                    if (nested.found && !nested.typdefspec.empty())
-                        ft = catalog::decode_type_spec(&fx.resource, nested.typdefspec);
+                    if (nested.found && !nested.typdefspec.empty()) {
+                        auto nested_r = catalog::decode_type_spec(&fx.resource, nested.typdefspec);
+                        assert(!nested_r.has_error());
+                        ft = std::move(nested_r.value());
+                    }
                 }
             }
             ft.set_alias(f.attname);
@@ -482,8 +467,6 @@ namespace services::disk::test_probe {
         return out;
     }
 
-    // --- probe_function ------------------------------------------------------
-    //
     // pg_proc layout: oid(0), proname(1), pronamespace(2), pronargs(3), prouid(4),
     //   proargmatchers(5), prorettype(6).
     template<typename Fx>

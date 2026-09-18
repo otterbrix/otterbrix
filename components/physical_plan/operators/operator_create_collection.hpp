@@ -20,7 +20,6 @@ namespace components::operators {
                                      components::catalog::oid_t table_oid,
                                      components::catalog::oid_t database_oid,
                                      std::vector<table::column_definition_t> columns,
-                                     bool is_disk_storage,
                                      std::vector<catalog_write_t> catalog_writes);
 
         // Sourceless SINK leaf: no data pipeline, no children. The executor admits
@@ -35,7 +34,6 @@ namespace components::operators {
         components::catalog::oid_t table_oid_;
         components::catalog::oid_t database_oid_;
         std::vector<table::column_definition_t> columns_;
-        bool is_disk_storage_;
         std::vector<catalog_write_t> catalog_writes_;
     };
 

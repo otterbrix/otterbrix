@@ -21,8 +21,9 @@ namespace components::operators {
             mark_executed();
             co_return;
         }
-        auto [_a, af] =
-            actor_zeta::send(ctx->disk_address, &services::disk::manager_disk_t::allocate_oids_batch, count_);
+        auto [_a, af] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                    &services::disk::manager_disk_t::allocate_oids_batch,
+                                                    count_);
         auto batch = co_await std::move(af);
         target_node_->set_oids(std::move(batch));
         mark_executed();

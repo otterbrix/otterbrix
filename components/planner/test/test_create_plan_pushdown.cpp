@@ -9,6 +9,7 @@
 // the flag.
 
 #include <catch2/catch_test_macros.hpp>
+#include <core/pmr.hpp>
 
 #include <components/compute/function.hpp>
 #include <components/expressions/key.hpp>
@@ -54,7 +55,7 @@ namespace {
 } // namespace
 
 TEST_CASE("create_plan: aggregate with pushdown group child lowers to merge over pushed_reduce_scan") {
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
     services::context_storage_t context(&resource, log_t{}, core::date::timezone_offset_t{});
     components::compute::function_registry_t registry(&resource);
 
@@ -71,9 +72,13 @@ TEST_CASE("create_plan: aggregate with pushdown group child lowers to merge over
 }
 
 TEST_CASE("create_plan: aggregate WITHOUT pushdown lowers to the normal aggregate chain") {
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
     services::context_storage_t context(&resource, log_t{}, core::date::timezone_offset_t{});
     components::compute::function_registry_t registry(&resource);
+
+    // The aggregate NAMES its table, so the planner demands a resolved, known oid
+    // (an unknown named table now refuses instead of scanning the no-FROM sentinel).
+    context.known_oids.insert(components::catalog::oid_t{123});
 
     auto node = build_agg(&resource, /*pushdown=*/false);
     auto plan =

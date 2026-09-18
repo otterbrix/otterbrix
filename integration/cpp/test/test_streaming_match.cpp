@@ -1,25 +1,9 @@
-// ============================================================================
-// Streaming MATCH — filter operator on the push-based read path.
-//
-// operator_match_t (operator_type::match) is the filter/projection operator the
-// planner builds for a WHERE predicate that is NOT a pure compare (e.g. LIKE,
-// which lowers to compare_type::regex) — a pure compare is pushed into the scan
-// (full_scan/index_scan) instead. The non-pushable predicate yields a
-//   match(streaming) -> full_scan(source)
-// chain, so a filtered SELECT now runs through the push-based STREAMING executor
-// (execute_pipeline): the source emits one batch at a time, match's push()
-// filters that batch, and surviving rows flow up — peak memory is one batch
-// instead of the whole materialized scan.
-//
-// WHAT THESE TESTS ASSERT:
-//   (a) PATH — a filtered SELECT over a MULTI-BATCH scan (>> DEFAULT_VECTOR_CAPACITY
-//       rows) routes through execute_pipeline, proven by streaming_pipeline_runs()
-//       bumping. Stubbing operator_match_t::role() back to none makes this RED.
-//   (b) CORRECTNESS — the streamed filter returns exactly the rows the materialize
-//       path produced, including a LIMIT that must cap the TOTAL emitted across
-//       batch boundaries (the cross-batch limit_total_ state), not per batch.
-// ============================================================================
+// operator_match_t is the filter operator the planner builds for a non-pure-compare WHERE
+// predicate (e.g. LIKE); a pure compare is pushed into the scan instead, giving a
+// match(streaming)->full_scan(source) chain that streams one batch at a time. Tests check
+// streaming_pipeline_runs() bumps (stubbing role() back to none makes that RED).
 
+#include "integration_fixture_path.hpp"
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <services/collection/executor.hpp>
@@ -28,9 +12,7 @@ using namespace components;
 using namespace components::cursor;
 
 namespace {
-    // >> DEFAULT_VECTOR_CAPACITY (1024): forces the scan source to emit MANY
-    // batches so match's push() must filter across batch boundaries and carry the
-    // LIMIT/OFFSET counter across them — the bounded streaming property under test.
+    // >> DEFAULT_VECTOR_CAPACITY (1024) so match's push() must filter across batches.
     constexpr unsigned kRowCount = 5000;
 
     cursor_t_ptr exec(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& sql) {
@@ -40,18 +22,14 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::streaming_match::like_filter_streams_and_lands") {
-    auto config = test_create_config("/tmp/test_streaming_match_like");
+    auto config = test_create_config(integration_fixture_path("test_streaming_match_like"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
     REQUIRE(exec(dispatcher, "CREATE DATABASE MatchDb;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE MatchDb.t (id bigint, name text);")->is_success());
 
-    // Seed a multi-batch row set. names: row i -> "match_<i>" when i is even,
-    // "other_<i>" when i is odd, so LIKE 'match%' selects exactly the even-id rows.
     {
         std::stringstream q;
         q << "INSERT INTO MatchDb.t (id, name) VALUES ";
@@ -64,11 +42,8 @@ TEST_CASE("integration::cpp::streaming_match::like_filter_streams_and_lands") {
         REQUIRE(cur->size() == kRowCount);
     }
 
-    const unsigned kExpectedMatches = kRowCount / 2; // even ids -> "match_*"
+    const unsigned kExpectedMatches = kRowCount / 2;
 
-    // PATH + CORRECTNESS: a LIKE filter (non-pure-compare -> operator_match_t over a
-    // full_scan source) over a multi-batch scan routes through the streaming
-    // pipeline and returns exactly the matching rows.
     const auto runs_before = services::collection::executor::streaming_pipeline_runs();
     {
         auto cur = exec(dispatcher, "SELECT id, name FROM MatchDb.t WHERE name LIKE 'match%';");
@@ -77,10 +52,8 @@ TEST_CASE("integration::cpp::streaming_match::like_filter_streams_and_lands") {
         REQUIRE(cur->size() == kExpectedMatches);
     }
     const auto runs_after = services::collection::executor::streaming_pipeline_runs();
-    REQUIRE(runs_after > runs_before); // streamed through execute_pipeline
+    REQUIRE(runs_after > runs_before);
 
-    // CORRECTNESS via an aggregate over the same predicate: COUNT equals the
-    // matching-row count.
     {
         auto cur = exec(dispatcher, "SELECT COUNT(id) AS c FROM MatchDb.t WHERE name LIKE 'match%';");
         REQUIRE(cur->is_success());
@@ -90,20 +63,14 @@ TEST_CASE("integration::cpp::streaming_match::like_filter_streams_and_lands") {
 }
 
 TEST_CASE("integration::cpp::streaming_match::like_filter_with_limit_caps_across_batches") {
-    auto config = test_create_config("/tmp/test_streaming_match_limit");
+    auto config = test_create_config(integration_fixture_path("test_streaming_match_limit"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
     REQUIRE(exec(dispatcher, "CREATE DATABASE MatchDb;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE MatchDb.t (id bigint, name text);")->is_success());
 
-    // Every row matches the LIKE predicate ("row_<i>" all start with "row"), so the
-    // result is bounded ONLY by the LIMIT, not by predicate selectivity. (A selective
-    // predicate would interact with the scan's offset+limit head-cap and obscure the
-    // streaming LIMIT logic under test.)
     {
         std::stringstream q;
         q << "INSERT INTO MatchDb.t (id, name) VALUES ";
@@ -115,11 +82,7 @@ TEST_CASE("integration::cpp::streaming_match::like_filter_with_limit_caps_across
         REQUIRE(cur->size() == kRowCount);
     }
 
-    // LIMIT must cap the TOTAL number of emitted rows across ALL streamed batches.
-    // kLimit (2000) > DEFAULT_VECTOR_CAPACITY (1024), so match's push() filters at
-    // least two batches and must carry the running LIMIT counter across the batch
-    // boundary — a per-batch reset (the streaming bug this guards against) would
-    // over-emit. Exactly kLimit rows must come back.
+    // kLimit > DEFAULT_VECTOR_CAPACITY forces multiple batches; a per-batch reset would over-emit.
     constexpr unsigned kLimit = 2000;
     const auto runs_before = services::collection::executor::streaming_pipeline_runs();
     {
@@ -130,38 +93,18 @@ TEST_CASE("integration::cpp::streaming_match::like_filter_with_limit_caps_across
         REQUIRE(cur->size() == kLimit);
     }
     const auto runs_after = services::collection::executor::streaming_pipeline_runs();
-    REQUIRE(runs_after > runs_before); // streamed through execute_pipeline
+    REQUIRE(runs_after > runs_before);
 }
 
-// ============================================================================
-// operator_match OVER A SINK — the crux of unconditional streaming.
-//
-// A match over a SCAN source carries REAL absolute row_ids (the scan stamps
-// them). A match over a SINK output (a GROUP BY / JOIN result) carries NO real
-// row_ids: those operators never write data_chunk_t::row_ids, so the slots are
-// zero-filled. Two operator_match defects bite ONLY over a sink:
-//   (a) row_ids: filter_batch_ copies the input chunk's row_ids forward. Over a
-//       sink they are all 0 → a downstream DML/index consumer dereferences
-//       storage at the bogus absolute id 0 (a real row), corrupting/deleting the
-//       wrong row.
-//   (b) predicate resource: the cached predicate was allocated on the FIRST
-//       pushed batch's arena; over a sink the finalize chunk's arena can differ,
-//       so the cached value-getter closures dangle on the 2nd chunk.
-//
-// These shapes were RED (segfault / wrong rows) when operator_match_t::role()
-// was flipped to UNCONDITIONALLY streaming, before the two defect fixes. They
-// assert: correct rows for the SELECT shapes, correct DML effect (and no crash)
-// for the DML-over-sink shapes.
-// ============================================================================
+// A match over a SINK (GROUP BY / JOIN) carries no real row_ids, unlike over a scan. Two
+// defects bite only there: filter_batch_ forwarding zero-filled row_ids to a DML/index
+// consumer (bogus id 0), and the cached predicate's arena dangling once the finalize chunk differs.
 
 namespace {
-    // Seed a tiny employees/departments pair (mirrors test_subqueries) so the
-    // match-over-sink shapes have a GROUP BY / JOIN sink to filter above.
     void setup_match_over_sink_db(otterbrix::wrapper_dispatcher_t* dispatcher) {
         REQUIRE(exec(dispatcher, "CREATE DATABASE SinkDb;")->is_success());
         REQUIRE(exec(dispatcher, "CREATE TABLE SinkDb.emp (id bigint, dept_id bigint, name text);")->is_success());
         REQUIRE(exec(dispatcher, "CREATE TABLE SinkDb.dept (id bigint, name text);")->is_success());
-        // dept_id 1 has 3 rows, dept_id 2 has 2 rows, dept_id 3 has 1 row.
         REQUIRE(exec(dispatcher,
                      "INSERT INTO SinkDb.emp (id, dept_id, name) VALUES "
                      "(1,1,'alice'), (2,1,'amy'), (3,1,'bob'), "
@@ -174,15 +117,8 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::streaming_match::having_count_filter_returns_correct_rows") {
-    // SELECT correctness over a GROUP BY sink: a HAVING predicate filters the
-    // grouped result. dept_id 1 (3 rows) and dept_id 2 (2 rows) survive c > 1;
-    // dept_id 3 (1 row) does not. This match (over a group sink) must return
-    // exactly the surviving groups — defect (b) would dangle the predicate on a
-    // multi-chunk grouped result.
-    auto config = test_create_config("/tmp/test_streaming_match_having");
+    auto config = test_create_config(integration_fixture_path("test_streaming_match_having"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     setup_match_over_sink_db(dispatcher);
@@ -190,18 +126,12 @@ TEST_CASE("integration::cpp::streaming_match::having_count_filter_returns_correc
     auto cur = exec(dispatcher, "SELECT dept_id, COUNT(*) AS c FROM SinkDb.emp GROUP BY dept_id HAVING COUNT(*) > 1;");
     INFO("HAVING error: " << (cur->is_error() ? cur->get_error().what : "none"));
     REQUIRE(cur->is_success());
-    REQUIRE(cur->size() == 2); // dept_id 1 and 2
+    REQUIRE(cur->size() == 2);
 }
 
 TEST_CASE("integration::cpp::streaming_match::join_with_nonpushdown_filter_returns_correct_rows") {
-    // SELECT correctness over a JOIN sink: a non-pushdown LIKE predicate filters
-    // the joined result. Joining emp to dept on dept_id then keeping names that
-    // LIKE 'a%' must return alice, amy, amanda (3) — match sits above the join
-    // sink, whose output carries no row_ids.
-    auto config = test_create_config("/tmp/test_streaming_match_join_filter");
+    auto config = test_create_config(integration_fixture_path("test_streaming_match_join_filter"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     setup_match_over_sink_db(dispatcher);
@@ -212,20 +142,13 @@ TEST_CASE("integration::cpp::streaming_match::join_with_nonpushdown_filter_retur
                     "WHERE e.name LIKE 'a%';");
     INFO("JOIN+LIKE error: " << (cur->is_error() ? cur->get_error().what : "none"));
     REQUIRE(cur->is_success());
-    REQUIRE(cur->size() == 3); // alice, amy, amanda
+    REQUIRE(cur->size() == 3);
 }
 
 TEST_CASE("integration::cpp::streaming_match::delete_where_in_group_subquery_lands") {
-    // DML over a GROUP BY sink-derived subquery: DELETE the duplicate-key rows.
-    // dept_id values with COUNT(*) > 1 are {1, 2}; deleting employees whose
-    // dept_id is in that set removes the 5 rows of dept_id 1 and 2, leaving the
-    // single dept_id 3 row. The subquery's grouped output has NO real row_ids;
-    // defect (a) would feed a bogus absolute id 0 to the storage delete and
-    // segfault / delete the wrong row. After the fix the right rows are deleted.
-    auto config = test_create_config("/tmp/test_streaming_match_delete_group");
+    // DML over a GROUP BY sink-derived subquery: exercises defect (a) (no real row_ids).
+    auto config = test_create_config(integration_fixture_path("test_streaming_match_delete_group"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     setup_match_over_sink_db(dispatcher);
@@ -236,9 +159,8 @@ TEST_CASE("integration::cpp::streaming_match::delete_where_in_group_subquery_lan
                         "(SELECT dept_id FROM SinkDb.emp GROUP BY dept_id HAVING COUNT(*) > 1);");
         INFO("DELETE IN group-subquery error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 5); // 3 (dept 1) + 2 (dept 2)
+        REQUIRE(cur->size() == 5);
     }
-    // CORRECTNESS: exactly the single dept_id 3 row remains, with the right id.
     {
         auto cur = exec(dispatcher, "SELECT COUNT(*) AS c FROM SinkDb.emp;");
         REQUIRE(cur->is_success());
@@ -248,28 +170,20 @@ TEST_CASE("integration::cpp::streaming_match::delete_where_in_group_subquery_lan
         auto cur = exec(dispatcher, "SELECT id FROM SinkDb.emp WHERE dept_id = 3;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 6); // dave
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 6);
     }
 }
 
 TEST_CASE("integration::cpp::streaming_match::delete_using_large_build_side_does_not_overflow") {
-    // REGRESSION (defect 3): DELETE ... USING where the USING/build table holds
-    // > DEFAULT_VECTOR_CAPACITY (1024) rows. The build side materializes into many
-    // <=1024-row chunks; the pre-fix push() fed right_->output()->data_chunk(),
-    // which merge_chunks() into ONE data_chunk_t sized to the TOTAL row count and
-    // aborted on the capacity<=1024 ctor assert. After the fix consume_join_batch_
-    // iterates the build side per chunk, so the delete lands.
-    auto config = test_create_config("/tmp/test_streaming_match_delete_using_large");
+    // REGRESSION: a build side > DEFAULT_VECTOR_CAPACITY rows used to merge_chunks() into one
+    // data_chunk_t, aborting on the capacity<=1024 assert; it's now iterated per chunk.
+    auto config = test_create_config(integration_fixture_path("test_streaming_match_delete_using_large"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     REQUIRE(exec(dispatcher, "CREATE DATABASE BigDb;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE BigDb.target (id bigint, k bigint);")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE BigDb.using_tbl (k bigint);")->is_success());
-    // Target: 3 rows keyed 0,1,2. USING: 2000 rows (> 1024) all keyed 1, so the
-    // build side spans multiple chunks and joins only the single target row k=1.
     REQUIRE(exec(dispatcher, "INSERT INTO BigDb.target (id, k) VALUES (0,0), (1,1), (2,2);")->is_success());
     constexpr unsigned kBuildRows = 2000;
     for (unsigned i = 0; i < kBuildRows; ++i) {
@@ -286,20 +200,14 @@ TEST_CASE("integration::cpp::streaming_match::delete_using_large_build_side_does
     {
         auto cur = exec(dispatcher, "SELECT COUNT(*) AS c FROM BigDb.target;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 2); // k=0 and k=2 remain
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 2);
     }
 }
 
 TEST_CASE("integration::cpp::streaming_match::delete_using_with_nonpushdown_filter_lands") {
-    // DML over a JOIN sink: DELETE ... USING with a non-pushdown filter on the
-    // target. Delete emp rows that join dept on dept_id AND whose name LIKE 'a%'.
-    // Matching emp: alice(1,d1), amy(2,d1), amanda(5,d2) → 3 rows. The match over
-    // the join sink carries no real row_ids; defect (a) would feed bogus id 0 to
-    // the storage delete. After the fix exactly those 3 rows are deleted.
-    auto config = test_create_config("/tmp/test_streaming_match_delete_using");
+    // DML over a JOIN sink with a non-pushdown filter: exercises defect (a) (no real row_ids).
+    auto config = test_create_config(integration_fixture_path("test_streaming_match_delete_using"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     setup_match_over_sink_db(dispatcher);
@@ -310,9 +218,8 @@ TEST_CASE("integration::cpp::streaming_match::delete_using_with_nonpushdown_filt
                         "WHERE SinkDb.emp.dept_id = SinkDb.dept.id AND SinkDb.emp.name LIKE 'a%';");
         INFO("DELETE USING+LIKE error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 3); // alice, amy, amanda
+        REQUIRE(cur->size() == 3);
     }
-    // CORRECTNESS: 3 rows remain (bob, carol, dave); the 'a%' names are gone.
     {
         auto cur = exec(dispatcher, "SELECT COUNT(*) AS c FROM SinkDb.emp;");
         REQUIRE(cur->is_success());
@@ -326,15 +233,11 @@ TEST_CASE("integration::cpp::streaming_match::delete_using_with_nonpushdown_filt
 }
 
 TEST_CASE("integration::cpp::streaming_match::like_all_null_element_disk_three_valued") {
-    // DISK-mode three-valued LIKE ALL: the pattern set of `s [NOT] LIKE ALL (SELECT ...)` is pushed
-    // into the scan as a conjunction of regex_filter_t leaves. A NULL element makes every ALL row
-    // at best UNKNOWN (`s LIKE NULL` is UNKNOWN), so PostgreSQL returns 0 rows — the filter builder
-    // used to exclude regex from the NULL-element collapse and returned the non-null-leaf result.
-    // ANY is unaffected (UNKNOWN and FALSE both drop the row).
-    auto config = test_create_config("/tmp/test_streaming_match_like_all_null_disk");
+    // DISK-mode three-valued LIKE ALL pushes the pattern set into the scan as a conjunction of
+    // regex_filter_t leaves; a NULL pattern makes ALL UNKNOWN for every row (PostgreSQL: 0
+    // rows) — the filter builder used to exclude regex from that NULL-element collapse.
+    auto config = test_create_config(integration_fixture_path("test_streaming_match_like_all_null_disk"));
     test_clear_directory(config);
-    config.disk.on = true;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -364,34 +267,18 @@ TEST_CASE("integration::cpp::streaming_match::like_all_null_element_disk_three_v
     }
 }
 
-// Late-materialization gather must never emit garbage cells: a SELECTIVE pushed
-// filter (approved * 5 < max_count) makes row_group_t::templated_scan gather ONLY the surviving
-// rows per non-filter column via col_data.fetch_row. A buffer-pin OOM inside fetch_row sets
-// column_fetch_state::fetch_error and writes NOTHING for that cell; the gather loop used to
-// ignore fetch_error entirely, so the scan "succeeded" with default/garbage cells while every
-// sibling scan leg (bulk scan/select) aborts on cs.has_error(). The fix aborts the scan through
-// collection_scan_state::scan_error exactly like the bulk legs.
-//
-// The pin OOM itself is NOT deterministically triggerable from the integration harness: the
-// buffer pool is constructed inside table_storage_t with a fixed 4 GiB cap (manager_disk.cpp,
-// `buffer_pool_(resource, uint64_t(1) << 32, ...)`) and configuration::config exposes no
-// memory-limit knob. This test therefore pins the HAPPY PATH of the exact gather code the fix
-// touched: multi-vector disk table, wide non-filter string column, <20% survival in the first and
-// last vectors — asserting both the survivor COUNT and the exact GATHERED CELL VALUES, which is
-// precisely what silently rots when a fetch error is swallowed.
+// row_group_t::templated_scan gathers surviving rows via col_data.fetch_row; a buffer-pin OOM
+// used to leave column_fetch_state::fetch_error unset instead of aborting the scan, silently
+// emitting garbage cells. The OOM itself isn't triggerable from this harness (fixed 4 GiB buffer
+// pool cap, no memory-limit knob), so this pins the happy-path gather code the fix touched.
 TEST_CASE("integration::cpp::streaming_match::late_mat_gather_selective_disk_values_land") {
-    auto config = test_create_config("/tmp/test_streaming_match_late_mat_gather");
+    auto config = test_create_config(integration_fixture_path("test_streaming_match_late_mat_gather"));
     test_clear_directory(config);
-    config.disk.on = true;
-    config.wal.on = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    // 4000 rows = 4 storage vectors (DEFAULT_VECTOR_CAPACITY 1024): the selective filters below
-    // leave survivors only in the first / last vector, so the gather runs against real vector
-    // offsets (base + indexing) rather than only index 0.
     constexpr unsigned kGatherRows = 4000;
-    const std::string wide_pad(120, 'x'); // wide non-filter column -> the gather target
+    const std::string wide_pad(120, 'x');
 
     REQUIRE(exec(dispatcher, "CREATE DATABASE GatherDb;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE GatherDb.t (id bigint, s text);")->is_success());
@@ -406,7 +293,6 @@ TEST_CASE("integration::cpp::streaming_match::late_mat_gather_selective_disk_val
         REQUIRE(cur->size() == kGatherRows);
     }
 
-    // Head of the first vector: 50 of 1024 survive (50*5 < 1024 -> the gather path).
     {
         auto cur = exec(dispatcher, "SELECT id, s FROM GatherDb.t WHERE id < 50;");
         INFO("head gather error: " << (cur->is_error() ? cur->get_error().what : "none"));
@@ -414,7 +300,6 @@ TEST_CASE("integration::cpp::streaming_match::late_mat_gather_selective_disk_val
         REQUIRE(cur->size() == 50);
     }
 
-    // Tail of the LAST vector: survivors sit at in-vector offsets ~878..927 of vector 3.
     {
         auto cur = exec(dispatcher, "SELECT id, s FROM GatherDb.t WHERE id >= 3950;");
         INFO("tail gather error: " << (cur->is_error() ? cur->get_error().what : "none"));
@@ -422,8 +307,7 @@ TEST_CASE("integration::cpp::streaming_match::late_mat_gather_selective_disk_val
         REQUIRE(cur->size() == 50);
     }
 
-    // Exact gathered CELL VALUES for single survivors in the first and last vectors — a swallowed
-    // fetch error would surface here as a default/garbage `s` cell next to a plausible row count.
+    // A swallowed fetch error would surface here as a garbage `s` cell next to a plausible row count.
     {
         auto cur = exec(dispatcher, "SELECT s FROM GatherDb.t WHERE id = 7;");
         REQUIRE(cur->is_success());

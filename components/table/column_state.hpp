@@ -21,7 +21,7 @@
 
 namespace components::vector {
     class data_chunk_t;
-} // namespace components::vector
+}
 
 namespace components::table {
     class row_group_t;
@@ -96,11 +96,12 @@ namespace components::table {
             return reinterpret_cast<const TARGET&>(*this);
         }
 
-        std::vector<uint32_t> blocks;
+        // uint64_t, not uint32_t: block ids share a domain with transient ids (>= storage::MAXIMUM_BLOCK).
+        std::vector<uint64_t> blocks;
     };
 
     struct column_append_state {
-        column_segment_t* current;
+        column_segment_t* current = nullptr;
         std::vector<column_append_state> child_appends;
         std::unique_ptr<std::unique_lock<std::mutex>> lock;
         std::unique_ptr<storage::buffer_handle_t> handle;
@@ -127,12 +128,10 @@ namespace components::table {
         uint64_t last_offset = 0;
         uint64_t result_offset = 0;
         std::vector<bool> scan_child_column;
-        // OOM (buffer-pool exhaustion) raised by a pin() while scanning this column.
-        // Leaf segment helpers set it; column_data_t::scan_vector bails on it and
-        // row_group_t aggregates it into collection_scan_state::scan_error. Success
-        // path leaves it as no_error().
         core::error_t scan_error{core::error_t::no_error()};
         bool has_error() const { return scan_error.contains_error(); }
+
+        void collect_child_errors();
 
         void initialize(const types::complex_logical_type& type, const std::vector<storage_index_t>& children);
         void initialize(const types::complex_logical_type& type);
@@ -142,20 +141,23 @@ namespace components::table {
     struct column_fetch_state {
         std::unordered_map<uint64_t, storage::buffer_handle_t> handles;
         std::vector<std::unique_ptr<column_fetch_state>> child_states;
-        // Set by a caller whose RESULT outlives this state. The handles above hold the pins that
-        // keep a fetched string's bytes alive, so a view borrowed from the block dangles once they
-        // are released with the state; with this set the string leg copies into the result's own
-        // heap instead. row_group_t::evaluate_predicate consumes its chunk inside the call and
-        // keeps the state alive throughout, so it borrows; the late-materialisation gather returns
-        // the chunk to its caller, so it must own.
+        // Set by a caller whose result outlives this state: the handles above pin a fetched
+        // string's bytes, so a borrowed view dangles once the state is released, and with this set
+        // the string copies into the result's own heap instead (evaluate_predicate borrows since
+        // the state outlives its chunk; late-materialization gather must own the reverse way).
         bool result_outlives_pins{false};
 
-        // OOM raised by the pin() inside get_or_insert_handle(); callers that route
-        // through a column_scan_state copy it into scan_error.
         core::error_t fetch_error{core::error_t::no_error()};
+
+        // THE ONLY way to reach a child state: a default-constructed one gets result_outlives_pins
+        // and fetch_error wrong.
+        column_fetch_state& child(uint64_t index);
+
+        bool absorb_error(const column_fetch_state& child_state);
 
         // Returns nullptr and sets fetch_error on buffer-pool exhaustion.
         storage::buffer_handle_t* get_or_insert_handle(column_segment_t& segment);
+        storage::buffer_handle_t* get_or_insert_handle(std::shared_ptr<storage::block_handle_t>& block);
     };
 
     struct string_block_t {
@@ -170,7 +172,8 @@ namespace components::table {
 
         virtual std::string segment_info() const { return ""; }
 
-        virtual std::vector<uint32_t> additional_blocks() const { return std::vector<uint32_t>(); }
+        // data_table_t::compact reclaims these via collect_disk_block_ids; omitting one leaks it every round.
+        virtual std::vector<uint64_t> additional_blocks() const { return std::vector<uint64_t>(); }
         template<typename TARGET>
         TARGET& cast() {
             return reinterpret_cast<TARGET&>(*this);
@@ -185,30 +188,36 @@ namespace components::table {
         ~uncompressed_string_segment_state() override;
 
         std::unique_ptr<string_block_t> head;
-        std::unordered_map<uint32_t, string_block_t*> overflow_blocks;
-        std::vector<uint32_t> on_disk_blocks;
+        // Keyed by the full 64-bit transient id (>= storage::MAXIMUM_BLOCK); disjoint from handles_.
+        std::unordered_map<uint64_t, string_block_t*> overflow_blocks;
+        std::vector<uint64_t> on_disk_blocks;
 
-        std::shared_ptr<storage::block_handle_t> handle(storage::block_manager_t& manager, uint32_t block_id);
+        std::vector<uint64_t> additional_blocks() const override { return on_disk_blocks; }
 
-        void register_block(storage::block_manager_t& manager, uint32_t block_id);
+        // Deliberately no `handle(manager, block_id)`: that would register an arbitrary id on a
+        // lookup miss, which registered_handle()'s contract below forbids.
+        [[nodiscard]] bool register_block(storage::block_manager_t& manager, uint64_t block_id);
+
+        // Lookup-only: an unregistered disk block is corruption, not something to look up anyway.
+        std::shared_ptr<storage::block_handle_t> registered_handle(uint64_t block_id);
 
     private:
-        std::mutex block_lock_;
-        std::unordered_map<uint32_t, std::shared_ptr<storage::block_handle_t>> handles_;
+        // NO LOCK: owned by one column segment -> one disk agent, resumed on at most one thread.
+        std::unordered_map<uint64_t, std::shared_ptr<storage::block_handle_t>> handles_;
     };
 
     struct column_segment_info {
-        uint64_t row_group_index;
-        uint64_t column_id;
+        uint64_t row_group_index{0};
+        uint64_t column_id{0};
         std::string column_path;
-        uint64_t segment_idx;
+        uint64_t segment_idx{0};
         std::string segment_type;
-        int64_t segment_start;
-        uint64_t segment_count;
-        bool has_updates;
-        uint32_t block_id;
-        std::vector<uint32_t> additional_blocks;
-        uint64_t block_offset;
+        int64_t segment_start{0};
+        uint64_t segment_count{0};
+        bool has_updates{false};
+        uint32_t block_id{0};
+        std::vector<uint64_t> additional_blocks;
+        uint64_t block_offset{0};
         std::string segment_info;
     };
 

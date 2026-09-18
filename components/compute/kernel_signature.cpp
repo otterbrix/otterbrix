@@ -12,6 +12,18 @@ namespace components::compute {
             return type.type() == types::logical_type::NA;
         }
 
+        // Plain function, not a closure: same_type_resolver() passes its address + index
+        // directly, so there's nothing to erase.
+        core::result_wrapper_t<fixed_t> resolve_same_type_at(size_t input_index,
+                                                             std::pmr::memory_resource* resource,
+                                                             const std::pmr::vector<fixed_t>& in) {
+            if (in.size() <= input_index) {
+                return core::error_t(core::error_code_t::incorrect_function_argument,
+                                     std::pmr::string{"less inputs than expected", resource});
+            }
+            return in[input_index];
+        }
+
         bool same_parameter(const parameter_type& lhs, const parameter_type& rhs) {
             if (lhs.is_variable() != rhs.is_variable()) {
                 return false;
@@ -31,11 +43,9 @@ namespace components::compute {
     }
 
     parameter_type parameter_type::variable(variable_id id, std::pmr::vector<types::complex_logical_type> admissible) {
-        parameter_type result;
-        result.is_variable_ = true;
-        result.id_ = id;
-        result.admissible_ = std::move(admissible);
-        return result;
+        // Through the constructor, not by assigning over the default member — see the ctor's
+        // note in kernel_signature.hpp (admissible_ defaults to null_memory_resource()).
+        return parameter_type{id, std::move(admissible)};
     }
 
     parameter_type parameter_type::variable(variable_id id) {
@@ -59,11 +69,23 @@ namespace components::compute {
         return std::any_of(admissible_.begin(), admissible_.end(), admitted_by);
     }
 
+    core::result_wrapper_t<fixed_t> type_resolver_fn::operator()(std::pmr::memory_resource* resource,
+                                                                 const std::pmr::vector<fixed_t>& input_types) const {
+        if (empty()) {
+            // Empty resolver is a caller mistake — refuse rather than guess.
+            return core::error_t(core::error_code_t::kernel_error,
+                                 std::pmr::string{"output type resolver is empty", resource});
+        }
+        if (indexed_ != nullptr) {
+            return indexed_(input_index_, resource, input_types);
+        }
+        return stateless_(resource, input_types);
+    }
+
     output_type output_type::fixed(fixed_t type) {
         output_type out;
         out.kind_ = kind_t::fixed_value;
-        out.fixed_value_ = type;
-        out.value_ = std::move(type);
+        out.fixed_value_ = std::move(type);
         return out;
     }
 
@@ -71,25 +93,27 @@ namespace components::compute {
         output_type out;
         out.kind_ = kind_t::same_type_at_index;
         out.input_index_ = input_index;
-        out.value_ = same_type_resolver(input_index);
         return out;
     }
 
     output_type output_type::computed(type_resolver_fn resolver) {
         output_type out;
         out.kind_ = kind_t::custom;
-        out.value_ = std::move(resolver);
+        out.resolver_ = resolver;
         return out;
     }
 
     core::result_wrapper_t<fixed_t> output_type::resolve(std::pmr::memory_resource* resource,
                                                          const std::pmr::vector<fixed_t>& input_types) const {
-        if (std::holds_alternative<fixed_t>(value_)) {
-            return std::get<fixed_t>(value_);
+        switch (kind_) {
+            case kind_t::fixed_value:
+                return fixed_value_;
+            case kind_t::same_type_at_index:
+                return resolve_same_type_at(input_index_, resource, input_types);
+            case kind_t::custom:
+                break;
         }
-
-        const auto& resolver = std::get<type_resolver_fn>(value_);
-        return resolver(resource, input_types);
+        return resolver_(resource, input_types);
     }
 
     kernel_signature_t::kernel_signature_t(function_type_t function_type,
@@ -126,14 +150,8 @@ namespace components::compute {
     }
 
     type_resolver_fn same_type_resolver(size_t input_index) {
-        return [input_index](std::pmr::memory_resource* resource,
-                             const std::pmr::vector<fixed_t>& in) -> core::result_wrapper_t<fixed_t> {
-            if (in.size() <= input_index) {
-                return core::error_t(core::error_code_t::incorrect_function_argument,
-                                     std::pmr::string{"less inputs than expected", resource});
-            }
-            return in[input_index];
-        };
+        // Index travels as data beside a plain function pointer, not a lambda capture — nothing to erase.
+        return type_resolver_fn{&resolve_same_type_at, input_index};
     }
 
     bool check_signature_conflicts(const kernel_signature_t& lhs, const kernel_signature_t& rhs) {

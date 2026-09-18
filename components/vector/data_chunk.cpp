@@ -10,9 +10,35 @@ namespace {
     using namespace components;
     using namespace components::vector;
 
+    void reset_validity_recursive(vector_t& vec) {
+        vec.validity().reset();
+        auto aux = vec.auxiliary();
+        if (!aux) {
+            return;
+        }
+        switch (aux->type()) {
+            case vector_buffer_type::LIST:
+                reset_validity_recursive(static_cast<list_vector_buffer_t*>(aux.get())->nested_data());
+                break;
+            case vector_buffer_type::ARRAY:
+                reset_validity_recursive(static_cast<array_vector_buffer_t*>(aux.get())->nested_data());
+                break;
+            case vector_buffer_type::STRUCT:
+                for (auto& entry : static_cast<struct_vector_buffer_t*>(aux.get())->entries()) {
+                    reset_validity_recursive(*entry);
+                }
+                break;
+            case vector_buffer_type::VECTOR_CHILD:
+                reset_validity_recursive(static_cast<child_vector_buffer_t*>(aux.get())->nested_data());
+                break;
+            default:
+                break;
+        }
+    }
+
     struct resolved_path_t {
-        const vector_t* array; // ARRAY/LIST the path ends up indexing; null unless it does
-        size_t index;          // which of its elements, meaningful only alongside `array`
+        const vector_t* array;
+        size_t index;
         const vector_t* leaf;
     };
 
@@ -24,9 +50,8 @@ namespace {
         for (auto it = std::next(col_path.begin()); it != col_path.end(); ++it) {
             auto t = sub_column->type().type();
             if (t == types::logical_type::ARRAY || t == types::logical_type::LIST) {
-                // Only a trailing subscript resolves. Anything after it (arr[i].field) would
-                // have to index a vector that does not exist: the field lives once per
-                // element, not once per row.
+                // Only a trailing subscript resolves — arr[i].field would index a vector that
+                // doesn't exist, since the field lives once per element, not once per row.
                 if (std::next(it) != col_path.end()) {
                     return {.array = nullptr, .index = 0, .leaf = nullptr};
                 }
@@ -37,9 +62,7 @@ namespace {
         return {.array = nullptr, .index = 0, .leaf = sub_column};
     }
 
-    // Copy element `index` of every row out of an ARRAY/LIST into a contiguous vector, so
-    // that index i means row i. Those values are strided in the flat child, hence the gather —
-    // typed copies through vector_ops::copy, no per-element logical_value_t round-trip.
+    // Uses typed vector_ops::copy, not per-element logical_value_t, to avoid a round-trip per row.
     vector_t align_to_rows(const vector_t& array, size_t index, uint64_t count, std::pmr::memory_resource* resource) {
         const vector_t& child = array.entry();
         const bool is_list = array.type().type() == types::logical_type::LIST;
@@ -86,7 +109,6 @@ namespace components::vector {
         , capacity_(capacity)
         , row_ids(resource, types::logical_type::BIGINT, capacity) {
         assert(capacity <= DEFAULT_VECTOR_CAPACITY);
-        // Build a fast lookup: which column indices need real buffers
         std::vector<bool> needed(all_types.size(), false);
         for (size_t idx : projected_cols) {
             if (idx < all_types.size()) {
@@ -98,7 +120,6 @@ namespace components::vector {
             if (needed[i]) {
                 data.emplace_back(resource_, all_types[i], capacity_);
             } else {
-                // Placeholder: type info only, no buffer allocation
                 data.emplace_back(resource_, all_types[i], false, false, 0);
             }
         }
@@ -120,13 +141,15 @@ namespace components::vector {
         return *this;
     }
 
-    // An unprojected placeholder vector has no data buffer AND no auxiliary buffer.
-    // (ARRAY/STRUCT/LIST real vectors have auxiliary != nullptr even though data_ is null;
-    // an NA column is a real column that allocates nothing at all.)
-    // These exist to keep column indices stable when projected_scan skips columns.
+    // A real ARRAY/STRUCT/LIST keeps auxiliary() set with null data(); NA legitimately allocates
+    // neither, so only an unprojected column has both null.
     static bool is_unprojected_placeholder(const vector_t& v) noexcept {
         return v.type().type() != types::logical_type::NA && v.data() == nullptr && v.auxiliary() == nullptr;
     }
+
+    // NA-typed vectors are CONSTANT, not FLAT, so skipping them here keeps the FLAT-destination
+    // assert in copy() from aborting on `INSERT ... VALUES (..., NULL)`.
+    static bool is_null_typed(const vector_t& v) noexcept { return v.type().type() == types::logical_type::NA; }
 
     uint64_t data_chunk_t::allocation_size() const {
         uint64_t total_size = 0;
@@ -143,8 +166,11 @@ namespace components::vector {
         }
         capacity_ = DEFAULT_VECTOR_CAPACITY;
         set_cardinality(0);
-        for (auto& column : data) {
-            column.reset_string_heap();
+        // validity_scan_partial ANDs bits into the mask, so a stale mask surviving reset() would
+        // carry the previous fill's NULLs into the next one — nested masks and the heap leak too.
+        for (auto& vec : data) {
+            reset_validity_recursive(vec);
+            vec.reset_string_heap();
         }
     }
 
@@ -189,9 +215,8 @@ namespace components::vector {
                         static_cast<const types::array_logical_type_extension*>(sub_column->type().extension())->size();
                     return sub_column->entry().set_value(index * stride + *it, val);
                 } else if (sub_column->type().type() == types::logical_type::LIST) {
-                    // Mutate element *it of row `index` in place through the row's
-                    // (offset,length) entry; out-of-range indices are a no-op (LIST
-                    // has no fixed width to grow into here).
+                    // Silently ignored, not grown — a LIST row's slice is a packed (offset,length)
+                    // into a shared child; there's no fixed width to extend.
                     const auto& offlen = sub_column->data<types::list_entry_t>()[index];
                     if (*it >= offlen.length) {
                         return;
@@ -256,9 +281,8 @@ namespace components::vector {
         assert(other.size() == 0);
 
         for (uint64_t i = 0; i < column_count(); i++) {
-            if (is_unprojected_placeholder(data[i]))
+            if (is_unprojected_placeholder(data[i]) || is_null_typed(other.data[i]))
                 continue;
-            // There's nothing to copy for vector of NULLs
             if (data[i].type().type() == types::logical_type::NA)
                 continue;
             assert(other.data[i].get_vector_type() == vector_type::FLAT);
@@ -278,9 +302,8 @@ namespace components::vector {
         assert(source_count <= size());
 
         for (uint64_t i = 0; i < column_count(); i++) {
-            if (is_unprojected_placeholder(data[i]))
+            if (is_unprojected_placeholder(data[i]) || is_null_typed(other.data[i]))
                 continue;
-            // There's nothing to copy for vector of NULLs
             if (data[i].type().type() == types::logical_type::NA)
                 continue;
             assert(other.data[i].get_vector_type() == vector_type::FLAT);
@@ -342,17 +365,34 @@ namespace components::vector {
         return types;
     }
 
-    size_t data_chunk_t::column_index(std::string_view key) const {
+    core::result_wrapper_t<size_t> data_chunk_t::column_index(std::string_view key) const {
         for (uint64_t i = 0; i < column_count(); i++) {
             if (data[i].type().alias() == key) {
-                return i;
+                return static_cast<size_t>(i);
             }
         }
-        assert(false && "data_chunk_t::column_index: no such column");
-        return std::numeric_limits<size_t>::max();
+        // Unknown name is user input, not an invariant — return an error, not a SIZE_MAX sentinel
+        // that indexes out of bounds under NDEBUG.
+        std::pmr::string message{resource_};
+        message.append("data_chunk_t::column_index: no column named \"");
+        message.append(key);
+        message.append("\"");
+        return core::error_t{core::error_code_t::field_not_exists, std::move(message)};
     }
 
-    std::pmr::vector<size_t> data_chunk_t::sub_column_indices(const std::pmr::vector<std::pmr::string>& path) const {
+    core::result_wrapper_t<std::pmr::vector<size_t>>
+    data_chunk_t::sub_column_indices(const std::pmr::vector<std::pmr::string>& path) const {
+        auto missing = [&](std::string_view segment) {
+            std::pmr::string message{resource_};
+            message.append("data_chunk_t::sub_column_indices: no column or field named \"");
+            message.append(segment);
+            message.append("\"");
+            return core::error_t{core::error_code_t::field_not_exists, std::move(message)};
+        };
+        if (path.empty()) {
+            std::pmr::string message{"data_chunk_t::sub_column_indices: empty path", resource_};
+            return core::error_t{core::error_code_t::field_not_exists, std::move(message)};
+        }
         std::pmr::vector<size_t> res(resource_);
         for (uint64_t i = 0; i < column_count(); i++) {
             if (core::pmr::operator==(data[i].type().alias(), path.front())) {
@@ -361,37 +401,35 @@ namespace components::vector {
             }
         }
         if (res.empty()) {
-            assert(false && "data_chunk_t::column_index: no such column");
-            return {size_t(-1)};
-        } else {
-            const vector_t* sub_column = &data[res.front()];
-            for (auto it = std::next(path.begin()); it != path.end(); ++it) {
-                bool field_found = false;
-                if (sub_column->type().type() == types::logical_type::ARRAY) {
-                    size_t index{};
-                    auto [p, ec] = std::from_chars(it->data(), it->data() + it->size(), index);
-                    if (ec == std::errc{} &&
-                        index < static_cast<const types::array_logical_type_extension*>(sub_column->type().extension())
-                                    ->size()) {
-                        res.emplace_back(index);
-                        sub_column = &sub_column->entry();
-                        field_found = true;
-                    }
-                } else {
-                    for (uint64_t i = 0; i < sub_column->type().child_types().size(); i++) {
-                        if (core::pmr::operator==(sub_column->type().child_types()[i].alias(), *it)) {
-                            res.emplace_back(i);
-                            if (std::next(it) != path.end()) {
-                                sub_column = sub_column->entries()[i].get();
-                            }
-                            field_found = true;
-                            break;
+            return missing(path.front());
+        }
+        const vector_t* sub_column = &data[res.front()];
+        for (auto it = std::next(path.begin()); it != path.end(); ++it) {
+            bool field_found = false;
+            if (sub_column->type().type() == types::logical_type::ARRAY) {
+                size_t index{};
+                auto [p, ec] = std::from_chars(it->data(), it->data() + it->size(), index);
+                if (ec == std::errc{} &&
+                    index < static_cast<const types::array_logical_type_extension*>(sub_column->type().extension())
+                                ->size()) {
+                    res.emplace_back(index);
+                    sub_column = &sub_column->entry();
+                    field_found = true;
+                }
+            } else {
+                for (uint64_t i = 0; i < sub_column->type().child_types().size(); i++) {
+                    if (core::pmr::operator==(sub_column->type().child_types()[i].alias(), *it)) {
+                        res.emplace_back(i);
+                        if (std::next(it) != path.end()) {
+                            sub_column = sub_column->entries()[i].get();
                         }
+                        field_found = true;
+                        break;
                     }
                 }
-                if (!field_found) {
-                    return {size_t(-1)};
-                }
+            }
+            if (!field_found) {
+                return missing(*it);
             }
         }
         return res;
@@ -401,8 +439,8 @@ namespace components::vector {
 
     void data_chunk_t::slice(const indexing_vector_t& indexing_vector, uint64_t count) {
         count_ = count;
-        // Explicit resource: a default-constructed pmr container would allocate on the process
-        // default resource, which this project forbids.
+        // Passes resource_ explicitly — a default-constructed pmr container would use the
+        // process default resource, which this project forbids.
         indexing_cache_t merge_cache{resource_};
         for (uint64_t c = 0; c < column_count(); c++) {
             data[c].slice(indexing_vector, count, merge_cache);
@@ -418,7 +456,6 @@ namespace components::vector {
         indexing_cache_t merge_cache{resource_};
         for (uint64_t c = 0; c < other.column_count(); c++) {
             if (other.data[c].get_vector_type() == vector_type::DICTIONARY) {
-                // already a dictionary! merge the dictionaries
                 data[col_offset + c].reference(other.data[c]);
                 data[col_offset + c].slice(indexing, count, merge_cache);
             } else {
@@ -506,8 +543,6 @@ namespace components::vector {
     }
 
     core::result_wrapper_t<types::logical_value_t> compact_to_bool_value(const std::pmr::vector<data_chunk_t>& chunks) {
-        // EXISTS: true iff ANY chunk carries a row (a multi-chunk / multi-branch result must not be
-        // judged empty from chunk 0 alone).
         bool any = false;
         for (const auto& c : chunks) {
             if (!c.empty()) {
@@ -520,8 +555,6 @@ namespace components::vector {
 
     core::result_wrapper_t<types::logical_value_t>
     compact_to_single_value(const std::pmr::vector<data_chunk_t>& chunks) {
-        // Count rows across ALL chunks — a scalar sub-query returning 2 rows may split across chunks, and
-        // that must still error (">1 row"), not silently take chunk 0's single cell.
         size_t total_rows = 0;
         size_t cols = 0;
         for (const auto& c : chunks) {
@@ -537,12 +570,8 @@ namespace components::vector {
                 }
             }
         }
-        // No extractable value cell → SQL NULL, not an error. This covers a scalar sub-query that returned
-        // zero rows AND the degenerate zero-column result an ungrouped aggregate emits when its input was
-        // filtered out (e.g. SELECT MAX(x) ... WHERE <no match> → one row, no column). Yielding an untyped
-        // NA null matches the value get_parameter() returns for an unbound id, so `x = (NULL scalar
-        // subquery)` compares against NULL and selects nothing. Only a genuine shape violation (>1 row, or
-        // >1 column) falls through to the error.
+        // No cell means SQL NULL, not an error — covers an empty scalar sub-query and the zero-column
+        // row an ungrouped aggregate emits when its filtered input matches nothing.
         if (total_rows == 0 || cols == 0) {
             return types::logical_value_t{chunks.front().resource(), nullptr};
         }
@@ -553,23 +582,20 @@ namespace components::vector {
 
     core::result_wrapper_t<types::logical_value_t>
     compact_to_array_value(const std::pmr::vector<data_chunk_t>& chunks) {
-        // IN / ANY / ALL list: gather EVERY row of EVERY chunk (unbounded — PostgreSQL treats
-        // `x IN (SELECT ...)` as a semi-join with no fixed row cap), not just chunk 0's ≤1024.
+        // Gathers every row of every chunk, unbounded — PostgreSQL treats `x IN (SELECT ...)` as
+        // a semi-join with no row cap, not capped at chunk 0's ≤1024.
         size_t total_rows = 0;
         for (const auto& c : chunks) {
             total_rows += c.size();
         }
         if (total_rows == 0) {
-            // Empty sub-query (e.g. `x IN (SELECT ... WHERE false)`): PostgreSQL treats
-            // this as an empty semi-join — `IN ()` matches nothing, `NOT IN ()` matches
-            // everything — NOT a type error. Return the SAME NA-null sentinel a zero-row
-            // scalar sub-query returns (compact_to_single_value above); the ANY/ALL
-            // evaluator special-cases the null array (no empty-array value built).
+            // An empty sub-query is an empty semi-join per PostgreSQL (`IN ()` matches nothing,
+            // `NOT IN ()` everything), not a type error — reuses the zero-row scalar sub-query's NA-null sentinel.
             return types::logical_value_t{chunks.front().resource(), nullptr};
         }
         std::vector<types::logical_value_t> array;
         array.reserve(total_rows);
-        const data_chunk_t* typed = nullptr; // first non-empty chunk — carries the element type
+        const data_chunk_t* typed = nullptr;
         for (const auto& c : chunks) {
             if (c.empty()) {
                 continue;

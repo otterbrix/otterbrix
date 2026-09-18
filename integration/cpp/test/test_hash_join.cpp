@@ -1,3 +1,4 @@
+#include "integration_fixture_path.hpp"
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
 
@@ -28,17 +29,8 @@ using expressions::side_t;
 using logical_plan::join_type;
 using operators::operator_type;
 
-// ----------------------------------------------------------------------------
-// Part 1 — substitution: the optimizer's rewrite_hash_joins must stamp a node_join_t
-// with algo()==hash (lowered to operator_hash_join_t by create_plan_join) exactly
-// when the condition is a single eq(left.key, right.key) on an inner/left/right/full
-// join, and leave it algo()==nested (lowered to operator_join_t) otherwise.
-//
-// We hand-build a logical join node whose ON-condition keys already carry
-// side()+path() — the exact post-validate state the real SQL→logical pipeline
-// reaches (transformer sets side(), validate_schema sets path()) — run the
-// optimizer rule, then lower with create_plan, mirroring the dispatcher pipeline.
-// ----------------------------------------------------------------------------
+// rewrite_hash_joins stamps algo()==hash exactly for a single eq(left.key,right.key) on an inner/left/right/full
+// join (nested otherwise); nodes are hand-built already carrying side()+path(), the real post-validate state.
 namespace {
 
     vector::data_chunk_t build_two_int_chunk(std::pmr::memory_resource* res) {
@@ -60,9 +52,7 @@ namespace {
         return k;
     }
 
-    // Two-column (key,val) chunk with caller-chosen column names + row count. The
-    // distinct column names let a create_plan-level test identify which source
-    // table backs each physical join child (build vs probe) after a build-side swap.
+    // Two-column chunk with caller-chosen names/rows; distinct names let a test tell build from probe after a swap.
     vector::data_chunk_t
     build_named_chunk(std::pmr::memory_resource* res, const char* key_name, const char* val_name, uint64_t rows) {
         std::pmr::vector<types::complex_logical_type> types(res);
@@ -86,9 +76,6 @@ TEST_CASE("integration::cpp::hash_join::substitution") {
     services::context_storage_t context(res, log_t{}, core::date::timezone_offset_t{});
     compute::function_registry_t registry(res);
 
-    // Builds a fresh join node (two raw-data children + one comparison condition),
-    // runs the optimizer's hash-join rewrite, lowers it with create_plan, and
-    // returns the resulting physical operator type.
     auto plan_type = [&](join_type jt, compare_type cmp, side_t ls, side_t rs) {
         auto cond = expressions::make_compare_expression(res,
                                                          cmp,
@@ -111,16 +98,13 @@ TEST_CASE("integration::cpp::hash_join::substitution") {
         CHECK(plan_type(join_type::left, compare_type::eq, side_t::left, side_t::right) == operator_type::hash_join);
         CHECK(plan_type(join_type::right, compare_type::eq, side_t::left, side_t::right) == operator_type::hash_join);
         CHECK(plan_type(join_type::full, compare_type::eq, side_t::left, side_t::right) == operator_type::hash_join);
-        // Operands swapped (right.key = left.key) is still an equi-join.
         CHECK(plan_type(join_type::inner, compare_type::eq, side_t::right, side_t::left) == operator_type::hash_join);
     }
 
     INFO("non-equi conditions keep the nested-loop join");
     {
-        // Not an equality comparison.
         CHECK(plan_type(join_type::inner, compare_type::gt, side_t::left, side_t::right) == operator_type::join);
         CHECK(plan_type(join_type::inner, compare_type::ne, side_t::left, side_t::right) == operator_type::join);
-        // eq, but both keys reference the same side — not a left↔right equi-join.
         CHECK(plan_type(join_type::inner, compare_type::eq, side_t::left, side_t::left) == operator_type::join);
     }
 
@@ -129,8 +113,7 @@ TEST_CASE("integration::cpp::hash_join::substitution") {
 
     INFO("nested-field equi-join (multi-element path) keeps the nested-loop join");
     {
-        // A path like [custom_type_col, f1] addresses a nested struct field; the hash
-        // probe only understands a single top-level column, so this must NOT be rewritten.
+        // A multi-element path addresses a nested struct field; the hash probe only understands a top-level column.
         auto lk = make_key(res, "l", side_t::left, 0);
         std::pmr::vector<size_t> lp{res};
         lp.push_back(0);
@@ -158,19 +141,11 @@ TEST_CASE("integration::cpp::hash_join::substitution") {
     }
 }
 
-// ----------------------------------------------------------------------------
-// Part 2 — correctness: drive the substituted hash join through real SQL and
-// check join cardinality/semantics for cases that stress the hash path:
-// duplicate keys, NULL keys, multi-chunk inputs (> DEFAULT_VECTOR_CAPACITY),
-// and string keys.
-// ----------------------------------------------------------------------------
 static const std::string db = "hashjoindb";
 
 TEST_CASE("integration::cpp::hash_join::correctness") {
-    auto config = test_create_config("/tmp/test_hash_join/base");
+    auto config = test_create_config(integration_fixture_path("test_hash_join/base"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto dispatcher = space.dispatcher();
     auto session = otterbrix::session_id_t();
@@ -186,17 +161,12 @@ TEST_CASE("integration::cpp::hash_join::correctness") {
     {
         create("dl");
         create("dr");
-        // left k=1 twice, k=2 once; right k=1 twice, k=3 once.
         REQUIRE(run("INSERT INTO " + db + ".dl (k, lv) VALUES (1, 10), (1, 11), (2, 20);")->is_success());
         REQUIRE(run("INSERT INTO " + db + ".dr (k, rv) VALUES (1, 100), (1, 101), (3, 300);")->is_success());
 
-        // k=1 → 2×2 cartesian = 4 matched rows; k=2,k=3 unmatched.
         CHECK(run("SELECT * FROM " + db + ".dl INNER JOIN " + db + ".dr ON dl.k = dr.k;")->size() == 4);
-        // LEFT: 4 matched + left-only (k=2) = 5.
         CHECK(run("SELECT * FROM " + db + ".dl LEFT JOIN " + db + ".dr ON dl.k = dr.k;")->size() == 5);
-        // RIGHT: 4 matched + right-only (k=3) = 5.
         CHECK(run("SELECT * FROM " + db + ".dl RIGHT JOIN " + db + ".dr ON dl.k = dr.k;")->size() == 5);
-        // FULL: 4 matched + left-only (k=2) + right-only (k=3) = 6.
         CHECK(run("SELECT * FROM " + db + ".dl FULL JOIN " + db + ".dr ON dl.k = dr.k;")->size() == 6);
     }
 
@@ -207,11 +177,8 @@ TEST_CASE("integration::cpp::hash_join::correctness") {
         REQUIRE(run("INSERT INTO " + db + ".nl (k, lv) VALUES (1, 10), (NULL, 20);")->is_success());
         REQUIRE(run("INSERT INTO " + db + ".nr (k, rv) VALUES (1, 100), (NULL, 200);")->is_success());
 
-        // Only k=1 matches; both NULL keys are dropped from the equi-join.
         CHECK(run("SELECT * FROM " + db + ".nl INNER JOIN " + db + ".nr ON nl.k = nr.k;")->size() == 1);
-        // LEFT: matched k=1 (1) + NULL-key left row as left-only (1) = 2.
         CHECK(run("SELECT * FROM " + db + ".nl LEFT JOIN " + db + ".nr ON nl.k = nr.k;")->size() == 2);
-        // FULL: matched k=1 (1) + NULL left-only (1) + NULL right-only (1) = 3.
         CHECK(run("SELECT * FROM " + db + ".nl FULL JOIN " + db + ".nr ON nl.k = nr.k;")->size() == 3);
     }
 
@@ -225,16 +192,13 @@ TEST_CASE("integration::cpp::hash_join::correctness") {
         r << "INSERT INTO " << db << ".br (k, rv) VALUES ";
         for (int i = 0; i < n; ++i) {
             l << "(" << i << ", " << i * 10 << ")" << (i == n - 1 ? ";" : ", ");
-            // right keys are the odd half [0, n) so exactly the even... use shifted overlap:
             r << "(" << (i + n / 2) << ", " << i << ")" << (i == n - 1 ? ";" : ", ");
         }
         REQUIRE(run(l.str())->is_success());
         REQUIRE(run(r.str())->is_success());
-        // left keys: [0, n); right keys: [n/2, n + n/2). Overlap = [n/2, n) = n/2 keys,
-        // each unique on both sides → n/2 matched rows.
+        // Right keys are shifted by n/2, giving a partial overlap so both matched and left-only rows are exercised.
         CHECK(run("SELECT * FROM " + db + ".bl INNER JOIN " + db + ".br ON bl.k = br.k;")->size() ==
               static_cast<size_t>(n / 2));
-        // LEFT join emits every left row at least once → n rows (n/2 matched + n/2 left-only).
         CHECK(run("SELECT * FROM " + db + ".bl LEFT JOIN " + db + ".br ON bl.k = br.k;")->size() ==
               static_cast<size_t>(n));
     }
@@ -245,27 +209,15 @@ TEST_CASE("integration::cpp::hash_join::correctness") {
         create("sr");
         REQUIRE(run("INSERT INTO " + db + ".sl (s, lv) VALUES ('a', 1), ('b', 2), ('a', 3);")->is_success());
         REQUIRE(run("INSERT INTO " + db + ".sr (s, rv) VALUES ('a', 10), ('c', 30);")->is_success());
-        // 'a' → 2 left × 1 right = 2 matched rows; 'b','c' unmatched.
         CHECK(run("SELECT * FROM " + db + ".sl INNER JOIN " + db + ".sr ON sl.s = sr.s;")->size() == 2);
     }
 }
 
-// ----------------------------------------------------------------------------
-// The batched join_builder gathers matched rows one output chunk
-// at a time with ONE indexed copy per (build-chunk, column), REORDERING rows so
-// that each such copy targets a contiguous range from a single build chunk. That
-// reorder makes output row order unspecified, so every value assert here is under
-// ORDER BY. A build side wider than DEFAULT_VECTOR_CAPACITY (2500 rows → 3 build
-// chunks) forces one output flush to span several build chunks, and > 1024 matches
-// force several output chunks — the exact paths a mis-built gather index would
-// scramble. The LEFT join additionally mixes > 1024 left-only NULL-pad rows with
-// matched rows inside a single builder.
-// ----------------------------------------------------------------------------
+// The batched join_builder reorders rows (one indexed copy per build-chunk/column), so results here are asserted
+// under ORDER BY; row counts here cross both build-chunk (2500 rows) and output-chunk (>1024 matches) boundaries.
 TEST_CASE("integration::cpp::hash_join::multi_build_chunk_values") {
-    auto config = test_create_config("/tmp/test_hash_join/mbchunk");
+    auto config = test_create_config(integration_fixture_path("test_hash_join/mbchunk"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto dispatcher = space.dispatcher();
     auto session = otterbrix::session_id_t();
@@ -288,9 +240,8 @@ TEST_CASE("integration::cpp::hash_join::multi_build_chunk_values") {
         REQUIRE(dispatcher->execute_sql(session, l.str())->is_success());
         REQUIRE(dispatcher->execute_sql(session, r.str())->is_success());
     }
-    // Left keys [0, n); right keys [shift, n + shift). Overlap = [shift, n) = n-shift
-    // unique keys → n-shift matched rows (> 1024). SELECT * column order is logical
-    // [left, right] = [mbl.k, mbl.lv, mbr.k, mbr.rv].
+    // Right keys are shifted by "shift", giving n-shift (>1024) matched keys to exercise multi-chunk output.
+    // SELECT * column order is [mbl.k, mbl.lv, mbr.k, mbr.rv].
     const int matched = n - shift; // 1250
 
     INFO("inner: every matched row gathered correctly across build chunks");
@@ -321,7 +272,6 @@ TEST_CASE("integration::cpp::hash_join::multi_build_chunk_values") {
             REQUIRE(cur->value(0, row).value<int64_t>() == k);       // mbl.k
             REQUIRE(cur->value(1, row).value<int64_t>() == k * 100); // mbl.lv
             if (k < shift) {
-                // left-only: no build match → NULL right columns.
                 REQUIRE(cur->value(2, row).is_null());
                 REQUIRE(cur->value(3, row).is_null());
             } else {
@@ -332,19 +282,8 @@ TEST_CASE("integration::cpp::hash_join::multi_build_chunk_values") {
     }
 }
 
-// ----------------------------------------------------------------------------
-// Build-side selection ("smaller side → hash build"), plan-time.
-//
-// operator_hash_join_t materializes its physical RIGHT child as the hash build.
-// create_plan_join moves the SMALLER table onto that build slot IFF the join is
-// INNER, both children are distinct base tables whose live row counts are known
-// (fetched into context.row_counts by execute_plan_full), and the current build
-// (logical-right) is the LARGER side. The swap re-orders the physical children,
-// so the ORIGIN table of the build (right_) child flips — observable here via the
-// build child's distinct key-column name. Outer joins, equal/missing/self-join
-// counts keep the default order. swapped_=true restores the
-// logical [left,right] output order so results stay identical (checked E2E below).
-// ----------------------------------------------------------------------------
+// create_plan_join moves the SMALLER table onto the physical RIGHT (build) slot IFF INNER, both children are
+// distinct base tables with known counts, and the default (right) build is larger; outer/self-join cases don't swap.
 TEST_CASE("integration::cpp::hash_join::build_side_selection") {
     std::pmr::monotonic_buffer_resource arena;
     auto* res = &arena;
@@ -354,11 +293,7 @@ TEST_CASE("integration::cpp::hash_join::build_side_selection") {
     constexpr oid_t left_table_oid = 42;
     constexpr oid_t right_table_oid = 43;
 
-    // Build an INNER-shaped hash join over two base tables (logical-left key col
-    // "lk", logical-right key col "rk"), stamp per-child table oids + the given row
-    // counts, lower via create_plan, and return the key-column NAME of whichever
-    // physical child became the hash build (right_). "lk" ⇒ the logical-left table
-    // moved into the build slot (swapped); "rk" ⇒ default order (not swapped).
+    // Returns the key-column name of whichever physical child became the hash build: "lk" means swapped, "rk" default.
     auto build_side_key_name =
         [&](join_type jt, uint64_t left_rows, uint64_t right_rows, bool populate_counts, bool same_oid) -> std::string {
         services::context_storage_t context(res, log_t{}, core::date::timezone_offset_t{});
@@ -410,20 +345,11 @@ TEST_CASE("integration::cpp::hash_join::build_side_selection") {
     { CHECK(build_side_key_name(join_type::left, 2, 5, true, false) == "rk"); }
 }
 
-// ----------------------------------------------------------------------------
-// Build-side selection end-to-end (disk ON). execute_plan_full fetches
-// live row counts for the INNER hash join's child tables, and create_plan_join
-// moves the SMALLER table onto the hash build. This query puts the SMALL table on
-// the LEFT and the LARGE table on the RIGHT, so the default build (right) is the
-// larger side → a correct impl swaps. The swap is correctness-neutral, so a
-// SELECT * per-cell check and a two-sided SUM over the join catch any column-order
-// inversion the swap could introduce.
-// ----------------------------------------------------------------------------
+// SMALL is on the LEFT and LARGE on the RIGHT, so the default (right) build is the larger side and a correct impl
+// swaps; a SELECT * per-cell check and a two-sided SUM catch any column-order inversion the swap could introduce.
 TEST_CASE("integration::cpp::hash_join::build_side_swap_values") {
-    auto config = test_create_config("/tmp/test_hash_join/buildside");
+    auto config = test_create_config(integration_fixture_path("test_hash_join/buildside"));
     test_clear_directory(config);
-    config.disk.on = true; // row-count fetch is gated on an owning disk agent
-    config.wal.on = false;
     test_spaces space(config);
     auto dispatcher = space.dispatcher();
     auto session = otterbrix::session_id_t();
@@ -433,7 +359,6 @@ TEST_CASE("integration::cpp::hash_join::build_side_swap_values") {
     REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE " + sdb + ".small();")->is_success());
     REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE " + sdb + ".large();")->is_success());
 
-    // small: keys 1..3 (sv = k*100). large: keys 1..30 (lv = k). Overlap = {1,2,3}.
     REQUIRE(
         dispatcher->execute_sql(session, "INSERT INTO " + sdb + ".small (k, sv) VALUES (1, 100), (2, 200), (3, 300);")
             ->is_success());
@@ -472,20 +397,12 @@ TEST_CASE("integration::cpp::hash_join::build_side_swap_values") {
                                                sdb + ".large l ON s.k = l.k;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        // matched keys {1,2,3}: SUM(small.sv) = 100+200+300 = 600; SUM(large.lv) = 1+2+3 = 6.
         REQUIRE(cur->value(0, 0).value<int64_t>() == 600);
         REQUIRE(cur->value(1, 0).value<int64_t>() == 6);
     }
 
-    // A single-table filter that matches NOTHING on the build (right) side. Pushdown
-    // pushes it below the join, so the build scan yields ZERO chunks (not one empty
-    // chunk). operator_hash_join_t::push must treat an empty build the same as an
-    // absent one — emit nothing — instead of dereferencing build_chunks.front() on
-    // an empty vector. Before the fix: null data_chunk_t → EXC_BAD_ACCESS in
-    // compute_join_layout under -O2 (Debug fires assert(!build_chunks.empty())).
-    // `small` (3 rows) stays the build side: it is smaller than `large` (30), so
-    // build-side selection does not swap it out. This is the SSB-load crash shrunk
-    // to a deterministic 2-table case.
+    // A filter matching nothing on the build side must yield zero build chunks treated as "no build", not a crash
+    // (the SSB-load EXC_BAD_ACCESS shrunk to a deterministic 2-table case); small stays the build side (it's smaller).
     INFO("empty build side (filter matches nothing) → 0 rows, no crash");
     {
         auto cur = dispatcher->execute_sql(session,
@@ -507,25 +424,12 @@ TEST_CASE("integration::cpp::hash_join::build_side_swap_values") {
     }
 }
 
-// ----------------------------------------------------------------------------
-// Multi-way (nested) cross-join promotion. An SSB-q2-shaped 3-table
-// comma join `FROM lo, p, s` lowers to a left-deep chain of CROSS joins with the
-// two equi predicates in a sibling match_t (WHERE), both keys stamped side=left.
-// promote_cross_joins must promote BOTH nested cross joins to INNER (each claiming
-// the conjunct that straddles its boundary) so rewrite_hash_joins can lower them to
-// hash joins; the single-table residual filter must keep applying. Column names are
-// distinct so the unqualified WHERE columns resolve unambiguously (the SSB shape).
-//
-// Hash lowering of the promoted joins is asserted at the plan level by
-// components/planner/test/test_promote_multiway.cpp; here we assert end-to-end row
-// correctness of the 3-table comma join (which without promotion runs as a slow
-// cross-product + residual filter — same rows, so this pins the join semantics).
-// ----------------------------------------------------------------------------
+// A 3-table comma join (SSB q2 shape) lowers to nested CROSS joins with both equi-predicates in a sibling WHERE;
+// promote_cross_joins must promote both to INNER so rewrite_hash_joins can hash them, keeping the residual filter.
+// Hash lowering is checked at the plan level by components/planner/test/test_promote_multiway.cpp; this is E2E rows.
 TEST_CASE("integration::cpp::hash_join::multiway_comma_join") {
-    auto config = test_create_config("/tmp/test_hash_join/multiway");
+    auto config = test_create_config(integration_fixture_path("test_hash_join/multiway"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
     test_spaces space(config);
     auto dispatcher = space.dispatcher();
     auto session = otterbrix::session_id_t();
@@ -538,17 +442,15 @@ TEST_CASE("integration::cpp::hash_join::multiway_comma_join") {
     REQUIRE(run("CREATE TABLE " + wdb + ".p();")->is_success());  // part-shaped dim
     REQUIRE(run("CREATE TABLE " + wdb + ".s();")->is_success());  // supplier-shaped dim
 
-    // lo(l_pk, l_sk, l_rev): part key, supplier key, revenue.
+    // lo=(l_pk,l_sk,l_rev): part/supplier key + revenue. p covers every part key; s covers only suppliers 10,20,
+    // so the l_sk=30 row has no matching supplier.
     REQUIRE(run("INSERT INTO " + wdb +
                 ".lo (l_pk, l_sk, l_rev) VALUES (1, 10, 100), (1, 20, 200), (2, 10, 300), (2, 20, 400), (3, 30, 500);")
                 ->is_success());
-    // p(p_pk, p_cat): every part key present; the l_sk=30 row has NO supplier.
     REQUIRE(run("INSERT INTO " + wdb + ".p (p_pk, p_cat) VALUES (1, 'A'), (2, 'B'), (3, 'A');")->is_success());
-    // s(s_sk, s_reg): only suppliers 10 and 20 (so l_sk=30 drops in the join).
     REQUIRE(run("INSERT INTO " + wdb + ".s (s_sk, s_reg) VALUES (10, 'X'), (20, 'Y');")->is_success());
 
-    // SELECT * column order = [lo | p | s] = [l_pk, l_sk, l_rev, p_pk, p_cat, s_sk, s_reg].
-    // Matches: l_pk=p_pk (all lo rows) then l_sk=s_sk drops the l_sk=30 row -> 4 rows.
+    // SELECT * column order = [l_pk, l_sk, l_rev, p_pk, p_cat, s_sk, s_reg].
     INFO("3-table comma join returns the correctly joined rows");
     {
         auto cur = run("SELECT * FROM " + wdb + ".lo, " + wdb + ".p, " + wdb + ".s WHERE l_pk = p_pk AND l_sk = s_sk;");
@@ -556,7 +458,6 @@ TEST_CASE("integration::cpp::hash_join::multiway_comma_join") {
         REQUIRE(cur->size() == 4);
         int64_t rev_sum = 0;
         for (size_t row = 0; row < cur->size(); ++row) {
-            // Both equi predicates must actually hold on every emitted row.
             REQUIRE(cur->value(0, row).value<int64_t>() == cur->value(3, row).value<int64_t>()); // l_pk == p_pk
             REQUIRE(cur->value(1, row).value<int64_t>() == cur->value(5, row).value<int64_t>()); // l_sk == s_sk
             rev_sum += cur->value(2, row).value<int64_t>();                                      // l_rev
@@ -564,8 +465,6 @@ TEST_CASE("integration::cpp::hash_join::multiway_comma_join") {
         CHECK(rev_sum == 1000); // 100 + 200 + 300 + 400 (the l_sk=30 / rev=500 row is unmatched)
     }
 
-    // A single-table residual filter (p_cat = 'A') must still apply after promotion:
-    // it keeps only the two rev-100/rev-200 rows (both p_pk=1, cat 'A').
     INFO("residual single-table filter still applies through multi-way promotion");
     {
         auto cur = run("SELECT * FROM " + wdb + ".lo, " + wdb + ".p, " + wdb +
@@ -580,21 +479,9 @@ TEST_CASE("integration::cpp::hash_join::multiway_comma_join") {
     }
 }
 
-// ----------------------------------------------------------------------------
-// Build-side selection vs a FILTERED side, plan-time. pushdown_filter wraps a
-// join input that carries a single-table WHERE in a fresh oid-less aggregate
-// (aggregate{source, match}), so the join child's own table_oid() is INVALID.
-// A direct-oid count gate would abstain there, and a statistics-free
-// tiebreaker would swap the filtered LEFT relation onto the hash build with
-// ZERO size information — a weakly-filtered HUGE left joined to a tiny
-// unfiltered right would build the HUGE side (memory blow-up).
-//
-// create_plan_join must resolve each side's EFFECTIVE base relation THROUGH the
-// wrapper and let live row counts decide: pre-filter left 1000 vs right 2 keeps
-// the tiny right as the build. The filter shape remains only an exact-count
-// TIE-break — a filtered relation is certainly no larger than its pre-filter
-// count, so at equal counts building the filtered side is evidence-backed.
-// ----------------------------------------------------------------------------
+// pushdown_filter wraps a join input's single-table WHERE in an oid-less aggregate{source,match}, so a direct-oid
+// count gate can't see through it; unresolved, a statistics-free tiebreaker could swap a weakly-filtered HUGE side
+// onto the build. create_plan_join resolves the EFFECTIVE relation; filtered vs unfiltered ties only at equal counts.
 TEST_CASE("integration::cpp::hash_join::filtered_side_swap_requires_size_evidence") {
     std::pmr::monotonic_buffer_resource arena;
     auto* res = &arena;
@@ -604,10 +491,6 @@ TEST_CASE("integration::cpp::hash_join::filtered_side_swap_requires_size_evidenc
     constexpr oid_t big_oid = 52;
     constexpr oid_t tiny_oid = 53;
 
-    // INNER hash join: logical-left = filter wrapper over the BIG table (bk/bv),
-    // logical-right = tiny unfiltered table (rk/rv). row_counts is seeded keyed
-    // by the EFFECTIVE base-table oids — the live counts the pre-lowering fetch
-    // provides for plain base tables.
     auto lower = [&](uint64_t big_rows, uint64_t tiny_rows) {
         services::context_storage_t context(res, log_t{}, core::date::timezone_offset_t{});
         context.known_oids.insert(big_oid);
@@ -617,9 +500,7 @@ TEST_CASE("integration::cpp::hash_join::filtered_side_swap_requires_size_evidenc
 
         auto big_table = logical_plan::make_node_raw_data(res, build_named_chunk(res, "bk", "bv", 100));
         big_table->set_table_oid(big_oid);
-        // The wrapper shape pushdown_filter synthesizes around a join input: an
-        // oid-less aggregate holding [source, match]; the WHERE is a plain
-        // col-vs-col compare (plan-time only — never executed here).
+        // Mimics pushdown_filter's wrapper shape: an oid-less aggregate{source, match}; the WHERE is never executed.
         auto where =
             expressions::make_compare_expression(res,
                                                  compare_type::gt,
@@ -653,7 +534,6 @@ TEST_CASE("integration::cpp::hash_join::filtered_side_swap_requires_size_evidenc
     INFO("huge filtered LEFT vs tiny RIGHT with live counts -> the tiny right STAYS the build");
     {
         auto plan = lower(1000, 2);
-        // The build must be the tiny raw-data child, NOT the filter wrapper.
         REQUIRE(plan->right()->type() == operator_type::raw_data);
         REQUIRE(plan->right()->output());
         REQUIRE(!plan->right()->output()->chunks().empty());
@@ -663,35 +543,16 @@ TEST_CASE("integration::cpp::hash_join::filtered_side_swap_requires_size_evidenc
     INFO("EXACT pre-filter count tie -> the filtered left (certainly <= tie) becomes the build");
     {
         auto plan = lower(2, 2);
-        // Swap fired: the build (right_) is the lowered filter wrapper.
         CHECK(plan->right()->type() == operator_type::match);
     }
 }
 
-// ----------------------------------------------------------------------------
-// Build-side selection at an EXACT pre-filter count tie (in-memory mode).
-//
-// operator_hash_join_t materializes its physical RIGHT child as the hash build.
-// Table storages live in the disk-manager agents even with disk.on=false
-// (pool-as-store), so execute_plan_full fetches live row counts here too, and
-// collect_inner_hash_join_oids resolves the filter-wrapped `filt` side through
-// pushdown_filter's oid-less wrapper: `filt` and `pln` both hold 3 pre-filter
-// rows — an exact tie. A pushed-down local WHERE filter only removes rows, so
-// the filtered LOGICAL-LEFT side (`filt`) is certainly <= the unfiltered right
-// (`pln`) — the evidence-backed tie-break moves it onto the hash build.
-// EXPLAIN renders the probe (physical left_) child first and the build
-// (physical right_) child second, so the UNfiltered `pln` (probe) is rendered
-// BEFORE the filtered `filt` (build). The swap is answer-neutral (swapped_
-// restores logical [left, right] output order), proven by the rows.
-//
-// Counts decide whenever both effective counts exist; the filter shape only
-// breaks an exact count tie.
-// ----------------------------------------------------------------------------
+// At an exact pre-filter count tie (filt and pln both 3 rows), collect_inner_hash_join_oids resolves filt through
+// pushdown_filter's wrapper; since a filtered side is certainly <= its pre-filter count, the tie-break moves filt
+// onto the build. EXPLAIN renders probe before build, so pln (probe) renders before filt (build); rows are unaffected.
 TEST_CASE("integration::cpp::hash_join::build_side_syntactic_inmemory") {
-    auto config = test_create_config("/tmp/test_hash_join/syntactic");
+    auto config = test_create_config(integration_fixture_path("test_hash_join/syntactic"));
     test_clear_directory(config);
-    config.disk.on = false; // in-memory: counts are still served by the pool-as-store disk agents
-    config.wal.on = false;
     test_spaces space(config);
     auto dispatcher = space.dispatcher();
     auto session = otterbrix::session_id_t();
@@ -715,7 +576,6 @@ TEST_CASE("integration::cpp::hash_join::build_side_syntactic_inmemory") {
         return t;
     };
 
-    // `filt` is filtered (x = 5); `pln` is not. `filt` is the logical-LEFT input.
     const std::string q = "SELECT * FROM " + sdb + ".filt JOIN " + sdb + ".pln ON filt.k = pln.k WHERE filt.x = 5";
 
     INFO("EXPLAIN: the filtered relation (filt) is the hash BUILD side, rendered AFTER the probe (pln)");
@@ -727,7 +587,6 @@ TEST_CASE("integration::cpp::hash_join::build_side_syntactic_inmemory") {
         const auto pos_pln = t.find("on pln");
         REQUIRE(pos_filt != std::string::npos);
         REQUIRE(pos_pln != std::string::npos);
-        // Probe (pln) precedes build (filt): pln is rendered first.
         CHECK(pos_pln < pos_filt);
     }
 
@@ -735,7 +594,6 @@ TEST_CASE("integration::cpp::hash_join::build_side_syntactic_inmemory") {
     {
         auto cur = run(q + " ORDER BY filt.k ASC;");
         REQUIRE(cur->is_success());
-        // filt.x = 5 keeps k in {1, 3}; join on k with pln -> 2 rows.
         // SELECT * column order = [filt.k, filt.x, pln.k, pln.y].
         REQUIRE(cur->size() == 2);
         CHECK(cur->value(0, 0).value<int64_t>() == 1);  // filt.k
@@ -749,26 +607,12 @@ TEST_CASE("integration::cpp::hash_join::build_side_syntactic_inmemory") {
     }
 }
 
-// ----------------------------------------------------------------------------
-// The row-count fetch must resolve a join input THROUGH pushdown_filter's
-// oid-less wrapper. `big` (8 rows) carries a weak local WHERE (x < 100, keeps
-// every row), so pushdown wraps it in the oid-less aggregate{scan, match}; a
-// collector reading only the DIRECT child's table_oid never fetches big's live
-// count, the count gate abstains, and a shape-only "filtered side is smaller"
-// guess would swap the HUGE filtered left onto the hash build (the SSB memory
-// blow-up shape). With the effective-oid descent in collect_inner_hash_join_oids
-// the counts decide: big 8 vs tiny 2 -> the tiny right STAYS the build (a
-// pushed filter is no evidence of size without a count tie).
-//
-// EXPLAIN renders the probe (physical left_) child first and the build
-// (physical right_) child second, so `big` (probe) must be rendered BEFORE
-// `tiny` (build).
-// ----------------------------------------------------------------------------
+// A weak WHERE (keeps all rows) still makes pushdown wrap big in an oid-less aggregate{scan, match}; without
+// descending through it in collect_inner_hash_join_oids, the count gate would abstain and risk swapping the HUGE
+// filtered side onto the build. With effective-oid descent, big 8 vs tiny 2 keeps tiny (probe renders before build).
 TEST_CASE("integration::cpp::hash_join::filtered_left_count_fetched_through_wrapper") {
-    auto config = test_create_config("/tmp/test_hash_join/wrapped_count");
+    auto config = test_create_config(integration_fixture_path("test_hash_join/wrapped_count"));
     test_clear_directory(config);
-    config.disk.on = false; // counts are still served by the pool-as-store disk agents
-    config.wal.on = false;
     test_spaces space(config);
     auto dispatcher = space.dispatcher();
     auto session = otterbrix::session_id_t();
@@ -795,7 +639,6 @@ TEST_CASE("integration::cpp::hash_join::filtered_left_count_fetched_through_wrap
         return t;
     };
 
-    // Weak filter on the LEFT (keeps all 8 rows) -> pushdown wraps `big`.
     const std::string q = "SELECT * FROM " + wdb + ".big JOIN " + wdb + ".tiny ON big.k = tiny.k WHERE big.x < 100";
 
     INFO("EXPLAIN: live counts resolved through the wrapper -> tiny (2 rows) stays the build");
@@ -807,7 +650,6 @@ TEST_CASE("integration::cpp::hash_join::filtered_left_count_fetched_through_wrap
         const auto pos_tiny = t.find("on tiny");
         REQUIRE(pos_big != std::string::npos);
         REQUIRE(pos_tiny != std::string::npos);
-        // Probe (big) precedes build (tiny): big is rendered first.
         CHECK(pos_big < pos_tiny);
     }
 
@@ -815,7 +657,7 @@ TEST_CASE("integration::cpp::hash_join::filtered_left_count_fetched_through_wrap
     {
         auto cur = run(q + " ORDER BY big.k ASC;");
         REQUIRE(cur->is_success());
-        // Keys {1, 2} match; SELECT * column order = [big.k, big.x, tiny.k, tiny.y].
+        // SELECT * column order = [big.k, big.x, tiny.k, tiny.y].
         REQUIRE(cur->size() == 2);
         CHECK(cur->value(0, 0).value<int64_t>() == 1);  // big.k
         CHECK(cur->value(1, 0).value<int64_t>() == 1);  // big.x

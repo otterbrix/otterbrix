@@ -14,8 +14,8 @@ namespace components::vector {
     constexpr size_t DEFAULT_VECTOR_CAPACITY = 1024;
 
     // Intrusively counted, not shared_ptr: the index array is copied by value all over the
-    // vector operations, so every copy used to touch a separate control block. std::shared_ptr
-    // is also on the project's forbidden list.
+    // vector operations, so a shared_ptr would give every copy its own control block to touch.
+    // std::shared_ptr is also on the project's forbidden list.
     struct indexing_data : public boost::intrusive_ref_counter<indexing_data> {
         explicit indexing_data(std::pmr::memory_resource* resource, size_t count);
 
@@ -23,8 +23,8 @@ namespace components::vector {
     };
 
     // pmr container: it is built per merge/slice on the caller's resource rather than on the
-    // global one. The mapped type is still a shared_ptr — vector_buffer_t's ownership is a
-    // separate change, flagged by a TODO in vector_buffer.hpp.
+    // global one. The mapped type is still a shared_ptr: vector_buffer_t's ownership has not
+    // been moved off it.
     using indexing_cache_t = std::pmr::unordered_map<uint64_t*, std::shared_ptr<vector_buffer_t>>;
 
     class indexing_vector_t {

@@ -34,14 +34,14 @@ namespace components::table::storage {
         resource_->deallocate(internal_buffer_, internal_size_);
     }
 
-    void file_buffer_t::read(core::filesystem::file_handle_t& handle, uint64_t location) {
+    bool file_buffer_t::read(core::filesystem::file_handle_t& handle, uint64_t location) {
         assert(type_ != file_buffer_type::TINY_BUFFER);
-        handle.read(internal_buffer_, internal_size_, location);
+        return handle.read(internal_buffer_, internal_size_, location);
     }
 
-    void file_buffer_t::write(core::filesystem::file_handle_t& handle, uint64_t location) {
+    bool file_buffer_t::write(core::filesystem::file_handle_t& handle, uint64_t location) {
         assert(type_ != file_buffer_type::TINY_BUFFER);
-        handle.write(internal_buffer_, internal_size_, location);
+        return handle.write(internal_buffer_, internal_size_, location);
     }
 
     void file_buffer_t::reallocate_buffer(size_t new_size) {

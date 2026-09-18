@@ -8,116 +8,130 @@
 #include <memory>
 #include <services/disk/manager_disk.hpp>
 #include <services/dispatcher/dispatcher.hpp>
+#include <services/index/index_rebuild_driver.hpp>
 #include <services/index/manager_index.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 
 namespace components::operators {
 
+#ifdef DEV_MODE
+    namespace {
+        checkpoint_repopulate_gate_t* g_checkpoint_repopulate_gate = nullptr;
+    } // namespace
+
+    void dev_set_checkpoint_repopulate_gate(checkpoint_repopulate_gate_t* gate) { g_checkpoint_repopulate_gate = gate; }
+    checkpoint_repopulate_gate_t* dev_checkpoint_repopulate_gate() { return g_checkpoint_repopulate_gate; }
+#endif
+
     operator_checkpoint_t::operator_checkpoint_t(std::pmr::memory_resource* resource, log_t log)
         : read_write_operator_t(resource, std::move(log), operator_type::checkpoint) {}
 
     actor_zeta::unique_future<void> operator_checkpoint_t::await_async_and_resume(pipeline::context_t* ctx) {
-        // Flush dirty index btrees so a post-recovery rebuild starts from a
-        // consistent on-disk index state.
+        // flush_all_indexes first arms the durable rebuild_marker_path_ guard; a refusal here stops the round
+        // before compaction. Per test_index_flush_refusal, skipping this lets clear()'s recursive
+        // remove_directory erase an injected fault (a `metadata` path replaced by a directory) before
+        // anything reads it — turning a real fault into a false success.
         if (ctx->index_address != actor_zeta::address_t::empty_address()) {
-            auto [_fi, fif] = actor_zeta::send(ctx->index_address,
-                                               &services::index::manager_index_t::flush_all_indexes,
-                                               ctx->session);
-            co_await std::move(fif);
+            auto [_fi, fif] = actor_zeta::otterbrix::send(ctx->index_address,
+                                                          &services::index::manager_index_t::flush_all_indexes,
+                                                          ctx->session);
+            // THE STATEMENT IS THE CHANNEL. The last step below truncates the WAL, so an index
+            // that cannot reach the device must stop the round here rather than be logged
+            // inside the agent and forgotten.
+            if (auto flush_error = co_await std::move(fif); flush_error.contains_error()) {
+                set_error(flush_error);
+                mark_failed();
+                co_return;
+            }
         }
 
         // snapshot the current WAL id BEFORE the checkpoint so the per-table
         // W-TORN (prev/current) snapshot pins a known recovery boundary.
         services::wal::id_t wal_max_id{0};
         if (ctx->wal_address != actor_zeta::address_t::empty_address()) {
-            auto [_wi, wif] = actor_zeta::send(ctx->wal_address,
-                                               &services::wal::manager_wal_replicate_t::current_wal_id,
-                                               ctx->session);
+            auto [_wi, wif] = actor_zeta::otterbrix::send(ctx->wal_address,
+                                                          &services::wal::manager_wal_replicate_t::current_wal_id,
+                                                          ctx->session);
             wal_max_id = co_await std::move(wif);
         }
 
-        // Compact watermark for checkpoint_inner's MVCC-gated compact: the
-        // dispatcher's visible-to-all horizon (current_message_sender is the
-        // dispatcher — the executor wires parent_address_ into the context).
-        // 0 when no dispatcher is wired (test topologies): compacts and the
-        // affected per-table checkpoints are then skipped, never unsafe.
+        // Compact watermark = dispatcher's visible-to-all horizon; 0 when no dispatcher is wired (test
+        // topologies), which just skips the affected per-table compacts safely.
         std::uint64_t compact_watermark = 0;
         if (ctx->current_message_sender != actor_zeta::address_t::empty_address()) {
-            auto [_wm, wmf] = actor_zeta::send(ctx->current_message_sender,
-                                               &services::dispatcher::manager_dispatcher_t::txn_compact_watermark_msg);
+            auto [_wm, wmf] =
+                actor_zeta::otterbrix::send(ctx->current_message_sender,
+                                            &services::dispatcher::manager_dispatcher_t::txn_compact_watermark_msg);
             compact_watermark = co_await std::move(wmf);
         }
 
         // checkpoint_all. No-op when disk is off.
         services::wal::id_t checkpoint_wal_id{0};
         if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
-            auto [_cp, cpf] = actor_zeta::send(ctx->disk_address,
-                                               &services::disk::manager_disk_t::checkpoint_all,
-                                               ctx->session,
-                                               wal_max_id,
-                                               compact_watermark);
+            auto [_cp, cpf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                          &services::disk::manager_disk_t::checkpoint_all,
+                                                          ctx->session,
+                                                          wal_max_id,
+                                                          compact_watermark);
             checkpoint_wal_id = co_await std::move(cpf);
         }
 
-        if (checkpoint_wal_id > services::wal::id_t{0} && ctx->wal_address != actor_zeta::address_t::empty_address()) {
-            auto [_wt, wtf] = actor_zeta::send(ctx->wal_address,
-                                               &services::wal::manager_wal_replicate_t::truncate_before,
-                                               ctx->session,
-                                               checkpoint_wal_id);
-            co_await std::move(wtf);
+#ifdef DEV_MODE
+        // Measurement seam (see the header): park the round between the compaction above and the
+        // index rebuild below. Non-blocking — one no-op cross-actor round-trip per poll parks this
+        // coroutine without pinning an actor thread, so a reader from another session can land
+        // inside the window.
+        while (auto* gate = dev_checkpoint_repopulate_gate()) {
+            if (!gate->hold()) {
+                break;
+            }
+            if (ctx->wal_address == actor_zeta::address_t::empty_address()) {
+                break;
+            }
+            auto [_gp, gpf] = actor_zeta::otterbrix::send(ctx->wal_address,
+                                                          &services::wal::manager_wal_replicate_t::current_wal_id,
+                                                          ctx->session);
+            [[maybe_unused]] const services::wal::id_t ping = co_await std::move(gpf);
+        }
+#endif
+
+        // Must run after checkpoint_all (compact() renumbers row ids the indexes still hold pre-compact) and
+        // before the truncate below, its point of no return. The rebuild_marker_path_ guard armed in step 1
+        // covers a mid-rebuild crash: a restart that finds it still armed declines to wire those indexes.
+        // repopulate_indexes_after_compaction is the ONE shared driver — also used by auto-checkpoint and
+        // VACUUM. It scans under the all-committed snapshot, NOT ctx->txn: this statement's snapshot can
+        // predate a neighbour's commit, and the clear-then-refill rebuild would silently drop that row
+        // from the index (test_checkpoint_rebuild_snapshot.cpp). The driver's parameter type accepts only
+        // committed_rows_snapshot(), so no caller can hand it a statement snapshot and compile.
+        {
+            auto rebuild_error = co_await services::index::repopulate_indexes_after_compaction(
+                resource_,
+                ctx->disk_address,
+                ctx->index_address,
+                ctx->session,
+                services::index::committed_rows_snapshot(),
+                ctx->execution_context.timezone_offset);
+            if (rebuild_error.contains_error()) {
+                // Fail the CHECKPOINT loudly rather than leave behind a lying index, and leave the
+                // journal alone — the truncate that would trim it is below this return.
+                set_error(rebuild_error);
+                mark_failed();
+                co_return;
+            }
         }
 
-        // Index rebuild. This MUST run AFTER checkpoint_all: checkpoint_inner
-        // compact()s each table's on-disk storage, which renumbers row ids
-        // (0-based, gap-free post-compact). The in-memory index engines hold
-        // POSITIONAL row refs into the pre-compact layout, so leaving them as-is
-        // would make every post-checkpoint index_scan return stale/wrong rows.
-        // repopulate_table clears the on-disk index backing AND the in-memory
-        // engine before re-inserting, so both btree duplicate-growth and
-        // disk_hash wrong-row drift are wiped in one pass. Sequential per-oid is
-        // fine: checkpoint is a cold, exclusive operation.
-        if (ctx->index_address != actor_zeta::address_t::empty_address()) {
-            std::pmr::vector<components::catalog::oid_t> indexed_oids{resource_};
-            {
-                auto [_io, iof] = actor_zeta::send(ctx->index_address,
-                                                   &services::index::manager_index_t::all_indexed_oids,
-                                                   ctx->session);
-                indexed_oids = co_await std::move(iof);
-            }
-
-            for (const auto table_oid : indexed_oids) {
-                std::uint64_t total = 0;
-                {
-                    auto [_tr, trf] = actor_zeta::send(ctx->disk_address,
-                                                       &services::disk::manager_disk_t::storage_total_rows,
-                                                       ctx->session,
-                                                       table_oid);
-                    total = co_await std::move(trf);
-                }
-
-                // total==0 (table emptied by compact) still repopulates: the
-                // clear step inside repopulate_table wipes stale index entries.
-                // storage_scan_segment returns an empty vector for count==0, which
-                // is exactly what repopulate_table expects.
-                std::pmr::vector<components::vector::data_chunk_t> scan_data(resource_);
-                {
-                    auto [_ss, ssf] = actor_zeta::send(ctx->disk_address,
-                                                       &services::disk::manager_disk_t::storage_scan_segment,
-                                                       ctx->session,
-                                                       table_oid,
-                                                       std::int64_t{0},
-                                                       total);
-                    scan_data = co_await std::move(ssf);
-                }
-
-                auto [_rp, rpf] = actor_zeta::send(ctx->index_address,
-                                                   &services::index::manager_index_t::repopulate_table,
-                                                   ctx->session,
-                                                   table_oid,
-                                                   std::move(scan_data),
-                                                   total,
-                                                   ctx->execution_context.timezone_offset);
-                co_await std::move(rpf);
+        if (checkpoint_wal_id > services::wal::id_t{0} && ctx->wal_address != actor_zeta::address_t::empty_address()) {
+            auto [_wt, wtf] = actor_zeta::otterbrix::send(ctx->wal_address,
+                                                          &services::wal::manager_wal_replicate_t::truncate_before,
+                                                          ctx->session,
+                                                          checkpoint_wal_id);
+            // THE STATEMENT IS THE CHANNEL, same as the index flush in step 1. A truncate that
+            // refused means a segment could not be read — the WAL is not in the state this
+            // CHECKPOINT reports, so say so instead of returning success over it.
+            if (auto truncate_error = co_await std::move(wtf); truncate_error.contains_error()) {
+                set_error(truncate_error);
+                mark_failed();
+                co_return;
             }
         }
 

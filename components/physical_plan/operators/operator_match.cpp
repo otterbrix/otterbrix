@@ -73,7 +73,6 @@ namespace components::operators {
                                                   const vector::vector_t* decisions,
                                                   const std::vector<size_t>& populated_cols,
                                                   bool sparse,
-                                                  bool row_ids_meaningful,
                                                   const std::pmr::vector<types::complex_logical_type>& types,
                                                   const vector::data_chunk_t& chunk,
                                                   int64_t& limit_total,
@@ -83,40 +82,41 @@ namespace components::operators {
             return core::error_t::no_error();
         }
 
-        vector::data_chunk_t out_chunk = sparse ? vector::data_chunk_t(resource, types, populated_cols, chunk.size())
-                                                : vector::data_chunk_t(resource, types, chunk.size());
-        int64_t out_count = 0;
+        // Build the selection of surviving rows. The selection MUST be sized to the full input
+        // length (set_index is unchecked); only the first out_count slots are filled/read.
+        vector::indexing_vector_t sel(resource);
+        sel.reset(chunk.size());
+        uint64_t out_count = 0;
         for (size_t i = 0; i < chunk.size(); i++) {
             const bool keep = decisions == nullptr || (!decisions->is_null(i) && decisions->get_value<bool>(i));
-            if (keep) {
-                for (size_t j : populated_cols) {
-                    out_chunk.set_value(j, static_cast<uint64_t>(out_count), chunk.data[j].value(i));
-                }
-                // Only propagate the input row_id when it is a REAL absolute id
-                // (input is a scan source's batch). Over a SINK
-                // (group/join) the input's row_ids are zero-filled placeholders; the
-                // out_chunk's row_ids are likewise zero-initialized, so leaving them
-                // (no copy) reproduces exactly what the materialized path produced
-                // over a sink — and crucially never hands a downstream DML/index
-                // consumer the bogus absolute id 0.
-                if (row_ids_meaningful) {
-                    out_chunk.row_ids.data<int64_t>()[out_count] = chunk.row_ids.data<int64_t>()[i];
-                }
-                ++out_count;
-                // Count-cap: the AUTHORITATIVE affected-row bound for DML …WHERE f(x) LIMIT n
-                // (no operator_limit over a DML root), and an advisory read-cap under
-                // operator_limit for SELECT. OFFSET is applied by operator_limit (SELECT) and
-                // does not exist for DML, so this stream is never skipped, only capped.
-                ++limit_total;
-                if (!limit_.check(limit_total)) {
-                    break;
-                }
+            if (!keep) {
+                continue;
+            }
+            sel.set_index(out_count, i);
+            ++out_count;
+            // Count-cap: the AUTHORITATIVE affected-row bound for DML …WHERE f(x) LIMIT n
+            // (no operator_limit over a DML root), and an advisory read-cap under
+            // operator_limit for SELECT. OFFSET is applied by operator_limit (SELECT) and
+            // does not exist for DML, so this stream is never skipped, only capped.
+            ++limit_total;
+            if (!limit_.check(limit_total)) {
+                break;
             }
         }
-        out_chunk.set_cardinality(static_cast<uint64_t>(out_count));
-        if (out_count > 0) {
-            out.emplace_back(std::move(out_chunk));
+        if (out_count == 0) {
+            return core::error_t::no_error();
         }
+
+        // TYPED, no-box gather, the same one operator_having uses: data_chunk_t::copy routes each
+        // column through vector_ops::copy instead of building a logical_value_t per cell, skips
+        // placeholder columns and sets the target cardinality itself. row_ids are gathered
+        // unconditionally: over a SINK the input's are zero-filled placeholders, so gathering them
+        // reproduces exactly the zero sentinel the per-cell path left behind.
+        vector::data_chunk_t out_chunk = sparse ? vector::data_chunk_t(resource, types, populated_cols, out_count)
+                                                : vector::data_chunk_t(resource, types, out_count);
+        chunk.copy(out_chunk, sel, out_count);
+        out.emplace_back(std::move(out_chunk));
+        note_emitted();
         return core::error_t::no_error();
     }
 
@@ -177,11 +177,23 @@ namespace components::operators {
                              decisions,
                              stream_populated_cols_,
                              stream_sparse_,
-                             row_ids_meaningful_(),
                              stream_types_,
                              input,
                              stream_limit_total_,
                              out);
+    }
+
+    core::error_t operator_match_t::finalize(pipeline::context_t* /*ctx*/, chunks_vector_t& out) {
+        if (emitted() || stream_types_.empty()) {
+            return core::error_t::no_error();
+        }
+        auto* res = stream_resource_ ? stream_resource_ : resource_;
+        vector::data_chunk_t empty = stream_sparse_
+                                         ? vector::data_chunk_t(res, stream_types_, stream_populated_cols_, 0)
+                                         : vector::data_chunk_t(res, stream_types_, 0);
+        empty.set_cardinality(0);
+        out.emplace_back(std::move(empty));
+        return core::error_t::no_error();
     }
 
     actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>

@@ -3,6 +3,7 @@ project(cpp_otterbrix)
 
 set(${PROJECT_NAME}_sources
       base_spaces.cpp
+      catalog_listing.cpp
       wrapper_dispatcher.cpp
       otterbrix.cpp
       connection.cpp

@@ -7,7 +7,7 @@
 namespace configuration {
 
     struct config_log final {
-        std::filesystem::path path{std::filesystem::current_path() / "log"};
+        std::filesystem::path path;
         log_t::level level{log_t::level::trace};
 
         explicit config_log(const std::filesystem::path& path = std::filesystem::current_path())
@@ -15,9 +15,7 @@ namespace configuration {
     };
 
     struct config_wal final {
-        std::filesystem::path path{std::filesystem::current_path() / "wal"};
-        bool on{true};
-        bool sync_to_disk{true};
+        std::filesystem::path path;
         uint32_t page_size{4096};
         std::size_t max_segment_size{4 * 1024 * 1024}; // 4 MB per segment
         // WAL_AUTO_CHECKPOINT_THRESHOLD_BYTES: trigger checkpoint_all when cumulative WAL
@@ -29,13 +27,18 @@ namespace configuration {
     };
 
     struct config_disk final {
-        std::filesystem::path path{std::filesystem::current_path() / "disk"};
-        bool on{true};
+        // No default member initializer: the constructor is the only way to build this (not an
+        // aggregate), so a second initializer here would just silently disagree with it.
+        std::filesystem::path path;
         int agent = 2;
         uint64_t bitcask_flush_threshold{1000};
         uint64_t bitcask_segment_record_limit{100};
         uint64_t btree_flush_threshold{1000};
 
+        // `<base>/wal`, not `<base>/disk`: the table tree shares the WAL directory on purpose --
+        // the shipped layout since 96d5ffaa. Renaming would not move existing databases, only
+        // strand them (a reopen finds an empty directory and bootstraps fresh). Pinned by
+        // config_disk_path_layout in services/disk/tests/test_config_layout.cpp.
         explicit config_disk(const std::filesystem::path& path = std::filesystem::current_path())
             : path(path / "wal") {}
     };

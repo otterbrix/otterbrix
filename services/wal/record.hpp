@@ -13,36 +13,36 @@ namespace services::wal {
         PHYSICAL_INSERT = 10,
         PHYSICAL_DELETE = 11,
         PHYSICAL_UPDATE = 12,
-        // Dynamic-schema growth for IN_MEMORY / computed tables. Written BEFORE the
-        // PHYSICAL_INSERT that depends on the new columns so WAL-first replay re-applies
-        // the schema change first. Payload is a 0-row data_chunk whose columns ARE the
-        // new columns (alias-tagged types). Idempotent on replay (already-present
-        // columns are skipped).
+        // Written BEFORE the dependent PHYSICAL_INSERT so WAL-first replay applies the schema
+        // change first; payload is a 0-row data_chunk whose columns ARE the new ones, idempotent on replay.
         PHYSICAL_ADD_COLUMN = 13,
     };
 
     struct record_t final {
-        size_tt size;
-        crc32_t crc32;
-        crc32_t last_crc32;
-        id_t id;
+        // Resource must arrive at construction: pmr move-assignment doesn't adopt the source's
+        // allocator, so assigning it after construction left decode_record allocating on the
+        // process-global arena; last_crc32/id are likewise zeroed until the CRC check succeeds.
+        explicit record_t(std::pmr::memory_resource* resource)
+            : physical_data(resource)
+            , physical_row_ids(resource) {}
+
+        size_tt size{0};
+        crc32_t crc32{0};
+        crc32_t last_crc32{0};
+        id_t id{0};
         uint64_t transaction_id{0};
-        // MVCC commit_id from txn_manager_->commit(); lets snapshot-aware
-        // replay restore published_horizon_ and the in_flight set. 0 on
-        // non-COMMIT records.
+        // From txn_manager_->commit(); replay uses it to restore published_horizon_/in_flight; 0 on non-COMMIT records.
         uint64_t commit_id{0};
         wal_record_type record_type{wal_record_type::COMMIT};
 
-        // Physical WAL fields. physical_data holds the record's payload as a batch of
-        // ≤DEFAULT_VECTOR_CAPACITY chunks (empty for DELETE / no-payload records).
+        // physical_data batches the payload as ≤DEFAULT_VECTOR_CAPACITY chunks; empty for DELETE/no-payload records.
         components::catalog::oid_t table_oid{components::catalog::INVALID_OID};
-        std::pmr::vector<components::vector::data_chunk_t> physical_data{std::pmr::get_default_resource()};
-        std::pmr::vector<int64_t> physical_row_ids{std::pmr::get_default_resource()};
+        std::pmr::vector<components::vector::data_chunk_t> physical_data;
+        std::pmr::vector<int64_t> physical_row_ids;
         uint64_t physical_row_start{0};
         uint64_t physical_row_count{0};
         core::date::timezone_offset_t session_tz{};
 
-        // Error tracking
         bool is_corrupt{false};
 
         bool is_valid() const { return size > 0 && !is_corrupt; }

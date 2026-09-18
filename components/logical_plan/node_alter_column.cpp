@@ -40,7 +40,7 @@ namespace components::logical_plan {
                 case alter_column_op::drop:
                     return "$computed_field_unregister[" + column_name_ + "]";
                 case alter_column_op::rename:
-                    break;
+                    break; // never emitted — see create_plan's computed rename case
             }
         }
         switch (op_) {

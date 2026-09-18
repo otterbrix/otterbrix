@@ -27,7 +27,23 @@ namespace components::expressions {
             , variant_select_{key.variant_select_}
             , absent_ok_{key.absent_ok_} {}
 
+        // Plain copy binds to the process-default resource (pmr default), not the source's arena.
+        // Copying with the source's allocator instead is a UAF once that arena frees — measured
+        // in components/context/tests/test_context_pmr_residency.cpp: a 43-char name came back
+        // as 90 bytes of poison. Use the allocator-extended constructor below to place on a named arena.
         key_t(const key_t& key) = default;
+
+        // No null-check on `resource`: the member-init list allocates before any body runs, so a null resource faults here, at the first member.
+        key_t(const key_t& key, std::pmr::memory_resource* resource)
+            : side_{key.side_}
+            , storage_{key.storage_, resource}
+            , qualifier_{key.qualifier_, resource}
+            , path_{key.path_, resource}
+            , cast_type_{key.cast_type_}
+            , variant_select_{key.variant_select_}
+            , absent_ok_{key.absent_ok_} {}
+
+        // propagate_on_container_copy_assignment is false for polymorphic_allocator, so the default already keeps each member's own allocator.
         key_t& operator=(const key_t& key) = default;
 
         explicit key_t(std::pmr::vector<std::pmr::string> str_vector, side_t side = side_t::undefined)

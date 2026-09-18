@@ -23,9 +23,6 @@ fn make_config(base: &str) -> (config_t, String, String, String, String) {
         wal_path: make_sv(&wal_path),
         disk_path: make_sv(&disk_path),
         main_path: make_sv(&main_path),
-        wal_on: false,
-        disk_on: false,
-        sync_to_disk: false,
     };
     (cfg, log_path, wal_path, disk_path, main_path)
 }

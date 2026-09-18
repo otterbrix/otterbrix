@@ -29,14 +29,25 @@ namespace components::sort {
 
     public:
         explicit columnar_sorter_t() = default;
-        explicit columnar_sorter_t(size_t index,
+        explicit columnar_sorter_t(std::pmr::memory_resource* resource,
+                                   size_t index,
                                    order order_ = order::ascending,
                                    null_order null_order_ = null_order::last);
 
-        void add(size_t index, order order_ = order::ascending, null_order null_order_ = null_order::last);
+        // Takes the resource explicitly: the single-index form builds the path itself, and a
+        // default-constructed pmr container would place it on the process default resource.
+        void add(std::pmr::memory_resource* resource,
+                 size_t index,
+                 order order_ = order::ascending,
+                 null_order null_order_ = null_order::last);
         void add(const std::pmr::vector<size_t>& col_path,
                  order order_ = order::ascending,
                  null_order null_order_ = null_order::last);
+
+        void clear() noexcept {
+            keys_.clear();
+            chunk_ = nullptr;
+        }
 
         void set_chunk(const vector::data_chunk_t& chunk);
 

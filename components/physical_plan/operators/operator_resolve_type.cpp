@@ -50,14 +50,14 @@ namespace components::operators {
             } else if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
                 std::pmr::vector<std::uint64_t> ns_keys(resource_);
                 ns_keys.emplace_back(catalog::pg_namespace_col::nspname);
-                auto [_n, nf] =
-                    actor_zeta::send(ctx->disk_address,
-                                     &services::disk::manager_disk_t::read_chunks_by_key,
-                                     exec_ctx,
-                                     kPgNamespace,
-                                     std::move(ns_keys),
-                                     components::operators::make_key_chunk(resource_, std::string_view{entry.dbname}),
-                                     std::pmr::vector<std::uint64_t>{resource_});
+                auto [_n, nf] = actor_zeta::otterbrix::send(
+                    ctx->disk_address,
+                    &services::disk::manager_disk_t::read_chunks_by_key,
+                    exec_ctx,
+                    kPgNamespace,
+                    std::move(ns_keys),
+                    components::operators::make_key_chunk(resource_, std::string_view{entry.dbname}),
+                    std::pmr::vector<std::uint64_t>{resource_});
                 auto ns_batches_r = co_await std::move(nf);
                 if (ns_batches_r.has_error()) {
                     // A failed pg_namespace read is not a miss; saying "not found" here hides it.
@@ -79,7 +79,7 @@ namespace components::operators {
             std::pmr::vector<std::uint64_t> typ_keys(resource_);
             typ_keys.emplace_back(catalog::pg_type_col::typname);
             typ_keys.emplace_back(catalog::pg_type_col::typnamespace);
-            auto [_t, tf] = actor_zeta::send(
+            auto [_t, tf] = actor_zeta::otterbrix::send(
                 ctx->disk_address,
                 &services::disk::manager_disk_t::read_chunks_by_key,
                 exec_ctx,
@@ -112,7 +112,14 @@ namespace components::operators {
                 md.typdefspec = std::string(batch.get_value<std::string_view>(3, 0));
             }
             if (!md.typdefspec.empty()) {
-                md.type = catalog::decode_type_spec(resource_, md.typdefspec);
+                auto md_type_r = catalog::decode_type_spec(resource_, md.typdefspec);
+                if (md_type_r.has_error()) {
+                    // An unreadable typdefspec is catalog corruption; answering a guessed
+                    // type would let every use of this UDT reinterpret bytes silently.
+                    set_error(md_type_r.error());
+                    co_return;
+                }
+                md.type = std::move(md_type_r.value());
             } else {
                 const auto lt = catalog::oid_to_builtin_type(md.type_oid);
                 if (lt != types::logical_type::UNKNOWN) {

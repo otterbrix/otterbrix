@@ -2,10 +2,22 @@
 #include <components/expressions/execution_dag_builder.hpp>
 #include <components/table/data_table.hpp>
 #include <components/table/storage/buffer_pool.hpp>
-#include <components/table/storage/in_memory_block_manager.hpp>
+#include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
 #include <core/file/local_file_system.hpp>
+#include <cstdio>
 #include <math.h>
+#include <string>
+#include <unistd.h>
+
+namespace {
+    // delete_rows answers a refusal, not just a count: result_wrapper_t::value() asserts the
+    // channel was cleared first, so a test that wants the number has to clear it.
+    uint64_t deleted_or_fail(core::result_wrapper_t<uint64_t> r) {
+        REQUIRE_FALSE(r.has_error());
+        return r.value();
+    }
+} // namespace
 
 TEST_CASE("components::table::data_table") {
     using namespace components::types;
@@ -61,10 +73,14 @@ TEST_CASE("components::table::data_table") {
     union_fields.emplace_back(logical_type::STRING_LITERAL, "string");
     complex_logical_type union_type = complex_logical_type::create_union(union_fields, "test_union");
 
+    // Real .otbx: test_size is more than one row group, so closing a group writes through to disk.
+    const std::string db_path = "/tmp/test_otterbrix_data_table_" + std::to_string(::getpid()) + ".otbx";
+    std::remove(db_path.c_str());
     core::filesystem::local_file_system_t fs;
     auto buffer_pool = storage::buffer_pool_t(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24);
     auto buffer_manager = storage::standard_buffer_manager_t(&resource, fs, buffer_pool);
-    auto block_manager = storage::in_memory_block_manager_t(buffer_manager, storage::DEFAULT_BLOCK_ALLOC_SIZE);
+    auto block_manager = storage::single_file_block_manager_t(buffer_manager, fs, db_path);
+    REQUIRE_FALSE(block_manager.create_new_database().has_error());
 
     std::vector<column_definition_t> columns;
     columns.reserve(8);
@@ -302,6 +318,7 @@ TEST_CASE("components::table::data_table") {
         }
         if (L.smallint != absent) {
             logical_value_t value = result.data[L.smallint].value(local);
+            CAPTURE(idx, local, L.smallint, result.size());
             REQUIRE(value.type().type() == logical_type::SMALLINT);
             REQUIRE(value.value<int16_t>() == static_cast<int16_t>(idx));
         }
@@ -361,7 +378,15 @@ TEST_CASE("components::table::data_table") {
                 rows.set_value(local, static_cast<int64_t>(base + local));
             }
             data_chunk_t result(&resource, data_table->copy_types(), count);
-            data_table->fetch(result, column_indices, rows, count, state, std::vector<size_t>{});
+            // fetch_visibility_t carries no default, so SNAPSHOT is spelled out.
+            data_table->fetch(result,
+                              column_indices,
+                              rows,
+                              count,
+                              state,
+                              std::vector<size_t>{},
+                              transaction_data{},
+                              fetch_visibility_t::SNAPSHOT);
             REQUIRE(result.size() == count);
             for (size_t local = 0; local < count; local++) {
                 check_cols(result, local, base + local, base_layout);
@@ -425,7 +450,7 @@ TEST_CASE("components::table::data_table") {
             v.set_value(i / 2, int64_t(i));
         }
         auto state = data_table->initialize_delete({});
-        auto deleted_count = data_table->delete_rows(*state, v, test_size / 2, 0);
+        auto deleted_count = deleted_or_fail(data_table->delete_rows(*state, v, test_size / 2, 0));
         REQUIRE(deleted_count == test_size / 2);
     }
     INFO("Scan after delete");
@@ -499,4 +524,6 @@ TEST_CASE("components::table::data_table") {
             });
         }
     }
+
+    std::remove(db_path.c_str());
 }

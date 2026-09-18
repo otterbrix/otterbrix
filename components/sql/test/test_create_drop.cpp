@@ -1,5 +1,9 @@
 #include <catch2/catch_test_macros.hpp>
+#include <components/logical_plan/node_alter_table.hpp>
 #include <components/logical_plan/node_create_collection.hpp>
+#include <components/logical_plan/node_create_index.hpp>
+#include <components/logical_plan/node_create_macro.hpp>
+#include <components/logical_plan/node_drop.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/parser/pg_functions.h>
 #include <components/sql/transformer/transformer.hpp>
@@ -251,6 +255,8 @@ TEST_CASE("components::sql::index") {
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
+    // CREATE INDEX registers TWO table lookups, like DROP INDEX below: the indexed table, and the
+    // index's own name (probing pg_class for a relation already using it).
     SECTION("create with uuid") {
         auto create =
             raw_parser(&arena_resource, "CREATE INDEX some_idx ON uuid.db.schema.table (field);")->lst.front().data;
@@ -260,7 +266,7 @@ TEST_CASE("components::sql::index") {
         }(transformer.transform(pg_cell_to_node_cast(create)).finalize()));
         REQUIRE(result.sub_queries.back()->type() == node_type::create_index_t);
         REQUIRE(entry_count(result.catalog_resolves.namespaces) == 1);
-        REQUIRE(entry_count(result.catalog_resolves.tables) == 1);
+        REQUIRE(entry_count(result.catalog_resolves.tables) == 2);
     }
 
     SECTION("create with schema") {
@@ -272,10 +278,10 @@ TEST_CASE("components::sql::index") {
         }(transformer.transform(pg_cell_to_node_cast(create)).finalize()));
         REQUIRE(result.sub_queries.back()->type() == node_type::create_index_t);
         REQUIRE(entry_count(result.catalog_resolves.namespaces) == 1);
-        REQUIRE(entry_count(result.catalog_resolves.tables) == 1);
+        REQUIRE(entry_count(result.catalog_resolves.tables) == 2);
     }
 
-    TEST_TRANSFORMER_OK("CREATE INDEX some_idx ON db.table (field);", node_type::create_index_t, 1, 1);
+    TEST_TRANSFORMER_OK("CREATE INDEX some_idx ON db.table (field);", node_type::create_index_t, 1, 2);
 
     // DROP INDEX names TWO pg_class rows — the parent table and the index — so it
     // registers two table lookups, and the drop node carries both names.
@@ -323,4 +329,349 @@ TEST_CASE("components::sql::types") {
     // INSERT is wrapped in sequence_t(resolve_table, resolve_constraint,
     // insert) — no dbname so no resolve_namespace.
     TEST_TRANSFORMER_OK("INSERT INTO table_ (custom_type_name) VALUES (ROW('text', 42))", node_type::insert_t, 0, 1);
+}
+
+// Reading only objects->lst.front() would plan `DROP TABLE a, b` as a silent no-op drop of `a` alone.
+TEST_CASE("components::sql::drop_names_every_object_or_refuses") {
+    auto resource = core::pmr::otterbrix_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
+    transform::transformer transformer(&resource);
+
+    auto refusal_of = [&](const char* query) {
+        auto stmt = raw_parser(&arena_resource, query)->lst.front().data;
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
+        REQUIRE(result.has_error());
+        return std::string{result.error().what};
+    };
+
+    SECTION("DROP TABLE a, b") {
+        const std::string what = refusal_of("DROP TABLE db_name.first_table, db_name.second_table");
+        CHECK(what.find("second_table") != std::string::npos);
+    }
+
+    SECTION("DROP SEQUENCE a, b") {
+        const std::string what = refusal_of("DROP SEQUENCE db_name.seq_a, db_name.seq_b");
+        CHECK(what.find("seq_b") != std::string::npos);
+    }
+
+    SECTION("DROP VIEW a, b, c") {
+        const std::string what = refusal_of("DROP VIEW db_name.v1, db_name.v2, db_name.v3");
+        CHECK(what.find("v2") != std::string::npos);
+        CHECK(what.find("v3") != std::string::npos);
+    }
+
+    SECTION("DROP INDEX a, b") {
+        const std::string what = refusal_of("DROP INDEX db_name.tbl.idx_a, db_name.tbl.idx_b");
+        CHECK(what.find("idx_b") != std::string::npos);
+    }
+
+    SECTION("DROP TYPE a, b") {
+        const std::string what = refusal_of("DROP TYPE type_a, type_b");
+        CHECK(what.find("type_b") != std::string::npos);
+    }
+
+    SECTION("a single object is still planned") {
+        auto stmt = raw_parser(&arena_resource, "DROP TABLE db_name.only_one")->lst.front().data;
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
+        REQUIRE_FALSE(result.has_error());
+        REQUIRE(result.value().sub_queries.back()->type() == node_type::drop_t);
+    }
+}
+
+// Any method that is not the literal "hash" must not collapse into index_type::single.
+TEST_CASE("components::sql::create_index_access_method") {
+    auto resource = core::pmr::otterbrix_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
+    transform::transformer transformer(&resource);
+
+    auto plan_of = [&](const char* query) {
+        auto stmt = raw_parser(&arena_resource, query)->lst.front().data;
+        return transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
+    };
+
+    SECTION("USING gin is refused, and the refusal names gin") {
+        auto result = plan_of("CREATE INDEX gin_idx ON db.tbl USING gin (field);");
+        REQUIRE(result.has_error());
+        CHECK(std::string{result.error().what}.find("gin") != std::string::npos);
+    }
+
+    SECTION("a misspelled method is refused, and the refusal names it") {
+        auto result = plan_of("CREATE INDEX typo_idx ON db.tbl USING hsah (field);");
+        REQUIRE(result.has_error());
+        CHECK(std::string{result.error().what}.find("hsah") != std::string::npos);
+    }
+
+    SECTION("USING brin is refused") {
+        REQUIRE(plan_of("CREATE INDEX brin_idx ON db.tbl USING brin (field);").has_error());
+    }
+
+    SECTION("USING spgist is refused") {
+        REQUIRE(plan_of("CREATE INDEX sp_idx ON db.tbl USING spgist (field);").has_error());
+    }
+
+    SECTION("USING hash still builds a hashed index") {
+        auto result = plan_of("CREATE INDEX h_idx ON db.tbl USING hash (field);");
+        REQUIRE_FALSE(result.has_error());
+        auto node = result.value().sub_queries.back();
+        REQUIRE(node->type() == node_type::create_index_t);
+        CHECK(reinterpret_cast<node_create_index_ptr&>(node)->type() == index_type::hashed);
+    }
+
+    SECTION("USING btree, and the omitted clause, still build a single index") {
+        for (const char* query :
+             {"CREATE INDEX b_idx ON db.tbl USING btree (field);", "CREATE INDEX d_idx ON db.tbl (field);"}) {
+            auto result = plan_of(query);
+            REQUIRE_FALSE(result.has_error());
+            auto node = result.value().sub_queries.back();
+            REQUIRE(node->type() == node_type::create_index_t);
+            CHECK(reinterpret_cast<node_create_index_ptr&>(node)->type() == index_type::single);
+        }
+    }
+}
+
+// IndexStmt's unique/whereClause/options/tableSpace fields must each be refused if unread, not silently dropped.
+TEST_CASE("components::sql::create_index_declared_clauses_are_not_dropped") {
+    auto resource = core::pmr::otterbrix_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
+    transform::transformer transformer(&resource);
+
+    auto plan_of = [&](const char* query) {
+        auto stmt = raw_parser(&arena_resource, query)->lst.front().data;
+        return transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
+    };
+
+    SECTION("CREATE UNIQUE INDEX is refused, and the refusal says UNIQUE") {
+        auto result = plan_of("CREATE UNIQUE INDEX u_idx ON db.tbl (field);");
+        REQUIRE(result.has_error());
+        CHECK(std::string{result.error().what}.find("UNIQUE") != std::string::npos);
+    }
+
+    SECTION("a partial-index WHERE is refused, not silently widened to a full index") {
+        auto result = plan_of("CREATE INDEX p_idx ON db.tbl (field) WHERE field > 0;");
+        REQUIRE(result.has_error());
+        CHECK(std::string{result.error().what}.find("WHERE") != std::string::npos);
+    }
+
+    SECTION("WITH options are refused, not dropped") {
+        auto result = plan_of("CREATE INDEX w_idx ON db.tbl (field) WITH (fillfactor = 70);");
+        REQUIRE(result.has_error());
+        CHECK(std::string{result.error().what}.find("WITH") != std::string::npos);
+    }
+
+    SECTION("TABLESPACE is refused, not dropped") {
+        auto result = plan_of("CREATE INDEX t_idx ON db.tbl (field) TABLESPACE fast_disk;");
+        REQUIRE(result.has_error());
+        CHECK(std::string{result.error().what}.find("TABLESPACE") != std::string::npos);
+    }
+}
+
+// transform_create_function reads only a one-part and a two-part funcname; a three-part
+// name must be refused, not silently registered under an empty dbname/relname.
+TEST_CASE("components::sql::create_function_shape_is_carried_or_refused") {
+    auto resource = core::pmr::otterbrix_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
+    transform::transformer transformer(&resource);
+
+    auto plan_of = [&](const char* query) {
+        auto stmt = raw_parser(&arena_resource, query)->lst.front().data;
+        return transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
+    };
+
+    SECTION("a three-part name is refused, and the refusal spells the name out") {
+        auto result = plan_of("CREATE FUNCTION cat.sch.fn(x INT) RETURNS INT AS 'x -> x';");
+        REQUIRE(result.has_error());
+        CHECK(std::string{result.error().what}.find("cat.sch.fn") != std::string::npos);
+    }
+
+    SECTION("an unnamed parameter is refused: a macro parameter is addressed by name") {
+        auto result = plan_of("CREATE FUNCTION db.f(INT) RETURNS INT AS 'x -> x';");
+        REQUIRE(result.has_error());
+    }
+
+    SECTION("a parameter DEFAULT is refused, not dropped") {
+        auto result = plan_of("CREATE FUNCTION db.f(x INT DEFAULT 5) RETURNS INT AS 'x -> x';");
+        REQUIRE(result.has_error());
+        CHECK(std::string{result.error().what}.find("x") != std::string::npos);
+    }
+
+    SECTION("an OUT parameter is refused: a macro has no output parameters") {
+        auto result = plan_of("CREATE FUNCTION db.f(OUT x INT) RETURNS INT AS 'x -> x';");
+        REQUIRE(result.has_error());
+    }
+
+    SECTION("RETURNS TABLE is refused: its columns are not input parameters") {
+        // Otherwise the grammar merges the TABLE columns into `parameters`, giving the macro the wrong arity.
+        auto result = plan_of("CREATE FUNCTION db.f(x INT) RETURNS TABLE (y INT) AS 'x -> x';");
+        REQUIRE(result.has_error());
+    }
+
+    SECTION("an option other than AS is refused, and the refusal names it") {
+        auto result = plan_of("CREATE FUNCTION db.f(x INT) RETURNS INT LANGUAGE sql;");
+        REQUIRE(result.has_error());
+        CHECK(std::string{result.error().what}.find("language") != std::string::npos);
+    }
+
+    SECTION("an empty AS body is refused") {
+        auto result = plan_of("CREATE FUNCTION db.f(x INT) RETURNS INT AS '';");
+        REQUIRE(result.has_error());
+    }
+
+    SECTION("a two-part AS clause is refused: an object file is not a macro body") {
+        auto result = plan_of("CREATE FUNCTION db.f(x INT) RETURNS INT AS 'obj_file', 'link_symbol';");
+        REQUIRE(result.has_error());
+    }
+
+    SECTION("OR REPLACE is refused, not silently degraded to plain CREATE") {
+        auto result = plan_of("CREATE OR REPLACE FUNCTION db.f(x INT) RETURNS INT AS 'x -> x';");
+        REQUIRE(result.has_error());
+        CHECK(std::string{result.error().what}.find("OR REPLACE") != std::string::npos);
+    }
+
+    SECTION("a WITH definition is refused, not dropped") {
+        auto result = plan_of("CREATE FUNCTION db.f(x INT) RETURNS INT AS 'x -> x' WITH (isStrict);");
+        REQUIRE(result.has_error());
+    }
+
+    SECTION("the supported shape still comes through whole") {
+        auto result = plan_of("CREATE FUNCTION db.add2(x INT, y INT) RETURNS INT AS 'x, y -> x + y';");
+        REQUIRE_FALSE(result.has_error());
+        auto node = result.value().sub_queries.back();
+        REQUIRE(node->type() == node_type::create_macro_t);
+        auto& macro = reinterpret_cast<node_create_macro_ptr&>(node);
+        CHECK(macro->macroname() == "add2");
+        CHECK(macro->dbname() == "db");
+        REQUIRE(macro->parameters().size() == 2);
+        CHECK(macro->parameters()[0] == "x");
+        CHECK(macro->parameters()[1] == "y");
+        CHECK(macro->body_sql() == "x, y -> x + y");
+    }
+
+    SECTION("a one-part name still lands on relname, not on dbname") {
+        auto result = plan_of("CREATE FUNCTION solo(x INT) RETURNS INT AS 'x -> x';");
+        REQUIRE_FALSE(result.has_error());
+        auto node = result.value().sub_queries.back();
+        REQUIRE(node->type() == node_type::create_macro_t);
+        auto& macro = reinterpret_cast<node_create_macro_ptr&>(node);
+        CHECK(macro->macroname() == "solo");
+        CHECK(macro->dbname().empty());
+    }
+}
+
+// CREATE honours IF NOT EXISTS; this pins the other half of the pair.
+TEST_CASE("components::sql::drop_carries_missing_ok") {
+    auto resource = core::pmr::otterbrix_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
+    transform::transformer transformer(&resource);
+
+    auto transform_drop = [&](const char* query) {
+        auto stmt = linitial(raw_parser(&arena_resource, query));
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
+        REQUIRE(!result.has_error());
+        auto node = result.value().sub_queries.back();
+        REQUIRE(node->type() == node_type::drop_t);
+        return boost::intrusive_ptr{static_cast<node_drop_t*>(node.get())};
+    };
+
+    SECTION("DROP TABLE IF EXISTS carries missing_ok") {
+        REQUIRE(transform_drop("DROP TABLE IF EXISTS db.t;")->missing_ok());
+    }
+    SECTION("plain DROP TABLE stays loud") { REQUIRE_FALSE(transform_drop("DROP TABLE db.t;")->missing_ok()); }
+    SECTION("DROP INDEX IF EXISTS carries missing_ok") {
+        REQUIRE(transform_drop("DROP INDEX IF EXISTS db.t.idx;")->missing_ok());
+    }
+    SECTION("plain DROP INDEX stays loud") { REQUIRE_FALSE(transform_drop("DROP INDEX db.t.idx;")->missing_ok()); }
+    SECTION("DROP VIEW IF EXISTS carries missing_ok") {
+        REQUIRE(transform_drop("DROP VIEW IF EXISTS db.v;")->missing_ok());
+    }
+    SECTION("DROP SEQUENCE IF EXISTS carries missing_ok") {
+        REQUIRE(transform_drop("DROP SEQUENCE IF EXISTS db.s;")->missing_ok());
+    }
+    SECTION("DROP TYPE IF EXISTS carries missing_ok") {
+        REQUIRE(transform_drop("DROP TYPE IF EXISTS mood;")->missing_ok());
+    }
+    SECTION("DROP DATABASE IF EXISTS carries missing_ok (its own DropdbStmt flag)") {
+        REQUIRE(transform_drop("DROP DATABASE IF EXISTS db;")->missing_ok());
+    }
+    SECTION("plain DROP DATABASE stays loud") { REQUIRE_FALSE(transform_drop("DROP DATABASE db;")->missing_ok()); }
+}
+
+// gram.y's opt_drop_behavior has three alternatives but two values: the empty one and a
+// written RESTRICT deliberately collapse to the same restrict_ (PostgreSQL parity).
+TEST_CASE("components::sql::drop_carries_written_behavior") {
+    auto resource = core::pmr::otterbrix_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
+    transform::transformer transformer(&resource);
+
+    using components::catalog::drop_behavior_t;
+
+    auto behavior_of = [&](const char* query) {
+        auto stmt = linitial(raw_parser(&arena_resource, query));
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
+        REQUIRE(!result.has_error());
+        auto node = result.value().sub_queries.back();
+        REQUIRE(node->type() == node_type::drop_t);
+        return static_cast<node_drop_t*>(node.get())->behavior();
+    };
+
+    SECTION("DROP TABLE CASCADE") { REQUIRE(behavior_of("DROP TABLE db.t CASCADE;") == drop_behavior_t::cascade_); }
+    SECTION("bare DROP TABLE defaults to RESTRICT") {
+        REQUIRE(behavior_of("DROP TABLE db.t;") == drop_behavior_t::restrict_);
+    }
+    SECTION("DROP TABLE RESTRICT is the same value as the bare form") {
+        REQUIRE(behavior_of("DROP TABLE db.t RESTRICT;") == drop_behavior_t::restrict_);
+    }
+    SECTION("DROP VIEW CASCADE") { REQUIRE(behavior_of("DROP VIEW db.v CASCADE;") == drop_behavior_t::cascade_); }
+    SECTION("DROP SEQUENCE CASCADE") {
+        REQUIRE(behavior_of("DROP SEQUENCE db.s CASCADE;") == drop_behavior_t::cascade_);
+    }
+    SECTION("DROP TYPE CASCADE — the arm that does not build through wrap_one") {
+        REQUIRE(behavior_of("DROP TYPE mood CASCADE;") == drop_behavior_t::cascade_);
+    }
+    SECTION("DROP INDEX CASCADE — the other arm that does not build through wrap_one") {
+        REQUIRE(behavior_of("DROP INDEX db.t.idx CASCADE;") == drop_behavior_t::cascade_);
+    }
+}
+
+// The same reading, per ALTER TABLE clause. The subcommand carries it because a
+// multi-clause ALTER can write a different word on each clause.
+TEST_CASE("components::sql::alter_drop_column_carries_written_behavior") {
+    auto resource = core::pmr::otterbrix_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
+    transform::transformer transformer(&resource);
+
+    using components::catalog::drop_behavior_t;
+
+    auto subcommands_of = [&](const char* query) {
+        auto stmt = linitial(raw_parser(&arena_resource, query));
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
+        REQUIRE(!result.has_error());
+        auto node = result.value().sub_queries.back();
+        REQUIRE(node->type() == node_type::alter_table_t);
+        return static_cast<node_alter_table_t*>(node.get())->subcommands();
+    };
+
+    SECTION("ALTER TABLE ... DROP COLUMN CASCADE") {
+        auto subs = subcommands_of("ALTER TABLE db.t DROP COLUMN c CASCADE;");
+        REQUIRE(subs.size() == 1);
+        REQUIRE(subs.front().behavior == drop_behavior_t::cascade_);
+    }
+    SECTION("bare DROP COLUMN defaults to RESTRICT") {
+        auto subs = subcommands_of("ALTER TABLE db.t DROP COLUMN c;");
+        REQUIRE(subs.size() == 1);
+        REQUIRE(subs.front().behavior == drop_behavior_t::restrict_);
+    }
+    SECTION("DROP COLUMN RESTRICT is the same value as the bare form") {
+        auto subs = subcommands_of("ALTER TABLE db.t DROP COLUMN c RESTRICT;");
+        REQUIRE(subs.size() == 1);
+        REQUIRE(subs.front().behavior == drop_behavior_t::restrict_);
+    }
+    SECTION("one word per clause, not one per statement") {
+        auto subs = subcommands_of("ALTER TABLE db.t DROP COLUMN a CASCADE, DROP COLUMN b;");
+        REQUIRE(subs.size() == 2);
+        REQUIRE(subs.front().behavior == drop_behavior_t::cascade_);
+        REQUIRE(subs.back().behavior == drop_behavior_t::restrict_);
+        // IF EXISTS is per-clause too, and must not have been swapped with the behavior.
+        REQUIRE_FALSE(subs.front().missing_ok);
+        REQUIRE_FALSE(subs.back().missing_ok);
+    }
 }

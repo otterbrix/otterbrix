@@ -160,10 +160,10 @@ namespace components::table {
         filter = table_filter_tree;
     }
 
-    const std::vector<storage_index_t>& table_scan_state::column_ids() {
-        assert(!column_ids_.empty());
-        return column_ids_;
-    }
+    // An empty list is a legal scan ("count visible rows, read no column"): SELECT of a column
+    // ALTER TABLE ADD COLUMN cataloged but no INSERT has materialized yet reaches it, answered
+    // with NULLs by table_storage_adapter_t. No assert here -- it would abort that read path.
+    const std::vector<storage_index_t>& table_scan_state::column_ids() { return column_ids_; }
 
     bool collection_scan_state::scan_committed(vector::data_chunk_t& result, table_scan_type type) {
         while (row_group) {

@@ -52,36 +52,28 @@ namespace components::operators {
         if (projected_cols_.empty()) {
             return vector::data_chunk_t{resource_, types, 0};
         }
-        // Pruned-scan contract (PR #477): pruned scans emit FULL-WIDTH chunks whose
-        // non-projected columns are buffer-less placeholders, so column ordinals stay
-        // stable plan-wide (expression key paths are never remapped after prune_columns).
-        // The schema'd 0-row empty-guard must honor the same shape as real batches —
-        // operators above index it by table ordinal. An empty `types` (the 0-column
-        // drain sentinel) still degrades to a 0-column chunk here.
+        // Pruned-scan contract (PR #477): pruned scans emit full-width chunks whose non-projected
+        // columns are buffer-less placeholders, so column ordinals stay stable plan-wide (expression
+        // key paths are never remapped after prune_columns). The schema'd 0-row empty-guard must honor
+        // the same shape as real batches, since operators above index it by table ordinal; an empty
+        // `types` (the 0-column drain sentinel) still degrades to a 0-column chunk here.
         return vector::data_chunk_t{resource_, types, projected_cols_, 0};
     }
 
-    // --- Push-based streaming pipeline source (PER-BATCH FETCH-NEXT, bounded) ---
-    // FIRST call: one-time setup (short-circuits, build the filter, the storage_types await for the
-    //   empty-guard schema), then OPEN the cursor (storage_fetch_next_batch, cursor_id==0, passing
-    //   the filter + offset+limit head cap) and return its first batch.
-    // SUBSEQUENT calls: ADVANCE the SAME cursor (cursor_id_!=0, no filter) and return one batch.
-    // Each call does at most ONE cross-actor fetch await; the N awaits are sequential across calls
-    // in this nested operator coroutine (driven by execute_pipeline), so the single-slot awaited
-    // continuation is republished+cleared between awaits — no lost-wakeup. Peak scan memory = one
-    // batch (zero pins survive a round-trip; the agent re-seeks a transient scan state from a
-    // stored position).
+    // Each call does at most one cross-actor fetch await; the N awaits are sequential across calls in
+    // this nested operator coroutine (driven by execute_pipeline), so the single-slot awaited
+    // continuation is republished+cleared between awaits — no lost-wakeup. Peak scan memory is one
+    // batch: no pins survive a round-trip, and the agent re-seeks a transient scan state from a stored
+    // position.
     actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
     full_scan::source_next(pipeline::context_t* ctx) {
         if (drained_) {
             co_return make_drain_chunk(std::pmr::vector<types::complex_logical_type>{resource_});
         }
 
-        // No-table sentinel (no-FROM SELECT): emit ONE synthetic single-row batch
-        // carrying one placeholder column (not the 0-column drain sentinel), then drain.
-        // operator_select_t projects its constant/arithmetic columns over this one row to
-        // produce the single constants row (the placeholder is ignored), matching the
-        // legacy virtual-row path. No disk round-trip.
+        // No-table sentinel (no-FROM SELECT): emit one synthetic single-row batch with one placeholder
+        // column (not the 0-column drain sentinel), then drain. operator_select_t projects its
+        // constant/arithmetic columns over this row (the placeholder is ignored); no disk round-trip.
         if (table_oid_ == components::catalog::INVALID_OID) {
             drained_ = true;
             std::pmr::vector<types::complex_logical_type> types(resource_);
@@ -94,10 +86,24 @@ namespace components::operators {
         if (!opened_) {
             opened_ = true;
 
-            // Short-circuit: all_false → empty result, immediately drained.
+            // Cached for the no-data empty-guard below: answering a refusal with an empty type list
+            // would build the filter against a table with no columns and shape the guard chunk wrong.
+            auto [_t, tf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                        &services::disk::manager_disk_t::storage_types,
+                                                        ctx->session,
+                                                        table_oid_);
+            auto types_result = co_await std::move(tf);
+            if (types_result.has_error()) {
+                set_error(types_result.error());
+                mark_failed();
+                co_return types_result.convert_error<vector::data_chunk_t>();
+            }
+            guard_types_ = std::move(types_result.value());
+
             if (expression_ && expression_->type() == expressions::compare_type::all_false) {
                 drained_ = true;
-                co_return make_drain_chunk(std::pmr::vector<types::complex_logical_type>{resource_});
+                emitted_any_ = true;
+                co_return make_drain_chunk(guard_types_);
             }
 
             // Short-circuit: null parameter in a scalar comparison — SQL NULL semantics.
@@ -111,18 +117,12 @@ namespace components::operators {
                 if (it != ctx->parameters.parameters.end() && it->second.is_null()) {
                     if (expression_->type() != expressions::compare_type::all) {
                         drained_ = true;
-                        co_return make_drain_chunk(std::pmr::vector<types::complex_logical_type>{resource_});
+                        emitted_any_ = true;
+                        co_return make_drain_chunk(guard_types_);
                     }
                     null_param_skip_filter = true;
                 }
             }
-
-            // Get types to build the filter (await 1). Cached for the no-data empty-guard below.
-            auto [_t, tf] = actor_zeta::send(ctx->disk_address,
-                                             &services::disk::manager_disk_t::storage_types,
-                                             ctx->session,
-                                             table_oid_);
-            guard_types_ = co_await std::move(tf);
 
             std::unique_ptr<table::table_filter_t> filter;
             if (!null_param_skip_filter) {
@@ -137,19 +137,19 @@ namespace components::operators {
             }
 
             // OPEN the cursor: the read-cap (offset+limit head cap) is pushed down as the agent's
-            // post-filter matched-row COUNT cap. SELECT OFFSET is applied by operator_limit above,
+            // post-filter matched-row count cap. SELECT OFFSET is applied by operator_limit above,
             // so every scan receives offset()==0 and head_cap() == limit here.
             const int64_t scan_limit = limit_.head_cap();
 
-            auto [_s, sf] = actor_zeta::send(ctx->disk_address,
-                                             &services::disk::manager_disk_t::storage_fetch_next_batch,
-                                             ctx->session,
-                                             table_oid_,
-                                             cursor_id_, // 0 == OPEN
-                                             std::move(filter),
-                                             scan_limit,
-                                             projected_cols_,
-                                             ctx->txn);
+            auto [_s, sf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                        &services::disk::manager_disk_t::storage_fetch_next_batch,
+                                                        ctx->session,
+                                                        table_oid_,
+                                                        cursor_id_, // 0 == OPEN
+                                                        std::move(filter),
+                                                        scan_limit,
+                                                        projected_cols_,
+                                                        ctx->txn);
             auto fetch_result = co_await std::move(sf);
             if (fetch_result.has_error()) {
                 set_error(fetch_result.error());
@@ -161,16 +161,37 @@ namespace components::operators {
             co_return co_await emit_or_skip(ctx, std::move(reply.batch));
         }
 
+#ifdef DEV_MODE
+        // Between-batches pause gate (see services::disk::scan_advance_gate_t). Polling by one
+        // cross-actor round-trip per ask keeps every mailbox free while the gate holds: the
+        // await parks this nested coroutine, it never blocks an actor thread.
+        while (true) {
+            auto* gate = services::disk::dev_scan_advance_gate();
+            if (gate == nullptr || !gate->hold(table_oid_, cursor_id_)) {
+                break;
+            }
+            auto [_g, gf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                        &services::disk::manager_disk_t::storage_total_rows,
+                                                        ctx->session,
+                                                        table_oid_);
+            auto ping = co_await std::move(gf);
+            if (ping.has_error()) {
+                // The poll target is gone — the world is tearing down; holding forever
+                // would hang it. Let the fetch below answer for the cursor.
+                break;
+            }
+        }
+#endif
         // ADVANCE: read one more batch from the open cursor (filter dropped — the agent owns it).
-        auto [_s, sf] = actor_zeta::send(ctx->disk_address,
-                                         &services::disk::manager_disk_t::storage_fetch_next_batch,
-                                         ctx->session,
-                                         table_oid_,
-                                         cursor_id_,
-                                         std::unique_ptr<table::table_filter_t>(nullptr),
-                                         int64_t{-1},
-                                         projected_cols_,
-                                         ctx->txn);
+        auto [_s, sf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                    &services::disk::manager_disk_t::storage_fetch_next_batch,
+                                                    ctx->session,
+                                                    table_oid_,
+                                                    cursor_id_,
+                                                    std::unique_ptr<table::table_filter_t>(nullptr),
+                                                    int64_t{-1},
+                                                    projected_cols_,
+                                                    ctx->txn);
         auto fetch_result = co_await std::move(sf);
         if (fetch_result.has_error()) {
             set_error(fetch_result.error());
@@ -181,8 +202,28 @@ namespace components::operators {
         co_return co_await emit_or_skip(ctx, std::move(reply.batch));
     }
 
-    // Apply the drained empty-guard to one fetched batch. (OFFSET is applied by operator_limit
-    // above; every scan receives offset()==0, so there is no per-batch skip / re-fetch.)
+    actor_zeta::unique_future<void> full_scan::release_cursor(pipeline::context_t* ctx) {
+        // Nothing to release: never opened, already drained (the agent erased its own entry),
+        // or already released.
+        if (cursor_id_ == 0 || drained_) {
+            co_return;
+        }
+        const uint64_t id = cursor_id_;
+        // Clear first so a re-entry cannot double-send, and so the operator cannot be left
+        // pointing at a cursor the agent has dropped.
+        cursor_id_ = 0;
+        drained_ = true;
+        auto [_s, cf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                    &services::disk::manager_disk_t::storage_close_cursor,
+                                                    ctx->session,
+                                                    table_oid_,
+                                                    id);
+        co_await std::move(cf);
+        co_return;
+    }
+
+    // Applies the drained empty-guard to one fetched batch; per-batch OFFSET skip never applies here
+    // (operator_limit already owns it, see source_next).
     actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
     full_scan::emit_or_skip(pipeline::context_t* /*ctx*/, std::unique_ptr<vector::data_chunk_t> batch) {
         const uint64_t sz = batch ? batch->size() : 0;
@@ -190,7 +231,7 @@ namespace components::operators {
         // Drained: the agent replied a cardinality-0 batch (and erased its cursor).
         if (sz == 0) {
             drained_ = true;
-            // Emit ONE schema'd 0-row guard the first time the source produces nothing, so a
+            // Emit one schema'd 0-row guard the first time the source produces nothing, so a
             // scalar aggregate emits COUNT=0 and an OUTER join NULL-pads.
             if (!emitted_any_) {
                 emitted_any_ = true;

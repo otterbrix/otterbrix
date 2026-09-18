@@ -9,18 +9,14 @@
 
 namespace services::planner::impl {
 
-    components::operators::operator_ptr
-    create_plan_select(const context_storage_t& context,
-                       const components::logical_plan::node_ptr& node,
-                       const components::logical_plan::storage_parameters* params = nullptr);
+    components::operators::operator_ptr create_plan_select(const context_storage_t& context,
+                                                           const components::logical_plan::node_ptr& node);
 
-    // Build physical projection columns from a DML node's RETURNING expression
-    // list (scalar get_field / arithmetic / constant / star_expand). Returns an
-    // empty vector when `returning` is empty (no RETURNING clause). Shared by
-    // create_plan_insert / _update / _delete.
-    std::pmr::vector<components::operators::select_column_t>
+    // Build physical projection columns from a DML node's RETURNING expression list.
+    // Returns an empty vector when `returning` is empty (no RETURNING clause).
+    // Shared by create_plan_insert / _update / _delete.
+    std::pmr::vector<components::operators::projected_column_t>
     build_returning_columns(std::pmr::memory_resource* resource,
-                            const std::pmr::vector<components::expressions::expression_ptr>& returning,
-                            const components::logical_plan::storage_parameters* params);
+                            const std::pmr::vector<components::expressions::expression_ptr>& returning);
 
 } // namespace services::planner::impl

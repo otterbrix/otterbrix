@@ -4,7 +4,6 @@
 #include <cassert>
 #include <memory>
 #include <mutex>
-#include <stdexcept>
 #include <vector>
 
 namespace components::table {
@@ -122,12 +121,20 @@ namespace components::table {
             }
             return nodes_.back().node.get();
         }
+        // Returns nullptr when no segment brackets `row_number`, never throws: a throw here
+        // would unwind across the disk agent's mailbox into a coroutine whose
+        // unhandled_exception() is empty, hanging the statement instead of failing it (rules
+        // 2/9). Every caller reports the miss on its own error channel.
         T* get_segment(int64_t row_number) {
             auto l = lock();
             return get_segment(l, row_number);
         }
         T* get_segment(std::unique_lock<std::mutex>& l, int64_t row_number) {
-            return nodes_[segment_index(l, row_number)].node.get();
+            uint64_t index;
+            if (!try_segment_index(l, row_number, index)) {
+                return nullptr;
+            }
+            return nodes_[index].node.get();
         }
 
         void append_segment_internal(std::unique_lock<std::mutex>&, std::unique_ptr<T> segment) {
@@ -202,14 +209,6 @@ namespace components::table {
             nodes_.erase(nodes_.begin() + static_cast<int64_t>(segment_start) + 1, nodes_.end());
         }
 
-        uint64_t segment_index(std::unique_lock<std::mutex>& l, int64_t row_number) {
-            uint64_t segment_index;
-            if (try_segment_index(l, row_number, segment_index)) {
-                return segment_index;
-            }
-            throw std::runtime_error("Could not find node in column segment tree");
-        }
-
         bool try_segment_index(std::unique_lock<std::mutex>& l, int64_t row_number, uint64_t& result) {
             while (nodes_.empty() ||
                    row_number >= nodes_.back().row_start + static_cast<int64_t>(nodes_.back().node->count)) {
@@ -259,18 +258,26 @@ namespace components::table {
             return result;
         }
 
-        void reinitialize() {
+        // Rebuilds the row_start map from the segments' own starts. False = a gap between
+        // nodes (a broken tree invariant); the map is left UNTOUCHED rather than half-rebuilt,
+        // which would misroute try_segment_index's binary search. Never throws.
+        [[nodiscard]] bool reinitialize() {
             if (nodes_.empty()) {
-                return;
+                return true;
             }
             int64_t offset = nodes_[0].node->start;
             for (auto& entry : nodes_) {
                 if (entry.node->start != offset) {
-                    throw std::runtime_error("In segment_tree_t::reinitialize - gap found between nodes!");
+                    return false;
                 }
+                offset += static_cast<int64_t>(entry.node->count);
+            }
+            offset = nodes_[0].node->start;
+            for (auto& entry : nodes_) {
                 entry.row_start = offset;
                 offset += static_cast<int64_t>(entry.node->count);
             }
+            return true;
         }
 
     protected:

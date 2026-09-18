@@ -23,6 +23,12 @@ namespace services::planner::impl {
                                     node->children()[1],
                                     components::logical_plan::limit_t::unlimit(),
                                     params);
+        // One refused arm refuses the whole union: set_children would swallow the
+        // null and the operator would answer the surviving arm as if it were the
+        // full result. A null root surfaces as create_physical_plan_error instead.
+        if (!left_op || !right_op) {
+            return nullptr;
+        }
 
         auto op = boost::intrusive_ptr(
             new components::operators::operator_union_t(context.resource, context.log.clone(), union_node->all()));

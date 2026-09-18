@@ -43,16 +43,20 @@ namespace services::planner::impl {
             }
 
             std::vector<size_t> required;
-            for (const auto& keys : context.indexed_keys) {
-                for (const auto& key : keys) {
-                    const auto name = key.as_string();
-                    const auto column = std::find_if(metadata->columns.begin(),
-                                                     metadata->columns.end(),
-                                                     [&](const auto& c) { return c.attname == name; });
-                    if (column == metadata->columns.end() || column->chunk_position < 0) {
-                        return {};
+            // Only the DELETE target's OWN indexes pin columns (index info is
+            // per-oid); no entry means the target has no indexes to feed.
+            if (const auto* index_info = context.index_info_for(node_delete->table_oid())) {
+                for (const auto& keys : index_info->keys) {
+                    for (const auto& key : keys) {
+                        const auto name = key.as_string();
+                        const auto column = std::find_if(metadata->columns.begin(),
+                                                         metadata->columns.end(),
+                                                         [&](const auto& c) { return c.attname == name; });
+                        if (column == metadata->columns.end() || column->chunk_position < 0) {
+                            return {};
+                        }
+                        required.push_back(static_cast<size_t>(column->chunk_position));
                     }
-                    required.push_back(static_cast<size_t>(column->chunk_position));
                 }
             }
             for (const auto& fk : node_delete->referencing_fks()) {
@@ -91,23 +95,8 @@ namespace services::planner::impl {
                                                                                    node_delete->target_oid()));
         }
 
-        auto returning = build_returning_columns(context.resource, node_delete->returning(), params);
+        auto returning = build_returning_columns(context.resource, node_delete->returning());
         const bool has_returning = !returning.empty();
-
-        // Forward the plan-resolved RETURNING output types (stamped on the delete node by
-        // validate_schema, in RETURNING projection order) onto the projection columns, so a
-        // CASE/COALESCE/deep-field RETURNING column over zero affected rows stays correctly
-        // typed instead of being dropped as an untyped (NA) placeholder. Mirrors the SELECT
-        // path (create_plan_aggregate -> operator_select_t::set_output_types). build_returning_columns
-        // emits one select_column_t per scalar RETURNING expression in returning() order, and
-        // output_types() is stamped in that same order, so column i maps to output_types()[i].
-        // No RETURNING -> output_types() empty -> has_output_types() false -> guard skips (no-op).
-        if (node->has_output_types()) {
-            const auto& output_types = node->output_types();
-            for (size_t i = 0; i < returning.size() && i < output_types.size(); ++i) {
-                returning[i].result_type = output_types[i];
-            }
-        }
 
         components::logical_plan::node_ptr node_match = nullptr;
         components::logical_plan::node_ptr node_limit = nullptr;
@@ -127,14 +116,29 @@ namespace services::planner::impl {
         }
         auto limit = static_cast<components::logical_plan::node_limit_t*>(node_limit.get())->limit();
         auto table_oid = node->table_oid();
+        // Past the catalog arm the target is always a NAMED table; a target the
+        // context cannot vouch for is a table that never resolved. Validation refuses
+        // this before plan generation; if that refusal is ever lost again, lowering
+        // anyway builds a sink with no table behind it, which the streaming executor
+        // admits as a sourceless sink — a DELETE that removes nothing and reports
+        // SUCCESS. A null root surfaces as create_physical_plan_error instead.
+        if (!context.has_table_oid(table_oid)) {
+            return nullptr;
+        }
         if (!node_source) {
             auto plan = boost::intrusive_ptr(new components::operators::operator_delete(context.resource,
                                                                                         context.log.clone(),
                                                                                         table_oid,
                                                                                         std::move(returning)));
             plan->set_table_has_indexes(node->table_has_indexes());
-            plan->set_children(
-                create_plan_match(context, node_match, limit, delete_projection(context, node_delete, has_returning)));
+            auto scan =
+                create_plan_match(context, node_match, limit, delete_projection(context, node_delete, has_returning));
+            // A refused scan child must refuse the DELETE: set_children would swallow
+            // the null into the same childless-sink success-without-deleting shape.
+            if (!scan) {
+                return nullptr;
+            }
+            plan->set_children(std::move(scan));
 
             return plan;
         }
@@ -151,13 +155,20 @@ namespace services::planner::impl {
                                                                                     *expr,
                                                                                     limit.limit()));
         plan->set_table_has_indexes(node->table_has_indexes());
+        auto source_op =
+            create_plan(context, function_registry, node_source, components::logical_plan::limit_t::unlimit(), params);
+        // A refused USING source must refuse the DELETE: set_children would swallow the
+        // null and the semi-join would run against a missing side.
+        if (!source_op) {
+            return nullptr;
+        }
         plan->set_children(
             boost::intrusive_ptr(new components::operators::full_scan(context.resource,
                                                                       context.log.clone(),
                                                                       table_oid,
                                                                       nullptr,
                                                                       components::logical_plan::limit_t::unlimit())),
-            create_plan(context, function_registry, node_source, components::logical_plan::limit_t::unlimit(), params));
+            std::move(source_op));
         return plan;
     }
 

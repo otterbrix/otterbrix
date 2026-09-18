@@ -9,26 +9,22 @@ namespace components::catalog {
                              const fetch_deps_fn& fetch_deps) {
         cascade_plan_t plan{resource};
 
-        auto deps = fetch_deps(resource, seed_classid, seed_oid);
-
-        if (behavior == drop_behavior_t::restrict_) {
-            // RESTRICT: block if any 'n' (normal) external dependency exists.
-            for (const auto& d : deps) {
+        if (refuses_on_dependency(behavior)) {
+            // RESTRICT only gates on a direct 'n' dependency and refuses outright — it
+            // never falls through with an empty plan, which used to read as "success,
+            // nothing deleted". Unlike PostgreSQL's findDependentObjects, the gate
+            // does not recurse past the seed's direct edges.
+            for (const auto& d : fetch_deps(resource, seed_classid, seed_oid)) {
                 if (deptype::blocks_restrict(d.deptype)) {
                     plan.status = ddl_status::restrict_blocked;
                     plan.blocking_oid = d.objid;
                     return plan;
                 }
             }
-            // No external deps → RESTRICT allows the drop (only auto/internal children).
-            return plan;
         }
 
-        // CASCADE: compute full topological drop order via DFS.
-        // The DFS returns only dependents of the seed; append the seed itself last
-        // so build_drop_sequence deletes its catalog rows after all dependents.
-        // On back-edge, cycle_at carries the offending oid — surface as
-        // ddl_status::cycle_detected, blocking_oid populated for diagnostics.
+        // topological_drop_order emits each dependent once, when finished (not once
+        // per reaching edge); the seed itself is appended last for the executor to drop.
         oid_t cycle_at = INVALID_OID;
         auto ordered = topological_drop_order(resource, seed_classid, seed_oid, fetch_deps, cycle_at);
         if (cycle_at != INVALID_OID) {

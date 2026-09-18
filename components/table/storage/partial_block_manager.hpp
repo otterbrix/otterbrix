@@ -18,10 +18,12 @@ namespace components::table::storage {
     class partial_block_manager_t {
     public:
         // A segment larger than FULL_THRESHOLD of the block payload gets a DEDICATED whole block
-        // (offset 0, never shared). At/below it, the segment is PACKED into a shared partial block
-        // at a (possibly non-zero) offset alongside other columns' segments. This is the single
-        // source of truth for the write-side "dedicated vs shared" decision (used by both the
-        // checkpoint flush path and the B2 write-through transition).
+        // (offset 0, never shared); at or below it the segment is PACKED into a shared partial block
+        // alongside other columns' segments. Single source of truth for the write-side "dedicated vs
+        // shared" decision, used by the checkpoint flush path and the write-through transition alike.
+        //
+        // Invariant: every offset handed out is 8-byte aligned (enforced in get_block_allocation) —
+        // offsets are dereferenced after restart with typed pointers up to uint64_t wide.
         static constexpr double FULL_THRESHOLD = 0.8;
 
         explicit partial_block_manager_t(block_manager_t& block_manager, double full_threshold = FULL_THRESHOLD);
@@ -33,8 +35,10 @@ namespace components::table::storage {
         // Write segment data into a managed block buffer (does NOT write to disk yet)
         void write_to_block(uint64_t block_id, uint32_t offset, const void* data, uint64_t size);
 
-        // Flush all managed block buffers to disk, then clear
-        void flush_partial_blocks();
+        // Flush all managed block buffers to disk, then clear. Returns io_error on failure: every
+        // column segment reaches the file through here, so a `void` would leave a failed
+        // data-block write invisible up to a committed header.
+        [[nodiscard]] core::result_wrapper_t<bool> flush_partial_blocks();
 
     private:
         struct partial_block_t {

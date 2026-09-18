@@ -31,13 +31,13 @@ set(${PROJECT_NAME}_SOURCES
        dispatcher/validation/resolve_expression.cpp
 
     # index
-        index/bitcask_task_executor.cpp
-        index/bitcask_hash_key_loader.cpp
         index/bitcask_index_disk.cpp
         index/disk_hash_table.cpp
         index/btree_index_disk.cpp
-        index/index_agent_disk.cpp
+        index/bitcask_index_agent.cpp
+        index/btree_index_agent.cpp
         index/manager_index.cpp
+        index/index_rebuild_driver.cpp
 
     # wal
         wal/wal_binary.cpp

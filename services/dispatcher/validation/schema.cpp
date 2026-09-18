@@ -43,6 +43,9 @@ namespace services::dispatcher::validation {
                     return type.type_name();
                 }
                 break;
+            case logical_type::LIST:
+            case logical_type::ARRAY:
+                return describe_type(type.child_type()) + "[]";
             default:
                 break;
         }
@@ -77,7 +80,6 @@ namespace services::dispatcher::validation {
             }
             return result;
         }
-        // Handle table-alias wildcard: "table.*" → expand all columns with matching result_alias
         if (key.storage().size() >= 2 && key.storage().back() == "*") {
             const auto& table_part = key.storage().at(key.storage().size() - 2);
             for (size_t i = 0; i < schema.size(); i++) {
@@ -90,17 +92,13 @@ namespace services::dispatcher::validation {
                 return result;
             }
         }
-        // removed '*' at the end, if it has one
         components::expressions::key_t truncated_key = key;
         if (truncated_key.storage().back() == "*") {
             truncated_key.storage().resize(truncated_key.storage().size() - 1);
         }
-        // First key is either table name or type name
-        // Also we store number of keys used to get there and path
         std::pmr::list<type_match_t> matches(resource);
-        // A qualified reference (m.v) names one table, so resolve it against that
-        // table's columns. side cannot do this: it is binary, and a chained JOIN puts
-        // three tables on two sides, so the qualifier is the only thing that tells
+        // A qualified reference (m.v) resolves against that one table. `side` can't do this: it is
+        // binary, but a chained JOIN puts three tables on two sides, so only the qualifier tells
         // the middle table from the leftmost one.
         if (truncated_key.has_qualifier()) {
             for (size_t i = 0; i < schema.size(); i++) {
@@ -110,16 +108,13 @@ namespace services::dispatcher::validation {
                 }
             }
         }
-        // Either unqualified, or the qualifier names nothing this schema knows: a
-        // sub-plan's schema is labelled with the derived table's alias, so a reference
-        // written inside it against the inner relation's own name ('inner_t.k' against
-        // 'sub'.k) matches nothing here, and raw node_data inputs carry no alias at all.
-        // Both are resolved by the by-name rules, which is what every key used to get.
-        // A qualifier the schema does know is the opposite case: the relation is right
-        // here and simply has no such column, and answering with a same-named column of
-        // another relation is a wrong answer, not a fallback. Decided once, before the
-        // loop: testing matches.empty() per iteration would stop at the first hit and
-        // hide the ambiguity that collecting every match detects.
+        // Unqualified, or a qualifier unknown to this schema, falls through to by-name matching: a
+        // sub-plan's schema carries the derived table's alias, so a reference against the inner
+        // relation's own name ('inner_t.k' vs. schema alias 'sub') matches nothing here, and raw
+        // node_data inputs carry no alias at all.
+        // A qualifier the schema does know but with no such column is a hard miss, not a fallback to
+        // a same-named column elsewhere. schema_knows_qualifier is computed once, before the loop, so
+        // per-iteration matches.empty() checks can't stop at the first hit and hide ambiguity.
         const bool schema_knows_qualifier =
             truncated_key.has_qualifier() &&
             std::any_of(schema.begin(), schema.end(), [&truncated_key](const type_from_t& entry) {
@@ -140,10 +135,8 @@ namespace services::dispatcher::validation {
             }
         }
 
-        // Side-aware disambiguation: only when there's ambiguity to resolve.
-        // Drop schema candidates whose stamped side disagrees only when >1 match
-        // (otherwise we'd drop legitimate single matches in chained-JOIN where
-        // inner-merge sides don't align with outer-merge name_collection sides).
+        // Only filters by side when there's more than one match: a single legitimate match in a
+        // chained JOIN can have a side that disagrees, since inner-merge sides don't align with it.
         if (matches.size() > 1 && key.side() != side_t::undefined) {
             for (auto it = matches.begin(); it != matches.end();) {
                 size_t schema_idx = it->path.empty() ? 0 : it->path[0];
@@ -171,42 +164,34 @@ namespace services::dispatcher::validation {
                     }
                 } else if (it->type->type() == logical_type::ARRAY) {
                     auto arr_type_ext = static_cast<array_logical_type_extension*>(it->type->extension());
-                    // used atoll because it does not give exceptions with incorrect arguments
-                    // and 0 index is invalid anyway
+                    // atoll: never throws on a bad argument, and a 0 index is invalid anyway.
                     auto index = std::atoll(truncated_key.storage()[it->key_order].c_str());
                     if (index <= 0 || static_cast<size_t>(index) > arr_type_ext->size()) {
                         matches.erase(it);
                         continue;
                     }
                     column_path path = it->path;
-                    // store 0 based index
                     path.emplace_back(index - 1);
                     matches.emplace(next_it, type_match_t{std::move(path), &it->type->child_type(), it->key_order + 1});
                 } else if (it->type->type() == logical_type::LIST) {
-                    // used atoll because it does not give exceptions with incorrect arguments
-                    // and 0 index is invalid anyway
                     auto index = std::atoll(truncated_key.storage()[it->key_order].c_str());
-                    // list does not have a fixed size, so we can not check upper bounds here
+                    // list has no fixed size, so there is no upper bound to check here.
                     if (index <= 0) {
                         matches.erase(it);
                         continue;
                     }
                     column_path path = it->path;
-                    // store 0 based index
                     path.emplace_back(index - 1);
                     matches.emplace(next_it, type_match_t{std::move(path), &it->type->child_type(), it->key_order + 1});
                 }
             } else {
-                // this is an exact match
                 result.emplace_back(type_path_t{std::move(it->path), *it->type});
             }
             matches.erase(it);
         }
 
-        // '::?' type-variant selection: among several same-name columns
-        // (computing multi-type fields), keep only the one whose physical type
-        // matches the requested type. Disambiguates what would otherwise be an
-        // ambiguous name; an empty result falls through to "not found" below.
+        // Variant-select: among same-named multi-type-field matches, keep only the one whose
+        // physical type matches the requested cast; empty falls through to "not found" below.
         if (key.is_variant_select() && key.has_cast_type()) {
             const auto want = key.cast_type().type();
             type_paths filtered{resource};
@@ -218,8 +203,6 @@ namespace services::dispatcher::validation {
             result = std::move(filtered);
         }
 
-        // if result still contains multiple types, try to disambiguate via the
-        // cast_type_ hint; if it remains ambiguous, that is an error
         if (result.size() > 1) {
             if (truncated_key.has_cast_type()) {
                 auto cast_lt = truncated_key.cast_type().type();
@@ -281,7 +264,6 @@ namespace services::dispatcher::validation {
             return core::error_t(core::error_code_t::schema_error,
                                  std::pmr::string{"path: \'" + key.as_string() + "\' was not found", resource});
         }
-        // Store path inside a key, since we will need it later
         key.set_path(result.front().path);
         return result;
     }

@@ -30,7 +30,7 @@ namespace components::operators {
                         components::catalog::oid_t table_oid,
                         std::pmr::vector<expressions::expression_ptr> updates,
                         bool upsert,
-                        std::pmr::vector<select_column_t> returning,
+                        std::pmr::vector<projected_column_t> returning,
                         expressions::expression_ptr expr = nullptr,
                         // Matched-row bound for the UPDATE ... FROM source path
                         // (UPDATE ... LIMIT n). -1 = unbounded. The no-source path
@@ -108,7 +108,7 @@ namespace components::operators {
         std::unique_ptr<execution_dag::execution_dag_t> graph_;
         std::unique_ptr<execution_dag::execution_dag_t> updates_graph_;
         bool upsert_;
-        std::pmr::vector<select_column_t> returning_;
+        std::pmr::vector<projected_column_t> returning_;
         bool table_has_indexes_{true};
         std::unique_ptr<execution_dag::execution_dag_t> returning_graph_;
         // UPDATE ... FROM RETURNING: the matched FROM rows, gathered in lockstep

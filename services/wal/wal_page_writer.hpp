@@ -2,8 +2,10 @@
 
 #include <core/file/file_handle.hpp>
 #include <core/file/local_file_system.hpp>
+#include <core/result_wrapper.hpp>
 #include <filesystem>
 #include <memory>
+#include <memory_resource>
 #include <services/wal/base.hpp>
 #include <services/wal/wal_page.hpp>
 #include <string>
@@ -12,12 +14,9 @@ namespace services::wal {
 
     class wal_page_writer_t {
     public:
-        /// Construct a page writer.
-        /// @param path        Path to the segment file (created if it does not exist).
-        /// @param db_name     Database name stored in the file header.
-        /// @param seg_index   Segment index stored in the file header.
-        /// @param max_seg_sz  Maximum segment file size before rotation (default 4 MiB).
-        wal_page_writer_t(const std::filesystem::path& path,
+        /// @param resource Backs the diagnostics carried by every error_t below.
+        wal_page_writer_t(std::pmr::memory_resource* resource,
+                          const std::filesystem::path& path,
                           const std::string& db_name,
                           uint32_t seg_index,
                           size_t max_seg_sz = 4 * 1024 * 1024);
@@ -27,15 +26,18 @@ namespace services::wal {
         wal_page_writer_t(const wal_page_writer_t&) = delete;
         wal_page_writer_t& operator=(const wal_page_writer_t&) = delete;
 
-        /// Append an encoded record. May span multiple pages.
-        /// @return false on write error (e.g. disk full).
-        bool append(const char* data, size_t size, id_t wal_id);
+        /// no_error() when usable; every entry point below refuses while an open failure is set.
+        [[nodiscard]] const core::error_t& open_error() const noexcept { return open_error_; }
+        [[nodiscard]] bool is_open() const noexcept { return file_ != nullptr; }
 
-        /// Flush current page to disk (even if not full).
-        bool flush();
+        /// The return is the only evidence it landed — a bare bool would let wal.cpp report an unwritten wal_id.
+        [[nodiscard]] core::error_t append(const char* data, size_t size, id_t wal_id);
 
-        /// Flush + fsync.
-        bool flush_and_sync();
+        /// Forces the page out even if not full.
+        [[nodiscard]] core::error_t flush();
+
+        /// Refuses if EITHER half fails, so a FULL-sync commit can't report durability falsely.
+        [[nodiscard]] core::error_t flush_and_sync();
 
         /// Path to the current segment file.
         std::filesystem::path current_segment_path() const;
@@ -43,11 +45,21 @@ namespace services::wal {
         /// Last WAL id written.
         id_t last_wal_id() const { return page_end_lsn_; }
 
+        /// The destructor's last-resort flush error; the engine never depends on it (explicit flush elsewhere).
+        [[nodiscard]] const core::error_t& last_error() const noexcept { return last_error_; }
+
+        /// True after a refused mid-record flush leaves an ORPHAN (PARTIAL_CONT) span; the owner
+        /// must rotate to a fresh segment or the next page is read as that span's continuation.
+        [[nodiscard]] bool torn_tail() const noexcept { return torn_tail_; }
+
     private:
-        bool write_file_header();
-        bool flush_page();
+        [[nodiscard]] core::error_t write_file_header();
+        [[nodiscard]] core::error_t flush_page();
         void start_new_page();
 
+        [[nodiscard]] core::error_t io_failure(const char* what) const;
+
+        std::pmr::memory_resource* resource_;
         std::filesystem::path path_;
         std::string database_name_;
         uint32_t segment_index_;
@@ -61,8 +73,11 @@ namespace services::wal {
         id_t page_lsn_{0};
         id_t page_end_lsn_{0};
         uint16_t page_flags_{PAGE_NORMAL};
-        size_t file_size_{0};  // total bytes written to file so far
-        bool has_data_{false}; // whether current page has any data
+        size_t file_size_{0};   // total bytes written to file so far
+        bool has_data_{false};  // whether current page has any data
+        bool torn_tail_{false}; // an orphan PARTIAL_CONT span sits at the end of the file
+        core::error_t open_error_;
+        core::error_t last_error_;
     };
 
 } // namespace services::wal

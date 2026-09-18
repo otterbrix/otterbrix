@@ -218,7 +218,11 @@ namespace components::planner::optimizer {
                     return false;
                 }
                 const auto* se = static_cast<const expressions::sort_expression_t*>(expr.get());
-                const auto& p = se->key().path();
+                if (!expressions::is_key(se->operand())) {
+                    // TODO: gather reqired columns from the expression
+                    return false;
+                }
+                const auto& p = expressions::as_key(se->operand()).path();
                 if (p.empty() || p[0] == SIZE_MAX) {
                     return false;
                 }

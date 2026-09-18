@@ -1,23 +1,21 @@
 #include "data_chunk_binary.hpp"
 
-#include <cassert>
 #include <cstring>
-#include <stdexcept>
+#include <limits>
 #include <string_view>
 
+#include <components/types/type_spec_codec.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/vector.hpp>
 #include <components/vector/vector_buffer.hpp>
 
 namespace components::vector {
 
-    // -----------------------------------------------------------------------
-    // Little-endian helpers
-    // -----------------------------------------------------------------------
     namespace {
 
         inline void write_le16(char* destination, uint16_t value) { std::memcpy(destination, &value, 2); }
         inline void write_le32(char* destination, uint32_t value) { std::memcpy(destination, &value, 4); }
+        inline void write_le64(char* destination, uint64_t value) { std::memcpy(destination, &value, 8); }
 
         inline uint16_t read_le16(const char* source) {
             uint16_t value;
@@ -29,9 +27,38 @@ namespace components::vector {
             std::memcpy(&value, source, 4);
             return value;
         }
+        inline uint64_t read_le64(const char* source) {
+            uint64_t value;
+            std::memcpy(&value, source, 8);
+            return value;
+        }
 
-        // Return the byte-size of one element for a fixed-width physical type.
-        // Returns 0 for STRING (variable-width) and for composite types (ARRAY, etc.).
+        // A nested payload's size isn't known ahead of the walk producing it, so the writer grows and back-patches.
+        inline void append_le16(services::wal::buffer_t& buffer, uint16_t value) {
+            const size_t at = buffer.size();
+            buffer.resize(at + 2);
+            write_le16(buffer.data() + at, value);
+        }
+        inline void append_le32(services::wal::buffer_t& buffer, uint32_t value) {
+            const size_t at = buffer.size();
+            buffer.resize(at + 4);
+            write_le32(buffer.data() + at, value);
+        }
+        inline void append_le64(services::wal::buffer_t& buffer, uint64_t value) {
+            const size_t at = buffer.size();
+            buffer.resize(at + 8);
+            write_le64(buffer.data() + at, value);
+        }
+        inline void append_bytes(services::wal::buffer_t& buffer, const void* source, size_t length) {
+            if (length == 0) {
+                return;
+            }
+            const size_t at = buffer.size();
+            buffer.resize(at + length);
+            std::memcpy(buffer.data() + at, source, length);
+        }
+
+        // 0 marks a variable-width or composite type (STRING, ARRAY, etc.).
         size_t fixed_type_size(types::physical_type physical_type) {
             switch (physical_type) {
                 case types::physical_type::BOOL:
@@ -62,167 +89,283 @@ namespace components::vector {
             return physical_type == types::physical_type::STRING;
         }
 
-        // Compute the size of the type header for a single column.
-        // Format: [logical_type:1][alias_length:2][alias:N][extension_type:1][extension_data:0-5]
-        uint32_t compute_type_header_size(const types::complex_logical_type& column_type) {
-            uint32_t header_size = 1 + 2; // logical_type + alias_length
-            if (column_type.has_alias()) {
-                header_size += static_cast<uint32_t>(column_type.alias().size());
-            }
-            header_size += 1; // extension_type byte
-            auto* extension = column_type.extension();
-            if (extension) {
-                switch (extension->type()) {
-                    case types::logical_type_extension::extension_type::ARRAY:
-                        header_size += 5; // inner_logical_type(1) + array_size(4)
-                        break;
-                    case types::logical_type_extension::extension_type::DECIMAL:
-                        header_size += 2; // width(1) + scale(1)
-                        break;
-                    default:
-                        break;
-                }
-            }
-            return header_size;
+        // 0 means the extension is missing: a type claiming ARRAY but unable to say how wide it is.
+        uint64_t array_stride(const types::complex_logical_type& type) {
+            const auto* extension = type.extension_as<types::array_logical_type_extension>();
+            return extension ? extension->size() : 0;
         }
 
-        // Write the type header for a single column. Returns pointer past written data.
-        char* write_type_header(char* output, const types::complex_logical_type& column_type) {
-            // Logical type
-            *reinterpret_cast<uint8_t*>(output) = static_cast<uint8_t>(column_type.type());
-            output += 1;
-
-            // Alias
-            if (column_type.has_alias()) {
-                auto alias_length = static_cast<uint16_t>(column_type.alias().size());
-                write_le16(output, alias_length);
-                output += 2;
-                std::memcpy(output, column_type.alias().data(), alias_length);
-                output += alias_length;
-            } else {
-                write_le16(output, 0);
-                output += 2;
+        // Column type header = [spec_size:u32][spec bytes]; spec_size 0 marks a refused encode.
+        void encode_type_spec_or_poison(const types::complex_logical_type& column_type,
+                                        std::pmr::vector<std::byte>& spec) {
+            spec.clear();
+            auto encoded = types::encode_type_spec(column_type, spec);
+            if (encoded.has_error()) {
+                spec.clear(); // poison marker: spec_size 0 → loud decode failure
             }
-
-            // Extension
-            auto* extension = column_type.extension();
-            if (!extension) {
-                *reinterpret_cast<uint8_t*>(output) = 0; // no extension
-                output += 1;
-            } else {
-                switch (extension->type()) {
-                    case types::logical_type_extension::extension_type::ARRAY: {
-                        *reinterpret_cast<uint8_t*>(output) = 1;
-                        output += 1;
-                        auto* array_extension = static_cast<const types::array_logical_type_extension*>(extension);
-                        *reinterpret_cast<uint8_t*>(output) =
-                            static_cast<uint8_t>(array_extension->internal_type().type());
-                        output += 1;
-                        write_le32(output, static_cast<uint32_t>(array_extension->size()));
-                        output += 4;
-                        break;
-                    }
-                    case types::logical_type_extension::extension_type::DECIMAL: {
-                        *reinterpret_cast<uint8_t*>(output) = 2;
-                        output += 1;
-                        auto* decimal_extension = static_cast<const types::decimal_logical_type_extension*>(extension);
-                        *reinterpret_cast<uint8_t*>(output) = decimal_extension->width();
-                        output += 1;
-                        *reinterpret_cast<uint8_t*>(output) = decimal_extension->scale();
-                        output += 1;
-                        break;
-                    }
-                    default:
-                        *reinterpret_cast<uint8_t*>(output) = 0; // unknown extension → none
-                        output += 1;
-                        break;
-                }
-            }
-
-            return output;
         }
 
-        // Read the type header for a single column. Advances scan pointer. On any
-        // buffer-overflow sets ok=false and returns an INVALID-typed placeholder
-        // (caller must check ok before using the result).
-        types::complex_logical_type read_type_header(const char*& scan, const char* end, bool& ok) {
+        types::complex_logical_type
+        read_type_header(const char*& scan, const char* end, std::pmr::memory_resource* resource, bool& ok) {
             if (scan + 4 > end) {
                 ok = false;
                 return types::complex_logical_type{types::logical_type::INVALID};
             }
-
-            // Logical type
-            auto logical_type_value = static_cast<types::logical_type>(*reinterpret_cast<const uint8_t*>(scan));
-            scan += 1;
-
-            // Alias
-            uint16_t alias_length = read_le16(scan);
-            scan += 2;
-            std::string alias;
-            if (alias_length > 0) {
-                if (scan + alias_length > end) {
-                    ok = false;
-                    return types::complex_logical_type{types::logical_type::INVALID};
-                }
-                alias.assign(scan, alias_length);
-                scan += alias_length;
-            }
-
-            // Extension type
-            if (scan >= end) {
+            uint32_t spec_size = read_le32(scan);
+            scan += 4;
+            if (spec_size == 0 || scan + spec_size > end) {
                 ok = false;
                 return types::complex_logical_type{types::logical_type::INVALID};
             }
-            uint8_t extension_type = *reinterpret_cast<const uint8_t*>(scan);
-            scan += 1;
-
-            switch (extension_type) {
-                case 1: { // ARRAY
-                    if (scan + 5 > end) {
-                        ok = false;
-                        return types::complex_logical_type{types::logical_type::INVALID};
-                    }
-                    auto inner_logical_type = static_cast<types::logical_type>(*reinterpret_cast<const uint8_t*>(scan));
-                    scan += 1;
-                    uint32_t array_size = read_le32(scan);
-                    scan += 4;
-                    return types::complex_logical_type::create_array(inner_logical_type,
-                                                                     static_cast<size_t>(array_size),
-                                                                     std::move(alias));
-                }
-                case 2: { // DECIMAL
-                    if (scan + 2 > end) {
-                        ok = false;
-                        return types::complex_logical_type{types::logical_type::INVALID};
-                    }
-                    uint8_t width = *reinterpret_cast<const uint8_t*>(scan);
-                    scan += 1;
-                    uint8_t scale = *reinterpret_cast<const uint8_t*>(scan);
-                    scan += 1;
-                    return types::complex_logical_type::create_decimal(width, scale, std::move(alias));
-                }
-                default: // no extension
-                    return types::complex_logical_type(logical_type_value, std::move(alias));
+            auto decoded = types::decode_type_spec(resource, reinterpret_cast<const std::byte*>(scan), spec_size);
+            scan += spec_size;
+            if (decoded.has_error()) {
+                ok = false;
+                return types::complex_logical_type{types::logical_type::INVALID};
             }
+            return std::move(decoded.value());
         }
 
-        // Empty/sentinel chunk returned on deserialize failure. Caller must check
-        // the ok flag and discard the chunk on failure.
         data_chunk_t make_empty_error_chunk(std::pmr::memory_resource* resource) {
             std::pmr::vector<types::complex_logical_type> empty_types(resource);
             return data_chunk_t(resource, empty_types, 1);
         }
 
+        // Nested payload order is [validity, ...children]; only levels below the top get a mask of their own here.
+
+        void append_validity_block(const vector_t& vector, uint64_t count, services::wal::buffer_t& buffer) {
+            if (count == 0 || vector.validity().all_valid()) {
+                append_le32(buffer, 0); // 0 bytes of mask = every element valid
+                return;
+            }
+            const auto mask_bytes = static_cast<uint32_t>((count + 7) / 8);
+            append_le32(buffer, mask_bytes);
+            const size_t at = buffer.size();
+            buffer.resize(at + mask_bytes);
+            char* output = buffer.data() + at;
+            std::memset(output, 0, mask_bytes);
+            for (uint64_t index = 0; index < count; ++index) {
+                if (vector.validity().row_is_valid(index)) {
+                    output[index / 8] |= static_cast<char>(1u << (index % 8));
+                }
+            }
+        }
+
+        bool read_validity_block(vector_t& vector, uint64_t count, const char*& scan, const char* end) {
+            if (static_cast<uint64_t>(end - scan) < 4) {
+                return false;
+            }
+            const uint32_t mask_bytes = read_le32(scan);
+            scan += 4;
+            if (mask_bytes == 0) {
+                return true;
+            }
+            if (mask_bytes != (count + 7) / 8 || static_cast<uint64_t>(end - scan) < mask_bytes) {
+                return false;
+            }
+            for (uint64_t index = 0; index < count; ++index) {
+                const bool valid = (static_cast<unsigned char>(scan[index / 8]) >> (index % 8)) & 1u;
+                if (!valid) {
+                    vector.validity().set_invalid(index);
+                }
+            }
+            scan += mask_bytes;
+            return true;
+        }
+
+        uint64_t list_child_count(const vector_t& vector, uint64_t count) {
+            uint64_t child_count = vector.size();
+            const auto* entries = reinterpret_cast<const types::list_entry_t*>(vector.data());
+            for (uint64_t row = 0; row < count; ++row) {
+                const uint64_t entry_end = entries[row].offset + entries[row].length;
+                if (entry_end > child_count) {
+                    child_count = entry_end;
+                }
+            }
+            return child_count;
+        }
+
+        // False means no rule for this payload; the caller poisons the column rather than writing a short one.
+        bool append_vector_payload(const vector_t& vector, uint64_t count, services::wal::buffer_t& buffer) {
+            const auto physical_type = vector.type().to_physical_type();
+
+            if (is_variable_type(physical_type)) {
+                const auto* views = reinterpret_cast<const std::string_view*>(vector.data());
+                uint32_t running_offset = 0;
+                for (uint64_t index = 0; index < count; ++index) {
+                    append_le32(buffer, running_offset);
+                    running_offset += static_cast<uint32_t>(views[index].size());
+                }
+                append_le32(buffer, running_offset);
+                for (uint64_t index = 0; index < count; ++index) {
+                    append_bytes(buffer, views[index].data(), views[index].size());
+                }
+                return true;
+            }
+
+            switch (physical_type) {
+                case types::physical_type::NA:
+                    return true;
+                case types::physical_type::STRUCT: {
+                    const auto& fields = vector.entries();
+                    for (const auto& field : fields) {
+                        append_validity_block(*field, count, buffer);
+                        if (!append_vector_payload(*field, count, buffer)) {
+                            return false;
+                        }
+                    }
+                    return true;
+                }
+                case types::physical_type::ARRAY: {
+                    const uint64_t stride = array_stride(vector.type());
+                    if (stride == 0) {
+                        return false;
+                    }
+                    const uint64_t child_count = count * stride;
+                    const auto& child = vector.entry();
+                    append_validity_block(child, child_count, buffer);
+                    return append_vector_payload(child, child_count, buffer);
+                }
+                case types::physical_type::LIST: {
+                    const auto* entries = reinterpret_cast<const types::list_entry_t*>(vector.data());
+                    for (uint64_t row = 0; row < count; ++row) {
+                        append_le64(buffer, entries[row].offset);
+                        append_le64(buffer, entries[row].length);
+                    }
+                    const uint64_t child_count = list_child_count(vector, count);
+                    append_le64(buffer, child_count);
+                    const auto& child = vector.entry();
+                    append_validity_block(child, child_count, buffer);
+                    return append_vector_payload(child, child_count, buffer);
+                }
+                default:
+                    break;
+            }
+
+            const size_t element_size = fixed_type_size(physical_type);
+            if (element_size == 0) {
+                // BIT / UNKNOWN / INVALID have no payload rule; only 0 rows can be written.
+                return count == 0;
+            }
+            append_bytes(buffer, vector.data(), element_size * count);
+            return true;
+        }
+
+        bool read_vector_payload(vector_t& vector,
+                                 uint64_t count,
+                                 const char*& scan,
+                                 const char* end,
+                                 std::pmr::memory_resource* resource) {
+            const auto physical_type = vector.type().to_physical_type();
+
+            if (is_variable_type(physical_type)) {
+                const uint64_t offsets_bytes = (count + 1) * 4u;
+                if (static_cast<uint64_t>(end - scan) < offsets_bytes) {
+                    return false;
+                }
+                const char* offsets = scan;
+                const uint32_t total_bytes = read_le32(offsets + count * 4u);
+                const char* string_data = offsets + offsets_bytes;
+                if (static_cast<uint64_t>(end - string_data) < total_bytes) {
+                    return false;
+                }
+
+                auto* views = reinterpret_cast<std::string_view*>(vector.data());
+                auto string_buffer = std::make_shared<string_vector_buffer_t>(resource);
+                for (uint64_t index = 0; index < count; ++index) {
+                    const uint32_t offset_begin = read_le32(offsets + index * 4);
+                    const uint32_t offset_end = read_le32(offsets + (index + 1) * 4);
+                    if (offset_end < offset_begin || offset_end > total_bytes) {
+                        return false;
+                    }
+                    const uint32_t string_length = offset_end - offset_begin;
+                    if (string_length > 0) {
+                        void* heap_pointer = string_buffer->insert(
+                            const_cast<void*>(static_cast<const void*>(string_data + offset_begin)),
+                            string_length);
+                        views[index] = std::string_view(reinterpret_cast<const char*>(heap_pointer), string_length);
+                    } else {
+                        views[index] = std::string_view();
+                    }
+                }
+                vector.set_auxiliary(std::move(string_buffer));
+                scan = string_data + total_bytes;
+                return true;
+            }
+
+            switch (physical_type) {
+                case types::physical_type::NA:
+                    return true;
+                case types::physical_type::STRUCT: {
+                    auto& fields = vector.entries();
+                    for (auto& field : fields) {
+                        if (!read_validity_block(*field, count, scan, end) ||
+                            !read_vector_payload(*field, count, scan, end, resource)) {
+                            return false;
+                        }
+                    }
+                    return true;
+                }
+                case types::physical_type::ARRAY: {
+                    const uint64_t stride = array_stride(vector.type());
+                    if (stride == 0) {
+                        return false;
+                    }
+                    const uint64_t child_count = count * stride;
+                    auto& child = vector.entry();
+                    return read_validity_block(child, child_count, scan, end) &&
+                           read_vector_payload(child, child_count, scan, end, resource);
+                }
+                case types::physical_type::LIST: {
+                    const uint64_t entries_bytes = count * 16u;
+                    if (static_cast<uint64_t>(end - scan) < entries_bytes + 8) {
+                        return false;
+                    }
+                    auto* entries = reinterpret_cast<types::list_entry_t*>(vector.data());
+                    for (uint64_t row = 0; row < count; ++row) {
+                        entries[row].offset = read_le64(scan);
+                        scan += 8;
+                        entries[row].length = read_le64(scan);
+                        scan += 8;
+                    }
+                    const uint64_t child_count = read_le64(scan);
+                    scan += 8;
+                    // A count the remaining bytes can't possibly back is refused before it drives an allocation.
+                    if (child_count > static_cast<uint64_t>(end - scan)) {
+                        return false;
+                    }
+                    vector.reserve(child_count);
+                    vector.set_list_size(child_count);
+                    auto& child = vector.entry();
+                    return read_validity_block(child, child_count, scan, end) &&
+                           read_vector_payload(child, child_count, scan, end, resource);
+                }
+                default:
+                    break;
+            }
+
+            const size_t element_size = fixed_type_size(physical_type);
+            if (element_size == 0) {
+                return count == 0;
+            }
+            const uint64_t bytes = element_size * count;
+            if (static_cast<uint64_t>(end - scan) < bytes) {
+                return false;
+            }
+            if (bytes > 0) {
+                std::memcpy(vector.data(), scan, bytes);
+                scan += bytes;
+            }
+            return true;
+        }
+
     } // anonymous namespace
 
-    // -----------------------------------------------------------------------
-    // serialize_binary
-    // -----------------------------------------------------------------------
     void serialize_binary(const data_chunk_t& chunk, services::wal::buffer_t& buffer) {
         const auto num_columns = static_cast<uint16_t>(chunk.column_count());
         const auto num_rows = static_cast<uint32_t>(chunk.size());
 
-        // ----- Build null mask (row-major, 1 bit per cell, bit=1 means valid) -----
+        // Null mask is row-major, 1 bit per cell, bit=1 means valid.
         const uint64_t total_cells = static_cast<uint64_t>(num_columns) * num_rows;
         const uint32_t null_mask_bytes = (total_cells > 0) ? static_cast<uint32_t>((total_cells + 7) / 8) : 0;
 
@@ -237,49 +380,14 @@ namespace components::vector {
 
         const uint32_t actual_mask_bytes = has_nulls ? null_mask_bytes : 0;
 
-        // ----- Pre-compute total size to minimise reallocations -----
-        // header: 2 (num_columns) + 4 (num_rows) + 4 (null_mask_size) + actual_mask_bytes
-        size_t total = 2 + 4 + 4 + actual_mask_bytes;
+        append_le16(buffer, num_columns);
+        append_le32(buffer, num_rows);
+        append_le32(buffer, actual_mask_bytes);
 
-        // Per-column: type_header + 4 (data_size) + data_size
-        std::vector<uint32_t> column_data_sizes(num_columns);
-        std::vector<uint32_t> column_type_header_sizes(num_columns);
-
-        for (uint16_t column_index = 0; column_index < num_columns; ++column_index) {
-            const auto& column = chunk.data[column_index];
-            auto physical_type = column.type().to_physical_type();
-
-            if (is_variable_type(physical_type)) {
-                uint32_t offsets_size = (num_rows + 1) * 4;
-                uint32_t string_data_size = 0;
-                const auto* views = reinterpret_cast<const std::string_view*>(column.data());
-                for (uint32_t row_index = 0; row_index < num_rows; ++row_index) {
-                    string_data_size += static_cast<uint32_t>(views[row_index].size());
-                }
-                column_data_sizes[column_index] = offsets_size + string_data_size;
-            } else {
-                size_t element_size = fixed_type_size(physical_type);
-                column_data_sizes[column_index] = static_cast<uint32_t>(element_size * num_rows);
-            }
-
-            column_type_header_sizes[column_index] = compute_type_header_size(column.type());
-            total += column_type_header_sizes[column_index] + 4 + column_data_sizes[column_index];
-        }
-
-        const size_t base = buffer.size();
-        buffer.resize(base + total);
-        char* output = buffer.data() + base;
-
-        // ----- Write header -----
-        write_le16(output, num_columns);
-        output += 2;
-        write_le32(output, num_rows);
-        output += 4;
-        write_le32(output, actual_mask_bytes);
-        output += 4;
-
-        // ----- Write null mask -----
         if (has_nulls) {
+            const size_t at = buffer.size();
+            buffer.resize(at + actual_mask_bytes);
+            char* output = buffer.data() + at;
             std::memset(output, 0, actual_mask_bytes);
             for (uint16_t column_index = 0; column_index < num_columns; ++column_index) {
                 const auto& column = chunk.data[column_index];
@@ -290,48 +398,36 @@ namespace components::vector {
                     }
                 }
             }
-            output += actual_mask_bytes;
         }
 
-        // ----- Write columns -----
+        // Per column: [spec_size:u32][spec][data_size:u32][payload].
+        std::pmr::vector<std::byte> spec(chunk.resource());
         for (uint16_t column_index = 0; column_index < num_columns; ++column_index) {
             const auto& column = chunk.data[column_index];
-            auto physical_type = column.type().to_physical_type();
+            const size_t column_start = buffer.size();
 
-            // Write type header (logical_type + alias + extension)
-            output = write_type_header(output, column.type());
+            encode_type_spec_or_poison(column.type(), spec);
+            append_le32(buffer, static_cast<uint32_t>(spec.size()));
+            append_bytes(buffer, spec.data(), spec.size());
 
-            // Write data_size
-            write_le32(output, column_data_sizes[column_index]);
-            output += 4;
+            const size_t length_position = buffer.size();
+            append_le32(buffer, 0); // data_size, back-patched once the payload is written
+            const size_t data_start = buffer.size();
 
-            // Write data
-            if (is_variable_type(physical_type)) {
-                const auto* views = reinterpret_cast<const std::string_view*>(column.data());
-                uint32_t running_offset = 0;
-                for (uint32_t row_index = 0; row_index < num_rows; ++row_index) {
-                    write_le32(output, running_offset);
-                    output += 4;
-                    running_offset += static_cast<uint32_t>(views[row_index].size());
-                }
-                write_le32(output, running_offset);
-                output += 4;
-                for (uint32_t row_index = 0; row_index < num_rows; ++row_index) {
-                    std::memcpy(output, views[row_index].data(), views[row_index].size());
-                    output += views[row_index].size();
-                }
-            } else {
-                std::memcpy(output, column.data(), column_data_sizes[column_index]);
-                output += column_data_sizes[column_index];
+            const bool payload_written = append_vector_payload(column, num_rows, buffer);
+            const size_t payload_size = buffer.size() - data_start;
+
+            if (!payload_written || spec.empty() || payload_size > std::numeric_limits<uint32_t>::max()) {
+                // Poison the whole column (spec_size 0) so the reader refuses it outright.
+                buffer.resize(column_start);
+                append_le32(buffer, 0);
+                append_le32(buffer, 0);
+                continue;
             }
+            write_le32(buffer.data() + length_position, static_cast<uint32_t>(payload_size));
         }
-
-        assert(static_cast<size_t>(output - buffer.data()) - base == total);
     }
 
-    // -----------------------------------------------------------------------
-    // deserialize_binary
-    // -----------------------------------------------------------------------
     data_chunk_t deserialize_binary(const char* data, size_t len, std::pmr::memory_resource* resource, bool& ok) {
         ok = true;
         if (len < 10) {
@@ -355,25 +451,35 @@ namespace components::vector {
                 ok = false;
                 return make_empty_error_chunk(resource);
             }
+            // Indexed by row * num_columns + column bits, so a mask shorter than the chunk is refused here.
+            const uint64_t required_bits = static_cast<uint64_t>(num_rows) * num_columns;
+            const uint64_t required_bytes = (required_bits + 7) / 8;
+            if (static_cast<uint64_t>(null_mask_size) < required_bytes) {
+                ok = false;
+                return make_empty_error_chunk(resource);
+            }
             null_mask = pointer;
             pointer += null_mask_size;
         }
 
-        // First pass: read column types (peek ahead).
+        // Interleaved as [type header][data_size][data] per column; a first walk collects types and
+        // offsets since data_chunk_t's ctor needs the whole column-type vector up front.
         std::pmr::vector<types::complex_logical_type> column_types(resource);
         column_types.reserve(num_columns);
+        std::pmr::vector<uint64_t> column_data_offsets(resource); // from `data`, to the column's DATA
+        std::pmr::vector<uint32_t> column_data_lengths(resource);
+        column_data_offsets.reserve(num_columns);
+        column_data_lengths.reserve(num_columns);
 
         {
             const char* scan = pointer;
             for (uint16_t column_index = 0; column_index < num_columns; ++column_index) {
-                // Read type header
-                auto column_type = read_type_header(scan, end, ok);
+                auto column_type = read_type_header(scan, end, resource, ok);
                 if (!ok) {
                     return make_empty_error_chunk(resource);
                 }
                 column_types.push_back(std::move(column_type));
 
-                // Skip data_size + data
                 if (scan + 4 > end) {
                     ok = false;
                     return make_empty_error_chunk(resource);
@@ -384,6 +490,8 @@ namespace components::vector {
                     ok = false;
                     return make_empty_error_chunk(resource);
                 }
+                column_data_offsets.push_back(static_cast<uint64_t>(scan - data));
+                column_data_lengths.push_back(data_size);
                 scan += data_size;
             }
         }
@@ -391,53 +499,19 @@ namespace components::vector {
         data_chunk_t chunk(resource, column_types, num_rows);
         chunk.set_cardinality(num_rows);
 
-        // Second pass: populate column data.
+        // The payload reader must land exactly on that column's own end; short or overrun is a format violation.
         for (uint16_t column_index = 0; column_index < num_columns; ++column_index) {
-            // Skip type header (already parsed in first pass)
-            read_type_header(pointer, end, ok);
-            if (!ok) {
+            const char* column_data = data + column_data_offsets[column_index];
+            const char* column_end = column_data + column_data_lengths[column_index];
+
+            auto& column = chunk.data[column_index];
+
+            const char* scan = column_data;
+            if (!read_vector_payload(column, num_rows, scan, column_end, resource) || scan != column_end) {
+                ok = false;
                 return make_empty_error_chunk(resource);
             }
 
-            uint32_t data_size = read_le32(pointer);
-            pointer += 4;
-
-            auto& column = chunk.data[column_index];
-            auto physical_type = column_types[column_index].to_physical_type();
-
-            if (is_variable_type(physical_type)) {
-                if (data_size < (num_rows + 1) * 4) {
-                    ok = false;
-                    return make_empty_error_chunk(resource);
-                }
-                const char* offsets_pointer = pointer;
-                const char* string_data = pointer + (num_rows + 1) * 4;
-
-                auto* views = reinterpret_cast<std::string_view*>(column.data());
-                auto string_buffer = std::make_shared<string_vector_buffer_t>(resource);
-
-                for (uint32_t row_index = 0; row_index < num_rows; ++row_index) {
-                    uint32_t offset_begin = read_le32(offsets_pointer + row_index * 4);
-                    uint32_t offset_end = read_le32(offsets_pointer + (row_index + 1) * 4);
-                    uint32_t string_length = offset_end - offset_begin;
-
-                    if (string_length > 0) {
-                        void* heap_pointer = string_buffer->insert(
-                            const_cast<void*>(static_cast<const void*>(string_data + offset_begin)),
-                            string_length);
-                        views[row_index] = std::string_view(reinterpret_cast<const char*>(heap_pointer), string_length);
-                    } else {
-                        views[row_index] = std::string_view();
-                    }
-                }
-
-                column.set_auxiliary(std::move(string_buffer));
-            } else {
-                std::memcpy(column.data(), pointer, data_size);
-            }
-            pointer += data_size;
-
-            // Apply null mask for this column.
             if (null_mask) {
                 for (uint32_t row_index = 0; row_index < num_rows; ++row_index) {
                     uint64_t bit_index = static_cast<uint64_t>(row_index) * num_columns + column_index;

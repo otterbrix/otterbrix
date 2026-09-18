@@ -4,6 +4,9 @@
 
 #include <components/index/logical_value_binary_codec.hpp>
 
+#include <cassert>
+#include <cstdlib>
+
 namespace services::index {
 
     using namespace core::b_plus_tree;
@@ -40,75 +43,125 @@ namespace services::index {
                 return components::types::physical_value(value.value<double>());
             case logical_type::STRING_LITERAL:
                 return components::types::physical_value(*value.value<std::string*>());
+            // Temporal types are raw counters physically (DATE = INT32 days, others INT64 microseconds).
+            case logical_type::DATE:
+                return components::types::physical_value(value.value<int32_t>());
+            case logical_type::TIME:
+            case logical_type::TIMESTAMP:
+            case logical_type::TIMESTAMP_TZ:
+                return components::types::physical_value(value.value<int64_t>());
             case logical_type::NA:
                 return components::types::physical_value();
             default:
-                assert(false && "unsupported type");
-                return components::types::physical_value();
+                // Unreachable from user data; untested since the suite runs Debug+DEV_MODE.
+                assert(false && "services::index::convert: key type not representable in physical_value");
+                std::abort();
         }
     }
 
     btree_index_disk_t::btree_index_disk_t(const path_t& path,
                                            std::pmr::memory_resource* resource,
                                            uint64_t flush_threshold)
-        : index_disk_t(flush_threshold)
+        : resource_(resource)
+        , flush_threshold_(flush_threshold)
         , path_(path)
-        , resource_(resource)
         , fs_(core::filesystem::local_file_system_t())
-        , db_(std::make_unique<btree_t>(resource_, fs_, path, item_key_getter)) {
+        , db_(std::make_unique<btree_t>(resource, fs_, path, item_key_getter)) {
         db_->load();
     }
 
+    // A NULL key is never stored/looked up, same rule as index_agent_contract.hpp's index_key_is_null.
+    bool btree_index_disk_t::key_is_absent(const value_t& key) noexcept { return key.is_null(); }
+
     btree_index_disk_t::~btree_index_disk_t() = default;
 
-    void btree_index_disk_t::insert(const value_t& key, size_t value) {
-        auto values = find(key);
+    namespace {
+        // Unread, a walk over an unreadable block comes back SHORT with no_error() (an accepted duplicate for
+        // UNIQUE, a lost parent for an FK); sticky by design, so a damaged tree refuses every later question.
+        core::error_t tree_load_refusal(core::b_plus_tree::load_failure_t failure,
+                                        std::pmr::memory_resource* resource) {
+            using core::b_plus_tree::load_failure_t;
+            const auto code = failure == load_failure_t::data_corruption ? core::error_code_t::data_corruption
+                              : failure == load_failure_t::out_of_memory ? core::error_code_t::out_of_memory
+                                                                         : core::error_code_t::io_error;
+            std::pmr::string message{"btree index: the tree reports an unresolved load failure: ", resource};
+            message += core::b_plus_tree::to_string(failure);
+            return core::error_t{code, std::move(message)};
+        }
+
+        [[nodiscard]] core::error_t consult_failure_channel(const core::b_plus_tree::btree_t& db,
+                                                            std::pmr::memory_resource* resource) {
+            const auto failure = db.load_failure();
+            if (failure == core::b_plus_tree::load_failure_t::none) {
+                return core::error_t::no_error();
+            }
+            return tree_load_refusal(failure, resource);
+        }
+    } // namespace
+
+    core::error_t btree_index_disk_t::insert(const value_t& key, size_t value) {
+        if (key_is_absent(key)) {
+            return core::error_t::no_error();
+        }
+        result values(resource());
+        if (auto probe_error = find(key, values); probe_error.contains_error()) {
+            return probe_error;
+        }
         if (std::find(values.begin(), values.end(), value) == values.end()) {
-            values.push_back(value);
-            std::pmr::string out(resource_);
+            std::pmr::string out(resource());
             components::index::codec::append_logical_value(out, key);
             components::index::codec::append_le<uint64_t>(out, static_cast<uint64_t>(value));
             db_->append(out.data(), static_cast<uint32_t>(out.size()));
             mark_operation_dirty();
-            flush_if_needed();
+            RETURN_IF_ERROR(consult_failure_channel(*db_, resource()));
+            return flush_if_needed();
         }
+        return core::error_t::no_error();
     }
 
-    void btree_index_disk_t::remove(value_t key) {
+    core::error_t btree_index_disk_t::remove(value_t key) {
+        if (key_is_absent(key)) {
+            return core::error_t::no_error();
+        }
+        RETURN_IF_ERROR(consult_failure_channel(*db_, resource()));
         db_->remove_index(convert(key));
         mark_operation_dirty();
-        flush_if_needed();
+        RETURN_IF_ERROR(consult_failure_channel(*db_, resource()));
+        return flush_if_needed();
     }
 
-    void btree_index_disk_t::remove(const value_t& key, size_t row_id) {
-        auto values = find(key);
+    core::error_t btree_index_disk_t::remove(const value_t& key, size_t row_id) {
+        if (key_is_absent(key)) {
+            return core::error_t::no_error();
+        }
+        result values(resource());
+        if (auto probe_error = find(key, values); probe_error.contains_error()) {
+            return probe_error;
+        }
         if (!values.empty()) {
-            values.erase(std::remove(values.begin(), values.end(), row_id), values.end());
-            std::pmr::string out(resource_);
+            std::pmr::string out(resource());
             components::index::codec::append_logical_value(out, key);
             components::index::codec::append_le<uint64_t>(out, static_cast<uint64_t>(row_id));
             db_->remove(out.data(), static_cast<uint32_t>(out.size()));
             mark_operation_dirty();
-            flush_if_needed();
+            RETURN_IF_ERROR(consult_failure_channel(*db_, resource()));
+            return flush_if_needed();
         }
+        return core::error_t::no_error();
     }
 
-    void btree_index_disk_t::flush_if_needed() {
+    core::error_t btree_index_disk_t::flush_if_needed() {
         if (should_flush()) {
-            auto flush_error = force_flush();
-            if (flush_error.type != core::error_code_t::none) {
-                return;
-            }
+            return force_flush();
         }
+        return core::error_t::no_error();
     }
 
     void btree_index_disk_t::insert_bulk_unchecked(const value_t& key, size_t value) {
-        // Bulk fast path: append (key,value) WITHOUT the per-insert find() dedup
-        // (insert()'s O(items-per-key) scan + binary decode) and WITHOUT a per-insert
-        // flush. The caller (bulk load / repopulate) guarantees uniqueness, so the
-        // dedup is unnecessary; force_flush() persists once at the end. This turns a
-        // bulk load from O(rows^2) into O(rows).
-        std::pmr::string out(resource_);
+        if (key_is_absent(key)) {
+            return;
+        }
+        std::pmr::string out(resource());
         components::index::codec::append_logical_value(out, key);
         components::index::codec::append_le<uint64_t>(out, static_cast<uint64_t>(value));
         db_->append(out.data(), static_cast<uint32_t>(out.size()));
@@ -116,9 +169,10 @@ namespace services::index {
     }
 
     void btree_index_disk_t::remove_bulk_unchecked(const value_t& key, size_t row_id) {
-        // Bulk fast path: erase the (key,row_id) entry directly WITHOUT the per-remove
-        // find() guard. The caller guarantees the entry is present; force_flush() once.
-        std::pmr::string out(resource_);
+        if (key_is_absent(key)) {
+            return;
+        }
+        std::pmr::string out(resource());
         components::index::codec::append_logical_value(out, key);
         components::index::codec::append_le<uint64_t>(out, static_cast<uint64_t>(row_id));
         db_->remove(out.data(), static_cast<uint32_t>(out.size()));
@@ -126,71 +180,115 @@ namespace services::index {
     }
 
     core::error_t btree_index_disk_t::force_flush() {
+        if (db_) {
+            RETURN_IF_ERROR(consult_failure_channel(*db_, resource()));
+        }
         if (is_dirty() && db_) {
             if (!db_->flush()) {
-                // The tree keeps the failed leaves dirty, so a later flush can still succeed —
-                // but this attempt did not persist, and the caller must not be told otherwise.
                 return core::error_t{core::error_code_t::io_error,
-                                     std::pmr::string{"btree index flush failed to reach the disk", resource_}};
+                                     std::pmr::string{"btree index flush failed to reach the disk", resource()}};
             }
             reset_flush_state();
         }
         return core::error_t::no_error();
     }
 
-    void btree_index_disk_t::find(const value_t& value, result& res) const {
+    namespace {
+        struct record_row_reader_t {
+            bool last_ok{true};
+            bool all_ok{true};
+
+            size_t operator()(void* data, size_t size) {
+                bool ok = true;
+                const auto id =
+                    id_of(btree_t::item_data{static_cast<data_ptr_t>(data), static_cast<uint32_t>(size)}, ok);
+                last_ok = ok;
+                all_ok = all_ok && ok;
+                return ok ? id.value<components::types::physical_type::UINT64>() : 0;
+            }
+        };
+
+        core::error_t unreadable_record(std::pmr::memory_resource* resource) {
+            return core::error_t{core::error_code_t::data_corruption,
+                                 std::pmr::string{"btree index: a stored record's key could not be decoded", resource}};
+        }
+    } // namespace
+
+    core::error_t btree_index_disk_t::find(const value_t& value, result& res) const {
+        if (key_is_absent(value)) {
+            return core::error_t::no_error();
+        }
+        RETURN_IF_ERROR(consult_failure_channel(*db_, resource()));
         auto index = convert(value);
         size_t count = db_->item_count(index);
-        res.reserve(count);
+        res.reserve(res.size() + count);
         for (size_t i = 0; i < count; i++) {
-            res.emplace_back(id_getter(db_->get_item(index, i)).value<components::types::physical_type::UINT64>());
+            bool ok = true;
+            const auto id = id_of(db_->get_item(index, i), ok);
+            if (!ok) {
+                return unreadable_record(resource());
+            }
+            res.emplace_back(id.value<components::types::physical_type::UINT64>());
         }
+        RETURN_IF_ERROR(consult_failure_channel(*db_, resource()));
+        return core::error_t::no_error();
     }
 
-    btree_index_disk_t::result btree_index_disk_t::find(const value_t& value) const {
-        btree_index_disk_t::result res;
-        find(value, res);
-        return res;
-    }
+    core::error_t btree_index_disk_t::scan_range(components::expressions::compare_type compare,
+                                                 const value_t& value,
+                                                 result& res) const {
+        using components::expressions::compare_type;
 
-    void btree_index_disk_t::lower_bound(const value_t& value, result& res) const {
-        auto max_index = convert(value);
-        db_->scan_ascending(
-            std::numeric_limits<btree_t::index_t>::min(),
-            max_index,
-            size_t(-1),
-            &res,
-            [](void* data, size_t size) -> size_t {
-                return id_getter(btree_t::item_data{static_cast<data_ptr_t>(data), static_cast<uint32_t>(size)})
-                    .value<components::types::physical_type::UINT64>();
-            },
-            [&max_index](const auto& index, const auto&) { return index != max_index; });
-    }
+        if (key_is_absent(value)) {
+            return core::error_t::no_error();
+        }
+        RETURN_IF_ERROR(consult_failure_channel(*db_, resource()));
 
-    btree_index_disk_t::result btree_index_disk_t::lower_bound(const value_t& value) const {
-        btree_index_disk_t::result res;
-        lower_bound(value, res);
-        return res;
-    }
+        // Both scan_ascending bounds are inclusive: lt/gt exclude the probe's own key via their predicate.
+        const auto probe = convert(value);
+        record_row_reader_t reader;
+        const auto read_row = [&reader](void* data, size_t size) { return reader(data, size); };
+        const auto readable = [&reader](auto keep) {
+            return [&reader, keep](const auto& index, const auto& row) { return reader.last_ok && keep(index, row); };
+        };
+        const auto ascending = [&](const auto& lo, const auto& hi, auto keep) {
+            db_->scan_ascending(lo, hi, size_t(-1), &res, read_row, readable(keep));
+        };
+        const auto keep_all = [](const auto&, const auto&) { return true; };
 
-    void btree_index_disk_t::upper_bound(const value_t& value, result& res) const {
-        auto min_index = convert(value);
-        db_->scan_decending(
-            convert(value),
-            std::numeric_limits<btree_t::index_t>::max(),
-            size_t(-1),
-            &res,
-            [](void* data, size_t size) -> size_t {
-                return id_getter(btree_t::item_data{static_cast<data_ptr_t>(data), static_cast<uint32_t>(size)})
-                    .value<components::types::physical_type::UINT64>();
-            },
-            [&min_index](const auto& index, const auto&) { return index != min_index; });
-    }
-
-    btree_index_disk_t::result btree_index_disk_t::upper_bound(const value_t& value) const {
-        btree_index_disk_t::result res;
-        upper_bound(value, res);
-        return res;
+        switch (compare) {
+            case compare_type::eq:
+                return find(value, res);
+            case compare_type::lt:
+                ascending(std::numeric_limits<btree_t::index_t>::min(),
+                          probe,
+                          [&probe](const auto& index, const auto&) { return index < probe; });
+                break;
+            case compare_type::lte:
+                ascending(std::numeric_limits<btree_t::index_t>::min(), probe, keep_all);
+                break;
+            case compare_type::gt:
+                ascending(probe,
+                          std::numeric_limits<btree_t::index_t>::max(),
+                          [&probe](const auto& index, const auto&) { return index > probe; });
+                break;
+            case compare_type::gte:
+                ascending(probe, std::numeric_limits<btree_t::index_t>::max(), keep_all);
+                break;
+            case compare_type::ne:
+                db_->full_scan(&res, read_row, readable([&probe](const auto& index, const auto&) {
+                    return index != probe;
+                }));
+                break;
+            default:
+                assert(false && "btree_index_disk_t::scan_range: predicate is not a value comparison");
+                std::abort();
+        }
+        if (!reader.all_ok) {
+            return unreadable_record(resource());
+        }
+        RETURN_IF_ERROR(consult_failure_channel(*db_, resource()));
+        return core::error_t::no_error();
     }
 
     void btree_index_disk_t::drop() {
@@ -198,17 +296,23 @@ namespace services::index {
         core::filesystem::remove_directory(fs_, path_);
     }
 
-    void btree_index_disk_t::clear() {
-        // Wipe tree contents in place but keep the index writable: drop the
-        // on-disk tree directory, then re-create an empty btree at the same
-        // path. load() on a freshly created directory yields an empty tree,
-        // so subsequent inserts repopulate cleanly. Unlike drop(), the
-        // instance stays alive and usable.
+    core::error_t btree_index_disk_t::clear() {
+        // Wipes tree contents in place (unlike drop(), the instance stays usable): re-creates an empty btree.
         db_.reset();
-        core::filesystem::remove_directory(fs_, path_);
-        db_ = std::make_unique<btree_t>(resource_, fs_, path_, item_key_getter);
+        const bool directory_removed = core::filesystem::remove_directory(fs_, path_);
+        db_ = std::make_unique<btree_t>(resource(), fs_, path_, item_key_getter);
         db_->load();
         reset_flush_state();
+        if (!directory_removed) {
+            return core::error_t{
+                core::error_code_t::index_create_fail,
+                std::pmr::string{"btree: the index directory " + path_.string() + " could not be removed for a clear",
+                                 resource()}};
+        }
+        return core::error_t::no_error();
     }
+
+    // apply_txn_inserts, apply_txn_deletes and set_bulk_mode are absent on purpose: this store
+    // owns no txn log and no bulk window, so they would be unreachable stubs.
 
 } // namespace services::index

@@ -4,14 +4,8 @@
 
 namespace components::operators {
 
-    // UNION / UNION ALL. A SINK whose two inputs are BOTH materialized by separate
-    // sub-plans (traverse_plan_ splits a binary node's left and right children) before
-    // the union runs: when the union is reached, left_->output() and right_->output()
-    // are ready. push() therefore folds nothing (the streaming pump's left batches are
-    // a redundant view of the already-materialized left_->output()); finalize() emits
-    // the union of the two materialized sides via the emit_union_() core — left rows
-    // first (in order), then right rows (deduped across both sides for UNION,
-    // concatenated for UNION ALL).
+    // UNION / UNION ALL. A SINK: push() folds each left batch into buffered_left_,
+    // finalize() emits the union of that buffer and the materialized right_->output()
     class operator_union_t final : public read_only_operator_t {
     public:
         operator_union_t(std::pmr::memory_resource* resource, log_t log, bool all);
@@ -28,9 +22,12 @@ namespace components::operators {
 
         [[nodiscard]] core::error_t finalize(pipeline::context_t* ctx, chunks_vector_t& out) override;
 
+        void reset_pipeline_state() noexcept override { buffered_left_.clear(); }
+
     private:
         bool all_;
         std::pmr::vector<types::complex_logical_type> output_types_;
+        chunks_vector_t buffered_left_{resource_};
 
         // The shared dedup/concat core: emit the union of `left_chunks` then
         // `right_chunks` into `out` (allocated from `res`). UNION ALL concatenates;

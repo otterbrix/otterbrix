@@ -8,17 +8,18 @@
 #include <components/expressions/scalar_expression.hpp>
 #include <components/types/logical_value.hpp>
 
-#include <array>
-#include <charconv>
-#include <fast_float/fast_float.h>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace components::operators {
 
     namespace {
 
+        // A CHECK over a name the write-set doesn't carry is enforced by nothing, so bind_to_write_set_
+        // refuses it rather than substitute a constant that would leave the predicate UNKNOWN (and permit the row).
         std::optional<size_t> find_col_index(const vector::data_chunk_t& chunk, std::string_view name) {
             for (uint64_t c = 0; c < chunk.column_count(); ++c) {
                 if (chunk.data[c].type().alias() == name) {
@@ -26,21 +27,6 @@ namespace components::operators {
                 }
             }
             return std::nullopt;
-        }
-
-        // The decoded DEFAULT value for `col`, or nullptr when the column has none.
-        const types::logical_value_t*
-        find_default(const std::vector<std::pair<std::string, types::logical_value_t>>* defaults,
-                     std::string_view col) {
-            if (defaults == nullptr) {
-                return nullptr;
-            }
-            for (const auto& [name, value] : *defaults) {
-                if (name == col) {
-                    return &value;
-                }
-            }
-            return nullptr;
         }
 
     } // anonymous namespace
@@ -51,13 +37,9 @@ namespace components::operators {
         std::vector<std::string> not_null_columns,
         std::vector<std::pair<std::string, expressions::expression_ptr>> check_predicates,
         std::vector<std::pair<std::string, uint64_t>> array_size_reqs,
-        std::vector<std::pair<std::string, types::logical_value_t>> column_defaults,
-        bool write_set_named,
         types::parameter_map_t check_params)
         : read_write_operator_t(resource, log, operator_type::check_constraint)
         , not_null_columns_(std::move(not_null_columns))
-        , column_defaults_(std::move(column_defaults))
-        , write_set_named_(write_set_named)
         , array_size_reqs_(std::move(array_size_reqs))
         , check_predicates_(std::move(check_predicates)) {
         check_params_.insert(check_params.begin(), check_params.end());
@@ -75,16 +57,23 @@ namespace components::operators {
         co_return;
     }
 
-    expressions::expression_ptr
+    core::result_wrapper_t<expressions::expression_ptr>
     operator_check_constraint_t::bind_to_write_set_(const expressions::expression_ptr& predicate,
-                                                    const vector::data_chunk_t& chunk) {
+                                                    const vector::data_chunk_t& chunk,
+                                                    std::string_view constraint_name) {
         auto bound = expressions::clone_expression(resource_, predicate);
         if (!bound) {
-            return bound;
+            // Only a null predicate (or the unreachable `invalid` group) clones to nothing. Passing
+            // it on would classify as condition_kind::always and skip the constraint entirely.
+            return core::error_t{core::error_code_t::invalid_constraint,
+                                 std::pmr::string{"CHECK constraint \"" + std::string{constraint_name} +
+                                                      "\" carries no predicate to evaluate",
+                                                  resource_}};
         }
-        // A column reference is either a position in the write-set or a value the write-set never
-        // carried. Rewriting the second kind into a constant is what lets one predicate judge an
-        // INSERT that named only some columns and an UPDATE that carries them all.
+        // A column reference is only a write-set position — every table column is fully materialised there
+        // (INSERT omissions expanded, UPDATE's row gathered), so a name not found is unresolvable.
+        // Substituting DEFAULT/NULL instead would leave the predicate UNKNOWN, which permits the row.
+        std::string missing_column;
         const auto rebind = [&](expressions::param_storage& operand, auto&& recurse) -> void {
             if (expressions::is_expr(operand)) {
                 auto& nested = expressions::as_expr(operand);
@@ -105,21 +94,10 @@ namespace components::operators {
                 key.set_path(std::pmr::vector<size_t>{{*ordinal}, resource_});
                 return;
             }
-            // Absent from the write-set: the stored row will hold the column's DEFAULT, or NULL
-            // when it has none — and a NULL operand leaves the predicate UNKNOWN, which permits
-            // the row, exactly as SQL requires of a CHECK.
-            const auto* value = find_default(&column_defaults_, name);
-            // Above every id the predicates already use, so a substituted constant never shadows a
-            // literal the expression was parsed with.
-            uint16_t next = 0;
-            for (const auto& [bound, _] : check_params_) {
-                next = std::max<uint16_t>(next, static_cast<uint16_t>(bound.t) + 1);
+            // First one wins: the message names a column, and the walk cannot unwind from here.
+            if (missing_column.empty()) {
+                missing_column = name;
             }
-            const core::parameter_id_t id{next};
-            check_params_.insert_or_assign(
-                id,
-                value != nullptr ? *value : types::logical_value_t{resource_, types::logical_type::NA});
-            operand = expressions::param_storage{id};
         };
         const auto walk = [&](expressions::expression_i* node, auto&& self) -> void {
             if (node == nullptr) {
@@ -154,6 +132,13 @@ namespace components::operators {
             }
         };
         walk(bound.get(), walk);
+        if (!missing_column.empty()) {
+            return core::error_t{core::error_code_t::invalid_constraint,
+                                 std::pmr::string{"CHECK constraint \"" + std::string{constraint_name} +
+                                                      "\" cannot be evaluated: the column \"" + missing_column +
+                                                      "\" is not in the written row",
+                                                  resource_}};
+        }
         return bound;
     }
 
@@ -189,7 +174,14 @@ namespace components::operators {
             checks.reserve(check_predicates_.size());
             for (const auto& entry : check_predicates_) {
                 compiled_check_t compiled;
-                auto bound = bind_to_write_set_(entry.second, *schema_chunk);
+                auto bound_r = bind_to_write_set_(entry.second, *schema_chunk, entry.first);
+                if (bound_r.has_error()) {
+                    // A constraint the engine cannot bind is not a constraint that permits
+                    // everything: it fails the statement that would have been judged by it.
+                    set_error(bound_r.error());
+                    return;
+                }
+                auto bound = std::move(bound_r.value());
                 compiled.condition = expressions::classify_condition(bound);
                 if (compiled.condition == expressions::condition_kind::computed) {
                     auto types = schema_chunk->types();
@@ -210,10 +202,9 @@ namespace components::operators {
                 continue;
             }
 
-            // NOT NULL checks. A column ABSENT from the write-set stores the table
-            // DEFAULT when one exists (filled agent-side); with no non-NULL default
-            // the stored value IS NULL — a violation (e.g. an INSERT omitting a
-            // PRIMARY KEY column, which pg_attribute never marks attnotnull).
+            // NOT NULL over the MATERIALISED row: an INSERT omitting the column already expanded it (to
+            // DEFAULT or NULL) before the append, so the validity bit answers directly — including an
+            // omitted PRIMARY KEY column, which pg_attribute never marks attnotnull.
             for (const auto& col_name : not_null_columns_) {
                 bool found = false;
                 for (uint64_t col = 0; col < chunk.column_count(); ++col) {
@@ -230,24 +221,16 @@ namespace components::operators {
                     }
                     break;
                 }
-                if (!found && write_set_named_) {
-                    const auto* def = find_default(&column_defaults_, col_name);
-                    if (def == nullptr || def->is_null()) {
-                        set_error(core::error_t{
-                            core::error_code_t::other_error,
-                            std::pmr::string{"NOT NULL constraint violated for column: " + col_name, resource_}});
-                        return;
-                    }
+                if (!found) {
+                    // Not a column of this write-set at all (a dynamic-schema table, or a
+                    // path that hands storage ready-made rows). Nothing materialised to judge.
+                    continue;
                 }
             }
 
-            // Fixed-ARRAY element checks. A value shorter than the column's declared size is
-            // reconciled to it by padding NULL (casts::array_cast), and this validates the rows
-            // the DML has ALREADY written — so the pad has happened and the short value is no
-            // longer short. What survives it is a NULL element, which is what a NOT NULL column
-            // cannot hold, so that is what is tested. The length is still compared for a write-set
-            // that reaches here unreconciled. Validated per column: one bad element fails the
-            // operation.
+            // Fixed-ARRAY checks run AFTER padding (casts::array_cast pads short values to the declared size
+            // with NULL), so what's tested is the padded NULL element; length is still compared for a
+            // write-set that reaches here unreconciled.
             for (const auto& [col_name, required_size] : array_size_reqs_) {
                 for (uint64_t col = 0; col < chunk.column_count(); ++col) {
                     if (chunk.data[col].type().alias() != col_name)

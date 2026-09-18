@@ -13,20 +13,7 @@ namespace services::planner::impl {
                        const components::logical_plan::node_ptr& node,
                        const components::logical_plan::storage_parameters* params) {
         const auto* node_insert = static_cast<const components::logical_plan::node_insert_t*>(node.get());
-        auto returning = build_returning_columns(context.resource, node_insert->returning(), params);
-        // Forward the plan-resolved RETURNING output types (stamped on the insert node by
-        // validate_schema) onto the projection columns, in projection order, so a
-        // CASE/COALESCE/deep-field RETURNING column over the appended rows stays correctly
-        // typed instead of being dropped as an untyped (NA) placeholder. evaluate_projection
-        // reads col.result_type authoritatively. Mirrors create_plan_aggregate's select path.
-        // No RETURNING -> output_types() is empty -> guard skips (no-op). No data-derived
-        // fallback (rule 6): a column without a resolved type stays unset.
-        if (node->has_output_types()) {
-            const auto& out_types = node->output_types();
-            for (size_t i = 0; i < returning.size() && i < out_types.size(); ++i) {
-                returning[i].result_type = out_types[i];
-            }
-        }
+        auto returning = build_returning_columns(context.resource, node_insert->returning());
         auto plan = boost::intrusive_ptr(new components::operators::operator_insert(context.resource,
                                                                                     context.log.clone(),
                                                                                     node->table_oid(),
@@ -45,6 +32,17 @@ namespace services::planner::impl {
                 .cast = binding.cast});
         }
         plan->set_column_bindings(std::move(bindings));
+        // Columns the statement omitted, with their fill values (resolved once by enrich from
+        // pg_attribute); materialised into the chunk before the append (operator_insert::push).
+        components::logical_plan::insert_fill_list_t fill(context.resource);
+        fill.reserve(node_insert->fill_list().size());
+        for (const auto& column : node_insert->fill_list()) {
+            fill.push_back(
+                components::logical_plan::insert_fill_column_t{std::pmr::string{column.name.c_str(), context.resource},
+                                                               column.type,
+                                                               column.value});
+        }
+        plan->set_fill_list(std::move(fill));
         plan->set_children(create_plan(context,
                                        function_registry,
                                        node->children().front(),

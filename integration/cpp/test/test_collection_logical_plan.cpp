@@ -1,3 +1,4 @@
+#include "integration_fixture_path.hpp"
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <components/expressions/aggregate_expression.hpp>
@@ -38,10 +39,8 @@ using id_par = core::parameter_id_t;
 static constexpr int kNumInserts = 100;
 
 TEST_CASE("integration::cpp::test_collection::logical_plan") {
-    auto config = test_create_config("/tmp/test_collection_logical_plan");
+    auto config = test_create_config(integration_fixture_path("test_collection_logical_plan"));
     test_clear_directory(config);
-    config.disk.on = false;
-    config.wal.on = false;
 
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -178,7 +177,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
         // Sort by count_bool ascending so false comes first, true second
         {
             std::vector<expressions::expression_ptr> sort = {
-                expressions::make_sort_expression(key(dispatcher->resource(), "count_bool"),
+                expressions::make_sort_expression(dispatcher->resource(),
+                                                  key(dispatcher->resource(), "count_bool"),
                                                   expressions::sort_order::asc)};
             aggregate->append_child(logical_plan::make_node_sort(dispatcher->resource(),
                                                                  core::dbname_t{},
@@ -889,7 +889,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             {
                 {
                     std::vector<expressions::expression_ptr> sort = {
-                        expressions::make_sort_expression(key(dispatcher->resource(), "avg"),
+                        expressions::make_sort_expression(dispatcher->resource(),
+                                                          key(dispatcher->resource(), "avg"),
                                                           expressions::sort_order::desc)};
                     aggregate->append_child(logical_plan::make_node_sort(dispatcher->resource(),
                                                                          core::dbname_t{},

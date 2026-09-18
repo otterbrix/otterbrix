@@ -1,6 +1,7 @@
 #include "kernel_executor.hpp"
 
 #include <optional>
+#include <string>
 
 using namespace components::types;
 using namespace components::vector;
@@ -10,7 +11,10 @@ namespace components::compute::detail {
     template<typename KernelType>
     class kernel_executor_impl : public kernel_executor_t {
     public:
-        kernel_executor_impl() = default;
+        explicit kernel_executor_impl(std::pmr::memory_resource* resource)
+            : resource_(resource) {
+            assert(resource_);
+        }
 
         core::error_t init(kernel_context& kernel_ctx, kernel_init_args args) override {
             kernel_ctx_ = &kernel_ctx;
@@ -36,11 +40,15 @@ namespace components::compute::detail {
         }
 
     protected:
+        // Before init() there is no kernel_context to source a resource from, so refusals use
+        // the executor's own resource_ instead of the process-wide default.
+        [[nodiscard]] std::pmr::memory_resource* error_resource() const {
+            return kernel_ctx_ ? kernel_ctx_->exec_context().resource() : resource_;
+        }
+
         [[nodiscard]] core::error_t not_accumulating() const {
             return core::error_t(core::error_code_t::kernel_error,
-                                 std::pmr::string{"this kernel does not accumulate across chunks",
-                                                  kernel_ctx_ ? kernel_ctx_->exec_context().resource()
-                                                              : std::pmr::get_default_resource()});
+                                 std::pmr::string{"this kernel does not accumulate across chunks", error_resource()});
         }
 
         vector_t prepare_vector_output(size_t length) {
@@ -50,11 +58,10 @@ namespace components::compute::detail {
 
         [[nodiscard]] core::error_t check_kernel() const {
             if (!kernel_ctx_) {
-                // TODO: find another way to get memory_resource
-                return core::error_t(core::error_code_t::kernel_error,
+                return core::error_t(
+                    core::error_code_t::kernel_error,
 
-                                     std::pmr::string{"Kernel context is null, init() method must be called first!",
-                                                      std::pmr::get_default_resource()});
+                    std::pmr::string{"Kernel context is null, init() method must be called first!", error_resource()});
             }
 
             if (!kernel_) {
@@ -81,6 +88,7 @@ namespace components::compute::detail {
 
         inline kernel_state* state() const { return kernel_ctx().state(); }
 
+        std::pmr::memory_resource* resource_ = nullptr;
         kernel_context* kernel_ctx_ = nullptr;
         const KernelType* kernel_ = nullptr;
         complex_logical_type output_type_;
@@ -88,6 +96,8 @@ namespace components::compute::detail {
 
     class vector_executor final : public kernel_executor_impl<vector_kernel> {
     public:
+        using kernel_executor_impl<vector_kernel>::kernel_executor_impl;
+
         [[nodiscard]] core::result_wrapper_t<datum_t> execute(const data_chunk_t& inputs) override {
             if (auto st = check_kernel(); st.contains_error()) {
                 return st;
@@ -113,10 +123,25 @@ namespace components::compute::detail {
                 return merged;
             }
 
+            // Outputs fuse side by side into one chunk sharing a single row count, so ragged
+            // input (chunks of different heights) has no honest count to report; refuse it.
+            const uint64_t rows = inputs.front().size();
+            for (const auto& in : inputs) {
+                if (in.size() != rows) {
+                    return core::error_t(
+                        core::error_code_t::kernel_error,
+                        std::pmr::string{"a fused vector batch needs every chunk to hold the same number of rows",
+                                         exec_ctx().resource()});
+                }
+            }
+
+            // Checked over the whole batch before the first kernel call, so a ragged batch
+            // never leaves the kernel half-driven.
             for (const auto& in : inputs) {
                 VALUE_OR_RETURN(auto produced, execute_batch(in));
                 merged.data.emplace_back(std::move(produced));
             }
+            merged.set_cardinality(rows);
 
             if (auto st = kernel().finalize(kernel_ctx(), merged); st.contains_error()) {
                 return st;
@@ -126,6 +151,9 @@ namespace components::compute::detail {
         }
 
     private:
+        // Must stay a local, never a member: the executor is reused chunk after chunk, and
+        // vector_t's move ctor copies the raw data pointer, so a stale member would alias
+        // freed memory -- invisible to ASAN inside a pmr pool.
         core::result_wrapper_t<vector_t> execute_batch(const data_chunk_t& inputs) {
             auto output = prepare_vector_output(inputs.size());
             if (auto st = kernel().execute(kernel_ctx(), inputs, output); st.contains_error()) {
@@ -137,6 +165,8 @@ namespace components::compute::detail {
 
     class aggregate_executor final : public kernel_executor_impl<aggregate_kernel> {
     public:
+        using kernel_executor_impl<aggregate_kernel>::kernel_executor_impl;
+
         core::error_t init(kernel_context& kernel_ctx, kernel_init_args args) override {
             if (auto st = kernel_executor_impl<aggregate_kernel>::init(kernel_ctx, args); st.contains_error()) {
                 return st;
@@ -182,18 +212,19 @@ namespace components::compute::detail {
         // An aggregate reduces many rows into per-group accumulators, so it is driven by
         // update()/finalize() and never produces a value straight out of one call.
         [[nodiscard]] core::error_t not_directly_executable() const {
-            return core::error_t(core::error_code_t::kernel_error,
-                                 std::pmr::string{"an aggregate is driven by update()/finalize(), not execute()",
-                                                  kernel_ctx_ ? kernel_ctx_->exec_context().resource()
-                                                              : std::pmr::get_default_resource()});
+            return core::error_t(
+                core::error_code_t::kernel_error,
+                std::pmr::string{"an aggregate is driven by update()/finalize(), not execute()", error_resource()});
         }
 
         const std::pmr::vector<types::complex_logical_type>* input_types_ = nullptr;
     };
 
-    std::unique_ptr<kernel_executor_t> kernel_executor_t::make_vector() { return std::make_unique<vector_executor>(); }
+    std::unique_ptr<kernel_executor_t> kernel_executor_t::make_vector(std::pmr::memory_resource* resource) {
+        return std::make_unique<vector_executor>(resource);
+    }
 
-    std::unique_ptr<kernel_executor_t> kernel_executor_t::make_aggregate() {
-        return std::make_unique<aggregate_executor>();
+    std::unique_ptr<kernel_executor_t> kernel_executor_t::make_aggregate(std::pmr::memory_resource* resource) {
+        return std::make_unique<aggregate_executor>(resource);
     }
 } // namespace components::compute::detail

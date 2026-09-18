@@ -221,6 +221,7 @@ namespace components::operators::join_detail {
         }
         pending_.back().set_cardinality(pending_rows_);
         out_->push_back(std::move(pending_.back()));
+        emitted_ = true;
         pending_.clear();
         pending_rows_ = 0;
     }

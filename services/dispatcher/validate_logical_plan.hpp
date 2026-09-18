@@ -74,6 +74,16 @@ namespace services::dispatcher {
                                                         const components::graph_execution_context& execution_context,
                                                         std::vector<components::table::column_definition_t>& columns);
 
+    // Gates a TYPE the DDL is about to make durable, using the real encoder
+    // (components::types::encode_type_spec) rather than a copy of its rules: a DECIMAL outside
+    // the width/scale window or nesting past the depth limit is reachable from ordinary SQL, and
+    // refused only by the reader costs a checkpoint that succeeds and a next startup that fails
+    // with data_corruption, permanently, with no statement left to blame.
+    // `subject` names what is being refused ("column 'c'", "type 'deep'").
+    [[nodiscard]] core::error_t gate_persistable_type(std::pmr::memory_resource* resource,
+                                                      const std::string& subject,
+                                                      const components::types::complex_logical_type& type);
+
     // Resolve every CHECK predicate the plan's DML nodes carry, against the table each one guards.
     // Called after enrich_plan, which is what parses the predicates out of the catalog.
     [[nodiscard]] core::error_t

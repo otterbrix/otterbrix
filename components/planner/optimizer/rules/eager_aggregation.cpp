@@ -27,10 +27,7 @@ namespace components::planner::optimizer {
             return nullptr;
         }
 
-        // A bare single-table scan aggregate the partial group can wrap: bound to one
-        // resolved table, not distinct, and carrying only an optional WHERE (match)
-        // child. Any group / sort / select / limit / having / nested source makes it
-        // NOT a plain scan -> skip (grouping over it would change semantics).
+        // Anything beyond a plain single-table scan would change semantics if grouped over.
         bool is_bare_table_source(const lp::node_ptr& n) {
             if (!n || n->type() != lp::node_type::aggregate_t) {
                 return false;
@@ -49,7 +46,6 @@ namespace components::planner::optimizer {
             return true;
         }
 
-        // A single top-level resolved column path -> its index; nullopt otherwise.
         bool single_col(const ce::key_t& k, size_t& out) {
             if (k.path().size() != 1) {
                 return false;
@@ -59,7 +55,8 @@ namespace components::planner::optimizer {
         }
 
         ce::key_t local_key(std::pmr::memory_resource* resource, const ce::key_t& src, size_t local_idx) {
-            ce::key_t k = src; // copy storage (name) + flags
+            // Copy must land on `resource`: the result belongs to the new partial node, not `src`'s.
+            ce::key_t k{src, resource};
             std::pmr::vector<size_t> p{resource};
             p.push_back(local_idx);
             k.set_path(std::move(p));
@@ -72,8 +69,7 @@ namespace components::planner::optimizer {
             k.set_path(std::move(p));
         }
 
-        // If `agg` is an eager-aggregation candidate, rewrite it in place. Total: a
-        // no-op on any non-matching shape.
+        // Rewrites `agg` in place if it is an eager-aggregation candidate; a no-op otherwise.
         void try_eager(std::pmr::memory_resource* resource, const lp::node_ptr& agg) {
             if (agg->type() != lp::node_type::aggregate_t) {
                 return;
@@ -86,9 +82,8 @@ namespace components::planner::optimizer {
                 return;
             }
             auto* join = static_cast<lp::node_join_t*>(source.get());
-            // INNER + single equi-key hash join only. A nested-loop (non-equi) join has
-            // no single join column to add to the partial grouping; outer joins would
-            // need row-preservation reasoning we do not attempt here.
+            // Inner + single equi-key hash join only: nested-loop has no single join column to add,
+            // and outer joins need row-preservation reasoning not attempted here.
             if (join->type() != lp::join_type::inner) {
                 return;
             }
@@ -109,16 +104,12 @@ namespace components::planner::optimizer {
             if (!group) {
                 return;
             }
-            // HAVING would need to run above the FINAL merge; skip (conservative).
+            // HAVING would need to run above the final merge; skip (conservative).
             if (find_child(agg, lp::node_type::having_t)) {
                 return;
             }
-            // A residual WHERE above the join (a cross-side predicate like
-            // t1.a > t2.b that pushdown_filter could not push below either side)
-            // addresses the join's MERGED column space. The partial splice collapses
-            // the pushed side to [group keys, join key, partial aggregates], silently
-            // re-pointing those merged paths at the wrong columns. Skip (conservative),
-            // same reasoning as the HAVING bail above.
+            // A residual WHERE above the join (e.g. t1.a > t2.b, unpushed) reads the join's merged
+            // column space; the partial splice would re-point it at the wrong columns, so skip.
             if (find_child(agg, lp::node_type::match_t)) {
                 return;
             }
@@ -127,16 +118,12 @@ namespace components::planner::optimizer {
                 return;
             }
 
-            // Classify the FINAL group: plain group-key columns + MIN/MAX aggregates,
-            // collecting each reference's MERGED column index.
             std::vector<ce::scalar_expression_t*> keys;
             std::vector<size_t> key_merged;
-            // The target list naming a grouping key. The group emits its TARGET LIST, so a key it
-            // names appears a second time as an ordinary column reference: `SELECT g, MIN(x)
-            // GROUP BY g` carries a group_field for the reduction AND a get_field for the output.
-            // It reduces nothing, but it reads a column whose position moves when the partial is
-            // spliced in, so its path is rewritten with the key's rather than the whole rule being
-            // refused. Same reading build_pushed_spec takes of a repeated key.
+            // A group emits its target list, so a key it names appears twice: `SELECT g, MIN(x)
+            // GROUP BY g` has a group_field for the reduction and a get_field that reduces nothing
+            // but moves with the splice, so its path is rewritten too rather than refusing the rule;
+            // build_pushed_spec treats a repeated key the same way.
             std::vector<ce::key_t*> key_outputs;
             std::vector<size_t> key_output_merged;
             std::vector<ce::aggregate_expression_t*> aggs;
@@ -191,8 +178,8 @@ namespace components::planner::optimizer {
             if (keys.empty() || aggs.empty()) {
                 return;
             }
-            // Every bare column the target list emits has to BE one of the reduction keys -- a
-            // grouped query cannot emit anything else at group cardinality.
+            // Every bare column the target list emits must be one of the reduction keys: nothing
+            // else survives at group cardinality.
             std::vector<size_t> key_output_of(key_outputs.size());
             for (size_t i = 0; i < key_outputs.size(); ++i) {
                 const auto named = std::find(key_merged.begin(), key_merged.end(), key_output_merged[i]);
@@ -202,8 +189,7 @@ namespace components::planner::optimizer {
                 key_output_of[i] = static_cast<size_t>(named - key_merged.begin());
             }
 
-            // Every group key AND every aggregate argument must live on ONE side.
-            // A left column sits in [0, left_width); a right column at left_width+.
+            // Every group key and every aggregate argument must live on one side of the join.
             bool all_left = true;
             bool all_right = true;
             for (size_t m : key_merged) {
@@ -233,43 +219,39 @@ namespace components::planner::optimizer {
             }
             auto* pushed_agg = static_cast<lp::node_aggregate_t*>(pushed.get());
 
-            // The join key on the pushed side, as a LOCAL column index.
             const size_t join_key_local = pushed_left ? join->left_col() : join->right_col();
             if (join_key_local >= pushed->output_types().size()) {
                 return; // defensive: unexpected stamp
             }
-            // Every referenced column must resolve inside the pushed side's stamped
-            // width (the output re-stamp below reads its type by that local index).
+            // Every referenced column must resolve inside the pushed side's stamped width (re-stamped
+            // below by that local index).
             for (size_t m : key_merged) {
                 if (m - base >= pushed->output_types().size()) {
-                    return; // defensive: unexpected stamp
+                    return;
                 }
             }
             for (size_t m : agg_merged) {
                 if (m - base >= pushed->output_types().size()) {
-                    return; // defensive: unexpected stamp
+                    return;
                 }
             }
 
-            // --- Build the PARTIAL group node ------------------------------------
-            // Partial output layout = [group keys..., join key (if new), aggregates...].
+            // Partial output layout: [group keys, join key (if new), aggregates].
             auto partial_group = lp::make_node_group(resource, pushed_agg->dbname(), pushed_agg->relname());
             std::vector<size_t> key_partial_pos(keys.size());
             size_t next_pos = 0;
             bool join_key_covered = false;
             size_t join_key_pos = 0;
-            // The keys, in emitted order. A group emits its TARGET LIST and a grouping key is NOT
-            // an output column on its own, so each key has to be NAMED as well as grouped on --
-            // otherwise the partial emits only its aggregates and the join probes a column that
-            // is not there. Collected first, appended below the group_fields so the output order
-            // is [keys..., join key, aggregates...], which key_partial_pos/agg_partial_pos assume.
+            // A grouping key is not an output column on its own, so it must be named as well as
+            // grouped on, or the partial emits only its aggregates and the join probes a missing
+            // column; staged on `resource` so nothing lands on the process default allocator.
             std::vector<ce::key_t> emitted_keys;
             for (size_t i = 0; i < keys.size(); ++i) {
                 const size_t local = key_merged[i] - base;
                 auto key = local_key(resource, keys[i]->key(), local);
                 partial_group->append_expression(
                     ce::make_scalar_expression(resource, ce::scalar_type::group_field, key));
-                emitted_keys.push_back(key);
+                emitted_keys.emplace_back(key, resource);
                 key_partial_pos[i] = next_pos;
                 if (local == join_key_local) {
                     join_key_covered = true;
@@ -278,13 +260,13 @@ namespace components::planner::optimizer {
                 ++next_pos;
             }
             if (!join_key_covered) {
-                // Add the join key as an extra partial grouping column so a partial
-                // group maps 1:1 to the join key (inner-join drop commutes with reduce).
+                // Adds the join key as an extra grouping column so a partial group maps 1:1 to it
+                // (inner-join then reduce commutes).
                 ce::key_t jk{resource, std::string{pushed->output_types()[join_key_local].alias()}};
                 set_key_path(resource, jk, join_key_local);
                 partial_group->append_expression(
                     ce::make_scalar_expression(resource, ce::scalar_type::group_field, jk));
-                emitted_keys.push_back(jk);
+                emitted_keys.emplace_back(jk, resource);
                 join_key_pos = next_pos;
                 ++next_pos;
             }
@@ -301,10 +283,9 @@ namespace components::planner::optimizer {
                                                           aggs[i]->key(),
                                                           local_key(resource, ce::as_key(aggs[i]->params()[0]), local));
                 pagg->add_function_uid(aggs[i]->function_uid());
-                // This rule runs AFTER validation, so nothing will stamp the expression it just
-                // built -- and the graph builder rejects an unstamped aggregate. Only MIN/MAX are
-                // pushed and MIN(MIN)=MIN over the same column, so the partial reduces to exactly
-                // the type the final one was resolved to.
+                // This rule runs after validation, so nothing else stamps the expression's type and
+                // the graph builder rejects an unstamped aggregate; copying the final's result type
+                // is safe since MIN(MIN)=MIN/MAX(MAX)=MAX over the same column.
                 pagg->set_result_type(aggs[i]->result_type());
                 pagg->set_mergeable(true);
                 pagg->set_distinct(false);
@@ -312,7 +293,6 @@ namespace components::planner::optimizer {
                 agg_partial_pos[i] = num_keys + i;
             }
 
-            // --- Rewrite the FINAL group to read the partial's output columns ----
             for (size_t i = 0; i < keys.size(); ++i) {
                 set_key_path(resource, keys[i]->key(), base + key_partial_pos[i]);
             }
@@ -321,22 +301,15 @@ namespace components::planner::optimizer {
                 set_key_path(resource, *key_outputs[i], base + key_partial_pos[key_output_of[i]]);
             }
             for (size_t i = 0; i < aggs.size(); ++i) {
-                // MIN(MIN)=MIN, MAX(MAX)=MAX: the function stays; only the argument
-                // moves onto the partial extremum column.
+                // The function stays; only the argument moves onto the partial extremum column.
                 set_key_path(resource, ce::as_key(aggs[i]->params()[0]), base + agg_partial_pos[i]);
             }
 
-            // --- Splice the partial under the join and re-stamp the equi key -----
             pushed->append_child(partial_group);
 
-            // Re-stamp the pushed node's output schema to the TRUE partial layout
-            // [group keys..., join key (if added), partial aggregates...]. The node
-            // still carried the base table's full column list, and BOTH lowerings
-            // treat that stamp as the authoritative output layout —
-            // create_plan_aggregate forwards it into operator_group's output_types_
-            // and into the pushed reduce spec, either of which then types the
-            // partial extremum column with whatever base column happens to sit at
-            // the same ordinal (wrong type whenever the ordinals do not coincide).
+            // Re-stamps the pushed node's output to the true partial layout: it still carries the base
+            // table's full column list, and both lowerings (create_plan_aggregate/operator_hash_group,
+            // the pushed reduce spec) treat that stamp as authoritative, mistyping columns otherwise.
             {
                 const auto& base_types = pushed->output_types();
                 std::pmr::vector<components::types::complex_logical_type> partial_types{resource};
@@ -348,8 +321,8 @@ namespace components::planner::optimizer {
                     partial_types.push_back(base_types[join_key_local]);
                 }
                 for (size_t i = 0; i < aggs.size(); ++i) {
-                    // MIN/MAX preserve their argument's type; the column is named
-                    // after the partial aggregate's output alias.
+                    // MIN/MAX preserve their argument's type; the column is named after the partial
+                    // aggregate's alias.
                     auto t = base_types[agg_merged[i] - base];
                     t.set_alias(aggs[i]->key().as_string());
                     partial_types.push_back(std::move(t));
@@ -362,8 +335,8 @@ namespace components::planner::optimizer {
             } else {
                 join->set_equi_columns(join->left_col(), join_key_pos);
             }
-            // Keep the ON condition truthful: the pushed-side key now sits at its
-            // partial-output position (side-local). The other side is untouched.
+            // Keeps the ON condition truthful: the pushed-side key now sits at its partial-output
+            // position; the other side is untouched.
             if (!join->expressions().empty() && join->expressions()[0] &&
                 join->expressions()[0]->group() == ce::expression_group::compare) {
                 auto* cmp = static_cast<ce::compare_expression_t*>(join->expressions()[0].get());

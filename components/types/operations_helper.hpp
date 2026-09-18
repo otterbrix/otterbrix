@@ -93,10 +93,7 @@ namespace components::types {
     struct abs<void> {
         template<typename T>
         constexpr auto operator()(T&& x) const {
-            if constexpr (std::is_same_v<std::decay_t<T>, bool>) {
-                assert(false && "abs() called on bool type");
-                std::abort();
-            } else if constexpr (std::is_same_v<std::decay_t<T>, int128_t>) {
+            if constexpr (std::is_same_v<std::decay_t<T>, int128_t>) {
                 return x < 0 ? -x : x;
             } else if constexpr (std::is_floating_point_v<std::decay_t<T>>) {
                 return std::fabs(std::forward<T>(x));
@@ -187,12 +184,8 @@ namespace components::types {
             // case physical_type::NA:
             //     return double_callback.template operator()<TypeLeft, std::nullptr_t>(std::forward<Args>(args)...);
             default:
-                // A true invariant violation must never throw (an exception aborts messily through the
-                // noexcept executor coroutine). Every non-CAST caller of this switch (arithmetic / copy /
-                // compare / void in components/vector/*.cpp) operates on already-validated vector physical
-                // types that are never NA/complex, so reaching here is a genuine "cannot happen". CAST is
-                // guarded before it ever dispatches here (logical_value_t::cast_as returns a
-                // conversion_failure error for a non-castable physical type instead of entering the switch).
+                // Same genuine "cannot happen" as simple_physical_type_switch above, and abort for the
+                // same reason: a throw would unwind messily through the noexcept executor coroutine.
                 assert(false && "simple_physical_type_switch: unhandled physical type");
                 std::abort();
         }
@@ -233,12 +226,8 @@ namespace components::types {
             // case physical_type::NA:
             //     return simple_physical_type_switch<DoubleCallback, std::nullptr_t>(type_right, std::forward<Args>(args)...);
             default:
-                // A true invariant violation must never throw (an exception aborts messily through the
-                // noexcept executor coroutine). Every non-CAST caller of this switch (arithmetic / copy /
-                // compare / void in components/vector/*.cpp) operates on already-validated vector physical
-                // types that are never NA/complex, so reaching here is a genuine "cannot happen". CAST is
-                // guarded before it ever dispatches here (logical_value_t::cast_as returns a
-                // conversion_failure error for a non-castable physical type instead of entering the switch).
+                // Same genuine "cannot happen" as simple_physical_type_switch above, and abort for the
+                // same reason: a throw would unwind messily through the noexcept executor coroutine.
                 assert(false && "simple_physical_type_switch: unhandled physical type");
                 std::abort();
         }
@@ -249,47 +238,50 @@ namespace components::types {
                                                    1e20, 1e21, 1e22, 1e23, 1e24, 1e25, 1e26, 1e27, 1e28, 1e29,
                                                    1e30, 1e31, 1e32, 1e33, 1e34, 1e35, 1e36, 1e37, 1e38, 1e39};
 
-    static constexpr int128_t POWERS_OF_TEN[]{absl::MakeInt128(0, 1ull),
-                                              absl::MakeInt128(0, 10ull),
-                                              absl::MakeInt128(0, 100ull),
-                                              absl::MakeInt128(0, 1000ull),
-                                              absl::MakeInt128(0, 10000ull),
-                                              absl::MakeInt128(0, 100000ull),
-                                              absl::MakeInt128(0, 1000000ull),
-                                              absl::MakeInt128(0, 10000000ull),
-                                              absl::MakeInt128(0, 100000000ull),
-                                              absl::MakeInt128(0, 1000000000ull),
-                                              absl::MakeInt128(0, 10000000000ull),
-                                              absl::MakeInt128(0, 100000000000ull),
-                                              absl::MakeInt128(0, 1000000000000ull),
-                                              absl::MakeInt128(0, 10000000000000ull),
-                                              absl::MakeInt128(0, 100000000000000ull),
-                                              absl::MakeInt128(0, 1000000000000000ull),
-                                              absl::MakeInt128(0, 10000000000000000ull),
-                                              absl::MakeInt128(0, 100000000000000000ull),
-                                              absl::MakeInt128(0, 1000000000000000000ull),
-                                              absl::MakeInt128(0, 10000000000000000000ull),
-                                              // some bit magic to maintain constexpr nature of the array
-                                              // there is a test to validate those hex values
-                                              absl::MakeInt128(0x5, 0x6BC75E2D63100000),
-                                              absl::MakeInt128(0x36, 0x35C9ADC5DEA00000),
-                                              absl::MakeInt128(0x21E, 0x19E0C9BAB2400000),
-                                              absl::MakeInt128(0x152D, 0x2C7E14AF6800000),
-                                              absl::MakeInt128(0xD3C2, 0x1BCECCEDA1000000),
-                                              absl::MakeInt128(0x84595, 0x161401484A000000),
-                                              absl::MakeInt128(0x52B7D2, 0xDCC80CD2E4000000),
-                                              absl::MakeInt128(0x33B2E3C, 0x9FD0803CE8000000),
-                                              absl::MakeInt128(0x204FCE5E, 0x3E25026110000000),
-                                              absl::MakeInt128(0x1431E0FAE, 0x6D7217CAA0000000),
-                                              absl::MakeInt128(0xC9F2C9CD0, 0x4674EDEA40000000),
-                                              absl::MakeInt128(0x7E37BE2022, 0xC0914B2680000000),
-                                              absl::MakeInt128(0x4EE2D6D415B, 0x85ACEF8100000000),
-                                              absl::MakeInt128(0x314DC6448D93, 0x38C15B0A00000000),
-                                              absl::MakeInt128(0x1ED09BEAD87C0, 0x378D8E6400000000),
-                                              absl::MakeInt128(0x13426172C74D82, 0x2B878FE800000000),
-                                              absl::MakeInt128(0xC097CE7BC90715, 0xB34B9F1000000000),
-                                              absl::MakeInt128(0x785EE10D5DA46D9, 0xF436A000000000),
-                                              absl::MakeInt128(0x4B3B4CA85A86C47A, 0x98A224000000000)};
+    static constexpr int128_t POWERS_OF_TEN[]{
+        absl::MakeInt128(0, 1ull),
+        absl::MakeInt128(0, 10ull),
+        absl::MakeInt128(0, 100ull),
+        absl::MakeInt128(0, 1000ull),
+        absl::MakeInt128(0, 10000ull),
+        absl::MakeInt128(0, 100000ull),
+        absl::MakeInt128(0, 1000000ull),
+        absl::MakeInt128(0, 10000000ull),
+        absl::MakeInt128(0, 100000000ull),
+        absl::MakeInt128(0, 1000000000ull),
+        absl::MakeInt128(0, 10000000000ull),
+        absl::MakeInt128(0, 100000000000ull),
+        absl::MakeInt128(0, 1000000000000ull),
+        absl::MakeInt128(0, 10000000000000ull),
+        absl::MakeInt128(0, 100000000000000ull),
+        absl::MakeInt128(0, 1000000000000000ull),
+        absl::MakeInt128(0, 10000000000000000ull),
+        absl::MakeInt128(0, 100000000000000000ull),
+        absl::MakeInt128(0, 1000000000000000000ull),
+        absl::MakeInt128(0, 10000000000000000000ull),
+        // some bit magic to maintain constexpr nature of the array
+        // there is a test to validate those hex values
+        absl::MakeInt128(0x5, 0x6BC75E2D63100000),
+        absl::MakeInt128(0x36, 0x35C9ADC5DEA00000),
+        absl::MakeInt128(0x21E, 0x19E0C9BAB2400000),
+        absl::MakeInt128(0x152D, 0x2C7E14AF6800000),
+        absl::MakeInt128(0xD3C2, 0x1BCECCEDA1000000),
+        absl::MakeInt128(0x84595, 0x161401484A000000),
+        absl::MakeInt128(0x52B7D2, 0xDCC80CD2E4000000),
+        absl::MakeInt128(0x33B2E3C, 0x9FD0803CE8000000),
+        absl::MakeInt128(0x204FCE5E, 0x3E25026110000000),
+        absl::MakeInt128(0x1431E0FAE, 0x6D7217CAA0000000),
+        absl::MakeInt128(0xC9F2C9CD0, 0x4674EDEA40000000),
+        absl::MakeInt128(0x7E37BE2022, 0xC0914B2680000000),
+        absl::MakeInt128(0x4EE2D6D415B, 0x85ACEF8100000000),
+        absl::MakeInt128(0x314DC6448D93, 0x38C15B0A00000000),
+        absl::MakeInt128(0x1ED09BEAD87C0, 0x378D8E6400000000),
+        absl::MakeInt128(0x13426172C74D82, 0x2B878FE800000000),
+        absl::MakeInt128(0xC097CE7BC90715, 0xB34B9F1000000000),
+        absl::MakeInt128(0x785EE10D5DA46D9, 0xF436A000000000),
+        // 10^38 must stay: decimal_length() and int_to_decimal() both index POWERS_OF_TEN[38]
+        // for the legal NUMERIC(38,0).
+        absl::MakeInt128(0x4B3B4CA85A86C47A, 0x98A224000000000)};
 
     // double supports up to 15 decimal places, so we stop there
     static constexpr std::string_view FORMAT_PRECISION[]{"{:.0f}",

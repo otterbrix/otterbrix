@@ -3,7 +3,6 @@
 #include <connection_environment/connection_environment.hpp>
 
 #include <components/types/logical_value.hpp>
-#include <components/types/operations_helper.hpp>
 #include <components/types/types.hpp>
 
 #include <ctime>
@@ -47,8 +46,8 @@ namespace otterbrix {
         }
     }
 
-    bool py_decimal_t::try_get_type(complex_logical_type& type) {
-        uint8_t width = static_cast<uint8_t>(digits.size());
+    bool py_decimal_t::try_get_type(std::pmr::memory_resource* resource, complex_logical_type& type) {
+        int32_t width = static_cast<int32_t>(digits.size());
 
         if (!exponent_recognized) {
             // Failed to convert decimal.Decimal value, exponent type is unknown
@@ -71,7 +70,15 @@ namespace otterbrix {
                         type = logical_type::DOUBLE;
                         return true;
                     }
-                    type = complex_logical_type::create_decimal(width, scale);
+                    auto decimal = complex_logical_type::create_decimal(resource,
+                                                                        static_cast<uint8_t>(width),
+                                                                        static_cast<uint8_t>(scale));
+                    if (decimal.has_error()) {
+                        // A python Decimal whose (width, scale) falls outside the engine's
+                        // DECIMAL window has no type here — reported, not approximated.
+                        return false;
+                    }
+                    type = std::move(decimal.value());
                     return true;
                 }
                 case py_decimal_exponent_type_t::EXPONENT_INFINITY: {
@@ -118,15 +125,18 @@ namespace otterbrix {
         // LCOV_EXCL_STOP
     }
 
-    static bool width_fits_in_decimal(uint8_t width) {
-        // has to fit within int128
-        return width < std::size(components::types::POWERS_OF_TEN);
+    // width >= 1: DECIMAL(0, ...) is outside the engine's window (is_valid_decimal_spec), so
+    // it routes to DOUBLE instead of a type create_decimal would refuse.
+    static bool width_fits_in_decimal(int32_t width) {
+        return width >= 1 && width <= std::numeric_limits<int64_t>::digits10;
     }
 
     template<class OP>
-    logical_value_t
-    PyDecimalCastSwitch(std::pmr::memory_resource* r, py_decimal_t& decimal, uint8_t width, uint8_t scale) {
-        return OP::template Operation<int64_t>(r, decimal.signed_value, decimal.digits, width, scale);
+    logical_value_t PyDecimalCastSwitch(std::pmr::memory_resource* r,
+                                        py_decimal_t& decimal,
+                                        const complex_logical_type& type,
+                                        uint8_t scale) {
+        return OP::template Operation<int64_t>(r, decimal.signed_value, decimal.digits, type, scale);
     }
 
     // Won't fit in a DECIMAL, fall back to DOUBLE
@@ -138,7 +148,7 @@ namespace otterbrix {
         if (!exponent_recognized) {
             return make_error(r, "Failed to convert decimal.Decimal value, exponent type is unknown");
         }
-        uint8_t width = static_cast<uint8_t>(digits.size());
+        int32_t width = static_cast<int32_t>(digits.size());
         if (!width_fits_in_decimal(width)) {
             return cast_to_double(r, obj);
         }
@@ -153,7 +163,9 @@ namespace otterbrix {
                 if (!width_fits_in_decimal(width)) {
                     return cast_to_double(r, obj);
                 }
-                return PyDecimalCastSwitch<py_decimal_scale_converter_t>(r, *this, width, scale);
+                VALUE_OR_RETURN(auto scale_type,
+                                complex_logical_type::create_decimal(r, static_cast<uint8_t>(width), scale));
+                return PyDecimalCastSwitch<py_decimal_scale_converter_t>(r, *this, scale_type, scale);
             }
             case py_decimal_exponent_type_t::EXPONENT_POWER: {
                 uint8_t scale = static_cast<uint8_t>(exponent_value);
@@ -161,7 +173,9 @@ namespace otterbrix {
                 if (!width_fits_in_decimal(width)) {
                     return cast_to_double(r, obj);
                 }
-                return PyDecimalCastSwitch<py_decimal_power_converter_t>(r, *this, width, scale);
+                VALUE_OR_RETURN(auto power_type,
+                                complex_logical_type::create_decimal(r, static_cast<uint8_t>(width), scale));
+                return PyDecimalCastSwitch<py_decimal_power_converter_t>(r, *this, power_type, scale);
             }
             case py_decimal_exponent_type_t::EXPONENT_NAN: {
                 return logical_value_t(r, NAN);

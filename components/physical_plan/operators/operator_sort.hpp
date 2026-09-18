@@ -51,6 +51,11 @@ namespace components::operators {
         push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& out) override;
         [[nodiscard]] core::error_t finalize(pipeline::context_t* ctx, chunks_vector_t& out) override;
 
+        void reset_pipeline_state() noexcept override {
+            buffered_input_.clear();
+            sorter_.clear();
+        }
+
     private:
         // The sorter is populated once, inside sort_merge, by walking key_specs_ in order —
         // a computed key's temporary-column index is unknowable before the first chunk's

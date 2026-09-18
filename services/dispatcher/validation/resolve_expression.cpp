@@ -6,6 +6,7 @@
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/cast_expression.hpp>
 #include <components/expressions/compare_expression.hpp>
+#include <components/expressions/expression_equivalence.hpp>
 #include <components/expressions/function_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/expressions/sort_expression.hpp>
@@ -135,6 +136,7 @@ namespace services::dispatcher::validation {
                 if (error_.contains_error()) {
                     return error_;
                 }
+                bind_to_precomputed_column(expression, inside_aggregate);
                 expression->set_cardinality(last_cardinality_);
                 return core::error_t::no_error();
             }
@@ -167,7 +169,10 @@ namespace services::dispatcher::validation {
             complex_logical_type column(components::expressions::key_t& key, bool inside_aggregate) {
                 auto resolved = validate_key(context_.resource, key, &context_.schema, context_.schema_right);
                 if (resolved.has_error()) {
-                    error_ = resolved.error();
+                    // error_on, not a plain copy: error_t's copy constructor leaves the message on
+                    // the default resource, and this resolver's own refusals (fail() above) are
+                    // built on context_.resource. One arena for every error the pass reports.
+                    error_ = core::error_on(context_.resource, resolved.error());
                     return invalid_type;
                 }
                 last_cardinality_ = cardinality_of_column(key, inside_aggregate);
@@ -180,20 +185,52 @@ namespace services::dispatcher::validation {
                 if (inside_aggregate) {
                     return cardinality_t::group;
                 }
-                if (context_.group_key_paths == nullptr) {
+                if (context_.precomputed == nullptr) {
                     return cardinality_t::row;
                 }
                 const auto& path = key.path();
                 if (path.empty()) {
                     return cardinality_t::row;
                 }
-                for (const auto& candidate : *context_.group_key_paths) {
-                    if (candidate.size() == path.size() &&
-                        std::equal(candidate.begin(), candidate.end(), path.begin())) {
-                        return cardinality_t::group;
+                for (const auto& candidate : *context_.precomputed) {
+                    // A computed column is matched as a whole expression, not by the columns it
+                    // reads: `a` is a bare row value under `GROUP BY a + b`.
+                    if (candidate.expression) {
+                        continue;
+                    }
+                    const auto& key_path = candidate.reference.path();
+                    if (key_path.size() == path.size() && std::equal(key_path.begin(), key_path.end(), path.begin())) {
+                        return candidate.cardinality;
                     }
                 }
                 return cardinality_t::row;
+            }
+
+            // same expressions do not require aliases to be referenced
+            void bind_to_precomputed_column(expression_ptr& expression, bool inside_aggregate) {
+                if (context_.precomputed == nullptr || inside_aggregate) {
+                    return;
+                }
+                for (const auto& candidate : *context_.precomputed) {
+                    if (!candidate.expression) {
+                        continue;
+                    }
+                    if (!components::expressions::same_computation(expression,
+                                                                   candidate.expression,
+                                                                   context_.parameters.parameters)) {
+                        continue;
+                    }
+                    auto reference =
+                        components::expressions::make_scalar_expression(context_.resource,
+                                                                        components::expressions::scalar_type::get_field,
+                                                                        expression->key(),
+                                                                        candidate.reference);
+                    reference->set_result_type(expression->result_type());
+                    reference->set_result_alias(expression->result_alias());
+                    expression = reference;
+                    last_cardinality_ = candidate.cardinality;
+                    return;
+                }
             }
 
             cardinality_t combine(cardinality_t left, cardinality_t right) const {
@@ -223,7 +260,7 @@ namespace services::dispatcher::validation {
                                                  arguments,
                                                  context_.allowed_functions);
                 if (resolved.has_error()) {
-                    error_ = resolved.error();
+                    error_ = core::error_on(context_.resource, resolved.error());
                     return;
                 }
                 comparison->add_function_uid(resolved.value().uid);
@@ -297,19 +334,11 @@ namespace services::dispatcher::validation {
                         if (error_.contains_error()) {
                             return;
                         }
-                        if (operand_type.type() != logical_type::BOOLEAN) {
-                            auto cast = context_.cast_registry.resolve(operand_type,
-                                                                       boolean_type,
-                                                                       components::casts::cast_type::implicit);
-                            if (!cast.has_value()) {
-                                fail(core::error_code_t::schema_error,
-                                     message(context_.resource,
-                                             "operand of ",
-                                             to_string(comparison->type()),
-                                             " must be BOOLEAN"));
-                                return;
-                            }
-                            splice_cast(context_.resource, nested, boolean_type, *cast);
+                        if (!require_type(nested,
+                                          operand_type,
+                                          boolean_type,
+                                          message(context_.resource, "operand of ", to_string(comparison->type())))) {
+                            return;
                         }
                         combined = combine(combined, last_cardinality_);
                         child = std::get<expression_ptr>(nested);
@@ -409,7 +438,7 @@ namespace services::dispatcher::validation {
                                      argument_types,
                                      components::compute::create_mask(components::compute::function_type_t::aggregate));
                 if (resolved.has_error()) {
-                    error_ = resolved.error();
+                    error_ = core::error_on(context_.resource, resolved.error());
                     return;
                 }
                 for (size_t index = 0; index < aggregate->params().size() && index < resolved.value().arguments.size();
@@ -440,15 +469,22 @@ namespace services::dispatcher::validation {
                     return;
                 }
 
+                // An aggregate's argument is row-wise, so a call inside one is a vector function
+                // however the surrounding clause was masked. Aggregates stay admissible so a
+                // nested reduction is reported as nesting below, not as a masked-out name.
+                const auto allowed_functions =
+                    inside_aggregate ? components::compute::create_mask(components::compute::function_type_t::vector,
+                                                                        components::compute::function_type_t::aggregate)
+                                     : context_.allowed_functions;
                 auto resolved = resolve_function(context_.resource,
                                                  context_.cast_registry,
                                                  context_.execution_context,
                                                  context_.function_registry,
                                                  call->name(),
                                                  argument_types,
-                                                 context_.allowed_functions);
+                                                 allowed_functions);
                 if (resolved.has_error()) {
-                    error_ = resolved.error();
+                    error_ = core::error_on(context_.resource, resolved.error());
                     return;
                 }
                 const bool reduces = resolved.value().function_type == components::compute::function_type_t::aggregate;
@@ -597,8 +633,7 @@ namespace services::dispatcher::validation {
                     }
                     // An even position that is not the trailing ELSE is a WHEN condition. It takes
                     // no part in the common type below; it only has to answer BOOLEAN.
-                    if (param_type.type() != logical_type::BOOLEAN) {
-                        fail(core::error_code_t::schema_error, "CASE WHEN condition must be BOOLEAN");
+                    if (!require_type(scalar->params()[position], param_type, boolean_type, "CASE WHEN condition")) {
                         return;
                     }
                 }
@@ -687,6 +722,29 @@ namespace services::dispatcher::validation {
             // Cardinality of the operand most recently resolved. Set by every path that resolves
             // one, read by the parent before it resolves the next.
             cardinality_t last_cardinality_{cardinality_t::constant};
+
+        public:
+            bool require_type(param_storage& operand,
+                              const complex_logical_type& actual,
+                              const complex_logical_type& wanted,
+                              std::string_view what) {
+                if (wanted.type() == logical_type::ANY || actual.type() == wanted.type()) {
+                    return true;
+                }
+                auto cast = context_.cast_registry.resolve(actual, wanted, components::casts::cast_type::implicit);
+                if (!cast.has_value()) {
+                    fail(core::error_code_t::schema_error,
+                         message(context_.resource,
+                                 what,
+                                 " must be ",
+                                 describe_type(wanted),
+                                 ", not ",
+                                 describe_type(actual)));
+                    return false;
+                }
+                splice_cast(context_.resource, operand, wanted, *cast);
+                return true;
+            }
         };
 
     } // namespace
@@ -707,6 +765,11 @@ namespace services::dispatcher::validation {
                 core::error_code_t::schema_error,
                 std::pmr::string{"could not resolve a concrete type for expression", context.resource});
         }
+        param_storage required{expression};
+        if (!resolver.require_type(required, result_type, context.required_type, "argument of the clause")) {
+            return resolver.take_error();
+        }
+        expression = std::get<expression_ptr>(required);
         return core::error_t::no_error();
     }
 

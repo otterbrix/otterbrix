@@ -89,7 +89,7 @@ namespace services::planner {
             case node_type::group_t:
                 return impl::create_plan_group(context, function_registry, node, params);
             case node_type::select_t:
-                return impl::create_plan_select(context, node, params);
+                return impl::create_plan_select(context, node);
             case node_type::sort_t:
                 return impl::create_plan_sort(context, node);
             case node_type::update_t:
@@ -115,7 +115,10 @@ namespace services::planner {
                         case components::logical_plan::alter_column_op::drop:
                             return impl::create_plan_computed_field_unregister(context, node);
                         case components::logical_plan::alter_column_op::rename:
-                            return nullptr; // computed rename is not emitted
+                            // computed rename is never emitted: rewrite_alter_table never sets computed_
+                            // on a rename clause, since a document table's RENAME is answered by
+                            // operator_alter_column_rename_t itself.
+                            return nullptr;
                     }
                     return nullptr;
                 }

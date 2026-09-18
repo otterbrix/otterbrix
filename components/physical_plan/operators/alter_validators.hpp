@@ -1,24 +1,15 @@
 #pragma once
 
-// ALTER atomic validation: async data-gathering layer.
+// Gathers inputs for alter_column_validators.{hpp,cpp}'s pure validators, testable without an actor harness.
 //
-// The pure validators in components/catalog/alter_column_validators.{hpp,cpp} take
-// pre-materialised inputs by const-reference; this file provides the async
-// helpers that gather those inputs from manager_disk_t. The split keeps the
-// pure validators testable without an actor harness while still letting ALTER
-// operators short-circuit on validation failure BEFORE any pg_catalog mutation.
-//
-// These helpers are NOT actors: they are coroutine functions invoked from an
-// operator's await_async_and_resume, piggy-backing on its async frame and
-// talking to manager_disk_t only via actor_zeta::send. A scan-side failure is
-// returned as a core::error_t: it used to degrade to an empty result, which the
-// pure validators read as "no visible columns" and "no dependents" — so a failed
-// read let a duplicate column through and made a RESTRICT check pass vacuously.
+// A scan-side failure returns core::error_t, not empty: the validators read empty as "no visible
+// columns"/"no dependents," so a failure must not slip a duplicate column or pass RESTRICT vacuously.
 
 #include <components/catalog/alter_column_validators.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/context/context.hpp>
 #include <components/context/execution_context.hpp>
+#include <components/vector/data_chunk.hpp>
 #include <core/result_wrapper.hpp>
 
 #include <actor-zeta.hpp>
@@ -26,42 +17,31 @@
 
 #include <memory_resource>
 #include <string>
-#include <utility>
 #include <vector>
 
 namespace components::operators::alter_validators {
 
-    // Async pg_attribute scan: visible column names for the relation, filtered by
-    // attisdropped==false and the MVCC snapshot (added_at <= horizon AND
-    // (dropped_at == 0 OR dropped_at > horizon)). Vector is allocated against
-    // `resource` and consumed by validate_column_not_duplicate. An empty list means
-    // the relation really has no visible columns, which a caller is entitled to trust.
+    // attisdropped==false and the MVCC snapshot (added_at <= horizon AND (dropped_at == 0 OR dropped_at > horizon)).
     actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<std::string>>>
     visible_column_names(std::pmr::memory_resource* resource,
                          actor_zeta::address_t disk_address,
                          components::execution_context_t exec_ctx,
                          components::catalog::oid_t table_oid);
 
-    // Async pg_depend scan: (classid, objid) pairs depending on (refclassid,
-    // refobjid, refobjsubid). refobjsubid is the altered column's attnum
-    // (0 = whole-relation). Feeds validate_cascade_dependencies for RESTRICT, or
-    // the cascade loop for CASCADE.
-    // TBD-impl: pg_depend has no refobjsubid yet, so this returns ALL dependents
-    // of the refobj (table); callers must refine once the column-grain id lands.
-    actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<std::pair<int, components::catalog::oid_t>>>>
-    scan_cascade_dependents(std::pmr::memory_resource* resource,
-                            actor_zeta::address_t disk_address,
-                            components::execution_context_t exec_ctx,
-                            components::catalog::oid_t ref_classid,
-                            components::catalog::oid_t ref_objid,
-                            std::int32_t ref_objsubid);
+    // relkind picks the refusal's wording; an empty name (no readable row) leaves relkind 0, the
+    // ordinary fallback. PURE deliberately: the caller awaits it itself, so an accepted ALTER pays nothing.
+    struct relation_identity_t {
+        std::string relname;
+        char relkind{0};
+    };
+    relation_identity_t
+    relation_identity_of(const std::pmr::vector<components::vector::data_chunk_t>& pg_class_batches);
 
-    // Re-export the pure validators so callsites reach pure + async helpers
-    // through one `using namespace alter_validators;`.
+    // Deliberately no pg_depend gatherer: deptype (blocking vs. cascadable) needs a
+    // (refclassid, refobjid) keyed read, so the operator that needs it reads pg_depend itself.
+
     using components::catalog::alter_column_validators::encode_default_spec_ec;
-    using components::catalog::alter_column_validators::validate_cascade_dependencies;
     using components::catalog::alter_column_validators::validate_column_not_duplicate;
-    using components::catalog::alter_column_validators::validate_default_value_evaluatable;
     using components::catalog::alter_column_validators::validate_default_value_type;
 
 } // namespace components::operators::alter_validators

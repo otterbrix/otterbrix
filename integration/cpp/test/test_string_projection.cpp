@@ -1,3 +1,4 @@
+#include "integration_fixture_path.hpp"
 #include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -43,10 +44,8 @@ namespace {
 } // namespace
 
 #define STRPROJ_ENV(dirname)                                                                                           \
-    auto config = test_create_config("/tmp/otterbrix/integration/test_string_projection/" dirname);                    \
+    auto config = test_create_config(integration_fixture_path("test_string_projection/" dirname));                     \
     test_clear_directory(config);                                                                                      \
-    config.disk.on = true;                                                                                             \
-    config.wal.on = false;                                                                                             \
     config.log.level = log_t::level::off;                                                                              \
     test_spaces space(config);                                                                                         \
     auto* d = space.dispatcher();                                                                                      \

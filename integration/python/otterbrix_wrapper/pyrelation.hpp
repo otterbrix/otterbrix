@@ -13,6 +13,7 @@
 #include <vector>
 
 namespace otterbrix {
+    class otterbrix_t;
     class py_connection_t;
     class py_expression_t;
     class expression_factory_t;
@@ -21,7 +22,7 @@ namespace otterbrix {
 
     class py_relation_t {
     public:
-        py_relation_t(py_connection_t* env, built_relation_t rel);
+        py_relation_t(std::shared_ptr<py_connection_t> env, built_relation_t rel);
         py_relation_t(std::unique_ptr<py_result_t> result);
 
         ~py_relation_t();
@@ -59,14 +60,33 @@ namespace otterbrix {
         void assert_relation();
 
     private:
+        // Refused unless still open. Chaining never touches `space_`: it goes through
+        // relation_factory_t's and expression_factory_t's own copies of the space, and
+        // close() nulls only the latter -- so without this check, a closed connection could
+        // still chain successfully and produce relations with no space of their own.
+        py_connection_t& live_env();
+
+    private:
+        // Held, not borrowed from `env`: close() can null the connection's space while `env`
+        // itself lives on, and node_/schema_ free into this arena from a destructor, which
+        // can't refuse (py_result_t::space is held for the same reason). Declared first so
+        // reverse-order destruction frees it last. Never null while `node_` is set.
+        boost::intrusive_ptr<otterbrix_t> space_;
+
         // The eagerly-built logical_plan node (nullptr when this py_relation_t was
         // created from a result). schema_ carries the column names/types this
         // node produces, computed eagerly at each chaining op so that
         // columns()/column_types() work before execution.
         components::logical_plan::node_ptr node_;
         std::pmr::vector<components::table::column_definition_t> schema_;
-        bool executed;
-        py_connection_t* env;
+        bool executed{false};
+        // Held rather than borrowed: a relation outlives the Python connection object that
+        // made it, so a raw back-pointer would read freed memory (no cycle: nothing here is
+        // reachable from the connection). shared_ptr because pybind11 owns py_connection_t
+        // through a shared_ptr holder (pyconnection/initialize.cpp) -- that IS its lifetime
+        // on this boundary; holding anything else wouldn't keep it alive or would compete
+        // with that holder.
+        std::shared_ptr<py_connection_t> env;
         std::unique_ptr<py_result_t> result;
         bool optimize_ = false;
     };

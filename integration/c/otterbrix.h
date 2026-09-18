@@ -13,15 +13,20 @@ typedef struct string_view_t {
     size_t size;
 } string_view_t;
 
+// ABI NOTE: `disk_on`, `sync_to_disk` and `wal_on` all removed, not deprecated. Every table is
+// disk-backed, every commit fsyncs, and the journal is not optional: switching it off left the
+// disk index (durable per commit) ahead of the table (durable per checkpoint), and stamped a zero
+// checkpoint floor that made the NEXT run replay a tail it had already absorbed.
+// Hand-written bindings (integration/csharp) must drop them too, and must drop the LAST field
+// first: removing an earlier bool while a later one survives shifts the survivor onto the wrong
+// offset, which no compiler reports. bindgen-generated ones (integration/rust/otterbrix-sys)
+// follow this header automatically.
 typedef struct config_t {
     int level;
     string_view_t log_path;
     string_view_t wal_path;
     string_view_t disk_path;
     string_view_t main_path;
-    bool wal_on;
-    bool disk_on;
-    bool sync_to_disk;
 } config_t;
 
 typedef enum state_t

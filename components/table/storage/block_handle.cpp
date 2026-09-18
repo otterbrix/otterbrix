@@ -40,7 +40,9 @@ namespace components::table::storage {
     }
 
     block_handle_t::block_handle_t(block_manager_t& block_manager, uint64_t block_id, memory_tag tag)
-        : block_manager(block_manager)
+        : buffer_manager(block_manager.buffer_manager)
+        , file_manager_(&block_manager)
+        , block_alloc_size_(block_manager.block_allocation_size())
         , readers_(0)
         , block_id_(block_id)
         , tag_(tag)
@@ -48,12 +50,12 @@ namespace components::table::storage {
         , buffer_(nullptr)
         , eviction_seq_num_(0)
         , destroy_condition_(destroy_buffer_condition::BLOCK)
-        , memory_charge_(tag, block_manager.buffer_manager.buffer_pool())
+        , memory_charge_(tag, buffer_manager.buffer_pool())
         , unswizzled_(nullptr)
         , eviction_queue_idx_(INVALID_INDEX) {
         eviction_seq_num_ = 0;
         state_ = block_state::UNLOADED;
-        memory_usage_ = block_manager.block_allocation_size();
+        memory_usage_ = block_alloc_size_;
     }
 
     block_handle_t::block_handle_t(block_manager_t& block_manager,
@@ -63,14 +65,42 @@ namespace components::table::storage {
                                    destroy_buffer_condition destroy_buffer_upon,
                                    uint64_t block_size,
                                    buffer_pool_reservation_t&& reservation)
-        : block_manager(block_manager)
+        : buffer_manager(block_manager.buffer_manager)
+        , file_manager_(&block_manager)
+        , block_alloc_size_(block_manager.block_allocation_size())
         , readers_(0)
         , block_id_(block_id)
         , tag_(tag)
         , buffer_type_(buffer->buffer_type())
         , eviction_seq_num_(0)
         , destroy_condition_(destroy_buffer_upon)
-        , memory_charge_(tag, block_manager.buffer_manager.buffer_pool())
+        , memory_charge_(tag, buffer_manager.buffer_pool())
+        , unswizzled_(nullptr)
+        , eviction_queue_idx_(INVALID_INDEX) {
+        buffer_ = std::move(buffer);
+        state_ = block_state::LOADED;
+        memory_usage_ = block_size;
+        memory_charge_ = std::move(reservation);
+    }
+
+    block_handle_t::block_handle_t(buffer_manager_t& buffer_manager,
+                                   uint64_t block_alloc_size,
+                                   uint64_t block_id,
+                                   memory_tag tag,
+                                   std::unique_ptr<file_buffer_t> buffer,
+                                   destroy_buffer_condition destroy_buffer_upon,
+                                   uint64_t block_size,
+                                   buffer_pool_reservation_t&& reservation)
+        : buffer_manager(buffer_manager)
+        , file_manager_(nullptr)
+        , block_alloc_size_(block_alloc_size)
+        , readers_(0)
+        , block_id_(block_id)
+        , tag_(tag)
+        , buffer_type_(buffer->buffer_type())
+        , eviction_seq_num_(0)
+        , destroy_condition_(destroy_buffer_upon)
+        , memory_charge_(tag, buffer_manager.buffer_pool())
         , unswizzled_(nullptr)
         , eviction_queue_idx_(INVALID_INDEX) {
         buffer_ = std::move(buffer);
@@ -92,7 +122,6 @@ namespace components::table::storage {
             unswizzled_ = nullptr;
             assert(!buffer_ || buffer_->buffer_type() == buffer_type_);
             if (buffer_ && buffer_type_ != file_buffer_type::TINY_BUFFER) {
-                auto& buffer_manager = block_manager.buffer_manager;
                 buffer_manager.buffer_pool().increment_dead_nodes(*this);
             }
 
@@ -105,7 +134,9 @@ namespace components::table::storage {
             }
         }
 
-        block_manager.unregister_block(*this);
+        if (file_manager_ != nullptr) {
+            file_manager_->unregister_block(*this);
+        }
     }
 
     std::unique_ptr<block_t>
@@ -156,7 +187,10 @@ namespace components::table::storage {
                                                      buffer_pool_reservation_t reservation) {
         assert(state_ != block_state::LOADED);
         assert(readers_ == 0);
-        auto block = allocate_block(block_manager, std::move(reusable_buffer), block_id_);
+        // Only reachable from standard_buffer_manager_t::batch_read, which only prefetch() calls,
+        // and prefetch() has no callers at all -- so a handle with no file never gets here.
+        assert(file_manager_ != nullptr);
+        auto block = allocate_block(*file_manager_, std::move(reusable_buffer), block_id_);
         std::memcpy(block->internal_buffer(), data, block->allocation_size());
         buffer_ = std::move(block);
         state_ = block_state::LOADED;
@@ -175,39 +209,45 @@ namespace components::table::storage {
         if (has_temp_copy()) {
             // Spilled: rebuild a buffer of THIS handle's type (never a block_t — the destructor and
             // the eviction queues both key off buffer_type_) and read the scratch slot back into it.
-            // temp_user_size_ is the buffer's own size() as recorded at spill time. Rebuilding from
-            // it reproduces the identical allocation: size() is (allocation - header), and the
-            // allocation is already sector-aligned, so aligning it up again is a no-op.
-            //
-            // reusable_buffer is deliberately not consumed here: pin() sizes it against
-            // memory_usage_ (a user size) while construct_manager_buffer compares allocations, so
-            // adopting it would compare two different units. Letting it go costs one allocation on
-            // a path that has just done disk I/O.
-            auto restored =
-                block_manager.buffer_manager.construct_manager_buffer(temp_user_size_, nullptr, buffer_type_);
-            if (!block_manager.buffer_manager.buffer_pool().read_temporary(temp_slot_,
-                                                                           restored->internal_buffer(),
-                                                                           temp_size_)) {
+            // temp_user_size_ is the buffer's size() at spill time, and rebuilding from it reproduces
+            // the identical allocation: size() is (allocation - header) over an already
+            // sector-aligned allocation. reusable_buffer is deliberately not consumed: pin() sizes it
+            // against memory_usage_ (a user size) while construct_manager_buffer compares
+            // allocations, so adopting it would compare two different units, and letting it go costs
+            // one allocation on a path that has just done disk I/O.
+            auto restored = buffer_manager.construct_manager_buffer(temp_user_size_, nullptr, buffer_type_);
+            if (!buffer_manager.buffer_pool().read_temporary(temp_slot_, restored->internal_buffer(), temp_size_)) {
                 return core::error_t(core::error_code_t::io_error,
                                      std::pmr::string{"block_handle_t: spilled buffer could not be read back",
-                                                      block_manager.buffer_manager.resource()});
+                                                      buffer_manager.resource()});
             }
             // The slot is released once the bytes are back in memory: the buffer may now be written
             // to, so the copy on disk is stale from this moment on.
-            block_manager.buffer_manager.buffer_pool().release_temporary(temp_slot_, temp_size_);
+            buffer_manager.buffer_pool().release_temporary(temp_slot_, temp_size_);
             clear_temp_copy();
             buffer_ = std::move(restored);
         } else if (block_id_ < MAXIMUM_BLOCK) {
-            auto block = allocate_block(block_manager, std::move(reusable_buffer), block_id_);
+            // The id gate implies a file behind it: only a block manager hands out ids below
+            // MAXIMUM_BLOCK, and the buffer manager's own blocks start at it.
+            assert(file_manager_ != nullptr);
+            auto block = allocate_block(*file_manager_, std::move(reusable_buffer), block_id_);
             // Disk reload: surface a checksum/IO failure as a value (data_corruption/io_error) rather than
             // throwing. The block stays UNLOADED on error.
-            auto read_result = block_manager.read(*block);
+            auto read_result = file_manager_->read(*block);
             if (read_result.has_error()) {
                 return read_result.convert_error<buffer_handle_t>();
             }
             buffer_ = std::move(block);
         } else {
-            return buffer_handle_t{};
+            // UNLOADED, no scratch copy: a managed in-memory block whose bytes exist NOWHERE.
+            // Unreachable through eviction (can_unload() refuses such blocks), but answering
+            // with an empty buffer_handle_t and no error made standard_buffer_manager_t::pin
+            // dereference a null buffer. Data loss already done; it must be SAID.
+            return core::error_t(
+                core::error_code_t::data_corruption,
+                std::pmr::string{"block_handle_t::load: an in-memory block has no buffer, no spill copy and no "
+                                 "disk form — its bytes are unrecoverable",
+                                 buffer_manager.resource()});
         }
         state_ = block_state::LOADED;
         readers_ = 1;
@@ -219,9 +259,17 @@ namespace components::table::storage {
             return nullptr;
         }
         assert(!unswizzled_);
-        // Either the bytes are already on disk, or they were just written to the pool's scratch
-        // file. Dropping a buffer that is in neither state loses rows.
-        assert(can_unload() || has_temp_copy());
+        // Dropping a buffer that is neither on disk nor spilled loses rows (an assert here would
+        // drop it anyway under NDEBUG). A leak is recoverable, lost rows are not, so the unload
+        // is REFUSED: the buffer stays resident, and every current caller already tolerates
+        // nullptr.
+        if (!can_unload() && !has_temp_copy()) {
+            std::fprintf(stderr,
+                         "components::table::storage::block_handle_t::unload_and_take_block: refusing to drop "
+                         "block %llu — its bytes are neither on disk nor spilled; the buffer stays resident\n",
+                         static_cast<unsigned long long>(block_id_));
+            return nullptr;
+        }
 
         memory_charge_.resize(0);
         state_ = block_state::UNLOADED;

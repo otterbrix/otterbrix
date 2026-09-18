@@ -1,9 +1,11 @@
 #include <catch2/catch_test_macros.hpp>
 #include <components/session/session.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <memory_resource>
 #include <thread>
+#include <vector>
 
 TEST_CASE("components::session::concurrent_generate_uid_uniqueness") {
     using namespace components::session;

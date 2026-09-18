@@ -30,8 +30,10 @@ namespace components::table::storage {
         file_buffer_t(file_buffer_t& source, file_buffer_type type);
         virtual ~file_buffer_t();
 
-        void read(core::filesystem::file_handle_t& handle, uint64_t location);
-        void write(core::filesystem::file_handle_t& handle, uint64_t location);
+        // The deepest link of the durability chain: `void` here would leave every data-block
+        // write unobserved, letting the checkpoint commit a root over blocks never laid down.
+        [[nodiscard]] bool read(core::filesystem::file_handle_t& handle, uint64_t location);
+        [[nodiscard]] bool write(core::filesystem::file_handle_t& handle, uint64_t location);
 
         void clear();
 

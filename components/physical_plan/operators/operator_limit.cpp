@@ -7,10 +7,15 @@ namespace components::operators {
 
     operator_limit_t::operator_limit_t(std::pmr::memory_resource* resource, log_t log, logical_plan::limit_t limit)
         : read_only_operator_t(resource, log, operator_type::limit)
-        , limit_(limit) {}
+        , limit_(limit)
+        , shape_(resource) {}
 
     core::error_t
     operator_limit_t::push(pipeline::context_t* /*ctx*/, vector::data_chunk_t&& input, chunks_vector_t& out) {
+        if (shape_.empty()) {
+            const auto& types = input.types();
+            shape_.assign(types.begin(), types.end());
+        }
         const int64_t batch = static_cast<int64_t>(input.size());
         if (batch == 0) {
             return core::error_t::no_error();
@@ -51,7 +56,18 @@ namespace components::operators {
                                                     static_cast<uint64_t>(emit_start - chunk_start),
                                                     static_cast<uint64_t>(emit_end - emit_start)));
             }
+            note_emitted();
         }
+        return core::error_t::no_error();
+    }
+
+    core::error_t operator_limit_t::finalize(pipeline::context_t* /*ctx*/, chunks_vector_t& out) {
+        if (emitted() || shape_.empty()) {
+            return core::error_t::no_error();
+        }
+        vector::data_chunk_t empty(resource_, shape_, 0);
+        empty.set_cardinality(0);
+        out.emplace_back(std::move(empty));
         return core::error_t::no_error();
     }
 

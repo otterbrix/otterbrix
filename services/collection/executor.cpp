@@ -38,7 +38,7 @@
 #include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/node_register_cast.hpp>
 #include <components/logical_plan/node_sequence.hpp>
-#include <components/logical_plan/node_set_timezone.hpp>
+#include <components/logical_plan/node_set_setting.hpp>
 #include <components/logical_plan/node_transaction.hpp>
 #include <components/logical_plan/node_update.hpp>
 #include <components/logical_plan/param_storage.hpp>
@@ -350,6 +350,8 @@ namespace services::collection::executor {
                              std::move(result.created_storage_oids),
                              std::move(result.created_indexes),
                              result.commit_id};
+        out.applied_setting = result.applied_setting;
+        out.applied_setting_value = std::move(result.applied_setting_value);
         out.captured_explain_ir = std::move(captured_ir);
         co_return std::move(out);
     }
@@ -380,7 +382,8 @@ namespace services::collection::executor {
 
     executor_t::unique_future<execute_result_t>
     executor_t::execute_plan_full(components::session::session_id_t session,
-                                  components::logical_plan::execution_plan_t plan) {
+                                  components::logical_plan::execution_plan_t plan,
+                                  services::dispatcher::txn_session_context_t session_ctx) {
         using node_type = components::logical_plan::node_type;
         using components::logical_plan::node_aggregate_t;
         using components::logical_plan::node_catalog_resolve_t;
@@ -413,7 +416,7 @@ namespace services::collection::executor {
                 sub_plan.explain = components::logical_plan::explain_type::analyze;
                 sub_plan.explain_capture_ir = true;
             }
-            auto sub_result = co_await execute_plan_full(session, std::move(sub_plan));
+            auto sub_result = co_await execute_plan_full(session, std::move(sub_plan), session_ctx);
             if (sub_result.cursor->is_error()) {
                 co_return execute_result_t{std::move(sub_result.cursor)};
             }
@@ -486,17 +489,11 @@ namespace services::collection::executor {
             plan.parameters->set_parameter(mapping.id, std::move(compacted.value()));
         }
 
-        // Move-construct, not default-construct+assign — the latter risks bad_alloc.
-        auto [_tb, tbf] =
-            actor_zeta::otterbrix::send(parent_address_,
-                                        &services::dispatcher::manager_dispatcher_t::txn_begin_session_msg,
-                                        session);
-        services::dispatcher::txn_session_context_t session_ctx = co_await std::move(tbf);
         components::table::transaction_data resolve_txn = session_ctx.txn;
         trace(log_,
-              "executor::execute_plan_full: session txn {}, explicit: {}, session: {}",
+              "executor::execute_plan_full: session txn {}, ends with the statement: {}, session: {}",
               resolve_txn.transaction_id,
-              session_ctx.is_explicit,
+              plan.commits_when_done,
               session.data());
 
         const node_type original_type = [&] {
@@ -504,15 +501,9 @@ namespace services::collection::executor {
             return r ? r->type() : node_type::unused;
         }();
 
-        std::pmr::string pending_set_tz_name{resource()};
-        if (original_type == node_type::set_timezone_t) {
-            auto* tz_node = static_cast<components::logical_plan::node_set_timezone_t*>(plan.sub_queries.back().get());
-            pending_set_tz_name.assign(tz_node->timezone_name().c_str(), tz_node->timezone_name().size());
-        }
-
         services::dispatcher::register_plan_targets(resource(), plan.sub_queries.back().get(), &plan.catalog_resolves);
 
-        services::context_storage_t context_storage(resource(), log_.clone(), session_ctx.session_tz);
+        services::context_storage_t context_storage(resource(), log_.clone(), session_ctx.settings);
 
         const bool needs_ddl_txn =
             original_type == node_type::create_collection_t || original_type == node_type::create_constraint_t ||
@@ -525,8 +516,7 @@ namespace services::collection::executor {
         const bool needs_dml_txn =
             !is_plan_only_explain && (original_type == node_type::insert_t || original_type == node_type::update_t ||
                                       original_type == node_type::delete_t);
-        const bool needs_commit_txn =
-            original_type == node_type::set_timezone_t || original_type == node_type::vacuum_t;
+        const bool needs_commit_txn = original_type == node_type::set_setting_t || original_type == node_type::vacuum_t;
 
         auto run_resolve_subplan = [this, session, resolve_txn, &session_ctx, &context_storage, &plan](
                                        [[maybe_unused]] executor_t* self,
@@ -538,9 +528,7 @@ namespace services::collection::executor {
                 root->append_child(n);
             }
             auto params = components::logical_plan::make_parameter_node(resource());
-            services::context_storage_t cstor{resource(),
-                                              log_.clone(),
-                                              context_storage.execution_context.timezone_offset};
+            services::context_storage_t cstor{resource(), log_.clone(), context_storage.execution_context};
             cstor.catalog_resolves = &plan.catalog_resolves;
             co_return co_await this->execute_plan(session,
                                                   components::logical_plan::execution_plan_t{resource(), root, params},
@@ -783,6 +771,15 @@ namespace services::collection::executor {
                 }
                 break;
             case node_type::create_collection_t: {
+                if (auto* cc = static_cast<const node_create_collection_t*>(plan.sub_queries.back().get());
+                    cc != nullptr) {
+                    if (auto dup =
+                            services::dispatcher::check_column_names_unique(resource(), cc->column_definitions());
+                        dup.contains_error()) {
+                        error = make_cursor(resource(), std::move(dup));
+                        break;
+                    }
+                }
                 if (!services::dispatcher::check_collection_exists(resource(), &plan.catalog_resolves, id)
                          .contains_error()) {
                     auto* cc = static_cast<const node_create_collection_t*>(plan.sub_queries.back().get());
@@ -999,7 +996,7 @@ namespace services::collection::executor {
                 }
                 break;
             }
-            case node_type::set_timezone_t:
+            case node_type::set_setting_t:
             case node_type::checkpoint_t:
             case node_type::vacuum_t:
             // Leaf control nodes like checkpoint/vacuum — omitting this hits validate_schema's default assert(false).
@@ -1226,9 +1223,7 @@ namespace services::collection::executor {
                 -> executor_t::unique_future<core::result_wrapper_t<std::vector<components::catalog::oid_t>>> {
                 auto node = components::logical_plan::make_node_allocate_oids(resource(), count);
                 components::compute::function_registry_t local_fn_registry{resource()};
-                services::context_storage_t cstor{resource(),
-                                                  log_.clone(),
-                                                  context_storage.execution_context.timezone_offset};
+                services::context_storage_t cstor{resource(), log_.clone(), context_storage.execution_context};
                 auto op = services::planner::create_plan(cstor,
                                                          local_fn_registry,
                                                          node,
@@ -1251,7 +1246,7 @@ namespace services::collection::executor {
                                                      disk_address_,
                                                      index_address_,
                                                      wal_address_};
-                pctx.txn = components::table::transaction_data{0, 0};
+                pctx.txn = components::table::transaction_data::committed();
                 op->prepare();
                 auto drive_err = co_await drive_subplan_(op, &pctx);
                 if (drive_err.contains_error()) {
@@ -1580,7 +1575,10 @@ namespace services::collection::executor {
                 std::pmr::vector<actor_zeta::unique_future<void>> revert_index_futures{resource()};
                 revert_index_futures.reserve(revert_insert_oids.size() + revert_delete_oids.size());
                 for (auto oid : revert_insert_oids) {
-                    components::execution_context_t abort_ctx{session, resolve_txn, session_ctx.session_tz, oid};
+                    components::execution_context_t abort_ctx{session,
+                                                              resolve_txn,
+                                                              session_ctx.settings.timezone_offset,
+                                                              oid};
                     auto [_ri, rif] = actor_zeta::otterbrix::send(index_address_,
                                                                   &services::index::manager_index_t::revert_insert,
                                                                   abort_ctx,
@@ -1588,7 +1586,10 @@ namespace services::collection::executor {
                     revert_index_futures.push_back(std::move(rif));
                 }
                 for (auto oid : revert_delete_oids) {
-                    components::execution_context_t abort_ctx{session, resolve_txn, session_ctx.session_tz, oid};
+                    components::execution_context_t abort_ctx{session,
+                                                              resolve_txn,
+                                                              session_ctx.settings.timezone_offset,
+                                                              oid};
                     auto [_rd, rdf] = actor_zeta::otterbrix::send(index_address_,
                                                                   &services::index::manager_index_t::revert_delete,
                                                                   abort_ctx,
@@ -1609,7 +1610,7 @@ namespace services::collection::executor {
                     revert_set.insert(del.table_oid);
                 }
                 std::vector<components::catalog::oid_t> revert_delete_tables{revert_set.begin(), revert_set.end()};
-                components::execution_context_t rd_ctx{session, resolve_txn, session_ctx.session_tz};
+                components::execution_context_t rd_ctx{session, resolve_txn, session_ctx.settings.timezone_offset};
                 auto [_rd, rdf] = actor_zeta::otterbrix::send(disk_address_,
                                                               &services::disk::manager_disk_t::storage_revert_deletes,
                                                               rd_ctx,
@@ -1617,11 +1618,6 @@ namespace services::collection::executor {
                 co_await std::move(rdf);
             }
             exec_result.pg_catalog_delete_tables.clear();
-
-            auto [_ab, abf] = actor_zeta::otterbrix::send(parent_address_,
-                                                          &services::dispatcher::manager_dispatcher_t::txn_abort_msg,
-                                                          session);
-            co_await std::move(abf);
 
             exec_result.dml_appends.clear();
             exec_result.dml_deletes.clear();
@@ -1650,12 +1646,13 @@ namespace services::collection::executor {
                       resolve_txn.transaction_id,
                       payload.base_appends.size(),
                       payload.base_deletes.size(),
-                      session_ctx.is_explicit ? "publish deferred to COMMIT" : "implicit COMMIT follows");
+                      plan.commits_when_done ? "COMMIT follows" : "publish deferred to COMMIT");
                 if (!payload.empty()) {
                     auto [_ac, acf] =
                         actor_zeta::otterbrix::send(parent_address_,
                                                     &services::dispatcher::manager_dispatcher_t::txn_accumulate_msg,
                                                     session,
+                                                    resolve_txn.transaction_id,
                                                     std::move(payload));
                     // transaction_inactive means the ranges were parked NOWHERE — swallowing it fakes success.
                     auto accumulate_err = co_await std::move(acf);
@@ -1674,10 +1671,10 @@ namespace services::collection::executor {
                 exec_result.created_storage_oids.clear();
                 exec_result.created_indexes.clear();
 
-                if (!session_ctx.is_explicit && exec_result.cursor->is_success()) {
+                if (plan.commits_when_done && exec_result.cursor->is_success()) {
                     auto commit_result = co_await run_commit_pipeline_(session,
                                                                        resolve_txn,
-                                                                       session_ctx.session_tz,
+                                                                       context_storage.execution_context,
                                                                        session_ctx.lowest_active_start_time,
                                                                        /*ddl_mode=*/false);
                     if (commit_result.cursor->is_error()) {
@@ -1707,8 +1704,9 @@ namespace services::collection::executor {
                 !exec_result.pg_attribute_commit_id_backfills.empty() || !exec_result.dropped_storage_oids.empty() ||
                 !exec_result.created_storage_oids.empty() || !exec_result.created_indexes.empty()) {
                 services::dispatcher::txn_accumulate_payload_t payload;
-                payload.pg_catalog_appends = std::move(exec_result.pg_catalog_appends);
-                payload.pg_catalog_delete_tables = std::move(exec_result.pg_catalog_delete_tables);
+                // Copied, not moved
+                payload.pg_catalog_appends = exec_result.pg_catalog_appends;
+                payload.pg_catalog_delete_tables = exec_result.pg_catalog_delete_tables;
                 payload.backfills = std::move(exec_result.pg_attribute_commit_id_backfills);
                 payload.dropped_storage_oids = std::move(exec_result.dropped_storage_oids);
                 payload.created_storage_oids = std::move(exec_result.created_storage_oids);
@@ -1717,10 +1715,13 @@ namespace services::collection::executor {
                     actor_zeta::otterbrix::send(parent_address_,
                                                 &services::dispatcher::manager_dispatcher_t::txn_accumulate_msg,
                                                 session,
+                                                resolve_txn.transaction_id,
                                                 std::move(payload));
                 auto accumulate_err = co_await std::move(acf);
                 if (accumulate_err.contains_error()) {
                     exec_result.cursor = make_cursor(resource(), std::move(accumulate_err));
+                    co_await revert_failed_txn(this, exec_result);
+                    has_create_index_pg_index_range = false;
                 }
                 exec_result.pg_catalog_appends.clear();
                 exec_result.pg_catalog_delete_tables.clear();
@@ -1768,38 +1769,16 @@ namespace services::collection::executor {
                 co_await undo_create_index(this, create_index_table_oid, create_index_oid);
             }
 
-            if (!session_ctx.is_explicit && exec_result.cursor->is_success()) {
+            if (plan.commits_when_done && exec_result.cursor->is_success()) {
                 auto commit_result = co_await run_commit_pipeline_(session,
                                                                    resolve_txn,
-                                                                   session_ctx.session_tz,
+                                                                   context_storage.execution_context,
                                                                    session_ctx.lowest_active_start_time,
                                                                    /*ddl_mode=*/true);
                 if (commit_result.cursor->is_error()) {
                     exec_result.cursor = std::move(commit_result.cursor);
                     if (original_type == node_type::create_index_t) {
                         co_await undo_create_index(this, create_index_table_oid, create_index_oid);
-                    }
-                }
-                if (commit_result.commit_id > 0 && original_type == node_type::create_index_t &&
-                    index_address_ != actor_zeta::address_t::empty_address()) {
-                    trace(log_,
-                          "executor::execute_plan_full: CREATE INDEX backfill commit — oid={}, commit_id={}",
-                          static_cast<unsigned>(create_index_table_oid),
-                          commit_result.commit_id);
-                    if (create_index_table_oid != components::catalog::INVALID_OID) {
-                        components::execution_context_t swap_ctx{session, resolve_txn, {}};
-                        std::pmr::vector<components::catalog::oid_t> commit_oids{resource()};
-                        commit_oids.push_back(create_index_table_oid);
-                        auto [_ci, cif] = actor_zeta::otterbrix::send(index_address_,
-                                                                      &services::index::manager_index_t::commit_inserts,
-                                                                      swap_ctx,
-                                                                      std::move(commit_oids),
-                                                                      commit_result.commit_id);
-                        auto ci_result = co_await std::move(cif);
-                        if (ci_result.contains_error()) {
-                            exec_result.cursor = make_cursor(resource(), ci_result);
-                            co_await undo_create_index(this, create_index_table_oid, create_index_oid);
-                        }
                     }
                 }
             }
@@ -1812,18 +1791,14 @@ namespace services::collection::executor {
             co_await revert_failed_txn(this, exec_result);
         }
 
-        if (original_type == node_type::set_timezone_t && exec_result.cursor->is_success() &&
-            !pending_set_tz_name.empty()) {
-            exec_result.applied_timezone.assign(pending_set_tz_name.data(), pending_set_tz_name.size());
-        }
-
         // Must release the resolve-scope txn here, or it pins lowest_active forever.
         const bool releases_resolve_txn = !needs_ddl_txn && !needs_dml_txn && !needs_commit_txn &&
-                                          !session_ctx.is_explicit && original_type != node_type::transaction_t;
+                                          plan.commits_when_done && original_type != node_type::transaction_t;
         if (releases_resolve_txn) {
             auto [_rl, rlf] = actor_zeta::otterbrix::send(parent_address_,
                                                           &services::dispatcher::manager_dispatcher_t::txn_abort_msg,
-                                                          session);
+                                                          session,
+                                                          resolve_txn.transaction_id);
             co_await std::move(rlf);
         }
 
@@ -2316,17 +2291,18 @@ namespace services::collection::executor {
                             for (uint64_t k = 0; k < gap.row_count; ++k) {
                                 fetch_ids.data<int64_t>()[k] = static_cast<int64_t>(gap.row_start + k);
                             }
-                            auto [_f, ff] = actor_zeta::otterbrix::send(disk_address_,
-                                                                        &services::disk::manager_disk_t::storage_fetch,
-                                                                        session,
-                                                                        oid,
-                                                                        std::move(fetch_ids),
-                                                                        gap.row_count,
-                                                                        std::vector<size_t>{},
-                                                                        components::table::transaction_data{},
-                                                                        components::table::fetch_visibility_t::RAW,
-                                                                        /*limit=*/int64_t{-1},
-                                                                        services::disk::k_fetch_epoch_unchecked);
+                            auto [_f, ff] =
+                                actor_zeta::otterbrix::send(disk_address_,
+                                                            &services::disk::manager_disk_t::storage_fetch,
+                                                            session,
+                                                            oid,
+                                                            std::move(fetch_ids),
+                                                            gap.row_count,
+                                                            std::vector<size_t>{},
+                                                            components::table::transaction_data::committed(),
+                                                            components::table::fetch_visibility_t::RAW,
+                                                            /*limit=*/int64_t{-1},
+                                                            services::disk::k_fetch_epoch_unchecked);
                             auto rows_r = co_await std::move(ff);
                             if (rows_r.has_error()) {
                                 co_return rows_r.error();
@@ -2429,6 +2405,11 @@ namespace services::collection::executor {
             for (auto& bf : pipeline_context.pg_attribute_commit_id_backfills) {
                 result_tracking.pg_attribute_commit_id_backfills.push_back(bf);
             }
+            if (!pipeline_context.applied_setting_value.empty()) {
+                result_tracking.applied_setting = pipeline_context.applied_setting;
+                result_tracking.applied_setting_value = std::move(pipeline_context.applied_setting_value);
+                pipeline_context.applied_setting_value.clear();
+            }
             pipeline_context.pg_catalog_appends.clear();
             pipeline_context.pg_catalog_delete_tables.clear();
             pipeline_context.pg_attribute_commit_id_backfills.clear();
@@ -2462,7 +2443,7 @@ namespace services::collection::executor {
     executor_t::unique_future<execute_result_t>
     executor_t::run_commit_pipeline_(components::session::session_id_t session,
                                      components::table::transaction_data txn,
-                                     core::date::timezone_offset_t session_tz,
+                                     const components::graph_execution_context& settings,
                                      uint64_t lowest_active_start_time,
                                      bool ddl_mode) {
         auto commit_node =
@@ -2475,7 +2456,7 @@ namespace services::collection::executor {
             commit_node->set_database_oid(db_oid);
         }
         auto cparams = components::logical_plan::make_parameter_node(resource());
-        services::context_storage_t cstor(resource(), log_.clone(), session_tz);
+        services::context_storage_t cstor(resource(), log_.clone(), settings);
         co_return co_await execute_plan(
             session,
             components::logical_plan::execution_plan_t{resource(), std::move(commit_node), std::move(cparams)},

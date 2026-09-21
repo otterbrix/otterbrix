@@ -349,11 +349,10 @@ TEST_CASE("integration::cpp::test_alter_rename_column::renamed_column_survives_a
     CHECK(after.report.unexplained.empty());
 }
 
-// With identity carried by the attoid, a RENAME and an unmaterialized ADD COLUMN are tellable
-// apart: the renamed column's attoid is in the live catalog under a different name (not a drop),
-// while the added column's attoid is in the catalog but not yet in storage — published forward so
-// the eventual INSERT stamps it instead of leaving a 0 the next reconciliation must refuse.
-TEST_CASE("integration::cpp::test_alter_rename_column::rename_and_unmaterialized_add_column_are_distinguishable") {
+// With identity carried by the attoid, a RENAME and an ADD COLUMN are tellable apart: the renamed
+// column's attoid is in the live catalog under a different name (not a drop), while the added
+// column's attoid is one the storage has never seen before.
+TEST_CASE("integration::cpp::test_alter_rename_column::rename_and_add_column_are_distinguishable") {
     auto config = test_create_config(integration_fixture_path("test_alter_rename_column/add_vs_rename"));
     test_clear_directory(config);
     config.log.level = log_t::level::off;

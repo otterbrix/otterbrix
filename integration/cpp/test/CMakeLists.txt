@@ -93,9 +93,11 @@ set( ${PROJECT_NAME}_SOURCES
         test_update.cpp
         test_wal_pool.cpp
         test_persistence.cpp
-        test_alter_drop_column_reclaim.cpp
+        test_alter_drop_column_positions.cpp
+        test_ddl_in_transaction.cpp
         test_cursor_under_concurrent_ddl.cpp
         test_alter_rename_column.cpp
+        test_alter_rename_column_collisions.cpp
         test_alter_missing_column.cpp
         test_wal_nested_payload_replay.cpp
         test_type_spec_write_gate.cpp
@@ -110,7 +112,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_pipeline_context_move.cpp
         test_delete_affected_count.cpp
         test_tinyint_numeric_cast.cpp
-        test_alter_add_column_unmaterialized.cpp
+        test_alter_add_column_reads.cpp
         test_computed_drop_complex_type.cpp
         test_multiple_primary_keys.cpp
         test_sql_features.cpp
@@ -182,6 +184,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_streaming_index_scan.cpp
         test_index_oid_selection.cpp
         test_streaming_join.cpp
+        test_autocommit.cpp
         test_streaming_ddl_leaf.cpp
         test_streaming_recursive_cte.cpp
         test_large_aggregate_dml.cpp

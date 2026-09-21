@@ -70,7 +70,7 @@ namespace {
             REQUIRE_FALSE(table.append_lock(state).has_error());
             REQUIRE_FALSE(table.initialize_append(state).has_error());
             REQUIRE_FALSE(table.append(chunk, state).has_error());
-            table.finalize_append(state, transaction_data{0, 0});
+            table.finalize_append(state, transaction_data::committed());
             offset += batch;
         }
     }
@@ -249,7 +249,7 @@ TEST_CASE("block_reachability: delete + compact + checkpoint accounts for freed 
         // Delete the first 6000 rows, commit + publish, compact, checkpoint.
         transaction_manager_t mgr(&env.resource);
         auto session = components::session::session_id_t::generate_uid();
-        auto& txn = mgr.begin_transaction(session);
+        auto& txn = mgr.begin_transaction(session, transaction_scope_t::statement);
         std::pmr::vector<complex_logical_type> id_type(&env.resource);
         id_type.emplace_back(logical_type::BIGINT);
         constexpr uint64_t DELETE_COUNT = 6000;

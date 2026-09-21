@@ -126,9 +126,9 @@ namespace services::wal {
 
         // Shares wal_worker_t::load's filter: an independent copy would test membership by
         // (recycled) txn id and could promote uncommitted records under a stale marker.
-        auto committed = filter_committed_records(std::move(all_records), nullptr);
+        auto committed = filter_committed_records(std::move(all_records));
 
-        // COMMIT IDS (issued once, never 0) are read off the markers, not the filter's own txn-id-keyed committed_out.
+        // COMMIT IDS, issued once and never 0.
         if (committed_out != nullptr) {
             for (const auto& r : committed) {
                 if (r.is_commit_marker() && r.commit_id != 0) {

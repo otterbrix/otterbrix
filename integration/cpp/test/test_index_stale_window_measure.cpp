@@ -191,13 +191,12 @@ namespace {
             const std::string probe = probe_sql(p);
 
             auto cp_session = otterbrix::session_id_t();
-            const std::size_t cp_idx = executor_of(cp_session);
 
             std::atomic<bool> stop{false};
             std::vector<probe_outcome_t> outcomes;
             std::thread reader([&] {
                 while (!stop.load(std::memory_order_acquire)) {
-                    auto s = session_avoiding_executor(cp_idx);
+                    auto s = otterbrix::session_id_t();
                     outcomes.push_back(classify(d->execute_sql(s, probe)));
                 }
             });
@@ -337,7 +336,6 @@ TEST_CASE("integration::cpp::index_stale_window::seam_between_compact_and_rebuil
             const std::string probe = probe_sql(p);
 
             auto cp_session = otterbrix::session_id_t();
-            const std::size_t cp_idx = executor_of(cp_session);
 
             services::disk::reset_checkpoint_entry_tallies();
             guard.gate.armed.store(true, std::memory_order_release);
@@ -349,7 +347,7 @@ TEST_CASE("integration::cpp::index_stale_window::seam_between_compact_and_rebuil
 
             // The round is parked: compaction is BEHIND, the index rebuild is AHEAD. This reader
             // arrives inside the window.
-            auto rd_session = session_avoiding_executor(cp_idx);
+            auto rd_session = otterbrix::session_id_t();
             components::cursor::cursor_t_ptr rd_cur;
             std::thread reader([&] { rd_cur = d->execute_sql(rd_session, probe); });
 

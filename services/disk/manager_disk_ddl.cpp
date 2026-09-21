@@ -108,34 +108,40 @@ namespace services::disk {
         co_return std::move(deleted_per_spec);
     }
 
-    manager_disk_t::unique_future<core::error_t> manager_disk_t::update_pg_attribute_commit_id_fields(
+    manager_disk_t::unique_future<components::pg_attribute_backfill_result_t>
+    manager_disk_t::update_pg_attribute_commit_id_fields(
         execution_context_t ctx,
         std::pmr::vector<components::pg_attribute_commit_id_backfill_t> backfills,
         std::uint64_t commit_id) {
         // Serialized (co_await per item) so per-backfill WAL records are emitted in order.
         constexpr auto pg_attr_oid = components::catalog::well_known_oid::pg_attribute_table;
+        components::pg_attribute_backfill_result_t empty_out;
         if (backfills.empty()) {
-            co_return core::error_t::no_error();
+            co_return empty_out;
         }
         if (agents_.empty()) {
-            co_return core::error_t{
+            empty_out.refusal = core::error_t{
                 core::error_code_t::io_error,
                 std::pmr::string{"update_pg_attribute_commit_id_fields: no disk agents; no commit_id stamp "
                                  "was applied",
                                  resource()}};
+            co_return empty_out;
         }
         const std::size_t idx = pool_idx_for_oid(pg_attr_oid, agents_.size());
         auto& agent = agents_[idx];
         if (agent == nullptr) {
-            co_return core::error_t{
+            empty_out.refusal = core::error_t{
                 core::error_code_t::io_error,
                 std::pmr::string{"update_pg_attribute_commit_id_fields: the agent owning pg_attribute is null; "
                                  "no commit_id stamp was applied",
                                  resource()}};
+            co_return empty_out;
         }
-        // Every marker is attempted: this path is below the durable commit marker and can't be retried.
+        // Every marker is attempted: a refusal must not strand the ranges the others already appended.
         core::error_t first_refusal = core::error_t::no_error();
         std::size_t refused_count = 0;
+        std::vector<components::pg_catalog_append_range_t> appended;
+        appended.reserve(backfills.size());
         for (const auto& b : backfills) {
             auto [needs_sched, fut] =
                 actor_zeta::otterbrix::send(agent->address(),
@@ -148,39 +154,22 @@ namespace services::disk {
                 scheduler_disk_->enqueue(agent.get());
             }
             auto stamped = co_await std::move(fut);
-            if (stamped.contains_error()) {
+            if (stamped.has_error()) {
                 ++refused_count;
                 if (!first_refusal.contains_error()) {
-                    first_refusal = core::error_on(resource(), stamped);
+                    first_refusal = core::error_on(resource(), stamped.error());
                 }
+                continue;
+            }
+            const auto stamped_range = stamped.value();
+            if (stamped_range.count > 0) {
+                appended.push_back(
+                    components::pg_catalog_append_range_t{pg_attr_oid, stamped_range.start_row, stamped_range.count});
             }
         }
 
-        // Can't take a second cross-actor await inside an append, so identity is parked here and
-        // stamped at column creation; fire-and-forget relies on mailbox FIFO order to land it first.
-        for (const auto& b : backfills) {
-            if (b.kind != components::pg_attribute_commit_id_backfill_t::kind_t::added_at ||
-                b.release_attname.empty() || b.release_table_oid == components::catalog::INVALID_OID ||
-                b.attoid == components::catalog::INVALID_OID) {
-                continue;
-            }
-            const std::size_t owner_idx = pool_idx_for_oid(b.release_table_oid, agents_.size());
-            if (owner_idx >= agents_.size() || agents_[owner_idx] == nullptr) {
-                continue;
-            }
-            auto& owner = agents_[owner_idx];
-            auto [owner_sched, note_fut] = actor_zeta::otterbrix::send(owner->address(),
-                                                                       &agent_disk_t::note_column_identity_inner,
-                                                                       b.release_table_oid,
-                                                                       b.release_attname,
-                                                                       static_cast<std::uint32_t>(b.attoid),
-                                                                       b.added_column_type);
-            [[maybe_unused]] auto dropped_note_future = std::move(note_fut);
-            if (owner_sched) {
-                scheduler_disk_->enqueue(owner.get());
-            }
-        }
-        // The identity notes are fire-and-forget, so the answer carries only what the stamps did.
+        components::pg_attribute_backfill_result_t out;
+        out.appended = std::move(appended);
         if (refused_count > 0) {
             std::pmr::string what{"update_pg_attribute_commit_id_fields: ", resource()};
             what.append(std::to_string(refused_count).c_str());
@@ -190,9 +179,9 @@ namespace services::disk {
             what.append(std::to_string(backfills.size() - refused_count).c_str());
             what.append(" applied); first refusal: ");
             what.append(first_refusal.what.c_str());
-            co_return core::error_t{first_refusal.type, std::move(what)};
+            out.refusal = core::error_t{first_refusal.type, std::move(what)};
         }
-        co_return core::error_t::no_error();
+        co_return out;
     }
 
     manager_disk_t::unique_future<std::uint64_t>
@@ -217,29 +206,91 @@ namespace services::disk {
         co_return 0;
     }
 
-    // Not folded into compact_relkind_g_storage (SUBTRACTIVE: a caller's gap there drops a SURVIVING column).
-    manager_disk_t::unique_future<core::result_wrapper_t<bool>>
-    manager_disk_t::drop_storage_column(session_id_t /*session*/,
-                                        components::catalog::oid_t table_oid,
-                                        std::string attname) {
+    manager_disk_t::unique_future<core::error_t>
+    manager_disk_t::add_storage_column(execution_context_t ctx,
+                                       components::catalog::oid_t table_oid,
+                                       components::table::column_definition_t column) {
         if (!agents_.empty()) {
             const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
             auto& agent = agents_[idx];
             if (agent != nullptr) {
                 auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
-                                                                      &agent_disk_t::drop_storage_column_inner,
+                                                                      &agent_disk_t::add_storage_column_inner,
+                                                                      ctx,
                                                                       table_oid,
-                                                                      std::move(attname));
+                                                                      std::move(column));
                 if (needs_sched) {
                     scheduler_disk_->enqueue(agent.get());
                 }
                 co_return co_await std::move(fut);
             }
         }
-        // The caller's tombstone is already durable, so "done" here would hide the column forever.
-        std::pmr::string msg{"manager_disk::drop_storage_column: no disk agent owns table oid ", resource()};
+        std::pmr::string msg{"manager_disk::add_storage_column: no disk agent owns table oid ", resource()};
         msg += std::pmr::string{std::to_string(static_cast<unsigned>(table_oid)), resource()};
-        co_return core::result_wrapper_t<bool>(core::error_t{core::error_code_t::other_error, std::move(msg)});
+        co_return core::error_t{core::error_code_t::actor_agent_missing, std::move(msg)};
+    }
+
+    manager_disk_t::unique_future<core::error_t>
+    manager_disk_t::stamp_column_dropped(execution_context_t ctx,
+                                         components::catalog::oid_t table_oid,
+                                         components::catalog::oid_t attoid) {
+        if (!agents_.empty()) {
+            const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
+            auto& agent = agents_[idx];
+            if (agent != nullptr) {
+                auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
+                                                                      &agent_disk_t::stamp_column_dropped_inner,
+                                                                      table_oid,
+                                                                      attoid,
+                                                                      ctx.txn);
+                if (needs_sched) {
+                    scheduler_disk_->enqueue(agent.get());
+                }
+                co_return co_await std::move(fut);
+            }
+        }
+        std::pmr::string msg{"manager_disk::stamp_column_dropped: no disk agent owns table oid ", resource()};
+        msg += std::pmr::string{std::to_string(static_cast<unsigned>(table_oid)), resource()};
+        co_return core::error_t{core::error_code_t::actor_agent_missing, std::move(msg)};
+    }
+
+    manager_disk_t::unique_future<void>
+    manager_disk_t::publish_column_stamps(execution_context_t ctx,
+                                          uint64_t commit_id,
+                                          std::pmr::set<components::catalog::oid_t> tables) {
+        const auto txn_id = ctx.txn.transaction_id;
+        if (txn_id == 0 || agents_.empty()) {
+            co_return;
+        }
+        std::pmr::vector<std::pmr::vector<components::catalog::oid_t>> per_agent{resource()};
+        per_agent.reserve(agents_.size());
+        for (std::size_t i = 0; i < agents_.size(); ++i) {
+            per_agent.emplace_back();
+        }
+        for (const auto& table_oid : tables) {
+            per_agent[pool_idx_for_oid(table_oid, agents_.size())].push_back(table_oid);
+        }
+        std::pmr::vector<unique_future<void>> agent_futures{resource()};
+        agent_futures.reserve(per_agent.size());
+        for (std::size_t i = 0; i < per_agent.size(); ++i) {
+            if (per_agent[i].empty() || agents_[i] == nullptr) {
+                continue;
+            }
+            auto& agent = agents_[i];
+            auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
+                                                                  &agent_disk_t::publish_column_stamps_inner,
+                                                                  txn_id,
+                                                                  commit_id,
+                                                                  std::move(per_agent[i]));
+            if (needs_sched) {
+                scheduler_disk_->enqueue(agent.get());
+            }
+            agent_futures.push_back(std::move(fut));
+        }
+        for (auto& fut : agent_futures) {
+            co_await std::move(fut);
+        }
+        co_return;
     }
 
     // The storage's column name caches the catalog's, so a rename it never saw is repaired at the
@@ -267,7 +318,7 @@ namespace services::disk {
         // "Done" here would leave storage on the OLD name, the divergence bootstrap reads as a DROP.
         std::pmr::string msg{"manager_disk::rename_storage_column: no disk agent owns table oid ", resource()};
         msg += std::pmr::string{std::to_string(static_cast<unsigned>(table_oid)), resource()};
-        co_return core::result_wrapper_t<bool>(core::error_t{core::error_code_t::other_error, std::move(msg)});
+        co_return core::result_wrapper_t<bool>(core::error_t{core::error_code_t::actor_agent_missing, std::move(msg)});
     }
 
 } // namespace services::disk

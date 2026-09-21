@@ -84,6 +84,15 @@ namespace services::wal {
                             uint64_t txn_id,
                             components::catalog::oid_t database_oid);
 
+        // ALTER TABLE ADD COLUMN's storage half: the schema record alone, with no rows to carry with it.
+        actor_zeta::unique_future<core::result_wrapper_t<id_t>>
+        write_physical_add_column(session_id_t session,
+                                  components::catalog::oid_t table_oid,
+                                  std::unique_ptr<components::vector::data_chunk_t> schema_chunk,
+                                  uint64_t column_count,
+                                  uint64_t txn_id,
+                                  components::catalog::oid_t database_oid);
+
         using dispatch_traits = actor_zeta::dispatch_traits<&wal_contract::load,
                                                             &wal_contract::commit_txn,
                                                             &wal_contract::truncate_before,
@@ -92,7 +101,8 @@ namespace services::wal {
                                                             &wal_contract::write_physical_insert,
                                                             &wal_contract::write_physical_delete,
                                                             &wal_contract::write_physical_update,
-                                                            &wal_contract::write_physical_grow>;
+                                                            &wal_contract::write_physical_grow,
+                                                            &wal_contract::write_physical_add_column>;
 
         wal_contract() = delete;
     };

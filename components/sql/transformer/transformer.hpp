@@ -139,7 +139,7 @@ namespace components::sql::transform {
         // BEGIN / COMMIT / ROLLBACK; unsupported variants (SAVEPOINT / 2PC)
         // return nullptr (see impl).
         core::result_wrapper_t<logical_plan::node_ptr> transform_transaction(TransactionStmt& node);
-        core::result_wrapper_t<logical_plan::node_ptr> transform_set_timezone(VariableSetStmt& node);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_set_setting(VariableSetStmt& node);
         // EXPLAIN / EXPLAIN ANALYZE: read the `analyze` option, restrict the inner to
         // SELECT/INSERT/UPDATE/DELETE, stamp plan->explain, and lower the inner so sub_queries.back()
         // stays the real query node. Output formatting is a host concern (the executor's renderer

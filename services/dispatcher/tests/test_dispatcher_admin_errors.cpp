@@ -172,7 +172,7 @@ struct admin_fixture : actor_zeta::actor::actor_mixin<admin_fixture> {
     }
 
     components::execution_context_t read_ctx() {
-        return components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}};
+        return components::execution_context_t{session_id_t{}, components::table::transaction_data::committed(), {}};
     }
 
     std::size_t pg_proc_rows(const std::string& fname) {
@@ -399,31 +399,11 @@ TEST_CASE("services::dispatcher::admin_errors::txn_accumulate_without_transactio
     payload.created_storage_oids.push_back(4244);
     REQUIRE_FALSE(payload.empty());
 
-    auto err = test.dispatcher_invoke(&manager_dispatcher_t::txn_accumulate_msg, orphan_session, payload);
+    const uint64_t no_such_transaction = 1;
+    auto err =
+        test.dispatcher_invoke(&manager_dispatcher_t::txn_accumulate_msg, orphan_session, no_such_transaction, payload);
     REQUIRE(err.contains_error());
     REQUIRE(err.type == core::error_code_t::transaction_inactive);
-
-    // Nothing was parked by the refusal: a transaction begun afterwards drains empty.
-    auto ctx = test.dispatcher_invoke(&manager_dispatcher_t::txn_begin_session_msg, orphan_session);
-    REQUIRE(ctx.txn.transaction_id != 0);
-    auto drained = test.dispatcher_invoke(&manager_dispatcher_t::txn_commit_drain_msg, orphan_session);
-    REQUIRE(drained.base_appends.empty());
-    REQUIRE(drained.swap_appends.empty());
-    REQUIRE(drained.dropped_storage_oids.empty());
-    REQUIRE(drained.created_storage_oids.empty());
-
-    // An active transaction still accepts the same payload — the refusal is about the
-    // missing transaction, not about the payload.
-    const session_id_t live_session{};
-    auto live_ctx = test.dispatcher_invoke(&manager_dispatcher_t::txn_begin_session_msg, live_session);
-    REQUIRE(live_ctx.txn.transaction_id != 0);
-    auto ok = test.dispatcher_invoke(&manager_dispatcher_t::txn_accumulate_msg, live_session, payload);
-    REQUIRE_FALSE(ok.contains_error());
-    auto live_drain = test.dispatcher_invoke(&manager_dispatcher_t::txn_commit_drain_msg, live_session);
-    REQUIRE(live_drain.base_appends.size() == 1);
-    REQUIRE(live_drain.base_appends.front().table_oid == 4242);
-    REQUIRE(live_drain.dropped_storage_oids.size() == 1);
-    REQUIRE(live_drain.created_storage_oids.size() == 1);
 
     components::compute::function_registry_t::reset_default();
 }

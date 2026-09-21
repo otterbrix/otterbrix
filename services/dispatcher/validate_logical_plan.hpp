@@ -55,6 +55,9 @@ namespace services::dispatcher {
     [[nodiscard]] core::error_t check_collection_exists(std::pmr::memory_resource* resource,
                                                         const catalog_resolves_t* resolves,
                                                         const components::catalog::table_id& id);
+    [[nodiscard]] core::error_t
+    check_column_names_unique(std::pmr::memory_resource* resource,
+                              const std::vector<components::table::column_definition_t>& columns);
     // Probe `alias` against the plan's resolved type entries for each dbname in
     // `search_dbnames` in order. Returns no_error() on first hit. If
     // `search_dbnames` is empty, falls back to {"public", "pg_catalog"}.

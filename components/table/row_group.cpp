@@ -132,7 +132,7 @@ namespace components::table {
         for (uint64_t i = 0; i < column_ids.size(); i++) {
             const auto& column = column_ids[i];
             if (!column.is_row_id_column()) {
-                auto& column_data = get_column(column);
+                auto& column_data = get_column(state.physical_column(column.primary_index()));
                 column_data.initialize_scan_with_offset(state.column_scans[i], row_number);
             } else {
                 state.column_scans[i].current = nullptr;
@@ -152,7 +152,7 @@ namespace components::table {
         for (uint64_t i = 0; i < column_ids.size(); i++) {
             auto column = column_ids[i];
             if (!column.is_row_id_column()) {
-                auto& column_data = get_column(column);
+                auto& column_data = get_column(state.physical_column(column.primary_index()));
                 column_data.initialize_scan(state.column_scans[i]);
             } else {
                 state.column_scans[i].current = nullptr;
@@ -228,17 +228,17 @@ namespace components::table {
             if (column.is_row_id_column()) {
                 continue;
             }
-            get_column(column).skip(state.column_scans[i]);
+            get_column(state.physical_column(column.primary_index())).skip(state.column_scans[i]);
         }
     }
 
     // The decision is indexed by vector offset, so a caller holding a visibility selection reads straight into it.
     core::result_wrapper_t<vector::vector_t>
-    row_group_t::evaluate_predicate(const table_filter_t& filter, int64_t base_row, uint64_t count) {
+    row_group_t::evaluate_predicate(const table_filter_t& filter,
+                                    int64_t base_row,
+                                    uint64_t count,
+                                    const std::vector<uint64_t>& column_indices) {
         auto* res = collection_->resource();
-        // A bound ordinal past the last materialized column is legal (ALTER TABLE ADD COLUMN not yet backfilled);
-        // such a column reads its catalog DEFAULT via fill_published_default instead of get_column().
-        const size_t materialized = get_column_count();
         std::vector<size_t> referenced;
         size_t width = 0;
         std::pmr::vector<types::complex_logical_type> chunk_types(res);
@@ -250,7 +250,7 @@ namespace components::table {
             }
             chunk_types[binding.column] = filter.graph->slot_type(binding.slot);
         }
-        for (size_t column = 0; column < width && column < materialized; column++) {
+        for (size_t column = 0; column < width && column < get_column_count(); column++) {
             bool bound = false;
             for (size_t r : referenced) {
                 if (r == column) {
@@ -259,7 +259,7 @@ namespace components::table {
                 }
             }
             if (!bound) {
-                chunk_types[column] = get_column(column).type();
+                chunk_types[column] = get_column(column_indices[column]).type();
             }
         }
         vector::data_chunk_t rows{res, chunk_types, referenced, count};
@@ -268,18 +268,15 @@ namespace components::table {
         size_t child_slot = 0;
         for (size_t column : referenced) {
             auto& column_state = fetch_state.child(child_slot++);
-            if (column >= materialized) {
-                fill_published_default(rows.data[column], collection_->published_column(column - materialized), count);
-                continue;
-            }
+            const size_t physical = column_indices[column];
             for (uint64_t row = 0; row < count; row++) {
 #ifdef DEV_MODE
                 g_predicate_row_fetches.fetch_add(1, std::memory_order_relaxed);
 #endif
-                get_column(column).fetch_row(column_state,
-                                             base_row + static_cast<int64_t>(row),
-                                             rows.data[column],
-                                             row);
+                get_column(physical).fetch_row(column_state,
+                                               base_row + static_cast<int64_t>(row),
+                                               rows.data[column],
+                                               row);
                 if (fetch_state.absorb_error(column_state)) {
                     return fetch_state.fetch_error;
                 }
@@ -302,9 +299,10 @@ namespace components::table {
                                       const table_filter_t* filter,
                                       uint64_t vector_count,
                                       uint64_t& approved_tuple_count,
-                                      core::error_t& error) {
+                                      core::error_t& error,
+                                      const std::vector<uint64_t>& column_indices) {
         const int64_t base_row = static_cast<int64_t>(vector_index * vector::DEFAULT_VECTOR_CAPACITY);
-        auto decided = evaluate_predicate(*filter, base_row, vector_count);
+        auto decided = evaluate_predicate(*filter, base_row, vector_count, column_indices);
         if (decided.has_error()) {
             error = decided.error();
             return;
@@ -323,7 +321,6 @@ namespace components::table {
 
     template<table_scan_type TYPE>
     void row_group_t::templated_scan(collection_scan_state& state, vector::data_chunk_t& result) {
-        constexpr bool ALLOW_UPDATES = TYPE != table_scan_type::COMMITTED_ROWS_DISALLOW_UPDATES;
         const auto& column_ids = state.column_ids();
         auto* filter = state.filter();
         for (auto& column_state : state.column_scans) {
@@ -362,14 +359,11 @@ namespace components::table {
                         assert(result.data[out_idx].type().type() == types::logical_type::BIGINT);
                         result.data[out_idx].sequence(static_cast<int64_t>(start + current_row), 1, count);
                     } else {
-                        auto& col_data = get_column(column);
+                        auto& col_data = get_column(state.physical_column(column.primary_index()));
                         if (TYPE == table_scan_type::REGULAR) {
                             col_data.scan(state.vector_index, state.column_scans[i], result.data[out_idx]);
                         } else {
-                            col_data.scan_committed(state.vector_index,
-                                                    state.column_scans[i],
-                                                    result.data[out_idx],
-                                                    ALLOW_UPDATES);
+                            col_data.scan_committed(state.vector_index, state.column_scans[i], result.data[out_idx]);
                         }
                     }
                 }
@@ -389,14 +383,14 @@ namespace components::table {
                     indexing.reset(nullptr);
                 }
                 if (filter) {
-                    assert(ALLOW_UPDATES);
                     filter_indexing(collection_->resource(),
                                     state.vector_index,
                                     indexing,
                                     filter,
                                     max_count,
                                     approved_tuple_count,
-                                    state.scan_error);
+                                    state.scan_error,
+                                    state.visible_to_physical());
                     if (state.has_error()) {
                         return;
                     }
@@ -425,7 +419,7 @@ namespace components::table {
                                 start + current_row + static_cast<int64_t>(indexing.get_index(indexing_idx));
                         }
                     } else {
-                        auto& col_data = get_column(column);
+                        auto& col_data = get_column(state.physical_column(column.primary_index()));
                         if (TYPE == table_scan_type::REGULAR) {
                             // Selective filter: gather only surviving rows via fetch_row instead of scanning+slicing
                             // (measured ~7x fewer decompressed rows at 0.2% survival; per-row gather wins below ~20%
@@ -481,8 +475,7 @@ namespace components::table {
                                                       state.column_scans[i],
                                                       result.data[out_idx],
                                                       indexing,
-                                                      approved_tuple_count,
-                                                      ALLOW_UPDATES);
+                                                      approved_tuple_count);
                         }
                     }
                 }
@@ -521,9 +514,6 @@ namespace components::table {
         switch (type) {
             case table_scan_type::COMMITTED_ROWS:
                 templated_scan<table_scan_type::COMMITTED_ROWS>(state, result);
-                break;
-            case table_scan_type::COMMITTED_ROWS_DISALLOW_UPDATES:
-                templated_scan<table_scan_type::COMMITTED_ROWS_DISALLOW_UPDATES>(state, result);
                 break;
             case table_scan_type::LATEST_COMMITTED_ROWS:
                 templated_scan<table_scan_type::COMMITTED_ROWS>(state, result);
@@ -591,6 +581,10 @@ namespace components::table {
             row_group_end = row_group_size();
         }
         this->count = row_group_end;
+        // Not required, but lowers memory consumption, when there are not updates history
+        if (is_direct_write_txn(txn.transaction_id) && version_info() == nullptr) {
+            return;
+        }
         get_or_create_version_info().append_version_info(txn, count, row_group_start, row_group_end);
     }
 
@@ -657,54 +651,6 @@ namespace components::table {
         return true;
     }
 
-    core::result_wrapper_t<bool> row_group_t::update(vector::data_chunk_t& update_chunk,
-                                                     int64_t* ids,
-                                                     uint64_t offset,
-                                                     uint64_t count,
-                                                     const std::vector<uint64_t>& column_ids) {
-        for (uint64_t i = 0; i < column_ids.size(); i++) {
-            auto column = column_ids[i];
-            assert(column != std::numeric_limits<uint64_t>::max());
-            auto& col_data = get_column(column);
-            assert(col_data.type().type() == update_chunk.data[i].type().type());
-            core::result_wrapper_t<bool> updated = [&]() -> core::result_wrapper_t<bool> {
-                if (offset > 0) {
-                    vector::vector_t sliced_vector(update_chunk.data[i], offset, count);
-                    sliced_vector.flatten(count);
-                    return col_data.update(column, sliced_vector, ids + offset, count);
-                }
-                return col_data.update(column, update_chunk.data[i], ids, count);
-            }();
-            if (updated.has_error()) {
-                return updated; // out_of_memory / data_corruption / io_error
-            }
-        }
-        return true;
-    }
-
-    core::result_wrapper_t<bool> row_group_t::update_column(vector::data_chunk_t& updates,
-                                                            vector::vector_t& row_ids,
-                                                            const std::vector<uint64_t>& column_path,
-                                                            uint64_t offset,
-                                                            uint64_t count) {
-        assert(updates.column_count() == 1);
-        auto ids = row_ids.data<int64_t>();
-
-        if (column_path.empty() || column_path[0] >= columns_.size()) {
-            return core::error_t(core::error_code_t::invalid_parameter,
-                                 std::pmr::string("row group update: the column path names no column of this row group",
-                                                  collection_->resource()));
-        }
-        auto primary_column_idx = column_path[0];
-        auto& col_data = get_column(primary_column_idx);
-        if (offset > 0) {
-            vector::vector_t sliced_vector(updates.data[0], offset, count);
-            sliced_vector.flatten(count);
-            return col_data.update_column(column_path, sliced_vector, ids + offset, count, 1);
-        }
-        return col_data.update_column(column_path, updates.data[0], ids, count, 1);
-    }
-
     uint64_t row_group_t::committed_row_count() {
         auto* vi = version_info_.load();
         if (vi) {
@@ -745,19 +691,14 @@ namespace components::table {
 
     class version_delete_state {
     public:
-        version_delete_state(row_group_t& info,
-                             uint64_t current_version,
-                             data_table_t& table,
-                             int64_t base_row,
-                             bool is_txn = false)
+        version_delete_state(row_group_t& info, uint64_t current_version, data_table_t& table, int64_t base_row)
             : info(info)
             , table(table)
             , current_chunk(storage::INVALID_INDEX)
             , current_version(current_version)
             , base_row(base_row)
             , delete_count(0)
-            , count(0)
-            , is_txn_(is_txn) {}
+            , count(0) {}
 
         row_group_t& info;
         data_table_t& table;
@@ -768,22 +709,13 @@ namespace components::table {
         uint64_t chunk_row;
         uint64_t delete_count;
         uint64_t count;
-        bool is_txn_;
 
         void delete_row(int64_t row_id);
         void flush();
     };
 
-    uint64_t row_group_t::delete_rows(uint64_t vector_idx, int64_t rows[], uint64_t count) {
-        const auto delete_id = ++current_version_;
-        auto deleted = get_or_create_version_info().delete_rows(vector_idx, delete_id, rows, count);
-        ++current_version_;
-        return deleted;
-    }
-
     uint64_t row_group_t::delete_rows(data_table_t& table, int64_t* ids, uint64_t count, uint64_t transaction_id) {
-        const bool is_txn = !is_direct_write_txn(transaction_id);
-        version_delete_state del_state(*this, transaction_id, table, start, is_txn);
+        version_delete_state del_state(*this, transaction_id, table, start);
 
         for (uint64_t i = 0; i < count; i++) {
             assert(ids[i] >= 0);
@@ -901,14 +833,7 @@ namespace components::table {
         if (count == 0) {
             return;
         }
-        uint64_t actual_delete_count;
-        if (is_txn_) {
-            actual_delete_count =
-                info.get_or_create_version_info().delete_rows(current_chunk, current_version, rows, count);
-        } else {
-            actual_delete_count = info.delete_rows(current_chunk, rows, count);
-        }
-        delete_count += actual_delete_count;
+        delete_count += info.get_or_create_version_info().delete_rows(current_chunk, current_version, rows, count);
         count = 0;
     }
     namespace {

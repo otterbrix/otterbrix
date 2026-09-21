@@ -81,7 +81,7 @@ TEST_CASE("components::table::predicate::two_long_string_columns_in_one_predicat
         REQUIRE_FALSE(table->append_lock(state).has_error());
         REQUIRE_FALSE(table->initialize_append(state).has_error());
         REQUIRE_FALSE(table->append(chunk, state).has_error());
-        table->finalize_append(state, transaction_data{0, 0});
+        table->finalize_append(state, transaction_data::committed());
     }
 
     // a >= wide_string('a', 100) AND b < wide_string('b', 200): both bound columns are long
@@ -114,7 +114,7 @@ TEST_CASE("components::table::predicate::two_long_string_columns_in_one_predicat
     column_ids.emplace_back(0);
     column_ids.emplace_back(1);
     table_scan_state scan_state(&env.resource);
-    table->initialize_scan(scan_state, column_ids, &filter);
+    table->initialize_scan(scan_state, column_ids, transaction_data::committed(), &filter);
 
     size_t produced = 0;
     for (;;) {

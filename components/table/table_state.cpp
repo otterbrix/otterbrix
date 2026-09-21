@@ -2,6 +2,8 @@
 
 #include <components/vector/data_chunk.hpp>
 
+#include <cassert>
+
 #include "collection.hpp"
 #include "row_group.hpp"
 
@@ -16,6 +18,19 @@ namespace components::table {
         , batch_index(0)
         , valid_indexing(resource, vector::DEFAULT_VECTOR_CAPACITY)
         , parent_(parent) {}
+
+    const std::vector<uint64_t>& collection_scan_state::visible_to_physical() const noexcept {
+        return parent_.visible_to_physical();
+    }
+
+    uint64_t collection_scan_state::physical_column(uint64_t visible) const noexcept {
+        const auto& map = parent_.visible_to_physical();
+        if (map.empty()) {
+            return visible;
+        }
+        assert(visible < map.size() && "physical_column: the id names a column this transaction cannot see");
+        return map[visible];
+    }
 
     void collection_scan_state::initialize(const std::pmr::vector<types::complex_logical_type>& types) {
         auto& ids = column_ids();
@@ -160,9 +175,7 @@ namespace components::table {
         filter = table_filter_tree;
     }
 
-    // An empty list is a legal scan ("count visible rows, read no column"): SELECT of a column
-    // ALTER TABLE ADD COLUMN cataloged but no INSERT has materialized yet reaches it, answered
-    // with NULLs by table_storage_adapter_t. No assert here -- it would abort that read path.
+    // An empty list is a legal scan: "count the visible rows, read no column" is what COUNT(*) asks for.
     const std::vector<storage_index_t>& table_scan_state::column_ids() { return column_ids_; }
 
     bool collection_scan_state::scan_committed(vector::data_chunk_t& result, table_scan_type type) {

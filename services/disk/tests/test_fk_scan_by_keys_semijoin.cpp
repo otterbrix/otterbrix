@@ -49,6 +49,8 @@ namespace {
         // into the production interface just for this test double's sake.
         using storage_t::delete_rows;
         using storage_t::scan;
+        // Overriding the physical types() would otherwise hide the per-transaction overload beside it.
+        using storage_t::types;
 
         std::pmr::vector<complex_logical_type> types() const override { return inner_.types(); }
         const std::vector<column_definition_t>& columns() const override { return inner_.columns(); }
@@ -69,13 +71,12 @@ namespace {
         core::result_wrapper_t<uint64_t> append(data_chunk_t& d, transaction_data txn) override {
             return inner_.append(d, txn);
         }
-        core::error_t update(vector_t& ids, data_chunk_t& d) override { return inner_.update(ids, d); }
-        core::result_wrapper_t<std::pair<int64_t, uint64_t>>
+        core::result_wrapper_t<components::storage::appended_range_t>
         update(vector_t& ids, data_chunk_t& d, transaction_data txn) override {
             return inner_.update(ids, d, txn);
         }
-        core::result_wrapper_t<uint64_t> delete_rows(vector_t& ids, uint64_t c) override {
-            return inner_.delete_rows(ids, c);
+        core::result_wrapper_t<uint64_t> delete_rows(vector_t& ids, uint64_t c, uint64_t txn_id) override {
+            return inner_.delete_rows(ids, c, txn_id);
         }
         std::pmr::memory_resource* resource() const override { return inner_.resource(); }
 
@@ -109,7 +110,7 @@ namespace {
         REQUIRE_FALSE(table.append_lock(state).has_error());
         REQUIRE_FALSE(table.initialize_append(state).has_error());
         REQUIRE_FALSE(table.append(chunk, state).has_error());
-        table.finalize_append(state, transaction_data{0, 0});
+        table.finalize_append(state, transaction_data::committed());
     }
 
     std::pmr::vector<std::uint64_t> key_indices(std::pmr::memory_resource* res,
@@ -178,7 +179,7 @@ TEST_CASE("services::disk::fk_hash_semijoin::multi_key_single_pass") {
     }
 
     auto kidx = key_indices(&resource, {0});
-    auto res_r = services::disk::fk_hash_semijoin(&resource, counter, kidx, keys, transaction_data{0, 0});
+    auto res_r = services::disk::fk_hash_semijoin(&resource, counter, kidx, keys, transaction_data::committed());
     REQUIRE_FALSE(res_r.has_error());
     auto& res = res_r.value();
 
@@ -225,7 +226,7 @@ TEST_CASE("services::disk::fk_hash_semijoin::heterogeneous_type_int32_vs_int64")
     keys.set_value(0, 1, logical_value_t{&resource, static_cast<int32_t>(40)});
 
     auto kidx = key_indices(&resource, {0});
-    auto res_r = services::disk::fk_hash_semijoin(&resource, counter, kidx, keys, transaction_data{0, 0});
+    auto res_r = services::disk::fk_hash_semijoin(&resource, counter, kidx, keys, transaction_data::committed());
     REQUIRE_FALSE(res_r.has_error());
     auto& res = res_r.value();
 
@@ -267,7 +268,7 @@ TEST_CASE("services::disk::fk_hash_semijoin::null_key_matches_nothing") {
     keys.set_value(0, 1, logical_value_t{&resource, static_cast<int64_t>(30)});
 
     auto kidx = key_indices(&resource, {0});
-    auto res_r = services::disk::fk_hash_semijoin(&resource, counter, kidx, keys, transaction_data{0, 0});
+    auto res_r = services::disk::fk_hash_semijoin(&resource, counter, kidx, keys, transaction_data::committed());
     REQUIRE_FALSE(res_r.has_error());
     auto& res = res_r.value();
 
@@ -316,7 +317,7 @@ TEST_CASE("services::disk::fk_hash_semijoin::composite_key") {
     }
 
     auto kidx = key_indices(&resource, {0, 1});
-    auto res_r = services::disk::fk_hash_semijoin(&resource, counter, kidx, keys, transaction_data{0, 0});
+    auto res_r = services::disk::fk_hash_semijoin(&resource, counter, kidx, keys, transaction_data::committed());
     REQUIRE_FALSE(res_r.has_error());
     auto& res = res_r.value();
 

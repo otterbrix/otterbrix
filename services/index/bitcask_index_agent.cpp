@@ -64,7 +64,7 @@ namespace services::index {
                                   uint64_t flush_threshold,
                                   uint64_t segment_record_limit,
                                   log_t& log,
-                                  std::pmr::set<std::uint64_t> committed_commit_ids) {
+                                  std::pmr::set<std::uint64_t> commit_ids) {
         // The open runs before anyone can address the actor, so a reachable agent always has an opened store.
         auto agent = actor_zeta::spawn<bitcask_index_agent_t>(resource,
                                                               path_db,
@@ -73,7 +73,7 @@ namespace services::index {
                                                               flush_threshold,
                                                               segment_record_limit,
                                                               log,
-                                                              std::move(committed_commit_ids));
+                                                              std::move(commit_ids));
         if (auto open_error = agent->open_store(); open_error.contains_error()) {
             return open_error;
         }
@@ -89,7 +89,7 @@ namespace services::index {
                                                  uint64_t flush_threshold,
                                                  uint64_t segment_record_limit,
                                                  log_t& log,
-                                                 std::pmr::set<std::uint64_t> committed_commit_ids)
+                                                 std::pmr::set<std::uint64_t> commit_ids)
         : actor_zeta::basic_actor<bitcask_index_agent_t>(resource)
         , log_(log.clone())
         , table_oid_(table_oid)
@@ -98,7 +98,7 @@ namespace services::index {
                  resource,
                  flush_threshold,
                  segment_record_limit,
-                 std::move(committed_commit_ids),
+                 std::move(commit_ids),
                  bitcask_index_disk_t::deferred_open_t{})
         , pending_inserts_(resource)
         , pending_deletes_(resource) {

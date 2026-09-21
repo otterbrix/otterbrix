@@ -142,7 +142,6 @@ TEST_CASE("integration::cpp::index_stale_window::reader_in_window_is_refused_not
         const std::string probe = probe_sql(p);
 
         auto cp_session = otterbrix::session_id_t();
-        const std::size_t cp_idx = executor_of(cp_session);
 
         guard.gate.armed.store(true, std::memory_order_release);
         components::cursor::cursor_t_ptr cp_cur;
@@ -153,7 +152,7 @@ TEST_CASE("integration::cpp::index_stale_window::reader_in_window_is_refused_not
 
         // The round is parked: compaction BEHIND, index rebuild AHEAD. This reader arrives
         // inside the window.
-        auto rd_session = session_avoiding_executor(cp_idx);
+        auto rd_session = otterbrix::session_id_t();
         components::cursor::cursor_t_ptr rd_cur;
         std::thread reader([&] { rd_cur = d->execute_sql(rd_session, probe); });
 

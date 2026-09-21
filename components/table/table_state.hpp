@@ -25,7 +25,6 @@ namespace components::table {
     {
         REGULAR = 0,
         COMMITTED_ROWS = 1,
-        COMMITTED_ROWS_DISALLOW_UPDATES = 2,
         LATEST_COMMITTED_ROWS = 4
     };
 
@@ -99,6 +98,9 @@ namespace components::table {
         bool next_batch(vector::data_chunk_t& result);
         bool scan_committed(vector::data_chunk_t& result, table_scan_type type);
 
+        [[nodiscard]] const std::vector<uint64_t>& visible_to_physical() const noexcept;
+        [[nodiscard]] uint64_t physical_column(uint64_t visible) const noexcept;
+
     private:
         table_scan_state& parent_;
     };
@@ -116,8 +118,12 @@ namespace components::table {
 
         const std::vector<storage_index_t>& column_ids();
 
+        [[nodiscard]] const std::vector<uint64_t>& visible_to_physical() const noexcept { return visible_to_physical_; }
+        void set_visible_to_physical(std::vector<uint64_t> map) { visible_to_physical_ = std::move(map); }
+
     private:
         std::vector<storage_index_t> column_ids_;
+        std::vector<uint64_t> visible_to_physical_;
     };
 
     class create_index_scan_state : public table_scan_state {

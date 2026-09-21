@@ -27,7 +27,7 @@ namespace services::disk::test_probe {
 
     namespace catalog = components::catalog;
 
-    // transaction_data{0, 0} (what most probe fixtures pass) sees rows fine but judges column
+    // transaction_data::committed() (what most probe fixtures pass) sees rows fine but judges column
     // visibility against start_time == 0, hiding a column an ALTER ... ADD COLUMN added later; a
     // fixture whose test drives that backfill must use this instead. This is a real production gap,
     // not just a test quirk: operator_resolve_table.cpp judges column visibility against start_time
@@ -107,11 +107,11 @@ namespace services::disk::test_probe {
                std::pmr::vector<components::types::logical_value_t> key_vals,
                bool committed_scan = true) {
         auto keys = build_key_chunk(&fx.resource, std::move(key_vals));
-        // committed_scan=true (default) scans committed-only (transaction_data{}), mirroring the deleted
+        // committed_scan=true (default) scans committed-only (transaction_data::committed()), mirroring the deleted
         // resolve_* disk path; committed_scan=false uses the caller's real ctx.txn, matching production
         // operator_resolve_* semantics (read-your-own-uncommitted-catalog-writes).
         if (committed_scan) {
-            ctx.txn = components::table::transaction_data{};
+            ctx.txn = components::table::transaction_data::committed();
         }
         auto r = fx.invoke(&manager_disk_t::read_chunks_by_key,
                            ctx,

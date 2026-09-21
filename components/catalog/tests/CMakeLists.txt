@@ -19,6 +19,7 @@ set(${PROJECT_NAME}_SOURCES
         test_prorettype_channel.cpp
         test_constraint_write_gate.cpp
         test_cascade_plan_steps.cpp
+        test_settings.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

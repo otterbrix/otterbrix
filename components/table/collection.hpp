@@ -20,10 +20,6 @@ namespace components::table {
 
     class data_table_t;
 
-    // DEFAULT-or-NULL for an unmaterialized column; shared by table_storage_adapter.hpp and
-    // row_group_t so SELECT and WHERE don't diverge again (one saw the default, the other matched nothing).
-    void fill_published_default(vector::vector_t& target, const column_definition_t* published, uint64_t rows);
-
     class row_group_segment_tree_t : public segment_tree_t<row_group_t, true> {
     public:
         explicit row_group_segment_tree_t(collection_t& collection);
@@ -34,6 +30,9 @@ namespace components::table {
         uint64_t current_row_group_;
         uint64_t max_row_group_;
     };
+
+    // marks blocks as free
+    void release_disk_blocks(storage::block_manager_t& block_manager, std::pmr::vector<uint64_t> block_ids);
 
     // A copy of this pointer taken before data_table_t::compact swaps in a rebuilt collection must
     // outlive the swap — block_manager_t::unregister_block's identity check depends on it
@@ -91,7 +90,8 @@ namespace components::table {
         [[nodiscard]] core::result_wrapper_t<bool> append(vector::data_chunk_t& chunk, table_append_state& state);
         void finalize_append(table_append_state& state, transaction_data txn);
         void commit_append(uint64_t commit_id, int64_t row_start, uint64_t count);
-        // Best-effort: every row group gets a chance to truncate before the first refusal is reported.
+        // Reverts only the table's tail: row groups past row_start go whole, the one holding it is truncated;
+        // any other range is refused.
         core::result_wrapper_t<bool> revert_append(int64_t row_start, uint64_t count);
         void commit_all_deletes(uint64_t txn_id, uint64_t commit_id);
         void revert_all_deletes(uint64_t txn_id);
@@ -101,13 +101,6 @@ namespace components::table {
 
         [[nodiscard]] core::result_wrapper_t<uint64_t>
         delete_rows(data_table_t& table, int64_t* ids, uint64_t count, uint64_t transaction_id);
-        // write_conflict or out_of_memory on failure.
-        [[nodiscard]] core::result_wrapper_t<bool>
-        update(int64_t* ids, const std::vector<uint64_t>& column_ids, vector::data_chunk_t& updates);
-        [[nodiscard]] core::result_wrapper_t<bool> update_column(vector::vector_t& row_ids,
-                                                                 const std::vector<uint64_t>& column_path,
-                                                                 vector::data_chunk_t& updates);
-
         std::vector<column_segment_info> get_column_segment_info();
 
         // Exclusively owned blocks only; data_table_t::compact frees them after swapping this collection out.
@@ -147,17 +140,6 @@ namespace components::table {
 
         void set_total_rows(uint64_t total) { total_rows_ = total; }
 
-        // Rebound on every read (table_storage_adapter_t::begin_read), not fixed at construction —
-        // compact/add_column/remove_column replace the collection and would drop a construction-time binding.
-        void publish_unmaterialized_columns(const std::vector<column_definition_t>* columns) noexcept {
-            unmaterialized_ = columns;
-        }
-        // nullptr past the materialized schema; fill_published_default reads that as all-NULL.
-        const column_definition_t* published_column(size_t offset) const noexcept {
-            return unmaterialized_ != nullptr && offset < unmaterialized_->size() ? &(*unmaterialized_)[offset]
-                                                                                  : nullptr;
-        }
-
     private:
         bool is_empty(std::unique_lock<std::mutex>&) const;
 
@@ -170,7 +152,6 @@ namespace components::table {
         // Exclusive; a shared_ptr stood here though nothing shared it -- every consumer uses .get()/operator->.
         std::unique_ptr<row_group_segment_tree_t> row_groups_;
         uint64_t allocation_size_;
-        const std::vector<column_definition_t>* unmaterialized_ = nullptr;
     };
 
 } // namespace components::table

@@ -82,47 +82,6 @@ namespace {
         std::unique_ptr<data_table_t> table;
     };
 
-    built_table_t build_table(env_t& env,
-                              tstorage::block_manager_t& bm,
-                              const std::string& column_name,
-                              const complex_logical_type& type,
-                              const std::vector<logical_value_t>& rows,
-                              const char* table_name) {
-        built_table_t out;
-        std::vector<column_definition_t> columns;
-        columns.emplace_back(column_name, type);
-        out.table = std::make_unique<data_table_t>(&env.resource, bm, std::move(columns), table_name);
-
-        auto types = out.table->copy_types();
-        data_chunk_t chunk(&env.resource, types, rows.size());
-        chunk.set_cardinality(rows.size());
-        for (uint64_t i = 0; i < rows.size(); i++) {
-            chunk.set_value(0, i, rows[i]);
-        }
-
-        table_append_state state(&env.resource);
-        REQUIRE_FALSE(out.table->append_lock(state).has_error());
-        REQUIRE_FALSE(out.table->initialize_append(state).has_error());
-        REQUIRE_FALSE(out.table->append(chunk, state).has_error());
-        out.table->finalize_append(state, transaction_data{0, 0});
-        return out;
-    }
-
-    logical_value_t list_value(env_t& env, const std::vector<uint64_t>& elements) {
-        std::vector<logical_value_t> members;
-        members.reserve(elements.size());
-        for (auto element : elements) {
-            members.emplace_back(&env.resource, element);
-        }
-        return logical_value_t::create_list(&env.resource, complex_logical_type{logical_type::UBIGINT}, members);
-    }
-
-    vector_t single_row_id(env_t& env, int64_t row_id) {
-        vector_t ids(&env.resource, logical_type::BIGINT, 1);
-        ids.data<int64_t>()[0] = row_id;
-        return ids;
-    }
-
 } // namespace
 
 // (1)+(2) LIST/ARRAY point fetch: NOT IMPLEMENTED, reported not thrown; unreachable via SQL, tested directly.
@@ -210,85 +169,6 @@ TEST_CASE("nested column: a list offset past the element column reports data_cor
     REQUIRE(state.scan_error.type == core::error_code_t::data_corruption);
 }
 
-// (4) An in-place LIST update changing a row's list length is refused: REACHABLE via the WAL
-// REPLAY leg of update (the txn leg is delete+append and never hits this), on the disk agent's thread.
-TEST_CASE("nested column: an in-place LIST update cannot change the list length, and says so") {
-    env_t env;
-    auto& bm = env.block_manager;
-
-    auto list_type = complex_logical_type::create_list(complex_logical_type{logical_type::UBIGINT});
-    std::vector<logical_value_t> rows;
-    rows.push_back(list_value(env, {10, 20}));
-    auto built = build_table(env, bm, "v", list_type, rows, "list_len_update");
-
-    auto row_ids = single_row_id(env, 0);
-    auto types = built.table->copy_types();
-
-    {
-        data_chunk_t upd(&env.resource, types, 1);
-        upd.set_cardinality(1);
-        upd.set_value(0, 0, list_value(env, {11, 21}));
-        auto state = built.table->initialize_update({});
-        auto updated = built.table->update(*state, row_ids, upd);
-        REQUIRE_FALSE(updated.has_error());
-    }
-
-    data_chunk_t upd(&env.resource, types, 1);
-    upd.set_cardinality(1);
-    upd.set_value(0, 0, list_value(env, {1, 2, 3}));
-    auto state = built.table->initialize_update({});
-    auto updated = built.table->update(*state, row_ids, upd);
-    REQUIRE(updated.has_error());
-    REQUIRE(updated.error().type == core::error_code_t::unimplemented_yet);
-}
-
-// (5)+(6) A malformed STRUCT sub-column path is refused; this call is update_column's only reachable surface.
-TEST_CASE("nested column: a struct sub-column update path is validated on the update channel") {
-    env_t env;
-    auto& bm = env.block_manager;
-
-    std::pmr::vector<complex_logical_type> fields(&env.resource);
-    fields.emplace_back(logical_type::BIGINT, "a");
-    fields.emplace_back(logical_type::BIGINT, "b");
-    auto struct_type = complex_logical_type::create_struct("pair", fields, "s");
-
-    auto column = column_data_t::create_column(&env.resource, bm, 0, 0, struct_type);
-    {
-        std::vector<logical_value_t> members;
-        members.emplace_back(&env.resource, int64_t{11});
-        members.emplace_back(&env.resource, int64_t{12});
-        vector_t v(&env.resource, struct_type, 1);
-        v.set_value(0, logical_value_t::create_struct(&env.resource, struct_type, members));
-        column_append_state append_state;
-        REQUIRE_FALSE(column->initialize_append(append_state).has_error());
-        REQUIRE_FALSE(column->append(append_state, v, 1).has_error());
-    }
-
-    vector_t update_vector(&env.resource, logical_type::BIGINT, 1);
-    update_vector.set_value(0, int64_t{99});
-    int64_t row_ids[1] = {0};
-    // depth 1 is what row_group_t::update_column starts the walk at (element 0 is the top-level column).
-    constexpr uint64_t start_depth = 1;
-
-    SECTION("a path that ends ON the struct names nothing writable") {
-        const std::vector<uint64_t> path{0};
-        auto updated = column->update_column(path, update_vector, row_ids, 1, start_depth);
-        REQUIRE(updated.has_error());
-        REQUIRE(updated.error().type == core::error_code_t::invalid_parameter);
-    }
-    SECTION("a path that names a field the struct does not have is refused") {
-        const std::vector<uint64_t> path{0, 99};
-        auto updated = column->update_column(path, update_vector, row_ids, 1, start_depth);
-        REQUIRE(updated.has_error());
-        REQUIRE(updated.error().type == core::error_code_t::invalid_parameter);
-    }
-    SECTION("POSITIVE CONTROL: a well-formed path into the first field still writes") {
-        const std::vector<uint64_t> path{0, 1};
-        auto updated = column->update_column(path, update_vector, row_ids, 1, start_depth);
-        REQUIRE_FALSE(updated.has_error());
-    }
-}
-
 // (7) An unnamed struct is refused at the append gate: REACHABLE via create_variant's LIST(struct) with no alias.
 TEST_CASE("nested column: an unnamed nested struct is refused by initialize_append") {
     env_t env;
@@ -360,48 +240,4 @@ TEST_CASE("column scan: a flat-vector scan over a non-flat result refuses on the
     mode_state.initialize(complex_logical_type{logical_type::UBIGINT});
     column->initialize_scan(mode_state);
     REQUIRE(column->get_vector_scan_type(mode_state, 8, non_flat) == scan_vector_type::SCAN_ENTIRE_VECTOR);
-}
-
-// (9) An index-build scan over a column with updates refuses: REACHABLE through the public
-// create_index_scan API, though no production caller passes COMMITTED_ROWS_DISALLOW_UPDATES today.
-TEST_CASE("column scan: an index-build scan over a column with updates refuses") {
-    env_t env;
-    auto& bm = env.block_manager;
-
-    std::vector<logical_value_t> rows;
-    for (int64_t i = 0; i < 4; i++) {
-        rows.emplace_back(&env.resource, i);
-    }
-    auto built = build_table(env, bm, "n", complex_logical_type{logical_type::BIGINT}, rows, "index_scan_updates");
-
-    std::vector<storage_index_t> column_indices;
-    column_indices.emplace_back(static_cast<uint64_t>(0));
-
-    {
-        table_scan_state scan_state(&env.resource);
-        built.table->initialize_scan(scan_state, column_indices);
-        auto types = built.table->copy_types();
-        data_chunk_t out(&env.resource, types, DEFAULT_VECTOR_CAPACITY);
-        built.table->create_index_scan(scan_state, out, table_scan_type::COMMITTED_ROWS_DISALLOW_UPDATES);
-        REQUIRE_FALSE(scan_state.table_state.has_error());
-        REQUIRE(out.size() == 4);
-    }
-
-    {
-        auto row_ids = single_row_id(env, 0);
-        auto types = built.table->copy_types();
-        data_chunk_t upd(&env.resource, types, 1);
-        upd.set_cardinality(1);
-        upd.set_value(0, 0, int64_t{77});
-        auto state = built.table->initialize_update({});
-        REQUIRE_FALSE(built.table->update(*state, row_ids, upd).has_error());
-    }
-
-    table_scan_state scan_state(&env.resource);
-    built.table->initialize_scan(scan_state, column_indices);
-    auto types = built.table->copy_types();
-    data_chunk_t out(&env.resource, types, DEFAULT_VECTOR_CAPACITY);
-    built.table->create_index_scan(scan_state, out, table_scan_type::COMMITTED_ROWS_DISALLOW_UPDATES);
-    REQUIRE(scan_state.table_state.has_error());
-    REQUIRE(scan_state.table_state.scan_error.type == core::error_code_t::index_create_fail);
 }

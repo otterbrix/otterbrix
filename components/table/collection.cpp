@@ -1,5 +1,7 @@
 #include "collection.hpp"
 
+#include <algorithm>
+#include <components/table/storage/block_manager.hpp>
 #include <components/table/storage/partial_block_manager.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <queue>
@@ -9,20 +11,6 @@
 #include "row_version_manager.hpp"
 
 namespace components::table {
-
-    void fill_published_default(vector::vector_t& target, const column_definition_t* published, uint64_t rows) {
-        if (rows == 0) {
-            return;
-        }
-        if (published == nullptr || !published->has_default_value() || published->default_value().is_null()) {
-            target.validity().set_all_invalid(rows);
-            return;
-        }
-        const auto& fill = published->default_value();
-        for (uint64_t row = 0; row < rows; row++) {
-            target.set_value(row, fill);
-        }
-    }
 
     row_group_segment_tree_t::row_group_segment_tree_t(collection_t& collection)
         : collection_(collection)
@@ -356,29 +344,45 @@ namespace components::table {
         return row_group->delete_stamp(row_id);
     }
 
-    core::result_wrapper_t<bool> collection_t::revert_append(int64_t row_start, uint64_t count) {
-        core::error_t first_error = core::error_t::no_error();
-        for (auto& rg : row_groups_->segments()) {
-            auto rg_end = rg.start + static_cast<int64_t>(rg.count.load());
-            if (rg_end <= row_start)
+    void release_disk_blocks(storage::block_manager_t& block_manager, std::pmr::vector<uint64_t> block_ids) {
+        std::sort(block_ids.begin(), block_ids.end());
+        block_ids.erase(std::unique(block_ids.begin(), block_ids.end()), block_ids.end());
+        for (uint64_t block_id : block_ids) {
+            if (block_id >= block_manager.total_blocks()) {
+                block_manager.mark_as_free(block_id);
                 continue;
-            if (rg.start >= row_start + static_cast<int64_t>(count))
-                break;
-            auto local_start = static_cast<uint64_t>(std::max(int64_t{0}, row_start - rg.start));
-            auto reverted = rg.revert_append(local_start);
-            if (reverted.has_error() && !first_error.contains_error()) {
-                first_error = reverted.error();
             }
+            block_manager.mark_as_free(block_id);
+            block_manager.unregister_block(block_id);
         }
-        if (total_rows_.load() >= count) {
-            total_rows_ -= count;
-        } else {
-            total_rows_ = 0;
+    }
+
+    core::result_wrapper_t<bool> collection_t::revert_append(int64_t row_start, uint64_t count) {
+        if (row_start + static_cast<int64_t>(count) != row_start_ + static_cast<int64_t>(total_rows_.load())) {
+            return core::error_t(core::error_code_t::invalid_parameter,
+                                 std::pmr::string("table revert: the range is not the table's tail", resource_));
         }
-        if (first_error.contains_error()) {
-            return first_error;
+        if (count == 0) {
+            return true;
         }
-        return true;
+        auto l = row_groups_->lock();
+        uint64_t segment_index;
+        if (!row_groups_->try_segment_index(l, row_start, segment_index)) {
+            return core::error_t(core::error_code_t::data_corruption,
+                                 std::pmr::string("table revert: no row group brackets the revert row", resource_));
+        }
+        const auto& segments = row_groups_->reference_segments(l);
+        std::pmr::vector<uint64_t> released{resource_};
+        for (uint64_t later = segment_index + 1; later < segments.size(); ++later) {
+            segments[later].node->collect_disk_block_ids(released);
+        }
+        release_disk_blocks(block_manager_, std::move(released));
+        row_groups_->erase_segments(l, segment_index);
+
+        auto* row_group = row_groups_->segment_at(l, static_cast<int64_t>(segment_index));
+        row_group->next = nullptr;
+        total_rows_ = static_cast<uint64_t>(row_start - row_start_);
+        return row_group->revert_append(static_cast<uint64_t>(row_start - row_group->start));
     }
 
     void collection_t::merge_storage(collection_t& data) {
@@ -424,77 +428,6 @@ namespace components::table {
             delete_count += row_group->delete_rows(table, ids + start, pos - start, transaction_id);
         } while (pos < count);
         return delete_count;
-    }
-
-    core::result_wrapper_t<bool>
-    collection_t::update(int64_t* ids, const std::vector<uint64_t>& column_ids, vector::data_chunk_t& updates) {
-        uint64_t pos = 0;
-        do {
-            uint64_t start = pos;
-            auto row_group = row_groups_->get_segment(ids[pos]);
-            if (!row_group) {
-                // get_segment miss rides the channel this function already returns.
-                return core::error_t(
-                    core::error_code_t::invalid_parameter,
-                    std::pmr::string("table update: a row id names no row group of this table", resource_));
-            }
-            int64_t base_id = row_group->start +
-                              (ids[pos] - row_group->start) / static_cast<int64_t>(vector::DEFAULT_VECTOR_CAPACITY *
-                                                                                   vector::DEFAULT_VECTOR_CAPACITY);
-            auto max_id = std::min(base_id + static_cast<int64_t>(vector::DEFAULT_VECTOR_CAPACITY),
-                                   row_group->start + static_cast<int64_t>(row_group->count));
-            for (pos++; pos < updates.size(); pos++) {
-                assert(ids[pos] >= 0);
-                if (ids[pos] < base_id) {
-                    break;
-                }
-                if (ids[pos] >= max_id) {
-                    break;
-                }
-            }
-            auto updated = row_group->update(updates, ids, start, pos - start, column_ids);
-            if (updated.has_error()) {
-                return updated; // write_conflict / out_of_memory
-            }
-        } while (pos < updates.size());
-        return true;
-    }
-
-    core::result_wrapper_t<bool> collection_t::update_column(vector::vector_t& row_ids,
-                                                             const std::vector<uint64_t>& column_path,
-                                                             vector::data_chunk_t& updates) {
-        uint64_t pos = 0;
-        do {
-            uint64_t start = pos;
-            auto row_group = row_groups_->get_segment(row_ids.data<int64_t>()[pos]);
-            if (!row_group) {
-                return core::error_t(
-                    core::error_code_t::invalid_parameter,
-                    std::pmr::string("table update: a row id names no row group of this table", resource_));
-            }
-            int64_t base_id = row_group->start + (row_ids.data<int64_t>()[pos] - row_group->start) /
-                                                     static_cast<int64_t>(vector::DEFAULT_VECTOR_CAPACITY *
-                                                                          vector::DEFAULT_VECTOR_CAPACITY);
-            auto max_id = std::min(base_id + static_cast<int64_t>(vector::DEFAULT_VECTOR_CAPACITY),
-                                   row_group->start + static_cast<int64_t>(row_group->count));
-            for (pos++; pos < updates.size(); pos++) {
-                assert(row_ids.data<int64_t>()[pos] >= 0);
-                if (row_ids.data<int64_t>()[pos] < base_id) {
-                    break;
-                }
-                if (row_ids.data<int64_t>()[pos] >= max_id) {
-                    break;
-                }
-            }
-            // Deliberately update_column, not update: row_group_t::update treats its last arg
-            // as top-level column ordinals, so a depth-2 column_path would misindex as a second
-            // column. update_column walks the path into the column instead.
-            auto updated = row_group->update_column(updates, row_ids, column_path, start, pos - start);
-            if (updated.has_error()) {
-                return updated;
-            }
-        } while (pos < updates.size());
-        return true;
     }
 
     std::vector<column_segment_info> collection_t::get_column_segment_info() {

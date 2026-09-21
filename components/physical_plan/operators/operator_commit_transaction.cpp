@@ -29,11 +29,13 @@ namespace components::operators {
         std::vector<components::pg_catalog_append_range_t> base_appends;
         std::set<components::catalog::oid_t> base_delete_tables;
         std::vector<components::catalog::oid_t> dropped_storage_oids;
+        std::vector<components::table::created_index_t> created_indexes;
         if (ctx->current_message_sender != actor_zeta::address_t::empty_address()) {
             auto [_dr, drf] =
                 actor_zeta::otterbrix::send(ctx->current_message_sender,
                                             &services::dispatcher::manager_dispatcher_t::txn_commit_drain_msg,
-                                            ctx->session);
+                                            ctx->session,
+                                            ctx->txn.transaction_id);
             services::dispatcher::txn_commit_drain_t drain = co_await std::move(drf);
             txn_data = drain.txn;
             swap_appends = std::move(drain.swap_appends);
@@ -42,6 +44,7 @@ namespace components::operators {
             base_appends = std::move(drain.base_appends);
             base_delete_tables = std::move(drain.base_delete_tables);
             dropped_storage_oids = std::move(drain.dropped_storage_oids);
+            created_indexes = std::move(drain.created_indexes);
             commit_id_ = drain.commit_id;
         }
 
@@ -61,16 +64,22 @@ namespace components::operators {
                                                                             base_delete_tables.end(),
                                                                             resource_};
 
+        std::pmr::set<components::catalog::oid_t> index_commit_oid_set{append_oid_set.begin(),
+                                                                       append_oid_set.end(),
+                                                                       resource_};
+        for (const auto& created : created_indexes) {
+            index_commit_oid_set.insert(created.table_oid);
+        }
         if (ctx->index_address != actor_zeta::address_t::empty_address() && txn_data.transaction_id != 0 &&
-            commit_id_ > 0 && !base_append_oids.empty()) {
-            std::pmr::vector<components::catalog::oid_t> append_oids{base_append_oids.begin(),
-                                                                     base_append_oids.end(),
-                                                                     resource_};
+            commit_id_ > 0 && !index_commit_oid_set.empty()) {
+            std::pmr::vector<components::catalog::oid_t> index_commit_oids{index_commit_oid_set.begin(),
+                                                                           index_commit_oid_set.end(),
+                                                                           resource_};
             auto [_ic, icf] = actor_zeta::otterbrix::send(
                 ctx->index_address,
                 &services::index::manager_index_t::commit_inserts,
                 components::execution_context_t{ctx->session, txn_data, ctx->execution_context.timezone_offset},
-                std::move(append_oids),
+                std::move(index_commit_oids),
                 commit_id_);
             core::error_t result = co_await std::move(icf);
             if (result.contains_error()) {
@@ -84,6 +93,67 @@ namespace components::operators {
                 set_error(std::move(result));
                 co_return;
             }
+        }
+
+        // Tables whose COLUMN SET this transaction changed
+        std::pmr::set<components::catalog::oid_t> column_stamped_tables{resource_};
+        for (const auto& b : swap_backfills) {
+            const bool stamps_a_column = b.kind == components::pg_attribute_commit_id_backfill_t::kind_t::dropped_at ||
+                                         b.kind == components::pg_attribute_commit_id_backfill_t::kind_t::added_at;
+            if (stamps_a_column && b.release_table_oid != components::catalog::INVALID_OID) {
+                column_stamped_tables.insert(b.release_table_oid);
+            }
+        }
+        // RENAME markers are kept OUT of the batch below: renaming preserves added_at_commit_id.
+        std::pmr::vector<components::pg_attribute_commit_id_backfill_t> column_renames{resource_};
+        for (const auto& b : swap_backfills) {
+            if (b.kind == components::pg_attribute_commit_id_backfill_t::kind_t::storage_rename &&
+                !b.release_attname.empty() && !b.rename_to_attname.empty() &&
+                b.release_table_oid != components::catalog::INVALID_OID) {
+                column_renames.push_back(b);
+            }
+        }
+        std::pmr::vector<components::pg_attribute_commit_id_backfill_t> backfill_markers{resource_};
+        backfill_markers.reserve(swap_backfills.size());
+        for (auto& b : swap_backfills) {
+            if (b.kind != components::pg_attribute_commit_id_backfill_t::kind_t::storage_rename) {
+                backfill_markers.push_back(std::move(b));
+            }
+        }
+        swap_backfills.clear();
+
+        // Has to be done before writing to WAL
+        std::vector<components::pg_catalog_append_range_t> backfill_appends;
+        if (!backfill_markers.empty() && commit_id_ > 0 &&
+            ctx->disk_address != actor_zeta::address_t::empty_address()) {
+            components::execution_context_t backfill_ctx{ctx->session, txn_data, {}};
+            const auto backfill_count = backfill_markers.size();
+            auto [_b, bf] =
+                actor_zeta::otterbrix::send(ctx->disk_address,
+                                            &services::disk::manager_disk_t::update_pg_attribute_commit_id_fields,
+                                            backfill_ctx,
+                                            std::move(backfill_markers),
+                                            commit_id_);
+            auto backfill_result = co_await std::move(bf);
+            backfill_appends = std::move(backfill_result.appended);
+            if (backfill_result.refusal.contains_error()) {
+                if (ctx->current_message_sender != actor_zeta::address_t::empty_address()) {
+                    auto [_dx, dxf] =
+                        actor_zeta::otterbrix::send(ctx->current_message_sender,
+                                                    &services::dispatcher::manager_dispatcher_t::txn_discard_msg,
+                                                    commit_id_);
+                    co_await std::move(dxf);
+                }
+                set_error(std::move(backfill_result.refusal));
+                co_return;
+            }
+            trace(log_,
+                  "operator_commit_transaction: stamped {} pg_attribute backfill marker(s) for txn {} "
+                  "commit_id {}, appending {} range(s) to the publish set",
+                  backfill_count,
+                  txn_data.transaction_id,
+                  commit_id_,
+                  backfill_appends.size());
         }
 
         // The single durable commit point and the last step that can still fail.
@@ -135,61 +205,6 @@ namespace components::operators {
             }
         }
 
-        // dropped_at markers carry the physical column release; split out before the move below empties swap_backfills.
-        std::pmr::vector<components::pg_attribute_commit_id_backfill_t> column_releases{resource_};
-        for (const auto& b : swap_backfills) {
-            if (b.kind == components::pg_attribute_commit_id_backfill_t::kind_t::dropped_at &&
-                !b.release_attname.empty() && b.release_table_oid != components::catalog::INVALID_OID) {
-                column_releases.push_back(b);
-            }
-        }
-        // RENAME markers are kept OUT of the batch below: renaming preserves added_at_commit_id.
-        std::pmr::vector<components::pg_attribute_commit_id_backfill_t> column_renames{resource_};
-        for (const auto& b : swap_backfills) {
-            if (b.kind == components::pg_attribute_commit_id_backfill_t::kind_t::storage_rename &&
-                !b.release_attname.empty() && !b.rename_to_attname.empty() &&
-                b.release_table_oid != components::catalog::INVALID_OID) {
-                column_renames.push_back(b);
-            }
-        }
-        std::pmr::vector<components::pg_attribute_commit_id_backfill_t> backfill_markers{resource_};
-        backfill_markers.reserve(swap_backfills.size());
-        for (auto& b : swap_backfills) {
-            if (b.kind != components::pg_attribute_commit_id_backfill_t::kind_t::storage_rename) {
-                backfill_markers.push_back(std::move(b));
-            }
-        }
-        swap_backfills.clear();
-        if (!backfill_markers.empty() && commit_id_ > 0 &&
-            ctx->disk_address != actor_zeta::address_t::empty_address()) {
-            components::execution_context_t backfill_ctx{ctx->session, txn_data, {}};
-            const auto backfill_count = backfill_markers.size();
-            auto [_b, bf] =
-                actor_zeta::otterbrix::send(ctx->disk_address,
-                                            &services::disk::manager_disk_t::update_pg_attribute_commit_id_fields,
-                                            backfill_ctx,
-                                            std::move(backfill_markers),
-                                            commit_id_);
-            // Must NOT set_error/co_return here: commit_id is already durable, refusing would strand it forever.
-            if (auto backfill_result = co_await std::move(bf); backfill_result.contains_error()) {
-                error(log_,
-                      "operator_commit_transaction: the pg_attribute backfill of {} marker(s) for txn {} "
-                      "commit_id {} reported refused stamp(s); each refused column keeps commit_id 0 and is "
-                      "visible to older snapshots: {}",
-                      backfill_count,
-                      txn_data.transaction_id,
-                      commit_id_,
-                      backfill_result.what.c_str());
-            } else {
-                trace(log_,
-                      "operator_commit_transaction: OPTION X drained {} pg_attribute backfill markers "
-                      "for txn {} commit_id {} (patched in-place)",
-                      backfill_count,
-                      txn_data.transaction_id,
-                      commit_id_);
-            }
-        }
-
         // Sits below the WAL marker: queues a deferred_delete_t stamped with commit_id, swept later.
         if (ctx->index_address != actor_zeta::address_t::empty_address() && txn_data.transaction_id != 0 &&
             commit_id_ > 0 && !base_delete_table_oids.empty()) {
@@ -221,6 +236,9 @@ namespace components::operators {
             all_appends.insert(all_appends.end(),
                                std::make_move_iterator(base_appends.begin()),
                                std::make_move_iterator(base_appends.end()));
+            all_appends.insert(all_appends.end(),
+                               std::make_move_iterator(backfill_appends.begin()),
+                               std::make_move_iterator(backfill_appends.end()));
             if (!all_appends.empty()) {
                 auto [_a, af] = actor_zeta::otterbrix::send(ctx->disk_address,
                                                             &services::disk::manager_disk_t::storage_publish_commits,
@@ -231,6 +249,9 @@ namespace components::operators {
             }
             std::set<components::catalog::oid_t> all_deletes = std::move(swap_deletes);
             all_deletes.insert(base_delete_tables.begin(), base_delete_tables.end());
+            if (!backfill_appends.empty()) {
+                all_deletes.insert(components::catalog::well_known_oid::pg_attribute_table);
+            }
             if (!all_deletes.empty()) {
                 auto [_d, df] = actor_zeta::otterbrix::send(ctx->disk_address,
                                                             &services::disk::manager_disk_t::storage_publish_deletes,
@@ -280,26 +301,20 @@ namespace components::operators {
             }
         }
 
-        // Mirrors the table DROP above: irreversible, so it waits for the pg_attribute tombstone to be durable.
-        if (commit_id_ > 0 && !column_releases.empty() && ctx->disk_address != actor_zeta::address_t::empty_address()) {
-            for (const auto& release : column_releases) {
-                auto [_rc, rcf] = actor_zeta::otterbrix::send(ctx->disk_address,
-                                                              &services::disk::manager_disk_t::drop_storage_column,
-                                                              ctx->session,
-                                                              release.release_table_oid,
-                                                              release.release_attname);
-                auto released = co_await std::move(rcf);
-                if (released.has_error()) {
-                    set_error(released.error());
-                    co_return;
-                }
-                trace(log_,
-                      "operator_commit_transaction: released column '{}' of oid {} — {} (commit_id {})",
-                      release.release_attname,
-                      static_cast<unsigned>(release.release_table_oid),
-                      released.value() ? "storage rebuilt without it" : "storage never carried it",
-                      commit_id_);
-            }
+        if (commit_id_ > 0 && !column_stamped_tables.empty() &&
+            ctx->disk_address != actor_zeta::address_t::empty_address()) {
+            const auto tables = column_stamped_tables.size();
+            components::execution_context_t stamp_ctx{ctx->session, txn_data, {}};
+            auto [_cs, csf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                          &services::disk::manager_disk_t::publish_column_stamps,
+                                                          stamp_ctx,
+                                                          commit_id_,
+                                                          std::move(column_stamped_tables));
+            co_await std::move(csf);
+            trace(log_,
+                  "operator_commit_transaction: published the column stamps of {} table(s) at commit_id {}",
+                  tables,
+                  commit_id_);
         }
 
         // Storage indexes columns BY NAME, so the copy must be renamed too or the next INSERT hits a stale name.
@@ -313,8 +328,16 @@ namespace components::operators {
                                                               rename.rename_to_attname);
                 auto renamed = co_await std::move(rnf);
                 if (renamed.has_error()) {
-                    set_error(renamed.error());
-                    co_return;
+                    error(log_,
+                          "operator_commit_transaction: renaming column '{}' -> '{}' of oid {} in the storage failed "
+                          "for commit_id {} ({}); the commit is already durable and published, so refusing would "
+                          "report a committed transaction as failed",
+                          rename.release_attname,
+                          rename.rename_to_attname,
+                          static_cast<unsigned>(rename.release_table_oid),
+                          commit_id_,
+                          renamed.error().what);
+                    continue;
                 }
                 trace(log_,
                       "operator_commit_transaction: renamed column '{}' -> '{}' of oid {} — {} (commit_id {})",

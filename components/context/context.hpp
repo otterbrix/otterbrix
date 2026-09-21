@@ -4,6 +4,7 @@
 #include <actor-zeta/detail/future.hpp>
 #include <components/base/collection_full_name.hpp>
 #include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/settings.hpp>
 #include <components/context/pg_catalog_swap.hpp>
 #include <components/execution_context/graph_execution_context.hpp>
 #include <components/logical_plan/param_storage.hpp>
@@ -69,6 +70,9 @@ namespace components::pipeline {
         std::vector<components::table::created_index_t> created_indexes;
         // commit_id drained by operator_commit_transaction_t, for follow-ups like an inline CREATE INDEX commit.
         uint64_t committed_id{0};
+
+        catalog::setting_id applied_setting{};
+        std::string applied_setting_value;
 
         // By reference: a by-value parameter froze the default allocator into `parameters` (context.cpp).
         context_t(const logical_plan::storage_parameters& init_parameters,

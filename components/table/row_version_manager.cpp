@@ -44,6 +44,10 @@ namespace components::table {
         return transaction_version_operator::use_inserted_version(transaction, id);
     }
 
+    bool version_visible(const transaction_data& txn, uint64_t stamp) noexcept {
+        return transaction_version_operator::use_inserted_version(txn, stamp);
+    }
+
     bool chunk_info::cleanup(uint64_t /* lowest_transaction */, std::unique_ptr<chunk_info>& /* result */) const {
         return false;
     }

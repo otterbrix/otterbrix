@@ -61,7 +61,7 @@ namespace {
         components::pipeline::context_t pipeline_ctx;
 
         harness_t()
-            : context(&arena, log_t{}, core::date::timezone_offset_t{})
+            : context(&arena, log_t{}, components::catalog::session_catalog_t{})
             , registry(&arena)
             , pipeline_params(&arena)
             , pipeline_ctx(pipeline_params,

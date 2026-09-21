@@ -7,6 +7,7 @@
 #include <components/logical_plan/node_register_cast.hpp>
 #include <components/logical_plan/node_register_udf.hpp>
 #include <components/logical_plan/node_sequence.hpp>
+#include <components/logical_plan/node_transaction.hpp>
 #include <components/logical_plan/node_unregister_udf.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/physical_plan/operators/operator_register_cast.hpp>
@@ -58,12 +59,12 @@ namespace services::dispatcher {
 
         constexpr std::array kBehaviorHandledIds{
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::execute_plan>,
+            actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::refuse_statement>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::register_udf>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::unregister_udf>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::register_cast>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::unregister_cast>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::set_explain_renderer>,
-            actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_begin_session_msg>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_mark_explicit_msg>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_commit_drain_msg>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_abort_drain_msg>,
@@ -169,7 +170,9 @@ namespace services::dispatcher {
                             }
                         }
                         if (slot) {
+                            current_entry_ = slot;
                             slot->behavior = behavior(slot->pending_msg.get());
+                            current_entry_ = nullptr;
                             progress = true;
                             continue;
                         }
@@ -185,7 +188,7 @@ namespace services::dispatcher {
                                     ready_slot = &e;
                                     break;
                                 }
-                            } else if (e.behavior && !e.behavior.done() && e.behavior.is_busy()) {
+                            } else if (e.behavior && !e.behavior.done() && e.behavior.is_busy() && !e.waiting) {
                                 ++e.stale_ticks;
                             }
                         }
@@ -195,7 +198,9 @@ namespace services::dispatcher {
 #ifdef DEV_MODE
                             note_pump_hop();
 #endif
+                            current_entry_ = ready_slot;
                             cont.resume();
+                            current_entry_ = nullptr;
                             poll_pending();
                             progress = true;
                             continue;
@@ -294,6 +299,10 @@ namespace services::dispatcher {
                 co_await actor_zeta::dispatch(this, &manager_dispatcher_t::execute_plan, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::refuse_statement>: {
+                co_await actor_zeta::dispatch(this, &manager_dispatcher_t::refuse_statement, msg);
+                break;
+            }
             case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::register_udf>: {
                 co_await actor_zeta::dispatch(this, &manager_dispatcher_t::register_udf, msg);
                 break;
@@ -312,10 +321,6 @@ namespace services::dispatcher {
             }
             case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::set_explain_renderer>: {
                 co_await actor_zeta::dispatch(this, &manager_dispatcher_t::set_explain_renderer, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_begin_session_msg>: {
-                co_await actor_zeta::dispatch(this, &manager_dispatcher_t::txn_begin_session_msg, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_mark_explicit_msg>: {
@@ -389,6 +394,12 @@ namespace services::dispatcher {
         }
     }
 
+    // it is not the best approach, but a little bit more stable than pure session hashing
+    std::size_t manager_dispatcher_t::next_executor_index() noexcept {
+        assert(!executors_.empty());
+        return next_executor_++ % executors_.size();
+    }
+
     manager_dispatcher_t::unique_future<void> manager_dispatcher_t::on_drop_resource_marked(uint8_t subscriber_kind) {
         if (subscriber_kind == DISK_KIND) {
             disk_has_dropped_ = true;
@@ -407,16 +418,47 @@ namespace services::dispatcher {
         co_return;
     }
 
-    void manager_dispatcher_t::seed_commit_clock_sync(uint64_t high_water) {
+    void manager_dispatcher_t::cache_settings_sync(const components::catalog::session_catalog_t& settings) {
+        default_settings_ = settings;
+        trace(log_, "manager_dispatcher_t::cache_settings_sync");
+    }
+
+    void manager_dispatcher_t::seed_clocks_sync(uint64_t commit_frontier, uint64_t txn_id_high_water) {
         // Restores BOTH halves of the commit clock: raising only the horizon left post-reopen
         // INSERTs reusing already-published commit-ids (symptom: SSB q1-1 returned 0 rows on reopen).
-        if (high_water > 0) {
-            txn_manager_.restore_commit_clock(high_water);
-            trace(log_,
-                  "manager_dispatcher_t::seed_commit_clock_sync , restored commit clock to frontier {}",
-                  high_water);
-        }
+        txn_manager_.restore_commit_clock(commit_frontier);
+        txn_manager_.seed_transaction_ids(txn_id_high_water);
+        trace(log_,
+              "manager_dispatcher_t::seed_clocks_sync , commit frontier {} , transaction ids above {}",
+              commit_frontier,
+              txn_id_high_water);
     }
+
+    namespace {
+        components::table::transaction_control_t
+        transaction_control_of(const components::logical_plan::execution_plan_t& plan) {
+            const auto* root = plan.sub_queries.back().get();
+            if (root == nullptr || root->type() != components::logical_plan::node_type::transaction_t) {
+                return components::table::transaction_control_t::none;
+            }
+            const auto op = static_cast<const components::logical_plan::node_transaction_t*>(root)->op();
+            if (op == components::logical_plan::transaction_op::commit) {
+                return components::table::transaction_control_t::commit;
+            }
+            if (op == components::logical_plan::transaction_op::abort) {
+                return components::table::transaction_control_t::rollback;
+            }
+            return components::table::transaction_control_t::none;
+        }
+
+        components::logical_plan::execution_plan_t make_rollback_plan(std::pmr::memory_resource* resource) {
+            return components::logical_plan::execution_plan_t{
+                resource,
+                components::logical_plan::make_node_transaction(resource,
+                                                                components::logical_plan::transaction_op::abort),
+                components::logical_plan::make_parameter_node(resource)};
+        }
+    } // namespace
 
     manager_dispatcher_t::unique_future<components::cursor::cursor_t_ptr>
     manager_dispatcher_t::execute_plan(components::session::session_id_t session,
@@ -429,28 +471,45 @@ namespace services::dispatcher {
         }
 
         assert(!executors_.empty());
-        const std::size_t pool_idx = std::hash<components::session::session_id_t>{}(session) % executors_.size();
+        const auto control = transaction_control_of(plan);
+        co_await take_turn_(session, control);
+        session_turn_t turn{this, session, control};
+        // The failed transaction was rolled back when it failed; a COMMIT ends it as that ROLLBACK.
+        bool commits_failed =
+            control == components::table::transaction_control_t::commit && failed_sessions_.contains(session);
+        auto executed = commits_failed ? make_rollback_plan(resource()) : std::move(plan);
+        auto resolved = create_session_context(session, &executed);
+        if (resolved.has_error()) {
+            co_return components::cursor::make_cursor(resource(), resolved.error());
+        }
+        auto session_ctx = std::move(resolved.value());
+        const uint64_t statement_txn_id = session_ctx.txn.transaction_id;
+        const std::size_t pool_idx = next_executor_index();
         trace(log_, "manager_dispatcher_t::execute_plan: routing to executor[{}]", pool_idx);
         auto [needs_sched, future] = actor_zeta::otterbrix::send(executor_addresses_[pool_idx],
                                                                  &collection::executor::executor_t::execute_plan_full,
                                                                  session,
-                                                                 std::move(plan));
+                                                                 std::move(executed),
+                                                                 std::move(session_ctx));
         if (needs_sched && executors_[pool_idx]) {
             scheduler_->enqueue(executors_[pool_idx].get());
         }
         auto exec_result = co_await std::move(future);
 
-        if (!exec_result.applied_timezone.empty()) {
-            auto tz_err = default_tz_cat_.set_timezone(
-                resource(),
-                std::string_view{exec_result.applied_timezone.data(), exec_result.applied_timezone.size()});
-            if (tz_err.contains_error()) {
+        if (!exec_result.applied_setting_value.empty()) {
+            const auto& setting_def = components::catalog::find_setting_by_id(exec_result.applied_setting);
+            auto apply_err = components::catalog::set_setting(default_settings_,
+                                                              exec_result.applied_setting,
+                                                              exec_result.applied_setting_value,
+                                                              resource());
+            if (apply_err.contains_error()) {
                 error(log_,
-                      "manager_dispatcher_t::execute_plan: session timezone cache refused '{}' AFTER it was "
+                      "manager_dispatcher_t::execute_plan: settings cache refused {} = '{}' AFTER it was "
                       "persisted to pg_settings: {}",
-                      std::string_view{exec_result.applied_timezone.data(), exec_result.applied_timezone.size()},
-                      tz_err.what);
-                exec_result.cursor = components::cursor::make_cursor(resource(), std::move(tz_err));
+                      setting_def.sql_name,
+                      exec_result.applied_setting_value,
+                      apply_err.what);
+                exec_result.cursor = components::cursor::make_cursor(resource(), std::move(apply_err));
             }
         }
 
@@ -458,14 +517,27 @@ namespace services::dispatcher {
               "manager_dispatcher_t::execute_plan: result received, success: {}",
               exec_result.cursor->is_success());
         if (exec_result.cursor && exec_result.cursor->is_error()) {
-            // IMPLICIT txns only: left open, this would pin compact_watermark() forever; EXPLICIT ones stay
-            // alive on purpose, for the client's ROLLBACK to run the abort-drain cascade.
-            if (auto* txn = txn_manager_.find_transaction(session); txn != nullptr && !txn->is_explicit()) {
-                txn_manager_.abort(session);
-                try_trigger_cleanup_if_horizon_advanced();
-            }
+            co_await finish_failed_statement_(session, statement_txn_id);
+        } else if (commits_failed) {
+            exec_result.cursor = components::cursor::make_cursor(
+                resource(),
+                core::error_t{
+                    core::error_code_t::transaction_finalized,
+                    std::pmr::string{"the transaction failed and was rolled back; nothing was committed", resource()}});
         }
         co_return std::move(exec_result.cursor);
+    }
+
+    manager_dispatcher_t::unique_future<components::cursor::cursor_t_ptr>
+    manager_dispatcher_t::refuse_statement(components::session::session_id_t session, core::error_t error) {
+        trace(log_, "manager_dispatcher_t::refuse_statement session: {}, {}", session.data(), error.what);
+        const auto control = components::table::transaction_control_t::none;
+        co_await take_turn_(session, control);
+        session_turn_t turn{this, session, control};
+        if (const auto* txn = txn_manager_.find_transaction(session); txn != nullptr) {
+            co_await finish_failed_statement_(session, txn->transaction_id());
+        }
+        co_return components::cursor::make_cursor(resource(), std::move(error));
     }
 
     manager_dispatcher_t::unique_future<core::error_t>
@@ -525,7 +597,7 @@ namespace services::dispatcher {
             co_return fanout_error;
         }
 
-        services::context_storage_t cstor{resource(), log_.clone(), session_tz(session)};
+        services::context_storage_t cstor{resource(), log_.clone(), session_settings(session)};
         auto op = services::planner::impl::create_plan_register_udf(cstor, plan, std::move(executor_uids));
         if (!op) {
             co_await unwind_udf_fanout_(session, std::move(registered));
@@ -546,7 +618,7 @@ namespace services::dispatcher {
                                              disk_address_,
                                              index_address_,
                                              wal_address_};
-        pctx.txn = components::table::transaction_data{0, 0};
+        pctx.txn = components::table::transaction_data::committed();
 
         op->prepare();
         co_await op->await_async_and_resume(&pctx);
@@ -675,7 +747,7 @@ namespace services::dispatcher {
                                                                 core::function_name_t{std::move(function_name)},
                                                                 std::move(inputs)));
 
-        services::context_storage_t cstor{resource(), log_.clone(), session_tz(session)};
+        services::context_storage_t cstor{resource(), log_.clone(), session_settings(session)};
         components::compute::function_registry_t fn_registry{resource()};
         auto op = services::planner::create_plan(cstor,
                                                  fn_registry,
@@ -699,7 +771,7 @@ namespace services::dispatcher {
                                              disk_address_,
                                              index_address_,
                                              wal_address_};
-        pctx.txn = components::table::transaction_data{0, 0};
+        pctx.txn = components::table::transaction_data::committed();
 
         op->prepare();
         co_await op->await_async_and_resume(&pctx);
@@ -761,16 +833,28 @@ namespace services::dispatcher {
         auto leaf =
             boost::intrusive_ptr(new components::logical_plan::node_register_cast_t(resource(), source, target, entry));
         auto plan = make_cast_resolve_plan(resource(), leaf, source, target);
-        const std::size_t pool_idx = std::hash<components::session::session_id_t>{}(session) % executors_.size();
+        co_await take_turn_(session, components::table::transaction_control_t::none);
+        session_turn_t turn{this, session, components::table::transaction_control_t::none};
+        auto resolved = create_session_context(session, &plan);
+        if (resolved.has_error()) {
+            co_return resolved.error();
+        }
+        auto session_ctx = std::move(resolved.value());
+        const uint64_t statement_txn_id = session_ctx.txn.transaction_id;
+        const std::size_t pool_idx = next_executor_index();
         auto [needs_sched, fut] = actor_zeta::otterbrix::send(executor_addresses_[pool_idx],
                                                               &collection::executor::executor_t::execute_plan_full,
                                                               session,
-                                                              std::move(plan));
+                                                              std::move(plan),
+                                                              std::move(session_ctx));
         if (needs_sched && executors_[pool_idx]) {
             scheduler_->enqueue(executors_[pool_idx].get());
         }
         auto res = co_await std::move(fut);
-        if (auto* txn = txn_manager_.find_transaction(session); txn != nullptr && !txn->is_explicit()) {
+        if (!res.cursor || res.cursor->is_error()) {
+            co_await finish_failed_statement_(session, statement_txn_id);
+        } else if (auto* txn = statement_transaction_(session, statement_txn_id);
+                   txn != nullptr && txn->scope() == components::table::transaction_scope_t::statement) {
             txn_manager_.abort(session);
             try_trigger_cleanup_if_horizon_advanced();
         }
@@ -828,7 +912,7 @@ namespace services::dispatcher {
 
         auto write_leaf = boost::intrusive_ptr(
             new components::logical_plan::node_register_cast_t(resource(), resolved_source, resolved_target, entry));
-        services::context_storage_t cstor{resource(), log_.clone(), session_tz(session)};
+        services::context_storage_t cstor{resource(), log_.clone(), session_settings(session)};
         auto op = services::planner::impl::create_plan_register_cast(cstor, write_leaf);
         if (!op) {
             co_return core::error_t{core::error_code_t::create_physical_plan_error,
@@ -847,7 +931,7 @@ namespace services::dispatcher {
                                              disk_address_,
                                              index_address_,
                                              wal_address_};
-        pctx.txn = components::table::transaction_data{0, 0};
+        pctx.txn = components::table::transaction_data::committed();
         op->prepare();
         co_await op->await_async_and_resume(&pctx);
         if (pctx.has_pending_disk_futures()) {
@@ -879,16 +963,28 @@ namespace services::dispatcher {
         auto leaf =
             boost::intrusive_ptr(new components::logical_plan::node_unregister_cast_t(resource(), source, target));
         auto plan = make_cast_resolve_plan(resource(), leaf, source, target);
-        const std::size_t pool_idx = std::hash<components::session::session_id_t>{}(session) % executors_.size();
+        co_await take_turn_(session, components::table::transaction_control_t::none);
+        session_turn_t turn{this, session, components::table::transaction_control_t::none};
+        auto resolved = create_session_context(session, &plan);
+        if (resolved.has_error()) {
+            co_return resolved.error();
+        }
+        auto session_ctx = std::move(resolved.value());
+        const uint64_t statement_txn_id = session_ctx.txn.transaction_id;
+        const std::size_t pool_idx = next_executor_index();
         auto [needs_sched, fut] = actor_zeta::otterbrix::send(executor_addresses_[pool_idx],
                                                               &collection::executor::executor_t::execute_plan_full,
                                                               session,
-                                                              std::move(plan));
+                                                              std::move(plan),
+                                                              std::move(session_ctx));
         if (needs_sched && executors_[pool_idx]) {
             scheduler_->enqueue(executors_[pool_idx].get());
         }
         auto res = co_await std::move(fut);
-        if (auto* txn = txn_manager_.find_transaction(session); txn != nullptr && !txn->is_explicit()) {
+        if (!res.cursor || res.cursor->is_error()) {
+            co_await finish_failed_statement_(session, statement_txn_id);
+        } else if (auto* txn = statement_transaction_(session, statement_txn_id);
+                   txn != nullptr && txn->scope() == components::table::transaction_scope_t::statement) {
             txn_manager_.abort(session);
             try_trigger_cleanup_if_horizon_advanced();
         }
@@ -949,7 +1045,7 @@ namespace services::dispatcher {
 
         auto write_leaf = boost::intrusive_ptr(
             new components::logical_plan::node_unregister_cast_t(resource(), resolved_source, resolved_target));
-        services::context_storage_t cstor{resource(), log_.clone(), session_tz(session)};
+        services::context_storage_t cstor{resource(), log_.clone(), session_settings(session)};
         auto op = services::planner::impl::create_plan_unregister_cast(cstor, write_leaf);
         if (!op) {
             co_return core::error_t{core::error_code_t::create_physical_plan_error,
@@ -968,7 +1064,7 @@ namespace services::dispatcher {
                                              disk_address_,
                                              index_address_,
                                              wal_address_};
-        pctx.txn = components::table::transaction_data{0, 0};
+        pctx.txn = components::table::transaction_data::committed();
         op->prepare();
         co_await op->await_async_and_resume(&pctx);
         if (pctx.has_pending_disk_futures()) {
@@ -991,91 +1087,232 @@ namespace services::dispatcher {
         co_return core::error_t::no_error();
     }
 
-    manager_dispatcher_t::unique_future<txn_session_context_t>
-    manager_dispatcher_t::txn_begin_session_msg(components::session::session_id_t session) {
-        auto& txn = txn_manager_.begin_transaction(session);
-        txn_session_context_t out;
-        out.txn = txn.data();
-        out.session_tz = session_tz(session);
-        out.is_explicit = txn.is_explicit();
-        out.lowest_active_start_time = txn_manager_.lowest_active_start_time();
+    core::result_wrapper_t<txn_session_context_t>
+    manager_dispatcher_t::create_session_context(components::session::session_id_t session,
+                                                 components::logical_plan::execution_plan_t* plan) {
+        if (failed_sessions_.contains(session)) {
+            if (transaction_control_of(*plan) == components::table::transaction_control_t::none) {
+                return core::error_t{
+                    core::error_code_t::transaction_finalized,
+                    std::pmr::string{"the transaction failed; only ROLLBACK is accepted until it ends", resource()}};
+            }
+            failed_sessions_.erase(session);
+        }
+        const auto& settings = session_settings(session);
+        const auto scope = settings.autocommit ? components::table::transaction_scope_t::statement
+                                               : components::table::transaction_scope_t::until_commit;
+        auto& txn = txn_manager_.resolve_transaction(session, scope);
+        plan->commits_when_done = txn.scope() == components::table::transaction_scope_t::statement;
+        txn_session_context_t context;
+        context.txn = txn.data();
+        context.settings = settings;
+        context.lowest_active_start_time = txn_manager_.lowest_active_start_time();
         trace(log_,
-              "manager_dispatcher_t::txn_begin_session_msg, session: {}, txn: {}, explicit: {}",
+              "manager_dispatcher_t::create_session_context, session: {}, txn: {}, ends with the statement: {}",
               session.data(),
-              out.txn.transaction_id,
-              out.is_explicit);
-        co_return out;
+              context.txn.transaction_id,
+              plan->commits_when_done);
+        return context;
     }
 
     manager_dispatcher_t::unique_future<void>
-    manager_dispatcher_t::txn_mark_explicit_msg(components::session::session_id_t session) {
-        auto& txn = txn_manager_.begin_transaction(session);
-        txn.mark_explicit();
+    manager_dispatcher_t::finish_failed_statement_(components::session::session_id_t session, uint64_t transaction_id) {
+        auto* txn = statement_transaction_(session, transaction_id);
+        if (txn == nullptr) {
+            co_return;
+        }
+        if (txn->scope() == components::table::transaction_scope_t::statement) {
+            txn_manager_.abort(session);
+            try_trigger_cleanup_if_horizon_advanced();
+            co_return;
+        }
+        if (!failed_sessions_.insert(session).second) {
+            co_return;
+        }
+        trace(log_,
+              "manager_dispatcher_t::finish_failed_statement_: txn {} failed, session: {}",
+              txn->transaction_id(),
+              session.data());
+        co_await run_rollback_plan_(session, txn->data());
+    }
+
+    manager_dispatcher_t::unique_future<void>
+    manager_dispatcher_t::run_rollback_plan_(components::session::session_id_t session,
+                                             components::table::transaction_data txn) {
+        auto plan = make_rollback_plan(resource());
+        txn_session_context_t context;
+        context.txn = txn;
+        context.settings = session_settings(session);
+        context.lowest_active_start_time = txn_manager_.lowest_active_start_time();
+        const std::size_t pool_idx = next_executor_index();
+        auto [needs_sched, future] = actor_zeta::otterbrix::send(executor_addresses_[pool_idx],
+                                                                 &collection::executor::executor_t::execute_plan_full,
+                                                                 session,
+                                                                 std::move(plan),
+                                                                 std::move(context));
+        if (needs_sched && executors_[pool_idx]) {
+            scheduler_->enqueue(executors_[pool_idx].get());
+        }
+        auto result = co_await std::move(future);
+        if (result.cursor && result.cursor->is_error()) {
+            error(log_,
+                  "manager_dispatcher_t::run_rollback_plan_: the failed transaction was not fully undone: {}",
+                  result.cursor->get_error().what);
+        }
+    }
+
+    components::table::transaction_t*
+    manager_dispatcher_t::statement_transaction_(components::session::session_id_t session,
+                                                 [[maybe_unused]] uint64_t transaction_id) {
+        auto* txn = txn_manager_.find_transaction(session);
+        assert(txn == nullptr || txn->transaction_id() == transaction_id);
+        return txn;
+    }
+
+    manager_dispatcher_t::unique_future<void>
+    manager_dispatcher_t::take_turn_(components::session::session_id_t session,
+                                     components::table::transaction_control_t control) {
+        auto& order = session_order_.try_emplace(session, resource()).first->second;
+        if (order.waiting.empty() && may_start_(session, order, control)) {
+            start_(&order, control);
+            co_return;
+        }
+        trace(log_, "manager_dispatcher_t::take_turn_: session {} waits for its running transaction", session.data());
+        actor_zeta::promise<void> admitted(resource());
+        auto turn = admitted.get_future();
+        order.waiting.push_back(waiting_statement_t{control, std::move(admitted)});
+        // The entry outlives this coroutine, and only the statement running in it touches the flag.
+        in_flight_entry_t* entry = current_entry_;
+        if (entry != nullptr) {
+            entry->waiting = true;
+        }
+        co_await std::move(turn);
+        if (entry != nullptr) {
+            entry->waiting = false;
+        }
+    }
+
+    bool manager_dispatcher_t::may_start_(components::session::session_id_t session,
+                                          const session_order_t& order,
+                                          components::table::transaction_control_t control) {
+        if (order.closing) {
+            return false;
+        }
+        if (order.running == 0) {
+            return true;
+        }
+        const auto* txn = txn_manager_.find_transaction(session);
+        // Running statements with no open transaction to join are still ending the one before.
+        if (txn == nullptr || txn->scope() == components::table::transaction_scope_t::statement) {
+            return false;
+        }
+        return control == components::table::transaction_control_t::none;
+    }
+
+    void manager_dispatcher_t::start_(session_order_t* order, components::table::transaction_control_t control) {
+        ++order->running;
+        if (control != components::table::transaction_control_t::none) {
+            order->closing = true;
+        }
+    }
+
+    void manager_dispatcher_t::end_turn_(components::session::session_id_t session,
+                                         components::table::transaction_control_t control) {
+        auto it = session_order_.find(session);
+        assert(it != session_order_.end() && it->second.running > 0);
+        auto& order = it->second;
+        --order.running;
+        if (control != components::table::transaction_control_t::none) {
+            order.closing = false;
+        }
+        while (!order.waiting.empty() && may_start_(session, order, order.waiting.front().control)) {
+            auto next = std::move(order.waiting.front());
+            order.waiting.pop_front();
+            start_(&order, next.control);
+            next.admitted.set_value();
+        }
+        if (order.running == 0 && order.waiting.empty()) {
+            session_order_.erase(it);
+        }
+    }
+
+    manager_dispatcher_t::unique_future<core::error_t>
+    manager_dispatcher_t::txn_mark_explicit_msg(components::session::session_id_t session, uint64_t transaction_id) {
         trace(log_,
               "manager_dispatcher_t::txn_mark_explicit_msg, session: {}, txn: {}",
               session.data(),
-              txn.transaction_id());
-        co_return;
+              transaction_id);
+        auto* txn = statement_transaction_(session, transaction_id);
+        if (txn == nullptr) {
+            co_return core::error_t{
+                core::error_code_t::transaction_inactive,
+                std::pmr::string{"BEGIN: its transaction ended before BEGIN reached it", resource()}};
+        }
+        txn->keep_until_commit();
+        co_return core::error_t::no_error();
     }
 
     manager_dispatcher_t::unique_future<txn_commit_drain_t>
-    manager_dispatcher_t::txn_commit_drain_msg(components::session::session_id_t session) {
+    manager_dispatcher_t::txn_commit_drain_msg(components::session::session_id_t session, uint64_t transaction_id) {
         trace(log_, "manager_dispatcher_t::txn_commit_drain_msg, session: {}", session.data());
         txn_commit_drain_t out;
-        if (auto* txn_t = txn_manager_.find_transaction(session)) {
-            if (!txn_t->has_accumulated()) {
-                // Empty COMMIT aborts instead of committing: it must not allocate a commit_id or advance the horizon.
-                txn_manager_.abort(session);
-                try_trigger_cleanup_if_horizon_advanced();
-                co_return out;
-            }
-            out.txn = txn_t->data();
-            txn_t->drain_pg_catalog_pending(out.swap_appends, out.swap_deletes);
-            out.swap_backfills = txn_t->drain_pg_attribute_commit_id_backfills();
-            auto drained_appends = txn_t->drain_base_appends();
-            out.base_appends.reserve(drained_appends.size());
-            for (const auto& r : drained_appends) {
-                out.base_appends.push_back(
-                    components::pg_catalog_append_range_t{r.table_oid, r.row_start, r.row_count});
-            }
-            auto drained_deletes = txn_t->drain_base_deletes();
-            for (const auto& d : drained_deletes) {
-                out.base_delete_tables.insert(d.table_oid);
-            }
-            out.dropped_storage_oids = txn_t->drain_dropped_storages();
-            out.created_storage_oids = txn_t->drain_created_storages();
-            out.created_indexes = txn_t->drain_created_indexes();
+        auto* txn_t = statement_transaction_(session, transaction_id);
+        assert(txn_t != nullptr);
+        if (!txn_t->has_accumulated()) {
+            // Empty COMMIT aborts instead of committing: it must not allocate a commit_id or advance the horizon.
+            txn_manager_.abort(session);
+            try_trigger_cleanup_if_horizon_advanced();
+            co_return out;
         }
+        out.txn = txn_t->data();
+        txn_t->drain_pg_catalog_pending(out.swap_appends, out.swap_deletes);
+        out.swap_backfills = txn_t->drain_pg_attribute_commit_id_backfills();
+        auto drained_appends = txn_t->drain_base_appends();
+        out.base_appends.reserve(drained_appends.size());
+        for (const auto& r : drained_appends) {
+            out.base_appends.push_back(components::pg_catalog_append_range_t{r.table_oid, r.row_start, r.row_count});
+        }
+        auto drained_deletes = txn_t->drain_base_deletes();
+        for (const auto& d : drained_deletes) {
+            out.base_delete_tables.insert(d.table_oid);
+        }
+        out.dropped_storage_oids = txn_t->drain_dropped_storages();
+        out.created_storage_oids = txn_t->drain_created_storages();
+        out.created_indexes = txn_t->drain_created_indexes();
         // No publish barrier here — txn_publish_msg runs it after storage/WAL, so no snapshot sees it half-flipped.
         out.commit_id = txn_manager_.commit(session);
         co_return out;
     }
 
-    manager_dispatcher_t::unique_future<txn_abort_drain_t>
-    manager_dispatcher_t::txn_abort_drain_msg(components::session::session_id_t session) {
-        trace(log_, "manager_dispatcher_t::txn_abort_drain_msg, session: {}", session.data());
+    txn_abort_drain_t manager_dispatcher_t::drain_for_abort_(components::table::transaction_t& txn) {
         txn_abort_drain_t out;
-        if (auto* txn_t = txn_manager_.find_transaction(session)) {
-            out.txn = txn_t->data();
-            txn_t->drain_pg_catalog_pending(out.swap_appends, out.pg_catalog_delete_tables);
-            auto backfills_discarded = txn_t->drain_pg_attribute_commit_id_backfills();
-            (void) backfills_discarded;
-            auto drained_appends = txn_t->drain_base_appends();
-            out.base_appends.reserve(drained_appends.size());
-            for (const auto& r : drained_appends) {
-                out.base_append_tables.insert(r.table_oid);
-                out.base_appends.push_back(
-                    components::pg_catalog_append_range_t{r.table_oid, r.row_start, r.row_count});
-            }
-            auto drained_deletes = txn_t->drain_base_deletes();
-            for (const auto& d : drained_deletes) {
-                out.base_delete_tables.insert(d.table_oid);
-            }
-            // DROP-retired storage oids are informational today — the abort operator does not yet un-stamp them.
-            out.dropped_storage_oids = txn_t->drain_dropped_storages();
-            out.created_storage_oids = txn_t->drain_created_storages();
-            out.created_indexes = txn_t->drain_created_indexes();
+        out.txn = txn.data();
+        txn.drain_pg_catalog_pending(out.swap_appends, out.pg_catalog_delete_tables);
+        auto backfills_discarded = txn.drain_pg_attribute_commit_id_backfills();
+        (void) backfills_discarded;
+        auto drained_appends = txn.drain_base_appends();
+        out.base_appends.reserve(drained_appends.size());
+        for (const auto& r : drained_appends) {
+            out.base_append_tables.insert(r.table_oid);
+            out.base_appends.push_back(components::pg_catalog_append_range_t{r.table_oid, r.row_start, r.row_count});
         }
+        auto drained_deletes = txn.drain_base_deletes();
+        for (const auto& d : drained_deletes) {
+            out.base_delete_tables.insert(d.table_oid);
+        }
+        // DROP-retired storage oids are informational today — the abort operator does not yet un-stamp them.
+        out.dropped_storage_oids = txn.drain_dropped_storages();
+        out.created_storage_oids = txn.drain_created_storages();
+        out.created_indexes = txn.drain_created_indexes();
+        return out;
+    }
+
+    manager_dispatcher_t::unique_future<txn_abort_drain_t>
+    manager_dispatcher_t::txn_abort_drain_msg(components::session::session_id_t session, uint64_t transaction_id) {
+        trace(log_, "manager_dispatcher_t::txn_abort_drain_msg, session: {}", session.data());
+        auto* txn_t = statement_transaction_(session, transaction_id);
+        assert(txn_t != nullptr);
+        auto out = drain_for_abort_(*txn_t);
         txn_manager_.abort(session);
         try_trigger_cleanup_if_horizon_advanced();
         co_return out;
@@ -1083,9 +1320,10 @@ namespace services::dispatcher {
 
     manager_dispatcher_t::unique_future<core::error_t>
     manager_dispatcher_t::txn_accumulate_msg(components::session::session_id_t session,
+                                             uint64_t transaction_id,
                                              txn_accumulate_payload_t payload) {
         trace(log_, "manager_dispatcher_t::txn_accumulate_msg, session: {}", session.data());
-        auto* txn_t = txn_manager_.find_transaction(session);
+        auto* txn_t = statement_transaction_(session, transaction_id);
         if (txn_t == nullptr) {
             error(log_,
                   "manager_dispatcher_t::txn_accumulate_msg: session {} has no active transaction; refusing to park "
@@ -1128,8 +1366,10 @@ namespace services::dispatcher {
     }
 
     manager_dispatcher_t::unique_future<void>
-    manager_dispatcher_t::txn_abort_msg(components::session::session_id_t session) {
+    manager_dispatcher_t::txn_abort_msg(components::session::session_id_t session, uint64_t transaction_id) {
         trace(log_, "manager_dispatcher_t::txn_abort_msg, session: {}", session.data());
+        [[maybe_unused]] const auto* txn = statement_transaction_(session, transaction_id);
+        assert(txn != nullptr);
         txn_manager_.abort(session);
         try_trigger_cleanup_if_horizon_advanced();
         co_return;

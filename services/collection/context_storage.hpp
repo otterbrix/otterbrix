@@ -1,6 +1,7 @@
 #pragma once
 
 #include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/session_catalog.hpp>
 #include <components/execution_context/graph_execution_context.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/key.hpp>
@@ -47,7 +48,6 @@ namespace services {
         std::pmr::memory_resource* resource;
         log_t log;
         components::graph_execution_context execution_context;
-        core::date::timezone_offset_t session_timezone;
         // Host-injected create_plan rule (see planner::create_plan_rule_t). Stamped
         // per query by the executor; read at create_plan's extension arm. Never null.
         planner::create_plan_rule_t create_plan_rule = &planner::no_custom_lowering;
@@ -88,10 +88,22 @@ namespace services {
 
         context_storage_t(std::pmr::memory_resource* resource,
                           log_t log,
-                          core::date::timezone_offset_t session_timezone)
+                          const components::catalog::session_catalog_t& settings)
             : resource(resource)
             , log(std::move(log))
-            , execution_context{.timezone_offset = session_timezone}
+            , execution_context{.timezone_offset = settings.timezone_offset,
+                                .decimal_width = settings.decimal_width,
+                                .decimal_scale = settings.decimal_scale}
+            , table_indexes(resource)
+            , cte_working_sets(resource)
+            , row_counts(resource) {}
+
+        context_storage_t(std::pmr::memory_resource* resource,
+                          log_t log,
+                          const components::graph_execution_context& inherited)
+            : resource(resource)
+            , log(std::move(log))
+            , execution_context(inherited)
             , table_indexes(resource)
             , cte_working_sets(resource)
             , row_counts(resource) {}

@@ -3,7 +3,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include <filesystem>
 #include <integration/cpp/connection.hpp>
-#include <stdexcept>
 #include <unistd.h>
 
 static const database_name_t database_name = "testdatabase";
@@ -157,21 +156,86 @@ TEST_CASE("integration::cpp::test_connectors") {
         }
     }
 }
-// Execute after close is a refusal, not a null dereference: close() nulls the instance
-// pointer, and a bare assert() there would abort in Debug / read null in Release. A
-// use-after-close is an embedder bug, so execute() throws instead -- the same exception
-// channel base_spaces uses for its startup refusals.
-// ===========================================================================
-TEST_CASE("integration::cpp::connection::execute_after_close_refuses_loudly") {
-    auto config =
-        test_create_config(integration_fixture_path("test_connection_after_close") / std::to_string(::getpid()));
+namespace {
+
+    void create_marks(otterbrix::connection_t& connection) {
+        REQUIRE(connection.execute("CREATE DATABASE TestDatabase;")->is_success());
+        REQUIRE(connection.execute("CREATE TABLE TestDatabase.marks (id bigint);")->is_success());
+    }
+
+    std::size_t visible_marks(otterbrix::connection_t& connection) {
+        auto cursor = connection.execute("SELECT id FROM TestDatabase.marks;");
+        INFO("SELECT error: " << (cursor->is_error() ? cursor->get_error().what : ""));
+        REQUIRE(cursor->is_success());
+        return cursor->size();
+    }
+
+} // namespace
+
+TEST_CASE("integration::cpp::connection") {
+    auto config = test_create_config(integration_fixture_path("connection") / std::to_string(::getpid()));
     test_clear_directory(config);
-    auto otterbrix = otterbrix::make_otterbrix(config);
+    config.log.level = log_t::level::off;
+    auto instance = otterbrix::make_otterbrix(config);
 
-    otterbrix::connection_t connection(otterbrix);
-    REQUIRE(connection.execute("SELECT 1;") != nullptr);
+    SECTION("statements share the connection's session") {
+        otterbrix::connection_t writer(instance);
+        otterbrix::connection_t reader(instance);
+        create_marks(writer);
 
-    connection.close();
+        REQUIRE(writer.execute("BEGIN;")->is_success());
+        REQUIRE(writer.execute("INSERT INTO TestDatabase.marks (id) VALUES (1);")->is_success());
 
-    REQUIRE_THROWS_AS(connection.execute("SELECT 1;"), std::runtime_error);
+        INFO("the row is inside the writer's open transaction");
+        REQUIRE(visible_marks(writer) == 1);
+        REQUIRE(visible_marks(reader) == 0);
+
+        REQUIRE(writer.execute("COMMIT;")->is_success());
+        REQUIRE(visible_marks(reader) == 1);
+    }
+
+    SECTION("close ends the connection's transaction") {
+        {
+            otterbrix::connection_t writer(instance);
+            create_marks(writer);
+            REQUIRE(writer.execute("BEGIN;")->is_success());
+            REQUIRE(writer.execute("INSERT INTO TestDatabase.marks (id) VALUES (1);")->is_success());
+            writer.close();
+        }
+
+        otterbrix::connection_t after(instance);
+        REQUIRE(visible_marks(after) == 0);
+        REQUIRE(after.execute("INSERT INTO TestDatabase.marks (id) VALUES (2);")->is_success());
+        REQUIRE(visible_marks(after) == 1);
+    }
+
+    SECTION("a failed transaction stays on its own connection") {
+        otterbrix::connection_t failing(instance);
+        otterbrix::connection_t other(instance);
+        create_marks(failing);
+
+        REQUIRE(failing.execute("BEGIN;")->is_success());
+        REQUIRE(failing.execute("INSERT INTO TestDatabase.marks (id) VALUES (1);")->is_success());
+        REQUIRE(failing.execute("INSERT INTO TestDatabase.missing (id) VALUES (1);")->is_error());
+
+        INFO("the failed block refuses everything but its end");
+        REQUIRE(failing.execute("SELECT id FROM TestDatabase.marks;")->is_error());
+
+        INFO("and the other connection neither carries the failure nor lost its own write");
+        REQUIRE(other.execute("INSERT INTO TestDatabase.marks (id) VALUES (2);")->is_success());
+        REQUIRE(visible_marks(other) == 1);
+
+        REQUIRE(failing.execute("ROLLBACK;")->is_success());
+        INFO("the failed transaction's row is gone; the other connection's row stands");
+        REQUIRE(visible_marks(failing) == 1);
+    }
+
+    SECTION("execute after close is refused") {
+        otterbrix::connection_t connection(instance);
+        REQUIRE(connection.execute("SELECT 1;")->is_success());
+
+        connection.close();
+
+        REQUIRE(connection.execute("SELECT 1;")->is_error());
+    }
 }

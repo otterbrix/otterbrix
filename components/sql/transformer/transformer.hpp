@@ -391,6 +391,22 @@ namespace components::sql::transform {
         // sub-queries and moved onto the execution_plan_t at the end of transform()
         logical_plan::catalog_resolves_t catalog_resolves_;
 
+        template<class Node>
+        std::string set_target(Node& node, const qualified_name_t& written) {
+            const logical_plan::node_t& base = node;
+            std::string dbname = database_for(written, policy_of(base));
+            node.set_dbname(dbname);
+            if constexpr (requires { node.set_relname(written.collection); }) {
+                node.set_relname(written.collection);
+            }
+            const bool leads_elsewhere = !written.unique_identifier.empty() || !written.schema.empty() ||
+                                         (!written.database.empty() && written.database != dbname);
+            if (leads_elsewhere) {
+                catalog_resolves_.external_targets.push_back(logical_plan::external_target_t{written, base.type()});
+            }
+            return dbname;
+        }
+
         // TODO: wrapp expressions in resolve node, and it won't be needed
         std::vector<std::string> cast_type_names_;
 

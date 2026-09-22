@@ -144,3 +144,12 @@ TEST_CASE("components::compute::registry::clean_builtin_registration_matches_the
         CHECK(fn->name() == name);
     }
 }
+
+TEST_CASE("components::compute::registry::every builtin uid is its own DEFAULT_FUNCTIONS index") {
+    for (size_t i = 0; i < DEFAULT_FUNCTIONS.size(); ++i) {
+        INFO("row " << i << " is '" << DEFAULT_FUNCTIONS[i].first << "'");
+        CHECK(DEFAULT_FUNCTIONS[i].second == i);
+        CHECK(is_builtin(DEFAULT_FUNCTIONS[i].second));
+    }
+    CHECK_FALSE(is_builtin(DEFAULT_FUNCTIONS.size()));
+}

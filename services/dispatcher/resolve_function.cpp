@@ -52,16 +52,13 @@ namespace services::dispatcher {
         }
 
         bool in_scope(function_scope scope, components::compute::function_uid uid) {
-            const bool builtin = std::any_of(components::compute::DEFAULT_FUNCTIONS.begin(),
-                                             components::compute::DEFAULT_FUNCTIONS.end(),
-                                             [uid](const auto& entry) { return entry.second == uid; });
             switch (scope) {
                 case function_scope::any:
                     return true;
                 case function_scope::builtins:
-                    return builtin;
+                    return components::compute::is_builtin(uid);
                 case function_scope::client:
-                    return !builtin;
+                    return !components::compute::is_builtin(uid);
             }
             return false;
         }
@@ -294,8 +291,8 @@ namespace services::dispatcher {
         std::optional<resolved_function_t> best;
         std::optional<total_cost_t> best_cost;
 
-        for (const auto& [registered_name, uid] : function_registry.get_functions()) {
-            if (registered_name != name.collection || !in_scope(scope, uid)) {
+        for (const auto uid : function_registry.find_functions(name.collection)) {
+            if (!in_scope(scope, uid)) {
                 continue;
             }
             name_exists = true;

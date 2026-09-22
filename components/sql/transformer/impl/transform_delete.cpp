@@ -29,9 +29,7 @@ namespace components::sql::transform {
                 del_limit);
             // The target identity stays ON the node: enrich binds it to a resolved
             // entry by name and stamps table_oid() + table_metadata() from there.
-            del->set_dbname(qn.database);
-            del->set_relname(qn.collection);
-            mark_invalid_target(&catalog_resolves_, *del, qn);
+            set_target(*del, qn);
             if (node.returningList) {
                 name_collection_t rnames;
                 rnames.left_name = qn;
@@ -85,9 +83,7 @@ namespace components::sql::transform {
                                            del_limit);
         // The target identity stays ON the node: enrich binds it to a resolved
         // entry by name and stamps table_oid() + table_metadata() from there.
-        del->set_dbname(names.left_name.database);
-        del->set_relname(names.left_name.collection);
-        mark_invalid_target(&catalog_resolves_, *del, names.left_name);
+        set_target(*del, names.left_name);
         // The USING source is a child sub-plan (the RIGHT side of the delete join);
         // its scans self-resolve by name, so no table_oid_from splice is needed.
         if (source_child) {

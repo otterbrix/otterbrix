@@ -131,8 +131,8 @@ namespace components::logical_plan {
     node_catalog_resolve_ptr make_node_catalog_resolve(std::pmr::memory_resource* resource, resolve_kind kind);
 
     // A write target spelled with a slot the catalog has no place for (uid or schema)
-    struct invalid_target_t {
-        qualified_name_t name;
+    struct external_target_t {
+        qualified_name_t written;
         node_type type;
     };
 
@@ -142,7 +142,7 @@ namespace components::logical_plan {
         node_catalog_resolve_ptr tables;
         node_catalog_resolve_ptr types;
         node_catalog_resolve_ptr constraints;
-        std::vector<invalid_target_t> invalid_targets;
+        std::vector<external_target_t> external_targets;
 
         // Creates the slot for `kind` empty on first use; non-const so the transformer can register entries.
         node_catalog_resolve_t& ensure(std::pmr::memory_resource* resource, resolve_kind kind);

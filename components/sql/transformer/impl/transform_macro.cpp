@@ -150,12 +150,11 @@ namespace components::sql::transform {
             return core::error_t(core::error_code_t::unimplemented_yet, std::move(msg));
         }
 
-        const std::string db_for_resolve = target_dbname(qn);
         auto m = logical_plan::make_node_create_macro(resource_,
-                                                      core::macroname_t{std::move(qn.collection)},
+                                                      core::macroname_t{qn.collection},
                                                       std::move(params),
                                                       core::body_sql_t{std::move(body_sql)});
-        m->set_dbname(db_for_resolve);
+        const std::string db_for_resolve = set_target(*m, qn);
         register_catalog_resolve_namespace(resource_, &catalog_resolves_, db_for_resolve);
         return m;
     }

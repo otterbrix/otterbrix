@@ -19,13 +19,12 @@ namespace components::sql::transform {
             view_body_text(resource_, raw_sql_, node.query_location, node.query_end_location, "CREATE VIEW"));
 
         auto qn = rangevar_to_qualified_name(node.view);
-        const std::string db_for_resolve = target_dbname(qn);
+
 
         auto v = logical_plan::make_node_create_view(resource_,
                                                      core::viewname_t{qn.collection},
                                                      core::query_sql_t{std::move(query_sql)});
-        v->set_dbname(db_for_resolve);
-        mark_invalid_target(&catalog_resolves_, *v, qn);
+        const std::string db_for_resolve = set_target(*v, qn);
         register_catalog_resolve_namespace(resource_, &catalog_resolves_, db_for_resolve);
         return v;
     }

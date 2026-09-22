@@ -93,9 +93,7 @@ namespace components::sql::transform {
                                         plan));
         auto upd_limit = std::move(upd_limit_res);
         auto upd = logical_plan::make_node_update(resource_, match, upd_limit, updates, false);
-        upd->set_dbname(names.left_name.database);
-        mark_invalid_target(&catalog_resolves_, *upd, names.left_name);
-        upd->set_relname(names.left_name.collection);
+        set_target(*upd, names.left_name);
         // The FROM source is a child sub-plan (the RIGHT side of the update join).
         // Its scans self-resolve by name during enrich, so no table_oid_from / sibling
         // resolve_table splice is needed.

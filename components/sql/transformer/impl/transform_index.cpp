@@ -61,7 +61,6 @@ namespace components::sql::transform {
         }
 
         auto qn = rangevar_to_qualified_name(node.relation);
-        const std::string dbname_for_resolve = qn.database;
         const std::string relname_for_resolve = qn.collection;
         auto create_index =
             logical_plan::make_node_create_index(resource_, core::indexname_t{std::string(node.idxname)}, type);
@@ -79,9 +78,7 @@ namespace components::sql::transform {
         }
         // The indexed table's identity stays ON the node: enrich binds it to a
         // resolved entry by name and stamps ns_oid + table_oid + columns from there.
-        create_index->set_dbname(dbname_for_resolve);
-        create_index->set_relname(relname_for_resolve);
-        mark_invalid_target(&catalog_resolves_, *create_index, qn);
+        const std::string dbname_for_resolve = set_target(*create_index, qn);
         // Two targets, same as DROP INDEX (transform_table.cpp): the table and the new
         // index name. A miss on the second is the normal case (name free); a hit stamps
         // name_conflict_oid so the planner refuses the taken name.

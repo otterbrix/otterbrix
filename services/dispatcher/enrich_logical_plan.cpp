@@ -1324,6 +1324,12 @@ namespace services::dispatcher {
                     return "CREATE SEQUENCE";
                 case node_type::create_index_t:
                     return "CREATE INDEX";
+                case node_type::create_type_t:
+                    return "CREATE TYPE";
+                case node_type::create_macro_t:
+                    return "CREATE FUNCTION";
+                case node_type::refresh_matview_t:
+                    return "REFRESH MATERIALIZED VIEW";
                 case node_type::drop_t:
                     return "DROP";
                 case node_type::alter_table_t:
@@ -1339,17 +1345,24 @@ namespace services::dispatcher {
             }
         }
 
-        core::error_t refuse_invalid_targets(std::pmr::memory_resource* resource,
+        // TODO: remove after federation & search path work
+        core::error_t refuse_external_targets(std::pmr::memory_resource* resource,
                                              const components::logical_plan::catalog_resolves_t& resolves) {
-            if (resolves.invalid_targets.empty()) {
+            if (resolves.external_targets.empty()) {
                 return core::error_t::no_error();
             }
-            const auto& target = resolves.invalid_targets.front();
+            const auto& target = resolves.external_targets.front();
             std::pmr::string msg{statement_of(target.type), resource};
             msg += " target \"";
-            msg += target.name.to_string();
-            msg += "\" names a uid or schema segment, which this catalog has no place for: a relation lives in a "
-                   "database — write it as [database.]name; nothing was changed";
+            msg += target.written.to_string();
+            if (!target.written.unique_identifier.empty() || !target.written.schema.empty()) {
+                msg += "\" names a uid or schema segment, which this catalog has no place for: a relation lives in a "
+                       "database — write it as [database.]name; nothing was changed";
+            } else {
+                // Nothing but a database is left, and the only statement that records one is a type:
+                // pg_type rows all sit in public, so the database it names is unreachable.
+                msg += "\" names a database, but a type always lives in \"public\"; nothing was changed";
+            }
             return core::error_t{core::error_code_t::invalid_parameter, std::move(msg)};
         }
     } // namespace
@@ -1363,7 +1376,7 @@ namespace services::dispatcher {
         if (!root)
             co_return core::error_t::no_error();
         if (resolves) {
-            if (auto refusal = refuse_invalid_targets(resource, *resolves); refusal.contains_error()) {
+            if (auto refusal = refuse_external_targets(resource, *resolves); refusal.contains_error()) {
                 co_return refusal;
             }
             bind_catalog_data(root.get(), *resolves);

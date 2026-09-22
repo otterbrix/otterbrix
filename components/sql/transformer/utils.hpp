@@ -7,6 +7,7 @@
 #include <components/expressions/forward.hpp>
 #include <components/expressions/key.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
+#include <components/logical_plan/node_drop.hpp>
 #include <components/logical_plan/node_join.hpp>
 #include <components/sql/parser/nodes/parsenodes.h>
 #include <components/sql/parser/pg_functions.h>
@@ -61,19 +62,76 @@ namespace components::sql::transform {
                                 construct(table->relname)};
     }
 
-    inline std::string target_dbname(const qualified_name_t& name) {
-        return name.database.empty() ? "public" : name.database;
+    enum table_name
+    {
+        table = 1,
+        database_table = 2,
+        database_schema_table = 3,
+        uuid_database_schema_table = 4
+    };
+
+    inline core::result_wrapper_t<qualified_name_t> qualified_name_of(std::pmr::memory_resource* resource,
+                                                                      const List& parts) {
+        std::vector<std::string> segments;
+        for (const auto& cell : parts.lst) {
+            segments.emplace_back(strVal(cell.data));
+        }
+        switch (static_cast<table_name>(segments.size())) {
+            case table:
+                return qualified_name_t{segments[0]};
+            case database_table:
+                return qualified_name_t{segments[0], segments[1]};
+            case database_schema_table:
+                return qualified_name_t{segments[0], segments[1], segments[2]};
+            case uuid_database_schema_table:
+                return qualified_name_t{segments[0], segments[1], segments[2], segments[3]};
+        }
+        std::pmr::string msg{"name has ", resource};
+        msg += std::to_string(segments.size());
+        msg += " parts; write it as [uid.][database.][schema.]name";
+        return core::error_t{core::error_code_t::sql_parse_error, std::move(msg)};
     }
 
-    // uid and schema are federation slots; the catalog holds a relname and a relnamespace and
-    // nothing else. A write target carrying either is recorded here and refused by enrich
-    // (catalog_resolves_t::invalid_targets).
-    inline void mark_invalid_target(logical_plan::catalog_resolves_t* resolves,
-                                    const logical_plan::node_t& node,
-                                    const qualified_name_t& name) {
-        if (!name.unique_identifier.empty() || !name.schema.empty()) {
-            resolves->invalid_targets.push_back({name, node.type()});
+    enum class namespace_policy
+    {
+        as_written,     // DML, ALTER, DROP: the database as written
+        default_public, // CREATE: an unnamed database means public
+        public_only     // a type: pg_type rows all sit in public
+    };
+
+    inline namespace_policy policy_of(const logical_plan::node_t& node) {
+        using logical_plan::node_type;
+        switch (node.type()) {
+            case node_type::create_type_t:
+                return namespace_policy::public_only;
+            case node_type::drop_t:
+                return static_cast<const logical_plan::node_drop_t&>(node).kind() ==
+                               logical_plan::drop_target_kind::type
+                           ? namespace_policy::public_only
+                           : namespace_policy::as_written;
+            case node_type::create_collection_t:
+            case node_type::create_view_t:
+            case node_type::create_matview_t:
+            case node_type::create_sequence_t:
+            case node_type::create_macro_t:
+                return namespace_policy::default_public;
+            // Everything else writes where the name says. CREATE INDEX is deliberately here: it
+            // names an existing table, so a bare name must still reach the table's own database.
+            default:
+                return namespace_policy::as_written;
         }
+    }
+
+    inline std::string database_for(const qualified_name_t& written, namespace_policy policy) {
+        switch (policy) {
+            case namespace_policy::default_public:
+                return written.database.empty() ? std::string{"public"} : written.database;
+            case namespace_policy::public_only:
+                return "public";
+            case namespace_policy::as_written:
+                break;
+        }
+        return written.database;
     }
 
     inline const std::string& visible_name(const qualified_name_t& name, const std::string& alias) noexcept {

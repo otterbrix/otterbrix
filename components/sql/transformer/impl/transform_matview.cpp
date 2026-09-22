@@ -60,7 +60,6 @@ namespace components::sql::transform {
 
         // 4. Matview target identity.
         auto target_qn = rangevar_to_qualified_name(cs.into->rel);
-        const std::string mv_db = target_dbname(target_qn);
         const std::string mv_name = target_qn.collection;
 
         // 5. Build matview node carrying body plan as child[0].
@@ -72,8 +71,7 @@ namespace components::sql::transform {
         // 6. Both identities stay ON the node — enrich binds each to a resolved
         // entry by name and stamps namespace_oid + source_table_oid + the source's
         // columns (which the planner's derive_output_schema needs) from there.
-        matview_node->set_dbname(mv_db);
-        mark_invalid_target(&catalog_resolves_, *matview_node, target_qn);
+        const std::string mv_db = set_target(*matview_node, target_qn);
         matview_node->set_source_dbname(source_db);
         matview_node->set_source_relname(source_rel);
         register_catalog_resolve_namespace(resource_, &catalog_resolves_, mv_db);
@@ -94,7 +92,7 @@ namespace components::sql::transform {
         // The matview's identity stays ON the node: enrich binds it to a resolved
         // entry by name, whose metadata carries view_sql (Phase A.A2 reads
         // pg_rewrite.ev_action for relkind='m').
-        node->set_dbname(qn.database);
+        set_target(*node, qn);
         register_catalog_resolve_table(resource_, &catalog_resolves_, qn.database, qn.collection);
         return node;
     }

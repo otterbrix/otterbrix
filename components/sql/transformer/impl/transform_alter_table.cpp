@@ -273,7 +273,6 @@ namespace components::sql::transform {
             return core::error_t(core::error_code_t::unimplemented_yet, std::move(msg));
         }
         auto qn = rangevar_to_qualified_name(node.relation);
-        const std::string db_for_resolve = qn.database;
         const std::string rel_for_resolve = qn.collection;
         std::string old_name = node.subname ? node.subname : "";
         std::string new_name = node.newname ? node.newname : "";
@@ -290,9 +289,7 @@ namespace components::sql::transform {
         auto n = logical_plan::make_node_alter_table_rename_column(resource_, std::move(old_name), std::move(new_name));
         // The altered table's identity stays ON the node: enrich binds it to a
         // resolved entry by name and stamps table_oid() + relkind from there.
-        n->set_dbname(db_for_resolve);
-        n->set_relname(rel_for_resolve);
-        mark_invalid_target(&catalog_resolves_, *n, qn);
+        const std::string db_for_resolve = set_target(*n, qn);
         register_catalog_resolve_table(resource_, &catalog_resolves_, db_for_resolve, rel_for_resolve);
         return n;
     }
@@ -307,9 +304,7 @@ namespace components::sql::transform {
         auto wrap_primary = [&](logical_plan::node_ptr n) {
             if (n && n->type() == logical_plan::node_type::alter_table_t) {
                 auto* alter = static_cast<logical_plan::node_alter_table_t*>(n.get());
-                alter->set_dbname(db);
-                alter->set_relname(rel);
-                mark_invalid_target(&catalog_resolves_, *alter, qn);
+                set_target(*alter, qn);
             }
             register_catalog_resolve_table(resource_, &catalog_resolves_, db, rel);
             return n;

@@ -576,9 +576,7 @@ namespace components::sql::transform {
             auto* ins_node = static_cast<logical_plan::node_insert_t*>(ins.get());
             ins_node->set_literal_digits(std::move(literal_digits));
             ins_node->returning() = returning;
-            ins_node->set_dbname(qn.database);
-            ins_node->set_relname(qn.collection);
-            mark_invalid_target(&catalog_resolves_, *ins_node, qn);
+            set_target(*ins_node, qn);
             register_catalog_resolve_table(resource_,
                                            &catalog_resolves_,
                                            qn.database,
@@ -592,9 +590,7 @@ namespace components::sql::transform {
             res->append_child(std::move(source));
             res->key_translation() = key_translation;
             res->returning() = returning;
-            res->set_dbname(qn.database);
-            res->set_relname(qn.collection);
-            mark_invalid_target(&catalog_resolves_, *res, qn);
+            set_target(*res, qn);
             register_catalog_resolve_table(resource_,
                                            &catalog_resolves_,
                                            qn.database,

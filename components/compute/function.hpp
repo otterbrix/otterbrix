@@ -5,8 +5,10 @@
 
 #include <components/types/types.hpp>
 #include <memory>
+#include <memory_resource>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <unordered_map>
 #include <vector>
@@ -292,6 +294,7 @@ namespace components::compute {
         [[nodiscard]] const core::error_t& builtin_registration_error() const noexcept;
         function* get_function(function_uid uid) const;
         [[nodiscard]] std::vector<std::pair<std::string, function_uid>> get_functions() const;
+        [[nodiscard]] std::pmr::vector<function_uid> find_functions(std::string_view name) const;
 
         // Remove a function by uid (DROP FUNCTION / unregister_udf path). No-op if uid not present.
         bool remove_function(function_uid uid);
@@ -337,6 +340,8 @@ namespace components::compute {
         std::pair<std::string, function_uid>{"sqrt", 14},
         std::pair<std::string, function_uid>{"cbrt", 15},
         std::pair<std::string, function_uid>{"factorial", 16}};
+
+    inline bool is_builtin(function_uid uid) noexcept { return uid < DEFAULT_FUNCTIONS.size(); }
 
     // Goes through add_builtin, which pins uids to DEFAULT_FUNCTIONS and poisons the registry on
     // mismatch; check builtin_registration_error() for the outcome.

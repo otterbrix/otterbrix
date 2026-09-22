@@ -35,7 +35,7 @@ namespace {
         REQUIRE_FALSE(table.append_lock(state).has_error());
         REQUIRE_FALSE(table.initialize_append(state).has_error());
         REQUIRE_FALSE(table.append(chunk, state).has_error());
-        table.finalize_append(state, transaction_data{0, 0});
+        table.finalize_append(state, transaction_data::committed());
     }
 
     std::pmr::vector<std::uint64_t> key_indices(std::pmr::memory_resource* res,
@@ -90,7 +90,7 @@ TEST_CASE("services::disk::fk_hash_semijoin::a_fractional_key_matches_no_integer
     keys.set_value(0, 2, logical_value_t{&resource, double{3.25}});
 
     auto kidx = key_indices(&resource, {0});
-    auto res_r = services::disk::fk_hash_semijoin(&resource, adapter, kidx, keys, transaction_data{0, 0});
+    auto res_r = services::disk::fk_hash_semijoin(&resource, adapter, kidx, keys, transaction_data::committed());
     REQUIRE_FALSE(res_r.has_error());
     auto& res = res_r.value();
     REQUIRE(res.size() == 3);
@@ -136,7 +136,7 @@ TEST_CASE("services::disk::fk_hash_semijoin::an_out_of_domain_key_misses_instead
     keys.set_value(0, 2, logical_value_t{&resource, int64_t{-70000}});
 
     auto kidx = key_indices(&resource, {0});
-    auto res_r = services::disk::fk_hash_semijoin(&resource, adapter, kidx, keys, transaction_data{0, 0});
+    auto res_r = services::disk::fk_hash_semijoin(&resource, adapter, kidx, keys, transaction_data::committed());
 
     INFO("an out-of-domain key is an evaluable request with an empty answer, not a failure");
     REQUIRE_FALSE(res_r.has_error());
@@ -178,7 +178,7 @@ TEST_CASE("services::disk::fk_hash_semijoin::an_uncomparable_type_pair_refuses_i
     keys.set_value(0, 1, logical_value_t{&resource, std::string_view{"nope"}});
 
     auto kidx = key_indices(&resource, {0});
-    auto res_r = services::disk::fk_hash_semijoin(&resource, adapter, kidx, keys, transaction_data{0, 0});
+    auto res_r = services::disk::fk_hash_semijoin(&resource, adapter, kidx, keys, transaction_data::committed());
 
     INFO("a key type the stored key type cannot be compared against is an unevaluable "
          "request, and an empty bucket would read as 'this parent has no children'");

@@ -22,13 +22,8 @@ namespace components::table {
         void initialize_scan(column_scan_state& state) override;
         void initialize_scan_with_offset(column_scan_state& state, int64_t row_idx) override;
 
-        uint64_t
-        scan(uint64_t vector_index, column_scan_state& state, vector::vector_t& result, uint64_t target_count) override;
-        uint64_t scan_committed(uint64_t vector_index,
-                                column_scan_state& state,
-                                vector::vector_t& result,
-                                bool allow_updates,
-                                uint64_t target_count) override;
+        uint64_t scan(column_scan_state& state, vector::vector_t& result, uint64_t target_count) override;
+        uint64_t scan_committed(column_scan_state& state, vector::vector_t& result, uint64_t target_count) override;
         uint64_t scan_count(column_scan_state& state, vector::vector_t& result, uint64_t count) override;
 
         [[nodiscard]] core::result_wrapper_t<bool> initialize_append(column_append_state& state) override;
@@ -38,15 +33,6 @@ namespace components::table {
         uint64_t fetch(column_scan_state& state, int64_t row_id, vector::vector_t& result) override;
         void
         fetch_row(column_fetch_state& state, int64_t row_id, vector::vector_t& result, uint64_t result_idx) override;
-        [[nodiscard]] core::result_wrapper_t<bool> update(uint64_t column_index,
-                                                          vector::vector_t& update_vector,
-                                                          int64_t* row_ids,
-                                                          uint64_t update_count) override;
-        [[nodiscard]] core::result_wrapper_t<bool> update_column(const std::vector<uint64_t>& column_pasth,
-                                                                 vector::vector_t& update_vector,
-                                                                 int64_t* row_ids,
-                                                                 uint64_t update_count,
-                                                                 uint64_t depth) override;
 
         void get_column_segment_info(uint64_t row_group_index,
                                      std::vector<uint64_t> col_path,

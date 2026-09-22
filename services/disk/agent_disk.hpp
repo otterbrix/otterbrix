@@ -58,8 +58,8 @@ namespace services::disk {
 
     using path_t = std::filesystem::path;
 
-    using session_id_t = ::components::session::session_id_t;
-    using execution_context_t = ::components::execution_context_t;
+    using session_id_t = components::session::session_id_t;
+    using execution_context_t = components::execution_context_t;
 
 #ifdef DEV_MODE
     uint64_t pushdown_reply_rows() noexcept;
@@ -147,18 +147,20 @@ namespace services::disk {
 
         // WAL-replay only, before scheduler.start; the storage_* handlers replace these after.
         [[nodiscard]] core::error_t no_replay_storage_error(const char* who, components::catalog::oid_t table_oid);
-        [[nodiscard]] core::error_t direct_delete_sync(components::catalog::oid_t table_oid,
-                                                       const std::pmr::vector<int64_t>& row_ids,
-                                                       uint64_t count,
-                                                       const components::table::transaction_data& txn);
-        [[nodiscard]] core::error_t direct_update_sync(components::catalog::oid_t table_oid,
-                                                       const std::pmr::vector<int64_t>& row_ids,
-                                                       components::vector::data_chunk_t& new_data);
+        [[nodiscard]] core::error_t delete_sync(components::catalog::oid_t table_oid,
+                                                const std::pmr::vector<int64_t>& row_ids,
+                                                uint64_t count,
+                                                const components::table::transaction_data& txn);
+        [[nodiscard]] core::result_wrapper_t<components::storage::appended_range_t>
+        update_sync(components::catalog::oid_t table_oid,
+                    const std::pmr::vector<int64_t>& row_ids,
+                    components::vector::data_chunk_t& new_data,
+                    components::table::transaction_data txn);
         [[nodiscard]] core::error_t direct_add_column_sync(components::catalog::oid_t table_oid,
                                                            const components::vector::data_chunk_t& schema_chunk);
 
         // Mutation handlers: a not-owned oid REFUSES on every leg below; only an empty request succeeds as a no-op.
-        unique_future<core::result_wrapper_t<std::pair<uint64_t, uint64_t>>>
+        unique_future<core::result_wrapper_t<components::storage::appended_range_t>>
         storage_append_inner(execution_context_t ctx,
                              components::catalog::oid_t table_oid,
                              std::unique_ptr<components::vector::data_chunk_t> data);
@@ -179,7 +181,7 @@ namespace services::disk {
         storage_revert_appends_inner(std::pmr::vector<components::pg_catalog_append_range_t> ranges, bool tail_only);
 
         // (0, 0) means an EMPTY chunk, not "no storage".
-        unique_future<core::result_wrapper_t<std::pair<int64_t, uint64_t>>>
+        unique_future<core::result_wrapper_t<components::storage::appended_range_t>>
         storage_update_inner(components::catalog::oid_t table_oid,
                              components::vector::vector_t row_ids,
                              std::unique_ptr<components::vector::data_chunk_t> data,
@@ -300,8 +302,7 @@ namespace services::disk {
                                      std::int64_t oid_col_idx,
                                      components::catalog::oid_t target_oid);
 
-        // Below the commit marker: a failure is reported, never un-commits.
-        unique_future<core::error_t>
+        unique_future<core::result_wrapper_t<components::storage::appended_range_t>>
         update_pg_attribute_commit_id_field_inner(execution_context_t ctx,
                                                   components::catalog::oid_t attoid,
                                                   components::pg_attribute_commit_id_backfill_t::kind_t kind,
@@ -331,12 +332,17 @@ namespace services::disk {
         unique_future<void> mark_storage_dropped_many_inner(std::pmr::vector<components::catalog::oid_t> table_oids,
                                                             uint64_t dropped_at_commit_id);
 
-        // Also parks the column's TYPE AND DEFAULT (encoded; decoded here) for table_storage_adapter_t.
-        unique_future<void>
-        note_column_identity_inner(components::catalog::oid_t table_oid,
-                                   std::string attname,
-                                   std::uint32_t attoid,
-                                   components::pg_attribute_commit_id_backfill_t::added_column_type_t type);
+        unique_future<core::error_t> add_storage_column_inner(execution_context_t ctx,
+                                                              components::catalog::oid_t table_oid,
+                                                              components::table::column_definition_t column);
+
+        unique_future<core::error_t> stamp_column_dropped_inner(components::catalog::oid_t table_oid,
+                                                                components::catalog::oid_t attoid,
+                                                                components::table::transaction_data txn);
+
+        unique_future<void> publish_column_stamps_inner(uint64_t txn_id,
+                                                        uint64_t commit_id,
+                                                        std::pmr::vector<components::catalog::oid_t> tables);
 
         void set_manager_dispatcher_sync(actor_zeta::address_t address);
 
@@ -373,7 +379,9 @@ namespace services::disk {
                                                             &agent_disk_t::drop_storage_column_inner,
                                                             &agent_disk_t::rename_storage_column_inner,
                                                             &agent_disk_t::mark_storage_dropped_many_inner,
-                                                            &agent_disk_t::note_column_identity_inner,
+                                                            &agent_disk_t::add_storage_column_inner,
+                                                            &agent_disk_t::stamp_column_dropped_inner,
+                                                            &agent_disk_t::publish_column_stamps_inner,
                                                             &agent_disk_t::create_storage_disk_inner,
                                                             // Appended LAST — positional msg ids.
                                                             &agent_disk_t::storage_open_scan_hold_inner,

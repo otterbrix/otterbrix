@@ -1,34 +1,46 @@
 #include "transaction_manager.hpp"
 
 #include <algorithm>
+#include <cassert>
 
 namespace components::table {
 
     transaction_manager_t::transaction_manager_t(std::pmr::memory_resource* resource)
         : resource_(resource) {}
 
-    transaction_t& transaction_manager_t::begin_transaction(session::session_id_t session) {
+    transaction_t& transaction_manager_t::begin_transaction(session::session_id_t session, transaction_scope_t scope) {
         std::lock_guard guard(lock_);
-        auto key = session.data();
-        if (active_.find(key) != active_.end()) {
-            return *active_[key];
+        assert(active_.find(session) == active_.end() && "begin_transaction opens; resolve_transaction joins");
+        return open_locked(session, scope);
+    }
+
+    transaction_t& transaction_manager_t::resolve_transaction(session::session_id_t session,
+                                                              transaction_scope_t scope) {
+        std::lock_guard guard(lock_);
+        auto it = active_.find(session);
+        if (it == active_.end()) {
+            return open_locked(session, scope);
         }
+        assert(it->second->scope() == transaction_scope_t::until_commit);
+        return *it->second;
+    }
+
+    transaction_t& transaction_manager_t::open_locked(session::session_id_t session, transaction_scope_t scope) {
         auto txn_id = next_transaction_id_.fetch_add(1);
         auto start_time = current_timestamp_.fetch_add(1);
-        auto txn = std::make_unique<transaction_t>(txn_id, start_time, session, resource_);
+        auto txn = std::make_unique<transaction_t>(txn_id, start_time, session, scope, resource_);
         auto horizon = published_horizon_.load(std::memory_order_relaxed);
         std::pmr::vector<uint64_t> in_flight(in_flight_commits_.begin(), in_flight_commits_.end(), resource_);
         txn->set_snapshot(horizon, std::move(in_flight));
         auto& ref = *txn;
-        active_[key] = std::move(txn);
+        active_[session] = std::move(txn);
         active_start_times_.insert(start_time);
         return ref;
     }
 
     uint64_t transaction_manager_t::commit(session::session_id_t session) {
         std::lock_guard guard(lock_);
-        auto key = session.data();
-        auto it = active_.find(key);
+        auto it = active_.find(session);
         if (it == active_.end()) {
             return 0;
         }
@@ -53,6 +65,17 @@ namespace components::table {
         auto cur_horizon = published_horizon_.load(std::memory_order_relaxed);
         if (frontier > cur_horizon) {
             published_horizon_.store(frontier, std::memory_order_release);
+        }
+    }
+
+    void transaction_manager_t::seed_transaction_ids(uint64_t high_water) {
+        // Previously active transactions do not affect it
+        if (high_water < TRANSACTION_ID_START) {
+            return;
+        }
+        auto current = next_transaction_id_.load(std::memory_order_relaxed);
+        if (high_water + 1 > current) {
+            next_transaction_id_.store(high_water + 1, std::memory_order_relaxed);
         }
     }
 
@@ -84,8 +107,7 @@ namespace components::table {
 
     void transaction_manager_t::abort(session::session_id_t session) {
         std::lock_guard guard(lock_);
-        auto key = session.data();
-        auto it = active_.find(key);
+        auto it = active_.find(session);
         if (it == active_.end()) {
             return;
         }
@@ -96,7 +118,7 @@ namespace components::table {
 
     transaction_t* transaction_manager_t::find_transaction(session::session_id_t session) {
         std::lock_guard guard(lock_);
-        auto it = active_.find(session.data());
+        auto it = active_.find(session);
         if (it == active_.end()) {
             return nullptr;
         }
@@ -105,7 +127,7 @@ namespace components::table {
 
     bool transaction_manager_t::has_active_transaction(session::session_id_t session) const {
         std::lock_guard guard(lock_);
-        return active_.find(session.data()) != active_.end();
+        return active_.find(session) != active_.end();
     }
 
     uint64_t transaction_manager_t::lowest_active_start_time() const {
@@ -116,7 +138,7 @@ namespace components::table {
         if (!in_flight_commits_.empty()) {
             lowest = std::min(lowest, *in_flight_commits_.begin() - 1);
         }
-        for (const auto& [key, txn] : active_) {
+        for (const auto& [session, txn] : active_) {
             const auto data = txn->data();
             if (!data.in_flight_snapshot.empty()) {
                 // in_flight_snapshot is sorted ascending (copied from a std::set).
@@ -151,7 +173,7 @@ namespace components::table {
         if (!in_flight_commits_.empty()) {
             watermark = std::min(watermark, *in_flight_commits_.begin() - 1);
         }
-        for (const auto& [key, txn] : active_) {
+        for (const auto& [session, txn] : active_) {
             const auto data = txn->data();
             watermark = std::min(watermark, data.snapshot_horizon);
             if (!data.in_flight_snapshot.empty()) {

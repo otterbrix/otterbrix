@@ -21,10 +21,10 @@ namespace services::disk::detail {
     // ---------------------------------------------------------------------------
     // inline_scan: scan `table` as `txn` sees it; fn(chunk, row_index) per visible
     // row, false stops early.
-    // txn is not optional: transaction_data{} means "committed direct writes only"
-    // (insert_id == 0), not "see everything" — pass whatever txn a preceding
-    // txn-carrying read (read_chunks_by_key, scan_by_keys, ...) used, or the scan
-    // disagrees with it about visibility and misreads "not found".
+    // txn is not optional. transaction_data::committed() leaves snapshot_horizon at its
+    // maximum, so it sees every COMMITTED row and no pending write — pass whatever txn a preceding
+    // txn-carrying read (read_chunks_by_key, scan_by_keys, ...) used, or the scan disagrees with it
+    // about visibility and misreads "not found".
     // ---------------------------------------------------------------------------
 
     namespace detail_impl_ {
@@ -54,7 +54,7 @@ namespace services::disk::detail {
             }
 
             components::table::table_scan_state state(resource);
-            table.initialize_scan(state, col_ids);
+            table.initialize_scan(state, col_ids, components::table::transaction_data::committed());
             // initialize_scan resets both states to the default snapshot; re-stamp txn
             // after it (same pattern as table_storage_adapter_t's txn-aware scans).
             state.table_state.txn = txn;

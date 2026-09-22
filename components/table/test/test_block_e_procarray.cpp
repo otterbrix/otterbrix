@@ -16,14 +16,14 @@ namespace components::table::test_block_e {
         // T2 begins + commits (allocates commit_id, ADDS to in_flight_commits_).
         // We DO NOT call publish() — keeps the commit_id in_flight.
         auto session2 = session_id_t::generate_uid();
-        mgr.begin_transaction(session2);
+        mgr.begin_transaction(session2, transaction_scope_t::statement);
         auto commit_id_t2 = mgr.commit(session2);
         REQUIRE(commit_id_t2 > 0);
 
         // T1 begins NOW — takes a snapshot that includes commit_id_t2 in its
         // in_flight_snapshot (since T2 committed but not yet published).
         auto session1 = session_id_t::generate_uid();
-        auto& txn1 = mgr.begin_transaction(session1);
+        auto& txn1 = mgr.begin_transaction(session1, transaction_scope_t::statement);
         auto data = txn1.data();
 
         // T1's snapshot MUST list commit_id_t2 as in_flight.
@@ -43,7 +43,7 @@ namespace components::table::test_block_e {
 
         // A FRESH txn (T3) starting now sees the PUBLISHED state — in_flight is empty.
         auto session3 = session_id_t::generate_uid();
-        auto& txn3 = mgr.begin_transaction(session3);
+        auto& txn3 = mgr.begin_transaction(session3, transaction_scope_t::statement);
         auto data3 = txn3.data();
         bool t3_contains_t2 =
             std::find(data3.in_flight_snapshot.begin(), data3.in_flight_snapshot.end(), commit_id_t2) !=
@@ -62,7 +62,7 @@ namespace components::table::test_block_e {
         transaction_manager_t mgr(&resource);
 
         auto session = session_id_t::generate_uid();
-        auto& txn = mgr.begin_transaction(session);
+        auto& txn = mgr.begin_transaction(session, transaction_scope_t::statement);
 
         // Snapshot captured at begin_transaction is cached on transaction_t.
         // data() returns by value-copy on each call — same snapshot fields each call.
@@ -111,8 +111,8 @@ namespace components::table::test_block_e {
         // in_flight_commits_ until publish().
         auto session1 = session_id_t::generate_uid();
         auto session2 = session_id_t::generate_uid();
-        mgr.begin_transaction(session1);
-        mgr.begin_transaction(session2);
+        mgr.begin_transaction(session1, transaction_scope_t::statement);
+        mgr.begin_transaction(session2, transaction_scope_t::statement);
         auto commit_id_t1 = mgr.commit(session1);
         auto commit_id_t2 = mgr.commit(session2);
         REQUIRE(commit_id_t1 > 0);

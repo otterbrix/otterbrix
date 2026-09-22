@@ -73,7 +73,7 @@ TEST_CASE("integration::cpp::hash_join::substitution") {
     std::pmr::monotonic_buffer_resource arena;
     auto* res = &arena;
 
-    services::context_storage_t context(res, log_t{}, core::date::timezone_offset_t{});
+    services::context_storage_t context(res, log_t{}, components::catalog::session_catalog_t{});
     compute::function_registry_t registry(res);
 
     auto plan_type = [&](join_type jt, compare_type cmp, side_t ls, side_t rs) {
@@ -296,7 +296,7 @@ TEST_CASE("integration::cpp::hash_join::build_side_selection") {
     // Returns the key-column name of whichever physical child became the hash build: "lk" means swapped, "rk" default.
     auto build_side_key_name =
         [&](join_type jt, uint64_t left_rows, uint64_t right_rows, bool populate_counts, bool same_oid) -> std::string {
-        services::context_storage_t context(res, log_t{}, core::date::timezone_offset_t{});
+        services::context_storage_t context(res, log_t{}, components::catalog::session_catalog_t{});
         const oid_t l = left_table_oid;
         const oid_t r = same_oid ? left_table_oid : right_table_oid;
         context.known_oids.insert(l);
@@ -492,7 +492,7 @@ TEST_CASE("integration::cpp::hash_join::filtered_side_swap_requires_size_evidenc
     constexpr oid_t tiny_oid = 53;
 
     auto lower = [&](uint64_t big_rows, uint64_t tiny_rows) {
-        services::context_storage_t context(res, log_t{}, core::date::timezone_offset_t{});
+        services::context_storage_t context(res, log_t{}, components::catalog::session_catalog_t{});
         context.known_oids.insert(big_oid);
         context.known_oids.insert(tiny_oid);
         context.row_counts[big_oid] = big_rows;

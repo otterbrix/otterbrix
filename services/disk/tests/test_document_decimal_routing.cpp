@@ -105,7 +105,7 @@ namespace {
 
     components::execution_context_t append_ctx(catalog::oid_t table_oid) {
         return components::execution_context_t{session_id_t{},
-                                               components::table::transaction_data{0, 0},
+                                               components::table::transaction_data::committed(),
                                                {},
                                                table_oid};
     }
@@ -130,7 +130,7 @@ TEST_CASE("services::disk::document_decimal::second_scale_refuses_instead_of_mer
                                   table_oid,
                                   decimal_batch(&fx.resource, 10, 2, "x", 150));
         REQUIRE_FALSE(appended.has_error());
-        REQUIRE(appended.value().second == 1);
+        REQUIRE(appended.value().count == 1);
     }
 
     {
@@ -148,8 +148,8 @@ TEST_CASE("services::disk::document_decimal::second_scale_refuses_instead_of_mer
                                   table_oid,
                                   decimal_batch(&fx.resource, 10, 2, "x", 275));
         REQUIRE_FALSE(appended.has_error());
-        REQUIRE(appended.value().first == 1);
-        REQUIRE(appended.value().second == 1);
+        REQUIRE(appended.value().start_row == 1);
+        REQUIRE(appended.value().count == 1);
     }
 }
 

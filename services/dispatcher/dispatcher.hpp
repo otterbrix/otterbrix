@@ -20,6 +20,8 @@
 #include <core/executor.hpp>
 #include <list>
 #include <mutex>
+#include <unordered_map>
+#include <unordered_set>
 
 #include <components/casts/cast_registry.hpp>
 #include <components/catalog/catalog_oids.hpp>
@@ -61,7 +63,7 @@ namespace services::dispatcher {
 
     // Thin router + txn-state mailbox service + executor-pool admin: per-query work lives entirely
     // in executor_t; the dispatcher owns only state that must stay global — txn_manager_ (reachable
-    // solely through the txn_*_msg handlers below), default_tz_cat_, the executor pool, DROP-GC flags.
+    // solely through the txn_*_msg handlers below), default_settings_, the executor pool, DROP-GC flags.
     class manager_dispatcher_t final : public actor_zeta::actor::actor_mixin<manager_dispatcher_t> {
     public:
         template<typename T>
@@ -73,6 +75,7 @@ namespace services::dispatcher {
             uint32_t stale_ticks{0};
             // Crossing the threshold escalates the routine watchdog trace to a warning.
             uint32_t poke_rounds{0};
+            bool waiting{false};
         };
 
         // The two host-customization hooks default to Null Objects, never null.
@@ -95,10 +98,9 @@ namespace services::dispatcher {
         enqueue_impl(actor_zeta::mailbox::message_ptr msg);
 
         // Direct sync call, safe only because the scheduler has not started yet; idempotent.
-        void seed_commit_clock_sync(uint64_t high_water);
+        void seed_clocks_sync(uint64_t commit_frontier, uint64_t txn_id_high_water);
 
-        // Restore default_tz_cat_ from the TimeZone persisted in pg_settings
-        void seed_default_timezone_sync(std::string_view name);
+        void cache_settings_sync(const components::catalog::session_catalog_t& settings);
 
         // Sync twin of on_drop_resource_marked(), for use before scheduler.start. Idempotent.
         void set_disk_has_dropped_sync(bool value) noexcept { disk_has_dropped_ = value; }
@@ -106,6 +108,9 @@ namespace services::dispatcher {
 
         unique_future<components::cursor::cursor_t_ptr> execute_plan(components::session::session_id_t session,
                                                                      components::logical_plan::execution_plan_t plan);
+        // Errored queries still have to go through regular transaction management
+        unique_future<components::cursor::cursor_t_ptr> refuse_statement(components::session::session_id_t session,
+                                                                         core::error_t error);
 
         unique_future<core::error_t> register_udf(components::session::session_id_t session,
                                                   components::compute::function_ptr function);
@@ -126,18 +131,19 @@ namespace services::dispatcher {
 
         // txn-state mailbox service: the only way any other actor reads or mutates transaction state.
 
-        // Idempotently begins the session's txn, so one exists before any operator runs, BEGIN's
-        // own plan included.
-        unique_future<txn_session_context_t> txn_begin_session_msg(components::session::session_id_t session);
-        // begin (idempotent) then mark_explicit — never a no-op on a missing txn.
-        unique_future<void> txn_mark_explicit_msg(components::session::session_id_t session);
+        // Each names the transaction its statement was resolved against
+        unique_future<core::error_t> txn_mark_explicit_msg(components::session::session_id_t session,
+                                                           uint64_t transaction_id);
         // Drains every parked range, then commit() allocates the commit_id into in_flight_commits_.
-        unique_future<txn_commit_drain_t> txn_commit_drain_msg(components::session::session_id_t session);
-        unique_future<txn_abort_drain_t> txn_abort_drain_msg(components::session::session_id_t session);
+        unique_future<txn_commit_drain_t> txn_commit_drain_msg(components::session::session_id_t session,
+                                                               uint64_t transaction_id);
+        unique_future<txn_abort_drain_t> txn_abort_drain_msg(components::session::session_id_t session,
+                                                             uint64_t transaction_id);
         // Answers core::error_t, not void, so a no-active-transaction refusal isn't silently dropped.
         unique_future<core::error_t> txn_accumulate_msg(components::session::session_id_t session,
+                                                        uint64_t transaction_id,
                                                         txn_accumulate_payload_t payload);
-        unique_future<void> txn_abort_msg(components::session::session_id_t session);
+        unique_future<void> txn_abort_msg(components::session::session_id_t session, uint64_t transaction_id);
         // Returns the compact watermark data_table_t::compact() treats as its visible-to-all horizon.
         unique_future<uint64_t> txn_publish_msg(uint64_t commit_id);
         // The other end of txn_publish_msg, for commits that never reach it. The operator must be
@@ -150,12 +156,12 @@ namespace services::dispatcher {
         unique_future<void> on_subscriber_empty(uint8_t subscriber_kind);
 
         using dispatch_traits = actor_zeta::dispatch_traits<&manager_dispatcher_t::execute_plan,
+                                                            &manager_dispatcher_t::refuse_statement,
                                                             &manager_dispatcher_t::register_udf,
                                                             &manager_dispatcher_t::unregister_udf,
                                                             &manager_dispatcher_t::register_cast,
                                                             &manager_dispatcher_t::unregister_cast,
                                                             &manager_dispatcher_t::set_explain_renderer,
-                                                            &manager_dispatcher_t::txn_begin_session_msg,
                                                             &manager_dispatcher_t::txn_mark_explicit_msg,
                                                             &manager_dispatcher_t::txn_commit_drain_msg,
                                                             &manager_dispatcher_t::txn_abort_drain_msg,
@@ -175,6 +181,61 @@ namespace services::dispatcher {
 
         void try_trigger_cleanup_if_horizon_advanced() noexcept;
 
+        std::size_t next_executor_index() noexcept;
+
+        core::result_wrapper_t<txn_session_context_t>
+        create_session_context(components::session::session_id_t session,
+                               components::logical_plan::execution_plan_t* plan);
+
+        unique_future<void> finish_failed_statement_(components::session::session_id_t session,
+                                                     uint64_t transaction_id);
+        unique_future<void> run_rollback_plan_(components::session::session_id_t session,
+                                               components::table::transaction_data txn);
+
+        txn_abort_drain_t drain_for_abort_(components::table::transaction_t& txn);
+
+        components::table::transaction_t* statement_transaction_(components::session::session_id_t session,
+                                                                 uint64_t transaction_id);
+
+        struct waiting_statement_t {
+            components::table::transaction_control_t control;
+            actor_zeta::promise<void> admitted;
+        };
+        struct session_order_t {
+            explicit session_order_t(std::pmr::memory_resource* resource)
+                : waiting(resource) {}
+            std::size_t running{0};
+            bool closing{false};
+            // list for pointer stability
+            std::pmr::list<waiting_statement_t> waiting;
+        };
+
+        class session_turn_t {
+        public:
+            session_turn_t(manager_dispatcher_t* dispatcher,
+                           components::session::session_id_t session,
+                           components::table::transaction_control_t control)
+                : dispatcher_(dispatcher)
+                , session_(session)
+                , control_(control) {}
+            ~session_turn_t() { dispatcher_->end_turn_(session_, control_); }
+            session_turn_t(const session_turn_t&) = delete;
+            session_turn_t& operator=(const session_turn_t&) = delete;
+
+        private:
+            manager_dispatcher_t* dispatcher_;
+            components::session::session_id_t session_;
+            components::table::transaction_control_t control_;
+        };
+
+        unique_future<void> take_turn_(components::session::session_id_t session,
+                                       components::table::transaction_control_t control);
+        void end_turn_(components::session::session_id_t session, components::table::transaction_control_t control);
+        bool may_start_(components::session::session_id_t session,
+                        const session_order_t& order,
+                        components::table::transaction_control_t control);
+        void start_(session_order_t* order, components::table::transaction_control_t control);
+
         std::pmr::memory_resource* resource_;
         actor_zeta::scheduler_raw scheduler_;
         log_t log_;
@@ -186,6 +247,7 @@ namespace services::dispatcher {
 
         std::pmr::vector<services::collection::executor::executor_ptr> executors_;
         std::pmr::vector<actor_zeta::address_t> executor_addresses_;
+        std::size_t next_executor_{0};
 
         // Constructor arguments, never defaults. An empty wal_address_ means a test topology that
         // spawned no WAL manager, not a configuration a user can ask for.
@@ -207,11 +269,18 @@ namespace services::dispatcher {
         std::condition_variable pump_cv_;
 
         components::table::transaction_manager_t txn_manager_;
+        std::pmr::unordered_map<components::session::session_id_t, session_order_t> session_order_{resource_};
+        // Their transaction failed and was rolled back; only ROLLBACK or COMMIT is accepted until one ends it.
+        std::pmr::unordered_set<components::session::session_id_t> failed_sessions_{resource_};
+        in_flight_entry_t* current_entry_{nullptr};
         components::casts::cast_registry_t cast_registry_;
-        components::catalog::session_catalog_t default_tz_cat_;
+        // global cached settings. updated on every set.
+        // TODO: settings for the session
+        components::catalog::session_catalog_t default_settings_;
 
-        core::date::timezone_offset_t session_tz(components::session::session_id_t /*session*/) const {
-            return default_tz_cat_.timezone_offset;
+        const components::catalog::session_catalog_t&
+        session_settings(components::session::session_id_t /*session*/) const {
+            return default_settings_;
         }
 
         // Fire-and-forget GC list for broadcast/register sends, drained via poll_pending().

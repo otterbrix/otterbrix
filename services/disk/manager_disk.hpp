@@ -19,6 +19,7 @@
 #include <components/catalog/results/ddl_result.hpp>
 #include <components/catalog/results/resolve_result.hpp>
 #include <components/catalog/session_catalog.hpp>
+#include <components/catalog/settings.hpp>
 #include <components/configuration/configuration.hpp>
 #include <components/context/execution_context.hpp>
 #include <components/context/pg_catalog_swap.hpp>
@@ -50,7 +51,7 @@
 
 namespace services::disk {
 
-    using session_id_t = ::components::session::session_id_t;
+    using session_id_t = components::session::session_id_t;
 
     /// Owns a table's data_table_t and the storage stack behind its table.otbx.
     class table_storage_t {
@@ -79,9 +80,6 @@ namespace services::disk {
 
         /// Unlike storage_degraded(), does not latch — a transient error must stay retryable.
         [[nodiscard]] bool last_checkpoint_failed() const noexcept { return last_checkpoint_failed_; }
-
-        /// Asked only on the failed-round retry path (walks every segment); over-reporting is safe.
-        [[nodiscard]] bool has_pending_update_overlay();
 
         /// A .otbx carries no version metadata: checkpointing over a stamp above `watermark` resurrects the row.
         [[nodiscard]] bool has_versions_above(uint64_t watermark) const;
@@ -123,7 +121,7 @@ namespace services::disk {
         bool drop_column(const std::string& attname);
 
         /// Storage half of ALTER TABLE RENAME COLUMN: in-memory only until the next checkpoint (a
-        /// crash reloads the OLD name); closed by comparing attoid, not name, in rearm_dropped_column_blocks_sync.
+        /// crash reloads the OLD name); closed by comparing attoid, not name, in reconcile_storage_with_catalog_sync.
         [[nodiscard]] core::result_wrapper_t<bool> rename_column(const std::string& old_attname,
                                                                  const std::string& new_attname);
 
@@ -159,8 +157,6 @@ namespace services::disk {
     // Namespace-scope (not nested) so agent_disk_t can own a map of these; ownership moves only by unique_ptr.
     struct collection_storage_entry_t {
         table_storage_t table_storage;
-        // Declared BEFORE `storage`: every adapter built below borrows it (see note_column_identity).
-        std::vector<components::table::column_definition_t> unmaterialized_columns;
         std::unique_ptr<components::storage::storage_t> storage;
         std::filesystem::path otbx_path;
         bool is_computed = false;
@@ -171,9 +167,7 @@ namespace services::disk {
                                    const std::filesystem::path& otbx_path_in,
                                    bool is_computed_create)
             : table_storage(resource, std::move(columns), otbx_path_in)
-            , storage(std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(),
-                                                                                     resource,
-                                                                                     &unmaterialized_columns))
+            , storage(std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(), resource))
             , otbx_path(otbx_path_in)
             , is_computed(is_computed_create) {}
 
@@ -183,28 +177,22 @@ namespace services::disk {
                                    std::vector<components::table::column_definition_t> catalog_columns,
                                    bool is_computed_load = false)
             : table_storage(resource, otbx_path_in, std::move(catalog_columns), is_computed_load)
-            , storage(std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(),
-                                                                                     resource,
-                                                                                     &unmaterialized_columns))
+            , storage(std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(), resource))
             , otbx_path(otbx_path_in)
             , is_computed(is_computed_load) {}
 
+        /// Recreates the storage adapter too — its data_table_t& would dangle after the rebuild.
         void add_column(components::table::column_definition_t& col, std::pmr::memory_resource* res) {
             table_storage.add_column(col);
-            drop_unmaterialized(col.name());
-            storage = std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(),
-                                                                                     res,
-                                                                                     &unmaterialized_columns);
+            storage = std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(), res);
         }
 
-        /// Recreates the storage adapter too — its data_table_t& would dangle after the rebuild.
+        /// Recreates the storage adapter too, for the same reason.
         bool drop_column(const std::string& attname, std::pmr::memory_resource* res) {
             if (!table_storage.drop_column(attname)) {
                 return false;
             }
-            storage = std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(),
-                                                                                     res,
-                                                                                     &unmaterialized_columns);
+            storage = std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(), res);
             return true;
         }
 
@@ -214,68 +202,9 @@ namespace services::disk {
             return table_storage.rename_column(old_attname, new_attname);
         }
 
-        void note_column_identity(std::string attname,
-                                  std::uint32_t attoid,
-                                  const components::types::complex_logical_type& type,
-                                  const std::optional<components::types::logical_value_t>& default_value = {}) {
-            if (attname.empty() || attoid == 0) {
-                return;
-            }
-            for (const auto& column : table_storage.table().columns()) {
-                if (column.name() == attname) {
-                    return;
-                }
-            }
-            for (auto& p : unmaterialized_columns) {
-                if (p.name() == attname) {
-                    if (p.attoid() == 0) {
-                        p.set_attoid(attoid);
-                    }
-                    if (!p.has_default_value() && default_value.has_value()) {
-                        p.set_default_value(default_value);
-                    }
-                    return;
-                }
-            }
-            components::table::column_definition_t def(std::move(attname), type);
-            def.set_attoid(attoid);
-            def.set_default_value(default_value);
-            unmaterialized_columns.push_back(std::move(def));
-        }
-
-        // Unlike take_column_identity, does NOT consume the entry — caller reads DEFAULT before materialising.
-        [[nodiscard]] const components::table::column_definition_t*
-        find_unmaterialized(const std::string& attname) const noexcept {
-            for (const auto& p : unmaterialized_columns) {
-                if (p.name() == attname) {
-                    return &p;
-                }
-            }
-            return nullptr;
-        }
-
-        // 0 = nothing published for this name. Consumes the entry, so the adapter stops answering NULLs.
-        std::uint32_t take_column_identity(const std::string& attname) {
-            for (auto it = unmaterialized_columns.begin(); it != unmaterialized_columns.end(); ++it) {
-                if (it->name() == attname) {
-                    const auto attoid = it->attoid();
-                    unmaterialized_columns.erase(it);
-                    return attoid;
-                }
-            }
-            return 0;
-        }
-
-        void drop_unmaterialized(const std::string& attname) {
-            for (auto it = unmaterialized_columns.begin(); it != unmaterialized_columns.end(); ++it) {
-                if (it->name() == attname) {
-                    unmaterialized_columns.erase(it);
-                    return;
-                }
-            }
-        }
-
-        void adopt_catalog_columns(const std::vector<components::table::column_definition_t>& catalog_columns) {
+        // A column the catalog names and the file does not
+        void adopt_catalog_columns(const std::vector<components::table::column_definition_t>& catalog_columns,
+                                   std::pmr::memory_resource* res) {
             for (const auto& def : catalog_columns) {
                 if (def.attoid() == 0) {
                     continue;
@@ -288,8 +217,8 @@ namespace services::disk {
                     }
                 }
                 if (!in_storage) {
-                    // Must decode attdefspec on the manager's resource, not the scan arena, or the default dangles.
-                    note_column_identity(def.name(), def.attoid(), def.type(), def.default_value_opt());
+                    auto column = def;
+                    add_column(column, res);
                 }
             }
         }
@@ -381,7 +310,7 @@ namespace services::disk {
         // Rebuilds the .otbx for tables load_user_table_storages_sync couldn't load; returns divergences not closed.
         [[nodiscard]] core::result_wrapper_t<std::size_t> rehydrate_missing_user_storages_sync();
         // Re-derives a column drop whose release a crash discarded; runs after both user-table walks and WAL replay.
-        void rearm_dropped_column_blocks_sync();
+        void reconcile_storage_with_catalog_sync();
         std::unordered_set<components::catalog::oid_t> alive_user_oids_sync() const;
         // '\0' means "no such row" only — an unreadable pg_class travels the error wrapper instead, or
         // a DOCUMENT table's dynamic schema would silently vanish.
@@ -414,6 +343,8 @@ namespace services::disk {
         // Most recent value for `name` in pg_settings, empty only if no such row exists (else throws).
         std::string read_setting_sync(std::string_view name);
 
+        const components::catalog::session_catalog_t& stored_settings_sync() const noexcept { return stored_catalog_; }
+
         unique_future<core::result_wrapper_t<resolve_namespace_result_t>> resolve_namespace(execution_context_t ctx,
                                                                                             std::string name);
 
@@ -443,9 +374,8 @@ namespace services::disk {
         unique_future<core::result_wrapper_t<std::pmr::vector<std::uint64_t>>>
         delete_pg_catalog_rows_many(execution_context_t ctx, std::pmr::vector<pg_catalog_delete_spec_t> specs);
 
-        // Patches backfilled pg_attribute rows after commit_id is known, before storage_publish_commits
-        // flips visibility.
-        unique_future<core::error_t>
+        // Stamps backfilled pg_attribute rows once commit_id is known. Runs ABOVE the WAL commit marker
+        unique_future<components::pg_attribute_backfill_result_t>
         update_pg_attribute_commit_id_fields(execution_context_t ctx,
                                              std::pmr::vector<components::pg_attribute_commit_id_backfill_t> backfills,
                                              std::uint64_t commit_id);
@@ -476,10 +406,17 @@ namespace services::disk {
                                                                components::catalog::oid_t table_oid,
                                                                std::set<std::string> live_attnames);
 
-        // ALTER TABLE DROP COLUMN's physical half; must run after the WAL commit marker and ProcArray
-        // publish barrier, or a release could outlive a reverted tombstone.
-        unique_future<core::result_wrapper_t<bool>>
-        drop_storage_column(session_id_t session, components::catalog::oid_t table_oid, std::string attname);
+        unique_future<core::error_t> add_storage_column(execution_context_t ctx,
+                                                        components::catalog::oid_t table_oid,
+                                                        components::table::column_definition_t column);
+
+        unique_future<core::error_t> stamp_column_dropped(execution_context_t ctx,
+                                                          components::catalog::oid_t table_oid,
+                                                          components::catalog::oid_t attoid);
+
+        unique_future<void> publish_column_stamps(execution_context_t ctx,
+                                                  uint64_t commit_id,
+                                                  std::pmr::set<components::catalog::oid_t> tables);
 
         // ALTER TABLE RENAME COLUMN's physical half; ordering mirrors drop_storage_column — a reverted
         // ALTER can never leave storage renamed against a catalog that took the rename back.
@@ -490,15 +427,22 @@ namespace services::disk {
 
         // ALTER TABLE ADD COLUMN: operator_alter_column_add_t; computed tables: operator_computed_field_register_t.
 
-        core::result_wrapper_t<uint64_t> direct_append_sync(components::catalog::oid_t table_oid,
-                                                            components::vector::data_chunk_t& data);
-        // These three refuse (not no-op) with no storage: on WAL replay, a dropped mutation never re-derives.
-        [[nodiscard]] core::error_t direct_delete_sync(components::catalog::oid_t table_oid,
-                                                       const std::pmr::vector<int64_t>& row_ids,
-                                                       uint64_t count);
-        [[nodiscard]] core::error_t direct_update_sync(components::catalog::oid_t table_oid,
-                                                       const std::pmr::vector<int64_t>& row_ids,
-                                                       components::vector::data_chunk_t& new_data);
+        core::result_wrapper_t<uint64_t> append_sync(components::catalog::oid_t table_oid,
+                                                     components::vector::data_chunk_t& data,
+                                                     components::table::transaction_data txn);
+        [[nodiscard]] core::error_t
+        commit_append_sync(components::catalog::oid_t table_oid, uint64_t commit_id, int64_t row_start, uint64_t count);
+        [[nodiscard]] core::error_t delete_sync(components::catalog::oid_t table_oid,
+                                                const std::pmr::vector<int64_t>& row_ids,
+                                                uint64_t count,
+                                                components::table::transaction_data txn);
+        [[nodiscard]] core::error_t
+        commit_all_deletes_sync(components::catalog::oid_t table_oid, uint64_t txn_id, uint64_t commit_id);
+        [[nodiscard]] core::result_wrapper_t<components::storage::appended_range_t>
+        update_sync(components::catalog::oid_t table_oid,
+                    const std::pmr::vector<int64_t>& row_ids,
+                    components::vector::data_chunk_t& new_data,
+                    components::table::transaction_data txn);
         [[nodiscard]] core::error_t direct_add_column_sync(components::catalog::oid_t table_oid,
                                                            const components::vector::data_chunk_t& schema_chunk);
 
@@ -600,12 +544,12 @@ namespace services::disk {
                       components::table::fetch_visibility_t visibility,
                       int64_t limit,
                       uint64_t expected_compact_epoch);
-        unique_future<core::result_wrapper_t<std::pair<uint64_t, uint64_t>>>
+        unique_future<core::result_wrapper_t<components::storage::appended_range_t>>
         storage_append(execution_context_t ctx,
                        components::catalog::oid_t table_oid,
                        std::pmr::vector<components::vector::data_chunk_t> data);
 
-        unique_future<core::result_wrapper_t<std::pair<int64_t, uint64_t>>>
+        unique_future<core::result_wrapper_t<components::storage::appended_range_t>>
         storage_update(execution_context_t ctx,
                        components::catalog::oid_t table_oid,
                        std::pmr::vector<components::vector::vector_t> row_ids,
@@ -662,7 +606,9 @@ namespace services::disk {
                                                        &manager_disk_t::read_chunks_by_key,
                                                        &manager_disk_t::read_chunks_by_keys,
                                                        &manager_disk_t::compact_relkind_g_storage,
-                                                       &manager_disk_t::drop_storage_column,
+                                                       &manager_disk_t::add_storage_column,
+                                                       &manager_disk_t::stamp_column_dropped,
+                                                       &manager_disk_t::publish_column_stamps,
                                                        &manager_disk_t::rename_storage_column,
                                                        &manager_disk_t::on_horizon_advanced,
                                                        &manager_disk_t::mark_storage_dropped_many,
@@ -712,7 +658,7 @@ namespace services::disk {
         scan_table(components::catalog::oid_t table_oid,
                    std::unique_ptr<components::table::table_filter_t> filter,
                    std::vector<std::size_t> projected_cols,
-                   components::table::transaction_data txn = components::table::transaction_data{});
+                   components::table::transaction_data txn = components::table::transaction_data::committed());
 
         static constexpr std::size_t pool_idx_for_oid(components::catalog::oid_t oid, std::size_t pool_size) noexcept {
             if (pool_size == 0)

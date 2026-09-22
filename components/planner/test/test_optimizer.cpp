@@ -722,7 +722,7 @@ TEST_CASE("optimizer::mirror_compare_symmetric") {
 
 TEST_CASE("optimizer::has_index_on_positive") {
     auto resource = core::pmr::otterbrix_resource();
-    services::context_storage_t ctx(&resource, log_t{}, core::date::timezone_offset_t{});
+    services::context_storage_t ctx(&resource, log_t{}, components::catalog::session_catalog_t{});
     constexpr auto table_oid = components::catalog::oid_t{701};
 
     components::logical_plan::keys_base_storage_t keys(&resource);
@@ -734,7 +734,7 @@ TEST_CASE("optimizer::has_index_on_positive") {
 
 TEST_CASE("optimizer::has_index_on_negative") {
     auto resource = core::pmr::otterbrix_resource();
-    services::context_storage_t ctx(&resource, log_t{}, core::date::timezone_offset_t{});
+    services::context_storage_t ctx(&resource, log_t{}, components::catalog::session_catalog_t{});
     constexpr auto table_oid = components::catalog::oid_t{702};
 
     components::logical_plan::keys_base_storage_t keys(&resource);
@@ -746,7 +746,7 @@ TEST_CASE("optimizer::has_index_on_negative") {
 
 TEST_CASE("optimizer::has_index_on_multi_field_skip") {
     auto resource = core::pmr::otterbrix_resource();
-    services::context_storage_t ctx(&resource, log_t{}, core::date::timezone_offset_t{});
+    services::context_storage_t ctx(&resource, log_t{}, components::catalog::session_catalog_t{});
     constexpr auto table_oid = components::catalog::oid_t{703};
 
     components::logical_plan::keys_base_storage_t keys(&resource);
@@ -759,7 +759,7 @@ TEST_CASE("optimizer::has_index_on_multi_field_skip") {
 
 TEST_CASE("optimizer::has_index_on_empty") {
     auto resource = core::pmr::otterbrix_resource();
-    services::context_storage_t ctx(&resource, log_t{}, core::date::timezone_offset_t{});
+    services::context_storage_t ctx(&resource, log_t{}, components::catalog::session_catalog_t{});
     constexpr auto table_oid = components::catalog::oid_t{704};
 
     REQUIRE(ctx.has_index_on(table_oid, key(&resource, "any")) == false);
@@ -795,7 +795,7 @@ TEST_CASE("optimizer::param_copy_survives") {
 static services::context_storage_t make_context_with_oid(std::pmr::memory_resource* resource,
                                                          components::catalog::oid_t oid,
                                                          const components::logical_plan::storage_parameters* params) {
-    services::context_storage_t ctx(resource, log_t{}, {});
+    services::context_storage_t ctx(resource, log_t{}, components::catalog::session_catalog_t{});
     ctx.known_oids.insert(oid);
     ctx.parameters = params;
     return ctx;

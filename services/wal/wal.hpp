@@ -6,7 +6,6 @@
 #include <filesystem>
 #include <map>
 #include <memory>
-#include <set>
 #include <string>
 #include <vector>
 
@@ -35,21 +34,21 @@ namespace services::wal {
     // The one committed-record filter shared by both replay readers (a second copy already drifted
     // apart once): a record is committed only when a COMMIT marker for the same txn sits at a
     // STRICTLY GREATER wal id -- txn ids are reused across restarts, but wal ids keep growing.
-    [[nodiscard]] inline std::vector<record_t> filter_committed_records(std::vector<record_t>&& records,
-                                                                        std::set<std::uint64_t>* committed_out) {
-        std::map<std::uint64_t, std::vector<id_t>> commits_by_txn;
+    [[nodiscard]] inline std::vector<record_t> filter_committed_records(std::vector<record_t>&& records) {
+        struct commit_marker_t {
+            id_t wal_id;
+            std::uint64_t commit_id;
+        };
+        std::map<std::uint64_t, std::vector<commit_marker_t>> commits_by_txn;
         for (const auto& r : records) {
             if (r.is_commit_marker() && r.is_valid()) {
-                commits_by_txn[r.transaction_id].push_back(r.id);
+                commits_by_txn[r.transaction_id].push_back(commit_marker_t{r.id, r.commit_id});
             }
         }
         for (auto& entry : commits_by_txn) {
-            std::sort(entry.second.begin(), entry.second.end());
-        }
-        if (committed_out != nullptr) {
-            for (const auto& entry : commits_by_txn) {
-                committed_out->insert(entry.first);
-            }
+            std::sort(entry.second.begin(),
+                      entry.second.end(),
+                      [](const commit_marker_t& lhs, const commit_marker_t& rhs) { return lhs.wal_id < rhs.wal_id; });
         }
 
         std::vector<record_t> result;
@@ -66,9 +65,14 @@ namespace services::wal {
             if (it == commits_by_txn.end()) {
                 continue;
             }
-            if (std::upper_bound(it->second.begin(), it->second.end(), r.id) == it->second.end()) {
+            const auto marker =
+                std::upper_bound(it->second.begin(), it->second.end(), r.id, [](id_t probe, const commit_marker_t& m) {
+                    return probe < m.wal_id;
+                });
+            if (marker == it->second.end()) {
                 continue;
             }
+            r.commit_id = marker->commit_id;
             result.push_back(std::move(r));
         }
         return result;
@@ -143,16 +147,6 @@ namespace services::wal {
                             wal::id_t add_column_id,
                             wal::id_t insert_id);
 
-        using dispatch_traits = actor_zeta::dispatch_traits<&wal_worker_t::load,
-                                                            &wal_worker_t::commit_txn,
-                                                            &wal_worker_t::truncate_before,
-                                                            &wal_worker_t::current_wal_id,
-                                                            &wal_worker_t::write_physical_insert,
-                                                            &wal_worker_t::write_physical_delete,
-                                                            &wal_worker_t::write_physical_update,
-                                                            &wal_worker_t::write_physical_grow>;
-
-    private:
         unique_future<core::result_wrapper_t<wal::id_t>>
         write_physical_add_column(session_id_t session,
                                   components::catalog::oid_t table_oid,
@@ -161,6 +155,17 @@ namespace services::wal {
                                   uint64_t txn_id,
                                   wal::id_t wal_id);
 
+        using dispatch_traits = actor_zeta::dispatch_traits<&wal_worker_t::load,
+                                                            &wal_worker_t::commit_txn,
+                                                            &wal_worker_t::truncate_before,
+                                                            &wal_worker_t::current_wal_id,
+                                                            &wal_worker_t::write_physical_insert,
+                                                            &wal_worker_t::write_physical_delete,
+                                                            &wal_worker_t::write_physical_update,
+                                                            &wal_worker_t::write_physical_grow,
+                                                            &wal_worker_t::write_physical_add_column>;
+
+    private:
         /// Refuses when a segment can't be opened -- skipping one breaks the CRC chain and page_lsn ordering.
         [[nodiscard]] core::error_t recover_from_disk();
 

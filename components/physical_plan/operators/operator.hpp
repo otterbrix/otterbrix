@@ -66,7 +66,7 @@ namespace components::operators {
         dynamic_cascade_delete,
         checkpoint,
         // session_catalog_t mutation stays in the dispatcher post-success; touches no shared state.
-        set_timezone,
+        set_setting,
         vacuum,
         register_udf,
         unregister_udf,

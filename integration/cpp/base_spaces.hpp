@@ -105,12 +105,7 @@ namespace otterbrix {
         //     (by indtype family), which owns it;
         //   - restores per-oid dropped-table tombstones.
         //
-        // committed_txn_ids is the WAL-replay set of committed transaction ids,
-        // forwarded by value into each spawned bitcask agent's txn-log recover
-        // gate. Passed during the single-threaded pre-scheduler window.
-        // No config_disk parameter: manager_index_ already holds the same
-        // config.disk.* thresholds via its own constructor and does the raising.
-        void bootstrap_indexes_sync(const std::set<std::uint64_t>& committed_txn_ids);
+        void bootstrap_indexes_sync(const std::set<std::uint64_t>& commit_ids);
 
     private:
         inline static std::unordered_set<std::filesystem::path, core::filesystem::path_hash> paths_ = {};

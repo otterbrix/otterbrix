@@ -28,7 +28,7 @@ public:
 
 private:
     static configuration::config make_config() {
-        // One named base d1ir via create_config -- not bare `current_path()/"disk"` and
+        // One named base dir via create_config -- not bare `current_path()/"disk"` and
         // `.../"wal"`, which scatter both into whatever directory the runner was launched from.
         auto cfg = configuration::config::create_config(std::filesystem::current_path() /
                                                         "otterbrix_benchmark_data");

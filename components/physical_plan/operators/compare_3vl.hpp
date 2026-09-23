@@ -14,6 +14,12 @@ namespace components::operators {
     inline types::tri_bool_t eval_compare_3vl(expressions::compare_type op,
                                               const types::logical_value_t& lhs,
                                               const types::logical_value_t& rhs) {
+        if (op == expressions::compare_type::is_null) {
+            return types::tri_of(lhs.is_null());
+        }
+        if (op == expressions::compare_type::is_not_null) {
+            return types::tri_of(!lhs.is_null());
+        }
         const auto c = lhs.compare_sql(rhs);
         if (!c) {
             return types::tri_bool_t::unknown;

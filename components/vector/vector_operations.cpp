@@ -388,6 +388,32 @@ namespace components::vector::vector_ops {
             }
         }
 
+        uint32_t fold_hash32(uint64_t hash, uint32_t seed) noexcept {
+            // MurmurHash3 fmix64.
+            uint64_t mixed = hash ^ (static_cast<uint64_t>(seed) * UINT64_C(0x9e3779b97f4a7c15));
+            mixed ^= mixed >> 33U;
+            mixed *= UINT64_C(0xff51afd7ed558ccd);
+            mixed ^= mixed >> 33U;
+            mixed *= UINT64_C(0xc4ceb9fe1a85ec53);
+            mixed ^= mixed >> 33U;
+            return static_cast<uint32_t>(mixed ^ (mixed >> 32U));
+        }
+
+        template<class T, typename value_hash_t>
+        static void templated_loop_hash32(vector_t& input,
+                                          uint32_t* result_data,
+                                          uint64_t count,
+                                          uint32_t seed,
+                                          value_hash_t&& value_hash) {
+            unified_vector_format idata(input.resource(), count);
+            input.to_unified_format(count, idata);
+            const auto* ldata = idata.get_data<T>();
+            for (uint64_t row = 0; row < count; row++) {
+                const auto idx = idata.referenced_indexing->get_index(row);
+                result_data[row] = fold_hash32(value_hash(ldata[idx], !idata.validity.row_is_valid(idx)), seed);
+            }
+        }
+
         template<bool HAS_RINDEXING>
         static void
         hash_type_switch(vector_t& input, vector_t& result, const indexing_vector_t* rindexing, uint64_t count) {
@@ -1517,6 +1543,62 @@ namespace components::vector::vector_ops {
 
     void hash(vector_t& input, vector_t& result, const indexing_vector_t& indexing, uint64_t count) {
         impl::hash_type_switch<true>(input, result, &indexing, count);
+    }
+
+    void hash32(vector_t& input, vector_t& result, uint64_t count, uint32_t seed) {
+        assert(result.type().type() == types::logical_type::UINTEGER);
+        auto* result_data = result.data<uint32_t>();
+        const auto scalar = [](auto value, bool is_null) { return impl::hasher_t::operation(value, is_null); };
+        const auto wide = [](auto value, bool is_null) { return impl::hash_128_value(value, is_null); };
+        switch (input.type().to_physical_type()) {
+            case types::physical_type::BOOL:
+            case types::physical_type::INT8:
+                impl::templated_loop_hash32<int8_t>(input, result_data, count, seed, scalar);
+                break;
+            case types::physical_type::INT16:
+                impl::templated_loop_hash32<int16_t>(input, result_data, count, seed, scalar);
+                break;
+            case types::physical_type::INT32:
+                impl::templated_loop_hash32<int32_t>(input, result_data, count, seed, scalar);
+                break;
+            case types::physical_type::INT64:
+                impl::templated_loop_hash32<int64_t>(input, result_data, count, seed, scalar);
+                break;
+            case types::physical_type::UINT8:
+                impl::templated_loop_hash32<uint8_t>(input, result_data, count, seed, scalar);
+                break;
+            case types::physical_type::UINT16:
+                impl::templated_loop_hash32<uint16_t>(input, result_data, count, seed, scalar);
+                break;
+            case types::physical_type::UINT32:
+                impl::templated_loop_hash32<uint32_t>(input, result_data, count, seed, scalar);
+                break;
+            case types::physical_type::UINT64:
+                impl::templated_loop_hash32<uint64_t>(input, result_data, count, seed, scalar);
+                break;
+            case types::physical_type::INT128:
+                impl::templated_loop_hash32<types::int128_t>(input, result_data, count, seed, wide);
+                break;
+            case types::physical_type::UINT128:
+                impl::templated_loop_hash32<types::uint128_t>(input, result_data, count, seed, wide);
+                break;
+            case types::physical_type::FLOAT:
+                impl::templated_loop_hash32<float>(input, result_data, count, seed, scalar);
+                break;
+            case types::physical_type::DOUBLE:
+                impl::templated_loop_hash32<double>(input, result_data, count, seed, scalar);
+                break;
+            case types::physical_type::STRING:
+                impl::templated_loop_hash32<std::string_view>(input, result_data, count, seed, scalar);
+                break;
+            case types::physical_type::NA:
+                // Every row is NULL: the value a NULL row of any typed column hashes to.
+                std::fill_n(result_data, count, impl::fold_hash32(impl::hasher_t::NULL_HASH, seed));
+                break;
+            default:
+                assert(false && "Nested columns are not supported in hash32 function");
+                throw std::logic_error("Invalid type for hash32");
+        }
     }
 
     void combine_hash(vector_t& hashes, vector_t& input, uint64_t count) {

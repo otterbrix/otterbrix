@@ -15,11 +15,10 @@ namespace services::index {
     };
 
     // `ok` matters: a decode failure otherwise returns 0, indistinguishable from an actual row 0.
-    inline core::b_plus_tree::btree_t::index_t id_of(const core::b_plus_tree::btree_t::item_data& item, bool& ok) {
+    inline int64_t id_of(const core::b_plus_tree::btree_t::item_data& item, bool& ok) {
         size_t pos = 0;
         components::index::codec::skip_logical_value(item.data, item.size, pos, &ok);
-        return core::b_plus_tree::btree_t::index_t(
-            components::index::codec::read_le_raw<uint64_t>(item.data, item.size, pos, &ok));
+        return components::index::codec::read_le_raw<int64_t>(item.data, item.size, pos, &ok);
     }
 
 } // namespace services::index

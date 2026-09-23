@@ -494,9 +494,8 @@ TEST_CASE("services::index::index_disk::ordered_reads_are_ascending") {
     REQUIRE(above.back() == 100);
 }
 
-// The store enforces this too, since the agent isn't its only door: convert() maps NULL to NA,
-// which would sort after every real key.
-TEST_CASE("services::index::index_disk::null_key_is_refused") {
+TEST_CASE("services::index::index_disk::a_null_key_handling") {
+    using components::expressions::compare_type;
     using components::types::complex_logical_type;
     using components::types::logical_type;
 
@@ -508,20 +507,45 @@ TEST_CASE("services::index::index_disk::null_key_is_refused") {
     auto index = btree_index_disk_t(path, &resource);
 
     const auto null_key = [&] { return logical_value_t(&resource, complex_logical_type{logical_type::NA}); };
+    const auto value = [&](int64_t key) { return logical_value_t(&resource, key); };
+    const auto sorted = [](auto container) {
+        std::vector<int64_t> out(container.begin(), container.end());
+        std::sort(out.begin(), out.end());
+        return out;
+    };
+    const auto scan = [&](compare_type compare, const logical_value_t& probe) {
+        btree_index_disk_t::result res(&resource);
+        REQUIRE(index.scan_range(compare, probe, res).type == core::error_code_t::none);
+        return sorted(res);
+    };
 
-    for (int i = 1; i <= 100; ++i) {
-        REQUIRE(index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i)).type ==
-                core::error_code_t::none);
+    constexpr int64_t kValueRows = 100;
+    for (int64_t i = 1; i <= kValueRows; ++i) {
+        REQUIRE(index.insert(value(i), i).type == core::error_code_t::none);
     }
-    REQUIRE(index.insert(null_key(), size_t(999)).type == core::error_code_t::none);
-    index.insert_bulk_unchecked(null_key(), size_t(998));
+    REQUIRE(index.insert(null_key(), 901).type == core::error_code_t::none);
+    REQUIRE(index.insert(null_key(), 902).type == core::error_code_t::none);
 
+    REQUIRE(sorted(index.find(null_key())) == std::vector<int64_t>{901, 902});
+    REQUIRE(sorted(index.find(value(7))) == std::vector<int64_t>{7});
+
+    REQUIRE(index.insert(null_key(), 901).type == core::error_code_t::none);
+    REQUIRE(sorted(index.find(null_key())) == std::vector<int64_t>{901, 902});
+
+    REQUIRE(scan(compare_type::gte, value(1)).size() == kValueRows);
+    REQUIRE(scan(compare_type::gt, value(kValueRows - 1)) == std::vector<int64_t>{kValueRows});
+    REQUIRE(scan(compare_type::ne, value(7)).size() == kValueRows - 1);
+    REQUIRE(scan(compare_type::lte, value(kValueRows)).size() == kValueRows);
+    REQUIRE(scan(compare_type::lt, value(2)) == std::vector<int64_t>{1});
+
+    REQUIRE(scan(compare_type::eq, null_key()) == std::vector<int64_t>{901, 902});
+    REQUIRE(scan(compare_type::ne, null_key()).size() == kValueRows);
+
+    REQUIRE(index.remove(null_key(), 901).type == core::error_code_t::none);
+    REQUIRE(sorted(index.find(null_key())) == std::vector<int64_t>{902});
+    REQUIRE(index.remove(null_key()).type == core::error_code_t::none);
     REQUIRE(index.find(null_key()).empty());
-    REQUIRE(index.upper_bound(logical_value_t(&resource, int64_t(90))).size() == 10);
-    REQUIRE(index.lower_bound(logical_value_t(&resource, int64_t(10))).size() == 9);
-
-    REQUIRE(index.lower_bound(null_key()).empty());
-    REQUIRE(index.upper_bound(null_key()).empty());
+    REQUIRE(scan(compare_type::gte, value(1)).size() == kValueRows);
 }
 
 // Graded against an explicit expected set, not a second implementation -- two implementations
@@ -548,7 +572,7 @@ TEST_CASE("services::index::index_disk::scan_range_answers_every_comparison") {
                                                            {-100, 10}};
     for (const auto& [k, row] : rows) {
         components::types::logical_value_t v(&resource, k);
-        REQUIRE(on_disk.insert(v, static_cast<size_t>(row)).type == core::error_code_t::none);
+        REQUIRE(on_disk.insert(v, static_cast<int64_t>(row)).type == core::error_code_t::none);
     }
 
     std::map<int64_t, int64_t> key_of_row;
@@ -660,14 +684,14 @@ TEST_CASE("services::index::index_disk::a_leaf_record_whose_key_will_not_decode_
 
         std::pmr::string good(&resource);
         components::index::codec::append_logical_value(good, logical_value_t(&resource, int64_t(7)));
-        components::index::codec::append_le<uint64_t>(good, uint64_t{5});
+        components::index::codec::append_le<int64_t>(good, int64_t{5});
         REQUIRE(tree.append(reinterpret_cast<core::b_plus_tree::data_ptr_t>(good.data()),
                             static_cast<uint32_t>(good.size())));
 
         std::pmr::string corrupt(&resource);
         components::index::codec::append_le<uint8_t>(corrupt, uint8_t{200});
-        components::index::codec::append_le<uint64_t>(corrupt, uint64_t{0});
-        components::index::codec::append_le<uint64_t>(corrupt, uint64_t{4242});
+        components::index::codec::append_le<int64_t>(corrupt, int64_t{0});
+        components::index::codec::append_le<int64_t>(corrupt, int64_t{4242});
         REQUIRE(tree.append(reinterpret_cast<core::b_plus_tree::data_ptr_t>(corrupt.data()),
                             static_cast<uint32_t>(corrupt.size())));
         REQUIRE(tree.flush());
@@ -765,7 +789,11 @@ TEST_CASE("services::index::index_disk::the_tree_holds_no_descriptor_per_leaf_at
         auto index = btree_index_disk_t(path, &resource);
         // DEFAULT_NODE_CAPACITY unique keys per leaf; 1500 distinct keys force >= 11 leaves.
         for (int i = 1; i <= 1500; ++i) {
-            index.insert_bulk_unchecked(logical_value_t(&resource, int64_t{i}), static_cast<size_t>(i));
+            std::pmr::string record(&resource);
+            components::index::codec::append_logical_value(record, logical_value_t(&resource, int64_t{i}));
+            components::index::codec::append_le<int64_t>(record, int64_t{i});
+            index.insert_bulk_unchecked(
+                core::b_plus_tree::btree_t::item_data{record.data(), static_cast<uint32_t>(record.size())});
         }
         REQUIRE_FALSE(index.force_flush().contains_error());
 
@@ -801,7 +829,7 @@ TEST_CASE("services::index::index_disk::rotated_segments_are_read_through_held_d
                                       std::pmr::set<std::uint64_t>{});
     constexpr int64_t key_count = 40;
     for (int64_t i = 1; i <= key_count; ++i) {
-        index.insert(logical_value_t(&resource, i), static_cast<size_t>(i));
+        index.insert(logical_value_t(&resource, i), i);
     }
     REQUIRE_FALSE(index.force_flush().contains_error());
 

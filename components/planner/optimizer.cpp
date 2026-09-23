@@ -17,7 +17,8 @@ namespace components::planner {
                                     logical_plan::parameter_node_t* parameters,
                                     const logical_plan::catalog_resolves_t* resolves,
                                     bool can_push_to_agent,
-                                    optimizer_pass_t host_pass) {
+                                    optimizer_pass_t host_pass,
+                                    const std::pmr::set<core::parameter_id_t>* deferred_parameters) {
         if (!node) {
             return nullptr;
         }
@@ -29,7 +30,7 @@ namespace components::planner {
         // DML on top and lowers DDL to sequences, leaving the
         // match_t/join_t/aggregate_t these rules target intact.
         if (parameters) {
-            optimizer::fold_constants(resource, node, parameters);
+            optimizer::fold_constants(resource, node, parameters, deferred_parameters);
         }
         // Clear a DISTINCT that a GROUP BY already makes redundant (group keys ⊆
         // projection / DISTINCT ON columns) so no operator_distinct "Unique" pass is

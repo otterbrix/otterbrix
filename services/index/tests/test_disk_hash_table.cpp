@@ -44,7 +44,13 @@ namespace {
         return std::move(walked.value());
     }
 
-    // FNV-1a collision pair for truncated entries (same 32-byte prefix and encoded length).
+    // The table takes each key's hash from its caller; any fixed function of the key bytes serves here.
+    uint32_t key_hash(std::string_view key) { return static_cast<uint32_t>(std::hash<std::string_view>{}(key)); }
+
+    // Given to two different keys to make them collide.
+    constexpr uint32_t colliding_hash = 0x5eed1234;
+
+    // Truncated entries that share their 32-byte prefix and encoded length, so only the loader tells them apart.
     static const unsigned char enc_a_bytes[] = {
         35,  200, 0,   0,   0,   97,  97,  97,  97,  97,  97,  97,  97,  97,  97,  97,  97,  97,  97,  97,  97,
         97,  97,  97,  97,  97,  97,  97,  97,  97,  97,  97,  9,   116, 135, 155, 250, 116, 9,   140, 227, 29,
@@ -100,22 +106,23 @@ TEST_CASE("services::index::disk_hash_table::put_get_erase_roundtrip") {
     std::filesystem::remove(path);
 
     disk_hash_table_t table(path, 64, &resource);
-    REQUIRE_FALSE(table.put("alpha", 10, 1, 100).contains_error());
-    REQUIRE_FALSE(table.put("beta", 20, 1, 200).contains_error());
+    REQUIRE_FALSE(table.put(key_hash("alpha"), "alpha", 10, 1, 100).contains_error());
+    REQUIRE_FALSE(table.put(key_hash("beta"), "beta", 20, 1, 200).contains_error());
 
-    auto alpha = must_read(table.get("alpha", loader_must_not_be_consulted(&resource)));
+    auto alpha = must_read(table.get(key_hash("alpha"), "alpha", loader_must_not_be_consulted(&resource)));
     REQUIRE(alpha.has_value());
     REQUIRE(alpha->value == 10);
     REQUIRE(alpha->log_file_id == 1);
     REQUIRE(alpha->log_offset == 100);
 
-    auto beta = must_read(table.get("beta", loader_must_not_be_consulted(&resource)));
+    auto beta = must_read(table.get(key_hash("beta"), "beta", loader_must_not_be_consulted(&resource)));
     REQUIRE(beta.has_value());
     REQUIRE(beta->value == 20);
 
-    REQUIRE(must_read(table.erase("alpha", loader_must_not_be_consulted(&resource))));
-    REQUIRE_FALSE(must_read(table.get("alpha", loader_must_not_be_consulted(&resource))).has_value());
-    REQUIRE(must_read(table.get("beta", loader_must_not_be_consulted(&resource))).has_value());
+    REQUIRE(must_read(table.erase(key_hash("alpha"), "alpha", loader_must_not_be_consulted(&resource))));
+    REQUIRE_FALSE(
+        must_read(table.get(key_hash("alpha"), "alpha", loader_must_not_be_consulted(&resource))).has_value());
+    REQUIRE(must_read(table.get(key_hash("beta"), "beta", loader_must_not_be_consulted(&resource))).has_value());
 }
 
 TEST_CASE("services::index::disk_hash_table::persist_reopen") {
@@ -125,19 +132,19 @@ TEST_CASE("services::index::disk_hash_table::persist_reopen") {
 
     {
         disk_hash_table_t table(path, 32, &resource);
-        REQUIRE_FALSE(table.put("k1", 111, 2, 1234).contains_error());
-        REQUIRE_FALSE(table.put("k2", 222, 2, 5678).contains_error());
+        REQUIRE_FALSE(table.put(key_hash("k1"), "k1", 111, 2, 1234).contains_error());
+        REQUIRE_FALSE(table.put(key_hash("k2"), "k2", 222, 2, 5678).contains_error());
         REQUIRE_FALSE(table.sync().contains_error());
     }
 
     {
         disk_hash_table_t reopened(path, 32, &resource);
-        auto v1 = must_read(reopened.get("k1", loader_must_not_be_consulted(&resource)));
+        auto v1 = must_read(reopened.get(key_hash("k1"), "k1", loader_must_not_be_consulted(&resource)));
         REQUIRE(v1.has_value());
         REQUIRE(v1->value == 111);
         REQUIRE(v1->log_file_id == 2);
         REQUIRE(v1->log_offset == 1234);
-        auto v2 = must_read(reopened.get("k2", loader_must_not_be_consulted(&resource)));
+        auto v2 = must_read(reopened.get(key_hash("k2"), "k2", loader_must_not_be_consulted(&resource)));
         REQUIRE(v2.has_value());
         REQUIRE(v2->value == 222);
     }
@@ -149,11 +156,11 @@ TEST_CASE("services::index::disk_hash_table::multiple_values_per_key") {
     std::filesystem::remove(path);
 
     disk_hash_table_t table(path, 32, &resource);
-    REQUIRE_FALSE(table.put("dup", 10, 1, 100).contains_error());
-    REQUIRE_FALSE(table.put("dup", 20, 2, 200).contains_error());
-    REQUIRE_FALSE(table.put("dup", 10, 3, 300).contains_error());
+    REQUIRE_FALSE(table.put(key_hash("dup"), "dup", 10, 1, 100).contains_error());
+    REQUIRE_FALSE(table.put(key_hash("dup"), "dup", 20, 2, 200).contains_error());
+    REQUIRE_FALSE(table.put(key_hash("dup"), "dup", 10, 3, 300).contains_error());
 
-    const auto values = must_read(table.get_all("dup", loader_must_not_be_consulted(&resource)));
+    const auto values = must_read(table.get_all(key_hash("dup"), "dup", loader_must_not_be_consulted(&resource)));
     REQUIRE(values.size() == 3);
 }
 
@@ -166,33 +173,31 @@ TEST_CASE("services::index::disk_hash_table::long_key_prefix_and_loader") {
     const std::string other_key = long_key + "y";
 
     disk_hash_table_t table(path, 8, &resource);
-    REQUIRE_FALSE(table.put(long_key, 777, 7, 700).contains_error());
+    REQUIRE_FALSE(table.put(key_hash(long_key), long_key, 777, 7, 700).contains_error());
 
     const auto source_1 = [&](uint32_t file_id, uint64_t offset) -> core::result_wrapper_t<std::pmr::string> {
         REQUIRE(file_id == 7);
         REQUIRE(offset == 700);
         return as_loader_key(&resource, long_key);
     };
-    auto with_loader = must_read(table.get(long_key, source_1));
+    auto with_loader = must_read(table.get(key_hash(long_key), long_key, source_1));
     REQUIRE(with_loader.has_value());
     REQUIRE(with_loader->value == 777);
 
     const auto source_2 = [&](uint32_t, uint64_t) -> core::result_wrapper_t<std::pmr::string> {
         return as_loader_key(&resource, long_key);
     };
-    auto mismatch = must_read(table.get(other_key, source_2));
+    auto mismatch = must_read(table.get(key_hash(other_key), other_key, source_2));
     REQUIRE_FALSE(mismatch.has_value());
 }
 
 TEST_CASE("services::index::disk_hash_table::truncated_collision_requires_loader") {
-    // enc_a/enc_b collide only for seed=0 (plain FNV-1a); table uses random seed by default.
-    env_var_guard_t seed_guard("OTTERBRIX_DISK_HASH_SEED", "0");
     auto resource = core::pmr::otterbrix_resource();
     const auto path = mk_path("disk_hash_table_truncated_collision.data");
     std::filesystem::remove(path);
 
     disk_hash_table_t table(path, 32, &resource);
-    REQUIRE_FALSE(table.put(enc_a, 777, 1, 100).contains_error());
+    REQUIRE_FALSE(table.put(colliding_hash, enc_a, 777, 1, 100).contains_error());
 
     size_t loader_calls = 0;
     const auto source_3 = [&](uint32_t, uint64_t) -> core::result_wrapper_t<std::pmr::string> {
@@ -200,12 +205,11 @@ TEST_CASE("services::index::disk_hash_table::truncated_collision_requires_loader
         return as_loader_key(&resource, enc_a);
     };
 
-    REQUIRE(must_read(table.get_all(enc_b, source_3)).empty());
+    REQUIRE(must_read(table.get_all(colliding_hash, enc_b, source_3)).empty());
     REQUIRE(loader_calls >= 1);
 }
 
 TEST_CASE("services::index::disk_hash_table::a_colliding_stranger_that_cannot_be_read_refuses_the_whole_walk") {
-    env_var_guard_t seed_guard("OTTERBRIX_DISK_HASH_SEED", "0");
     auto resource = core::pmr::otterbrix_resource();
     const auto path = mk_path("disk_hash_table_unreadable_collision_stranger.data");
     std::filesystem::remove(path);
@@ -213,8 +217,8 @@ TEST_CASE("services::index::disk_hash_table::a_colliding_stranger_that_cannot_be
     std::filesystem::remove(std::filesystem::path(path).concat(".ovf"));
 
     disk_hash_table_t table(path, 32, &resource);
-    REQUIRE_FALSE(table.put(enc_b, 555, 2, 200).contains_error());
-    REQUIRE_FALSE(table.put(enc_a, 777, 1, 100).contains_error());
+    REQUIRE_FALSE(table.put(colliding_hash, enc_b, 555, 2, 200).contains_error());
+    REQUIRE_FALSE(table.put(colliding_hash, enc_a, 777, 1, 100).contains_error());
 
     // A walk's refusal copies through VALUE_OR_RETURN and doesn't propagate the allocator.
     const auto produced_key = as_loader_key(&resource, enc_a);
@@ -223,7 +227,7 @@ TEST_CASE("services::index::disk_hash_table::a_colliding_stranger_that_cannot_be
     const auto both_readable = [&](uint32_t, uint64_t offset) -> core::result_wrapper_t<std::pmr::string> {
         return as_loader_key(&resource, offset == 200 ? enc_b : enc_a);
     };
-    const auto complete = must_read(table.get_all(enc_b, both_readable));
+    const auto complete = must_read(table.get_all(colliding_hash, enc_b, both_readable));
     REQUIRE(complete.size() == 1);
     REQUIRE(complete.front().value == 555);
 
@@ -237,7 +241,7 @@ TEST_CASE("services::index::disk_hash_table::a_colliding_stranger_that_cannot_be
                              std::pmr::string{"the stranger's record is unreadable", &resource});
     };
 
-    auto walked = table.get_all(enc_b, stranger_unreadable);
+    auto walked = table.get_all(colliding_hash, enc_b, stranger_unreadable);
     REQUIRE(walked.has_error());
     REQUIRE(walked.error().type == core::error_code_t::io_error);
     REQUIRE(consulted.size() == 2);
@@ -252,7 +256,7 @@ TEST_CASE("services::index::disk_hash_table::get_invokes_key_loader_for_truncate
 
     const std::string long_key(200, 'x');
     disk_hash_table_t table(path, 8, &resource);
-    REQUIRE_FALSE(table.put(long_key, 777, 7, 700).contains_error());
+    REQUIRE_FALSE(table.put(key_hash(long_key), long_key, 777, 7, 700).contains_error());
 
     size_t loader_calls = 0;
     const auto source_4 = [&](uint32_t file_id, uint64_t offset) -> core::result_wrapper_t<std::pmr::string> {
@@ -262,7 +266,7 @@ TEST_CASE("services::index::disk_hash_table::get_invokes_key_loader_for_truncate
         return as_loader_key(&resource, long_key);
     };
 
-    const auto value = must_read(table.get(long_key, source_4));
+    const auto value = must_read(table.get(key_hash(long_key), long_key, source_4));
     REQUIRE(value.has_value());
     REQUIRE(value->value == 777);
     REQUIRE(loader_calls == 1);
@@ -274,7 +278,7 @@ TEST_CASE("services::index::disk_hash_table::get_skips_key_loader_for_inline_ent
     std::filesystem::remove(path);
 
     disk_hash_table_t table(path, 8, &resource);
-    REQUIRE_FALSE(table.put("short-key", 5, 1, 100).contains_error());
+    REQUIRE_FALSE(table.put(key_hash("short-key"), "short-key", 5, 1, 100).contains_error());
 
     size_t loader_calls = 0;
     const auto source_5 = [&](uint32_t, uint64_t) -> core::result_wrapper_t<std::pmr::string> {
@@ -282,7 +286,7 @@ TEST_CASE("services::index::disk_hash_table::get_skips_key_loader_for_inline_ent
         return as_loader_key(&resource, "short-key");
     };
 
-    const auto value = must_read(table.get("short-key", source_5));
+    const auto value = must_read(table.get(key_hash("short-key"), "short-key", source_5));
     REQUIRE(value.has_value());
     REQUIRE(value->value == 5);
     REQUIRE(loader_calls == 0);
@@ -295,7 +299,7 @@ TEST_CASE("services::index::disk_hash_table::erase_invokes_key_loader_for_trunca
 
     const std::string long_key(200, 'y');
     disk_hash_table_t table(path, 8, &resource);
-    REQUIRE_FALSE(table.put(long_key, 909, 9, 900).contains_error());
+    REQUIRE_FALSE(table.put(key_hash(long_key), long_key, 909, 9, 900).contains_error());
 
     size_t loader_calls = 0;
     const auto source_6 = [&](uint32_t file_id, uint64_t offset) -> core::result_wrapper_t<std::pmr::string> {
@@ -305,9 +309,9 @@ TEST_CASE("services::index::disk_hash_table::erase_invokes_key_loader_for_trunca
         return as_loader_key(&resource, long_key);
     };
 
-    REQUIRE(must_read(table.erase(long_key, source_6)));
+    REQUIRE(must_read(table.erase(key_hash(long_key), long_key, source_6)));
     REQUIRE(loader_calls >= 1);
-    REQUIRE_FALSE(must_read(table.get(long_key, source_6)).has_value());
+    REQUIRE_FALSE(must_read(table.get(key_hash(long_key), long_key, source_6)).has_value());
 }
 
 // test_bitcask_index_disk.cpp::find_refuses_when_a_long_keys_record_cannot_be_read can't catch this alone.
@@ -319,7 +323,7 @@ TEST_CASE("services::index::disk_hash_table::truncated_entry_refuses_when_the_re
 
     const std::string long_key(200, 'x');
     disk_hash_table_t table(path, 8, &resource);
-    REQUIRE_FALSE(table.put(long_key, 777, 7, 700).contains_error());
+    REQUIRE_FALSE(table.put(key_hash(long_key), long_key, 777, 7, 700).contains_error());
 
     uint64_t truncated_entries = 0;
     REQUIRE_FALSE(table
@@ -335,11 +339,11 @@ TEST_CASE("services::index::disk_hash_table::truncated_entry_refuses_when_the_re
         return core::error_t(core::error_code_t::io_error, std::pmr::string{"record unreadable", &resource});
     };
 
-    auto read = table.get_all(long_key, refuses);
+    auto read = table.get_all(key_hash(long_key), long_key, refuses);
     REQUIRE(read.has_error());
     REQUIRE(read.error().type == core::error_code_t::io_error);
 
-    auto erased = table.erase(long_key, refuses);
+    auto erased = table.erase(key_hash(long_key), long_key, refuses);
     REQUIRE(erased.has_error());
     REQUIRE(erased.error().type == core::error_code_t::io_error);
 
@@ -347,7 +351,7 @@ TEST_CASE("services::index::disk_hash_table::truncated_entry_refuses_when_the_re
     const auto source = [&](uint32_t, uint64_t) -> core::result_wrapper_t<std::pmr::string> {
         return as_loader_key(&resource, long_key);
     };
-    const auto still_there = must_read(table.get(long_key, source));
+    const auto still_there = must_read(table.get(key_hash(long_key), long_key, source));
     REQUIRE(still_there.has_value());
     REQUIRE(still_there->value == 777);
 }
@@ -361,7 +365,7 @@ TEST_CASE("services::index::disk_hash_table::truncated_entry_answers_no_when_the
     const std::string different_key = std::string(199, 'x') + "y";
 
     disk_hash_table_t table(path, 8, &resource);
-    REQUIRE_FALSE(table.put(long_key, 777, 7, 700).contains_error());
+    REQUIRE_FALSE(table.put(key_hash(long_key), long_key, 777, 7, 700).contains_error());
 
     size_t loader_calls = 0;
     const auto answers = [&](uint32_t, uint64_t) -> core::result_wrapper_t<std::pmr::string> {
@@ -369,7 +373,7 @@ TEST_CASE("services::index::disk_hash_table::truncated_entry_answers_no_when_the
         return as_loader_key(&resource, different_key);
     };
 
-    const auto missing = must_read(table.get(long_key, answers));
+    const auto missing = must_read(table.get(key_hash(long_key), long_key, answers));
     REQUIRE_FALSE(missing.has_value());
     REQUIRE(loader_calls == 1);
 }
@@ -380,14 +384,16 @@ TEST_CASE("services::index::disk_hash_table::inline_entry_never_reaches_a_refusi
     std::filesystem::remove(path);
 
     disk_hash_table_t table(path, 8, &resource);
-    REQUIRE_FALSE(table.put("short-key", 5, 1, 100).contains_error());
+    REQUIRE_FALSE(table.put(key_hash("short-key"), "short-key", 5, 1, 100).contains_error());
 
-    const auto value = must_read(table.get("short-key", loader_must_not_be_consulted(&resource)));
+    const auto value =
+        must_read(table.get(key_hash("short-key"), "short-key", loader_must_not_be_consulted(&resource)));
     REQUIRE(value.has_value());
     REQUIRE(value->value == 5);
 
-    REQUIRE(must_read(table.erase("short-key", loader_must_not_be_consulted(&resource))));
-    REQUIRE_FALSE(must_read(table.get("short-key", loader_must_not_be_consulted(&resource))).has_value());
+    REQUIRE(must_read(table.erase(key_hash("short-key"), "short-key", loader_must_not_be_consulted(&resource))));
+    REQUIRE_FALSE(
+        must_read(table.get(key_hash("short-key"), "short-key", loader_must_not_be_consulted(&resource))).has_value());
 
     auto refusal = loader_must_not_be_consulted(&resource)(0, 0);
     REQUIRE(refusal.has_error());
@@ -404,7 +410,8 @@ TEST_CASE("services::index::disk_hash_table::rehash_preserves_entries") {
 
     for (int i = 0; i < 300; ++i) {
         const auto key = "k." + std::to_string(i);
-        REQUIRE_FALSE(table.put(key, static_cast<int64_t>(i), 1, static_cast<uint64_t>(1000 + i)).contains_error());
+        REQUIRE_FALSE(table.put(key_hash(key), key, static_cast<int64_t>(i), 1, static_cast<uint64_t>(1000 + i))
+                          .contains_error());
     }
 
     REQUIRE_FALSE(table.rehash(128).contains_error());
@@ -412,7 +419,7 @@ TEST_CASE("services::index::disk_hash_table::rehash_preserves_entries") {
 
     for (int i = 0; i < 300; ++i) {
         const auto key = "k." + std::to_string(i);
-        auto v = must_read(table.get(key, loader_must_not_be_consulted(&resource)));
+        auto v = must_read(table.get(key_hash(key), key, loader_must_not_be_consulted(&resource)));
         REQUIRE(v.has_value());
         REQUIRE(v->value == static_cast<int64_t>(i));
     }
@@ -427,8 +434,8 @@ TEST_CASE("services::index::disk_hash_table::rehash_truncated_keys_without_loade
     const std::string key2 = std::string(199, 'a') + "b";
 
     disk_hash_table_t table(path, 4, &resource);
-    REQUIRE_FALSE(table.put(key1, 11, 5, 500).contains_error());
-    REQUIRE_FALSE(table.put(key2, 22, 6, 600).contains_error());
+    REQUIRE_FALSE(table.put(key_hash(key1), key1, 11, 5, 500).contains_error());
+    REQUIRE_FALSE(table.put(key_hash(key2), key2, 22, 6, 600).contains_error());
 
     REQUIRE_FALSE(table.rehash(64).contains_error());
 
@@ -442,11 +449,11 @@ TEST_CASE("services::index::disk_hash_table::rehash_truncated_keys_without_loade
         }
         return core::error_t(core::error_code_t::io_error, std::pmr::string{"no record at this location", &resource});
     };
-    auto v1 = must_read(table.get(key1, source_7));
+    auto v1 = must_read(table.get(key_hash(key1), key1, source_7));
     REQUIRE(v1.has_value());
     REQUIRE(v1->value == 11);
 
-    auto v2 = must_read(table.get(key2, source_7));
+    auto v2 = must_read(table.get(key_hash(key2), key2, source_7));
     REQUIRE(v2.has_value());
     REQUIRE(v2->value == 22);
 }
@@ -474,7 +481,7 @@ TEST_CASE("services::index::disk_hash_table::linear_hashing_progression") {
         for (size_t i = 0; i < keys.size(); ++i) {
             const auto offset = static_cast<uint64_t>(10'000 + i);
             full_key_by_offset.emplace(offset, keys[i]);
-            REQUIRE_FALSE(table.put(keys[i], static_cast<int64_t>(i), 42, offset).contains_error());
+            REQUIRE_FALSE(table.put(key_hash(keys[i]), keys[i], static_cast<int64_t>(i), 42, offset).contains_error());
         }
 
         const auto source_8 = [&](uint32_t file_id, uint64_t offset) -> core::result_wrapper_t<std::pmr::string> {
@@ -494,7 +501,7 @@ TEST_CASE("services::index::disk_hash_table::linear_hashing_progression") {
             REQUIRE_FALSE(table.rehash(target).contains_error());
             REQUIRE(table.bucket_count() == target);
             for (size_t i = 0; i < keys.size(); ++i) {
-                auto v = must_read(table.get(keys[i], source_8));
+                auto v = must_read(table.get(key_hash(keys[i]), keys[i], source_8));
                 REQUIRE(v.has_value());
                 REQUIRE(v->value == static_cast<int64_t>(i));
             }
@@ -523,7 +530,7 @@ TEST_CASE("services::index::disk_hash_table::linear_hashing_progression") {
             REQUIRE_FALSE(reopened.rehash(target).contains_error());
             REQUIRE(reopened.bucket_count() == target);
             for (size_t i = 0; i < keys.size(); ++i) {
-                auto v = must_read(reopened.get(keys[i], source_9));
+                auto v = must_read(reopened.get(key_hash(keys[i]), keys[i], source_9));
                 REQUIRE(v.has_value());
                 REQUIRE(v->value == static_cast<int64_t>(i));
             }
@@ -542,7 +549,8 @@ TEST_CASE("services::index::disk_hash_table::auto_rehash_by_load_factor") {
 
     for (int i = 0; i < 20; ++i) {
         const auto key = "auto.k." + std::to_string(i);
-        REQUIRE_FALSE(table.put(key, static_cast<int64_t>(i), 10, static_cast<uint64_t>(i + 1)).contains_error());
+        REQUIRE_FALSE(
+            table.put(key_hash(key), key, static_cast<int64_t>(i), 10, static_cast<uint64_t>(i + 1)).contains_error());
     }
 
     REQUIRE(table.bucket_count() > initial_buckets);
@@ -561,8 +569,13 @@ TEST_CASE("services::index::disk_hash_table::split_crash_after_copy_sync") {
         table.set_auto_rehash_suppressed(true);
         for (int i = 0; i < 300; ++i) {
             keys.emplace_back("crash.copy.k." + std::to_string(i));
-            REQUIRE_FALSE(
-                table.put(keys.back(), static_cast<int64_t>(i), 1, static_cast<uint64_t>(1000 + i)).contains_error());
+            REQUIRE_FALSE(table
+                              .put(key_hash(keys.back()),
+                                   keys.back(),
+                                   static_cast<int64_t>(i),
+                                   1,
+                                   static_cast<uint64_t>(1000 + i))
+                              .contains_error());
         }
         env_var_guard_t guard("OTTERBRIX_DISK_HASH_SPLIT_FAILPOINT", "after_copy_sync");
         REQUIRE(table.rehash(5).contains_error());
@@ -572,7 +585,9 @@ TEST_CASE("services::index::disk_hash_table::split_crash_after_copy_sync") {
         disk_hash_table_t reopened(path, 4, &resource);
         REQUIRE(reopened.bucket_count() == 4);
         for (int i = 0; i < 300; ++i) {
-            auto v = must_read(reopened.get(keys[static_cast<size_t>(i)], loader_must_not_be_consulted(&resource)));
+            auto v = must_read(reopened.get(key_hash(keys[static_cast<size_t>(i)]),
+                                            keys[static_cast<size_t>(i)],
+                                            loader_must_not_be_consulted(&resource)));
             REQUIRE(v.has_value());
             REQUIRE(v->value == static_cast<int64_t>(i));
         }
@@ -591,8 +606,13 @@ TEST_CASE("services::index::disk_hash_table::split_crash_after_header_sync") {
         table.set_auto_rehash_suppressed(true);
         for (int i = 0; i < 300; ++i) {
             keys.emplace_back("crash.header.k." + std::to_string(i));
-            REQUIRE_FALSE(
-                table.put(keys.back(), static_cast<int64_t>(i), 1, static_cast<uint64_t>(2000 + i)).contains_error());
+            REQUIRE_FALSE(table
+                              .put(key_hash(keys.back()),
+                                   keys.back(),
+                                   static_cast<int64_t>(i),
+                                   1,
+                                   static_cast<uint64_t>(2000 + i))
+                              .contains_error());
         }
         env_var_guard_t guard("OTTERBRIX_DISK_HASH_SPLIT_FAILPOINT", "after_header_sync");
         REQUIRE(table.rehash(5).contains_error());
@@ -602,7 +622,9 @@ TEST_CASE("services::index::disk_hash_table::split_crash_after_header_sync") {
         disk_hash_table_t reopened(path, 4, &resource);
         REQUIRE(reopened.bucket_count() == 5);
         for (int i = 0; i < 300; ++i) {
-            auto v = must_read(reopened.get(keys[static_cast<size_t>(i)], loader_must_not_be_consulted(&resource)));
+            auto v = must_read(reopened.get(key_hash(keys[static_cast<size_t>(i)]),
+                                            keys[static_cast<size_t>(i)],
+                                            loader_must_not_be_consulted(&resource)));
             REQUIRE(v.has_value());
             REQUIRE(v->value == static_cast<int64_t>(i));
         }
@@ -621,8 +643,13 @@ TEST_CASE("services::index::disk_hash_table::split_crash_recovery_continues_prog
         table.set_auto_rehash_suppressed(true);
         for (int i = 0; i < 400; ++i) {
             keys.emplace_back("crash.recover.k." + std::to_string(i));
-            REQUIRE_FALSE(
-                table.put(keys.back(), static_cast<int64_t>(i), 1, static_cast<uint64_t>(5000 + i)).contains_error());
+            REQUIRE_FALSE(table
+                              .put(key_hash(keys.back()),
+                                   keys.back(),
+                                   static_cast<int64_t>(i),
+                                   1,
+                                   static_cast<uint64_t>(5000 + i))
+                              .contains_error());
         }
 
         env_var_guard_t guard("OTTERBRIX_DISK_HASH_SPLIT_FAILPOINT", "after_header_sync");
@@ -637,7 +664,9 @@ TEST_CASE("services::index::disk_hash_table::split_crash_recovery_continues_prog
         REQUIRE(reopened.bucket_count() == 6);
 
         for (int i = 0; i < 400; ++i) {
-            auto v = must_read(reopened.get(keys[static_cast<size_t>(i)], loader_must_not_be_consulted(&resource)));
+            auto v = must_read(reopened.get(key_hash(keys[static_cast<size_t>(i)]),
+                                            keys[static_cast<size_t>(i)],
+                                            loader_must_not_be_consulted(&resource)));
             REQUIRE(v.has_value());
             REQUIRE(v->value == static_cast<int64_t>(i));
         }
@@ -668,8 +697,8 @@ TEST_CASE("services::index::disk_hash_table::create_returns_a_usable_table") {
     REQUIRE_FALSE(result.has_error());
     auto table = std::move(result.value());
     REQUIRE(table);
-    REQUIRE_FALSE(table->put("k", 42, 0, 0).contains_error());
-    auto found = must_read(table->get("k", loader_must_not_be_consulted(&resource)));
+    REQUIRE_FALSE(table->put(key_hash("k"), "k", 42, 0, 0).contains_error());
+    auto found = must_read(table->get(key_hash("k"), "k", loader_must_not_be_consulted(&resource)));
     REQUIRE(found.has_value());
     REQUIRE(found->value == 42);
 }
@@ -689,7 +718,8 @@ TEST_CASE("services::index::disk_hash_table::for_each_walks_duplicates_in_insert
     constexpr int64_t duplicates = 300;
     for (int64_t i = 0; i < duplicates; ++i) {
         REQUIRE_FALSE(
-            table.put("dup", i, static_cast<uint32_t>(i + 1), static_cast<uint64_t>(1000 + i)).contains_error());
+            table.put(key_hash("dup"), "dup", i, static_cast<uint32_t>(i + 1), static_cast<uint64_t>(1000 + i))
+                .contains_error());
     }
     REQUIRE_FALSE(table.sync().contains_error());
 
@@ -710,7 +740,7 @@ TEST_CASE("services::index::disk_hash_table::for_each_walks_duplicates_in_insert
         REQUIRE_FALSE(ref.key_truncated);
     }
 
-    auto all = must_read(table.get_all("dup", loader_must_not_be_consulted(&resource)));
+    auto all = must_read(table.get_all(key_hash("dup"), "dup", loader_must_not_be_consulted(&resource)));
     REQUIRE(all.size() == seen.size());
     for (size_t i = 0; i < all.size(); ++i) {
         REQUIRE(all[i].value == seen[i].value);
@@ -742,7 +772,8 @@ TEST_CASE("services::index::disk_hash_table::for_each_keeps_interleaved_keys_in_
                                           put_t{"alpha", 9}},
                                          &resource);
     for (const auto& step : script) {
-        REQUIRE_FALSE(table.put(step.key, step.value, 7, static_cast<uint64_t>(step.value) * 10).contains_error());
+        REQUIRE_FALSE(table.put(key_hash(step.key), step.key, step.value, 7, static_cast<uint64_t>(step.value) * 10)
+                          .contains_error());
     }
 
     std::pmr::vector<int64_t> seen(&resource);
@@ -766,8 +797,8 @@ TEST_CASE("services::index::disk_hash_table::for_each_multi_bucket_order_is_stab
     std::pmr::vector<int64_t> first_pass(&resource);
     std::pmr::vector<int64_t> second_pass(&resource);
 
+    const uint32_t key_buckets[key_count] = {15, 60, 53, 34, 3};
     {
-        env_var_guard_t seed_guard("OTTERBRIX_DISK_HASH_SEED", "0x5eed1234");
         disk_hash_table_t table(path, 64, &resource);
         REQUIRE_FALSE(table.set_auto_rehash_suppressed(true));
 
@@ -776,7 +807,8 @@ TEST_CASE("services::index::disk_hash_table::for_each_multi_bucket_order_is_stab
             for (int k = 0; k < key_count; ++k) {
                 const std::string key = "key_" + std::to_string(k);
                 REQUIRE_FALSE(
-                    table.put(key, static_cast<int64_t>(k) * 1000 + n, 1, static_cast<uint64_t>(n)).contains_error());
+                    table.put(key_buckets[k], key, static_cast<int64_t>(k) * 1000 + n, 1, static_cast<uint64_t>(n))
+                        .contains_error());
             }
         }
 
@@ -794,8 +826,7 @@ TEST_CASE("services::index::disk_hash_table::for_each_multi_bucket_order_is_stab
         REQUIRE(second_pass[i] == first_pass[i]);
     }
 
-    // The bucket loop runs ascending; with the seed pinned above, fnv1a-32(0x5eed1234) mod 64 puts
-    // key_4 in bucket 3, key_0 in 15, key_3 in 34, key_2 in 53, key_1 in 60 -- fixing this order.
+    // The bucket loop runs ascending, so the buckets chosen above fix this order.
     const std::pmr::vector<int> expected_key_order({4, 0, 3, 2, 1}, &resource);
     for (size_t group = 0; group < expected_key_order.size(); ++group) {
         for (int64_t n = 0; n < per_key; ++n) {
@@ -838,7 +869,9 @@ TEST_CASE("services::index::disk_hash_table::for_each_delivers_every_entry_befor
 
     constexpr int64_t total = 40;
     for (int64_t i = 0; i < total; ++i) {
-        REQUIRE_FALSE(table.put("k" + std::to_string(i), i, 1, static_cast<uint64_t>(i)).contains_error());
+        REQUIRE_FALSE(
+            table.put(key_hash("k" + std::to_string(i)), "k" + std::to_string(i), i, 1, static_cast<uint64_t>(i))
+                .contains_error());
     }
 
     auto full_walk = table.for_each([&](const disk_hash_table_t::value_ref_t& ref) {
@@ -851,7 +884,7 @@ TEST_CASE("services::index::disk_hash_table::for_each_delivers_every_entry_befor
     REQUIRE(calls == size_on_return);
     REQUIRE(size_on_return == static_cast<size_t>(total));
 
-    REQUIRE(must_read(table.get("k0", loader_must_not_be_consulted(&resource))).has_value());
+    REQUIRE(must_read(table.get(key_hash("k0"), "k0", loader_must_not_be_consulted(&resource))).has_value());
     REQUIRE_FALSE(table.sync().contains_error());
     REQUIRE(collected.size() == size_on_return);
     REQUIRE(calls == size_on_return);
@@ -899,7 +932,7 @@ TEST_CASE("services::index::disk_hash_table::reads_refuse_when_an_overflow_page_
     // MEASURED, not assumed: the entry that first grows the overflow file is where the primary page ran out of room.
     size_t entries_that_fit_the_primary_page = 0;
     for (int64_t i = 0; i < entry_count; ++i) {
-        REQUIRE_FALSE(table.put(key, i, 1, static_cast<uint64_t>(1000 + i)).contains_error());
+        REQUIRE_FALSE(table.put(key_hash(key), key, i, 1, static_cast<uint64_t>(1000 + i)).contains_error());
         if (entries_that_fit_the_primary_page == 0 && std::filesystem::exists(overflow_path) &&
             std::filesystem::file_size(overflow_path) >= disk_hash_table_t::page_size) {
             entries_that_fit_the_primary_page = static_cast<size_t>(i);
@@ -910,19 +943,19 @@ TEST_CASE("services::index::disk_hash_table::reads_refuse_when_an_overflow_page_
     REQUIRE(std::filesystem::file_size(overflow_path) >= disk_hash_table_t::page_size);
 
     REQUIRE_FALSE(table.sync().contains_error());
-    const auto whole = must_read(table.get_all(key, loader_must_not_be_consulted(&resource)));
+    const auto whole = must_read(table.get_all(key_hash(key), key, loader_must_not_be_consulted(&resource)));
     REQUIRE(whole.size() == static_cast<size_t>(entry_count));
 
     const auto overflow_bytes = read_file_bytes(overflow_path);
     std::filesystem::resize_file(overflow_path, 0);
 
     // THE PROPERTY: before the fix, this line silently came back with 40 of the 200 rows and no way to say so.
-    auto after = table.get_all(key, loader_must_not_be_consulted(&resource));
+    auto after = table.get_all(key_hash(key), key, loader_must_not_be_consulted(&resource));
     INFO("get_all met an unreadable overflow page and must REFUSE, not answer with the primary page alone");
     REQUIRE(after.has_error());
     REQUIRE(after.error().type == core::error_code_t::io_error);
 
-    auto single = table.get(key, loader_must_not_be_consulted(&resource));
+    auto single = table.get(key_hash(key), key, loader_must_not_be_consulted(&resource));
     REQUIRE(single.has_error());
 
     size_t seen = 0;
@@ -932,11 +965,11 @@ TEST_CASE("services::index::disk_hash_table::reads_refuse_when_an_overflow_page_
     REQUIRE(seen < static_cast<size_t>(entry_count));
 
     // erase's bare false would conflate "no such key" with "the chain ran out from under me".
-    auto erased = table.erase("absent-" + key, loader_must_not_be_consulted(&resource));
+    auto erased = table.erase(key_hash("absent-" + key), "absent-" + key, loader_must_not_be_consulted(&resource));
     REQUIRE(erased.has_error());
 
     restore_file_bytes(overflow_path, overflow_bytes);
-    const auto restored = must_read(table.get_all(key, loader_must_not_be_consulted(&resource)));
+    const auto restored = must_read(table.get_all(key_hash(key), key, loader_must_not_be_consulted(&resource)));
     REQUIRE(restored.size() == static_cast<size_t>(entry_count));
 }
 
@@ -955,7 +988,8 @@ TEST_CASE("services::index::disk_hash_table::split_refuses_when_an_entry_cannot_
         table.set_auto_rehash_suppressed(true);
         for (int i = 0; i < 400; ++i) {
             auto key = chain_key(i);
-            REQUIRE_FALSE(table.put(key, static_cast<int64_t>(i), 1, static_cast<uint64_t>(3000 + i)).contains_error());
+            REQUIRE_FALSE(table.put(key_hash(key), key, static_cast<int64_t>(i), 1, static_cast<uint64_t>(3000 + i))
+                              .contains_error());
             keys.emplace_back(std::move(key));
         }
         REQUIRE(table.bucket_count() == 1);
@@ -965,7 +999,9 @@ TEST_CASE("services::index::disk_hash_table::split_refuses_when_an_entry_cannot_
             env_var_guard_t deny_overflow("OTTERBRIX_DISK_HASH_OVERFLOW_ALLOC_FAILPOINT", "1");
             bool put_refused = false;
             for (int i = 0; i < 200 && !put_refused; ++i) {
-                put_refused = table.put("sensitivity." + std::to_string(i), 0, 1, 0).contains_error();
+                put_refused =
+                    table.put(key_hash("sensitivity." + std::to_string(i)), "sensitivity." + std::to_string(i), 0, 1, 0)
+                        .contains_error();
             }
             REQUIRE(put_refused);
 
@@ -975,7 +1011,7 @@ TEST_CASE("services::index::disk_hash_table::split_refuses_when_an_entry_cannot_
         REQUIRE(table.bucket_count() == 1);
 
         for (size_t i = 0; i < keys.size(); ++i) {
-            auto v = must_read(table.get(keys[i], loader_must_not_be_consulted(&resource)));
+            auto v = must_read(table.get(key_hash(keys[i]), keys[i], loader_must_not_be_consulted(&resource)));
             REQUIRE(v.has_value());
             REQUIRE(v->value == static_cast<int64_t>(i));
         }
@@ -987,7 +1023,8 @@ TEST_CASE("services::index::disk_hash_table::split_refuses_when_an_entry_cannot_
     REQUIRE_FALSE(reopened.rehash(2).contains_error());
     REQUIRE(reopened.bucket_count() == 2);
     for (size_t i = 0; i < keys.size(); ++i) {
-        const auto rows = must_read(reopened.get_all(keys[i], loader_must_not_be_consulted(&resource)));
+        const auto rows =
+            must_read(reopened.get_all(key_hash(keys[i]), keys[i], loader_must_not_be_consulted(&resource)));
         REQUIRE(rows.size() == 1);
         REQUIRE(rows.front().value == static_cast<int64_t>(i));
     }
@@ -1007,7 +1044,8 @@ TEST_CASE("services::index::disk_hash_table::split_refuses_when_a_source_page_ca
     keys.reserve(400);
     for (int i = 0; i < 400; ++i) {
         auto key = chain_key(i);
-        REQUIRE_FALSE(table.put(key, static_cast<int64_t>(i), 1, static_cast<uint64_t>(4000 + i)).contains_error());
+        REQUIRE_FALSE(table.put(key_hash(key), key, static_cast<int64_t>(i), 1, static_cast<uint64_t>(4000 + i))
+                          .contains_error());
         keys.emplace_back(std::move(key));
     }
     REQUIRE_FALSE(table.sync().contains_error());
@@ -1023,14 +1061,14 @@ TEST_CASE("services::index::disk_hash_table::split_refuses_when_a_source_page_ca
 
     restore_file_bytes(overflow_path, overflow_bytes);
     for (size_t i = 0; i < keys.size(); ++i) {
-        const auto rows = must_read(table.get_all(keys[i], loader_must_not_be_consulted(&resource)));
+        const auto rows = must_read(table.get_all(key_hash(keys[i]), keys[i], loader_must_not_be_consulted(&resource)));
         REQUIRE(rows.size() == 1);
         REQUIRE(rows.front().value == static_cast<int64_t>(i));
     }
     REQUIRE_FALSE(table.rehash(2).contains_error());
     REQUIRE(table.bucket_count() == 2);
     for (size_t i = 0; i < keys.size(); ++i) {
-        const auto rows = must_read(table.get_all(keys[i], loader_must_not_be_consulted(&resource)));
+        const auto rows = must_read(table.get_all(key_hash(keys[i]), keys[i], loader_must_not_be_consulted(&resource)));
         REQUIRE(rows.size() == 1);
         REQUIRE(rows.front().value == static_cast<int64_t>(i));
     }
@@ -1074,8 +1112,13 @@ TEST_CASE("services::index::disk_hash_table::open_refuses_when_the_entry_count_c
         disk_hash_table_t table(path, 8, &resource);
         table.set_auto_rehash_suppressed(true);
         for (int64_t i = 0; i < 64; ++i) {
-            REQUIRE_FALSE(
-                table.put("count-key-" + std::to_string(i), i, 1, 100 + static_cast<uint64_t>(i)).contains_error());
+            REQUIRE_FALSE(table
+                              .put(key_hash("count-key-" + std::to_string(i)),
+                                   "count-key-" + std::to_string(i),
+                                   i,
+                                   1,
+                                   100 + static_cast<uint64_t>(i))
+                              .contains_error());
         }
         REQUIRE_FALSE(table.sync().contains_error());
     }
@@ -1099,7 +1142,7 @@ TEST_CASE("services::index::disk_hash_table::open_refuses_a_corrupt_linear_hash_
 
     {
         disk_hash_table_t table(path, 32, &resource);
-        REQUIRE_FALSE(table.put("k", 7, 1, 100).contains_error());
+        REQUIRE_FALSE(table.put(key_hash("k"), "k", 7, 1, 100).contains_error());
         REQUIRE_FALSE(table.sync().contains_error());
     }
 
@@ -1123,7 +1166,7 @@ TEST_CASE("services::index::disk_hash_table::open_refuses_a_corrupt_overflow_cur
 
     {
         disk_hash_table_t table(path, 16, &resource);
-        REQUIRE_FALSE(table.put("k", 7, 1, 100).contains_error());
+        REQUIRE_FALSE(table.put(key_hash("k"), "k", 7, 1, 100).contains_error());
         REQUIRE_FALSE(table.sync().contains_error());
     }
 
@@ -1148,7 +1191,7 @@ TEST_CASE("services::index::disk_hash_table::open_refuses_a_header_whose_checksu
 
     {
         disk_hash_table_t table(path, 16, &resource);
-        REQUIRE_FALSE(table.put("k", 7, 1, 100).contains_error());
+        REQUIRE_FALSE(table.put(key_hash("k"), "k", 7, 1, 100).contains_error());
         REQUIRE_FALSE(table.sync().contains_error());
     }
 
@@ -1171,7 +1214,7 @@ TEST_CASE("services::index::disk_hash_table::open_refuses_a_file_without_the_mag
 
     {
         disk_hash_table_t table(path, 16, &resource);
-        REQUIRE_FALSE(table.put("k", 7, 1, 100).contains_error());
+        REQUIRE_FALSE(table.put(key_hash("k"), "k", 7, 1, 100).contains_error());
         REQUIRE_FALSE(table.sync().contains_error());
     }
 
@@ -1198,8 +1241,9 @@ TEST_CASE("services::index::disk_hash_table::an_erased_slot_is_reused_by_the_nex
 
     // Live size never exceeds 1 across all put/erase rounds.
     for (int64_t i = 0; i < 500; ++i) {
-        REQUIRE_FALSE(table.put("steady-key", i, 1, static_cast<uint64_t>(1000 + i)).contains_error());
-        auto erased = table.erase("steady-key", loader_must_not_be_consulted(&resource));
+        REQUIRE_FALSE(
+            table.put(key_hash("steady-key"), "steady-key", i, 1, static_cast<uint64_t>(1000 + i)).contains_error());
+        auto erased = table.erase(key_hash("steady-key"), "steady-key", loader_must_not_be_consulted(&resource));
         REQUIRE_FALSE(erased.has_error());
         REQUIRE(erased.value());
     }
@@ -1208,8 +1252,8 @@ TEST_CASE("services::index::disk_hash_table::an_erased_slot_is_reused_by_the_nex
     INFO("a page cycling ONE live entry must reuse its freed slot, not grow an overflow chain");
     REQUIRE_FALSE(overflow_grew);
 
-    REQUIRE_FALSE(table.put("steady-key", 42, 3, 4242).contains_error());
-    auto found = must_read(table.get("steady-key", loader_must_not_be_consulted(&resource)));
+    REQUIRE_FALSE(table.put(key_hash("steady-key"), "steady-key", 42, 3, 4242).contains_error());
+    auto found = must_read(table.get(key_hash("steady-key"), "steady-key", loader_must_not_be_consulted(&resource)));
     REQUIRE(found.has_value());
     REQUIRE(found->value == 42);
     REQUIRE(found->log_file_id == 3);
@@ -1249,7 +1293,7 @@ TEST_CASE("services::index::disk_hash_table::a_failed_closing_flush_is_reported_
     const auto stderr_text = capture_stderr_of(capture_file, [&] {
         env_var_guard_t failpoint("OTTERBRIX_DISK_HASH_CLOSE_FAILPOINT", "1");
         disk_hash_table_t table(path, 8, &resource);
-        REQUIRE_FALSE(table.put("k", 7, 1, 100).contains_error());
+        REQUIRE_FALSE(table.put(key_hash("k"), "k", 7, 1, 100).contains_error());
     });
 
     INFO("a closing flush that failed must be named on stderr, not dropped in silence");

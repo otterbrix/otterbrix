@@ -50,9 +50,12 @@ namespace {
         return path;
     }
 
-    std::vector<std::pair<logical_value_t, size_t>> one_entry(std::pmr::memory_resource* resource) {
-        std::vector<std::pair<logical_value_t, size_t>> values;
-        values.emplace_back(logical_value_t(resource, int64_t{42}), size_t{7});
+    services::index::key_batch_t one_entry(std::pmr::memory_resource* resource) {
+        services::index::key_batch_t values(resource);
+        components::vector::vector_t keys(resource, components::types::logical_type::BIGINT, 1);
+        keys.data<int64_t>()[0] = 42;
+        values.keys.emplace_back(std::move(keys), size_t{1});
+        values.ids.push_back(7);
         return values;
     }
 

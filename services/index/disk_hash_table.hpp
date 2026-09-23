@@ -38,6 +38,7 @@ namespace services::index {
 
         struct value_ref_t {
             int64_t value{0};
+            uint32_t key_hash{0};
             uint32_t log_file_id{0};
             uint64_t log_offset{0};
             bool key_truncated{false};
@@ -59,14 +60,16 @@ namespace services::index {
 
         // Failure means the entry could not be placed, or an auto-rehash it tripped could not
         // finish; the table stays consistent either way (see split_one_bucket_unlocked).
-        [[nodiscard]] core::error_t put(std::string_view key, int64_t value, uint32_t log_file_id, uint64_t log_offset);
+        [[nodiscard]] uint32_t hash_seed() const noexcept { return header_.hash_seed_value; }
+
+        [[nodiscard]] core::error_t
+        put(uint32_t key_hash, std::string_view key, int64_t value, uint32_t log_file_id, uint64_t log_offset);
 
         // A page chain walk that cannot finish refuses rather than returning a partial row set —
         // a silent `break` would make "three rows" indistinguishable from a read failure mid-count.
         template<hash_key_loader loader_t>
-        [[nodiscard]] core::result_wrapper_t<std::vector<value_ref_t>> get_all(std::string_view key,
-                                                                               const loader_t& load_full_key) const {
-            const uint32_t key_hash = hash_key(key);
+        [[nodiscard]] core::result_wrapper_t<std::vector<value_ref_t>>
+        get_all(uint32_t key_hash, std::string_view key, const loader_t& load_full_key) const {
             uint64_t page_id = bucket_primary_page_id(bucket_id_for_hash(key_hash));
             std::pmr::vector<value_ref_t> values(memory_resource_);
 
@@ -91,6 +94,7 @@ namespace services::index {
                         continue;
                     }
                     values.push_back(value_ref_t{entry.value,
+                                                 slot.key_hash,
                                                  entry.log_file_id,
                                                  entry.log_offset,
                                                  (entry.entry_flags & entry_flag_truncated) != 0});
@@ -101,9 +105,9 @@ namespace services::index {
         }
 
         template<hash_key_loader loader_t>
-        [[nodiscard]] core::result_wrapper_t<std::optional<value_ref_t>> get(std::string_view key,
-                                                                             const loader_t& load_full_key) const {
-            VALUE_OR_RETURN(auto all, get_all(key, load_full_key));
+        [[nodiscard]] core::result_wrapper_t<std::optional<value_ref_t>>
+        get(uint32_t key_hash, std::string_view key, const loader_t& load_full_key) const {
+            VALUE_OR_RETURN(auto all, get_all(key_hash, key, load_full_key));
             if (all.empty()) {
                 return std::optional<value_ref_t>{};
             }
@@ -113,14 +117,15 @@ namespace services::index {
         // error_t here is distinct from "not found" (false): folding the two would tell
         // erase_all_refs_for_key's loop it was done when the walk had actually failed.
         template<hash_key_loader loader_t>
-        [[nodiscard]] core::result_wrapper_t<bool> erase(std::string_view key, const loader_t& load_full_key) {
-            return erase_matching(key, std::nullopt, load_full_key);
+        [[nodiscard]] core::result_wrapper_t<bool>
+        erase(uint32_t key_hash, std::string_view key, const loader_t& load_full_key) {
+            return erase_matching(key_hash, key, std::nullopt, load_full_key);
         }
 
         template<hash_key_loader loader_t>
         [[nodiscard]] core::result_wrapper_t<bool>
-        erase(std::string_view key, int64_t value, const loader_t& load_full_key) {
-            return erase_matching(key, std::optional<int64_t>(value), load_full_key);
+        erase(uint32_t key_hash, std::string_view key, int64_t value, const loader_t& load_full_key) {
+            return erase_matching(key_hash, key, std::optional<int64_t>(value), load_full_key);
         }
 
         // Template parameter, not std::function: avoids heap allocation for the
@@ -150,6 +155,7 @@ namespace services::index {
                             continue;
                         }
                         cb(value_ref_t{entry.value,
+                                       slot.key_hash,
                                        entry.log_file_id,
                                        entry.log_offset,
                                        (entry.entry_flags & entry_flag_truncated) != 0});
@@ -241,8 +247,6 @@ namespace services::index {
         uint64_t overflow_page_count() const;
         uint64_t bucket_primary_page_id(uint32_t bucket_id) const;
 
-        uint32_t hash_key(std::string_view key) const;
-
         [[nodiscard]] bool read_page(uint64_t page_id, byte_buffer_t& page) const;
         [[nodiscard]] bool write_page(uint64_t page_id, const byte_buffer_t& page);
         void init_empty_page(byte_buffer_t& page) const;
@@ -278,9 +282,10 @@ namespace services::index {
         }
 
         template<hash_key_loader loader_t>
-        [[nodiscard]] core::result_wrapper_t<bool>
-        erase_matching(std::string_view key, std::optional<int64_t> expected_value, const loader_t& load_full_key) {
-            const uint32_t key_hash = hash_key(key);
+        [[nodiscard]] core::result_wrapper_t<bool> erase_matching(uint32_t key_hash,
+                                                                  std::string_view key,
+                                                                  std::optional<int64_t> expected_value,
+                                                                  const loader_t& load_full_key) {
             uint64_t page_id = bucket_primary_page_id(bucket_id_for_hash(key_hash));
             byte_buffer_t page(memory_resource_);
             page.resize(page_size);
@@ -341,7 +346,7 @@ namespace services::index {
         bool
         try_insert_payload_in_page(byte_buffer_t& page, uint32_t key_hash, const byte_buffer_t& payload, bool& changed);
         [[nodiscard]] core::error_t
-        put_unlocked(std::string_view key, int64_t value, uint32_t log_file_id, uint64_t log_offset);
+        put_unlocked(uint32_t key_hash, std::string_view key, int64_t value, uint32_t log_file_id, uint64_t log_offset);
         [[nodiscard]] core::error_t
         insert_payload_into_bucket_unlocked(uint32_t bucket_id, uint32_t key_hash, const byte_buffer_t& payload);
         // Refuses rather than returning a partial count, which open_or_create would otherwise

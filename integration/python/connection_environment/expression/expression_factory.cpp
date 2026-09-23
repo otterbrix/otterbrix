@@ -243,7 +243,7 @@ namespace otterbrix {
     }
 
     core::parameter_id_t expression_factory_t::add_value(components::types::logical_value_t&& value) {
-        auto param = core::parameter_id_t(counter);
+        auto param = core::parameter_id_t{static_cast<uint16_t>(counter)};
         counter++;
         values.emplace(param, value);
         return param;

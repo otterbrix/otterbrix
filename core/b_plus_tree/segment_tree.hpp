@@ -234,12 +234,8 @@ namespace core::b_plus_tree {
                 return *this;
             }
 
-            inline bool operator==(const iterator& rhs) { return metadata_ == rhs.metadata_; }
-            inline bool operator<(const iterator& rhs) { return metadata_ < rhs.metadata_; }
-            inline bool operator>(const iterator& rhs) { return metadata_ > rhs.metadata_; }
-            inline bool operator!=(const iterator& rhs) { return !(*this == rhs); }
-            inline bool operator<=(const iterator& rhs) { return !(*this > rhs); }
-            inline bool operator>=(const iterator& rhs) { return !(*this < rhs); }
+            inline bool operator==(const iterator& rhs) const noexcept { return metadata_ == rhs.metadata_; }
+            inline auto operator<=>(const iterator& rhs) const noexcept { return metadata_ <=> rhs.metadata_; }
 
         private:
             void get_block();
@@ -321,12 +317,11 @@ namespace core::b_plus_tree {
                 return *this;
             }
 
-            inline bool operator==(const r_iterator& rhs) { return metadata_ == rhs.metadata_; }
-            inline bool operator<(const r_iterator& rhs) { return metadata_ > rhs.metadata_; }
-            inline bool operator>(const r_iterator& rhs) { return metadata_ < rhs.metadata_; }
-            inline bool operator!=(const r_iterator& rhs) { return !(*this == rhs); }
-            inline bool operator<=(const r_iterator& rhs) { return !(*this > rhs); }
-            inline bool operator>=(const r_iterator& rhs) { return !(*this < rhs); }
+            inline bool operator==(const r_iterator& rhs) const noexcept { return metadata_ == rhs.metadata_; }
+            inline auto operator<=>(const r_iterator& rhs) const noexcept {
+                // reverse order for the reverse operator
+                return rhs.metadata_ <=> metadata_;
+            }
 
         private:
             void get_block();

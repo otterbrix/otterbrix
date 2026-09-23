@@ -686,9 +686,7 @@ namespace services::dispatcher {
     core::error_t validate_types(std::pmr::memory_resource* resource,
                                  const catalog_resolves_t* resolves,
                                  node_t* logical_plan,
-                                 const components::graph_execution_context& execution_context) {
-        const auto session_tz = execution_context.timezone_offset;
-
+                                 const components::graph_execution_context&) {
         core::error_t result = core::error_t::no_error();
         char insert_target_relkind = 0;
         // Breadth-first walk visits INSERT before its data child, the only moment the two

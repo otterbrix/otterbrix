@@ -486,7 +486,7 @@ namespace components::sql::transform {
                         if (inner.has_error()) {
                             return inner.error();
                         }
-                        context.plan->sub_query_results.emplace_back(&vector::compact_to_single_value, param_id);
+                        context.plan->sub_query_results.push_back({&vector::compact_to_single_value, param_id});
                         context.plan->sub_queries.emplace_back(std::move(inner.value()));
                         return param_id;
                     }
@@ -495,7 +495,7 @@ namespace components::sql::transform {
                         if (inner.has_error()) {
                             return inner.error();
                         }
-                        context.plan->sub_query_results.emplace_back(&vector::compact_to_bool_value, param_id);
+                        context.plan->sub_query_results.push_back({&vector::compact_to_bool_value, param_id});
                         context.plan->sub_queries.emplace_back(std::move(inner.value()));
                         return param_id;
                     }
@@ -510,10 +510,10 @@ namespace components::sql::transform {
                         if (inner.has_error()) {
                             return inner.error();
                         }
-                        context.plan->sub_query_results.emplace_back(&vector::compact_to_array_value,
-                                                                     param_id,
-                                                                     /*boolean_required=*/false,
-                                                                     /*array_equality=*/true);
+                        context.plan->sub_query_results.push_back({&vector::compact_to_array_value,
+                                                                   param_id,
+                                                                   /*boolean_required=*/false,
+                                                                   /*array_equality=*/true});
                         context.plan->sub_queries.emplace_back(std::move(inner.value()));
                         if (context.array_operand) {
                             *context.array_operand = true;
@@ -975,7 +975,7 @@ namespace components::sql::transform {
                 if (sub_node.has_error()) {
                     return sub_node.error();
                 }
-                plan->sub_query_results.emplace_back(&vector::compact_to_bool_value, param_id2);
+                plan->sub_query_results.push_back({&vector::compact_to_bool_value, param_id2});
                 plan->sub_queries.emplace_back(std::move(sub_node.value()));
                 auto expr = make_compare_expression(resource_, compare_type::eq, param_id1, param_id2);
                 expr->make_unfoldable();
@@ -1019,7 +1019,7 @@ namespace components::sql::transform {
                 if (sub_node.has_error()) {
                     return sub_node.error();
                 }
-                plan->sub_query_results.emplace_back(&vector::compact_to_array_value, param_id);
+                plan->sub_query_results.push_back({&vector::compact_to_array_value, param_id});
                 plan->sub_queries.emplace_back(std::move(sub_node.value()));
                 auto ctype = node->subLinkType == ANY_SUBLINK ? compare_type::any : compare_type::all;
                 auto expr = make_compare_expression(resource_, ctype, key.field, param_id);
@@ -1052,9 +1052,9 @@ namespace components::sql::transform {
                     return sub_node.error();
                 }
                 // boolean_required: PostgreSQL rejects `WHERE (SELECT 1)` rather than silently coercing.
-                plan->sub_query_results.emplace_back(&vector::compact_to_single_value,
-                                                     param_result,
-                                                     /*boolean_required=*/true);
+                plan->sub_query_results.push_back({&vector::compact_to_single_value,
+                                                   param_result,
+                                                   /*boolean_required=*/true});
                 plan->sub_queries.emplace_back(std::move(sub_node.value()));
                 auto expr = make_compare_expression(resource_, compare_type::eq, param_true, param_result);
                 expr->make_unfoldable();

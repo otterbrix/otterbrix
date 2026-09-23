@@ -1,0 +1,67 @@
+name: ubuntu
+
+on:
+  push:
+    paths-ignore:
+      - '**.md'
+  pull_request:
+    paths-ignore:
+      - '**.md'
+
+jobs:
+  run:
+    name: ${{ matrix.version }} ${{ matrix.compiler }}
+    runs-on: ubuntu-${{ matrix.version }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: '22.04'
+            compiler: gcc
+            cc: gcc
+            cxx: g++
+          - version: '24.04'
+            compiler: gcc
+            cc: gcc
+            cxx: g++
+          - version: '22.04'
+            compiler: clang
+            # clang-14 (the 22.04 default) does not support <source_location>
+            cc: clang-15
+            cxx: clang++-15
+            packages: clang-15
+          - version: '24.04'
+            compiler: clang
+            cc: clang-18
+            cxx: clang++-18
+            packages: clang-18
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Install system dependencies
+        run: |
+          sudo apt update && sudo apt install -y  build-essential ninja-build python3-pip curl gnupg apt-transport-https flex bison ${{ matrix.packages }}
+
+      - name: conan installation and configuration
+        run: |
+          pip install conan==2.20.0
+          conan profile detect --force
+          conan remote add otterbrix http://conan.otterbrix.com
+
+      - name: download dependencies
+        run: |
+          mkdir build && cd build
+          cp ../conanfile.py .
+          conan install . --build missing -s build_type=Release -s compiler.cppstd=20
+
+      - name: build
+        run: |
+          cd build
+          cmake  -G Ninja -DCMAKE_C_COMPILER=${{ matrix.cc }} -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} -DCMAKE_TOOLCHAIN_FILE=./build/Release/generators/conan_toolchain.cmake -DCMAKE_BUILD_TYPE=Release -DDEV_MODE=ON -DEXAMPLE=ON ..
+          cmake --build .
+
+      - name: Test
+        run: |
+          cd build
+          ctest -C Release -V --output-on-failure

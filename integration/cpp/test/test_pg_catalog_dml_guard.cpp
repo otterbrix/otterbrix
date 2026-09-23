@@ -22,9 +22,6 @@ using namespace components;
 
 namespace {
 
-    constexpr std::string_view kUserDb = "guarddb";
-    constexpr std::string_view kUserTable = "guarddb.alpha";
-
     void seed_user_table(otterbrix::wrapper_dispatcher_t* dispatcher) {
         REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE guarddb;")->is_success());
         REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE guarddb.alpha (id BIGINT, name STRING);")->is_success());

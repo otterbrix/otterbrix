@@ -2,20 +2,21 @@
 #include <sstream>
 
 namespace components::expressions {
-
-    function_expression_t::function_expression_t(std::pmr::memory_resource* resource, std::string&& name)
+    function_expression_t::function_expression_t(std::pmr::memory_resource* resource, qualified_name_t&& name)
         : expression_i(expression_group::function, key_t{resource})
         , name_(std::move(name))
         , args_(resource) {}
 
     function_expression_t::function_expression_t(std::pmr::memory_resource* resource,
-                                                 std::string&& name,
+                                                 qualified_name_t&& name,
                                                  std::pmr::vector<param_storage>&& args)
         : expression_i(expression_group::function, key_t{resource})
         , name_(std::move(name))
         , args_(std::move(args)) {}
 
-    const std::string& function_expression_t::name() const noexcept { return name_; }
+    const std::string& function_expression_t::name() const noexcept { return name_.collection; }
+
+    const qualified_name_t& function_expression_t::full_name() const noexcept { return name_; }
 
     void function_expression_t::set_key(const key_t& new_key) { key() = new_key; }
 
@@ -40,7 +41,7 @@ namespace components::expressions {
     std::string function_expression_t::to_string_impl() const {
         std::stringstream stream;
         stream << "$function: {";
-        stream << "name: {\"" << name_ << "\"}, ";
+        stream << "name: {\"" << name_.to_string() << "\"}, ";
         stream << "args: {";
         bool is_first = true;
         for (const auto& id : args_) {
@@ -60,14 +61,13 @@ namespace components::expressions {
         return name_ == other->name_ && args_ == other->args_;
     }
 
-    function_expression_ptr make_function_expression(std::pmr::memory_resource* resource, std::string&& name) {
+    function_expression_ptr make_function_expression(std::pmr::memory_resource* resource, qualified_name_t&& name) {
         return {new function_expression_t(resource, std::move(name))};
     }
 
     function_expression_ptr make_function_expression(std::pmr::memory_resource* resource,
-                                                     std::string&& name,
+                                                     qualified_name_t&& name,
                                                      std::pmr::vector<param_storage>&& args) {
         return {new function_expression_t(resource, std::move(name), std::move(args))};
     }
-
 } // namespace components::expressions

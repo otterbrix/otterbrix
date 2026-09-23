@@ -2,6 +2,10 @@
 #include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <components/compute/function.hpp>
+
+#include <string>
+#include <tuple>
 
 // Regression tests for issue #557: two tables with the same name in different databases must be fully
 // independent. Before the fix, name→OID resolution scanned pg_class by relname alone (the
@@ -440,16 +444,15 @@ TEST_CASE("integration::cpp::multi_database_isolation::unqualified_names_preserv
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    // Unqualified CREATE TABLE keeps working (the relname-only scan is
-    // preserved for empty dbnames). Unqualified DML behavior is a known gap
-    // tracked in issue #574 and deliberately not asserted here.
+    // Unqualified CREATE TABLE keeps working: naming no database, it lands in
+    // public (test_unqualified_name_ambiguity.cpp covers unqualified access).
     {
         auto session = otterbrix::session_id_t();
         REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE t1 (id BIGINT);")->is_success());
     }
 
-    // A table created unqualified (relnamespace = INVALID) is not reachable
-    // through a database-qualified name.
+    // A table created unqualified lives in public, so another database's
+    // qualifier does not reach it.
     {
         auto session = otterbrix::session_id_t();
         REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE db1;")->is_success());
@@ -501,4 +504,213 @@ TEST_CASE("integration::cpp::multi_database_isolation::restart_persistence_isola
             REQUIRE(c->value(0, 0).value<int64_t>() == 20);
         }
     }
+}
+
+// uid and schema are federation slots: this catalog stores a relation under a database and nothing
+// else, a statement that WRITES through one of them is refused rather than quietly landing in the
+// database slot with the segment dropped.
+TEST_CASE("integration::cpp::multi_database_isolation::write_through_a_schema_segment_is_refused") {
+    auto config = test_create_config(integration_fixture_path("test_multi_db_isolation/schema_segment_write"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    auto exec = [&](const std::string& sql) {
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(exec("CREATE DATABASE d;")->is_success());
+    REQUIRE(exec("CREATE TABLE d.t (id BIGINT);")->is_success());
+    REQUIRE(exec("INSERT INTO d.t (id) VALUES (1), (2);")->is_success());
+
+    for (const auto* sql : {"CREATE TABLE d.s.t2 (id BIGINT);",
+                            "CREATE TABLE u.d.s.t3 (id BIGINT);",
+                            "INSERT INTO d.s.t (id) VALUES (3);",
+                            "UPDATE d.s.t SET id = 9;",
+                            "DELETE FROM d.s.t;",
+                            "DROP TABLE d.s.t;"}) {
+        auto cursor = exec(sql);
+        INFO("[" << sql << "] " << (cursor->is_error() ? cursor->get_error().what.c_str() : "<accepted>"));
+        REQUIRE(cursor->is_error());
+        REQUIRE(cursor->get_error().type == core::error_code_t::invalid_parameter);
+    }
+
+    INFO("nothing above landed: the table keeps its rows and no relation was created");
+    auto rows = exec("SELECT id FROM d.t;");
+    REQUIRE(rows->is_success());
+    REQUIRE(rows->size() == 2);
+    auto created = exec("SELECT relname FROM pg_catalog.pg_class WHERE relname = 't2' OR relname = 't3';");
+    REQUIRE(created->is_success());
+    REQUIRE(created->size() == 0);
+}
+
+// The READ path keeps the federation slots
+TEST_CASE("integration::cpp::multi_database_isolation::read_through_a_schema_segment_resolves") {
+    auto config = test_create_config(integration_fixture_path("test_multi_db_isolation/schema_segment_read"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    auto exec = [&](const std::string& sql) {
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(exec("CREATE DATABASE d;")->is_success());
+    REQUIRE(exec("CREATE TABLE d.t (id BIGINT);")->is_success());
+    REQUIRE(exec("INSERT INTO d.t (id) VALUES (1), (2);")->is_success());
+
+    auto through_schema = exec("SELECT id FROM d.s.t;");
+    INFO("[SELECT id FROM d.s.t;] " << (through_schema->is_error() ? through_schema->get_error().what.c_str()
+                                                                   : "<no error>"));
+    REQUIRE(through_schema->is_success());
+    REQUIRE(through_schema->size() == 2);
+}
+
+TEST_CASE("integration::cpp::multi_database_isolation::create_index_on_a_bare_table_name") {
+    auto config = test_create_config(integration_fixture_path("test_multi_db_isolation/index_bare_name"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    auto exec = [&](const std::string& sql) {
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+    auto relnamespace_of = [&](const std::string& relname) {
+        auto cursor = exec("SELECT relnamespace FROM pg_catalog.pg_class WHERE relname = '" + relname + "';");
+        REQUIRE(cursor->is_success());
+        REQUIRE(cursor->size() == 1);
+        return cursor->value(0, 0).value<uint32_t>();
+    };
+
+    REQUIRE(exec("CREATE DATABASE dix;")->is_success());
+    REQUIRE(exec("CREATE TABLE dix.t (id BIGINT);")->is_success());
+    REQUIRE(exec("INSERT INTO dix.t (id) VALUES (1), (2);")->is_success());
+
+    auto created = exec("CREATE INDEX idx_bare ON t (id);");
+    INFO("[CREATE INDEX idx_bare ON t (id);] " << (created->is_error() ? created->get_error().what.c_str() : "<ok>"));
+    REQUIRE(created->is_success());
+    CHECK(relnamespace_of("idx_bare") == relnamespace_of("t"));
+
+    auto rows = exec("SELECT id FROM dix.t WHERE id = 1;");
+    REQUIRE(rows->is_success());
+    CHECK(rows->size() == 1);
+}
+
+namespace {
+    core::error_t call_probe_exec(components::compute::kernel_context&,
+                                  const components::vector::data_chunk_t& in,
+                                  components::vector::vector_t& out) {
+        const auto* source = in.data[0].data<int64_t>();
+        auto* destination = out.data<int64_t>();
+        for (uint64_t row = 0; row < in.size(); ++row) {
+            destination[row] = source[row] + 1;
+        }
+        return core::error_t::no_error();
+    }
+
+    components::compute::function_ptr make_call_probe(std::pmr::memory_resource* resource) {
+        using namespace components::compute;
+        function_doc doc{"short_doc", "full_doc", {"arg"}, false};
+        auto fn = std::make_unique<vector_function>("call_probe", arity::unary(), doc, 1);
+        kernel_signature_t sig(function_type_t::vector,
+                               {parameter_type::exact(components::types::logical_type::BIGINT)},
+                               {output_type::fixed(components::types::logical_type::BIGINT)});
+        std::ignore = fn->add_kernel(resource, vector_kernel{std::move(sig), call_probe_exec});
+        return fn;
+    }
+
+    void seed_named_rows(otterbrix::wrapper_dispatcher_t* dispatcher) {
+        REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE d;")->is_success());
+        REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE d.t (id BIGINT, name TEXT);")->is_success());
+        REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO d.t (id, name) VALUES (1, 'a'), (2, 'bb'), (3, 'bb');")
+                    ->is_success());
+    }
+
+    void require_answered(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& sql, std::size_t rows) {
+        auto cursor = test_helpers::exec(dispatcher, sql);
+        INFO("[" << sql << "] " << (cursor->is_error() ? cursor->get_error().what.c_str() : "<no error>"));
+        REQUIRE(cursor->is_success());
+        CHECK(cursor->size() == rows);
+    }
+
+    // The refusal spells the call out as written, so it says which spelling was turned down.
+    void require_call_refused(otterbrix::wrapper_dispatcher_t* dispatcher,
+                              const std::string& sql,
+                              core::error_code_t code,
+                              const std::string& written) {
+        auto cursor = test_helpers::exec(dispatcher, sql);
+        INFO("[" << sql << "] " << (cursor->is_error() ? cursor->get_error().what.c_str() : "<accepted>"));
+        REQUIRE(cursor->is_error());
+        CHECK(cursor->get_error().type == code);
+        CHECK(std::string{cursor->get_error().what.c_str()}.find(written) != std::string::npos);
+    }
+} // namespace
+
+TEST_CASE("integration::cpp::multi_database_isolation::a_call_reaches_only_what_its_namespace_holds") {
+    auto config = test_create_config(integration_fixture_path("test_multi_db_isolation/call_namespace"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    seed_named_rows(dispatcher);
+    REQUIRE_FALSE(
+        dispatcher->register_udf(otterbrix::session_id_t(), make_call_probe(dispatcher->resource())).contains_error());
+
+    for (const auto* sql : {"SELECT length(name) FROM d.t;",
+                            "SELECT pg_catalog.length(name) FROM d.t;",
+                            "SELECT call_probe(id) FROM d.t;",
+                            "SELECT public.call_probe(id) FROM d.t;"}) {
+        require_answered(dispatcher, sql, 3);
+    }
+    require_call_refused(dispatcher,
+                         "SELECT public.length(name) FROM d.t;",
+                         core::error_code_t::unrecognized_function,
+                         "public.length");
+    require_call_refused(dispatcher,
+                         "SELECT pg_catalog.call_probe(id) FROM d.t;",
+                         core::error_code_t::unrecognized_function,
+                         "pg_catalog.call_probe");
+}
+
+TEST_CASE("integration::cpp::multi_database_isolation::a_call_naming_a_database_is_refused") {
+    auto config = test_create_config(integration_fixture_path("test_multi_db_isolation/call_database"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    seed_named_rows(dispatcher);
+
+    for (const auto& [sql, written] : std::initializer_list<std::pair<const char*, const char*>>{
+             {"SELECT d.length(name) FROM d.t;", "d.length"},
+             {"SELECT d.count(*) FROM d.t;", "d.count"},
+             {"SELECT count(id) FROM d.t GROUP BY name HAVING d.count(id) > 1;", "d.count"},
+             {"SELECT * FROM d.generate_series(1, 3);", "d.generate_series"}}) {
+        require_call_refused(dispatcher, sql, core::error_code_t::unimplemented_yet, written);
+    }
+    require_answered(dispatcher, "SELECT * FROM pg_catalog.generate_series(1, 3);", 3);
+}
+
+TEST_CASE("integration::cpp::multi_database_isolation::a_call_through_a_schema_segment_is_refused") {
+    auto config = test_create_config(integration_fixture_path("test_multi_db_isolation/call_schema_segment"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    seed_named_rows(dispatcher);
+
+    require_call_refused(dispatcher,
+                         "SELECT d.s.length(name) FROM d.t;",
+                         core::error_code_t::invalid_parameter,
+                         "d.s.length");
+    require_call_refused(dispatcher,
+                         "SELECT u.d.s.length(name) FROM d.t;",
+                         core::error_code_t::invalid_parameter,
+                         "u.d.s.length");
+}
+
+TEST_CASE("integration::cpp::multi_database_isolation::a_qualified_call_matches_its_bare_grouping_key") {
+    auto config = test_create_config(integration_fixture_path("test_multi_db_isolation/call_grouping_key"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    seed_named_rows(dispatcher);
+
+    require_answered(dispatcher, "SELECT pg_catalog.upper(name) FROM d.t GROUP BY upper(name);", 2);
 }

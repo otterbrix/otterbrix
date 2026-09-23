@@ -67,7 +67,7 @@ namespace {
                                 casts(),
                                 components::graph_execution_context{},
                                 functions(),
-                                name,
+                                qualified_name_t{std::string{name}},
                                 arguments,
                                 any_kind());
     }
@@ -160,7 +160,7 @@ TEST_CASE("dispatcher::resolve_function: the function decides its own return typ
                                  casts(),
                                  components::graph_execution_context{},
                                  functions(),
-                                 "count",
+                                 qualified_name_t{"count"},
                                  none,
                                  any_kind());
     REQUIRE_FALSE(star.has_error());
@@ -195,7 +195,7 @@ TEST_CASE("dispatcher::resolve_function: a family entry keeps the argument's par
                                      casts(),
                                      components::graph_execution_context{},
                                      functions(),
-                                     "sum",
+                                     qualified_name_t{"sum"},
                                      arguments,
                                      any_kind());
     REQUIRE_FALSE(resolved.has_error());
@@ -218,7 +218,7 @@ TEST_CASE("dispatcher::resolve_function: the clause decides which function kinds
                                          casts(),
                                          components::graph_execution_context{},
                                          functions(),
-                                         "sum",
+                                         qualified_name_t{"sum"},
                                          integer,
                                          scalar_only);
     REQUIRE(sum_in_where.has_error());
@@ -228,7 +228,7 @@ TEST_CASE("dispatcher::resolve_function: the clause decides which function kinds
                                                 casts(),
                                                 components::graph_execution_context{},
                                                 functions(),
-                                                "length",
+                                                qualified_name_t{"length"},
                                                 text,
                                                 aggregate_only);
     REQUIRE(length_in_aggregate.has_error());
@@ -238,7 +238,7 @@ TEST_CASE("dispatcher::resolve_function: the clause decides which function kinds
                                    casts(),
                                    components::graph_execution_context{},
                                    functions(),
-                                   "sum",
+                                   qualified_name_t{"sum"},
                                    integer,
                                    aggregate_only)
                       .has_error());
@@ -246,7 +246,7 @@ TEST_CASE("dispatcher::resolve_function: the clause decides which function kinds
                                    casts(),
                                    components::graph_execution_context{},
                                    functions(),
-                                   "length",
+                                   qualified_name_t{"length"},
                                    text,
                                    scalar_only)
                       .has_error());
@@ -274,7 +274,7 @@ TEST_CASE("dispatcher::resolve_function: abs resolves per argument type") {
                                    casts(),
                                    components::graph_execution_context{},
                                    functions(),
-                                   "abs",
+                                   qualified_name_t{"abs"},
                                    decimal_arg,
                                    any_kind());
     REQUIRE_FALSE(scaled.has_error());

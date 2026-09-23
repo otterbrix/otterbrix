@@ -20,7 +20,6 @@ namespace components::sql::parser {
 } // namespace components::sql::parser
 
 namespace components::sql::transform {
-
     // There are some differences for expression parsing, depending on where it is placed
     enum class expression_placement_t
     {
@@ -352,7 +351,7 @@ namespace components::sql::transform {
                                                                      logical_plan::parameter_node_t* params);
 
         core::result_wrapper_t<logical_plan::node_ptr> transform_from_element(Node* item,
-                                                                              qualified_name& slot_name,
+                                                                              qualified_name_t& slot_name,
                                                                               std::string& slot_alias,
                                                                               name_collection_t& names,
                                                                               logical_plan::node_join_ptr& node_join,
@@ -391,6 +390,22 @@ namespace components::sql::transform {
         // Every catalog lookup the statement depends on, accumulated across all
         // sub-queries and moved onto the execution_plan_t at the end of transform()
         logical_plan::catalog_resolves_t catalog_resolves_;
+
+        template<class Node>
+        std::string set_target(Node& node, const qualified_name_t& written) {
+            const logical_plan::node_t& base = node;
+            std::string dbname = database_for(written, policy_of(base));
+            node.set_dbname(dbname);
+            if constexpr (requires { node.set_relname(written.collection); }) {
+                node.set_relname(written.collection);
+            }
+            const bool leads_elsewhere = !written.unique_identifier.empty() || !written.schema.empty() ||
+                                         (!written.database.empty() && written.database != dbname);
+            if (leads_elsewhere) {
+                catalog_resolves_.external_targets.push_back(logical_plan::external_target_t{written, base.type()});
+            }
+            return dbname;
+        }
 
         // TODO: wrapp expressions in resolve node, and it won't be needed
         std::vector<std::string> cast_type_names_;

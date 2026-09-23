@@ -1776,7 +1776,7 @@ namespace services::dispatcher {
                                      *cast_registry,
                                      context.execution_context,
                                      context.function_registry,
-                                     function_node->name(),
+                                     function_node->full_name(),
                                      function_input,
                                      components::compute::create_mask(components::compute::function_type_t::vector,
                                                                       components::compute::function_type_t::expand));

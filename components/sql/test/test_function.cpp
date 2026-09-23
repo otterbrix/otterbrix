@@ -83,6 +83,32 @@ TEST_CASE("components::sql::functions") {
         R"_($aggregate: {$join: {$type: inner, $aggregate: {}, $aggregate: {}, $function: {name: {"udf"}, args: {"id", "struct_type/field"}}}})_",
         vec());
 
+    TEST_SIMPLE_FUNCTION(
+        R"_(SELECT pg_catalog.length(text) FROM some_table;)_",
+        R"_($aggregate: {$group: {$function: {name: {"pg_catalog.length"}, args: {"text"}}}, $select: {}})_",
+        vec());
+
+    TEST_SIMPLE_FUNCTION(R"_(SELECT * FROM users WHERE public.is_active_user(id);)_",
+                         R"_($aggregate: {$match: {$function: {name: {"public.is_active_user"}, args: {"id"}}}})_",
+                         vec());
+
+    TEST_SIMPLE_FUNCTION(R"_(SELECT * FROM db1.some_udf(5, 10);)_",
+                         R"_($aggregate: {$function: {name: {"db1.some_udf"}, args: {#0, #1}}})_",
+                         vec({v(&resource, 5l), v(&resource, 10l)}));
+
+    TEST_SIMPLE_FUNCTION(
+        R"_(SELECT u.d.s.some_udf(text) FROM some_table;)_",
+        R"_($aggregate: {$group: {$function: {name: {"u.d.s.some_udf"}, args: {"text"}}}, $select: {}})_",
+        vec());
+
+    SECTION("a name with more segments than uid.db.schema.name has no reading") {
+        auto select = linitial(raw_parser(&arena_resource, "SELECT a.b.c.d.some_udf(text) FROM some_table;"));
+        auto result = transformer.transform(pg_cell_to_node_cast(select)).finalize();
+        REQUIRE(result.has_error());
+        CHECK(result.error().type == core::error_code_t::sql_parse_error);
+        CHECK(std::string{result.error().what}.find("a.b.c.d.some_udf") != std::string::npos);
+    }
+
     /*
     TEST_SIMPLE_FUNCTION(
         R"_(SELECT (myfunc(x)).* FROM some_table;)_",

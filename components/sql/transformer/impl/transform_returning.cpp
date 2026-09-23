@@ -5,7 +5,6 @@
 using namespace components::expressions;
 
 namespace components::sql::transform {
-
     core::result_wrapper_t<std::pmr::vector<expressions::expression_ptr>>
     transformer::transform_returning(List* returning_list,
                                      const name_collection_t& names,
@@ -28,9 +27,9 @@ namespace components::sql::transform {
                     VALUE_OR_RETURN(auto col, columnref_to_field(resource_, col_ref, names));
                     // RETURNING table.* — carry the table qualifier so the validator
                     // can expand it by result_alias.
-                    if (!col.table.empty()) {
+                    if (col.is_qualified()) {
                         std::pmr::vector<std::pmr::string> star_path{resource_};
-                        star_path.emplace_back(std::pmr::string{col.table, resource_});
+                        star_path.emplace_back(std::pmr::string{col.table.collection, resource_});
                         star_path.emplace_back(std::pmr::string{"*", resource_});
                         out.push_back(make_scalar_expression(resource_,
                                                              scalar_type::star_expand,
@@ -63,5 +62,4 @@ namespace components::sql::transform {
         }
         return out;
     }
-
 } // namespace components::sql::transform

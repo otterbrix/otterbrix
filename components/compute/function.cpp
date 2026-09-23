@@ -432,6 +432,16 @@ namespace components::compute {
         return result;
     }
 
+    std::pmr::vector<function_uid> function_registry_t::find_functions(std::string_view name) const {
+        std::pmr::vector<function_uid> result{resource_};
+        for (const auto& [uid, func] : functions_) {
+            if (func->name() == name) {
+                result.push_back(uid);
+            }
+        }
+        return result;
+    }
+
     std::pmr::memory_resource* function_registry_t::resource() const noexcept { return resource_; }
 
     void function_registry_t::add_builtin(function_ptr function) {

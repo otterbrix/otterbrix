@@ -576,12 +576,11 @@ namespace components::sql::transform {
             auto* ins_node = static_cast<logical_plan::node_insert_t*>(ins.get());
             ins_node->set_literal_digits(std::move(literal_digits));
             ins_node->returning() = returning;
-            ins_node->set_dbname(qn.dbname);
-            ins_node->set_relname(qn.relname);
+            set_target(*ins_node, qn);
             register_catalog_resolve_table(resource_,
                                            &catalog_resolves_,
-                                           qn.dbname,
-                                           qn.relname,
+                                           qn.database,
+                                           qn.collection,
                                            constraint_resolve_kind::outgoing);
             return ins;
         } else {
@@ -591,12 +590,11 @@ namespace components::sql::transform {
             res->append_child(std::move(source));
             res->key_translation() = key_translation;
             res->returning() = returning;
-            res->set_dbname(qn.dbname);
-            res->set_relname(qn.relname);
+            set_target(*res, qn);
             register_catalog_resolve_table(resource_,
                                            &catalog_resolves_,
-                                           qn.dbname,
-                                           qn.relname,
+                                           qn.database,
+                                           qn.collection,
                                            constraint_resolve_kind::outgoing);
             return res;
         }

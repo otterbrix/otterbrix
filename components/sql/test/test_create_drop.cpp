@@ -77,53 +77,15 @@ TEST_CASE("components::sql::table") {
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
-    SECTION("create with uuid") {
-        auto create = raw_parser(&arena_resource, "CREATE TABLE uuid.db_name.schema.table_name()")->lst.front().data;
-        auto result = ([](auto _w) {
-            REQUIRE_FALSE(_w.has_error());
-            return _w.value();
-        }(transformer.transform(pg_cell_to_node_cast(create)).finalize()));
-        REQUIRE(result.sub_queries.back()->type() == node_type::create_collection_t);
-        REQUIRE(entry_count(result.catalog_resolves.namespaces) == 1);
-    }
-
-    SECTION("create with schema") {
-        auto create = raw_parser(&arena_resource, "CREATE TABLE db_name.schema.table_name()")->lst.front().data;
-        auto result = ([](auto _w) {
-            REQUIRE_FALSE(_w.has_error());
-            return _w.value();
-        }(transformer.transform(pg_cell_to_node_cast(create)).finalize()));
-        REQUIRE(result.sub_queries.back()->type() == node_type::create_collection_t);
-        REQUIRE(entry_count(result.catalog_resolves.namespaces) == 1);
-    }
-
+    TEST_TRANSFORMER_OK("CREATE TABLE uuid.db_name.schema.table_name()", node_type::create_collection_t, 1, 0);
+    TEST_TRANSFORMER_OK("CREATE TABLE db_name.schema.table_name()", node_type::create_collection_t, 1, 0);
     TEST_TRANSFORMER_OK("CREATE TABLE db_name.table_name()", node_type::create_collection_t, 1, 0);
-    TEST_TRANSFORMER_OK("CREATE TABLE table_name()", node_type::create_collection_t, 0, 0);
+    TEST_TRANSFORMER_OK("CREATE TABLE table_name()", node_type::create_collection_t, 1, 0);
 
     // DROP TABLE registers a namespace + table lookup; the drop node carries the
     // names and gets namespace_oid + table_oid pasted on by enrich.
-    SECTION("drop with uuid") {
-        auto drop = raw_parser(&arena_resource, "DROP TABLE uuid.db_name.schema.table_name")->lst.front().data;
-        auto result = ([](auto _w) {
-            REQUIRE_FALSE(_w.has_error());
-            return _w.value();
-        }(transformer.transform(pg_cell_to_node_cast(drop)).finalize()));
-        REQUIRE(result.sub_queries.back()->type() == node_type::drop_t);
-        REQUIRE(entry_count(result.catalog_resolves.namespaces) == 1);
-        REQUIRE(entry_count(result.catalog_resolves.tables) == 1);
-    }
-
-    SECTION("drop with schema") {
-        auto drop = raw_parser(&arena_resource, "DROP TABLE db_name.schema.table_name")->lst.front().data;
-        auto result = ([](auto _w) {
-            REQUIRE_FALSE(_w.has_error());
-            return _w.value();
-        }(transformer.transform(pg_cell_to_node_cast(drop)).finalize()));
-        REQUIRE(result.sub_queries.back()->type() == node_type::drop_t);
-        REQUIRE(entry_count(result.catalog_resolves.namespaces) == 1);
-        REQUIRE(entry_count(result.catalog_resolves.tables) == 1);
-    }
-
+    TEST_TRANSFORMER_OK("DROP TABLE uuid.db_name.schema.table_name", node_type::drop_t, 1, 1);
+    TEST_TRANSFORMER_OK("DROP TABLE db_name.schema.table_name", node_type::drop_t, 1, 1);
     TEST_TRANSFORMER_OK("DROP TABLE db_name.table_name", node_type::drop_t, 1, 1);
     // No db prefix → the table lookup carries an empty dbname, and no namespace
     // lookup is registered at all.
@@ -323,8 +285,8 @@ TEST_CASE("components::sql::types") {
     // DROP TYPE is wrapped in sequence_t(resolve_ns, resolve_type, drop_type).
     TEST_TRANSFORMER_OK("DROP TYPE custom_type_name", node_type::drop_t, 1, 0);
 
-    // CREATE TABLE with a custom type is wrapped in sequence_t(resolve_type, create_collection).
-    TEST_TRANSFORMER_OK("CREATE TABLE table_ (custom_type_name custom_type);", node_type::create_collection_t, 0, 0);
+    // CREATE TABLE with a custom type is wrapped in sequence_t(resolve_ns, resolve_type, create_collection).
+    TEST_TRANSFORMER_OK("CREATE TABLE table_ (custom_type_name custom_type);", node_type::create_collection_t, 1, 0);
 
     // INSERT is wrapped in sequence_t(resolve_table, resolve_constraint,
     // insert) — no dbname so no resolve_namespace.
@@ -553,7 +515,7 @@ TEST_CASE("components::sql::create_function_shape_is_carried_or_refused") {
         REQUIRE(node->type() == node_type::create_macro_t);
         auto& macro = reinterpret_cast<node_create_macro_ptr&>(node);
         CHECK(macro->macroname() == "solo");
-        CHECK(macro->dbname().empty());
+        CHECK(macro->dbname() == "public");
     }
 }
 
@@ -674,4 +636,35 @@ TEST_CASE("components::sql::alter_drop_column_carries_written_behavior") {
         REQUIRE_FALSE(subs.front().missing_ok);
         REQUIRE_FALSE(subs.back().missing_ok);
     }
+}
+
+TEST_CASE("components::sql::unreachable_write_targets") {
+    auto resource = core::pmr::otterbrix_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
+    transform::transformer transformer(&resource);
+
+    auto recorded = [&](const char* sql) {
+        auto stmt = raw_parser(&arena_resource, sql)->lst.front().data;
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
+        REQUIRE_FALSE(result.has_error());
+        std::vector<std::string> written;
+        for (const auto& target : result.value().catalog_resolves.external_targets) {
+            written.emplace_back(target.written.to_string());
+        }
+        return written;
+    };
+    using names = std::vector<std::string>;
+
+    CHECK(recorded("CREATE TABLE uuid.db_name.schema.table_name()") == names{"uuid.db_name.schema.table_name"});
+    CHECK(recorded("DROP TABLE db_name.schema.table_name") == names{"db_name.schema.table_name"});
+
+    CHECK(recorded("CREATE TABLE db_name.table_name()").empty());
+    CHECK(recorded("DROP TABLE db_name.table_name").empty());
+
+    CHECK(recorded("CREATE TYPE db_name.type_name AS (id int)") == names{"db_name.type_name"});
+    CHECK(recorded("DROP TYPE db_name.type_name") == names{"db_name.type_name"});
+
+    CHECK(recorded("CREATE TABLE table_name()").empty());
+    CHECK(recorded("CREATE TYPE type_name AS (id int)").empty());
+    CHECK(recorded("DROP TYPE type_name").empty());
 }

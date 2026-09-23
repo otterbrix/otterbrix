@@ -3,19 +3,20 @@
 #include <sstream>
 
 namespace components::logical_plan {
-
-    node_function_t::node_function_t(std::pmr::memory_resource* resource, std::string&& name)
+    node_function_t::node_function_t(std::pmr::memory_resource* resource, qualified_name_t&& name)
         : node_t(resource, node_type::function_t)
         , name_(std::move(name)) {}
 
     node_function_t::node_function_t(std::pmr::memory_resource* resource,
-                                     std::string&& name,
+                                     qualified_name_t&& name,
                                      std::pmr::vector<expressions::param_storage>&& args)
         : node_t(resource, node_type::function_t)
         , name_(std::move(name))
         , args_(std::move(args)) {}
 
-    const std::string& node_function_t::name() const noexcept { return name_; }
+    const std::string& node_function_t::name() const noexcept { return name_.collection; }
+
+    const qualified_name_t& node_function_t::full_name() const noexcept { return name_; }
 
     const std::pmr::vector<expressions::param_storage>& node_function_t::args() const noexcept { return args_; }
 
@@ -28,7 +29,7 @@ namespace components::logical_plan {
     std::string node_function_t::to_string_impl() const {
         std::stringstream stream;
         stream << "$function: {";
-        stream << "name: {\"" << name_ << "\"}, ";
+        stream << "name: {\"" << name_.to_string() << "\"}, ";
         stream << "args: {";
         bool is_first = true;
         for (const auto& arg : args_) {
@@ -43,14 +44,13 @@ namespace components::logical_plan {
         return stream.str();
     }
 
-    node_function_ptr make_node_function(std::pmr::memory_resource* resource, std::string&& name) {
+    node_function_ptr make_node_function(std::pmr::memory_resource* resource, qualified_name_t&& name) {
         return {new node_function_t(resource, std::move(name))};
     }
 
     node_function_ptr make_node_function(std::pmr::memory_resource* resource,
-                                         std::string&& name,
+                                         qualified_name_t&& name,
                                          std::pmr::vector<expressions::param_storage>&& args) {
         return {new node_function_t(resource, std::move(name), std::move(args))};
     }
-
 } // namespace components::logical_plan

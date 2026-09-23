@@ -30,7 +30,6 @@
 using namespace components::cursor;
 
 namespace services::dispatcher {
-
 #ifdef DEV_MODE
     namespace {
         std::atomic<uint64_t> g_pump_hops{0};
@@ -733,7 +732,10 @@ namespace services::dispatcher {
                                              std::pmr::string{"unregister_udf: executor " + std::to_string(i) + " of " +
                                                                   std::to_string(ack_futures.size()) +
                                                                   " held no overload of '" + function_name +
-                                                                  "' matching this signature; pg_proc left untouched",
+                                                                  "' matching this signature; pg_proc left untouched. "
+                                                                  "A function a previous process registered cannot "
+                                                                  "be unregistered, only replaced: register_udf it "
+                                                                  "again",
                                                               resource()}};
             }
         }
@@ -1394,5 +1396,4 @@ namespace services::dispatcher {
         trace(log_, "manager_dispatcher_t::txn_compact_watermark_msg, watermark: {}", watermark);
         co_return watermark;
     }
-
 } // namespace services::dispatcher

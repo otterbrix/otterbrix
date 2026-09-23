@@ -6,9 +6,7 @@
 #include <components/sql/transformer/utils.hpp>
 
 namespace components::sql::transform {
-
     namespace {
-
         // No `default:` on purpose: the compiler must break the build when the parser
         // learns a new ObjectType, rather than let it fall through to a generic sentence.
         struct rename_form_t {
@@ -247,7 +245,6 @@ namespace components::sql::transform {
         }
 
         constexpr std::string_view alter_table_refusal_tail = " is not implemented; the table was not altered";
-
     } // namespace
 
     core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_rename(RenameStmt& node) {
@@ -276,8 +273,7 @@ namespace components::sql::transform {
             return core::error_t(core::error_code_t::unimplemented_yet, std::move(msg));
         }
         auto qn = rangevar_to_qualified_name(node.relation);
-        const std::string db_for_resolve = qn.dbname;
-        const std::string rel_for_resolve = qn.relname;
+        const std::string rel_for_resolve = qn.collection;
         std::string old_name = node.subname ? node.subname : "";
         std::string new_name = node.newname ? node.newname : "";
         // operator_alter_column_rename_t carries the same empty-name no-op as its
@@ -293,8 +289,7 @@ namespace components::sql::transform {
         auto n = logical_plan::make_node_alter_table_rename_column(resource_, std::move(old_name), std::move(new_name));
         // The altered table's identity stays ON the node: enrich binds it to a
         // resolved entry by name and stamps table_oid() + relkind from there.
-        n->set_dbname(db_for_resolve);
-        n->set_relname(rel_for_resolve);
+        const std::string db_for_resolve = set_target(*n, qn);
         register_catalog_resolve_table(resource_, &catalog_resolves_, db_for_resolve, rel_for_resolve);
         return n;
     }
@@ -302,15 +297,14 @@ namespace components::sql::transform {
     core::result_wrapper_t<logical_plan::node_ptr>
     transformer::transform_alter_table(AlterTableStmt& node, logical_plan::execution_plan_t* plan) {
         auto qn = rangevar_to_qualified_name(node.relation);
-        const std::string& db = qn.dbname;
-        const std::string& rel = qn.relname;
+        const std::string& db = qn.database;
+        const std::string& rel = qn.collection;
         // Helper: every return path below targets (db, rel) — name the node and
         // register the lookup once.
         auto wrap_primary = [&](logical_plan::node_ptr n) {
             if (n && n->type() == logical_plan::node_type::alter_table_t) {
                 auto* alter = static_cast<logical_plan::node_alter_table_t*>(n.get());
-                alter->set_dbname(db);
-                alter->set_relname(rel);
+                set_target(*alter, qn);
             }
             register_catalog_resolve_table(resource_, &catalog_resolves_, db, rel);
             return n;
@@ -566,5 +560,4 @@ namespace components::sql::transform {
         // `DROP COLUMN IF EXISTS x`.
         return wrap_primary(logical_plan::make_node_alter_table_multi(resource_, std::move(subs)));
     }
-
 } // namespace components::sql::transform

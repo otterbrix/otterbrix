@@ -31,10 +31,12 @@ namespace components::sql::transform {
 
     core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_create_type(CompositeTypeStmt& node) {
         VALUE_OR_RETURN(auto fields, get_types(resource_, *node.coldeflist));
-        auto type = types::complex_logical_type::create_struct(construct(node.typevar->relname), fields);
+        auto written = rangevar_to_qualified_name(node.typevar);
+        auto type = types::complex_logical_type::create_struct(written.collection, fields);
         auto type_copy = type;
         auto created = logical_plan::make_node_create_type(resource_, std::move(type_copy));
-        created->set_dbname("public");
+        // A type always lands in "public"; a name that spells uid or schema goes to enrich to refuse.
+        set_target(*created, written);
         register_create_type_resolves(resource_, &catalog_resolves_, type);
         return created;
     }
@@ -51,10 +53,11 @@ namespace components::sql::transform {
             values.emplace_back(resource_, counter++);
             values.back().set_alias(strVal(cell.data));
         }
-        auto type = types::complex_logical_type::create_enum(strVal(node.typeName->lst.back().data), std::move(values));
+        VALUE_OR_RETURN(auto written, qualified_name_of(resource_, *node.typeName));
+        auto type = types::complex_logical_type::create_enum(written.collection, std::move(values));
         auto type_copy = type;
         auto created = logical_plan::make_node_create_type(resource_, std::move(type_copy));
-        created->set_dbname("public");
+        set_target(*created, written);
         register_create_type_resolves(resource_, &catalog_resolves_, type);
         return created;
     }

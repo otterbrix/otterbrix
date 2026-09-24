@@ -10,7 +10,11 @@ fn main() {
         .canonicalize()
         .expect("failed to canonicalise repository root");
 
-    let default_lib_dir = repo_root.join("build").join("integration").join("c");
+    let default_lib_dir = repo_root
+        .join("build")
+        .join("release")
+        .join("integration")
+        .join("c");
     let default_include_dir = repo_root.join("integration").join("c");
 
     let lib_dir =
@@ -21,7 +25,7 @@ fn main() {
     let abs_lib_dir = PathBuf::from(&lib_dir).canonicalize().unwrap_or_else(|_| {
         panic!(
             "OTTERBRIX_LIB_DIR={lib_dir:?} does not point to an existing directory; \
-             build the C++ side first (cmake --build build) or set OTTERBRIX_LIB_DIR explicitly"
+             build the C++ side first (integration/rust/scripts/build-cpp.sh) or set OTTERBRIX_LIB_DIR explicitly"
         )
     });
     let abs_include_dir = PathBuf::from(&include_dir)

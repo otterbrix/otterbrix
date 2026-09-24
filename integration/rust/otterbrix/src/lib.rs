@@ -84,7 +84,7 @@
 //! This crate transitively links against `libotterbrix.so` from the upstream
 //! Otterbrix C++ build. By default,
 //! [`otterbrix-sys`](https://crates.io/crates/otterbrix-sys) resolves both
-//! the header and the shared object under `<repo>/build/integration/c`, and
+//! the header and the shared object under `<repo>/build/release/integration/c`, and
 //! `build.rs` embeds an `rpath` so the linker can locate the library at run
 //! time without `LD_LIBRARY_PATH`. Set `OTTERBRIX_LIB_DIR` and/or
 //! `OTTERBRIX_INCLUDE_DIR` to override the default search path.

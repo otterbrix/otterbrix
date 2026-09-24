@@ -27,8 +27,8 @@ may add, remove or rename items without notice.
 ## Build requirements
 
 `build.rs` invokes `bindgen` against
-`<repo>/build/integration/c/otterbrix.h` and links against
-`<repo>/build/integration/c/libotterbrix.so`. Both paths are derived from
+`<repo>/integration/c/otterbrix.h` and links against
+`<repo>/build/release/integration/c/libotterbrix.so`. Both paths are derived from
 `CARGO_MANIFEST_DIR` by default; set `OTTERBRIX_INCLUDE_DIR` and/or
 `OTTERBRIX_LIB_DIR` to override them.
 

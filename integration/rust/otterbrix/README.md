@@ -50,7 +50,7 @@ cargo run -p otterbrix --example <name>
 
 This crate links against `libotterbrix.so` from the upstream Otterbrix C++
 build. The default search path resolved by `otterbrix-sys/build.rs` is
-`<repo>/build/integration/c`; both `OTTERBRIX_LIB_DIR` and
+`<repo>/build/release/integration/c`; both `OTTERBRIX_LIB_DIR` and
 `OTTERBRIX_INCLUDE_DIR` may be set to override it.
 
 For the canonical build flow (build the `.so`, run tests, run checks)

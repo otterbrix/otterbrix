@@ -84,7 +84,7 @@ jobs:
           python${{ matrix.PYTHON_VERSION }} -m pip install --user --retries=30 --upgrade pip
           python${{ matrix.PYTHON_VERSION }} -m pip install --user --retries=30 build pytest==6.2.5
           
-          conan install . -pr:h profiles/release -pr:b default --build=missing -of build/wheel -o build_python=True
+          conan install . -pr:h profiles/release -pr:b default --build=missing --build="m4/*" -of build/wheel -o build_python=True
           conan cache clean "*" --source --build --download --temp
 
       - name: Build wheel

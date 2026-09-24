@@ -15,7 +15,7 @@ WORKDIR /app
 
 COPY ./conanfile.py ./conanfile.py
 COPY ./profiles ./profiles
-RUN conan install . -pr:h profiles/release -pr:b default --build=missing -of build/wheel -o build_python=True
+RUN conan install . -pr:h profiles/release -pr:b default --build=missing --build="m4/*" -of build/wheel -o build_python=True
 
 COPY ./integration ./integration
 COPY ./cmake ./cmake

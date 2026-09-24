@@ -744,7 +744,7 @@ namespace components::sql::transform {
                         return core::error_t::no_error();
                     }
                     if (expr->group() == child_expr->group()) {
-                        auto comp_expr = reinterpret_cast<const compare_expression_ptr&>(child_expr);
+                        const auto* comp_expr = static_cast<const compare_expression_t*>(child_expr.get());
                         if (expr->type() == comp_expr->type()) {
                             for (auto& child : comp_expr->children()) {
                                 expr->append_child(child);
@@ -865,7 +865,7 @@ namespace components::sql::transform {
                 }
                 // De Morgan preserves 3-valued NULL semantics; a plain union_not would wrongly flip a NULL match.
                 if (right->group() == expression_group::compare) {
-                    auto& membership = reinterpret_cast<compare_expression_ptr&>(right);
+                    auto* membership = static_cast<compare_expression_t*>(right.get());
                     const auto ctype = membership->type();
                     if ((ctype == compare_type::any || ctype == compare_type::all) &&
                         membership->inner_op() != compare_type::regex) {
@@ -878,7 +878,7 @@ namespace components::sql::transform {
                     }
                 }
                 if (right->group() == expression_group::compare) {
-                    auto& inner = reinterpret_cast<const compare_expression_ptr&>(right);
+                    const auto* inner = static_cast<const compare_expression_t*>(right.get());
                     if (inner->type() == compare_type::union_not && inner->children().size() == 1) {
                         return inner->children().front();
                     }

@@ -161,7 +161,7 @@ TEST_CASE("components::sql::insert_bind") {
         }
 
         const auto& chunk =
-            reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
+            static_cast<components::logical_plan::node_data_t*>(node->children().front().get())->data_chunk();
         REQUIRE(chunk.size() == 1);
         REQUIRE(chunk.value(0, 0) == v(&resource, 42l));
         REQUIRE(chunk.value(1, 0) == v(&resource, "inserted"));
@@ -186,7 +186,7 @@ TEST_CASE("components::sql::insert_bind") {
         }
 
         const auto& chunk =
-            reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
+            static_cast<components::logical_plan::node_data_t*>(node->children().front().get())->data_chunk();
         REQUIRE(chunk.size() == 1);
         REQUIRE(chunk.value(0, 0) == v(&resource, 123l));
         REQUIRE(chunk.value(1, 0) == v(&resource, 123l));
@@ -212,7 +212,7 @@ TEST_CASE("components::sql::insert_bind") {
         }
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
         const auto& chunk =
-            reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
+            static_cast<components::logical_plan::node_data_t*>(node->children().front().get())->data_chunk();
         REQUIRE(chunk.size() == 2);
         REQUIRE(chunk.value(0, 0) == v(&resource, 1ul));
         REQUIRE(chunk.value(1, 0) == v(&resource, "Name1"));
@@ -356,14 +356,14 @@ TEST_CASE("components::sql::transform_result") {
             node = node->children().back();
         }
 
-        const auto& keys = reinterpret_cast<logical_plan::node_insert_ptr&>(node)->key_translation();
+        const auto& keys = static_cast<logical_plan::node_insert_t*>(node.get())->key_translation();
         std::ignore = binder.bind(1, v(&resource, true)).bind(2, v(&resource, std::string("doc 10"))).finalize();
 
         const auto& chunk =
-            reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
+            static_cast<components::logical_plan::node_data_t*>(node->children().front().get())->data_chunk();
         REQUIRE(chunk.size() == 1);
         REQUIRE(chunk.value(0, 0) == v(&resource, true));
         REQUIRE(chunk.value(1, 0) == v(&resource, std::string("doc 10")));
-        REQUIRE(reinterpret_cast<logical_plan::node_insert_ptr&>(node)->key_translation() == keys);
+        REQUIRE(static_cast<logical_plan::node_insert_t*>(node.get())->key_translation() == keys);
     }
 }

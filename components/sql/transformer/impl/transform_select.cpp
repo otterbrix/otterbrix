@@ -1210,7 +1210,7 @@ namespace components::sql::transform {
                                          std::pmr::string{"GROUP BY operator is missing its operand", resource_});
                 }
                 // `GROUP BY <n>` groups by the n-th output expression instead of computing n.
-                if (nodeTag(key_node) == T_A_Const && nodeTag(&pg_ptr_cast<A_Const>(key_node)->val) == T_Integer) {
+                if (nodeTag(key_node) == T_A_Const && pg_ptr_cast<A_Const>(key_node)->val.type == T_Integer) {
                     const int64_t position = intVal(&pg_ptr_cast<A_Const>(key_node)->val);
                     ResTarget* target = positional_target(node.targetList, position);
                     if (target == nullptr) {
@@ -1365,7 +1365,7 @@ namespace components::sql::transform {
                                          std::pmr::string{"ORDER BY operator is missing its operand", resource_});
                 }
                 const auto order = is_desc ? sort_order::desc : sort_order::asc;
-                if (nodeTag(sort_node) == T_A_Const && nodeTag(&pg_ptr_cast<A_Const>(sort_node)->val) == T_Integer) {
+                if (nodeTag(sort_node) == T_A_Const && pg_ptr_cast<A_Const>(sort_node)->val.type == T_Integer) {
                     column_ref_t field(resource_);
                     RETURN_IF_ERROR(positional_sort_field(node.targetList,
                                                           intVal(&pg_ptr_cast<A_Const>(sort_node)->val),

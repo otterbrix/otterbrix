@@ -138,9 +138,9 @@ namespace {
                 case LT::BIGINT:
                     return components::types::logical_value_t(resource, int128_t{val.value<int64_t>()});
                 case LT::UTINYINT:
-                    return components::types::logical_value_t(resource, int128_t{val.value<uint8_t>()});
+                    return components::types::logical_value_t(resource, int128_t{static_cast<uint32_t>(val.value<uint8_t>())});
                 case LT::USMALLINT:
-                    return components::types::logical_value_t(resource, int128_t{val.value<uint16_t>()});
+                    return components::types::logical_value_t(resource, int128_t{static_cast<uint32_t>(val.value<uint16_t>())});
                 case LT::UINTEGER:
                     return components::types::logical_value_t(resource, int128_t{val.value<uint32_t>()});
                 case LT::UBIGINT:

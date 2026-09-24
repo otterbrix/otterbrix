@@ -35,7 +35,7 @@ TEST_CASE("components::sql::insert_into") {
         auto node = dml_consumer(result.sub_queries.back());
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
         const auto& chunk =
-            reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
+            static_cast<components::logical_plan::node_data_t*>(node->children().front().get())->data_chunk();
         REQUIRE(chunk.size() == 1);
         REQUIRE(chunk.value(0, 0) == components::types::logical_value_t(&arena_resource, 1l));
         REQUIRE(chunk.value(1, 0) == components::types::logical_value_t(&arena_resource, "Name"));
@@ -52,7 +52,7 @@ TEST_CASE("components::sql::insert_into") {
         auto node = dml_consumer(result.sub_queries.back());
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
         const auto& chunk =
-            reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
+            static_cast<components::logical_plan::node_data_t*>(node->children().front().get())->data_chunk();
         REQUIRE(chunk.size() == 1);
         REQUIRE(chunk.value(0, 0) == components::types::logical_value_t(&arena_resource, 1l));
         REQUIRE(chunk.value(1, 0) == components::types::logical_value_t(&arena_resource, "Name"));
@@ -69,7 +69,7 @@ TEST_CASE("components::sql::insert_into") {
         auto node = dml_consumer(result.sub_queries.back());
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
         const auto& chunk =
-            reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
+            static_cast<components::logical_plan::node_data_t*>(node->children().front().get())->data_chunk();
         REQUIRE(chunk.size() == 1);
         REQUIRE(chunk.value(0, 0) == components::types::logical_value_t(&arena_resource, 1l));
         REQUIRE(chunk.value(1, 0) == components::types::logical_value_t(&arena_resource, "Name"));
@@ -87,7 +87,7 @@ TEST_CASE("components::sql::insert_into") {
         auto node = dml_consumer(result.sub_queries.back());
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
         const auto& chunk =
-            reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
+            static_cast<components::logical_plan::node_data_t*>(node->children().front().get())->data_chunk();
         REQUIRE(chunk.size() == 1);
         REQUIRE(chunk.value(0, 0) == components::types::logical_value_t(&arena_resource, 43l));
         REQUIRE(chunk.value(1, 0) == components::types::logical_value_t(&arena_resource, "some text"));
@@ -103,7 +103,7 @@ TEST_CASE("components::sql::insert_into") {
         auto node = dml_consumer(result.sub_queries.back());
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
         const auto& chunk =
-            reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
+            static_cast<components::logical_plan::node_data_t*>(node->children().front().get())->data_chunk();
         REQUIRE(chunk.size() == 1);
         auto arr =
             components::types::logical_value_t::create_array(&arena_resource,
@@ -129,7 +129,7 @@ TEST_CASE("components::sql::insert_into") {
         auto node = dml_consumer(result.sub_queries.back());
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
         const auto& chunk =
-            reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
+            static_cast<components::logical_plan::node_data_t*>(node->children().front().get())->data_chunk();
         REQUIRE(chunk.size() == 5);
         REQUIRE(chunk.value(0, 0) == components::types::logical_value_t(&arena_resource, 1l));
         REQUIRE(chunk.value(1, 0) == components::types::logical_value_t(&arena_resource, "Name1"));
@@ -152,11 +152,11 @@ WHERE condition = true;)_"));
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
         REQUIRE(
             static_cast<const std::string&>(
-                reinterpret_cast<components::logical_plan::node_aggregate_ptr&>(node->children().front())->dbname()) ==
+                static_cast<components::logical_plan::node_aggregate_t*>(node->children().front().get())->dbname()) ==
             "");
         REQUIRE(
             static_cast<const std::string&>(
-                reinterpret_cast<components::logical_plan::node_aggregate_ptr&>(node->children().front())->relname()) ==
+                static_cast<components::logical_plan::node_aggregate_t*>(node->children().front().get())->relname()) ==
             "table1");
     }
 }

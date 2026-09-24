@@ -166,7 +166,7 @@ namespace components::sql::transform {
         if (effective_consumer_type(node) == logical_plan::node_type::insert_t) {
             if (prev_finalized) {
                 const auto& bound =
-                    reinterpret_cast<logical_plan::node_data_ptr&>(consumer->children().front())->chunks();
+                    static_cast<logical_plan::node_data_t*>(consumer->children().front().get())->chunks();
                 insert_rows_t fresh(resource_);
                 fresh.reserve(bound.size());
                 for (const auto& src : bound) {

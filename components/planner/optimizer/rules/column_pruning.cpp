@@ -83,7 +83,7 @@ namespace components::planner::optimizer {
                     return collect_cols_from_param(cast_expr->child(), cols);
                 }
                 if (sub->group() == expression_group::compare) {
-                    const auto& ce = reinterpret_cast<const expressions::compare_expression_ptr&>(sub);
+                    const auto ce = boost::static_pointer_cast<expressions::compare_expression_t>(sub);
                     return collect_cols_from_compare(ce, cols);
                 }
                 if (sub->group() == expression_group::function) {
@@ -145,7 +145,7 @@ namespace components::planner::optimizer {
                             return false;
                     }
                 } else if (expr->group() == expression_group::compare) {
-                    const auto& ce = reinterpret_cast<const expressions::compare_expression_ptr&>(expr);
+                    const auto ce = boost::static_pointer_cast<expressions::compare_expression_t>(expr);
                     if (!collect_cols_from_compare(ce, cols))
                         return false;
                 } else if (expr->group() == expression_group::function) {
@@ -351,7 +351,7 @@ namespace components::planner::optimizer {
                 if (expr->group() != expressions::expression_group::compare) {
                     return false;
                 }
-                const auto& ce = reinterpret_cast<const expressions::compare_expression_ptr&>(expr);
+                const auto* ce = static_cast<const expressions::compare_expression_t*>(expr.get());
                 if (expressions::is_union_compare_condition(ce->type())) {
                     for (const auto& child : ce->children()) {
                         if (!walk(child))
@@ -434,7 +434,7 @@ namespace components::planner::optimizer {
                 if (!expr || expr->group() != expressions::expression_group::compare) {
                     return;
                 }
-                const auto& ce = reinterpret_cast<const expressions::compare_expression_ptr&>(expr);
+                auto* ce = static_cast<expressions::compare_expression_t*>(expr.get());
                 if (expressions::is_union_compare_condition(ce->type())) {
                     for (const auto& child : ce->children()) {
                         remap(child);
@@ -555,7 +555,7 @@ namespace components::planner::optimizer {
                         can_project = false;
                         break;
                     }
-                    const auto& ce = reinterpret_cast<const expressions::compare_expression_ptr&>(expr);
+                    const auto ce = boost::static_pointer_cast<expressions::compare_expression_t>(expr);
                     if (!collect_cols_from_compare(ce, raw_cols)) {
                         can_project = false;
                         break;

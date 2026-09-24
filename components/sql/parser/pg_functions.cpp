@@ -47,8 +47,6 @@ int errcode(int sqlerrcode) { return sqlerrcode; }
 
 const char* errhint(const char* msg) { return msg; }
 
-const char* errmsg_internal(const char* fmt, ...) { fmt; }
-
 const char* errdetail(const char* fmt, ...) { return fmt; }
 
 int errposition(int cursorpos) { return cursorpos; }
@@ -77,11 +75,11 @@ char* psprintf(std::pmr::memory_resource* resource, const char* fmt, ...) {
             throw std::runtime_error("Formatting error in psprintf");
         }
 
-        if (newlen < len)
+        if (static_cast<size_t>(newlen) < len)
             return result;
 
         pfree(result);
-        len = newlen;
+        len = static_cast<size_t>(newlen) + 1;
     }
 }
 

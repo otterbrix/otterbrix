@@ -46,8 +46,11 @@ std::string errmsg(const char* fmt, Args... args) {
     result.resize(size - 1); // remove '\0'
     return result;
 }
+template<typename... Args>
+std::string errmsg_internal(const char* fmt, Args... args) {
+    return errmsg(fmt, args...);
+}
 const char* errhint(const char* msg);
-const char* errmsg_internal(const char* fmt, ...);
 const char* errdetail(const char* fmt, ...);
 int errposition(int cursorpos);
 char* psprintf(std::pmr::memory_resource* resource, const char* fmt, ...);

@@ -1,6 +1,7 @@
 #include "nodes.h"
 #include "parsenodes.h"
 #include <components/sql/parser/pg_functions.h>
+#include <cstring>
 
 #define COMPARE_SCALAR_FIELD(fldname)                                                                                  \
     do {                                                                                                               \
@@ -45,9 +46,7 @@ void* copyObject(std::pmr::memory_resource* resource, const void* obj) { // mdxn
     return n;
 }
 
-bool equal(const void* a1, const void* b1) {
-    const TypeName *a = reinterpret_cast<const TypeName*>(a1), *b = reinterpret_cast<const TypeName*>(b1);
-
+static bool equal_type_name(const TypeName* a, const TypeName* b) {
     COMPARE_NODE_FIELD(names);
     COMPARE_SCALAR_FIELD(typeOid);
     COMPARE_SCALAR_FIELD(setof);
@@ -57,6 +56,60 @@ bool equal(const void* a1, const void* b1) {
     COMPARE_NODE_FIELD(arrayBounds);
 
     return true;
+}
+
+static bool equal_list(const List* a, const List* b) {
+    if (a->lst.size() != b->lst.size()) {
+        return false;
+    }
+    auto b_cell = b->lst.begin();
+    for (const auto& a_cell : a->lst) {
+        if (!equal(a_cell.data, b_cell->data)) {
+            return false;
+        }
+        ++b_cell;
+    }
+    return true;
+}
+
+static bool equal_value(const Value* a, const Value* b) {
+    switch (a->type) {
+        case T_Integer:
+            return a->val.ival == b->val.ival;
+        case T_Float:
+        case T_String:
+        case T_BitString:
+            return std::strcmp(a->val.str, b->val.str) == 0;
+        case T_Null:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool equal(const void* a, const void* b) {
+    if (a == b) {
+        return true;
+    }
+    if (a == nullptr || b == nullptr || nodeTag(a) != nodeTag(b)) {
+        return false;
+    }
+    switch (nodeTag(a)) {
+        case T_TypeName:
+            return equal_type_name(static_cast<const TypeName*>(a), static_cast<const TypeName*>(b));
+        case T_List:
+            return equal_list(static_cast<const List*>(a), static_cast<const List*>(b));
+        case T_Integer:
+        case T_Float:
+        case T_String:
+        case T_BitString:
+        case T_Null:
+            return equal_value(static_cast<const Value*>(a), static_cast<const Value*>(b));
+        case T_A_Const:
+            return equal_value(&static_cast<const A_Const*>(a)->val, &static_cast<const A_Const*>(b)->val);
+        default:
+            return false;
+    }
 }
 
 void makeNodeinjpoin() {

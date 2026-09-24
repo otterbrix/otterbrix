@@ -11,7 +11,6 @@ set(external_LIBS
     otterbrix_vector
     otterbrix_table
     otterbrix::planner
-    utf8proc::utf8proc
 )
 
 set(ALL_OBJECT_FILES)
@@ -48,8 +47,6 @@ target_link_libraries(otterbrix_python PRIVATE
     actor-zeta::actor-zeta
     Boost::boost
     fmt::fmt
-    ZLIB::ZLIB
-    BZip2::BZip2
 )
 
 

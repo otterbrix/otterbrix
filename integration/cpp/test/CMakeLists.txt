@@ -247,8 +247,6 @@ target_link_libraries(
         Boost::boost
         fmt::fmt
         #CONAN_PKG::libcurl
-        ZLIB::ZLIB
-        BZip2::BZip2
         #libbacktrace::libbacktrace
 
 )
@@ -278,8 +276,6 @@ target_link_libraries(profile_arithmetic PRIVATE
         actor-zeta::actor-zeta
         Boost::boost
         fmt::fmt
-        ZLIB::ZLIB
-        BZip2::BZip2
 )
 
 # Storage-cost measurement harness. Deliberately NOT a
@@ -303,6 +299,4 @@ target_link_libraries(measure_storage_costs PRIVATE
         actor-zeta::actor-zeta
         Boost::boost
         fmt::fmt
-        ZLIB::ZLIB
-        BZip2::BZip2
 )

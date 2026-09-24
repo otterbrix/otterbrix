@@ -99,7 +99,6 @@ endif ()
 #clang tools
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake")
-find_package(Sanitizers REQUIRED)
 
 if (ENABLE_ASAN)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O0 -g -fno-omit-frame-pointer -fsanitize=address")
@@ -131,17 +130,12 @@ find_package(fmt 11.1.3 REQUIRED)
 find_package(spdlog 1.15.1 REQUIRED)
 find_package(Catch2 3 REQUIRED)
 find_package(benchmark 1.6.1 REQUIRED)
-find_package(ZLIB 1.2.12 REQUIRED)
-find_package(BZip2 1.0.8 REQUIRED)
 find_package(actor-zeta REQUIRED)
-find_package(FastFloat REQUIRED)
 
 if(BUILD_PYTHON)
     set(PYBIND11_FINDPYTHON ON)
     find_package(Python3 REQUIRED COMPONENTS Interpreter Development.Module)
     find_package(pybind11 CONFIG REQUIRED)
-    find_package(utf8proc CONFIG REQUIRED)
-    find_package(tabulate CONFIG REQUIRED)
 endif()
 
 find_package(absl CONFIG REQUIRED)
@@ -190,9 +184,8 @@ endif()
 
 if(ALLOW_BENCHMARK)
     add_subdirectory(benchmark)
+    add_subdirectory(JSONBench/otterbrix)
 endif()
-
-add_subdirectory(JSONBench/otterbrix)
 
 
 

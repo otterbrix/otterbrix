@@ -34,11 +34,3 @@ target_include_directories(
 if(DEV_MODE)
     #add_subdirectory(test)
 endif()
-
-install(TARGETS
-        otterbrix_${CURRENT_TARGET}
-
-        RUNTIME DESTINATION bin
-        LIBRARY DESTINATION lib
-        ARCHIVE DESTINATION lib
-)

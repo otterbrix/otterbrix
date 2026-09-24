@@ -31,8 +31,6 @@ target_link_libraries(
         Boost::boost
         fmt::fmt
         #CONAN_PKG::libcurl
-        ZLIB::ZLIB
-        BZip2::BZip2
         #libbacktrace::libbacktrace
 
 )

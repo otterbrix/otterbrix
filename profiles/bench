@@ -1,0 +1,4 @@
+include(./release)
+
+[settings]
+&:build_type=RelWithDebInfo

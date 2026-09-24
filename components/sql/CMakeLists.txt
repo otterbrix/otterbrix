@@ -1,6 +1,6 @@
 project(sql CXX)
 
-find_package(BISON REQUIRED)
+find_package(BISON 3.0 REQUIRED)
 find_package(FLEX REQUIRED)
 
 bison_target(
@@ -11,6 +11,7 @@ bison_target(
 )
 flex_target(Lexer parser/scan.l ${CMAKE_CURRENT_BINARY_DIR}/parser/scan.cpp)
 add_flex_bison_dependency(Lexer Parser)
+set_source_files_properties(${BISON_Parser_OUTPUTS} ${FLEX_Lexer_OUTPUTS} PROPERTIES COMPILE_OPTIONS -w)
 
 set(SOURCE_${PROJECT_NAME}
     ${BISON_Parser_OUTPUTS}
@@ -78,11 +79,6 @@ target_include_directories(
     ${CMAKE_CURRENT_BINARY_DIR}
     ${CMAKE_CURRENT_BINARY_DIR}/parser
 )
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -w")
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -w")
-
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-all")
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-all")
 
 if (DEV_MODE)
     add_subdirectory(demo_extension)

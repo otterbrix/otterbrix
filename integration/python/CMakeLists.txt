@@ -5,12 +5,8 @@ endif()
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
 set(external_LIBS
-    cpp_otterbrix
-
+    otterbrix::otterbrix
     otterbrix_string_util
-    otterbrix_vector
-    otterbrix_table
-    otterbrix::planner
 )
 
 set(ALL_OBJECT_FILES)

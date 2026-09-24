@@ -8,31 +8,11 @@ set( ${PROJECT_NAME}_SOURCES
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})
 
+# main.cpp includes only ../otterbrix.h: link libotterbrix alone, as the Rust and C# bindings do
 target_link_libraries(
         ${PROJECT_NAME} PRIVATE
-
         c_otterbrix
-        cpp_otterbrix
-
-        otterbrix::test_generaty
-        otterbrix::log
-        otterbrix::cursor
-        otterbrix::session
-        otterbrix::services
-        otterbrix::locks
-
-        spdlog::spdlog
-        #CONAN_PKG::date
         Catch2::Catch2WithMain
-        absl::crc32c
-        absl::int128
-        benchmark::benchmark
-        actor-zeta::actor-zeta
-        Boost::boost
-        fmt::fmt
-        #CONAN_PKG::libcurl
-        #libbacktrace::libbacktrace
-
 )
 
 include(CTest)

@@ -54,7 +54,7 @@ test = ["pytest"]
 
 # CI copies this file to the repo root and builds there, so source-dir is "." (top-level CMakeLists.txt)
 [tool.scikit-build]
-cmake.version = ">=3.20"
+cmake.version = ">=3.25"
 cmake.source-dir = "."
 cmake.build-type = "Release"
 build-dir = "build/{wheel_tag}"

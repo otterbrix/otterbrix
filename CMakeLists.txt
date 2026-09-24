@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.22...3.31 FATAL_ERROR)
+cmake_minimum_required(VERSION 3.25...3.31 FATAL_ERROR)
 
 set_property(GLOBAL PROPERTY GLOBAL_DEPENDS_NO_CYCLES TRUE)
 
@@ -62,11 +62,10 @@ endif()
 
 # We do not use -Werror flag with sanitizers for the following reasons:
 # 1) Sanitizers force us to build absl locally, which does contains warnings
-# 2) Incomplete support of macOS makes development too cumbersome with -Werror enabled
-# 3) A sanitizer teaches the compiler new complaints the code cannot answer: under
+# 2) A sanitizer teaches the compiler new complaints the code cannot answer: under
 #    -fsanitize=thread gcc rejects every std::atomic_thread_fence it cannot model (-Wtsan),
 #    and its std::string bounds analysis at -O0 reports impossible memcpy overlaps (-Wrestrict).
-set(USE_Werror "$<NOT:$<OR:$<BOOL:${APPLE}>,$<BOOL:${ENABLE_ASAN}>,$<BOOL:${ENABLE_TSAN}>,$<BOOL:${ENABLE_UBSAN}>>>")
+set(USE_Werror "$<NOT:$<OR:$<BOOL:${ENABLE_ASAN}>,$<BOOL:${ENABLE_TSAN}>,$<BOOL:${ENABLE_UBSAN}>>>")
 
 if ((CMAKE_CXX_COMPILER_ID MATCHES "GNU") OR (CMAKE_CXX_COMPILER_ID MATCHES "Clang"))
     add_compile_options(
@@ -101,21 +100,18 @@ endif ()
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake")
 
 if (ENABLE_ASAN)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O0 -g -fno-omit-frame-pointer -fsanitize=address")
-    set(CMAKE_CXX_FLAGS_RELEASE "-O0 -g -DNDEBUG" CACHE STRING "" FORCE)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -fno-omit-frame-pointer -fsanitize=address")
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
-    # Guarantee -O0 comes last (overrides any -O3 from toolchain/build-type defaults)
-    add_compile_options(-O0)
 endif()
 
 if (ENABLE_TSAN)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O0 -g -fno-omit-frame-pointer -fsanitize=thread")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -fno-omit-frame-pointer -fsanitize=thread")
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=thread")
     add_compile_definitions(OTTERBRIX_TSAN_ENABLED)
 endif()
 
 if (ENABLE_UBSAN)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O0 -g -fno-omit-frame-pointer -fsanitize=undefined -fno-sanitize-recover=undefined")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -fno-omit-frame-pointer -fsanitize=undefined -fno-sanitize-recover=undefined")
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=undefined")
 endif()
 

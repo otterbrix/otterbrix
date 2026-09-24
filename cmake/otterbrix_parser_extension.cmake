@@ -17,7 +17,7 @@ function(otterbrix_add_parser_extension lib_name)
         set(EXT_PREFIX ${lib_name})
     endif ()
 
-    find_package(BISON REQUIRED)
+    find_package(BISON 3.0 REQUIRED)
     find_package(FLEX REQUIRED)
 
     bison_target(${EXT_PREFIX}_parser
@@ -29,6 +29,8 @@ function(otterbrix_add_parser_extension lib_name)
             ${CMAKE_CURRENT_BINARY_DIR}/${EXT_PREFIX}_scan.cpp
             DEFINES_FILE ${CMAKE_CURRENT_BINARY_DIR}/${EXT_PREFIX}_scan.h)
     add_flex_bison_dependency(${EXT_PREFIX}_lexer ${EXT_PREFIX}_parser)
+    set_source_files_properties(${BISON_${EXT_PREFIX}_parser_OUTPUTS} ${FLEX_${EXT_PREFIX}_lexer_OUTPUTS}
+            PROPERTIES COMPILE_OPTIONS -w)
 
     add_library(otterbrix_${lib_name} STATIC
             ${BISON_${EXT_PREFIX}_parser_OUTPUTS}

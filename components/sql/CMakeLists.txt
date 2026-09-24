@@ -9,6 +9,10 @@ bison_target(
         ${CMAKE_CURRENT_BINARY_DIR}/parser/gram.cpp
         DEFINES_FILE ${CMAKE_CURRENT_BINARY_DIR}/parser/gram.hpp
 )
+add_custom_command(OUTPUT ${BISON_Parser_OUTPUT_SOURCE} APPEND
+        COMMAND ${CMAKE_COMMAND} -DHEADER=${BISON_Parser_OUTPUT_HEADER}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/parser/strip_yyparse_prototype.cmake
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/parser/strip_yyparse_prototype.cmake)
 flex_target(Lexer parser/scan.l ${CMAKE_CURRENT_BINARY_DIR}/parser/scan.cpp)
 add_flex_bison_dependency(Lexer Parser)
 set_source_files_properties(${BISON_Parser_OUTPUTS} ${FLEX_Lexer_OUTPUTS} PROPERTIES COMPILE_OPTIONS -w)

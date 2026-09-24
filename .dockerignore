@@ -293,6 +293,7 @@ out
 gen
 .git
 *.md
+!README.md
 *.yml
 **/*.sh
 

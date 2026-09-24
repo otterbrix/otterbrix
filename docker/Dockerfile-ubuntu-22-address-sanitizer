@@ -12,39 +12,31 @@ RUN apt update && \
         python3-pip \
         python3-venv \
         curl gnupg apt-transport-https \
-        zlib1g \
-        flex \
-        bison && \
+        zlib1g && \
     apt clean && \
     rm -rf /var/lib/apt/lists/*
 
-RUN    pip3 install --no-cache-dir conan==2.15.0 "cmake<4" && \
+RUN    pip3 install --no-cache-dir conan==2.30.0 "cmake<4" && \
        conan profile detect --force && \
-       conan remote add otterbrix http://conan.otterbrix.com
+       conan remote add otterbrix https://conan.otterbrix.com --allowed-packages "actor-zeta/*"
 
 RUN rm /bin/sh && ln -s /bin/bash /bin/sh
 
-WORKDIR /app/build
-COPY ./conanfile.py ./conanfile.py
-RUN conan install conanfile.py --build missing -s build_type=Release -s compiler.cppstd=gnu20
-
 WORKDIR /app
+COPY ./conanfile.py ./conanfile.py
+COPY ./profiles ./profiles
+RUN conan install . -pr:h profiles/asan -pr:b default --build=missing -of build/asan
+
 COPY ./integration ./integration
 COPY ./cmake ./cmake
 COPY ./components ./components
 COPY ./core ./core
 COPY ./services ./services
 COPY ./example ./example
-COPY ./JSONBench ./JSONBench
 COPY ./CMakeLists.txt ./CMakeLists.txt
+COPY ./CMakePresets.json ./CMakePresets.json
 
-WORKDIR /app/build
-
-RUN cmake .. -G Ninja -DCMAKE_TOOLCHAIN_FILE=./build/Release/generators/conan_toolchain.cmake \
-    -DCMAKE_BUILD_TYPE=Release -DDEV_MODE=ON -DEXAMPLE=ON -DENABLE_ASAN=ON && \
-    cmake --build . --target all -- -j $(nproc)
-
-RUN ctest -C Release -V --output-on-failure --timeout 60
+RUN cmake --workflow --preset asan
 
 # Multistage build is faster and resulting image will be smaller
 FROM mcr.microsoft.com/dotnet/sdk:7.0-jammy
@@ -64,9 +56,9 @@ RUN cd integration/csharp && \
 RUN mkdir -p integration/csharp/src/Duckstax.Otterbrix/bin/Release/net7.0 && \
     mkdir -p integration/csharp/tests/Duckstax.Otterbrix.Tests/bin/Release/net7.0 && \
     mkdir -p integration/csharp/build && \
-    cp ./build/integration/c/libotterbrix.so ./integration/csharp/build/libotterbrix.so && \
-    cp ./build/integration/c/libotterbrix.so ./integration/csharp/src/Duckstax.Otterbrix/bin/Release/net7.0/libotterbrix.so && \
-    cp ./build/integration/c/libotterbrix.so ./integration/csharp/tests/Duckstax.Otterbrix.Tests/bin/Release/net7.0/libotterbrix.so
+    cp ./build/asan/integration/c/libotterbrix.so ./integration/csharp/build/libotterbrix.so && \
+    cp ./build/asan/integration/c/libotterbrix.so ./integration/csharp/src/Duckstax.Otterbrix/bin/Release/net7.0/libotterbrix.so && \
+    cp ./build/asan/integration/c/libotterbrix.so ./integration/csharp/tests/Duckstax.Otterbrix.Tests/bin/Release/net7.0/libotterbrix.so
 
 RUN cd integration/csharp && \
     export ASAN_LIB=$(find /usr/lib/ -name "libasan.so.*" | head -n 1) && \

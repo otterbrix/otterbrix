@@ -2,22 +2,20 @@ FROM quay.io/pypa/manylinux_2_28_x86_64 AS build_wheel
 
 ENV PYTHONFAULTHANDLER=1
 
-RUN yum install -y ninja-build python3-pip python3-devel wget unzip zip flex bison
+RUN yum install -y ninja-build python3-pip python3-devel wget unzip zip
 
+# pip3 here is the system Python 3.6; conan 2.30 needs Python >= 3.7, so it comes from the image's pipx
 RUN    pip3 install --upgrade pip && \
-       pip3 install --no-cache-dir conan==2.19.0 pytest==6.2.5 cmake==3.28.3 && \
+       pip3 install --no-cache-dir pytest==6.2.5 cmake==3.28.3 && \
+       pipx install conan==2.30.0 && \
        conan profile detect --force && \
-       conan remote add otterbrix http://conan.otterbrix.com
+       conan remote add otterbrix https://conan.otterbrix.com --allowed-packages "actor-zeta/*"
 
 WORKDIR /app
 
 COPY ./conanfile.py ./conanfile.py
-RUN conan install . --build missing  \
-    --build fmt \
-    --build spdlog  \
-    -s build_type=Release \
-    -s compiler.cppstd=gnu17 \
-    -s compiler.libcxx=libstdc++11
+COPY ./profiles ./profiles
+RUN conan install . -pr:h profiles/release -pr:b default --build=missing -of build/wheel -o build_python=True
 
 COPY ./integration ./integration
 COPY ./cmake ./cmake
@@ -25,7 +23,6 @@ COPY ./components ./components
 COPY ./core ./core
 COPY ./services ./services
 COPY ./example ./example
-COPY ./JSONBench ./JSONBench
 COPY ./CMakeLists.txt ./CMakeLists.txt
 
 COPY ./README.md ./README.md
@@ -35,8 +32,7 @@ RUN   PYBIN=(/opt/python/*/bin) && \
       if [[  ${BIN} == *"cp310"* ]]; then \
           cp integration/python/otterbrix/pyproject.toml . && \
           ${BIN}/python3 -m pip install --no-cache-dir build && \
-          conan install . --build missing -s build_type=Release -s compiler.cppstd=gnu17 -s compiler.libcxx=libstdc++11 -o build_python=True -of=./conan_build && \
-          CMAKE_ARGS="-DCMAKE_TOOLCHAIN_FILE=$(find "$PWD/conan_build" -name conan_toolchain.cmake -print -quit)" ${BIN}/python3 -m build --wheel --outdir dist . ; \
+          CMAKE_ARGS="-DCMAKE_TOOLCHAIN_FILE=$PWD/build/wheel/generators/conan_toolchain.cmake" ${BIN}/python3 -m build --wheel --outdir dist . ; \
       fi \
       done
 
@@ -57,10 +53,10 @@ RUN apt update && \
 
 WORKDIR /app
 
-COPY --from=build_wheel /app/work/dist/otterbrix-1.0.1a9-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl /app/otterbrix-1.0.1a9-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+COPY --from=build_wheel /app/work/dist/otterbrix-*.whl /app/
 COPY ./integration  ./integration
 
-RUN pip3 install ./otterbrix-1.0.1a9-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+RUN pip3 install ./otterbrix-*.whl
 RUN python3 -c "import distutils.sysconfig as sysconfig; print(sysconfig.get_config_var('LIBDIR'))"
-RUN python3 -c "from otterbrix import Client, DataBase, Collection, Connection, Cursor"
+RUN python3 -c "from otterbrix import Client, Connection, Cursor, connect"
 RUN pytest -v -s

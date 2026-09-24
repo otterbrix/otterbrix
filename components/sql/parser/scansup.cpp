@@ -29,13 +29,13 @@ char* downcase_truncate_identifier(std::pmr::memory_resource* resource, const ch
     char* result;
     int i;
 
-    result = reinterpret_cast<char*>(resource->allocate(len + 1));
+    result = reinterpret_cast<char*>(resource->allocate(static_cast<size_t>(len) + 1));
     for (i = 0; i < len; i++) {
-        unsigned char ch = (unsigned char) ident[i];
+        unsigned char ch = static_cast<unsigned char>(ident[i]);
 
         if (ch >= 'A' && ch <= 'Z')
             ch += 'a' - 'A';
-        result[i] = (char) ch;
+        result[i] = static_cast<char>(ch);
     }
     result[i] = '\0';
 
@@ -54,7 +54,7 @@ void truncate_identifier(char* ident, int len, bool warn) {
 			 * is not valid in what libc thinks is the prevailing encoding.
 			 */
             char buf[NAMEDATALEN];
-            memcpy(buf, ident, len);
+            memcpy(buf, ident, static_cast<size_t>(len));
             buf[len] = '\0';
             //            ereport(
             //                NOTICE,

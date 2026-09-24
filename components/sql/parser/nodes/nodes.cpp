@@ -111,8 +111,3 @@ bool equal(const void* a, const void* b) {
             return false;
     }
 }
-
-void makeNodeinjpoin() {
-    int a = 0;
-    int b = 1000;
-}

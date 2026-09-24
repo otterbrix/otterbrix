@@ -694,7 +694,7 @@ namespace components::sql::transform {
                                                                               logical_plan::parameter_node_t* params) {
         if (nodeTag(node) == T_ParamRef) {
             auto ref = pg_ptr_cast<ParamRef>(node);
-            if (auto it = parameter_map_.find(ref->number); it != parameter_map_.end()) {
+            if (auto it = parameter_map_.find(static_cast<size_t>(ref->number)); it != parameter_map_.end()) {
                 return it->second;
             } else {
                 auto id = params->add_parameter(

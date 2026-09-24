@@ -12,7 +12,7 @@ using namespace components::sql;
     SECTION(QUERY) {                                                                                                   \
         bool exception_thrown = false;                                                                                 \
         try {                                                                                                          \
-            auto select = linitial(raw_parser(&arena_resource, QUERY));                                                \
+            raw_parser(&arena_resource, QUERY);                                                                        \
         } catch (const parser_exception_t& e) {                                                                        \
             exception_thrown = true;                                                                                   \
             REQUIRE(std::string_view{e.what()} == RESULT);                                                             \

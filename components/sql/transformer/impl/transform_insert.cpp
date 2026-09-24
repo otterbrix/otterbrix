@@ -414,7 +414,7 @@ namespace components::sql::transform {
                         auto ref = pg_ptr_cast<ParamRef>(it_value->data);
                         auto loc = std::make_pair(global_row, field_name);
 
-                        if (auto it = parameter_insert_map_.find(ref->number); it != parameter_insert_map_.end()) {
+                        if (auto it = parameter_insert_map_.find(static_cast<size_t>(ref->number)); it != parameter_insert_map_.end()) {
                             it->second.emplace_back(std::move(loc));
                         } else {
                             std::pmr::vector<insert_location_t> par(resource_);
@@ -442,7 +442,7 @@ namespace components::sql::transform {
                             std::find_if(chunk.data.begin(), chunk.data.end(), [&](const vector::vector_t& column) {
                                 return column.type().alias() == field_name;
                             });
-                        size_t column_index = it - chunk.data.begin();
+                        size_t column_index = static_cast<size_t>(it - chunk.data.begin());
                         if (it == chunk.data.end()) {
                             value.set_alias(field_name);
                             chunk.data.emplace_back(resource_, value.type(), chunk.capacity());
@@ -472,7 +472,7 @@ namespace components::sql::transform {
                             std::find_if(chunk.data.begin(), chunk.data.end(), [&](const vector::vector_t& column) {
                                 return column.type().alias() == field_name;
                             });
-                        size_t column_index = it - chunk.data.begin();
+                        size_t column_index = static_cast<size_t>(it - chunk.data.begin());
                         if (it == chunk.data.end()) {
                             value.set_alias(field_name);
                             chunk.data.emplace_back(resource_, value.type(), chunk.capacity());

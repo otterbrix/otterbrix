@@ -605,7 +605,7 @@ namespace components::sql::transform {
             if (intVal(size) < 0) {
                 column = types::complex_logical_type::create_list(column);
             } else {
-                column = types::complex_logical_type::create_array(column, intVal(size));
+                column = types::complex_logical_type::create_array(column, static_cast<size_t>(intVal(size)));
             }
         }
 

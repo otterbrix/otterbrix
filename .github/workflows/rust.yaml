@@ -2,16 +2,22 @@ name: rust integration
 
 on:
   push:
+    branches: [main]
     paths-ignore:
       - '**.md'
   pull_request:
     paths-ignore:
       - '**.md'
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   rust:
     name: Build & test Rust integration
     runs-on: ubuntu-22.04
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -21,14 +27,22 @@ jobs:
           sudo apt update
           sudo apt install -y \
             build-essential ninja-build python3-pip \
-            curl gnupg apt-transport-https flex bison \
+            curl gnupg apt-transport-https \
             clang libclang-dev pkg-config
 
       - name: Install conan
         run: |
-          pip install conan==2.20.0
+          pipx install conan==2.30.0
           conan profile detect --force
-          conan remote add otterbrix http://conan.otterbrix.com
+          conan remote add otterbrix https://conan.otterbrix.com --allowed-packages "actor-zeta/*"
+          echo "CONAN_COMPILER=$(sed -n 's/^compiler=//p; s/^compiler\.version=//p' "$(conan config home)/profiles/default" | paste -sd- -)" >> "$GITHUB_ENV"
+
+      - name: Cache conan packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.conan2/p
+          key: conan-ubuntu-22.04-rust-${{ env.CONAN_COMPILER }}-${{ hashFiles('conanfile.py', 'profiles/**') }}
+          restore-keys: conan-ubuntu-22.04-rust-${{ env.CONAN_COMPILER }}-
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -39,14 +53,8 @@ jobs:
         env:
           CC: gcc
         run: |
-          mkdir -p build
-          cd build
-          cp ../conanfile.py .
-          conan install . --build missing -s build_type=Release -s compiler.cppstd=20
-          cmake .. -G Ninja \
-            -DCMAKE_TOOLCHAIN_FILE=./build/Release/generators/conan_toolchain.cmake \
-            -DCMAKE_BUILD_TYPE=Release -DDEV_MODE=ON
-          cmake --build . --target c_otterbrix -- -j "$(nproc)"
+          integration/rust/scripts/build-cpp.sh
+          conan cache clean "*" --source --build --download --temp
 
       - name: Run Rust checks (fmt, clippy, doc, tests)
         run: ./scripts/CI/run-rust-checks.sh

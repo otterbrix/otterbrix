@@ -2,16 +2,22 @@ name: ubuntu
 
 on:
   push:
+    branches: [main]
     paths-ignore:
       - '**.md'
   pull_request:
     paths-ignore:
       - '**.md'
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   run:
     name: ${{ matrix.version }} ${{ matrix.compiler }}
     runs-on: ubuntu-${{ matrix.version }}
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -35,33 +41,45 @@ jobs:
             cc: clang-18
             cxx: clang++-18
             packages: clang-18
+    env:
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+      CCACHE_MAXSIZE: 2G
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
       - name: Install system dependencies
         run: |
-          sudo apt update && sudo apt install -y  build-essential ninja-build python3-pip curl gnupg apt-transport-https flex bison ${{ matrix.packages }}
+          sudo apt update && sudo apt install -y  build-essential ninja-build python3-pip curl gnupg apt-transport-https ccache ${{ matrix.packages }}
+          echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
 
       - name: conan installation and configuration
         run: |
-          pip install conan==2.20.0
+          pipx install conan==2.30.0
           conan profile detect --force
-          conan remote add otterbrix http://conan.otterbrix.com
+          conan remote add otterbrix https://conan.otterbrix.com --allowed-packages "actor-zeta/*"
+          echo "CONAN_COMPILER=$(sed -n 's/^compiler=//p; s/^compiler\.version=//p' "$(conan config home)/profiles/default" | paste -sd- -)" >> "$GITHUB_ENV"
+
+      - name: Cache conan packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.conan2/p
+          key: conan-ubuntu-${{ matrix.version }}-${{ matrix.compiler }}-release-${{ env.CONAN_COMPILER }}-${{ hashFiles('conanfile.py', 'profiles/**') }}
+          restore-keys: conan-ubuntu-${{ matrix.version }}-${{ matrix.compiler }}-release-${{ env.CONAN_COMPILER }}-
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-ubuntu-${{ matrix.version }}-${{ matrix.compiler }}-release-${{ env.CONAN_COMPILER }}-${{ github.sha }}
+          restore-keys: ccache-ubuntu-${{ matrix.version }}-${{ matrix.compiler }}-release-${{ env.CONAN_COMPILER }}-
 
       - name: download dependencies
         run: |
-          mkdir build && cd build
-          cp ../conanfile.py .
-          conan install . --build missing -s build_type=Release -s compiler.cppstd=20
+          conan install . -pr:h profiles/release -pr:b default --build=missing -of build/release
+          conan cache clean "*" --source --build --download --temp
 
-      - name: build
+      - name: build and test
         run: |
-          cd build
-          cmake  -G Ninja -DCMAKE_C_COMPILER=${{ matrix.cc }} -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} -DCMAKE_TOOLCHAIN_FILE=./build/Release/generators/conan_toolchain.cmake -DCMAKE_BUILD_TYPE=Release -DDEV_MODE=ON -DEXAMPLE=ON ..
-          cmake --build .
-
-      - name: Test
-        run: |
-          cd build
-          ctest -C Release -V --output-on-failure
+          CTEST_PARALLEL_LEVEL=$(nproc) cmake --workflow --preset release

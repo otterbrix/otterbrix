@@ -2,54 +2,69 @@ name: ubuntu 22.04 thread sanitizer
 
 on:
   push:
+    branches: [main]
     paths-ignore:
       - '**.md'
   pull_request:
     paths-ignore:
       - '**.md'
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   run:
     name: Run
     runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    env:
+      CCACHE_MAXSIZE: 5G
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
       - name: Install system dependencies
         run: |
-          sudo apt update && sudo apt install -y build-essential ninja-build python3-pip curl gnupg apt-transport-https flex bison g++-12
+          sudo apt update && sudo apt install -y build-essential ninja-build python3-pip curl gnupg apt-transport-https g++-12 ccache
+          echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
 
       - name: conan installation and configuration
         run: |
-          pip install conan==2.15.0
+          pipx install conan==2.30.0
           conan profile detect --force
-          conan remote add otterbrix http://conan.otterbrix.com
+          conan remote add otterbrix https://conan.otterbrix.com --allowed-packages "actor-zeta/*"
+          echo "CONAN_COMPILER=$(sed -n 's/^compiler=//p; s/^compiler\.version=//p' "$(conan config home)/profiles/default" | paste -sd- -)" >> "$GITHUB_ENV"
+
+      - name: Cache conan packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.conan2/p
+          key: conan-ubuntu-22.04-tsan-${{ env.CONAN_COMPILER }}-${{ hashFiles('conanfile.py', 'profiles/**') }}
+          restore-keys: conan-ubuntu-22.04-tsan-${{ env.CONAN_COMPILER }}-
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-ubuntu-22.04-tsan-${{ env.CONAN_COMPILER }}-${{ github.sha }}
+          restore-keys: ccache-ubuntu-22.04-tsan-${{ env.CONAN_COMPILER }}-
 
       - name: download dependencies
         run: |
-          mkdir build && cd build
-          cp ../conanfile.py .
           # actor-zeta is rebuilt from source with -fsanitize=thread: its mailbox CAS lives
           # out-of-line in the prebuilt archive, and an uninstrumented dependency makes the
-          # sender-to-actor happens-before edge invisible. See .github/tsan-deps.profile
-          conan install . --build missing --build="actor-zeta/*" \
-            -pr:h ../.github/tsan-deps.profile \
-            -s build_type=Release -s compiler.cppstd=20
+          # sender-to-actor happens-before edge invisible. See profiles/tsan
+          conan install . -pr:h profiles/tsan -pr:b default --build=missing -of build/tsan
+          conan cache clean "*" --source --build --download --temp
 
       # TSan runtime aborts with "unexpected memory mapping" under high-entropy ASLR
       - name: Reduce ASLR entropy for TSan
         run: sudo sysctl vm.mmap_rnd_bits=28
 
-      - name: build
-        run: |
-          cd build
-          cmake  -G Ninja -DCMAKE_C_COMPILER=gcc-12 -DCMAKE_CXX_COMPILER=g++-12 -DCMAKE_TOOLCHAIN_FILE=./build/Release/generators/conan_toolchain.cmake -DCMAKE_BUILD_TYPE=Release -DDEV_MODE=ON -DEXAMPLE=ON -DENABLE_TSAN=ON ..
-          cmake --build .
-
-      - name: Test
+      - name: build and test
         env:
-          TSAN_OPTIONS: suppressions=${{ github.workspace }}/.github/tsan-suppressions.txt second_deadlock_stack=1
+          CC: gcc-12
+          CXX: g++-12
         run: |
-          cd build
-          ctest -C Release --output-on-failure
+          CTEST_PARALLEL_LEVEL=$(nproc) cmake --workflow --preset tsan

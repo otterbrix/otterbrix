@@ -274,7 +274,7 @@ namespace components::vector {
                     auto* src = vec.data<T>();
                     auto* out = output.data<T>();
                     for (uint64_t i = 0; i < count; i++) {
-                        out[i] = -src[i];
+                        out[i] = static_cast<T>(-src[i]);
                     }
                 }
                 template<typename T>

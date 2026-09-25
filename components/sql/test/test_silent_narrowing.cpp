@@ -236,7 +236,7 @@ TEST_CASE("components::sql::narrowing::decimal_literal_exact") {
         }
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
         const auto& chunk =
-            reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
+            static_cast<components::logical_plan::node_data_t*>(node->children().front().get())->data_chunk();
         REQUIRE(chunk.size() == 1);
         auto stored = chunk.value(0, 0);
         REQUIRE(stored.type().type() == components::types::logical_type::DECIMAL);

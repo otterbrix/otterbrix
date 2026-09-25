@@ -180,7 +180,7 @@ expression_ptr parse_find_condition_(std::pmr::memory_resource* resource,
                               params);
     }
     if (res_condition->children().size() == 1) {
-        compare_expression_ptr child = reinterpret_cast<const compare_expression_ptr&>(res_condition->children()[0]);
+        compare_expression_ptr child = boost::static_pointer_cast<compare_expression_t>(res_condition->children()[0]);
         normalize(child);
         return child;
     }

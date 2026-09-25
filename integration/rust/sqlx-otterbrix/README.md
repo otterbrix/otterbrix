@@ -60,7 +60,7 @@ See the rustdoc on `lib.rs` for the full list of caveats.
 ## Build requirements
 
 This crate transitively links against `libotterbrix.so`. The default
-search path is `<repo>/build/integration/c`; both `OTTERBRIX_LIB_DIR` and
+search path is `<repo>/build/release/integration/c`; both `OTTERBRIX_LIB_DIR` and
 `OTTERBRIX_INCLUDE_DIR` may be set to override it.
 
 For the canonical build flow (build the `.so`, run tests, run checks)

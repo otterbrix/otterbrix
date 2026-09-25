@@ -78,7 +78,7 @@ namespace services::planner::impl {
             if (expr->group() != expression_group::compare) {
                 return false;
             }
-            auto comp_expr = reinterpret_cast<const compare_expression_ptr&>(expr);
+            const auto* comp_expr = static_cast<const compare_expression_t*>(expr.get());
             // do_not_fold() (correlated / sub-query-array compares) must stay in-memory, never pushed to disk.
             if (comp_expr->do_not_fold()) {
                 return false;
@@ -141,7 +141,7 @@ namespace services::planner::impl {
             if (context.has_table_oid(table_oid)) {
                 // TODO: function_expr in scans
                 if (is_pure_compare(expr)) {
-                    auto comp_expr = reinterpret_cast<const expr::compare_expression_ptr&>(expr);
+                    auto comp_expr = boost::static_pointer_cast<expr::compare_expression_t>(expr);
                     if (!comp_expr->is_union()) {
                         bool key_on_left = true;
                         if (can_use_index(context, table_oid, *comp_expr, key_on_left)) {

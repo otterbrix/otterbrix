@@ -19,6 +19,7 @@ set(${PROJECT_NAME}_SOURCES
         test_parser_extension.cpp
         test_silent_narrowing.cpp
         test_transaction.cpp
+        test_parser_internals.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

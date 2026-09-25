@@ -17,6 +17,4 @@ target_link_libraries(jsonbench_otterbrix PRIVATE
     actor-zeta::actor-zeta
     Boost::boost
     fmt::fmt
-    ZLIB::ZLIB
-    BZip2::BZip2
 )

@@ -6,44 +6,53 @@ on:
     branches:
       - main
 
-env:
-  ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   run:
     name: Run
     runs-on: macos-latest
+    timeout-minutes: 60
+    env:
+      CCACHE_MAXSIZE: 2G
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
       - name: Install system dependencies
         run: |
-            brew update && (brew list ninja || brew install ninja) && (brew list cmake || brew install cmake) && (brew list flex || brew install flex) && (brew list bison || brew install bison)
-            brew link bison --force
-            python3 -m pip install --no-cache-dir conan==2.30.0 pytest==6.2.5 --break-system-packages
+            brew install ninja ccache
+            echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
 
       - name: conan installation and configuration
         run: |
+          pipx install conan==2.30.0
           conan profile detect --force
-          conan remote add otterbrix http://conan.otterbrix.com
+          conan remote add otterbrix https://conan.otterbrix.com --allowed-packages "actor-zeta/*"
+          echo "CONAN_COMPILER=$(sed -n 's/^compiler=//p; s/^compiler\.version=//p' "$(conan config home)/profiles/default" | paste -sd- -)" >> "$GITHUB_ENV"
+
+      - name: Cache conan packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.conan2/p
+          key: conan-macos-${{ runner.arch }}-release-python-${{ env.CONAN_COMPILER }}-${{ hashFiles('conanfile.py', 'profiles/**') }}
+          restore-keys: conan-macos-${{ runner.arch }}-release-python-${{ env.CONAN_COMPILER }}-
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-macos-${{ runner.arch }}-release-python-${{ env.CONAN_COMPILER }}-${{ github.sha }}
+          restore-keys: ccache-macos-${{ runner.arch }}-release-python-${{ env.CONAN_COMPILER }}-
 
       - name: download dependencies
         run: |
-          mkdir build && cd build
-          cp ../conanfile.py .
-          conan install . --build missing -s build_type=Release -s compiler.cppstd=gnu20 -o build_python=True
+          conan install . -pr:h profiles/release -pr:b default --build=missing -of build/release -o build_python=True
+          conan cache clean "*" --source --build --download --temp
 
-      - name: build
-        env:
-          CC: gcc
+      - name: build and test
         run: |
-          cd build
-          cmake  -G Ninja -DCMAKE_TOOLCHAIN_FILE=./build/Release/generators/conan_toolchain.cmake -DCMAKE_BUILD_TYPE=Release -DDEV_MODE=ON -DEXAMPLE=ON ..
-          cmake --build .
-
-      - name: Test
-        run: |
-          cd build
-          ctest -C Release -V --output-on-failure
+          CTEST_PARALLEL_LEVEL=$(sysctl -n hw.logicalcpu) cmake --workflow --preset release

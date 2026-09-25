@@ -156,11 +156,40 @@ See the project [security policy](https://github.com/agdev/otterbrix/blob/main/.
 
 ## **Build requirements**
 
-To correctly build Otterbrix, you will need the most current [version of Docker](https://docs.docker.com/reference/cli/docker/version/).
+* A C++20 compiler: GCC 11+, Clang 15+ or Apple Clang
+* CMake 3.25+ and Ninja
+* [Conan 2](https://docs.conan.io/2/installation.html) (CI pins 2.30.0)
+
+The C++ dependencies, including bison and flex, come from Conan. One-time setup:
+
+```bash
+conan profile detect
+conan remote add otterbrix https://conan.otterbrix.com --allowed-packages "actor-zeta/*"
+```
 
 ## **Building Otterbrix**
 
-The current version of Otterbrix can be built in Dockerfiles only. If you need assistance when building Otterbrix, please contact our [team](https://github.com/agdev/otterbrix/blob/main/team@otterbrix.com).
+Every build is two commands, the same locally and in CI:
+
+```bash
+conan install . -pr:h profiles/release -pr:b default --build=missing -of build/release
+cmake --workflow --preset release    # configure, build, run the tests
+```
+
+To use another preset, replace `release` in all three places; the build goes to `build/<preset>`. Set `CTEST_PARALLEL_LEVEL` to run the tests in parallel.
+
+| Preset | Build |
+| ----- | ----- |
+| `debug` | Debug, with tests |
+| `release` | Release, with tests |
+| `asan` | AddressSanitizer, with tests |
+| `tsan` | ThreadSanitizer, with tests. Linux only: `profiles/tsan` builds actor-zeta with gcc-12, so run the second command as `CC=gcc-12 CXX=g++-12 cmake --workflow --preset tsan` |
+| `ubsan` | UndefinedBehaviorSanitizer, with tests |
+| `bench` | RelWithDebInfo with the benchmarks, no tests |
+
+To build the Python module, add `-o build_python=True` to `conan install`.
+
+Docker is optional: the images in [`docker/`](docker/) wrap the same flow, e.g. `docker build -f docker/Dockerfile-ubuntu-22 .`.
 
 ## **Troubleshooting**
 

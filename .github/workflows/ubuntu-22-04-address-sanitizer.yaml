@@ -2,47 +2,61 @@ name: ubuntu 22.04 address sanitizer
 
 on:
   push:
+    branches: [main]
     paths-ignore:
       - '**.md'
   pull_request:
     paths-ignore:
       - '**.md'
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   run:
     name: Run
     runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    env:
+      CCACHE_MAXSIZE: 5G
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
       - name: Install system dependencies
         run: |
-          sudo apt update && sudo apt install -y build-essential ninja-build python3-pip curl gnupg apt-transport-https flex bison
+          sudo apt update && sudo apt install -y build-essential ninja-build python3-pip curl gnupg apt-transport-https ccache
+          echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
 
       - name: conan installation and configuration
         run: |
-          pip install conan==2.15.0
+          pipx install conan==2.30.0
           conan profile detect --force
-          conan remote add otterbrix http://conan.otterbrix.com
+          conan remote add otterbrix https://conan.otterbrix.com --allowed-packages "actor-zeta/*"
+          echo "CONAN_COMPILER=$(sed -n 's/^compiler=//p; s/^compiler\.version=//p' "$(conan config home)/profiles/default" | paste -sd- -)" >> "$GITHUB_ENV"
+
+      - name: Cache conan packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.conan2/p
+          key: conan-ubuntu-22.04-asan-${{ env.CONAN_COMPILER }}-${{ hashFiles('conanfile.py', 'profiles/**') }}
+          restore-keys: conan-ubuntu-22.04-asan-${{ env.CONAN_COMPILER }}-
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-ubuntu-22.04-asan-${{ env.CONAN_COMPILER }}-${{ github.sha }}
+          restore-keys: ccache-ubuntu-22.04-asan-${{ env.CONAN_COMPILER }}-
 
       - name: download dependencies
         run: |
-          mkdir build && cd build
-          cp ../conanfile.py .
-          conan install . --build missing -s build_type=Release -s compiler.cppstd=20
+          conan install . -pr:h profiles/asan -pr:b default --build=missing -of build/asan
+          conan cache clean "*" --source --build --download --temp
 
-      - name: build
+      - name: build and test
         env:
           CC: gcc
         run: |
-          cd build
-          cmake  -G Ninja -DCMAKE_TOOLCHAIN_FILE=./build/Release/generators/conan_toolchain.cmake -DCMAKE_BUILD_TYPE=Release -DDEV_MODE=ON -DEXAMPLE=ON -DENABLE_ASAN=ON ..
-          cmake --build .
-
-      - name: Test
-        env:
-          ASAN_OPTIONS: fast_unwind_on_malloc=0
-        run: |
-          cd build
-          ctest -C Release --output-on-failure
+          CTEST_PARALLEL_LEVEL=$(nproc) cmake --workflow --preset asan

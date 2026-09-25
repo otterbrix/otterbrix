@@ -118,8 +118,8 @@ namespace components::sql::transform {
         , param_insert_map_(std::move(param_insert_map))
         , param_insert_rows_(std::move(param_insert_rows))
         , deferred_limits_(std::move(deferred_limits))
-        , bound_flags_(resource_)
         , taken_params_(resource_)
+        , bound_flags_(resource_)
         , last_error_(core::error_t::no_error())
         , finalized_(false) {
         if (!parameter_count()) {
@@ -147,8 +147,8 @@ namespace components::sql::transform {
         , param_map_(resource)
         , param_insert_map_(resource)
         , param_insert_rows_(resource)
-        , bound_flags_(resource_)
         , taken_params_(resource_)
+        , bound_flags_(resource_)
         , last_error_(std::move(error))
         , finalized_(true) {}
 
@@ -166,7 +166,7 @@ namespace components::sql::transform {
         if (effective_consumer_type(node) == logical_plan::node_type::insert_t) {
             if (prev_finalized) {
                 const auto& bound =
-                    reinterpret_cast<logical_plan::node_data_ptr&>(consumer->children().front())->chunks();
+                    static_cast<logical_plan::node_data_t*>(consumer->children().front().get())->chunks();
                 insert_rows_t fresh(resource_);
                 fresh.reserve(bound.size());
                 for (const auto& src : bound) {

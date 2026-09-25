@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.22...3.31 FATAL_ERROR)
+cmake_minimum_required(VERSION 3.25...3.31 FATAL_ERROR)
 
 set_property(GLOBAL PROPERTY GLOBAL_DEPENDS_NO_CYCLES TRUE)
 
@@ -62,11 +62,10 @@ endif()
 
 # We do not use -Werror flag with sanitizers for the following reasons:
 # 1) Sanitizers force us to build absl locally, which does contains warnings
-# 2) Incomplete support of macOS makes development too cumbersome with -Werror enabled
-# 3) A sanitizer teaches the compiler new complaints the code cannot answer: under
+# 2) A sanitizer teaches the compiler new complaints the code cannot answer: under
 #    -fsanitize=thread gcc rejects every std::atomic_thread_fence it cannot model (-Wtsan),
 #    and its std::string bounds analysis at -O0 reports impossible memcpy overlaps (-Wrestrict).
-set(USE_Werror "$<NOT:$<OR:$<BOOL:${APPLE}>,$<BOOL:${ENABLE_ASAN}>,$<BOOL:${ENABLE_TSAN}>,$<BOOL:${ENABLE_UBSAN}>>>")
+set(USE_Werror "$<NOT:$<OR:$<BOOL:${ENABLE_ASAN}>,$<BOOL:${ENABLE_TSAN}>,$<BOOL:${ENABLE_UBSAN}>>>")
 
 if ((CMAKE_CXX_COMPILER_ID MATCHES "GNU") OR (CMAKE_CXX_COMPILER_ID MATCHES "Clang"))
     add_compile_options(
@@ -99,24 +98,20 @@ endif ()
 #clang tools
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake")
-find_package(Sanitizers REQUIRED)
 
 if (ENABLE_ASAN)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O0 -g -fno-omit-frame-pointer -fsanitize=address")
-    set(CMAKE_CXX_FLAGS_RELEASE "-O0 -g -DNDEBUG" CACHE STRING "" FORCE)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -fno-omit-frame-pointer -fsanitize=address")
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
-    # Guarantee -O0 comes last (overrides any -O3 from toolchain/build-type defaults)
-    add_compile_options(-O0)
 endif()
 
 if (ENABLE_TSAN)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O0 -g -fno-omit-frame-pointer -fsanitize=thread")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -fno-omit-frame-pointer -fsanitize=thread")
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=thread")
     add_compile_definitions(OTTERBRIX_TSAN_ENABLED)
 endif()
 
 if (ENABLE_UBSAN)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O0 -g -fno-omit-frame-pointer -fsanitize=undefined -fno-sanitize-recover=undefined")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -fno-omit-frame-pointer -fsanitize=undefined -fno-sanitize-recover=undefined")
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=undefined")
 endif()
 
@@ -131,17 +126,12 @@ find_package(fmt 11.1.3 REQUIRED)
 find_package(spdlog 1.15.1 REQUIRED)
 find_package(Catch2 3 REQUIRED)
 find_package(benchmark 1.6.1 REQUIRED)
-find_package(ZLIB 1.2.12 REQUIRED)
-find_package(BZip2 1.0.8 REQUIRED)
 find_package(actor-zeta REQUIRED)
-find_package(FastFloat REQUIRED)
 
 if(BUILD_PYTHON)
     set(PYBIND11_FINDPYTHON ON)
     find_package(Python3 REQUIRED COMPONENTS Interpreter Development.Module)
     find_package(pybind11 CONFIG REQUIRED)
-    find_package(utf8proc CONFIG REQUIRED)
-    find_package(tabulate CONFIG REQUIRED)
 endif()
 
 find_package(absl CONFIG REQUIRED)
@@ -190,9 +180,8 @@ endif()
 
 if(ALLOW_BENCHMARK)
     add_subdirectory(benchmark)
+    add_subdirectory(JSONBench/otterbrix)
 endif()
-
-add_subdirectory(JSONBench/otterbrix)
 
 
 

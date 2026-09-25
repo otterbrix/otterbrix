@@ -44,7 +44,7 @@ inline std::size_t entry_count(const node_catalog_resolve_ptr& node) { return no
         auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();                                    \
         REQUIRE(!result.has_error());                                                                                  \
         auto node = result.value().sub_queries.back();                                                                 \
-        auto data = reinterpret_cast<node_create_collection_ptr&>(node);                                               \
+        auto* data = static_cast<node_create_collection_t*>(node.get());                                               \
         const auto& schema = data->schema();                                                                           \
         CHECK_FN(schema);                                                                                              \
     }
@@ -376,7 +376,7 @@ TEST_CASE("components::sql::create_index_access_method") {
         REQUIRE_FALSE(result.has_error());
         auto node = result.value().sub_queries.back();
         REQUIRE(node->type() == node_type::create_index_t);
-        CHECK(reinterpret_cast<node_create_index_ptr&>(node)->type() == index_type::hashed);
+        CHECK(static_cast<node_create_index_t*>(node.get())->type() == index_type::hashed);
     }
 
     SECTION("USING btree, and the omitted clause, still build a single index") {
@@ -386,7 +386,7 @@ TEST_CASE("components::sql::create_index_access_method") {
             REQUIRE_FALSE(result.has_error());
             auto node = result.value().sub_queries.back();
             REQUIRE(node->type() == node_type::create_index_t);
-            CHECK(reinterpret_cast<node_create_index_ptr&>(node)->type() == index_type::single);
+            CHECK(static_cast<node_create_index_t*>(node.get())->type() == index_type::single);
         }
     }
 }
@@ -499,7 +499,7 @@ TEST_CASE("components::sql::create_function_shape_is_carried_or_refused") {
         REQUIRE_FALSE(result.has_error());
         auto node = result.value().sub_queries.back();
         REQUIRE(node->type() == node_type::create_macro_t);
-        auto& macro = reinterpret_cast<node_create_macro_ptr&>(node);
+        auto* macro = static_cast<node_create_macro_t*>(node.get());
         CHECK(macro->macroname() == "add2");
         CHECK(macro->dbname() == "db");
         REQUIRE(macro->parameters().size() == 2);
@@ -513,7 +513,7 @@ TEST_CASE("components::sql::create_function_shape_is_carried_or_refused") {
         REQUIRE_FALSE(result.has_error());
         auto node = result.value().sub_queries.back();
         REQUIRE(node->type() == node_type::create_macro_t);
-        auto& macro = reinterpret_cast<node_create_macro_ptr&>(node);
+        auto* macro = static_cast<node_create_macro_t*>(node.get());
         CHECK(macro->macroname() == "solo");
         CHECK(macro->dbname() == "public");
     }

@@ -16,6 +16,7 @@
 #ifndef NODES_H
 #define NODES_H
 
+#include <cassert>
 #include <cstring>
 #include <memory_resource>
 
@@ -597,38 +598,14 @@ typedef struct Node {
 *
 * !WARNING!: Avoid using newNode directly. You should be using the
 *	  macro makeNode.  eg. to create a Query node, use makeNode(resource, Query)
-*
-* Note: the size argument should always be a compile-time constant, so the
-* apparent risk of multiple evaluation doesn't matter in practice.
 */
-#ifdef __GNUC__
-
-/* With GCC, we can use a compound statement within an expression */
-#define newNode(_resource_, size, tag)                                                                                 \
-    ({                                                                                                                 \
-        Node* _result;                                                                                                 \
-        AssertMacro((size) >= sizeof(Node)); /* need the tag, at least */                                              \
-        _result = reinterpret_cast<Node*>(_resource_->allocate(size));                                                 \
-        memset(_result, 0, size);                                                                                      \
-        _result->type = (tag);                                                                                         \
-        _result;                                                                                                       \
-    })
-#else
-
-/*
-*	There is no way to dereference the palloc'ed pointer to assign the
-*	tag, and also return the pointer itself, so we need a holder variable.
-*	Fortunately, this macro isn't recursive so we just define
-*	a global variable for this purpose.
-*/
-extern PGDLLIMPORT Node* newNodeMacroHolder;
-
-#define newNode(_resource_, size, tag)                                                                                 \
-    (AssertMacro((size) >= sizeof(Node)), /* need the tag, at least */                                                 \
-     newNodeMacroHolder = reinterpret_cast<Node*>(resource->allocate(size)),                                           \
-     memset(newNodeMacroHolder, 0, size);                                                                              \
-     newNodeMacroHolder->type = (tag), newNodeMacroHolder)
-#endif /* __GNUC__ */
+inline Node* newNode(std::pmr::memory_resource* resource, size_t size, NodeTag tag) {
+    assert(size >= sizeof(Node)); /* need the tag, at least */
+    auto* result = reinterpret_cast<Node*>(resource->allocate(size));
+    memset(result, 0, size);
+    result->type = tag;
+    return result;
+}
 
 #define makeNode(_resource_, _type_) (reinterpret_cast<_type_*>(newNode(_resource_, sizeof(_type_), T_##_type_)))
 #define NodeSetTag(nodeptr, t) (((Node*) (nodeptr))->type = (t))

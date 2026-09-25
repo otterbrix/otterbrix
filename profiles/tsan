@@ -1,4 +1,4 @@
-include(default)
+include(./release)
 
 # TSAN needs every dependency that synchronizes through std::atomic to be compiled with
 # -fsanitize=thread. actor-zeta's mailbox CAS lives out-of-line in its compiled archive
@@ -24,3 +24,6 @@ actor-zeta/*:tools.build:compiler_executables={"c": "gcc-12", "cpp": "g++-12"}
 actor-zeta/*:tools.build:cxxflags=["-fsanitize=thread", "-g", "-fno-omit-frame-pointer", "-Wno-error=tsan"]
 actor-zeta/*:tools.build:sharedlinkflags=["-fsanitize=thread"]
 actor-zeta/*:tools.build:exelinkflags=["-fsanitize=thread"]
+# tools.build:cxxflags is not part of the package id by default: without this line --build=missing
+# reuses a stock, uninstrumented actor-zeta binary.
+actor-zeta/*:tools.info.package_id:confs=["tools.build:cxxflags"]

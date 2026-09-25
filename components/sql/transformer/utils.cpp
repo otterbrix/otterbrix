@@ -582,7 +582,7 @@ namespace components::sql::transform {
                     raw_scale > types::DECIMAL_MAX_WIDTH) {
                     return core::error_t(core::error_code_t::invalid_parameter,
                                          std::pmr::string{"DECIMAL width must be between 1 and " +
-                                                              std::to_string(types::DECIMAL_MAX_WIDTH) +
+                                                              std::to_string(static_cast<unsigned>(types::DECIMAL_MAX_WIDTH)) +
                                                               " and scale must not exceed width",
                                                           resource});
                 }
@@ -605,7 +605,7 @@ namespace components::sql::transform {
             if (intVal(size) < 0) {
                 column = types::complex_logical_type::create_list(column);
             } else {
-                column = types::complex_logical_type::create_array(column, intVal(size));
+                column = types::complex_logical_type::create_array(column, static_cast<size_t>(intVal(size)));
             }
         }
 
@@ -694,9 +694,9 @@ namespace components::sql::transform {
             std::pmr::string msg{"numeric field overflow: ", resource};
             msg.append(text.data(), text.size());
             msg += " does not fit NUMERIC(";
-            msg += std::to_string(width);
+            msg += std::to_string(static_cast<unsigned>(width));
             msg += ", ";
-            msg += std::to_string(scale);
+            msg += std::to_string(static_cast<unsigned>(scale));
             msg += ")";
             return core::error_t(core::error_code_t::invalid_parameter, std::move(msg));
         };
@@ -984,11 +984,11 @@ namespace components::sql::transform {
                 }
                 case LT::UTINYINT:
                     lo = 0;
-                    hi = std::numeric_limits<uint8_t>::max();
+                    hi = static_cast<uint32_t>(std::numeric_limits<uint8_t>::max());
                     return true;
                 case LT::USMALLINT:
                     lo = 0;
-                    hi = std::numeric_limits<uint16_t>::max();
+                    hi = static_cast<uint32_t>(std::numeric_limits<uint16_t>::max());
                     return true;
                 case LT::UINTEGER:
                     lo = 0;

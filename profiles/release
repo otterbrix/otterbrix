@@ -1,0 +1,5 @@
+include(default)
+
+[settings]
+compiler.cppstd=20
+build_type=Release

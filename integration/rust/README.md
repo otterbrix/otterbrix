@@ -41,7 +41,7 @@ C++ build. From a clean checkout:
 
 ```bash
 # 1. Build libotterbrix.so (Conan + CMake + Ninja). Requires conan,
-#    cmake and ninja in PATH; outputs build/integration/c/libotterbrix.so.
+#    cmake and ninja in PATH; outputs build/release/integration/c/libotterbrix.so.
 ./integration/rust/scripts/build-cpp.sh
 
 # 2. Run the Rust workspace tests (lib, integration and doctests).
@@ -56,7 +56,7 @@ to invoke `cargo` directly, set `RUSTFLAGS` and `RUSTDOCFLAGS` so the
 linker embeds an `rpath` for `libotterbrix.so`:
 
 ```bash
-LIB_DIR="$(pwd)/build/integration/c"
+LIB_DIR="$(pwd)/build/release/integration/c"
 export RUSTFLAGS="-C link-arg=-Wl,-rpath,$LIB_DIR"
 export RUSTDOCFLAGS="-C link-arg=-Wl,-rpath,$LIB_DIR"
 
@@ -65,7 +65,7 @@ cargo test --workspace
 ```
 
 By default the build scripts resolve `libotterbrix.so` and `otterbrix.h`
-under `<repo>/build/integration/c`. Override with `OTTERBRIX_LIB_DIR`
+under `<repo>/build/release/integration/c`. Override with `OTTERBRIX_LIB_DIR`
 and/or `OTTERBRIX_INCLUDE_DIR` if you keep the C++ artefacts elsewhere.
 
 ## CI / Docker

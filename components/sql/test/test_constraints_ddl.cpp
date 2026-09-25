@@ -39,7 +39,7 @@ TEST_CASE("components::sql::constraints::not_null_and_default") {
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
         auto node = ddl_consumer(result.sub_queries.back());
-        auto data = reinterpret_cast<node_create_collection_ptr&>(node);
+        auto* data = static_cast<node_create_collection_t*>(node.get());
 
         const auto& col_defs = data->column_definitions();
         REQUIRE(col_defs.size() == 2);
@@ -58,7 +58,7 @@ TEST_CASE("components::sql::constraints::not_null_and_default") {
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
         auto node = ddl_consumer(result.sub_queries.back());
-        auto data = reinterpret_cast<node_create_collection_ptr&>(node);
+        auto* data = static_cast<node_create_collection_t*>(node.get());
 
         const auto& col_defs = data->column_definitions();
         REQUIRE(col_defs.size() == 2);
@@ -78,7 +78,7 @@ TEST_CASE("components::sql::constraints::not_null_and_default") {
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
         auto node = ddl_consumer(result.sub_queries.back());
-        auto data = reinterpret_cast<node_create_collection_ptr&>(node);
+        auto* data = static_cast<node_create_collection_t*>(node.get());
 
         const auto& col_defs = data->column_definitions();
         REQUIRE(col_defs.size() == 2);
@@ -97,7 +97,7 @@ TEST_CASE("components::sql::constraints::not_null_and_default") {
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
         auto node = ddl_consumer(result.sub_queries.back());
-        auto data = reinterpret_cast<node_create_collection_ptr&>(node);
+        auto* data = static_cast<node_create_collection_t*>(node.get());
 
         const auto& col_defs = data->column_definitions();
         REQUIRE(col_defs.size() == 2);
@@ -115,7 +115,7 @@ TEST_CASE("components::sql::constraints::not_null_and_default") {
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
         auto node = ddl_consumer(result.sub_queries.back());
-        auto data = reinterpret_cast<node_create_collection_ptr&>(node);
+        auto* data = static_cast<node_create_collection_t*>(node.get());
 
         const auto& constraints = data->constraints();
         REQUIRE(constraints.size() == 1);
@@ -133,7 +133,7 @@ TEST_CASE("components::sql::constraints::not_null_and_default") {
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
         auto node = ddl_consumer(result.sub_queries.back());
-        auto data = reinterpret_cast<node_create_collection_ptr&>(node);
+        auto* data = static_cast<node_create_collection_t*>(node.get());
 
         const auto& constraints = data->constraints();
         REQUIRE(constraints.size() == 1);
@@ -168,7 +168,7 @@ TEST_CASE("components::sql::sequence") {
         }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
         auto node = ddl_consumer(result.sub_queries.back());
         REQUIRE(node->type() == node_type::create_sequence_t);
-        auto seq = reinterpret_cast<node_create_sequence_ptr&>(node);
+        auto* seq = static_cast<node_create_sequence_t*>(node.get());
         REQUIRE(seq->start() == 10);
         REQUIRE(seq->increment() == 2);
     }
@@ -291,7 +291,7 @@ TEST_CASE("components::sql::check_constraint_whitelist") {
             return transformed.error();
         }
         auto node = ddl_consumer(transformed.value().sub_queries.back());
-        auto data = reinterpret_cast<node_create_collection_ptr&>(node);
+        auto* data = static_cast<node_create_collection_t*>(node.get());
         if (data->constraints().size() != 1) {
             return core::error_t{core::error_code_t::invalid_constraint,
                                  std::pmr::string{"expected exactly one constraint", &resource}};
@@ -395,7 +395,7 @@ TEST_CASE("components::sql::if_not_exists") {
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
         auto node = ddl_consumer(result.sub_queries.back());
-        auto& d = reinterpret_cast<node_create_database_ptr&>(node);
+        auto* d = static_cast<node_create_database_t*>(node.get());
         REQUIRE_FALSE(d->if_not_exists());
     }
 
@@ -406,7 +406,7 @@ TEST_CASE("components::sql::if_not_exists") {
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
         auto node = ddl_consumer(result.sub_queries.back());
-        auto& d = reinterpret_cast<node_create_database_ptr&>(node);
+        auto* d = static_cast<node_create_database_t*>(node.get());
         REQUIRE(d->if_not_exists());
     }
 
@@ -417,7 +417,7 @@ TEST_CASE("components::sql::if_not_exists") {
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
         auto node = ddl_consumer(result.sub_queries.back());
-        auto& cc = reinterpret_cast<node_create_collection_ptr&>(node);
+        auto* cc = static_cast<node_create_collection_t*>(node.get());
         REQUIRE(cc->relname() == "tbl");
         REQUIRE(cc->if_not_exists());
     }
@@ -429,7 +429,7 @@ TEST_CASE("components::sql::if_not_exists") {
             return _w.value();
         }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
         auto node = ddl_consumer(result.sub_queries.back());
-        auto& cc = reinterpret_cast<node_create_collection_ptr&>(node);
+        auto* cc = static_cast<node_create_collection_t*>(node.get());
         REQUIRE_FALSE(cc->if_not_exists());
     }
 }
@@ -450,7 +450,7 @@ TEST_CASE("components::sql::sequence_bounds_are_read_by_node_tag") {
         REQUIRE_FALSE(result.has_error());
         auto node = ddl_consumer(result.value().sub_queries.back());
         REQUIRE(node->type() == node_type::create_sequence_t);
-        return reinterpret_cast<node_create_sequence_ptr&>(node);
+        return boost::static_pointer_cast<node_create_sequence_t>(node);
     };
 
     SECTION("a bound outside int32 is the value that was written, not a pointer") {

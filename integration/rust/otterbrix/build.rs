@@ -9,7 +9,11 @@ fn main() {
         .join("..")
         .canonicalize()
         .expect("failed to canonicalise repository root");
-    let default_lib_dir = repo_root.join("build").join("integration").join("c");
+    let default_lib_dir = repo_root
+        .join("build")
+        .join("release")
+        .join("integration")
+        .join("c");
 
     let lib_dir =
         env::var("OTTERBRIX_LIB_DIR").unwrap_or_else(|_| default_lib_dir.display().to_string());

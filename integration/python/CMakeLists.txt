@@ -5,13 +5,8 @@ endif()
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
 set(external_LIBS
-    cpp_otterbrix
-
+    otterbrix::otterbrix
     otterbrix_string_util
-    otterbrix_vector
-    otterbrix_table
-    otterbrix::planner
-    utf8proc::utf8proc
 )
 
 set(ALL_OBJECT_FILES)
@@ -48,8 +43,6 @@ target_link_libraries(otterbrix_python PRIVATE
     actor-zeta::actor-zeta
     Boost::boost
     fmt::fmt
-    ZLIB::ZLIB
-    BZip2::BZip2
 )
 
 

@@ -1,0 +1,8 @@
+file(READ "${HEADER}" content)
+set(prototype "int base_yyparse (std::pmr::memory_resource* resource, core_yyscan_t yyscanner);")
+string(FIND "${content}" "${prototype}" at)
+if(at EQUAL -1)
+    message(FATAL_ERROR "${HEADER}: bison no longer emits '${prototype}'")
+endif()
+string(REPLACE "${prototype}" "" content "${content}")
+file(WRITE "${HEADER}" "${content}")

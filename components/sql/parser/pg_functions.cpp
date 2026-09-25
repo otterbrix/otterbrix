@@ -47,8 +47,6 @@ int errcode(int sqlerrcode) { return sqlerrcode; }
 
 const char* errhint(const char* msg) { return msg; }
 
-const char* errmsg_internal(const char* fmt, ...) { fmt; }
-
 const char* errdetail(const char* fmt, ...) { return fmt; }
 
 int errposition(int cursorpos) { return cursorpos; }
@@ -77,11 +75,11 @@ char* psprintf(std::pmr::memory_resource* resource, const char* fmt, ...) {
             throw std::runtime_error("Formatting error in psprintf");
         }
 
-        if (newlen < len)
+        if (static_cast<size_t>(newlen) < len)
             return result;
 
         pfree(result);
-        len = newlen;
+        len = static_cast<size_t>(newlen) + 1;
     }
 }
 
@@ -113,7 +111,7 @@ std::string NameListToString(PGList* names) {
     ListCell* l;
 
     foreach (l, names) {
-        Node* name = (Node*) lfirst(l);
+        Node* name = reinterpret_cast<Node*>(lfirst(l));
 
         if (l != list_head(names))
             string.push_back('.');
@@ -123,14 +121,14 @@ std::string NameListToString(PGList* names) {
         else if (IsA(name, A_Star))
             string += "*";
         else
-            elog(ERROR, "unexpected node type in name list: %d", (int) nodeTag(name));
+            elog(ERROR, "unexpected node type in name list: %d", static_cast<int>(nodeTag(name)));
     }
 
     return string;
 }
 
 DefElem* defWithOids(std::pmr::memory_resource* resource, bool value) {
-    return makeDefElem(resource, "oids", (Node*) makeInteger(resource, value));
+    return makeDefElem(resource, const_cast<char*>("oids"), reinterpret_cast<Node*>(makeInteger(resource, value)));
 }
 
 // mdxn: only utf-8 support
@@ -277,7 +275,7 @@ int pg_mblen(const char* mbstr) { return (pg_utf_mblen(reinterpret_cast<const un
 
 unsigned char* unicode_to_utf8(pg_wchar c, unsigned char* utf8string) {
     if (c <= 0x7F) {
-        utf8string[0] = c;
+        utf8string[0] = static_cast<unsigned char>(c);
     } else if (c <= 0x7FF) {
         utf8string[0] = 0xC0 | ((c >> 6) & 0x1F);
         utf8string[1] = 0x80 | (c & 0x3F);

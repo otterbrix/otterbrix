@@ -5,10 +5,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUST_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$RUST_DIR/../.." && pwd)"
 
-LIB_DIR="${OTTERBRIX_LIB_DIR:-$REPO_ROOT/build/integration/c}"
+LIB_DIR="${OTTERBRIX_LIB_DIR:-$REPO_ROOT/build/release/integration/c}"
 
-if [[ ! -f "$LIB_DIR/libotterbrix.so" ]]; then
-    echo "error: libotterbrix.so not found in $LIB_DIR" >&2
+if [[ "$(uname -s)" == Darwin ]]; then
+    LIB_NAME=libotterbrix.dylib
+else
+    LIB_NAME=libotterbrix.so
+fi
+
+if [[ ! -f "$LIB_DIR/$LIB_NAME" ]]; then
+    echo "error: $LIB_NAME not found in $LIB_DIR" >&2
     echo "       run scripts/build-cpp.sh first or set OTTERBRIX_LIB_DIR." >&2
     exit 1
 fi

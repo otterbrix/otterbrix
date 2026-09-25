@@ -33,7 +33,7 @@ const ScanKeyword* ScanKeywordLookup(const char* text, const ScanKeyword* keywor
     const ScanKeyword* low;
     const ScanKeyword* high;
 
-    len = std::strlen(text);
+    len = static_cast<int>(std::strlen(text));
     /* We assume all keywords are shorter than NAMEDATALEN. */
     if (len >= NAMEDATALEN)
         return NULL;

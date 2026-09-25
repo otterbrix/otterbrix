@@ -40,7 +40,7 @@ typedef uintptr_t Datum;
 // mdxn: c.h
 /* msb for char */
 #define HIGHBIT (0x80)
-#define IS_HIGHBIT_SET(ch) ((unsigned char) (ch) &HIGHBIT)
+#define IS_HIGHBIT_SET(ch) (static_cast<unsigned char>(ch) & HIGHBIT)
 
 #if defined(HAVE__BUILTIN_UNREACHABLE) && !defined(USE_ASSERT_CHECKING)
 #define pg_unreachable() __builtin_unreachable()

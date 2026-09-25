@@ -316,9 +316,6 @@ namespace services::index {
                         }
                     }
                     if (cont) {
-#ifdef DEV_MODE
-                        services::dispatcher::note_pump_hop();
-#endif
                         cont.resume();
                         poll_pending();
                         made_progress = true;
@@ -340,11 +337,6 @@ namespace services::index {
                 }
 
                 std::unique_lock<std::mutex> lk(mutex_);
-                if (inbox_.empty()) {
-                    pump_cv_.wait_for(lk,
-                                      in_flight.empty() ? std::chrono::microseconds(100)
-                                                        : std::chrono::microseconds(5));
-                }
             }
         });
     }
@@ -354,7 +346,6 @@ namespace services::index {
         g_index_deferred_deletes.fetch_sub(deferred_deletes_.size(), std::memory_order_relaxed);
 #endif
         loop_running_.store(false, std::memory_order_release);
-        pump_cv_.notify_all();
         if (loop_thread_.joinable()) {
             loop_thread_.join();
         }
@@ -369,7 +360,6 @@ namespace services::index {
     std::pair<bool, actor_zeta::detail::enqueue_result>
     manager_index_t::enqueue_impl(actor_zeta::mailbox::message_ptr msg) {
         inbox_.push(msg.release());
-        pump_cv_.notify_one();
         return {false, actor_zeta::detail::enqueue_result::success};
     }
 

@@ -52,9 +52,8 @@ namespace {
         operators::operator_ptr op(
             new operators::operator_resolve_constraint_t(resource, log_t{}, pair.constraints.get(), pair.tables.get()));
 
-        int disk_actor_stand_in = 0;
         pipeline::context_t ctx(logical_plan::storage_parameters{resource},
-                                actor_zeta::address_t{resource, &disk_actor_stand_in},
+                                actor_zeta::address_t::empty_address(),
                                 pipeline::no_mailbox(),
                                 pipeline::no_mailbox());
 

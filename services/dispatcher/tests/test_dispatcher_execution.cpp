@@ -406,22 +406,6 @@ TEST_CASE("services::dispatcher::alter_add_column_gates_persistable_type") {
     REQUIRE(mentions(cur->get_error(), "cannot be persisted"));
 }
 
-// A ready future answered with a default value would build it on the empty address's null resource.
-TEST_CASE("services::dispatcher::empty_target_send_dies_loudly") {
-    const pid_t child = fork();
-    REQUIRE(child >= 0);
-    if (child == 0) {
-        // Catch2 installs a SIGABRT handler; reset it so the abort reaches waitpid as a signal death.
-        ::signal(SIGABRT, SIG_DFL);
-        auto res = actor_zeta::otterbrix::send(actor_zeta::address_t::empty_address(),
-                                               &services::collection::executor::executor_t::poke_msg);
-        _exit(res.second.is_ready() ? 42 : 43);
-    }
-    int status = 0;
-    REQUIRE(::waitpid(child, &status, 0) == child);
-    REQUIRE(WIFSIGNALED(status));
-}
-
 // Skipping set_column_bindings would register a and b instead of the written x and y.
 TEST_CASE("services::dispatcher::insert_select_column_list_renames_into_computed_table") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();

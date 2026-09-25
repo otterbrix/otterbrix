@@ -72,7 +72,10 @@ TEST_CASE("services::index::btree_index_agent_t refuses writes after its drop") 
 
     auto [drop_sched, drop_future] =
         actor_zeta::otterbrix::send<&index_agent_contract::drop>(agent->address(), session);
-    agent->resume(1);
+    {
+        auto info = agent->resume(1);
+        REQUIRE(info.result == actor_zeta::scheduler::resume_result::awaiting);
+    }
     REQUIRE(drop_future.is_ready());
 
     auto [stage_sched, stage_future] =
@@ -80,7 +83,10 @@ TEST_CASE("services::index::btree_index_agent_t refuses writes after its drop") 
                                                                           session,
                                                                           uint64_t{0},
                                                                           one_entry(&resource));
-    agent->resume(1);
+    {
+        auto info = agent->resume(1);
+        REQUIRE(info.result == actor_zeta::scheduler::resume_result::awaiting);
+    }
     REQUIRE(stage_future.is_ready());
     auto stage_error = std::move(stage_future).take_ready();
     INFO("staging into a dropped ordered index must be refused, not buffered where nothing will read it");
@@ -92,7 +98,10 @@ TEST_CASE("services::index::btree_index_agent_t refuses writes after its drop") 
                                                                            session,
                                                                            uint64_t{0},
                                                                            uint64_t{0});
-    agent->resume(1);
+    {
+        auto info = agent->resume(1);
+        REQUIRE(info.result == actor_zeta::scheduler::resume_result::awaiting);
+    }
     REQUIRE(commit_future.is_ready());
     auto commit_error = std::move(commit_future).take_ready();
     INFO("and so must the commit that would publish it into a null tree");
@@ -104,7 +113,10 @@ TEST_CASE("services::index::btree_index_agent_t refuses writes after its drop") 
                                                                           session,
                                                                           uint64_t{0},
                                                                           one_entry(&resource));
-    agent->resume(1);
+    {
+        auto info = agent->resume(1);
+        REQUIRE(info.result == actor_zeta::scheduler::resume_result::awaiting);
+    }
     REQUIRE(stage_del_future.is_ready());
     auto stage_del_error = std::move(stage_del_future).take_ready();
     INFO("a delete against a dropped ordered index must be refused for the same reason");
@@ -116,7 +128,10 @@ TEST_CASE("services::index::btree_index_agent_t refuses writes after its drop") 
                                                                            session,
                                                                            uint64_t{0},
                                                                            uint64_t{0});
-    agent->resume(1);
+    {
+        auto info = agent->resume(1);
+        REQUIRE(info.result == actor_zeta::scheduler::resume_result::awaiting);
+    }
     REQUIRE(commit_del_future.is_ready());
     auto commit_del_error = std::move(commit_del_future).take_ready();
     REQUIRE(commit_del_error.contains_error());
@@ -125,7 +140,10 @@ TEST_CASE("services::index::btree_index_agent_t refuses writes after its drop") 
     // clear() must also refuse, so a repopulate of a dropped index cannot report success.
     auto [clear_sched, clear_future] =
         actor_zeta::otterbrix::send<&index_agent_contract::clear>(agent->address(), session);
-    agent->resume(1);
+    {
+        auto info = agent->resume(1);
+        REQUIRE(info.result == actor_zeta::scheduler::resume_result::awaiting);
+    }
     REQUIRE(clear_future.is_ready());
     auto clear_error = std::move(clear_future).take_ready();
     REQUIRE(clear_error.contains_error());
@@ -154,7 +172,10 @@ TEST_CASE("services::index::bitcask_index_agent_t refuses writes after its drop"
 
     auto [drop_sched, drop_future] =
         actor_zeta::otterbrix::send<&index_agent_contract::drop>(agent->address(), session);
-    agent->resume(1);
+    {
+        auto info = agent->resume(1);
+        REQUIRE(info.result == actor_zeta::scheduler::resume_result::awaiting);
+    }
     REQUIRE(drop_future.is_ready());
 
     auto [stage_sched, stage_future] =
@@ -162,7 +183,10 @@ TEST_CASE("services::index::bitcask_index_agent_t refuses writes after its drop"
                                                                           session,
                                                                           uint64_t{99},
                                                                           one_entry(&resource));
-    agent->resume(1);
+    {
+        auto info = agent->resume(1);
+        REQUIRE(info.result == actor_zeta::scheduler::resume_result::awaiting);
+    }
     REQUIRE(stage_future.is_ready());
     auto stage_error = std::move(stage_future).take_ready();
     INFO("staging into a dropped hashed index must be refused");
@@ -173,7 +197,10 @@ TEST_CASE("services::index::bitcask_index_agent_t refuses writes after its drop"
                                                                                                       session,
                                                                                                       uint64_t{99},
                                                                                                       commit_id_of(99));
-    agent->resume(1);
+    {
+        auto info = agent->resume(1);
+        REQUIRE(info.result == actor_zeta::scheduler::resume_result::awaiting);
+    }
     REQUIRE(txn_future.is_ready());
     auto txn_error = std::move(txn_future).take_ready();
     INFO("a committed insert into a dropped hashed index must be refused, not journalled");
@@ -185,7 +212,10 @@ TEST_CASE("services::index::bitcask_index_agent_t refuses writes after its drop"
                                                                            session,
                                                                            uint64_t{0},
                                                                            uint64_t{0});
-    agent->resume(1);
+    {
+        auto info = agent->resume(1);
+        REQUIRE(info.result == actor_zeta::scheduler::resume_result::awaiting);
+    }
     REQUIRE(bulk_future.is_ready());
     auto bulk_error = std::move(bulk_future).take_ready();
     INFO("and so must a rebuild feed, which takes the other route into the same freed store");
@@ -197,7 +227,10 @@ TEST_CASE("services::index::bitcask_index_agent_t refuses writes after its drop"
                                                                           session,
                                                                           uint64_t{99},
                                                                           one_entry(&resource));
-    agent->resume(1);
+    {
+        auto info = agent->resume(1);
+        REQUIRE(info.result == actor_zeta::scheduler::resume_result::awaiting);
+    }
     REQUIRE(stage_del_future.is_ready());
     auto stage_del_error = std::move(stage_del_future).take_ready();
     REQUIRE(stage_del_error.contains_error());
@@ -208,7 +241,10 @@ TEST_CASE("services::index::bitcask_index_agent_t refuses writes after its drop"
                                                                            session,
                                                                            uint64_t{99},
                                                                            commit_id_of(99));
-    agent->resume(1);
+    {
+        auto info = agent->resume(1);
+        REQUIRE(info.result == actor_zeta::scheduler::resume_result::awaiting);
+    }
     REQUIRE(remove_future.is_ready());
     auto remove_error = std::move(remove_future).take_ready();
     INFO("a delete against a dropped hashed index must be refused for the same reason");

@@ -194,7 +194,6 @@ namespace services::wal {
         std::atomic<bool> loop_running_{true};
         boost::lockfree::queue<actor_zeta::mailbox::message*> inbox_{128};
         std::mutex mutex_; // guards the idle wait condition only.
-        std::condition_variable pump_cv_;
     };
 
 } // namespace services::wal

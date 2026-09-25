@@ -145,7 +145,10 @@ TEST_CASE("services::index::drop_index keeps the agent alive under an outstandin
     REQUIRE_FALSE(read_future.is_ready());
 
     // Mailbox is FIFO and drop() was posted first, so this resume is the drop; the read stays queued.
-    agent_raw->resume(1);
+    {
+        auto info = agent_raw->resume(1);
+        REQUIRE(info.result == actor_zeta::scheduler::resume_result::resume);
+    }
 
     // drop_index gives up the registry entry here; the agent itself must survive, because the read is
     // still sitting in its mailbox.
@@ -156,7 +159,8 @@ TEST_CASE("services::index::drop_index keeps the agent alive under an outstandin
     // failure instead of a use-after-free: a destroyed agent has close_impl cancel the queued read, so
     // the future is already ready here, while a surviving one has not answered yet and needs a resume.
     if (!read_future.is_ready()) {
-        agent_raw->resume(1);
+        auto info = agent_raw->resume(1);
+        REQUIRE(info.result == actor_zeta::scheduler::resume_result::awaiting);
     }
     REQUIRE(read_future.is_ready());
     auto answer = std::move(read_future).take_ready();

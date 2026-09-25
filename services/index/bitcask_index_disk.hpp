@@ -1,14 +1,17 @@
 #pragma once
 
 #include "disk_hash_table.hpp"
+#include "index_types.hpp"
 
 #include <components/types/logical_value.hpp>
 #include <core/file/file_handle.hpp>
 #include <core/file/local_file_system.hpp>
 #include <core/result_wrapper.hpp>
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <memory>
 #include <memory_resource>
@@ -37,7 +40,7 @@ namespace services::index {
     public:
         using value_t = components::types::logical_value_t;
         using path_t = std::filesystem::path;
-        using result = std::pmr::vector<size_t>;
+        using result = std::pmr::vector<int64_t>;
 
         static constexpr uint64_t default_flush_threshold_{1000};
         static constexpr uint64_t default_segment_record_limit_{10000};
@@ -69,12 +72,13 @@ namespace services::index {
 
         [[nodiscard]] core::error_t open();
 
-        using entry_t = std::pair<value_t, size_t>;
+        // (key bytes, row id).
+        using entry_t = std::pair<std::pmr::string, int64_t>;
         using entries_t = std::pmr::vector<entry_t>;
 
-        void insert(const value_t& key, size_t value);
-        void remove(value_t key);
-        void remove(const value_t& key, size_t row_id);
+        void insert(const value_t& key, int64_t row_id);
+        void remove(const value_t& key);
+        void remove(const value_t& key, int64_t row_id);
 
         // Equality only — no scan_range; a range predicate is refused one level up in
         // bitcask_index_agent_t::read_rows. Refuses outright on a partial keydir walk, never a truncated set.
@@ -88,6 +92,8 @@ namespace services::index {
             return res;
         }
 
+        [[nodiscard]] core::error_t find_not_null(result& res) const;
+
         void drop();
         [[nodiscard]] core::error_t clear();
         // io_error on refusal must fail the statement, or the table and its index silently disagree.
@@ -97,12 +103,13 @@ namespace services::index {
         // Runs on the caller's thread, once, at the end of the write handler that incurred the debt.
         [[nodiscard]] core::error_t merge_pending_segments();
         void set_bulk_mode(bool enabled);
-        [[nodiscard]] core::error_t
-        apply_txn_inserts(uint64_t txn_id, uint64_t commit_id, const std::vector<std::pair<value_t, size_t>>& values);
-        [[nodiscard]] core::error_t
-        apply_txn_deletes(uint64_t txn_id, uint64_t commit_id, const std::vector<std::pair<value_t, size_t>>& values);
-        void insert_bulk_unchecked(const value_t& key, size_t value);
-        void remove_bulk_unchecked(const value_t& key, size_t row_id);
+        [[nodiscard]] core::error_t apply_txn_inserts(uint64_t txn_id, uint64_t commit_id, key_batch_t& values);
+        [[nodiscard]] core::error_t apply_txn_deletes(uint64_t txn_id, uint64_t commit_id, key_batch_t& values);
+        // internal implementation, but they are used by the index agent
+        [[nodiscard]] core::error_t apply_inserts(key_batch_t& values);
+        [[nodiscard]] core::error_t apply_deletes(key_batch_t& values);
+        void insert_bulk_unchecked(const value_t& key, int64_t row_id);
+        void remove_bulk_unchecked(const value_t& key, int64_t row_id);
 
         [[nodiscard]] const disk_hash_table_t& hash_storage() const noexcept { return *hash_index_; }
         [[nodiscard]] disk_hash_table_t& hash_storage() noexcept { return *hash_index_; }
@@ -130,7 +137,14 @@ namespace services::index {
             uint64_t scan_end{0};
         };
 
-        using row_ids_t = std::pmr::vector<size_t>;
+        using row_ids_t = std::pmr::vector<int64_t>;
+
+        struct owned_key_t {
+            uint32_t hash;
+            std::pmr::string bytes;
+        };
+        [[nodiscard]] owned_key_t encode_key(const value_t& key) const;
+        [[nodiscard]] core::result_wrapper_t<uint32_t> hash_key_bytes(std::string_view key_bytes) const;
 
         [[nodiscard]] core::error_t initialize_storage();
         [[nodiscard]] core::error_t load_from_disk();
@@ -145,20 +159,21 @@ namespace services::index {
         [[nodiscard]] core::error_t rotate_active_segment_if_needed();
         uint64_t allocate_next_segment_id();
         [[nodiscard]] core::error_t merge_immutable_segments();
-        [[nodiscard]] core::result_wrapper_t<row_ids_t> current_rows(const value_t& key) const;
+        [[nodiscard]] core::result_wrapper_t<row_ids_t> current_rows(uint32_t key_hash,
+                                                                     std::string_view key_bytes) const;
         // true=value (rows filled), false=tombstone (legitimately no rows), error=unreadable — a
         // bare bool would misread a corrupt record as "no rows" and let append_snapshot erase the row list.
-        [[nodiscard]] core::result_wrapper_t<bool>
-        read_rows_at(uint32_t segment_id, uint64_t value_offset, row_ids_t& rows, value_t* out_key = nullptr) const;
-        std::string key_bytes_for_hash(const value_t& key, bool* ok = nullptr) const;
-        [[nodiscard]] core::error_t erase_all_refs_for_key(std::string_view key_bytes);
+        [[nodiscard]] core::result_wrapper_t<bool> read_rows_at(uint32_t segment_id,
+                                                                uint64_t value_offset,
+                                                                row_ids_t& rows,
+                                                                std::pmr::string* out_key = nullptr) const;
+        [[nodiscard]] core::error_t erase_all_refs_for_key(uint32_t key_hash, std::string_view key_bytes);
         // Reports a hash-index write failure rather than dropping it — a lost entry goes unfindable silently.
-        [[nodiscard]] core::error_t append_snapshot(const value_t& key, const row_ids_t& rows);
-        [[nodiscard]] core::error_t append_tombstone(const value_t& key);
-        [[nodiscard]] core::error_t append_txn_record(uint64_t txn_id,
-                                                      uint64_t commit_id,
-                                                      uint8_t op_kind,
-                                                      const std::vector<std::pair<value_t, size_t>>& values);
+        [[nodiscard]] core::error_t
+        append_snapshot(uint32_t key_hash, std::string_view key_bytes, const row_ids_t& rows);
+        [[nodiscard]] core::error_t append_tombstone(uint32_t key_hash, std::string_view key_bytes);
+        [[nodiscard]] core::error_t
+        append_txn_record(uint64_t txn_id, uint64_t commit_id, uint8_t op_kind, const key_batch_t& values);
         [[nodiscard]] core::error_t recover_txn_log();
         std::filesystem::path txn_log_file_path() const;
         std::filesystem::path txn_applied_file_path() const;

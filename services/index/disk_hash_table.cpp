@@ -17,17 +17,6 @@ namespace services::index {
     namespace codec = components::index::codec;
 
     namespace {
-        uint32_t fnv1a_32_seeded(std::string_view s, uint32_t seed) {
-            constexpr uint32_t offset = 2166136261u;
-            constexpr uint32_t prime = 16777619u;
-            uint32_t h = offset ^ seed;
-            for (char ch : s) {
-                const auto c = static_cast<uint8_t>(ch);
-                h ^= c;
-                h *= prime;
-            }
-            return h;
-        }
 
         uint32_t generate_hash_seed() {
 #ifdef DEV_MODE
@@ -149,14 +138,19 @@ namespace services::index {
         }
     }
 
-    core::error_t
-    disk_hash_table_t::put(std::string_view key, int64_t value, uint32_t log_file_id, uint64_t log_offset) {
-        return put_unlocked(key, value, log_file_id, log_offset);
+    core::error_t disk_hash_table_t::put(uint32_t key_hash,
+                                         std::string_view key,
+                                         int64_t value,
+                                         uint32_t log_file_id,
+                                         uint64_t log_offset) {
+        return put_unlocked(key_hash, key, value, log_file_id, log_offset);
     }
 
-    core::error_t
-    disk_hash_table_t::put_unlocked(std::string_view key, int64_t value, uint32_t log_file_id, uint64_t log_offset) {
-        const uint32_t key_hash = hash_key(key);
+    core::error_t disk_hash_table_t::put_unlocked(uint32_t key_hash,
+                                                  std::string_view key,
+                                                  int64_t value,
+                                                  uint32_t log_file_id,
+                                                  uint64_t log_offset) {
         const uint32_t bucket_id = bucket_id_for_hash(key_hash);
         auto payload = make_entry_payload(key, value, log_file_id, log_offset);
         RETURN_IF_ERROR(insert_payload_into_bucket_unlocked(bucket_id, key_hash, payload));
@@ -583,10 +577,6 @@ namespace services::index {
     }
 
     uint64_t disk_hash_table_t::bucket_primary_page_id(uint32_t bucket_id) const { return 1 + bucket_id; }
-
-    uint32_t disk_hash_table_t::hash_key(std::string_view key) const {
-        return fnv1a_32_seeded(key, header_.hash_seed_value);
-    }
 
     uint32_t disk_hash_table_t::bucket_id_for_hash(uint32_t key_hash) const {
         if (header_.bucket_count_value == 0) {

@@ -63,12 +63,19 @@ namespace {
         return store_dir(root) / "bitcask.txn.log";
     }
 
-    std::vector<std::pair<logical_value_t, size_t>> entries(std::pmr::memory_resource* resource,
-                                                            std::initializer_list<std::pair<int64_t, size_t>> rows) {
-        std::vector<std::pair<logical_value_t, size_t>> values;
-        for (const auto& [key, row_id] : rows) {
-            values.emplace_back(logical_value_t(resource, key), row_id);
+    services::index::key_batch_t entries(std::pmr::memory_resource* resource,
+                                         std::initializer_list<std::pair<int64_t, int64_t>> rows) {
+        services::index::key_batch_t values(resource);
+        if (rows.size() == 0) {
+            return values;
         }
+        components::vector::vector_t keys(resource, components::types::logical_type::BIGINT, rows.size());
+        size_t row = 0;
+        for (const auto& [key, row_id] : rows) {
+            keys.data<int64_t>()[row++] = key;
+            values.ids.push_back(row_id);
+        }
+        values.keys.emplace_back(std::move(keys), rows.size());
         return values;
     }
 

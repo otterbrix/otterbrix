@@ -74,10 +74,8 @@ namespace services::index {
 
         unique_future<void> drop(session_id_t session);
         unique_future<core::error_t> clear(session_id_t session);
-        unique_future<core::error_t>
-        stage_inserts(session_id_t session, uint64_t txn_id, std::vector<std::pair<value_t, size_t>> values);
-        unique_future<core::error_t>
-        stage_deletes(session_id_t session, uint64_t txn_id, std::vector<std::pair<value_t, size_t>> values);
+        unique_future<core::error_t> stage_inserts(session_id_t session, uint64_t txn_id, key_batch_t values);
+        unique_future<core::error_t> stage_deletes(session_id_t session, uint64_t txn_id, key_batch_t values);
         // commit_id is unused (no journal here) but kept: the contract is positional by msg_id.
         unique_future<core::error_t> commit_inserts(session_id_t session, uint64_t txn_id, uint64_t commit_id);
         unique_future<core::error_t> commit_deletes(session_id_t session, uint64_t txn_id, uint64_t commit_id);
@@ -111,16 +109,10 @@ namespace services::index {
         btree_index_disk_t store_;
         bool is_dropped_{false};
 
-        // Keys are encoded in the b+tree's own record format so a staged key compares the same way
-        // the committed half does. Bucket 0 is committed-but-not-yet-durable, published by commit_inserts.
-        using pending_row_t = std::pair<std::pmr::string, int64_t>;
-        using pending_rows_t = std::pmr::vector<pending_row_t>;
-        using pending_txn_map_t = std::pmr::unordered_map<uint64_t, pending_rows_t>;
+        // One staged batch per transaction
+        using pending_txn_map_t = std::pmr::unordered_map<uint64_t, key_batch_t>;
         pending_txn_map_t pending_inserts_;
         pending_txn_map_t pending_deletes_;
-
-        // No normalization: the tree compares the column's own type -- that step belongs to the hashed family.
-        [[nodiscard]] std::pmr::string encode_key(const value_t& key) const;
 
         // Publishes the ({txn_id}, 0) bucket pair; `apply` is the only difference between insert and delete.
         template<typename ApplyFn>

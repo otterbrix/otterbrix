@@ -478,6 +478,7 @@ namespace core::b_plus_tree {
         if (!static_cast<leaf_node_t*>(current_node)->contains_index(index)) {
             tree_mutex_.unlock();
             release_locks_(modified_nodes);
+            current_node->unlock_exclusive();
             return false;
         }
 
@@ -498,7 +499,9 @@ namespace core::b_plus_tree {
                 tree_mutex_.unlock();
             }
 
-            if (!modified_nodes.empty() && result) {
+            if (!result) {
+                release_locks_(modified_nodes);
+            } else if (!modified_nodes.empty()) {
                 modified_nodes.pop_back(); // remove parent node, since it is already aquired
             }
             // TODO: rework recursive node removal to be more friendly with multithreading
@@ -625,6 +628,7 @@ namespace core::b_plus_tree {
         if (!static_cast<leaf_node_t*>(current_node)->contains_index(index)) {
             tree_mutex_.unlock();
             release_locks_(modified_nodes);
+            current_node->unlock_exclusive();
             return false;
         }
 
@@ -641,7 +645,9 @@ namespace core::b_plus_tree {
 
             result = static_cast<leaf_node_t*>(current_node)->remove_index(index);
 
-            if (!modified_nodes.empty() && result) {
+            if (!result) {
+                release_locks_(modified_nodes);
+            } else if (!modified_nodes.empty()) {
                 modified_nodes.pop_back(); // remove parent node, since it is already aquired
             }
             // TODO: rework recursive node removal to be more friendly with multithreading

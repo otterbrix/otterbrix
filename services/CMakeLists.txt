@@ -38,6 +38,7 @@ set(${PROJECT_NAME}_SOURCES
         index/btree_index_agent.cpp
         index/manager_index.cpp
         index/index_rebuild_driver.cpp
+        index/index_types.cpp
 
     # wal
         wal/wal_binary.cpp

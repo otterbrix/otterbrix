@@ -83,10 +83,8 @@ namespace services::index {
 
         unique_future<void> drop(session_id_t session);
         unique_future<core::error_t> clear(session_id_t session);
-        unique_future<core::error_t>
-        stage_inserts(session_id_t session, uint64_t txn_id, std::vector<std::pair<value_t, size_t>> values);
-        unique_future<core::error_t>
-        stage_deletes(session_id_t session, uint64_t txn_id, std::vector<std::pair<value_t, size_t>> values);
+        unique_future<core::error_t> stage_inserts(session_id_t session, uint64_t txn_id, key_batch_t values);
+        unique_future<core::error_t> stage_deletes(session_id_t session, uint64_t txn_id, key_batch_t values);
         unique_future<core::error_t> commit_inserts(session_id_t session, uint64_t txn_id, uint64_t commit_id);
         unique_future<core::error_t> commit_deletes(session_id_t session, uint64_t txn_id, uint64_t commit_id);
         unique_future<core::error_t> revert_inserts(session_id_t session, uint64_t txn_id);
@@ -126,17 +124,10 @@ namespace services::index {
         bitcask_index_disk_t store_;
         bool is_dropped_{false};
 
-        // Keys are encoded exactly as bitcask_index_disk_t::key_bytes_for_hash hashes/memcmps (narrow
-        // ints widened to BIGINT/UBIGINT, so a SMALLINT probe matches a BIGINT-stored key). Bucket 0
-        // is committed-but-not-yet-durable, published by commit_inserts alongside the committing transaction.
-        using pending_row_t = std::pair<std::pmr::string, int64_t>;
-        using pending_rows_t = std::pmr::vector<pending_row_t>;
-        using pending_txn_map_t = std::pmr::unordered_map<uint64_t, pending_rows_t>;
+        // One staged batch per transaction
+        using pending_txn_map_t = std::pmr::unordered_map<uint64_t, key_batch_t>;
         pending_txn_map_t pending_inserts_;
         pending_txn_map_t pending_deletes_;
-
-        // Normalized key bytes only, no row id -- the bucket carries that separately.
-        [[nodiscard]] std::pmr::string encode_key(const value_t& key) const;
 
         // Publishes/erases the ({txn_id}, 0) pair; `apply` is the only difference between insert and delete.
         template<typename ApplyFn>

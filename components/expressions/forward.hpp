@@ -44,6 +44,7 @@ namespace components::expressions {
         union_not,
         all_true,
         all_false,
+        all_unknown,
         is_null,
         is_not_null
     };

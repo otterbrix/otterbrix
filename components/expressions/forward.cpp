@@ -32,6 +32,8 @@ namespace components::expressions {
                 return "all_true";
             case compare_type::all_false:
                 return "all_false";
+            case compare_type::all_unknown:
+                return "all_unknown";
             case compare_type::is_null:
                 return "is_null";
             case compare_type::is_not_null:

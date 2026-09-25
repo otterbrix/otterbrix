@@ -3,6 +3,7 @@
 #include <charconv>
 #include <components/index/logical_value_binary_codec.hpp>
 #include <components/table/test/fault_injection_file.hpp>
+#include <components/vector/vector_operations.hpp>
 #include <core/pmr.hpp>
 #include <core/result_wrapper.hpp>
 #include <cstddef>
@@ -37,6 +38,24 @@ using services::index::bitcask_index_disk_t;
 using services::index::btree_index_disk_t;
 
 namespace {
+    services::index::key_batch_t entries(std::pmr::memory_resource* resource,
+                                         std::initializer_list<std::pair<int64_t, int64_t>> rows) {
+        services::index::key_batch_t values(resource);
+        if (rows.size() == 0) {
+            return values;
+        }
+        components::vector::vector_t keys(resource, components::types::logical_type::BIGINT, rows.size());
+        size_t row = 0;
+        for (const auto& [key, row_id] : rows) {
+            keys.data<int64_t>()[row++] = key;
+            values.ids.push_back(row_id);
+        }
+        values.keys.emplace_back(std::move(keys), rows.size());
+        return values;
+    }
+} // namespace
+
+namespace {
     // bitcask returns a result_wrapper_t (refusable); btree returns the row list directly.
     template<typename found_t>
     auto rows_of(found_t&& found) {
@@ -63,6 +82,21 @@ namespace {
                 core::error_code_t::io_error,
                 std::pmr::string{"the loader must not be consulted: every key in this case is inline", resource});
         };
+    }
+
+    struct stored_key_t {
+        uint32_t hash;
+        std::pmr::string bytes;
+    };
+    stored_key_t
+    stored_key_of(const bitcask_index_disk_t& index, const logical_value_t& key, std::pmr::memory_resource* resource) {
+        stored_key_t stored{0, std::pmr::string(resource)};
+        components::index::codec::append_logical_value(stored.bytes, key);
+        components::vector::vector_t keys(resource, key, 1);
+        components::vector::vector_t hashes(resource, components::types::logical_type::UINTEGER, 1);
+        components::vector::vector_ops::hash32(keys, hashes, 1, index.hash_storage().hash_seed());
+        stored.hash = hashes.data<uint32_t>()[0];
+        return stored;
     }
 
     // Empty default is correct, not a fallback: these fixtures have no txn-log to gate.
@@ -383,6 +417,51 @@ TEST_CASE("services::index::bitcask_index_disk::int64_basic") {
     REQUIRE(rows_of(index.find(logical_value_t(&resource, 2l))).empty());
 }
 
+TEST_CASE("services::index::bitcask_index_disk::null_keys") {
+    using components::types::complex_logical_type;
+    using components::types::logical_type;
+
+    auto resource = core::pmr::otterbrix_resource();
+
+    std::filesystem::path path{index_fixture_path("bitcask_null_key")};
+    std::filesystem::remove_all(path);
+    std::filesystem::create_directories(path);
+    auto index = make_test_index(path, &resource);
+
+    const auto null_key = [&] { return logical_value_t(&resource, complex_logical_type{logical_type::NA}); };
+    const auto sorted = [](auto container) {
+        std::vector<int64_t> out(container.begin(), container.end());
+        std::sort(out.begin(), out.end());
+        return out;
+    };
+    const auto not_null_rows = [&] {
+        bitcask_index_disk_t::result res(&resource);
+        REQUIRE(index.find_not_null(res).type == core::error_code_t::none);
+        return sorted(res);
+    };
+
+    constexpr int64_t kValueRows = 17;
+    std::vector<int64_t> value_rows;
+    for (int64_t i = 1; i <= kValueRows; ++i) {
+        index.insert(logical_value_t(&resource, i), i);
+        value_rows.push_back(i);
+    }
+    index.insert(null_key(), 901);
+    index.insert(null_key(), 902);
+
+    REQUIRE(sorted(rows_of(index.find(null_key()))) == std::vector<int64_t>{901, 902});
+    REQUIRE(not_null_rows() == value_rows);
+
+    // One row of the NA key, then the whole key.
+    index.remove(null_key(), 901);
+    REQUIRE(sorted(rows_of(index.find(null_key()))) == std::vector<int64_t>{902});
+    REQUIRE(not_null_rows() == value_rows);
+
+    index.remove(null_key());
+    REQUIRE(rows_of(index.find(null_key())).empty());
+    REQUIRE(not_null_rows() == value_rows);
+}
+
 TEST_CASE("services::index::bitcask_index_disk::persist_close_reopen") {
     auto resource = core::pmr::otterbrix_resource();
 
@@ -436,7 +515,7 @@ TEST_CASE("services::index::bitcask_index_disk::persist_close_reopen_large_datas
         for (int key : {1, 42, 872, 1500, 2499, 2500}) {
             auto rows = rows_of(reopened.find(logical_value_t(&resource, int64_t(key))));
             REQUIRE(rows.size() == 1);
-            REQUIRE(rows.front() == static_cast<size_t>(key));
+            REQUIRE(rows.front() == static_cast<int64_t>(key));
         }
         REQUIRE(rows_of(reopened.find(logical_value_t(&resource, int64_t(2600)))).empty());
     }
@@ -570,7 +649,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_survives_more_than_two_rou
             const auto rows = rows_of(index.find(logical_value_t(&resource, int64_t(i))));
             INFO("key " << i << " must survive every merge round");
             REQUIRE(rows.size() == 1);
-            REQUIRE(rows.front() == static_cast<size_t>(i));
+            REQUIRE(rows.front() == static_cast<int64_t>(i));
         }
     }
 }
@@ -1190,15 +1269,15 @@ TEST_CASE("services::index::bitcask_index_disk::find_refuses_when_a_long_keys_re
         auto long_found = index.find(logical_value_t(&resource, long_key));
         REQUIRE(long_found.has_error());
 
-        namespace codec = components::index::codec;
-        const auto encoded_long_key = codec::encode_disk_hash_key(logical_value_t(&resource, long_key));
+        const auto stored_long_key = stored_key_of(index, logical_value_t(&resource, long_key), &resource);
         size_t keydir_loader_calls = 0;
         const auto keydir_loader_refuses = [&](uint32_t, uint64_t) -> core::result_wrapper_t<std::pmr::string> {
             ++keydir_loader_calls;
             return core::error_t(core::error_code_t::io_error,
                                  std::pmr::string{"the record carrying the whole key is unreadable", &resource});
         };
-        auto keydir_walk = index.hash_storage().get_all(encoded_long_key, keydir_loader_refuses);
+        auto keydir_walk =
+            index.hash_storage().get_all(stored_long_key.hash, stored_long_key.bytes, keydir_loader_refuses);
         REQUIRE(keydir_walk.has_error());
         REQUIRE(keydir_walk.error().type == core::error_code_t::io_error);
         REQUIRE(keydir_walk.error().what == "the record carrying the whole key is unreadable");
@@ -1247,9 +1326,7 @@ TEST_CASE("services::index::bitcask_index_disk::txn_log_recovery_replays_committ
 
     {
         auto index = make_test_index(path, &resource);
-        std::vector<std::pair<logical_value_t, size_t>> inserts;
-        inserts.emplace_back(logical_value_t(&resource, 1001l), 11);
-        inserts.emplace_back(logical_value_t(&resource, 1002l), 22);
+        auto inserts = entries(&resource, {{1001, 11}, {1002, 22}});
         REQUIRE(!index.apply_txn_inserts(5001, commit_id_of(5001), inserts).contains_error());
     }
 
@@ -1271,8 +1348,7 @@ TEST_CASE("services::index::bitcask_index_disk::txn_log_applied_checkpoint_preve
 
     {
         auto index = make_test_index(path, &resource);
-        std::vector<std::pair<logical_value_t, size_t>> inserts;
-        inserts.emplace_back(logical_value_t(&resource, 2001l), 77);
+        auto inserts = entries(&resource, {{2001, 77}});
         REQUIRE(!index.apply_txn_inserts(6001, commit_id_of(6001), inserts).contains_error());
     }
 
@@ -1293,12 +1369,10 @@ TEST_CASE("services::index::bitcask_index_disk::txn_log_recovery_is_order_indepe
 
     {
         auto index = make_test_index(path, &resource);
-        std::vector<std::pair<logical_value_t, size_t>> first;
-        first.emplace_back(logical_value_t(&resource, 3001l), 1);
+        auto first = entries(&resource, {{3001, 1}});
         REQUIRE(!index.apply_txn_inserts(9002, commit_id_of(9002), first).contains_error());
 
-        std::vector<std::pair<logical_value_t, size_t>> second;
-        second.emplace_back(logical_value_t(&resource, 3002l), 2);
+        auto second = entries(&resource, {{3002, 2}});
         REQUIRE(!index.apply_txn_inserts(9001, commit_id_of(9001), second).contains_error());
     }
 
@@ -1319,7 +1393,7 @@ TEST_CASE("services::index::bitcask_index_disk::max_size_t_row_id_persists") {
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
-    const auto max_row_id = std::numeric_limits<size_t>::max();
+    const auto max_row_id = std::numeric_limits<int64_t>::max();
 
     {
         auto index = make_test_index(path, &resource);
@@ -1349,14 +1423,10 @@ TEST_CASE("services::index::bitcask_index_disk::recover_gates_uncommitted_txn_fr
     {
         auto index = make_test_index(path, &resource);
 
-        std::vector<std::pair<logical_value_t, size_t>> a_inserts;
-        a_inserts.emplace_back(logical_value_t(&resource, 4001l), 41);
-        a_inserts.emplace_back(logical_value_t(&resource, 4002l), 42);
+        auto a_inserts = entries(&resource, {{4001, 41}, {4002, 42}});
         REQUIRE(!index.apply_txn_inserts(txn_a, commit_id_of(txn_a), a_inserts).contains_error());
 
-        std::vector<std::pair<logical_value_t, size_t>> b_inserts;
-        b_inserts.emplace_back(logical_value_t(&resource, 5001l), 51);
-        b_inserts.emplace_back(logical_value_t(&resource, 5002l), 52);
+        auto b_inserts = entries(&resource, {{5001, 51}, {5002, 52}});
         REQUIRE(!index.apply_txn_inserts(txn_b, commit_id_of(txn_b), b_inserts).contains_error());
     }
 
@@ -1393,8 +1463,7 @@ TEST_CASE("services::index::bitcask_index_disk::recover_gate_refuses_a_reused_tx
 
     {
         auto index = make_test_index(path, &resource);
-        std::vector<std::pair<logical_value_t, size_t>> inserts;
-        inserts.emplace_back(logical_value_t(&resource, 4242l), 42);
+        auto inserts = entries(&resource, {{4242, 42}});
         REQUIRE(!index.apply_txn_inserts(reused_txn_id, never_committed_in_run_2, inserts).contains_error());
     }
 
@@ -1412,8 +1481,7 @@ TEST_CASE("services::index::bitcask_index_disk::recover_gate_refuses_a_reused_tx
         std::filesystem::create_directories(path);
         {
             auto index = make_test_index(path, &resource);
-            std::vector<std::pair<logical_value_t, size_t>> inserts;
-            inserts.emplace_back(logical_value_t(&resource, 4242l), 42);
+            auto inserts = entries(&resource, {{4242, 42}});
             REQUIRE(!index.apply_txn_inserts(reused_txn_id, never_committed_in_run_2, inserts).contains_error());
         }
         wipe_all_but_txn_log(path);
@@ -1440,12 +1508,10 @@ TEST_CASE("services::index::bitcask_index_disk::recover_skipped_frames_advance_a
     {
         auto index = make_test_index(path, &resource);
 
-        std::vector<std::pair<logical_value_t, size_t>> a_inserts;
-        a_inserts.emplace_back(logical_value_t(&resource, 6001l), 61);
+        auto a_inserts = entries(&resource, {{6001, 61}});
         REQUIRE(!index.apply_txn_inserts(txn_a, commit_id_of(txn_a), a_inserts).contains_error());
 
-        std::vector<std::pair<logical_value_t, size_t>> b_inserts;
-        b_inserts.emplace_back(logical_value_t(&resource, 7001l), 71);
+        auto b_inserts = entries(&resource, {{7001, 71}});
         REQUIRE(!index.apply_txn_inserts(txn_b, commit_id_of(txn_b), b_inserts).contains_error());
     }
 
@@ -1508,11 +1574,8 @@ TEST_CASE("services::index::bitcask_index_disk::clear_keeps_shared_hash_storage"
     const auto* shared_ptr = &index.hash_storage();
 
     index.insert(logical_value_t(&resource, int64_t(987)), 986);
-    auto encoded_cast =
-        logical_value_t(&resource, int64_t(987)).cast_as(complex_logical_type(logical_type::BIGINT), {});
-    REQUIRE_FALSE(encoded_cast.has_error());
-    const auto encoded = codec::encode_disk_hash_key(encoded_cast.value());
-    REQUIRE(rows_of(shared_ptr->get(encoded, loader_must_not_be_consulted(&resource))).has_value());
+    const auto stored = stored_key_of(index, logical_value_t(&resource, int64_t(987)), &resource);
+    REQUIRE(rows_of(shared_ptr->get(stored.hash, stored.bytes, loader_must_not_be_consulted(&resource))).has_value());
 
     auto refusal = loader_must_not_be_consulted(&resource)(0, 0);
     REQUIRE(refusal.has_error());
@@ -1521,10 +1584,11 @@ TEST_CASE("services::index::bitcask_index_disk::clear_keeps_shared_hash_storage"
     REQUIRE(index.clear().type == core::error_code_t::none);
 
     REQUIRE(&index.hash_storage() == shared_ptr);
-    REQUIRE_FALSE(rows_of(shared_ptr->get(encoded, loader_must_not_be_consulted(&resource))).has_value());
+    REQUIRE_FALSE(
+        rows_of(shared_ptr->get(stored.hash, stored.bytes, loader_must_not_be_consulted(&resource))).has_value());
 
     index.insert(logical_value_t(&resource, int64_t(987)), 986);
-    REQUIRE(rows_of(shared_ptr->get(encoded, loader_must_not_be_consulted(&resource))).has_value());
+    REQUIRE(rows_of(shared_ptr->get(stored.hash, stored.bytes, loader_must_not_be_consulted(&resource))).has_value());
     const auto rows = rows_of(index.find(logical_value_t(&resource, int64_t(987))));
     REQUIRE(rows.size() == 1);
     REQUIRE(rows.front() == 986);
@@ -1806,8 +1870,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_refused_txn_log_append_refuses
     fault.faulty_marker = "bitcask.txn.log";
 
     auto index = make_test_index(path, &resource);
-    std::vector<std::pair<logical_value_t, size_t>> batch;
-    batch.emplace_back(logical_value_t(&resource, 9l), 99);
+    auto batch = entries(&resource, {{9, 99}});
 
     fault.plan.fail_writes_from = 1;
     REQUIRE(index.apply_txn_inserts(1, commit_id_of(1), batch).contains_error());
@@ -1860,7 +1923,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_refuses_on_an_unreadable_r
     for (int key : {1, 100, 250}) {
         const auto rows = rows_of(index.find(logical_value_t(&resource, int64_t(key))));
         REQUIRE(rows.size() == 1);
-        REQUIRE(rows.front() == static_cast<size_t>(key));
+        REQUIRE(rows.front() == static_cast<int64_t>(key));
     }
 }
 
@@ -1873,8 +1936,7 @@ TEST_CASE("services::index::bitcask_index_disk::an_unopenable_txn_log_refuses_th
 
     {
         auto index = make_test_index(path, &resource);
-        std::vector<std::pair<logical_value_t, size_t>> batch;
-        batch.emplace_back(logical_value_t(&resource, 21l), 210);
+        auto batch = entries(&resource, {{21, 210}});
         REQUIRE(index.apply_txn_inserts(7, commit_id_of(7), batch).type == core::error_code_t::none);
     }
     wipe_all_but_txn_log(path);
@@ -1914,11 +1976,9 @@ TEST_CASE("services::index::bitcask_index_disk::a_corrupt_txn_log_frame_is_a_tai
 
     {
         auto index = make_test_index(path, &resource);
-        std::vector<std::pair<logical_value_t, size_t>> batch;
-        batch.emplace_back(logical_value_t(&resource, 31l), 310);
+        auto batch = entries(&resource, {{31, 310}});
         REQUIRE(index.apply_txn_inserts(3, commit_id_of(3), batch).type == core::error_code_t::none);
-        std::vector<std::pair<logical_value_t, size_t>> second;
-        second.emplace_back(logical_value_t(&resource, 32l), 320);
+        auto second = entries(&resource, {{32, 320}});
         REQUIRE(index.apply_txn_inserts(4, commit_id_of(4), second).type == core::error_code_t::none);
     }
     wipe_all_but_txn_log(path);
@@ -1941,8 +2001,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_corrupt_txn_log_frame_is_a_tai
         REQUIRE_FALSE(open_error.contains_error());
         REQUIRE(rows_of(index.find(logical_value_t(&resource, 31l))).empty());
         REQUIRE(rows_of(index.find(logical_value_t(&resource, 32l))).empty());
-        std::vector<std::pair<logical_value_t, size_t>> after;
-        after.emplace_back(logical_value_t(&resource, 33l), 330);
+        auto after = entries(&resource, {{33, 330}});
         REQUIRE(index.apply_txn_inserts(5, commit_id_of(5), after).type == core::error_code_t::none);
         REQUIRE(rows_of(index.find(logical_value_t(&resource, 33l))).front() == 330);
     }
@@ -2074,7 +2133,7 @@ TEST_CASE("services::index::bitcask_index_disk::open_survives_a_keydir_entry_lef
         for (int i = 0; i < 5; ++i) {
             const auto rows = rows_of(index.find(logical_value_t(&resource, int64_t(1000 + i))));
             REQUIRE(rows.size() == 1);
-            REQUIRE(rows.front() == static_cast<size_t>(1000 + i));
+            REQUIRE(rows.front() == static_cast<int64_t>(1000 + i));
         }
     }
 }
@@ -2326,7 +2385,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_refused_keydir_reset_is_a_valu
         for (int i = 0; i < 5; ++i) {
             const auto rows = rows_of(index.find(logical_value_t(&resource, int64_t(2000 + i))));
             REQUIRE(rows.size() == 1);
-            REQUIRE(rows.front() == static_cast<size_t>(2000 + i));
+            REQUIRE(rows.front() == static_cast<int64_t>(2000 + i));
         }
     }
 }
@@ -2380,7 +2439,7 @@ TEST_CASE("services::index::bitcask_index_disk::opening_over_a_read_only_directo
         for (int i = 0; i < key_count; ++i) {
             const auto rows = rows_of(index.find(logical_value_t(&resource, int64_t(700 + i))));
             REQUIRE(rows.size() == 1);
-            REQUIRE(rows.front() == static_cast<size_t>(700 + i));
+            REQUIRE(rows.front() == static_cast<int64_t>(700 + i));
         }
     }
 }
@@ -2431,7 +2490,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_wipe_that_left_the_keydir_behi
         for (int i = 0; i < key_count; ++i) {
             const auto rows = rows_of(index.find(logical_value_t(&resource, int64_t(810 + i))));
             REQUIRE(rows.size() == 1);
-            REQUIRE(rows.front() == static_cast<size_t>(810 + i));
+            REQUIRE(rows.front() == static_cast<int64_t>(810 + i));
         }
     }
 }
@@ -2470,7 +2529,7 @@ TEST_CASE("services::index::bitcask_index_disk::clear_over_an_unlistable_directo
         for (int i = 0; i < key_count; ++i) {
             const auto rows = rows_of(index.find(logical_value_t(&resource, int64_t(910 + i))));
             REQUIRE(rows.size() == 1);
-            REQUIRE(rows.front() == static_cast<size_t>(910 + i));
+            REQUIRE(rows.front() == static_cast<int64_t>(910 + i));
         }
     }
 
@@ -2628,68 +2687,6 @@ TEST_CASE("services::index::bitcask_index_disk::clear_reports_the_artifact_it_co
     std::filesystem::remove_all(txn_log);
 }
 
-TEST_CASE("services::index::bitcask_index_disk::a_record_whose_key_will_not_decode_refuses_the_open") {
-    auto resource = core::pmr::otterbrix_resource();
-
-    std::filesystem::path path{index_fixture_path("bitcask_undecodable_key")};
-    std::filesystem::remove_all(path);
-    std::filesystem::create_directories(path);
-
-    {
-        auto index = make_test_index(path, &resource);
-        index.insert(logical_value_t(&resource, 1l), 11);
-        index.insert(logical_value_t(&resource, 2l), 22);
-        REQUIRE(index.force_flush().type == core::error_code_t::none);
-    }
-
-    const auto file_path = latest_bitcask_data_file(path);
-    REQUIRE_FALSE(file_path.empty());
-    const auto backup = read_file_bytes(file_path);
-    REQUIRE(backup.size() > sizeof(crashed_record_header_t));
-
-    {
-        // Key tag byte set to 200 (unused by any logical type), CRC recomputed so this doesn't
-        // just re-test the CRC path.
-        auto bytes = backup;
-        crashed_record_header_t header{};
-        std::memcpy(&header, bytes.data(), sizeof(header));
-        const auto payload_offset = sizeof(header);
-        REQUIRE(header.payload_size > 0);
-        REQUIRE(payload_offset + header.payload_size <= bytes.size());
-
-        bytes[payload_offset] = std::byte{200};
-
-        absl::crc32c_t calc =
-            absl::ComputeCrc32c(absl::string_view(reinterpret_cast<const char*>(bytes.data()) + sizeof(header.crc),
-                                                  sizeof(header) - sizeof(header.crc)));
-        calc = absl::ExtendCrc32c(calc,
-                                  absl::string_view(reinterpret_cast<const char*>(bytes.data()) + payload_offset,
-                                                    static_cast<size_t>(header.payload_size)));
-        const auto fixed_crc = static_cast<uint32_t>(calc);
-        std::memcpy(bytes.data(), &fixed_crc, sizeof(fixed_crc));
-        write_file_bytes(file_path, bytes);
-    }
-
-    {
-        bitcask_index_disk_t index(path,
-                                   &resource,
-                                   test_flush_threshold,
-                                   1000,
-                                   std::pmr::set<std::uint64_t>{},
-                                   bitcask_index_disk_t::deferred_open_t{});
-        auto open_error = index.open();
-        REQUIRE(open_error.contains_error());
-        CHECK(open_error.type == core::error_code_t::index_create_fail);
-    }
-
-    write_file_bytes(file_path, backup);
-    {
-        auto index = make_test_index(path, &resource);
-        REQUIRE(rows_of(index.find(logical_value_t(&resource, 1l))).size() == 1);
-        REQUIRE(rows_of(index.find(logical_value_t(&resource, 2l))).size() == 1);
-    }
-}
-
 TEST_CASE("services::index::bitcask_index_disk::a_crash_left_txn_log_stump_does_not_take_the_whole_log_down") {
     auto resource = core::pmr::otterbrix_resource();
 
@@ -2700,8 +2697,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_crash_left_txn_log_stump_does_
 
     {
         auto index = make_test_index(path, &resource, committed_set(&resource, {commit_id_of(1), commit_id_of(2)}));
-        std::vector<std::pair<logical_value_t, size_t>> batch;
-        batch.emplace_back(logical_value_t(&resource, 1l), 11);
+        auto batch = entries(&resource, {{1, 11}});
         REQUIRE(index.apply_txn_inserts(1, commit_id_of(1), batch).type == core::error_code_t::none);
     }
 
@@ -2722,8 +2718,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_crash_left_txn_log_stump_does_
                                    bitcask_index_disk_t::deferred_open_t{});
         REQUIRE(index.open().type == core::error_code_t::none);
 
-        std::vector<std::pair<logical_value_t, size_t>> batch;
-        batch.emplace_back(logical_value_t(&resource, 2l), 22);
+        auto batch = entries(&resource, {{2, 22}});
         REQUIRE(index.apply_txn_inserts(2, commit_id_of(2), batch).type == core::error_code_t::none);
         // With the stump still in place this would be 32 bytes longer -- the bytes that kill the next open.
         CHECK(std::filesystem::file_size(log_path) == 2 * one_frame);
@@ -3051,8 +3046,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_txn_frame_whose_declared_paylo
 
     {
         auto index = make_test_index(path, &resource);
-        std::vector<std::pair<logical_value_t, size_t>> batch;
-        batch.emplace_back(logical_value_t(&resource, 81l), 810);
+        auto batch = entries(&resource, {{81, 810}});
         REQUIRE(index.apply_txn_inserts(81, commit_id_of(81), batch).type == core::error_code_t::none);
     }
     wipe_all_but_txn_log(path);
@@ -3156,8 +3150,7 @@ TEST_CASE("services::index::bitcask_index_disk::an_unreadable_applied_offset_sid
 
     {
         auto index = make_test_index(path, &resource);
-        std::vector<std::pair<logical_value_t, size_t>> batch;
-        batch.emplace_back(logical_value_t(&resource, 101l), 1010);
+        auto batch = entries(&resource, {{101, 1010}});
         REQUIRE(index.apply_txn_inserts(101, commit_id_of(101), batch).type == core::error_code_t::none);
     }
 
@@ -3246,8 +3239,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_refused_txn_log_repair_keeps_i
 
     {
         auto index = make_test_index(path, &resource);
-        std::vector<std::pair<logical_value_t, size_t>> batch;
-        batch.emplace_back(logical_value_t(&resource, 111l), 1110);
+        auto batch = entries(&resource, {{111, 1110}});
         REQUIRE(index.apply_txn_inserts(111, commit_id_of(111), batch).type == core::error_code_t::none);
     }
 
@@ -3272,16 +3264,14 @@ TEST_CASE("services::index::bitcask_index_disk::a_refused_txn_log_repair_keeps_i
     // Device now refuses the cut (truncate() fails), so nothing is cut or appended.
     fault.plan.crashed = true;
     {
-        std::vector<std::pair<logical_value_t, size_t>> batch;
-        batch.emplace_back(logical_value_t(&resource, 112l), 1120);
+        auto batch = entries(&resource, {{112, 1120}});
         REQUIRE(index.apply_txn_inserts(112, commit_id_of(112), batch).contains_error());
     }
     REQUIRE(std::filesystem::file_size(log_path) == one_frame + sizeof(crashed_txn_frame_header_t));
 
     fault.plan.crashed = false;
     {
-        std::vector<std::pair<logical_value_t, size_t>> batch;
-        batch.emplace_back(logical_value_t(&resource, 113l), 1130);
+        auto batch = entries(&resource, {{113, 1130}});
         REQUIRE(index.apply_txn_inserts(113, commit_id_of(113), batch).type == core::error_code_t::none);
     }
 

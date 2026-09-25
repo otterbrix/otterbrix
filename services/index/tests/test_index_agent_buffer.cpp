@@ -71,7 +71,8 @@ namespace {
     auto ask(Agent& agent, Args&&... args) {
         auto [needs_sched, future] =
             actor_zeta::otterbrix::send<Handler>(agent->address(), std::forward<Args>(args)...);
-        agent->resume(1);
+        auto info = agent->resume(1);
+        REQUIRE(info.result == actor_zeta::scheduler::resume_result::awaiting);
         REQUIRE(future.is_ready());
         return std::move(future).take_ready();
     }

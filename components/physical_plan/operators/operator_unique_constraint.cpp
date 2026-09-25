@@ -214,15 +214,6 @@ namespace components::operators {
                 counts.push_back(chunk_count);
             }
 
-            // LAYER 2 — existing-row detection: after LAYER 1, every qualifying key is unique in the batch,
-            // so a match count > 1 means a pre-existing row. No disk actor is test topology, not corruption —
-            // skip the layer.
-            if (ctx->disk_address == actor_zeta::address_t::empty_address()) {
-                continue;
-            }
-            // Unlike a missing disk actor, an unresolved oid is corruption, not topology — refuse rather
-            // than skip the stored-row scan. Both splice sites (planner.cpp rewrite_insert / rewrite_update) get
-            // their oid from catalog_resolves_t::constraints_for, which never emits groups for INVALID_OID.
             if (table_oid_ == catalog::INVALID_OID) {
                 set_error(
                     core::error_t{core::error_code_t::invalid_constraint,
@@ -230,6 +221,9 @@ namespace components::operators {
                                                    "stored rows cannot be checked",
                                                    resource_}});
                 co_return;
+            }
+            if (ctx->disk_address == actor_zeta::address_t::empty_address()) {
+                continue;
             }
 
             // Repack qualifying rows into full DEFAULT_VECTOR_CAPACITY chunks and scan each once, instead of

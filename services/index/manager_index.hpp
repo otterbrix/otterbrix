@@ -398,7 +398,6 @@ namespace services::index {
 
         // mutex_ guards only the cv idle-wait, so the DML/DDL path stays lock-free.
         std::mutex mutex_;
-        std::condition_variable pump_cv_;
         std::thread loop_thread_;
         std::atomic<bool> loop_running_{true};
         boost::lockfree::queue<actor_zeta::mailbox::message*> inbox_{128};

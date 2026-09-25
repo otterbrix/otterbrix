@@ -75,7 +75,8 @@ namespace {
     template<typename T, typename Agent>
     void settle(actor_zeta::unique_future<T>& fut, Agent* agent) {
         for (int attempt = 0; attempt < 8 && !fut.is_ready(); ++attempt) {
-            agent->resume(1);
+            auto info = agent->resume(1);
+            REQUIRE(info.result == actor_zeta::scheduler::resume_result::awaiting);
             resume_awaited(fut);
         }
         REQUIRE(fut.is_ready());
@@ -85,7 +86,8 @@ namespace {
     auto ask(Agent* agent, Args&&... args) {
         auto [needs_sched, future] =
             actor_zeta::otterbrix::send<Handler>(agent->address(), std::forward<Args>(args)...);
-        agent->resume(1);
+        auto info = agent->resume(1);
+        REQUIRE(info.result == actor_zeta::scheduler::resume_result::awaiting);
         REQUIRE(future.is_ready());
         return std::move(future).take_ready();
     }
@@ -336,7 +338,8 @@ TEST_CASE("services::index::manager::a catchup staging the agent refused fails t
 
     {
         auto [needs_sched, fut] = actor_zeta::otterbrix::send<&index_agent_contract::drop>(agent->address(), session);
-        agent->resume(1);
+        auto info = agent->resume(1);
+        REQUIRE(info.result == actor_zeta::scheduler::resume_result::awaiting);
         REQUIRE(fut.is_ready());
     }
 

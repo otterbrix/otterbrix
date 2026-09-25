@@ -72,7 +72,6 @@ set( ${PROJECT_NAME}_SOURCES
         test_wal_storage_namespace_dirs.cpp
         test_null_persistence.cpp
         test_struct_null_field_read.cpp
-        test_pump_hops.cpp
         test_append_pin_lifetime.cpp
         test_gather_string_lifetime.cpp
         test_fk_cascade_row_identity.cpp

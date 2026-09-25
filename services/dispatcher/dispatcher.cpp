@@ -30,14 +30,6 @@
 using namespace components::cursor;
 
 namespace services::dispatcher {
-#ifdef DEV_MODE
-    namespace {
-        std::atomic<uint64_t> g_pump_hops{0};
-    } // namespace
-    uint64_t pump_hops() noexcept { return g_pump_hops.load(std::memory_order_relaxed); }
-    void reset_pump_hops() noexcept { g_pump_hops.store(0, std::memory_order_relaxed); }
-    void note_pump_hop() noexcept { g_pump_hops.fetch_add(1, std::memory_order_relaxed); }
-#endif
 
     namespace {
         constexpr uint8_t DISK_KIND = 1;
@@ -143,11 +135,6 @@ namespace services::dispatcher {
         trace(log_, "manager_dispatcher_t: spawned {} executors with WAL/Disk/Index addresses", executor_pool_size_);
 
         loop_thread_ = std::thread([this] {
-            // ~20 hops at 100us floors a statement at ~3.5ms, so idle_wait must exceed in_flight_wait.
-            constexpr auto in_flight_wait = pump_tuning_t::in_flight_wait;
-            constexpr auto idle_wait = pump_tuning_t::idle_wait;
-            constexpr uint32_t stale_tick_threshold = pump_tuning_t::stale_tick_threshold;
-
             std::pmr::list<in_flight_entry_t> in_flight(resource());
             while (loop_running_.load(std::memory_order_acquire)) {
                 actor_zeta::mailbox::message* raw = nullptr;
@@ -187,16 +174,9 @@ namespace services::dispatcher {
                                     ready_slot = &e;
                                     break;
                                 }
-                            } else if (e.behavior && !e.behavior.done() && e.behavior.is_busy() && !e.waiting) {
-                                ++e.stale_ticks;
                             }
                         }
                         if (cont) {
-                            ready_slot->stale_ticks = 0;
-                            ready_slot->poke_rounds = 0;
-#ifdef DEV_MODE
-                            note_pump_hop();
-#endif
                             current_entry_ = ready_slot;
                             cont.resume();
                             current_entry_ = nullptr;
@@ -217,55 +197,13 @@ namespace services::dispatcher {
                     poll_pending();
                 }
 
-                // WATCHDOG for the actor-zeta lost-wakeup race (docs/actor-zeta-lost-wakeup.md): a
-                // mailbox parked reader_blocked while its future is already ready never wakes on its own.
-                bool any_stale = false;
-                for (auto& e : in_flight)
-                    if (e.behavior && !e.behavior.done() && e.behavior.is_busy() && !e.behavior.is_awaited_ready() &&
-                        e.stale_ticks > stale_tick_threshold) {
-                        any_stale = true;
-                        break;
-                    }
-                if (any_stale) {
-                    constexpr uint32_t escalate_poke_rounds = 256;
-                    bool escalate = false;
-                    for (auto& e : in_flight) {
-                        if (e.behavior && !e.behavior.done() && e.behavior.is_busy() &&
-                            !e.behavior.is_awaited_ready() && e.stale_ticks > stale_tick_threshold) {
-                            if (++e.poke_rounds == escalate_poke_rounds) {
-                                escalate = true;
-                            }
-                        }
-                    }
-                    if (escalate) {
-                        warn(log_,
-                             "dispatcher loop: await stale across {} poke rounds — possible stalled executor",
-                             escalate_poke_rounds);
-                    } else {
-                        trace(log_, "dispatcher loop: stale await detected — poking executors");
-                    }
-                    for (auto& ex : executors_) {
-                        if (ex) {
-                            [[maybe_unused]] auto [ns, f] =
-                                actor_zeta::send(ex.get(), &collection::executor::executor_t::poke_msg);
-                            if (ns)
-                                scheduler_->enqueue(ex.get());
-                        }
-                    }
-                    for (auto& e : in_flight) e.stale_ticks = 0;
-                }
-
                 std::unique_lock<std::mutex> lk(mutex_);
-                if (inbox_.empty()) {
-                    pump_cv_.wait_for(lk, in_flight.empty() ? idle_wait : in_flight_wait);
-                }
             }
         });
     }
 
     manager_dispatcher_t::~manager_dispatcher_t() {
         loop_running_.store(false, std::memory_order_release);
-        pump_cv_.notify_one();
         if (loop_thread_.joinable()) {
             loop_thread_.join();
         }
@@ -282,7 +220,6 @@ namespace services::dispatcher {
     std::pair<bool, actor_zeta::detail::enqueue_result>
     manager_dispatcher_t::enqueue_impl(actor_zeta::mailbox::message_ptr msg) {
         inbox_.push(msg.release());
-        pump_cv_.notify_one();
         return {false, actor_zeta::detail::enqueue_result::success};
     }
 

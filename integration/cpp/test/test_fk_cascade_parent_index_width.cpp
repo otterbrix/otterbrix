@@ -46,9 +46,8 @@ namespace {
         operators::operator_ptr source(new stub_dml_t(resource, parent_rows(resource, parent_columns)));
         cascade->set_children(source);
 
-        int disk_actor_stand_in = 0;
         pipeline::context_t ctx(logical_plan::storage_parameters{resource},
-                                actor_zeta::address_t{resource, &disk_actor_stand_in},
+                                actor_zeta::address_t::empty_address(),
                                 pipeline::no_mailbox(),
                                 pipeline::no_mailbox());
 

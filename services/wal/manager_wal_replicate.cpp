@@ -167,9 +167,6 @@ namespace services::wal {
                         }
                     }
                     if (cont) {
-#ifdef DEV_MODE
-                        services::dispatcher::note_pump_hop();
-#endif
                         cont.resume();
                         continue;
                     }
@@ -191,10 +188,6 @@ namespace services::wal {
                 poll_auto_checkpoint_();
 
                 std::unique_lock<std::mutex> lock(mutex_);
-                // pump_cv_ only notifies from enqueue_impl, so this timeout IS the per-hop latency while busy (~20
-                // hops/stmt); shortening it or the idle tick burns CPU or reopens the push-notify race.
-                pump_cv_.wait_for(lock,
-                                  in_flight.empty() ? std::chrono::microseconds(100) : std::chrono::microseconds(5));
             }
             // in_flight (and its message_ptr/behavior_t) is destroyed here, on the loop thread, never a sender thread.
         });
@@ -203,10 +196,6 @@ namespace services::wal {
     manager_wal_replicate_t::~manager_wal_replicate_t() {
         trace(log_, "delete manager_wal_replicate_t");
         loop_running_.store(false, std::memory_order_release);
-        {
-            std::lock_guard<std::mutex> guard(mutex_);
-            pump_cv_.notify_one();
-        }
         if (loop_thread_.joinable()) {
             loop_thread_.join();
         }
@@ -223,7 +212,6 @@ namespace services::wal {
     std::pair<bool, actor_zeta::detail::enqueue_result>
     manager_wal_replicate_t::enqueue_impl(actor_zeta::mailbox::message_ptr msg) {
         inbox_.push(msg.release());
-        pump_cv_.notify_one();
         return {false, actor_zeta::detail::enqueue_result::success};
     }
 

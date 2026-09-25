@@ -42,25 +42,6 @@ namespace services::disk {
 
 namespace services::dispatcher {
 
-    // A future completed on another thread notifies nobody, so readiness is found only by polling.
-#ifdef DEV_MODE
-    uint64_t pump_hops() noexcept;
-    void reset_pump_hops() noexcept;
-    void note_pump_hop() noexcept;
-#endif
-
-    struct pump_tuning_t final {
-        static constexpr auto in_flight_wait = std::chrono::microseconds(5);
-        static constexpr auto idle_wait = std::chrono::microseconds(100);
-        static constexpr auto poke_after = std::chrono::microseconds(100);
-        static constexpr uint32_t stale_tick_threshold = poke_after / in_flight_wait;
-    };
-
-    static_assert(pump_tuning_t::stale_tick_threshold == pump_tuning_t::poke_after / pump_tuning_t::in_flight_wait,
-                  "the poke threshold must stay DERIVED from the two waits, not written out as a number");
-    static_assert(pump_tuning_t::in_flight_wait < pump_tuning_t::idle_wait,
-                  "the in-flight tick is the per-hop latency and must be shorter than the idle tick");
-
     // Thin router + txn-state mailbox service + executor-pool admin: per-query work lives entirely
     // in executor_t; the dispatcher owns only state that must stay global — txn_manager_ (reachable
     // solely through the txn_*_msg handlers below), default_settings_, the executor pool, DROP-GC flags.
@@ -72,9 +53,6 @@ namespace services::dispatcher {
         struct in_flight_entry_t {
             actor_zeta::mailbox::message_ptr pending_msg{};
             actor_zeta::behavior_t behavior{};
-            uint32_t stale_ticks{0};
-            // Crossing the threshold escalates the routine watchdog trace to a warning.
-            uint32_t poke_rounds{0};
             bool waiting{false};
         };
 
@@ -266,7 +244,6 @@ namespace services::dispatcher {
         // Raw message* since boost::lockfree requires trivially-copyable; re-wrapped by the loop.
         boost::lockfree::queue<actor_zeta::mailbox::message*> inbox_{128};
         std::mutex mutex_;
-        std::condition_variable pump_cv_;
 
         components::table::transaction_manager_t txn_manager_;
         std::pmr::unordered_map<components::session::session_id_t, session_order_t> session_order_{resource_};

@@ -98,7 +98,6 @@ namespace services::collection::executor {
             actor_zeta::msg_id<executor_t, &executor_t::register_cast>,
             actor_zeta::msg_id<executor_t, &executor_t::unregister_cast>,
             actor_zeta::msg_id<executor_t, &executor_t::set_explain_renderer>,
-            actor_zeta::msg_id<executor_t, &executor_t::poke_msg>,
             actor_zeta::msg_id<executor_t, &executor_t::unregister_udf_uid>,
         };
 
@@ -228,10 +227,6 @@ namespace services::collection::executor {
                 co_await actor_zeta::dispatch(this, &executor_t::set_explain_renderer, msg);
                 break;
             }
-            case actor_zeta::msg_id<executor_t, &executor_t::poke_msg>: {
-                co_await actor_zeta::dispatch(this, &executor_t::poke_msg, msg);
-                break;
-            }
             case actor_zeta::msg_id<executor_t, &executor_t::unregister_udf_uid>: {
                 co_await actor_zeta::dispatch(this, &executor_t::unregister_udf_uid, msg);
                 break;
@@ -240,10 +235,6 @@ namespace services::collection::executor {
                 break;
         }
     }
-
-    // Poke target only, for the dispatcher's lost-wakeup watchdog (docs/actor-zeta-lost-wakeup.md);
-    // remove with it.
-    executor_t::unique_future<void> executor_t::poke_msg() { co_return; }
 
     auto executor_t::make_type() const noexcept -> const char* { return "executor"; }
 

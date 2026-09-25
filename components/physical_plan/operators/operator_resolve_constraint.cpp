@@ -76,10 +76,6 @@ namespace components::operators {
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
         for (auto& entry : node_->entries()) {
-            // No disk / no tables node is topology, not corruption: skip rather than error.
-            if (ctx->disk_address == actor_zeta::address_t::empty_address() || tables_node_ == nullptr) {
-                continue;
-            }
             // Refuse rather than silently drop constraints: every entry is minted with a valid target.
             if (entry.target >= tables_node_->entries().size()) {
                 std::string msg = "constraint resolution: entry names table #";

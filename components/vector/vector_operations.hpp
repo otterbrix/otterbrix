@@ -418,6 +418,7 @@ namespace components::vector::vector_ops {
 
     void hash(vector_t& input, vector_t& result, uint64_t count);
     void hash(vector_t& input, vector_t& result, const indexing_vector_t& indexing, uint64_t count);
+    void hash32(vector_t& input, vector_t& result, uint64_t count, uint32_t seed);
 
     void combine_hash(vector_t& hashes, vector_t& input, uint64_t count);
     void combine_hash(vector_t& hashes, vector_t& input, const indexing_vector_t& rindexing, uint64_t count);

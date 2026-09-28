@@ -1505,12 +1505,18 @@ namespace services::collection::executor {
         }
 
         const bool can_push_to_agent = disk_address_ != actor_zeta::address_t::empty_address();
+        // Every sub-query's result slot, so folding cannot read placeholders
+        std::pmr::set<core::parameter_id_t> deferred_parameters{resource()};
+        for (const auto& mapping : plan.sub_query_results) {
+            deferred_parameters.insert(mapping.id);
+        }
         plan.sub_queries.back() = components::planner::optimize(resource(),
                                                                 std::move(plan.sub_queries.back()),
                                                                 plan.parameters.get(),
                                                                 &plan.catalog_resolves,
                                                                 can_push_to_agent,
-                                                                optimizer_pass_);
+                                                                optimizer_pass_,
+                                                                &deferred_parameters);
 
         if (can_push_to_agent) {
             std::pmr::set<components::catalog::oid_t> inner_hash_join_oids{resource()};

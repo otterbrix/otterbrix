@@ -2,6 +2,7 @@
 
 #include "absl/crc/crc32c.h"
 #include <components/index/logical_value_binary_codec.hpp>
+#include <components/vector/vector_operations.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -69,35 +70,6 @@ namespace services::index {
             return handle;
         }
 
-        components::types::logical_value_t normalize_hash_key(const components::types::logical_value_t& key,
-                                                              core::date::timezone_offset_t session_tz) {
-            using namespace components::types;
-            switch (key.type().type()) {
-                case logical_type::TINYINT:
-                case logical_type::SMALLINT:
-                case logical_type::INTEGER:
-                case logical_type::BIGINT: {
-                    auto casted = key.cast_as(complex_logical_type(logical_type::BIGINT), session_tz);
-                    if (casted.has_error()) {
-                        return key;
-                    }
-                    return std::move(casted.value());
-                }
-                case logical_type::UTINYINT:
-                case logical_type::USMALLINT:
-                case logical_type::UINTEGER:
-                case logical_type::UBIGINT: {
-                    auto casted = key.cast_as(complex_logical_type(logical_type::UBIGINT), session_tz);
-                    if (casted.has_error()) {
-                        return key;
-                    }
-                    return std::move(casted.value());
-                }
-                default:
-                    return key;
-            }
-        }
-
         constexpr const char* segment_prefix = "bitcask.";
         constexpr const char* segment_suffix = ".data";
         constexpr const char* current_segment_file = "CURRENT";
@@ -126,39 +98,160 @@ namespace services::index {
             uint64_t payload_size;
         };
 
+        struct batch_header_t {
+            uint32_t row_count;
+            components::types::logical_type key_type;
+            // Meaningful only for a DECIMAL key.
+            uint8_t decimal_width;
+            uint8_t decimal_scale;
+        };
+
+        struct record_payload_header_t {
+            uint32_t key_size;
+            uint32_t row_count;
+        };
+
         std::pmr::string serialize_payload(std::pmr::memory_resource* resource,
-                                           const services::index::bitcask_index_disk_t::value_t& key,
-                                           const std::pmr::vector<size_t>& rows) {
+                                           std::string_view key_bytes,
+                                           const std::pmr::vector<int64_t>& rows) {
+            const record_payload_header_t header{static_cast<uint32_t>(key_bytes.size()),
+                                                 static_cast<uint32_t>(rows.size())};
             std::pmr::string out(resource);
-            components::index::codec::append_logical_value(out, key);
-            components::index::codec::append_le<uint32_t>(out, static_cast<uint32_t>(rows.size()));
-            for (auto row : rows) {
-                components::index::codec::append_le<uint64_t>(out, static_cast<uint64_t>(row));
-            }
+            out.resize(sizeof(header) + key_bytes.size() + rows.size() * sizeof(int64_t));
+            char* cursor = out.data();
+            std::memcpy(cursor, &header, sizeof(header));
+            cursor += sizeof(header);
+            std::memcpy(cursor, key_bytes.data(), key_bytes.size());
+            cursor += key_bytes.size();
+            std::memcpy(cursor, rows.data(), rows.size() * sizeof(int64_t));
             return out;
         }
 
-        // The key codec leaves `pos` unmoved on refusal, so ignoring a false return here would misread the row count.
-        [[nodiscard]] bool deserialize_payload(std::pmr::memory_resource* resource,
-                                               const std::pmr::string& payload,
-                                               services::index::bitcask_index_disk_t::value_t& key,
-                                               std::pmr::vector<size_t>& rows) {
-            size_t pos = 0;
-            bool ok = true;
-            key = components::index::codec::read_logical_value(resource, payload, pos, &ok);
-            const auto n = components::index::codec::read_le<uint32_t>(payload, pos, &ok);
-            if (!ok) {
+        // `key_bytes` views into `payload`. False when the sizes in the head do not add up to the payload.
+        [[nodiscard]] bool deserialize_payload(const std::pmr::string& payload,
+                                               std::string_view* key_bytes,
+                                               std::pmr::vector<int64_t>* rows) {
+            record_payload_header_t header{};
+            if (payload.size() < sizeof(header)) {
                 return false;
             }
-            rows.clear();
-            if (n > (payload.size() - pos) / sizeof(uint64_t)) {
+            std::memcpy(&header, payload.data(), sizeof(header));
+            const uint64_t body_size = payload.size() - sizeof(header);
+            if (header.key_size > body_size ||
+                (body_size - header.key_size) != static_cast<uint64_t>(header.row_count) * sizeof(int64_t)) {
                 return false;
             }
-            rows.reserve(n);
-            for (uint32_t i = 0; i < n; ++i) {
-                rows.emplace_back(static_cast<size_t>(components::index::codec::read_le<uint64_t>(payload, pos, &ok)));
+            *key_bytes = std::string_view(payload.data() + sizeof(header), header.key_size);
+            rows->resize(header.row_count);
+            std::memcpy(rows->data(),
+                        payload.data() + sizeof(header) + header.key_size,
+                        header.row_count * sizeof(int64_t));
+            return true;
+        }
+
+        // Calls `emit(key_hash, key_bytes, row_id)` for each key of the batch; one hash32 per group.
+        template<typename emit_t>
+        [[nodiscard]] core::error_t
+        for_each_batch_key(key_batch_t& values, uint32_t seed, std::pmr::memory_resource* resource, emit_t&& emit) {
+            std::pmr::string key_buffer(resource);
+            size_t offset = 0;
+            for (auto& [keys, rows] : values.keys) {
+                const int64_t* ids = values.ids.data() + offset;
+                offset += rows;
+                components::vector::vector_t hashes(resource, components::types::logical_type::UINTEGER, rows);
+                components::vector::vector_ops::hash32(keys, hashes, rows, seed);
+                const auto* key_hashes = hashes.data<uint32_t>();
+                RETURN_IF_ERROR(
+                    for_each_key_bytes(keys, rows, &key_buffer, [&](size_t row, std::string_view key_bytes) {
+                        return emit(key_hashes[row], key_bytes, ids[row]);
+                    }));
             }
-            return ok;
+            return core::error_t::no_error();
+        }
+
+        [[nodiscard]] bool
+        read_txn_batch(std::pmr::memory_resource* resource, const std::pmr::string& payload, key_batch_t* batch) {
+            using components::types::complex_logical_type;
+            using components::types::logical_type;
+            using components::types::physical_type;
+            using components::vector::DEFAULT_VECTOR_CAPACITY;
+
+            batch_header_t header{};
+            if (payload.size() < sizeof(header)) {
+                return false;
+            }
+            std::memcpy(&header, payload.data(), sizeof(header));
+            const char* cursor = payload.data() + sizeof(header);
+            const char* const end = payload.data() + payload.size();
+            if (header.row_count == 0) {
+                return cursor == end;
+            }
+
+            complex_logical_type key_type(header.key_type);
+            if (header.key_type == logical_type::DECIMAL) {
+                auto decimal =
+                    complex_logical_type::create_decimal(resource, header.decimal_width, header.decimal_scale);
+                if (decimal.has_error()) {
+                    return false;
+                }
+                key_type = std::move(decimal.value());
+            }
+            const bool is_string = key_type.to_physical_type() == physical_type::STRING;
+            const size_t key_width = key_type.size();
+            const auto remaining = [&cursor, end]() { return static_cast<size_t>(end - cursor); };
+
+            const size_t ids_size = header.row_count * sizeof(int64_t);
+            if (remaining() < ids_size) {
+                return false;
+            }
+            batch->ids.resize(header.row_count);
+            std::memcpy(batch->ids.data(), cursor, ids_size);
+            cursor += ids_size;
+
+            batch->keys.reserve((header.row_count + DEFAULT_VECTOR_CAPACITY - 1) / DEFAULT_VECTOR_CAPACITY);
+            for (size_t done = 0; done < header.row_count;) {
+                const size_t rows = std::min<size_t>(DEFAULT_VECTOR_CAPACITY, header.row_count - done);
+                done += rows;
+                auto& keys =
+                    batch->keys
+                        .emplace_back(components::vector::vector_t(resource, key_type, DEFAULT_VECTOR_CAPACITY), rows)
+                        .first;
+                auto* key_data = reinterpret_cast<char*>(keys.data());
+                for (size_t row = 0; row < rows; ++row) {
+                    std::string_view text;
+                    if (is_string) {
+                        uint32_t length = 0;
+                        if (remaining() < sizeof(length)) {
+                            return false;
+                        }
+                        std::memcpy(&length, cursor, sizeof(length));
+                        cursor += sizeof(length);
+                        if (remaining() < length) {
+                            return false;
+                        }
+                        text = std::string_view(cursor, length);
+                        cursor += length;
+                    } else {
+                        if (remaining() < key_width) {
+                            return false;
+                        }
+                        std::memcpy(key_data + row * key_width, cursor, key_width);
+                        cursor += key_width;
+                    }
+                    uint8_t is_valid = 0;
+                    if (remaining() < sizeof(is_valid)) {
+                        return false;
+                    }
+                    std::memcpy(&is_valid, cursor, sizeof(is_valid));
+                    cursor += sizeof(is_valid);
+                    if (is_valid == 0) {
+                        keys.set_null(row, true);
+                    } else if (is_string) {
+                        keys.set_value(row, text);
+                    }
+                }
+            }
+            return cursor == end;
         }
 
         std::filesystem::path segment_file_path(const std::filesystem::path& directory, uint64_t segment_id) {
@@ -484,18 +577,12 @@ namespace services::index {
     core::result_wrapper_t<std::pmr::string> bitcask_index_disk_t::load_hash_key_at(uint32_t segment_id,
                                                                                     uint64_t value_offset) const {
         row_ids_t rows(resource());
-        value_t key(resource(), nullptr);
-        auto read = read_rows_at(segment_id, value_offset, rows, &key);
+        std::pmr::string key_bytes(resource());
+        auto read = read_rows_at(segment_id, value_offset, rows, &key_bytes);
         if (read.has_error()) {
             return read.error();
         }
-        // Not a hot path -- called ZERO times in the randomized stress profile (integer keys stay inline).
-        bool key_hashable = true;
-        const auto key_bytes = key_bytes_for_hash(key, &key_hashable);
-        if (!key_hashable) {
-            return io_failure("bitcask: a stored key has no hash encoding in this build");
-        }
-        return std::pmr::string(key_bytes.data(), key_bytes.size(), resource());
+        return key_bytes;
     }
 
     void bitcask_index_disk_t::set_bulk_mode(bool enabled) {
@@ -531,9 +618,30 @@ namespace services::index {
         return core::error_t::no_error();
     }
 
-    std::string bitcask_index_disk_t::key_bytes_for_hash(const value_t& key, bool* ok) const {
-        auto normalized = normalize_hash_key(key, core::date::timezone_offset_t{});
-        return components::index::codec::encode_disk_hash_key(normalized, ok);
+    bitcask_index_disk_t::owned_key_t bitcask_index_disk_t::encode_key(const value_t& key) const {
+        // ugly hack to use the same vector function, and per lookup it is fast enough
+        owned_key_t encoded{0, std::pmr::string(resource())};
+        components::index::codec::append_logical_value(encoded.bytes, key);
+        components::vector::vector_t keys(resource(), key, 1);
+        components::vector::vector_t hashes(resource(), components::types::logical_type::UINTEGER, 1);
+        components::vector::vector_ops::hash32(keys, hashes, 1, hash_index_->hash_seed());
+        encoded.hash = hashes.data<uint32_t>()[0];
+        return encoded;
+    }
+
+    core::result_wrapper_t<uint32_t> bitcask_index_disk_t::hash_key_bytes(std::string_view key_bytes) const {
+        // ugly hack to use the same vector function, but for loading it work for now
+        const std::pmr::string encoded(key_bytes, resource());
+        size_t pos = 0;
+        bool decoded = true;
+        const auto key = components::index::codec::read_logical_value(resource(), encoded, pos, &decoded);
+        if (!decoded || pos != encoded.size()) {
+            return io_failure("bitcask: a stored key could not be decoded");
+        }
+        components::vector::vector_t keys(resource(), key, 1);
+        components::vector::vector_t hashes(resource(), components::types::logical_type::UINTEGER, 1);
+        components::vector::vector_ops::hash32(keys, hashes, 1, hash_index_->hash_seed());
+        return hashes.data<uint32_t>()[0];
     }
 
     // None of the three refusal paths below may be swallowed: an unresolved manifest would resurrect dropped keys.
@@ -701,24 +809,25 @@ namespace services::index {
                     crc_failure_ = true;
                     return core::error_t::no_error();
                 }
-                value_t key(resource(), nullptr);
+                std::string_view key_bytes;
                 row_ids_t rows(resource());
-                if (!deserialize_payload(resource(), payload, key, rows)) {
+                if (!deserialize_payload(payload, &key_bytes, &rows)) {
                     return io_failure("bitcask: segment " + segment.path.string() +
                                       " holds a record whose key could not be decoded");
                 }
-                bool key_hashable = true;
-                const auto key_bytes = key_bytes_for_hash(key, &key_hashable);
-                if (!key_hashable) {
+                auto hashed = hash_key_bytes(key_bytes);
+                if (hashed.has_error()) {
                     return io_failure("bitcask: segment " + segment.path.string() +
-                                      " holds a key this build has no hash encoding for");
+                                      " holds a record whose key could not be decoded");
                 }
+                uint32_t key_hash = hashed.value();
                 if (static_cast<record_kind_t>(header.kind) == record_kind_t::tombstone) {
-                    RETURN_IF_ERROR(erase_all_refs_for_key(key_bytes));
+                    RETURN_IF_ERROR(erase_all_refs_for_key(key_hash, key_bytes));
                 } else if (static_cast<record_kind_t>(header.kind) == record_kind_t::value) {
-                    RETURN_IF_ERROR(erase_all_refs_for_key(key_bytes));
-                    RETURN_IF_ERROR(hash_index_->put(key_bytes,
-                                                     rows.empty() ? -1 : static_cast<int64_t>(rows.back()),
+                    RETURN_IF_ERROR(erase_all_refs_for_key(key_hash, key_bytes));
+                    RETURN_IF_ERROR(hash_index_->put(key_hash,
+                                                     key_bytes,
+                                                     rows.empty() ? -1 : rows.back(),
                                                      static_cast<uint32_t>(segment.id),
                                                      payload_offset));
                 } else {
@@ -872,7 +981,7 @@ namespace services::index {
     core::result_wrapper_t<bool> bitcask_index_disk_t::read_rows_at(uint32_t segment_id,
                                                                     uint64_t value_offset,
                                                                     row_ids_t& rows,
-                                                                    value_t* out_key) const {
+                                                                    std::pmr::string* out_key) const {
         const auto segment_path = segment_file_path(path_, segment_id);
         // Reuses this store's own descriptor: a fresh open() per read refused spuriously roughly once in ten runs.
         core::filesystem::file_handle_t* f = nullptr;
@@ -942,22 +1051,21 @@ namespace services::index {
             return io_failure("bitcask: CRC mismatch on the record at " + std::to_string(value_offset) + " of " +
                               segment_path.string());
         }
-        value_t key(resource(), nullptr);
-        if (!deserialize_payload(resource(), payload, key, rows)) {
+        std::string_view key_bytes;
+        if (!deserialize_payload(payload, &key_bytes, &rows)) {
             return io_failure("bitcask: the record at " + std::to_string(value_offset) + " of " +
                               segment_path.string() + " could not be decoded");
         }
         if (out_key) {
-            *out_key = value_t(resource(), key);
+            out_key->assign(key_bytes.data(), key_bytes.size());
         }
         // False means a tombstone; `rows` is then the empty list the record carries, not left untouched.
         return static_cast<record_kind_t>(header.kind) == record_kind_t::value;
     }
 
     core::result_wrapper_t<bitcask_index_disk_t::row_ids_t>
-    bitcask_index_disk_t::current_rows(const value_t& key) const {
-        const auto key_bytes = key_bytes_for_hash(key);
-        VALUE_OR_RETURN(auto ref, hash_index_->get(key_bytes, key_loader()));
+    bitcask_index_disk_t::current_rows(uint32_t key_hash, std::string_view key_bytes) const {
+        VALUE_OR_RETURN(auto ref, hash_index_->get(key_hash, key_bytes, key_loader()));
         if (!ref.has_value()) {
             return row_ids_t(resource());
         }
@@ -970,23 +1078,24 @@ namespace services::index {
         return rows;
     }
 
-    core::error_t bitcask_index_disk_t::erase_all_refs_for_key(std::string_view key_bytes) {
+    core::error_t bitcask_index_disk_t::erase_all_refs_for_key(uint32_t key_hash, std::string_view key_bytes) {
         while (true) {
-            VALUE_OR_RETURN(const bool erased, hash_index_->erase(key_bytes, key_loader()));
+            VALUE_OR_RETURN(const bool erased, hash_index_->erase(key_hash, key_bytes, key_loader()));
             if (!erased) {
                 return core::error_t::no_error();
             }
         }
     }
 
-    core::error_t bitcask_index_disk_t::append_snapshot(const value_t& key, const row_ids_t& rows) {
+    core::error_t
+    bitcask_index_disk_t::append_snapshot(uint32_t key_hash, std::string_view key_bytes, const row_ids_t& rows) {
         RETURN_IF_ERROR(refuse_if_sealed());
         RETURN_IF_ERROR(rotate_active_segment_if_needed());
         // Not just defensive: a rotation whose open() refused leaves no handle, and the write below would null-deref.
         if (!file_) {
             return io_failure("bitcask: no active segment is open for " + path_.string());
         }
-        auto payload = serialize_payload(resource(), key, rows);
+        auto payload = serialize_payload(resource(), key_bytes, rows);
         const auto offset = file_->seek_position();
         const auto record_write =
             write_record(*file_, static_cast<uint8_t>(record_kind_t::value), ++next_timestamp_, payload);
@@ -998,13 +1107,13 @@ namespace services::index {
             return io_failure("bitcask: the snapshot record could not be written to " +
                               active_data_file_path_.string());
         }
-        const auto key_bytes = key_bytes_for_hash(key);
-        if (auto erase_error = erase_all_refs_for_key(key_bytes); erase_error.contains_error()) {
+        if (auto erase_error = erase_all_refs_for_key(key_hash, key_bytes); erase_error.contains_error()) {
             ++active_segment_records_;
             return erase_error;
         }
-        if (auto put_error = hash_index_->put(key_bytes,
-                                              rows.empty() ? -1 : static_cast<int64_t>(rows.back()),
+        if (auto put_error = hash_index_->put(key_hash,
+                                              key_bytes,
+                                              rows.empty() ? -1 : rows.back(),
                                               static_cast<uint32_t>(active_segment_id_),
                                               offset + sizeof(record_header_t));
             put_error.contains_error()) {
@@ -1015,13 +1124,13 @@ namespace services::index {
         return core::error_t::no_error();
     }
 
-    core::error_t bitcask_index_disk_t::append_tombstone(const value_t& key) {
+    core::error_t bitcask_index_disk_t::append_tombstone(uint32_t key_hash, std::string_view key_bytes) {
         RETURN_IF_ERROR(refuse_if_sealed());
         RETURN_IF_ERROR(rotate_active_segment_if_needed());
         if (!file_) {
             return io_failure("bitcask: no active segment is open for " + path_.string());
         }
-        auto payload = serialize_payload(resource(), key, row_ids_t(resource()));
+        auto payload = serialize_payload(resource(), key_bytes, row_ids_t(resource()));
         const auto offset = file_->seek_position();
         const auto record_write =
             write_record(*file_, static_cast<uint8_t>(record_kind_t::tombstone), ++next_timestamp_, payload);
@@ -1033,8 +1142,7 @@ namespace services::index {
             return io_failure("bitcask: the tombstone record could not be written to " +
                               active_data_file_path_.string());
         }
-        const auto key_bytes = key_bytes_for_hash(key);
-        auto erase_error = erase_all_refs_for_key(key_bytes);
+        auto erase_error = erase_all_refs_for_key(key_hash, key_bytes);
         ++active_segment_records_;
         return erase_error;
     }
@@ -1095,14 +1203,80 @@ namespace services::index {
     core::error_t bitcask_index_disk_t::append_txn_record(uint64_t txn_id,
                                                           uint64_t commit_id,
                                                           uint8_t op_kind,
-                                                          const std::vector<std::pair<value_t, size_t>>& values) {
+                                                          const key_batch_t& values) {
         RETURN_IF_ERROR(refuse_if_sealed());
-        std::pmr::string payload(resource());
-        components::index::codec::append_le<uint32_t>(payload, static_cast<uint32_t>(values.size()));
-        for (const auto& [key, row_id] : values) {
-            components::index::codec::append_logical_value(payload, key);
-            components::index::codec::append_le<uint64_t>(payload, static_cast<uint64_t>(row_id));
+        using components::types::logical_type;
+        using components::types::physical_type;
+
+        batch_header_t batch_header{};
+        batch_header.key_type = logical_type::NA;
+        bool is_string = false;
+        size_t key_width = 0;
+        if (!values.empty()) {
+            const auto& key_type = values.keys.front().first.type();
+            batch_header.key_type = key_type.type();
+            if (key_type.type() == logical_type::DECIMAL) {
+                const auto* decimal =
+                    static_cast<const components::types::decimal_logical_type_extension*>(key_type.extension());
+                batch_header.decimal_width = decimal->width();
+                batch_header.decimal_scale = decimal->scale();
+            }
+            is_string = key_type.to_physical_type() == physical_type::STRING;
+            key_width = key_type.size();
         }
+
+        // Payload: [batch_header_t][row ids][keys]. Every row is written, a key as [value][is_valid u8]: a
+        // fixed-width value is its raw bytes, a STRING value [length u32][bytes]. An invalid row's value bytes are
+        // ignored on read; its STRING length is written as 0, so a NULL slot's view is never read.
+        // TODO: pack validity bits together
+        size_t key_bytes = 0;
+        for (const auto& [keys, rows] : values.keys) {
+            assert(keys.get_vector_type() == components::vector::vector_type::FLAT);
+            if (!is_string) {
+                key_bytes += rows * (key_width + sizeof(uint8_t));
+                continue;
+            }
+            const auto* texts = keys.data<std::string_view>();
+            for (size_t row = 0; row < rows; ++row) {
+                key_bytes += sizeof(uint32_t) + sizeof(uint8_t);
+                if (keys.validity().row_is_valid(row)) {
+                    key_bytes += texts[row].size();
+                }
+            }
+        }
+        batch_header.row_count = static_cast<uint32_t>(values.size());
+
+        const size_t ids_offset = sizeof(batch_header);
+        const size_t keys_offset = ids_offset + values.size() * sizeof(int64_t);
+        std::pmr::string payload(resource());
+        payload.resize(keys_offset + key_bytes);
+        std::memcpy(payload.data(), &batch_header, sizeof(batch_header));
+        std::memcpy(payload.data() + ids_offset, values.ids.data(), values.size() * sizeof(int64_t));
+        char* keys_cursor = payload.data() + keys_offset;
+
+        for (const auto& [keys, rows] : values.keys) {
+            const auto& validity = keys.validity();
+            const auto* key_data = reinterpret_cast<const char*>(keys.data());
+            const auto* texts = keys.data<std::string_view>();
+            for (size_t row = 0; row < rows; ++row) {
+                const uint8_t is_valid = validity.row_is_valid(row) ? 1 : 0;
+                if (is_string) {
+                    const auto length = is_valid ? static_cast<uint32_t>(texts[row].size()) : uint32_t{0};
+                    std::memcpy(keys_cursor, &length, sizeof(length));
+                    keys_cursor += sizeof(length);
+                    if (length != 0) {
+                        std::memcpy(keys_cursor, texts[row].data(), length);
+                        keys_cursor += length;
+                    }
+                } else {
+                    std::memcpy(keys_cursor, key_data + row * key_width, key_width);
+                    keys_cursor += key_width;
+                }
+                std::memcpy(keys_cursor, &is_valid, sizeof(is_valid));
+                keys_cursor += sizeof(is_valid);
+            }
+        }
+        assert(keys_cursor == payload.data() + payload.size());
 
         txn_frame_header_t header{};
         header.magic = txn_magic;
@@ -1232,25 +1406,11 @@ namespace services::index {
                 return io_failure("bitcask: the txn log holds a frame with an unknown op kind");
             }
             if (committed) {
-                size_t pos = 0;
-                bool frame_ok = true;
-                const auto count = components::index::codec::read_le<uint32_t>(payload, pos, &frame_ok);
-                for (uint32_t i = 0; i < count && frame_ok; ++i) {
-                    auto key = components::index::codec::read_logical_value(resource(), payload, pos, &frame_ok);
-                    const auto row_id =
-                        static_cast<size_t>(components::index::codec::read_le<uint64_t>(payload, pos, &frame_ok));
-                    if (!frame_ok) {
-                        break;
-                    }
-                    if (header.op_kind == 1) {
-                        insert(key, row_id);
-                    } else {
-                        remove(key, row_id);
-                    }
-                }
-                if (!frame_ok) {
+                key_batch_t batch(resource());
+                if (!read_txn_batch(resource(), payload, &batch)) {
                     return io_failure("bitcask: a committed txn-log frame could not be decoded during recovery");
                 }
+                RETURN_IF_ERROR(header.op_kind == 1 ? apply_inserts(batch) : apply_deletes(batch));
                 RETURN_IF_ERROR(sync_if_dirty());
             }
             const uint64_t frame_end_offset = payload_offset + header.payload_size;
@@ -1261,9 +1421,7 @@ namespace services::index {
         return core::error_t::no_error();
     }
 
-    core::error_t bitcask_index_disk_t::apply_txn_inserts(uint64_t txn_id,
-                                                          uint64_t commit_id,
-                                                          const std::vector<std::pair<value_t, size_t>>& values) {
+    core::error_t bitcask_index_disk_t::apply_txn_inserts(uint64_t txn_id, uint64_t commit_id, key_batch_t& values) {
         // The durable index frame is written before the data segments, so bailing here leaves segments untouched.
         if (auto err = append_txn_record(txn_id, commit_id, 1, values); err.contains_error()) {
             return err;
@@ -1272,24 +1430,29 @@ namespace services::index {
             return io_failure("bitcask: the txn log is closed after a frame this store reported as written");
         }
         const auto applied_offset = txn_log_file_->file_size();
-        for (const auto& [key, row_id] : values) {
-            VALUE_OR_RETURN(auto rows, current_rows(key));
-            if (std::find(rows.begin(), rows.end(), row_id) != rows.end()) {
-                continue;
-            }
-            rows.emplace_back(row_id);
-            if (auto err = append_snapshot(key, rows); err.contains_error()) {
-                return err;
-            }
-            mark_operation_dirty();
-        }
+        RETURN_IF_ERROR(apply_inserts(values));
         RETURN_IF_ERROR(sync_if_dirty());
         return write_applied_log_offset(applied_offset);
     }
 
-    core::error_t bitcask_index_disk_t::apply_txn_deletes(uint64_t txn_id,
-                                                          uint64_t commit_id,
-                                                          const std::vector<std::pair<value_t, size_t>>& values) {
+    core::error_t bitcask_index_disk_t::apply_inserts(key_batch_t& values) {
+        return for_each_batch_key(
+            values,
+            hash_index_->hash_seed(),
+            resource(),
+            [this](uint32_t key_hash, std::string_view key_bytes, int64_t row_id) -> core::error_t {
+                VALUE_OR_RETURN(auto rows, current_rows(key_hash, key_bytes));
+                if (std::find(rows.begin(), rows.end(), row_id) != rows.end()) {
+                    return core::error_t::no_error();
+                }
+                rows.emplace_back(row_id);
+                RETURN_IF_ERROR(append_snapshot(key_hash, key_bytes, rows));
+                mark_operation_dirty();
+                return core::error_t::no_error();
+            });
+    }
+
+    core::error_t bitcask_index_disk_t::apply_txn_deletes(uint64_t txn_id, uint64_t commit_id, key_batch_t& values) {
         if (auto err = append_txn_record(txn_id, commit_id, 2, values); err.contains_error()) {
             return err;
         }
@@ -1297,50 +1460,58 @@ namespace services::index {
             return io_failure("bitcask: the txn log is closed after a frame this store reported as written");
         }
         const auto applied_offset = txn_log_file_->file_size();
-        for (const auto& [key, row_id] : values) {
-            VALUE_OR_RETURN(auto rows, current_rows(key));
-            if (rows.empty()) {
-                continue;
-            }
-            const auto original_size = rows.size();
-            rows.erase(std::remove(rows.begin(), rows.end(), row_id), rows.end());
-            if (rows.size() == original_size) {
-                continue;
-            }
-            if (rows.empty()) {
-                RETURN_IF_ERROR(append_tombstone(key));
-            } else {
-                RETURN_IF_ERROR(append_snapshot(key, rows));
-            }
-            mark_operation_dirty();
-        }
+        RETURN_IF_ERROR(apply_deletes(values));
         RETURN_IF_ERROR(sync_if_dirty());
         return write_applied_log_offset(applied_offset);
     }
 
-    void bitcask_index_disk_t::insert(const value_t& key, size_t value) {
-        auto rows = current_rows(key);
+    core::error_t bitcask_index_disk_t::apply_deletes(key_batch_t& values) {
+        return for_each_batch_key(
+            values,
+            hash_index_->hash_seed(),
+            resource(),
+            [this](uint32_t key_hash, std::string_view key_bytes, int64_t row_id) -> core::error_t {
+                VALUE_OR_RETURN(auto rows, current_rows(key_hash, key_bytes));
+                const auto original_size = rows.size();
+                rows.erase(std::remove(rows.begin(), rows.end(), row_id), rows.end());
+                if (rows.size() == original_size) {
+                    return core::error_t::no_error();
+                }
+                if (rows.empty()) {
+                    RETURN_IF_ERROR(append_tombstone(key_hash, key_bytes));
+                } else {
+                    RETURN_IF_ERROR(append_snapshot(key_hash, key_bytes, rows));
+                }
+                mark_operation_dirty();
+                return core::error_t::no_error();
+            });
+    }
+
+    void bitcask_index_disk_t::insert(const value_t& key, int64_t row_id) {
+        const auto encoded = encode_key(key);
+        auto rows = current_rows(encoded.hash, encoded.bytes);
         if (rows.has_error()) {
             note_write_error(rows.error());
             return;
         }
         auto& row_ids = rows.value();
-        if (std::find(row_ids.begin(), row_ids.end(), value) != row_ids.end()) {
+        if (std::find(row_ids.begin(), row_ids.end(), row_id) != row_ids.end()) {
             return;
         }
-        row_ids.emplace_back(value);
-        note_write_error(append_snapshot(key, row_ids));
+        row_ids.emplace_back(row_id);
+        note_write_error(append_snapshot(encoded.hash, encoded.bytes, row_ids));
         mark_operation_dirty();
         flush_if_needed();
     }
 
-    void bitcask_index_disk_t::insert_bulk_unchecked(const value_t& key, size_t value) {
-        // Must not short-circuit to a snapshot holding only `value`: append_snapshot replaces the whole row list.
-        insert(key, value);
+    void bitcask_index_disk_t::insert_bulk_unchecked(const value_t& key, int64_t row_id) {
+        // Must not short-circuit to a snapshot holding only `row_id`: append_snapshot replaces the whole row list.
+        insert(key, row_id);
     }
 
-    void bitcask_index_disk_t::remove(value_t key) {
-        auto ref = hash_index_->get(key_bytes_for_hash(key), key_loader());
+    void bitcask_index_disk_t::remove(const value_t& key) {
+        auto encoded = encode_key(key);
+        auto ref = hash_index_->get(encoded.hash, encoded.bytes, key_loader());
         if (ref.has_error()) {
             note_write_error(ref.error());
             return;
@@ -1348,13 +1519,14 @@ namespace services::index {
         if (!ref.value().has_value()) {
             return;
         }
-        note_write_error(append_tombstone(key));
+        note_write_error(append_tombstone(encoded.hash, encoded.bytes));
         mark_operation_dirty();
         flush_if_needed();
     }
 
-    void bitcask_index_disk_t::remove(const value_t& key, size_t row_id) {
-        auto read = current_rows(key);
+    void bitcask_index_disk_t::remove(const value_t& key, int64_t row_id) {
+        auto encoded = encode_key(key);
+        auto read = current_rows(encoded.hash, encoded.bytes);
         if (read.has_error()) {
             note_write_error(read.error());
             return;
@@ -1370,15 +1542,15 @@ namespace services::index {
         }
 
         if (rows.empty()) {
-            note_write_error(append_tombstone(key));
+            note_write_error(append_tombstone(encoded.hash, encoded.bytes));
         } else {
-            note_write_error(append_snapshot(key, rows));
+            note_write_error(append_snapshot(encoded.hash, encoded.bytes, rows));
         }
         mark_operation_dirty();
         flush_if_needed();
     }
 
-    void bitcask_index_disk_t::remove_bulk_unchecked(const value_t& key, size_t row_id) { remove(key, row_id); }
+    void bitcask_index_disk_t::remove_bulk_unchecked(const value_t& key, int64_t row_id) { remove(key, row_id); }
 
     void bitcask_index_disk_t::flush_if_needed() {
         if (bulk_mode_) {
@@ -1441,8 +1613,8 @@ namespace services::index {
                 return;
             }
             row_ids_t rows(resource());
-            value_t key(resource(), nullptr);
-            auto read = read_rows_at(ref.log_file_id, ref.log_offset, rows, &key);
+            std::pmr::string key_bytes(resource());
+            auto read = read_rows_at(ref.log_file_id, ref.log_offset, rows, &key_bytes);
             if (read.has_error()) {
                 read_error = read.error();
                 return;
@@ -1451,7 +1623,7 @@ namespace services::index {
                 return; // tombstone: this key legitimately contributes no entries
             }
             for (auto row : rows) {
-                entries.emplace_back(value_t(resource(), key), row);
+                entries.emplace_back(key_bytes, row);
             }
         });
         if (walk_error.contains_error()) {
@@ -1461,7 +1633,8 @@ namespace services::index {
     }
 
     core::error_t bitcask_index_disk_t::find(const value_t& value, result& res) const {
-        VALUE_OR_RETURN(auto ref, hash_index_->get(key_bytes_for_hash(value), key_loader()));
+        auto encoded = encode_key(value);
+        VALUE_OR_RETURN(auto ref, hash_index_->get(encoded.hash, encoded.bytes, key_loader()));
         if (!ref.has_value()) {
             return core::error_t::no_error();
         }
@@ -1472,6 +1645,20 @@ namespace services::index {
         }
         res.reserve(res.size() + rows.size());
         res.insert(res.end(), rows.begin(), rows.end());
+        return core::error_t::no_error();
+    }
+
+    core::error_t bitcask_index_disk_t::find_not_null(result& res) const {
+        auto null_key = encode_key(
+            value_t(resource(), components::types::complex_logical_type{components::types::logical_type::NA}));
+        entries_t entries(resource());
+        RETURN_IF_ERROR(load_entries(entries));
+        res.reserve(res.size() + entries.size());
+        for (const auto& [key_bytes, row_id] : entries) {
+            if (key_bytes != null_key.bytes) {
+                res.push_back(row_id);
+            }
+        }
         return core::error_t::no_error();
     }
 
@@ -1576,22 +1763,15 @@ namespace services::index {
         uint64_t meta_records = 0;
         for (const auto& ref : refs) {
             row_ids_t rows(resource());
-            value_t key(resource(), nullptr);
-            auto read = read_rows_at(ref.log_file_id, ref.log_offset, rows, &key);
+            std::pmr::string key_bytes(resource());
+            auto read = read_rows_at(ref.log_file_id, ref.log_offset, rows, &key_bytes);
             if (read.has_error()) {
                 return abandon_merge(merged_file, meta_file, read.error());
             }
             if (!read.value()) {
                 continue; // tombstone: dropping it from the merged output IS the compaction
             }
-            bool key_hashable = true;
-            const auto key_bytes = key_bytes_for_hash(key, &key_hashable);
-            if (!key_hashable) {
-                return abandon_merge(merged_file,
-                                     meta_file,
-                                     io_failure("bitcask: a relocated key has no hash encoding in this build"));
-            }
-            auto payload = serialize_payload(resource(), key, rows);
+            auto payload = serialize_payload(resource(), key_bytes, rows);
             const auto offset = merged_file->seek_position();
             if (!write_record(*merged_file, static_cast<uint8_t>(record_kind_t::value), ++next_timestamp_, payload)
                      .complete) {
@@ -1601,15 +1781,16 @@ namespace services::index {
                     io_failure("bitcask: a relocated record could not be written to " + temp_path.string()));
             }
 
+            uint32_t key_hash = ref.key_hash;
             uint32_t key_size = static_cast<uint32_t>(key_bytes.size());
-            int64_t row_value = rows.empty() ? -1 : static_cast<int64_t>(rows.back());
+            int64_t row_value = rows.empty() ? -1 : rows.back();
             uint32_t old_log_file_id = ref.log_file_id;
             uint64_t old_log_offset = ref.log_offset;
             uint64_t new_log_offset = offset + sizeof(record_header_t);
             const auto meta_write = [&](const void* data, uint64_t size) {
                 return meta_file->write(const_cast<void*>(data), size).complete;
             };
-            if (!meta_write(&key_size, sizeof(key_size)) ||
+            if (!meta_write(&key_hash, sizeof(key_hash)) || !meta_write(&key_size, sizeof(key_size)) ||
                 (key_size != 0 && !meta_write(key_bytes.data(), key_size)) ||
                 !meta_write(&old_log_file_id, sizeof(old_log_file_id)) ||
                 !meta_write(&old_log_offset, sizeof(old_log_offset)) || !meta_write(&row_value, sizeof(row_value)) ||
@@ -1684,6 +1865,12 @@ namespace services::index {
         uint64_t meta_offset = 0;
         const uint64_t meta_size = meta_file->file_size();
         while (meta_offset < meta_size) {
+            uint32_t key_hash = 0;
+            if (!meta_file->read(&key_hash, sizeof(key_hash), meta_offset)) {
+                return io_failure("bitcask: the merge journal could not be read back");
+            }
+            meta_offset += sizeof(key_hash);
+
             uint32_t key_size = 0;
             if (!meta_file->read(&key_size, sizeof(key_size), meta_offset)) {
                 return io_failure("bitcask: the merge journal could not be read back");
@@ -1718,16 +1905,19 @@ namespace services::index {
             }
             meta_offset += sizeof(new_log_offset);
 
-            VALUE_OR_RETURN(auto current, hash_index_->get(key_bytes, key_loader()));
+            VALUE_OR_RETURN(auto current, hash_index_->get(key_hash, key_bytes, key_loader()));
             if (!current.has_value()) {
                 continue;
             }
             if (current->log_file_id != old_log_file_id || current->log_offset != old_log_offset) {
                 continue;
             }
-            RETURN_IF_ERROR(erase_all_refs_for_key(key_bytes));
-            RETURN_IF_ERROR(
-                hash_index_->put(key_bytes, row_value, static_cast<uint32_t>(merged_segment_id), new_log_offset));
+            RETURN_IF_ERROR(erase_all_refs_for_key(key_hash, key_bytes));
+            RETURN_IF_ERROR(hash_index_->put(key_hash,
+                                             key_bytes,
+                                             row_value,
+                                             static_cast<uint32_t>(merged_segment_id),
+                                             new_log_offset));
         }
         meta_file.reset();
         std::error_code journal_ec;

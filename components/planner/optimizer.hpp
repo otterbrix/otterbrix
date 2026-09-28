@@ -4,6 +4,8 @@
 #include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/param_storage.hpp>
 
+#include <set>
+
 namespace components::planner {
 
     // Host-injected optimizer pass: a final rewrite the embedding host runs on the
@@ -35,11 +37,13 @@ namespace components::planner {
     // On DDL trees (sequence_t of primitive writes) it is a harmless no-op:
     // the planner leaves the match_t/join_t/aggregate_t these rules target
     // intact (DML wrappers sit on top; DDL has no such nodes).
+    // `deferred_parameters`: unknown type/value parameters at optimization step
     logical_plan::node_ptr optimize(std::pmr::memory_resource* resource,
                                     logical_plan::node_ptr node,
                                     logical_plan::parameter_node_t* parameters,
                                     const logical_plan::catalog_resolves_t* resolves = nullptr,
                                     bool can_push_to_agent = false,
-                                    optimizer_pass_t host_pass = &no_op_pass);
+                                    optimizer_pass_t host_pass = &no_op_pass,
+                                    const std::pmr::set<core::parameter_id_t>* deferred_parameters = nullptr);
 
 } // namespace components::planner

@@ -1,4 +1,5 @@
 #include "manager_index.hpp"
+#include "index_types.hpp"
 
 #include <actor-zeta/spawn.hpp>
 #include <algorithm>
@@ -182,26 +183,27 @@ namespace services::index {
     }
 
     namespace {
-        // (key, row id) pairs for one index; avoids forwarding whole chunks, which clones every column per agent.
-        using key_batch_t = std::vector<std::pair<value_t, size_t>>;
 
         key_batch_t collect_contiguous(std::pmr::memory_resource* resource,
                                        const components::index::keys_base_storage_t& keys,
                                        const std::pmr::vector<components::vector::data_chunk_t>& chunks,
                                        int64_t start_row_id,
                                        uint64_t count) {
-            key_batch_t batch;
+            key_batch_t batch(resource);
+            batch.keys.reserve(chunks.size());
+            batch.ids.reserve(chunks.size() * components::vector::DEFAULT_VECTOR_CAPACITY);
             uint64_t seen = 0;
             for (const auto& chunk : chunks) {
+                const uint64_t taken = std::min<uint64_t>(chunk.size(), count - seen);
                 const auto column = resolve_key_column(keys, chunk);
-                for (uint64_t i = 0; i < chunk.size() && seen < count; ++i) {
-                    if (column != key_column_absent) {
-                        const auto cell = chunk.data[column].value(i);
-                        batch.emplace_back(value_t(resource, cell),
-                                           static_cast<size_t>(start_row_id + static_cast<int64_t>(seen)));
+                if (column != key_column_absent) {
+                    batch.keys.emplace_back(components::vector::vector_t(chunk.data[column], 0, taken),
+                                            static_cast<size_t>(taken));
+                    for (uint64_t row = 0; row < taken; ++row) {
+                        batch.ids.push_back(start_row_id + static_cast<int64_t>(seen + row));
                     }
-                    ++seen;
                 }
+                seen += taken;
                 if (seen >= count) {
                     break;
                 }
@@ -213,17 +215,21 @@ namespace services::index {
                                        const components::index::keys_base_storage_t& keys,
                                        const std::pmr::vector<components::vector::data_chunk_t>& chunks,
                                        const std::pmr::vector<int64_t>& row_ids) {
-            key_batch_t batch;
-            size_t seen = 0;
+            key_batch_t batch(resource);
+            batch.keys.reserve(chunks.size());
+            batch.ids.reserve(row_ids.size());
+            uint64_t seen = 0;
             for (const auto& chunk : chunks) {
+                const uint64_t taken = std::min<uint64_t>(chunk.size(), row_ids.size() - seen);
                 const auto column = resolve_key_column(keys, chunk);
-                for (uint64_t i = 0; i < chunk.size() && seen < row_ids.size(); ++i) {
-                    if (column != key_column_absent) {
-                        const auto cell = chunk.data[column].value(i);
-                        batch.emplace_back(value_t(resource, cell), static_cast<size_t>(row_ids[seen]));
-                    }
-                    ++seen;
+                if (column != key_column_absent) {
+                    batch.keys.emplace_back(components::vector::vector_t(chunk.data[column], 0, taken),
+                                            static_cast<size_t>(taken));
+                    batch.ids.insert(batch.ids.end(),
+                                     row_ids.begin() + static_cast<std::ptrdiff_t>(seen),
+                                     row_ids.begin() + static_cast<std::ptrdiff_t>(seen + taken));
                 }
+                seen += taken;
                 if (seen >= row_ids.size()) {
                     break;
                 }
@@ -234,17 +240,18 @@ namespace services::index {
         key_batch_t collect_by_chunk_row_ids(std::pmr::memory_resource* resource,
                                              const components::index::keys_base_storage_t& keys,
                                              const std::pmr::vector<components::vector::data_chunk_t>& chunks) {
-            key_batch_t batch;
+            key_batch_t batch(resource);
+            batch.keys.reserve(chunks.size());
+            batch.ids.reserve(chunks.size() * components::vector::DEFAULT_VECTOR_CAPACITY);
             for (const auto& chunk : chunks) {
                 const auto column = resolve_key_column(keys, chunk);
                 if (column == key_column_absent) {
                     continue;
                 }
+                batch.keys.emplace_back(components::vector::vector_t(chunk.data[column], 0, chunk.size()),
+                                        static_cast<size_t>(chunk.size()));
                 const auto* chunk_row_ids = chunk.row_ids.data<int64_t>();
-                for (uint64_t i = 0; i < chunk.size(); ++i) {
-                    const auto cell = chunk.data[column].value(i);
-                    batch.emplace_back(value_t(resource, cell), static_cast<size_t>(chunk_row_ids[i]));
-                }
+                batch.ids.insert(batch.ids.end(), chunk_row_ids, chunk_row_ids + chunk.size());
             }
             return batch;
         }
@@ -1385,11 +1392,10 @@ namespace services::index {
                 std::pmr::string{"index search: the table has no index on the predicate key", resource_}};
         }
 
-        if (index_key_is_null(value)) {
-            co_return index_search_result_t{std::pmr::vector<int64_t>(resource_), record->built_compact_epoch};
-        }
-
-        if (compare != components::expressions::compare_type::eq && !record->ordered) {
+        // A null test needs no ordering: is_null is one key's bucket, is_not_null is every other key.
+        const bool is_null_test = compare == components::expressions::compare_type::is_null ||
+                                  compare == components::expressions::compare_type::is_not_null;
+        if (compare != components::expressions::compare_type::eq && !is_null_test && !record->ordered) {
             co_return core::error_t{
                 core::error_code_t::index_not_exists,
                 std::pmr::string{"index search: this index has no ordering and cannot answer a range predicate",

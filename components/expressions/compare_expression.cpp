@@ -81,7 +81,8 @@ namespace components::expressions {
 
     std::string compare_expression_t::to_string_impl() const {
         std::stringstream stream;
-        if (type() == compare_type::all_true || type() == compare_type::all_false) {
+        if (type() == compare_type::all_true || type() == compare_type::all_false ||
+            type() == compare_type::all_unknown) {
             stream << type();
         } else if (is_union()) {
             stream << type() << ": [";
@@ -178,6 +179,8 @@ namespace components::expressions {
             return compare_type::all_true;
         } else if (key == "all_false") {
             return compare_type::all_false;
+        } else if (key == "all_unknown") {
+            return compare_type::all_unknown;
         } else if (key == "is_null") {
             return compare_type::is_null;
         } else if (key == "is_not_null") {
@@ -198,6 +201,7 @@ namespace components::expressions {
             case compare_type::all_true:
                 return condition_kind::always;
             case compare_type::all_false:
+            case compare_type::all_unknown:
                 return condition_kind::never;
             default:
                 return condition_kind::computed;

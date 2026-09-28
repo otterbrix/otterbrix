@@ -96,10 +96,12 @@ namespace {
         return keys;
     }
 
-    std::vector<std::pair<logical_value_t, size_t>>
-    one_entry(std::pmr::memory_resource* resource, int64_t key, size_t row_id) {
-        std::vector<std::pair<logical_value_t, size_t>> values;
-        values.emplace_back(logical_value_t(resource, key), row_id);
+    services::index::key_batch_t one_entry(std::pmr::memory_resource* resource, int64_t key, int64_t row_id) {
+        services::index::key_batch_t values(resource);
+        components::vector::vector_t keys(resource, components::types::logical_type::BIGINT, 1);
+        keys.data<int64_t>()[0] = key;
+        values.keys.emplace_back(std::move(keys), size_t{1});
+        values.ids.push_back(row_id);
         return values;
     }
 

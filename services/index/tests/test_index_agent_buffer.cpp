@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <limits>
 #include <string>
 #include <set>
 #include <utility>
@@ -56,12 +57,27 @@ namespace {
         return path;
     }
 
-    std::vector<std::pair<logical_value_t, size_t>> entries(std::pmr::memory_resource* resource,
-                                                            std::initializer_list<std::pair<int64_t, size_t>> rows) {
-        std::vector<std::pair<logical_value_t, size_t>> values;
-        for (const auto& [key, row_id] : rows) {
-            values.emplace_back(logical_value_t(resource, key), row_id);
+    // TEST EXCLUSIVE, to simplify null setting
+    constexpr int64_t kNullKey = std::numeric_limits<int64_t>::min();
+
+    services::index::key_batch_t entries(std::pmr::memory_resource* resource,
+                                         std::initializer_list<std::pair<int64_t, int64_t>> rows) {
+        services::index::key_batch_t values(resource);
+        if (rows.size() == 0) {
+            return values;
         }
+        components::vector::vector_t keys(resource, components::types::logical_type::BIGINT, rows.size());
+        size_t row = 0;
+        for (const auto& [key, row_id] : rows) {
+            if (key == kNullKey) {
+                keys.set_null(row, true);
+            } else {
+                keys.data<int64_t>()[row] = key;
+            }
+            ++row;
+            values.ids.push_back(row_id);
+        }
+        values.keys.emplace_back(std::move(keys), rows.size());
         return values;
     }
 
@@ -312,39 +328,6 @@ TEST_CASE("services::index::bitcask_index_agent_t buffers a transaction's own wr
         CHECK(read(txn1, val77).empty());
     }
 
-    // A hashed key is normalized to BIGINT/UBIGINT before keying, in both the agent's encoder
-    // and the store's key_bytes_for_hash -- checked here across both halves.
-    SECTION("a SMALLINT probe matches a BIGINT-stored key, in the bucket and in the store") {
-        REQUIRE_FALSE(ask<&index_agent_contract::stage_inserts>(agent, session, txn1, entries(&resource, {{4242, 1}}))
-                          .contains_error());
-        const logical_value_t probe_small(&resource, int16_t{4242});
-        INFO("the staged half must be found by a narrower probe");
-        CHECK(read(txn1, probe_small) == std::vector<int64_t>{1});
-
-        REQUIRE_FALSE(
-            ask<&index_agent_contract::commit_inserts>(agent, session, txn1, commit_id_of(txn1)).contains_error());
-        INFO("and so must the committed half, or the two halves would key differently");
-        CHECK(read(txn2, probe_small) == std::vector<int64_t>{1});
-
-        CHECK(read(txn2, logical_value_t(&resource, int16_t{4243})).empty());
-    }
-
-    // A range refusal must be a VALUE, not an empty result: an empty range is
-    // indistinguishable from "no row carries this key".
-    SECTION("a range predicate is refused, loudly") {
-        for (auto compare :
-             {compare_type::ne, compare_type::lt, compare_type::lte, compare_type::gt, compare_type::gte}) {
-            auto answer = ask<&index_agent_contract::read_rows>(agent,
-                                                                session,
-                                                                compare,
-                                                                logical_value_t(&resource, int64_t{42}),
-                                                                txn1);
-            INFO("compare=" << static_cast<int>(compare));
-            REQUIRE(answer.has_error());
-            REQUIRE(answer.error().type == core::error_code_t::index_not_exists);
-        }
-    }
-
     std::filesystem::remove_all(path);
 }
 
@@ -357,13 +340,102 @@ TEST_CASE("services::index::each agent family states its backend and its orderin
     STATIC_REQUIRE_FALSE(bitcask_index_agent_t::supports_ordered_probe_v);
 }
 
-// A NULL key must never be staged: convert() maps NULL to the NA physical_value
-// (numeric_limits<physical_value>::max()), so a stored NULL would sort after every real
-// key and pollute every upper-bound/gte answer.
-TEST_CASE("services::index::a NULL key is neither staged nor matched") {
+template<typename Agent>
+void null_keys_answer_only_the_null_tests(Agent& agent, std::pmr::memory_resource* resource) {
+    const auto session = session_id_t::generate_uid();
+    const uint64_t writer = TRANSACTION_ID_START + 21;
+    const uint64_t onlooker = TRANSACTION_ID_START + 22;
+
+    // The null tests take a dummy key, exactly as transform_null_test hands one over.
+    const auto dummy = [&] { return logical_value_t(resource, nullptr); };
+    const auto read = [&](compare_type compare, const logical_value_t& key, uint64_t txn_id) {
+        auto answer = ask<&index_agent_contract::read_rows>(agent, session, compare, key, txn_id);
+        REQUIRE_FALSE(answer.has_error());
+        return sorted(std::move(answer.value()));
+    };
+
+    // Rows 2 and 4 hold NULL; rows 1 and 3 hold keys.
+    REQUIRE_FALSE(
+        ask<&index_agent_contract::stage_inserts>(agent,
+                                                  session,
+                                                  writer,
+                                                  entries(resource, {{9, 1}, {kNullKey, 2}, {21, 3}, {kNullKey, 4}}))
+            .contains_error());
+
+    SECTION("a staged NULL row answers the null tests inside the transaction that staged it") {
+        CHECK(read(compare_type::is_null, dummy(), writer) == std::vector<int64_t>{2, 4});
+        CHECK(read(compare_type::is_not_null, dummy(), writer) == std::vector<int64_t>{1, 3});
+        CHECK(read(compare_type::is_null, dummy(), onlooker).empty());
+        CHECK(read(compare_type::is_not_null, dummy(), onlooker).empty());
+    }
+
+    SECTION("committed NULL rows answer the null tests, and no value comparison answers them") {
+        REQUIRE_FALSE(
+            ask<&index_agent_contract::commit_inserts>(agent, session, writer, commit_id_of(writer)).contains_error());
+
+        CHECK(read(compare_type::is_null, dummy(), onlooker) == std::vector<int64_t>{2, 4});
+        CHECK(read(compare_type::is_not_null, dummy(), onlooker) == std::vector<int64_t>{1, 3});
+        CHECK(read(compare_type::eq, logical_value_t(resource, int64_t{9}), onlooker) == std::vector<int64_t>{1});
+    }
+
+    SECTION("deleting a NULL row takes it out of the null test's answer and leaves the other one") {
+        REQUIRE_FALSE(
+            ask<&index_agent_contract::commit_inserts>(agent, session, writer, commit_id_of(writer)).contains_error());
+
+        const uint64_t deleter = TRANSACTION_ID_START + 23;
+        REQUIRE_FALSE(
+            ask<&index_agent_contract::stage_deletes>(agent, session, deleter, entries(resource, {{kNullKey, 2}}))
+                .contains_error());
+        CHECK(read(compare_type::is_null, dummy(), deleter) == std::vector<int64_t>{4});
+        CHECK(read(compare_type::is_null, dummy(), onlooker) == std::vector<int64_t>{2, 4});
+
+        REQUIRE_FALSE(ask<&index_agent_contract::commit_deletes>(agent, session, deleter, commit_id_of(deleter))
+                          .contains_error());
+        CHECK(read(compare_type::is_null, dummy(), onlooker) == std::vector<int64_t>{4});
+        CHECK(read(compare_type::is_not_null, dummy(), onlooker) == std::vector<int64_t>{1, 3});
+    }
+}
+
+TEST_CASE("services::index::btree_index_agent_t answers the null tests over NULL keys") {
     auto resource = core::pmr::otterbrix_resource();
     auto log = initialization_logger("python", "/tmp/docker_logs/");
-    const auto path = fresh_index_root("otterbrix_test_index_agent_buffer_null_key");
+    const auto path = fresh_index_root("otterbrix_test_index_agent_buffer_null_key_btree");
+
+    auto agent_result =
+        btree_index_agent_t::create(&resource, path, kTableOid, kIndexOid, /*flush_threshold=*/1000, log);
+    REQUIRE_FALSE(agent_result.has_error());
+    auto agent = std::move(agent_result.value());
+
+    null_keys_answer_only_the_null_tests(agent, &resource);
+
+    std::filesystem::remove_all(path);
+}
+
+TEST_CASE("services::index::bitcask_index_agent_t answers the null tests over NULL keys") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto log = initialization_logger("python", "/tmp/docker_logs/");
+    const auto path = fresh_index_root("otterbrix_test_index_agent_buffer_null_key_bitcask");
+
+    auto agent_result = bitcask_index_agent_t::create(&resource,
+                                                      path,
+                                                      kTableOid,
+                                                      kIndexOid,
+                                                      /*flush_threshold=*/1000,
+                                                      /*segment_record_limit=*/100,
+                                                      log,
+                                                      std::pmr::set<std::uint64_t>(&resource));
+    REQUIRE_FALSE(agent_result.has_error());
+    auto agent = std::move(agent_result.value());
+
+    null_keys_answer_only_the_null_tests(agent, &resource);
+
+    std::filesystem::remove_all(path);
+}
+
+TEST_CASE("services::index::a NULL key is indexed properly") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto log = initialization_logger("python", "/tmp/docker_logs/");
+    const auto path = fresh_index_root("otterbrix_test_index_agent_buffer_null_key_ranges");
 
     auto agent_result =
         btree_index_agent_t::create(&resource, path, kTableOid, kIndexOid, /*flush_threshold=*/1000, log);
@@ -371,29 +443,24 @@ TEST_CASE("services::index::a NULL key is neither staged nor matched") {
     auto agent = std::move(agent_result.value());
 
     const auto session = session_id_t::generate_uid();
-    const uint64_t txn = TRANSACTION_ID_START + 21;
+    const uint64_t txn = TRANSACTION_ID_START + 24;
 
-    std::vector<std::pair<logical_value_t, size_t>> with_null;
-    with_null.emplace_back(logical_value_t(&resource, nullptr), size_t{1});
-    with_null.emplace_back(logical_value_t(&resource, int64_t{9}), size_t{2});
     REQUIRE_FALSE(
-        ask<&index_agent_contract::stage_inserts>(agent, session, txn, std::move(with_null)).contains_error());
+        ask<&index_agent_contract::stage_inserts>(agent, session, txn, entries(&resource, {{9, 2}, {kNullKey, 1}}))
+            .contains_error());
+    REQUIRE_FALSE(ask<&index_agent_contract::commit_inserts>(agent, session, txn, commit_id_of(txn)).contains_error());
 
-    auto null_probe = ask<&index_agent_contract::read_rows>(agent,
-                                                            session,
-                                                            compare_type::eq,
-                                                            logical_value_t(&resource, nullptr),
-                                                            txn);
-    REQUIRE_FALSE(null_probe.has_error());
-    CHECK(null_probe.value().empty());
+    const auto read = [&](compare_type compare, int64_t key) {
+        auto answer =
+            ask<&index_agent_contract::read_rows>(agent, session, compare, logical_value_t(&resource, key), txn);
+        REQUIRE_FALSE(answer.has_error());
+        return sorted(std::move(answer.value()));
+    };
 
-    auto gte_probe = ask<&index_agent_contract::read_rows>(agent,
-                                                           session,
-                                                           compare_type::gte,
-                                                           logical_value_t(&resource, int64_t{9}),
-                                                           txn);
-    REQUIRE_FALSE(gte_probe.has_error());
-    CHECK(sorted(std::move(gte_probe.value())) == std::vector<int64_t>{2});
+    CHECK(read(compare_type::gte, int64_t{9}) == std::vector<int64_t>{2});
+    CHECK(read(compare_type::gt, int64_t{0}) == std::vector<int64_t>{2});
+    CHECK(read(compare_type::ne, int64_t{9}).empty());
+    CHECK(read(compare_type::lte, int64_t{9}) == std::vector<int64_t>{2});
 
     std::filesystem::remove_all(path);
 }

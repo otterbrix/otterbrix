@@ -389,7 +389,7 @@ TEST_CASE("logical_value_binary_codec: a well-formed record leaves ok alone") {
 
     std::pmr::string encoded(&resource);
     append_logical_value(encoded, logical_value_t(&resource, std::string("a-real-key")));
-    append_le<uint64_t>(encoded, uint64_t{4242});
+    append_le<int64_t>(encoded, int64_t{4242});
 
     bool ok = true;
     size_t pos = 0;

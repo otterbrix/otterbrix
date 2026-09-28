@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <memory>
 #include <memory_resource>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -25,7 +26,7 @@ namespace services::index {
     public:
         using value_t = components::types::logical_value_t;
         using path_t = std::filesystem::path;
-        using result = std::pmr::vector<size_t>;
+        using result = std::pmr::vector<int64_t>;
 
         static constexpr uint64_t default_flush_threshold_{1000};
 
@@ -39,9 +40,9 @@ namespace services::index {
 
         [[nodiscard]] std::pmr::memory_resource* resource() const noexcept { return resource_; }
 
-        [[nodiscard]] core::error_t insert(const value_t& key, size_t value);
+        [[nodiscard]] core::error_t insert(const value_t& key, int64_t row_id);
         [[nodiscard]] core::error_t remove(value_t key);
-        [[nodiscard]] core::error_t remove(const value_t& key, size_t row_id);
+        [[nodiscard]] core::error_t remove(const value_t& key, int64_t row_id);
 
         // An undecodable record surfaces as data_corruption, never a fabricated row id 0.
         [[nodiscard]] core::error_t find(const value_t& value, result& res) const;
@@ -78,12 +79,10 @@ namespace services::index {
         [[nodiscard]] core::error_t force_flush();
 
         // Skips the per-op find() dedup; caller must feed each (key, row_id) pair at most once (not unique keys).
-        void insert_bulk_unchecked(const value_t& key, size_t value);
-        void remove_bulk_unchecked(const value_t& key, size_t row_id);
+        void insert_bulk_unchecked(core::b_plus_tree::btree_t::item_data record);
+        void remove_bulk_unchecked(core::b_plus_tree::btree_t::item_data record);
 
     private:
-        [[nodiscard]] static bool key_is_absent(const value_t& key) noexcept;
-
         [[nodiscard]] bool should_flush() const noexcept { return ops_since_flush_ >= flush_threshold_; }
         void mark_operation_dirty() noexcept {
             dirty_ = true;

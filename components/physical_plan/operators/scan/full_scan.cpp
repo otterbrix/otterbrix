@@ -15,10 +15,12 @@ namespace components::operators {
         if (!expression || expression->type() == expressions::compare_type::all_true) {
             return std::unique_ptr<table::table_filter_t>{};
         }
-        // pushing graph that is always false is pessimization, and should be caught earlier
-        if (expression->type() == expressions::compare_type::all_false) {
-            return core::error_t{core::error_code_t::physical_plan_error,
-                                 std::pmr::string{"all_false predicate reached filter construction", resource}};
+        // pushing graph that never selects a row is pessimization, and should be caught earlier
+        if (expression->type() == expressions::compare_type::all_false ||
+            expression->type() == expressions::compare_type::all_unknown) {
+            return core::error_t{
+                core::error_code_t::physical_plan_error,
+                std::pmr::string{"a predicate that selects nothing reached filter construction", resource}};
         }
 
         const auto condition = expressions::classify_condition(expression);
@@ -100,7 +102,8 @@ namespace components::operators {
             }
             guard_types_ = std::move(types_result.value());
 
-            if (expression_ && expression_->type() == expressions::compare_type::all_false) {
+            if (expression_ && (expression_->type() == expressions::compare_type::all_false ||
+                                expression_->type() == expressions::compare_type::all_unknown)) {
                 drained_ = true;
                 emitted_any_ = true;
                 co_return make_drain_chunk(guard_types_);

@@ -2,6 +2,8 @@
 
 // Shared by bitcask_index_agent_t and btree_index_agent_t; duplication beats the coupling a base would add.
 
+#include "index_types.hpp"
+
 #include <core/result_wrapper.hpp>
 
 #include <actor-zeta/actor/address.hpp>
@@ -51,10 +53,8 @@ namespace services::index {
         unique_future<core::error_t> clear(session_id_t session);
 
         // Stages inserts/deletes in this transaction's bucket; nothing reaches the store before commit.
-        unique_future<core::error_t>
-        stage_inserts(session_id_t session, uint64_t txn_id, std::vector<std::pair<value_t, size_t>> values);
-        unique_future<core::error_t>
-        stage_deletes(session_id_t session, uint64_t txn_id, std::vector<std::pair<value_t, size_t>> values);
+        unique_future<core::error_t> stage_inserts(session_id_t session, uint64_t txn_id, key_batch_t values);
+        unique_future<core::error_t> stage_deletes(session_id_t session, uint64_t txn_id, key_batch_t values);
 
         // commit_id is contract-wide: message ids are positional, so the ordered family takes but ignores it.
         unique_future<core::error_t> commit_inserts(session_id_t session, uint64_t txn_id, uint64_t commit_id);
@@ -100,7 +100,7 @@ namespace services::index {
                  index_agent_contract::session_id_t session,
                  uint64_t txn_id,
                  uint64_t commit_id,
-                 std::vector<std::pair<index_agent_contract::value_t, size_t>> values,
+                 key_batch_t values,
                  index_agent_contract::value_t key,
                  actor_zeta::mailbox::message* msg) {
         { agent.drop(session) }

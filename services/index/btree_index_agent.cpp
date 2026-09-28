@@ -42,7 +42,8 @@ namespace services::index {
             }
         }
 
-        bool is_value_comparison(components::expressions::compare_type compare) {
+        // only for asserts
+        [[maybe_unused]] bool is_value_comparison(components::expressions::compare_type compare) {
             switch (compare) {
                 case components::expressions::compare_type::eq:
                 case components::expressions::compare_type::ne:
@@ -145,12 +146,6 @@ namespace services::index {
 
     auto btree_index_agent_t::make_type() const noexcept -> const char* { return "btree_index_agent"; }
 
-    std::pmr::string btree_index_agent_t::encode_key(const value_t& key) const {
-        std::pmr::string out(resource());
-        codec::append_logical_value(out, key);
-        return out;
-    }
-
     btree_index_agent_t::unique_future<void> btree_index_agent_t::drop(session_id_t session) {
         trace(log_, "btree_index_agent_t::drop, session: {}", session.data());
         store_.drop();
@@ -174,9 +169,7 @@ namespace services::index {
     }
 
     btree_index_agent_t::unique_future<core::error_t>
-    btree_index_agent_t::stage_inserts(session_id_t session,
-                                       uint64_t txn_id,
-                                       std::vector<std::pair<value_t, size_t>> values) {
+    btree_index_agent_t::stage_inserts(session_id_t session, uint64_t txn_id, key_batch_t values) {
         trace(log_,
               "btree_index_agent_t::stage_inserts: {}, txn_id: {}, session: {}",
               values.size(),
@@ -187,21 +180,12 @@ namespace services::index {
                 core::error_code_t::index_not_exists,
                 std::pmr::string{"btree_index_agent_t::stage_inserts: the index has been dropped", resource()}};
         }
-        auto& bucket = pending_inserts_[txn_id];
-        bucket.reserve(bucket.size() + values.size());
-        for (const auto& [key, row_id] : values) {
-            if (index_key_is_null(key)) {
-                continue;
-            }
-            bucket.emplace_back(encode_key(key), static_cast<int64_t>(row_id));
-        }
+        append_key_batch(&pending_inserts_.try_emplace(txn_id, resource()).first->second, values, resource());
         co_return core::error_t::no_error();
     }
 
     btree_index_agent_t::unique_future<core::error_t>
-    btree_index_agent_t::stage_deletes(session_id_t session,
-                                       uint64_t txn_id,
-                                       std::vector<std::pair<value_t, size_t>> values) {
+    btree_index_agent_t::stage_deletes(session_id_t session, uint64_t txn_id, key_batch_t values) {
         trace(log_,
               "btree_index_agent_t::stage_deletes: {}, txn_id: {}, session: {}",
               values.size(),
@@ -212,45 +196,38 @@ namespace services::index {
                 core::error_code_t::index_not_exists,
                 std::pmr::string{"btree_index_agent_t::stage_deletes: the index has been dropped", resource()}};
         }
-        auto& bucket = pending_deletes_[txn_id];
-        bucket.reserve(bucket.size() + values.size());
-        for (const auto& [key, row_id] : values) {
-            if (index_key_is_null(key)) {
-                continue;
-            }
-            bucket.emplace_back(encode_key(key), static_cast<int64_t>(row_id));
-        }
+        append_key_batch(&pending_deletes_.try_emplace(txn_id, resource()).first->second, values, resource());
         co_return core::error_t::no_error();
     }
 
     // Publishes bucket `txn_id` AND bucket 0 (committed-but-not-durable), unlike bitcask's ONE-bucket route.
     template<typename ApplyFn>
     core::error_t btree_index_agent_t::publish_buckets(pending_txn_map_t& buckets, uint64_t txn_id, ApplyFn&& apply) {
-        // Refused rather than published: an undecodable key would push NA into the tree, polluting gte answers.
-        bool decode_ok = true;
-        const auto publish_one = [&](uint64_t bucket_id) {
+        // A tree record is [key bytes][row id]
+        std::pmr::string record_buffer(resource());
+        const auto publish_one = [&](uint64_t bucket_id) -> core::error_t {
             auto it = buckets.find(bucket_id);
             if (it == buckets.end()) {
-                return;
+                return core::error_t::no_error();
             }
-            for (const auto& [encoded, row_id] : it->second) {
-                size_t pos = 0;
-                auto key = codec::read_logical_value(resource(), encoded, pos, &decode_ok);
-                if (!decode_ok) {
-                    return;
-                }
-                apply(key, static_cast<size_t>(row_id));
+            const auto& bucket = it->second;
+            size_t offset = 0;
+            for (const auto& [keys, rows] : bucket.keys) {
+                const int64_t* ids = bucket.ids.data() + offset;
+                offset += rows;
+                RETURN_IF_ERROR(for_each_key_bytes(keys, rows, &record_buffer, [&](size_t row, std::string_view) {
+                    record_buffer.append(reinterpret_cast<const char*>(ids + row), sizeof(int64_t));
+                    apply(core::b_plus_tree::btree_t::item_data{record_buffer.data(),
+                                                                static_cast<uint32_t>(record_buffer.size())});
+                    return core::error_t::no_error();
+                }));
             }
             buckets.erase(it);
+            return core::error_t::no_error();
         };
-        publish_one(txn_id);
-        if (txn_id != 0 && decode_ok) {
-            publish_one(0);
-        }
-        if (!decode_ok) {
-            return core::error_t{
-                core::error_code_t::data_corruption,
-                std::pmr::string{"btree_index_agent_t: a staged key could not be decoded for publication", resource()}};
+        RETURN_IF_ERROR(publish_one(txn_id));
+        if (txn_id != 0) {
+            RETURN_IF_ERROR(publish_one(0));
         }
         return store_.force_flush();
     }
@@ -268,8 +245,8 @@ namespace services::index {
                 std::pmr::string{"btree_index_agent_t::commit_inserts: the index has been dropped", resource()}};
         }
         // insert_bulk_unchecked skips insert()'s per-row dedup find() and flush; no bulk window to open.
-        co_return publish_buckets(pending_inserts_, txn_id, [this](const value_t& key, size_t row_id) {
-            store_.insert_bulk_unchecked(key, row_id);
+        co_return publish_buckets(pending_inserts_, txn_id, [this](core::b_plus_tree::btree_t::item_data record) {
+            store_.insert_bulk_unchecked(record);
         });
     }
 
@@ -285,8 +262,8 @@ namespace services::index {
                 core::error_code_t::index_not_exists,
                 std::pmr::string{"btree_index_agent_t::commit_deletes: the index has been dropped", resource()}};
         }
-        co_return publish_buckets(pending_deletes_, txn_id, [this](const value_t& key, size_t row_id) {
-            store_.remove_bulk_unchecked(key, row_id);
+        co_return publish_buckets(pending_deletes_, txn_id, [this](core::b_plus_tree::btree_t::item_data record) {
+            store_.remove_bulk_unchecked(record);
         });
     }
 
@@ -325,68 +302,91 @@ namespace services::index {
                 core::error_code_t::index_not_exists,
                 std::pmr::string{"btree_index_agent_t::read_rows: the index has been dropped", resource()}};
         }
-        if (index_key_is_null(key)) {
-            co_return std::pmr::vector<int64_t>(resource());
-        }
-        if (!is_value_comparison(compare)) {
-            co_return core::error_t{
-                core::error_code_t::index_not_exists,
-                std::pmr::string{"btree_index_agent_t::read_rows: the predicate is not a value comparison",
-                                 resource()}};
-        }
-        btree_index_disk_t::result found(resource());
-        if (compare == components::expressions::compare_type::eq) {
-            if (auto read_error = store_.find(key, found); read_error.contains_error()) {
+        using components::expressions::compare_type;
+        bool null_test = compare == compare_type::is_null || compare == compare_type::is_not_null;
+        value_t probe_key =
+            null_test
+                ? value_t(resource(), components::types::complex_logical_type{components::types::logical_type::NA})
+                : key;
+        auto store_compare = compare == compare_type::is_null       ? compare_type::eq
+                             : compare == compare_type::is_not_null ? compare_type::ne
+                                                                    : compare;
+        assert(is_value_comparison(store_compare) &&
+               "btree_index_agent_t::read_rows: the predicate is not a value comparison");
+        std::pmr::vector<int64_t> rows(resource());
+        if (store_compare == compare_type::eq) {
+            if (auto read_error = store_.find(probe_key, rows); read_error.contains_error()) {
                 co_return read_error;
             }
         } else {
-            if (auto read_error = store_.scan_range(compare, key, found); read_error.contains_error()) {
+            if (auto read_error = store_.scan_range(store_compare, probe_key, rows); read_error.contains_error()) {
                 co_return read_error;
             }
-        }
-        std::pmr::vector<int64_t> rows(resource());
-        rows.reserve(found.size());
-        for (auto row : found) {
-            rows.emplace_back(static_cast<int64_t>(row));
         }
 
         // Unlike the hashed family's merge, this compares decoded tree-key VALUES, not encoded bytes,
         // because the predicate here can be any of lt/lte/gt/gte/ne, not just `=`.
-        const auto encoded_probe = encode_key(key);
+        std::pmr::string encoded_probe(resource());
+        codec::append_logical_value(encoded_probe, probe_key);
         bool staged_ok = true;
         const auto probe = decode_as_tree_key(encoded_probe, staged_ok);
+        std::pmr::string key_buffer(resource());
 
-        const auto add_bucket = [&](uint64_t bucket_id) {
+        const auto staged_matches = [&](const auto& stored) {
+            const bool stored_is_null = stored.type() == components::types::physical_type::NA;
+            if (null_test) {
+                return stored_is_null == (compare == compare_type::is_null);
+            }
+            return !stored_is_null && predicate_holds(compare, stored, probe);
+        };
+
+        const auto for_each_match = [&](const key_batch_t& bucket, auto&& on_match) -> core::error_t {
+            size_t offset = 0;
+            for (const auto& [keys, rows] : bucket.keys) {
+                const int64_t* ids = bucket.ids.data() + offset;
+                offset += rows;
+                RETURN_IF_ERROR(
+                    for_each_key_bytes(keys, rows, &key_buffer, [&](size_t row, std::string_view staged_key) {
+                        if (staged_matches(decode_as_tree_key(staged_key, staged_ok))) {
+                            on_match(ids[row]);
+                        }
+                        return core::error_t::no_error();
+                    }));
+            }
+            return core::error_t::no_error();
+        };
+        const auto add_bucket = [&](uint64_t bucket_id) -> core::error_t {
             auto it = pending_inserts_.find(bucket_id);
             if (it == pending_inserts_.end()) {
-                return;
+                return core::error_t::no_error();
             }
-            for (const auto& [pending_key, row_id] : it->second) {
-                if (predicate_holds(compare, decode_as_tree_key(pending_key, staged_ok), probe)) {
-                    rows.push_back(row_id);
-                }
-            }
+            return for_each_match(it->second, [&](int64_t row_id) { rows.push_back(row_id); });
         };
-        const auto drop_bucket = [&](uint64_t bucket_id) {
+        const auto drop_bucket = [&](uint64_t bucket_id) -> core::error_t {
             auto it = pending_deletes_.find(bucket_id);
             if (it == pending_deletes_.end()) {
-                return;
+                return core::error_t::no_error();
             }
-            for (const auto& [pending_key, row_id] : it->second) {
-                if (!predicate_holds(compare, decode_as_tree_key(pending_key, staged_ok), probe)) {
-                    continue;
-                }
+            return for_each_match(it->second, [&](int64_t row_id) {
                 rows.erase(std::remove(rows.begin(), rows.end(), row_id), rows.end());
-            }
+            });
         };
 
-        add_bucket(0);
-        if (txn_id != 0) {
-            add_bucket(txn_id);
+        if (auto merge_error = add_bucket(0); merge_error.contains_error()) {
+            co_return merge_error;
         }
-        drop_bucket(0);
         if (txn_id != 0) {
-            drop_bucket(txn_id);
+            if (auto merge_error = add_bucket(txn_id); merge_error.contains_error()) {
+                co_return merge_error;
+            }
+        }
+        if (auto merge_error = drop_bucket(0); merge_error.contains_error()) {
+            co_return merge_error;
+        }
+        if (txn_id != 0) {
+            if (auto merge_error = drop_bucket(txn_id); merge_error.contains_error()) {
+                co_return merge_error;
+            }
         }
         // A merge whose staged half couldn't be decoded is a wrong answer, not a smaller one.
         if (!staged_ok) {

@@ -38,6 +38,8 @@ namespace services::planner::impl {
                 case expr::compare_type::lte:
                 case expr::compare_type::gt:
                 case expr::compare_type::gte:
+                case expr::compare_type::is_null:
+                case expr::compare_type::is_not_null:
                     break;
                 default:
                     return false;

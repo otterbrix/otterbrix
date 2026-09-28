@@ -401,7 +401,7 @@ TEST_CASE("services::index::bitcask_index_disk::int64_basic") {
     auto index = make_test_index(path, &resource);
 
     for (int i = 1; i <= 100; ++i) {
-        index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i));
+        index.insert(logical_value_t(&resource, int64_t(i)), static_cast<int64_t>(i));
     }
 
     REQUIRE(rows_of(index.find(logical_value_t(&resource, 1l))).size() == 1);
@@ -472,7 +472,7 @@ TEST_CASE("services::index::bitcask_index_disk::persist_close_reopen") {
     {
         auto index = bitcask_index_disk_t(path, &resource, test_flush_threshold, 1000, std::pmr::set<std::uint64_t>{});
         for (int i = 1; i <= 100; ++i) {
-            index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i));
+            index.insert(logical_value_t(&resource, int64_t(i)), static_cast<int64_t>(i));
         }
         for (int i = 2; i <= 100; i += 2) {
             index.remove(logical_value_t(&resource, int64_t(i)));
@@ -504,7 +504,7 @@ TEST_CASE("services::index::bitcask_index_disk::persist_close_reopen_large_datas
     {
         auto index = bitcask_index_disk_t(path, &resource, test_flush_threshold, 1000, std::pmr::set<std::uint64_t>{});
         for (int i = 1; i <= 2500; ++i) {
-            index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i));
+            index.insert(logical_value_t(&resource, int64_t(i)), static_cast<int64_t>(i));
         }
         REQUIRE(index.force_flush().type == core::error_code_t::none);
     }
@@ -531,7 +531,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_immutable_segments") {
     {
         auto index = make_test_index(path, &resource);
         for (int i = 1; i <= 250; ++i) {
-            index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i));
+            index.insert(logical_value_t(&resource, int64_t(i)), static_cast<int64_t>(i));
         }
         REQUIRE(index.force_flush().type == core::error_code_t::none);
         // Rotation only records a merge is owed; asking for it synchronously avoids waiting on one.
@@ -563,12 +563,12 @@ TEST_CASE("services::index::bitcask_index_disk::merge_keeps_latest_snapshot_for_
 
         index.insert(logical_value_t(&resource, 777l), 1);
         for (int i = 1; i < 100; ++i) {
-            index.insert(logical_value_t(&resource, 10000l + i), static_cast<size_t>(i));
+            index.insert(logical_value_t(&resource, 10000l + i), static_cast<int64_t>(i));
         }
 
         index.insert(logical_value_t(&resource, 777l), 2);
         for (int i = 1; i < 100; ++i) {
-            index.insert(logical_value_t(&resource, 20000l + i), static_cast<size_t>(100 + i));
+            index.insert(logical_value_t(&resource, 20000l + i), static_cast<int64_t>(100 + i));
         }
 
         index.insert(logical_value_t(&resource, 30001l), 30001);
@@ -599,12 +599,12 @@ TEST_CASE("services::index::bitcask_index_disk::merge_drops_tombstoned_keys") {
 
         index.insert(logical_value_t(&resource, 555l), 55);
         for (int i = 1; i < 100; ++i) {
-            index.insert(logical_value_t(&resource, 40000l + i), static_cast<size_t>(i));
+            index.insert(logical_value_t(&resource, 40000l + i), static_cast<int64_t>(i));
         }
 
         index.remove(logical_value_t(&resource, 555l));
         for (int i = 1; i < 100; ++i) {
-            index.insert(logical_value_t(&resource, 50000l + i), static_cast<size_t>(100 + i));
+            index.insert(logical_value_t(&resource, 50000l + i), static_cast<int64_t>(100 + i));
         }
 
         index.insert(logical_value_t(&resource, 60001l), 60001);
@@ -633,7 +633,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_survives_more_than_two_rou
     {
         auto index = make_test_index(path, &resource);
         for (int i = 1; i <= key_count; ++i) {
-            index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i));
+            index.insert(logical_value_t(&resource, int64_t(i)), static_cast<int64_t>(i));
             REQUIRE(index.merge_pending_segments().type == core::error_code_t::none);
         }
         REQUIRE(index.force_flush().type == core::error_code_t::none);
@@ -665,7 +665,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_preserves_active_segment_e
         auto index = make_test_index(path, &resource);
 
         for (int i = 1; i <= 200; ++i) {
-            index.insert(logical_value_t(&resource, 70000l + i), static_cast<size_t>(i));
+            index.insert(logical_value_t(&resource, 70000l + i), static_cast<int64_t>(i));
         }
 
         index.insert(logical_value_t(&resource, 888l), 888);
@@ -881,7 +881,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_fs_error_does_not_lose_dat
     {
         auto index = make_test_index(path, &resource);
         for (int i = 1; i <= 250; ++i) {
-            index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i));
+            index.insert(logical_value_t(&resource, int64_t(i)), static_cast<int64_t>(i));
         }
         REQUIRE(index.force_flush().type == core::error_code_t::none);
         REQUIRE(index.merge_pending_segments().type == core::error_code_t::none);
@@ -1015,7 +1015,7 @@ TEST_CASE("services::index::bitcask_index_disk::recovery_crc_mismatch_does_not_d
     {
         auto index = make_test_index(path, &resource);
         for (int i = 1; i <= 250; ++i) {
-            index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i));
+            index.insert(logical_value_t(&resource, int64_t(i)), static_cast<int64_t>(i));
         }
         REQUIRE(index.force_flush().type == core::error_code_t::none);
     }
@@ -1088,7 +1088,7 @@ TEST_CASE("services::index::bitcask_index_disk::an_unreadable_current_refuses_an
     {
         auto index = make_test_index(path, &resource);
         for (int i = 1; i <= 250; ++i) {
-            index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i));
+            index.insert(logical_value_t(&resource, int64_t(i)), static_cast<int64_t>(i));
         }
         REQUIRE(index.force_flush().type == core::error_code_t::none);
     }
@@ -1229,7 +1229,7 @@ TEST_CASE("services::index::bitcask_index_disk::find_refuses_when_a_long_keys_re
         index.insert(logical_value_t(&resource, long_key), 4242);
         index.insert(logical_value_t(&resource, short_key), 777);
         for (int i = 0; i < 5; ++i) {
-            index.insert(logical_value_t(&resource, int64_t(1000 + i)), static_cast<size_t>(1000 + i));
+            index.insert(logical_value_t(&resource, int64_t(1000 + i)), static_cast<int64_t>(1000 + i));
         }
         REQUIRE(index.force_flush().type == core::error_code_t::none);
     }
@@ -1613,7 +1613,7 @@ TEST_CASE("services::index::bitcask_index_disk::insert_refuses_when_the_previous
         index.insert(logical_value_t(&resource, 7l), 101);
         index.insert(logical_value_t(&resource, 7l), 102);
         for (int i = 0; i < 5; ++i) {
-            index.insert(logical_value_t(&resource, int64_t(1000 + i)), static_cast<size_t>(1000 + i));
+            index.insert(logical_value_t(&resource, int64_t(1000 + i)), static_cast<int64_t>(1000 + i));
         }
         REQUIRE(index.force_flush().type == core::error_code_t::none);
     }
@@ -1895,7 +1895,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_refuses_on_an_unreadable_r
 
     auto index = make_test_index(path, &resource);
     for (int i = 1; i <= 250; ++i) {
-        index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i));
+        index.insert(logical_value_t(&resource, int64_t(i)), static_cast<int64_t>(i));
     }
     REQUIRE(index.force_flush().type == core::error_code_t::none);
     REQUIRE(count_bitcask_data_files(path) == 3);
@@ -2084,7 +2084,7 @@ TEST_CASE("services::index::bitcask_index_disk::open_survives_a_keydir_entry_lef
         index.insert(logical_value_t(&resource, long_key), 4242);
         index.insert(logical_value_t(&resource, short_key), 777);
         for (int i = 0; i < 5; ++i) {
-            index.insert(logical_value_t(&resource, int64_t(1000 + i)), static_cast<size_t>(1000 + i));
+            index.insert(logical_value_t(&resource, int64_t(1000 + i)), static_cast<int64_t>(1000 + i));
         }
         REQUIRE(index.force_flush().type == core::error_code_t::none);
         REQUIRE(count_bitcask_data_files(path) == 2);
@@ -2170,7 +2170,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_killed_merge_never_broke_the_o
         index.insert(logical_value_t(&resource, inline_key), 4242);
         index.insert(logical_value_t(&resource, short_key), 777);
         for (int i = 0; i < 5; ++i) {
-            index.insert(logical_value_t(&resource, int64_t(1000 + i)), static_cast<size_t>(1000 + i));
+            index.insert(logical_value_t(&resource, int64_t(1000 + i)), static_cast<int64_t>(1000 + i));
         }
         REQUIRE(index.force_flush().type == core::error_code_t::none);
         REQUIRE(count_bitcask_data_files(path) == 2);
@@ -2289,7 +2289,7 @@ TEST_CASE("services::index::bitcask_index_disk::the_keydir_is_derived_from_the_s
         probes.emplace_back(&resource, int64_t(500 + i));
     }
 
-    std::vector<std::vector<size_t>> before;
+    std::vector<std::vector<int64_t>> before;
     {
         auto index = bitcask_index_disk_t(path,
                                           &resource,
@@ -2301,7 +2301,7 @@ TEST_CASE("services::index::bitcask_index_disk::the_keydir_is_derived_from_the_s
         index.insert(logical_value_t(&resource, another_long_key), 13);
         index.insert(logical_value_t(&resource, short_key), 14);
         for (int i = 0; i < 6; ++i) {
-            index.insert(logical_value_t(&resource, int64_t(500 + i)), static_cast<size_t>(500 + i));
+            index.insert(logical_value_t(&resource, int64_t(500 + i)), static_cast<int64_t>(500 + i));
         }
         REQUIRE(index.force_flush().type == core::error_code_t::none);
         for (const auto& probe : probes) {
@@ -2324,7 +2324,7 @@ TEST_CASE("services::index::bitcask_index_disk::the_keydir_is_derived_from_the_s
         REQUIRE(index.open().type == core::error_code_t::none);
         for (size_t i = 0; i < probes.size(); ++i) {
             const auto rows = rows_of(index.find(probes[i]));
-            const std::vector<size_t> after(rows.begin(), rows.end());
+            const std::vector<int64_t> after(rows.begin(), rows.end());
             REQUIRE(after == before[i]);
         }
     }
@@ -2350,7 +2350,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_refused_keydir_reset_is_a_valu
         index.insert(logical_value_t(&resource, long_key), 4242);
         index.insert(logical_value_t(&resource, short_key), 777);
         for (int i = 0; i < 5; ++i) {
-            index.insert(logical_value_t(&resource, int64_t(2000 + i)), static_cast<size_t>(2000 + i));
+            index.insert(logical_value_t(&resource, int64_t(2000 + i)), static_cast<int64_t>(2000 + i));
         }
         REQUIRE(index.force_flush().type == core::error_code_t::none);
     }
@@ -2404,7 +2404,7 @@ TEST_CASE("services::index::bitcask_index_disk::opening_over_a_read_only_directo
                                           test_segment_record_limit,
                                           std::pmr::set<std::uint64_t>{});
         for (int i = 0; i < key_count; ++i) {
-            index.insert(logical_value_t(&resource, int64_t(700 + i)), static_cast<size_t>(700 + i));
+            index.insert(logical_value_t(&resource, int64_t(700 + i)), static_cast<int64_t>(700 + i));
         }
         REQUIRE(index.force_flush().type == core::error_code_t::none);
     }
@@ -2459,7 +2459,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_wipe_that_left_the_keydir_behi
                                           test_segment_record_limit,
                                           std::pmr::set<std::uint64_t>{});
         for (int i = 0; i < key_count; ++i) {
-            index.insert(logical_value_t(&resource, int64_t(810 + i)), static_cast<size_t>(810 + i));
+            index.insert(logical_value_t(&resource, int64_t(810 + i)), static_cast<int64_t>(810 + i));
         }
         REQUIRE(index.force_flush().type == core::error_code_t::none);
     }
@@ -2508,7 +2508,7 @@ TEST_CASE("services::index::bitcask_index_disk::clear_over_an_unlistable_directo
                                       test_segment_record_limit,
                                       std::pmr::set<std::uint64_t>{});
     for (int i = 0; i < key_count; ++i) {
-        index.insert(logical_value_t(&resource, int64_t(910 + i)), static_cast<size_t>(910 + i));
+        index.insert(logical_value_t(&resource, int64_t(910 + i)), static_cast<int64_t>(910 + i));
     }
     REQUIRE(index.force_flush().type == core::error_code_t::none);
 
@@ -2757,7 +2757,7 @@ TEST_CASE("services::index::bitcask_index_disk::every_byte_of_a_record_header_is
         auto index = make_test_index(path, &resource);
         for (int i = 1; i <= 250; ++i) {
             poison_the_stack_below();
-            index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i));
+            index.insert(logical_value_t(&resource, int64_t(i)), static_cast<int64_t>(i));
         }
         poison_the_stack_below();
         index.remove(logical_value_t(&resource, 7l), 7);
@@ -2852,7 +2852,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_finished_merge_leaves_no_manif
     {
         auto index = make_test_index(path, &resource);
         for (int i = 1; i <= 250; ++i) {
-            index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i));
+            index.insert(logical_value_t(&resource, int64_t(i)), static_cast<int64_t>(i));
         }
         REQUIRE(index.force_flush().type == core::error_code_t::none);
         REQUIRE(count_bitcask_data_files(path) == 3);
@@ -3203,7 +3203,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_stale_merge_temp_that_will_not
 
     auto index = make_test_index(path, &resource);
     for (int i = 1; i <= 250; ++i) {
-        index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i));
+        index.insert(logical_value_t(&resource, int64_t(i)), static_cast<int64_t>(i));
     }
     REQUIRE(index.force_flush().type == core::error_code_t::none);
 

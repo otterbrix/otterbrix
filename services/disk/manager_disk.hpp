@@ -641,7 +641,6 @@ namespace services::disk {
         // Needs to stay trivially-copyable for boost::lockfree; re-wrapped into an owning pointer by the loop.
         boost::lockfree::queue<actor_zeta::mailbox::message*> inbox_{128};
         std::mutex mutex_;
-        std::condition_variable pump_cv_;
 
         log_t log_;
         configuration::config_disk config_;

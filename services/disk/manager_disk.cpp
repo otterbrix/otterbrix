@@ -432,9 +432,6 @@ namespace services::disk {
                             }
                         }
                         if (cont) {
-#ifdef DEV_MODE
-                            services::dispatcher::note_pump_hop();
-#endif
                             cont.resume(); // disk: no poll_pending — no pending_<T>_ containers.
                             progress = true;
                             continue;
@@ -449,11 +446,6 @@ namespace services::disk {
                     }
                 }
                 std::unique_lock<std::mutex> lk(mutex_);
-                // In flight this timeout IS the per-hop latency (a statement crosses ~20 hops), so it's short.
-                if (inbox_.empty())
-                    pump_cv_.wait_for(lk,
-                                      in_flight.empty() ? std::chrono::microseconds(100)
-                                                        : std::chrono::microseconds(5));
             }
         });
         trace(log_, "manager_disk finish");
@@ -461,7 +453,6 @@ namespace services::disk {
 
     manager_disk_t::~manager_disk_t() {
         loop_running_.store(false, std::memory_order_release);
-        pump_cv_.notify_one();
         if (loop_thread_.joinable()) {
             loop_thread_.join();
         }
@@ -483,7 +474,6 @@ namespace services::disk {
                   "dropped and its future completes as abandoned");
             return {false, actor_zeta::detail::enqueue_result::queue_closed};
         }
-        pump_cv_.notify_one();
         return {false, actor_zeta::detail::enqueue_result::success};
     }
 

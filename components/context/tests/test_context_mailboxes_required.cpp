@@ -41,25 +41,22 @@ TEST_CASE("components::pipeline::context_t::a context cannot be built without na
 TEST_CASE("components::pipeline::context_t::each mailbox argument lands on its own member") {
     core::pmr::otterbrix_resource arena;
 
-    int disk_stand_in = 0;
-    int index_stand_in = 0;
-    int wal_stand_in = 0;
-    address_t disk{&arena, &disk_stand_in};
-    address_t index{&arena, &index_stand_in};
-    address_t wal{&arena, &wal_stand_in};
+    address_t disk = actor_zeta::address_t::empty_address();
+    address_t index = actor_zeta::address_t::empty_address();
+    address_t wal = actor_zeta::address_t::empty_address();
 
     lp::storage_parameters params{&arena};
     context_t ctx{params, disk, index, wal};
-    CHECK(ctx.disk_address.get() == &disk_stand_in);
-    CHECK(ctx.index_address.get() == &index_stand_in);
-    CHECK(ctx.wal_address.get() == &wal_stand_in);
+    CHECK(ctx.disk_address.get() == nullptr);
+    CHECK(ctx.index_address.get() == nullptr);
+    CHECK(ctx.wal_address.get() == nullptr);
 
     context_t executor_ctx{session_t{}, disk, index, nullptr, params, disk, index, wal};
-    CHECK(executor_ctx.disk_address.get() == &disk_stand_in);
-    CHECK(executor_ctx.index_address.get() == &index_stand_in);
-    CHECK(executor_ctx.wal_address.get() == &wal_stand_in);
-    CHECK(executor_ctx.address().get() == &disk_stand_in);
-    CHECK(executor_ctx.current_message_sender.get() == &index_stand_in);
+    CHECK(executor_ctx.disk_address.get() == nullptr);
+    CHECK(executor_ctx.index_address.get() == nullptr);
+    CHECK(executor_ctx.wal_address.get() == nullptr);
+    CHECK(executor_ctx.address().get() == nullptr);
+    CHECK(executor_ctx.current_message_sender.get() == nullptr);
 
     // A context that has none says so, and nothing silently supplies one.
     context_t unwired{params,

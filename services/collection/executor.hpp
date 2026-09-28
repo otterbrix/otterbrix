@@ -177,9 +177,6 @@ namespace services::collection::executor {
         // Fanned out from the dispatcher; POD fn-pointers stored per-executor, so there's no shared mutable state.
         unique_future<bool> set_explain_renderer(uint32_t id, explain_render_fn fn);
 
-        // No-op poke target for the dispatcher's lost-wakeup watchdog.
-        unique_future<void> poke_msg();
-
         // Same seam as execute_sub_plan_; not in dispatch_traits, a synchronous in-coroutine call.
         [[nodiscard]] unique_future<core::result_wrapper_t<components::operators::chunks_vector_t>>
         run_subplan(components::operators::operator_ptr root, components::pipeline::context_t* ctx) override;
@@ -190,7 +187,6 @@ namespace services::collection::executor {
                                                             &executor_t::register_cast,
                                                             &executor_t::unregister_cast,
                                                             &executor_t::set_explain_renderer,
-                                                            &executor_t::poke_msg,
                                                             &executor_t::unregister_udf_uid>;
 
         auto make_type() const noexcept -> const char*;

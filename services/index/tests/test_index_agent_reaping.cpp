@@ -112,8 +112,10 @@ TEST_CASE("services::index::on_horizon_advanced frees the agents of a reclaimed 
 
     INFO("the horizon sweep must wait for the terminal drop it sent");
     REQUIRE_FALSE(horizon_future.is_ready());
-
-    agent_raw->resume(1);
+    {
+        auto info = agent_raw->resume(1);
+        REQUIRE(info.result == actor_zeta::scheduler::resume_result::awaiting);
+    }
     REQUIRE(resume_awaited(horizon_future));
     REQUIRE(horizon_future.is_ready());
 
@@ -161,7 +163,10 @@ TEST_CASE("services::index::unregister_collection frees the agents of the table 
     INFO("the teardown must wait for the terminal drop it sent");
     REQUIRE_FALSE(unregister_future.is_ready());
 
-    agent_raw->resume(1);
+    {
+        auto info = agent_raw->resume(1);
+        REQUIRE(info.result == actor_zeta::scheduler::resume_result::awaiting);
+    }
     REQUIRE(resume_awaited(unregister_future));
     REQUIRE(unregister_future.is_ready());
 

@@ -47,7 +47,7 @@ TEST_CASE("services::index::index_disk::string") {
     auto index = btree_index_disk_t(path, &resource);
 
     for (int i = 1; i <= 100; ++i) {
-        REQUIRE(index.insert(logical_value_t(&resource, padded_string(i)), static_cast<size_t>(i)).type ==
+        REQUIRE(index.insert(logical_value_t(&resource, padded_string(i)), static_cast<int64_t>(i)).type ==
                 core::error_code_t::none);
     }
 
@@ -81,7 +81,7 @@ TEST_CASE("services::index::index_disk::int32") {
     auto index = btree_index_disk_t(path, &resource);
 
     for (int i = 1; i <= 100; ++i) {
-        REQUIRE(index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i)).type ==
+        REQUIRE(index.insert(logical_value_t(&resource, int64_t(i)), static_cast<int64_t>(i)).type ==
                 core::error_code_t::none);
     }
 
@@ -115,7 +115,7 @@ TEST_CASE("services::index::index_disk::uint32") {
     auto index = btree_index_disk_t(path, &resource);
 
     for (int i = 1; i <= 100; ++i) {
-        REQUIRE(index.insert(logical_value_t(&resource, uint64_t(i)), static_cast<size_t>(i)).type ==
+        REQUIRE(index.insert(logical_value_t(&resource, uint64_t(i)), static_cast<int64_t>(i)).type ==
                 core::error_code_t::none);
     }
 
@@ -149,7 +149,7 @@ TEST_CASE("services::index::index_disk::double") {
     auto index = btree_index_disk_t(path, &resource);
 
     for (int i = 1; i <= 100; ++i) {
-        REQUIRE(index.insert(logical_value_t(&resource, double(i)), static_cast<size_t>(i)).type ==
+        REQUIRE(index.insert(logical_value_t(&resource, double(i)), static_cast<int64_t>(i)).type ==
                 core::error_code_t::none);
     }
 
@@ -184,7 +184,7 @@ TEST_CASE("services::index::index_disk::multi_values::int32") {
 
     for (int i = 1; i <= 100; ++i) {
         for (int j = 0; j < 10; ++j) {
-            REQUIRE(index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(1000 * j + i)).type ==
+            REQUIRE(index.insert(logical_value_t(&resource, int64_t(i)), static_cast<int64_t>(1000 * j + i)).type ==
                     core::error_code_t::none);
         }
     }
@@ -203,7 +203,7 @@ TEST_CASE("services::index::index_disk::multi_values::int32") {
 
     for (int i = 2; i <= 100; i += 2) {
         for (int j = 5; j < 10; ++j) {
-            REQUIRE(index.remove(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(1000 * j + i)).type ==
+            REQUIRE(index.remove(logical_value_t(&resource, int64_t(i)), static_cast<int64_t>(1000 * j + i)).type ==
                     core::error_code_t::none);
         }
     }
@@ -223,7 +223,7 @@ TEST_CASE("services::index::index_disk::persist_close_reopen") {
     {
         auto index = btree_index_disk_t(path, &resource);
         for (int i = 1; i <= 100; ++i) {
-            REQUIRE(index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i)).type ==
+            REQUIRE(index.insert(logical_value_t(&resource, int64_t(i)), static_cast<int64_t>(i)).type ==
                     core::error_code_t::none);
         }
         REQUIRE(index.force_flush().type == core::error_code_t::none);
@@ -255,7 +255,7 @@ TEST_CASE("services::index::index_disk::remove_flush_reload") {
     {
         auto index = btree_index_disk_t(path, &resource);
         for (int i = 1; i <= 100; ++i) {
-            REQUIRE(index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i)).type ==
+            REQUIRE(index.insert(logical_value_t(&resource, int64_t(i)), static_cast<int64_t>(i)).type ==
                     core::error_code_t::none);
         }
         for (int i = 2; i <= 100; i += 2) {
@@ -349,11 +349,11 @@ TEST_CASE("services::index::index_disk::date_keys") {
     auto index = btree_index_disk_t(path, &resource);
 
     for (int i = 1; i <= 100; i += 2) {
-        REQUIRE(index.insert(logical_value_t(&resource, date_t{days{i}}), static_cast<size_t>(i)).type ==
+        REQUIRE(index.insert(logical_value_t(&resource, date_t{days{i}}), static_cast<int64_t>(i)).type ==
                 core::error_code_t::none);
     }
     for (int i = 100; i >= 2; i -= 2) {
-        REQUIRE(index.insert(logical_value_t(&resource, date_t{days{i}}), static_cast<size_t>(i)).type ==
+        REQUIRE(index.insert(logical_value_t(&resource, date_t{days{i}}), static_cast<int64_t>(i)).type ==
                 core::error_code_t::none);
     }
 
@@ -395,7 +395,7 @@ TEST_CASE("services::index::index_disk::timestamp_keys") {
         return logical_value_t(&resource, timestamp_t{microseconds{int64_t{i} * 1'000'000}});
     };
     for (int i = 49; i >= -50; --i) {
-        REQUIRE(index.insert(key(i), static_cast<size_t>(i + 51)).type == core::error_code_t::none);
+        REQUIRE(index.insert(key(i), static_cast<int64_t>(i + 51)).type == core::error_code_t::none);
     }
 
     REQUIRE(index.find(key(-50)).size() == 1);
@@ -421,7 +421,7 @@ TEST_CASE("services::index::index_disk::a_threshold_flush_that_cannot_reach_the_
     std::filesystem::create_directories(path);
     auto index = btree_index_disk_t(path, &resource, /*flush_threshold=*/1);
 
-    REQUIRE(index.insert(logical_value_t(&resource, int64_t(1)), size_t(1)).type == core::error_code_t::none);
+    REQUIRE(index.insert(logical_value_t(&resource, int64_t(1)), int64_t{1}).type == core::error_code_t::none);
 
     const auto metadata = path / "metadata";
     REQUIRE(std::filesystem::exists(metadata));
@@ -429,7 +429,7 @@ TEST_CASE("services::index::index_disk::a_threshold_flush_that_cannot_reach_the_
     std::filesystem::create_directories(metadata);
     REQUIRE(std::filesystem::is_directory(metadata));
 
-    auto refused = index.insert(logical_value_t(&resource, int64_t(2)), size_t(2));
+    auto refused = index.insert(logical_value_t(&resource, int64_t(2)), int64_t{2});
     CHECK(refused.type == core::error_code_t::io_error);
 
     auto refused_remove = index.remove(logical_value_t(&resource, int64_t(1)));
@@ -454,12 +454,12 @@ TEST_CASE("services::index::index_disk::write_path_never_uses_the_default_resour
     } guard{std::pmr::set_default_resource(std::pmr::null_memory_resource())};
 
     for (int i = 1; i <= 8; ++i) {
-        REQUIRE(index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i)).type ==
+        REQUIRE(index.insert(logical_value_t(&resource, int64_t(i)), static_cast<int64_t>(i)).type ==
                 core::error_code_t::none);
     }
-    REQUIRE(index.insert(logical_value_t(&resource, int64_t(4)), size_t(400)).type ==
+    REQUIRE(index.insert(logical_value_t(&resource, int64_t(4)), int64_t{400}).type ==
             core::error_code_t::none); // duplicate key
-    REQUIRE(index.remove(logical_value_t(&resource, int64_t(4)), size_t(400)).type == core::error_code_t::none);
+    REQUIRE(index.remove(logical_value_t(&resource, int64_t(4)), int64_t{400}).type == core::error_code_t::none);
 
     btree_index_disk_t::result rows(&resource);
     REQUIRE(index.find(logical_value_t(&resource, int64_t(4)), rows).type == core::error_code_t::none);
@@ -479,7 +479,7 @@ TEST_CASE("services::index::index_disk::ordered_reads_are_ascending") {
     auto index = btree_index_disk_t(path, &resource);
 
     for (int i = 1; i <= 100; ++i) {
-        REQUIRE(index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i)).type ==
+        REQUIRE(index.insert(logical_value_t(&resource, int64_t(i)), static_cast<int64_t>(i)).type ==
                 core::error_code_t::none);
     }
 
@@ -703,7 +703,7 @@ TEST_CASE("services::index::index_disk::a_leaf_record_whose_key_will_not_decode_
     btree_index_disk_t::result rows(&resource);
     const auto refused = index.scan_range(compare_type::ne, logical_value_t(&resource, int64_t(999)), rows);
     CHECK(refused.type == core::error_code_t::data_corruption);
-    CHECK(std::find(rows.begin(), rows.end(), size_t(0)) == rows.end());
+    CHECK(std::find(rows.begin(), rows.end(), int64_t{0}) == rows.end());
 
     btree_index_disk_t::result good_rows(&resource);
     CHECK(index.find(logical_value_t(&resource, int64_t(7)), good_rows).type == core::error_code_t::none);
@@ -722,7 +722,7 @@ TEST_CASE("services::index::index_disk::a_corrupt_block_refuses_the_probe_instea
         auto index = btree_index_disk_t(path, &resource);
         for (int i = 1; i <= 200; ++i) {
             REQUIRE_FALSE(
-                index.insert(logical_value_t(&resource, int64_t{i}), static_cast<size_t>(i)).contains_error());
+                index.insert(logical_value_t(&resource, int64_t{i}), static_cast<int64_t>(i)).contains_error());
         }
         REQUIRE_FALSE(index.force_flush().contains_error());
         REQUIRE(index.find(logical_value_t(&resource, int64_t{42})).size() == 1);

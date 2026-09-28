@@ -16,7 +16,8 @@
 using namespace components;
 
 // A UNIQUE/PK violation must surface as set_error/has_error, never a throw. These unit tests
-// give an EMPTY disk address, so the existing-row scan is skipped and the coroutine resolves eagerly.
+// give a resolved table oid and an EMPTY disk address, so the existing-row scan is skipped and the
+// coroutine resolves eagerly.
 
 namespace {
 
@@ -35,13 +36,13 @@ namespace {
         return operators::operator_ptr(new constraint_source_operator_t(resource, std::move(data)));
     }
 
-    // table_oid stays INVALID_OID, so the existing-row scan layer stays dormant.
+    // A resolved oid with no disk actor: the existing-row scan layer stays dormant.
     bool run_unique(std::pmr::memory_resource* resource,
                     vector::data_chunk_t&& write_set,
                     std::vector<std::vector<std::string>> groups,
                     std::string* err_out = nullptr) {
         operators::operator_ptr op(
-            new operators::operator_unique_constraint_t(resource, log_t{}, catalog::INVALID_OID, std::move(groups)));
+            new operators::operator_unique_constraint_t(resource, log_t{}, catalog::FIRST_USER_OID, std::move(groups)));
         op->set_children(make_child(resource, std::move(write_set)));
 
         pipeline::context_t ctx(logical_plan::storage_parameters{resource},
@@ -228,7 +229,7 @@ TEST_CASE("unique constraint operator: a chunk whose layout disagrees with the f
     auto data = operators::make_operator_data(&resource, std::move(chunks));
 
     operators::operator_ptr op(
-        new operators::operator_unique_constraint_t(&resource, log_t{}, catalog::INVALID_OID, {{"k"}}));
+        new operators::operator_unique_constraint_t(&resource, log_t{}, catalog::FIRST_USER_OID, {{"k"}}));
     op->set_children(operators::operator_ptr(new constraint_source_operator_t(&resource, std::move(data))));
 
     pipeline::context_t ctx(logical_plan::storage_parameters{&resource},
@@ -247,7 +248,8 @@ TEST_CASE("unique constraint operator: a chunk whose layout disagrees with the f
     REQUIRE(err.find("\"k\"") != std::string::npos);
 }
 
-// INVALID_OID alone must not disable the existing-row scan; an empty disk address is topology, not a name.
+// INVALID_OID is corruption and must be refused even when no disk actor exists — an empty disk address is
+// topology, and its skip must not hide an unresolved table.
 TEST_CASE("unique constraint operator: an unresolved table oid does not disable the existing-row layer",
           "[unique_constraint]") {
     auto resource = core::pmr::otterbrix_resource();
@@ -264,10 +266,8 @@ TEST_CASE("unique constraint operator: an unresolved table oid does not disable 
         new operators::operator_unique_constraint_t(&resource, log_t{}, catalog::INVALID_OID, {{"a"}}));
     op->set_children(make_child(&resource, std::move(chunk)));
 
-    // Any non-null address reads as "not empty" for the topology check; the refusal fires before any send.
-    int disk_actor_stand_in = 0;
     pipeline::context_t ctx(logical_plan::storage_parameters{&resource},
-                            actor_zeta::address_t{&resource, &disk_actor_stand_in},
+                            actor_zeta::address_t::empty_address(),
                             pipeline::no_mailbox(),
                             pipeline::no_mailbox());
 

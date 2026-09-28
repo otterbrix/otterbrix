@@ -85,15 +85,15 @@ TEST_CASE("services::index::bitcask_index_disk::randomized_insert_remove_find_st
 
     size_t find_count = 0;
     size_t duplicate_row_violations = 0;
-    std::array<std::unordered_set<size_t>, key_count> expected_after_stress;
+    std::array<std::unordered_set<int64_t>, key_count> expected_after_stress;
 
     auto snapshot = [&](bitcask_index_disk_t& from) {
-        std::array<std::unordered_set<size_t>, key_count> state;
+        std::array<std::unordered_set<int64_t>, key_count> state;
         for (size_t key = 0; key < key_count; ++key) {
             const auto logical_key = logical_value_t(&resource, static_cast<int64_t>(key));
             const auto actual_rows = rows_of(from.find(logical_key));
 
-            std::unordered_set<size_t> actual_set;
+            std::unordered_set<int64_t> actual_set;
             actual_set.reserve(actual_rows.size());
             for (auto row : actual_rows) {
                 actual_set.insert(row);
@@ -113,12 +113,12 @@ TEST_CASE("services::index::bitcask_index_disk::randomized_insert_remove_find_st
             std::mt19937_64 rng(0xB17CA5ULL + worker_id * 7919ULL);
             const size_t key_begin = worker_id * keys_per_worker;
             std::uniform_int_distribution<size_t> key_dist(key_begin, key_begin + keys_per_worker - 1);
-            std::uniform_int_distribution<size_t> row_dist(0, 1999);
+            std::uniform_int_distribution<int64_t> row_dist(0, 1999);
             std::uniform_int_distribution<int> op_dist(0, 99);
 
             for (size_t i = 0; i < operations_per_worker; ++i) {
                 const auto key = key_dist(rng);
-                const auto row = worker_id * 100000 + row_dist(rng);
+                const auto row = static_cast<int64_t>(worker_id) * 100000 + row_dist(rng);
                 const auto op = op_dist(rng);
                 const auto logical_key = logical_value_t(&resource, static_cast<int64_t>(key));
 
@@ -129,7 +129,7 @@ TEST_CASE("services::index::bitcask_index_disk::randomized_insert_remove_find_st
                 } else {
                     auto rows = rows_of(index.find(logical_key));
                     if (!rows.empty()) {
-                        std::unordered_set<size_t> seen;
+                        std::unordered_set<int64_t> seen;
                         seen.reserve(rows.size());
                         for (auto r : rows) {
                             seen.insert(r);

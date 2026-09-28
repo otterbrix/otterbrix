@@ -13,36 +13,6 @@ namespace services::index {
 
         namespace codec = components::index::codec;
 
-        // Widens like bitcask_index_disk_t::key_bytes_for_hash; no counterpart on the ordered side.
-        components::types::logical_value_t normalize_hash_key(const components::types::logical_value_t& key) {
-            using namespace components::types;
-            switch (key.type().type()) {
-                case logical_type::TINYINT:
-                case logical_type::SMALLINT:
-                case logical_type::INTEGER:
-                case logical_type::BIGINT: {
-                    // Not assert-then-value(): a failed cast in Release would deref an empty optional.
-                    auto casted = key.cast_as(complex_logical_type(logical_type::BIGINT), {});
-                    if (casted.has_error()) {
-                        return key;
-                    }
-                    return std::move(casted.value());
-                }
-                case logical_type::UTINYINT:
-                case logical_type::USMALLINT:
-                case logical_type::UINTEGER:
-                case logical_type::UBIGINT: {
-                    auto casted = key.cast_as(complex_logical_type(logical_type::UBIGINT), {});
-                    if (casted.has_error()) {
-                        return key;
-                    }
-                    return std::move(casted.value());
-                }
-                default:
-                    return key;
-            }
-        }
-
         // Byte equality, not value equality, so -0.0 and +0.0 don't collide across halves.
         bool key_satisfies(std::string_view stored, std::string_view probe) { return stored == probe; }
 
@@ -157,12 +127,6 @@ namespace services::index {
 
     auto bitcask_index_agent_t::make_type() const noexcept -> const char* { return "bitcask_index_agent"; }
 
-    std::pmr::string bitcask_index_agent_t::encode_key(const value_t& key) const {
-        std::pmr::string out(resource());
-        codec::append_logical_value(out, normalize_hash_key(key));
-        return out;
-    }
-
     bitcask_index_agent_t::unique_future<void> bitcask_index_agent_t::drop(session_id_t session) {
         trace(log_, "bitcask_index_agent_t::drop, session: {}", session.data());
         store_.drop();
@@ -190,9 +154,7 @@ namespace services::index {
     }
 
     bitcask_index_agent_t::unique_future<core::error_t>
-    bitcask_index_agent_t::stage_inserts(session_id_t session,
-                                         uint64_t txn_id,
-                                         std::vector<std::pair<value_t, size_t>> values) {
+    bitcask_index_agent_t::stage_inserts(session_id_t session, uint64_t txn_id, key_batch_t values) {
         trace(log_,
               "bitcask_index_agent_t::stage_inserts: {}, txn_id: {}, session: {}",
               values.size(),
@@ -204,22 +166,12 @@ namespace services::index {
                 core::error_code_t::index_not_exists,
                 std::pmr::string{"bitcask_index_agent_t::stage_inserts: the index has been dropped", resource()}};
         }
-        auto& bucket = pending_inserts_[txn_id];
-        bucket.reserve(bucket.size() + values.size());
-        for (const auto& [key, row_id] : values) {
-            // The ONE null-key rule, called and not re-derived (index_agent_contract.hpp).
-            if (index_key_is_null(key)) {
-                continue;
-            }
-            bucket.emplace_back(encode_key(key), static_cast<int64_t>(row_id));
-        }
+        append_key_batch(&pending_inserts_.try_emplace(txn_id, resource()).first->second, values, resource());
         co_return core::error_t::no_error();
     }
 
     bitcask_index_agent_t::unique_future<core::error_t>
-    bitcask_index_agent_t::stage_deletes(session_id_t session,
-                                         uint64_t txn_id,
-                                         std::vector<std::pair<value_t, size_t>> values) {
+    bitcask_index_agent_t::stage_deletes(session_id_t session, uint64_t txn_id, key_batch_t values) {
         trace(log_,
               "bitcask_index_agent_t::stage_deletes: {}, txn_id: {}, session: {}",
               values.size(),
@@ -230,15 +182,7 @@ namespace services::index {
                 core::error_code_t::index_not_exists,
                 std::pmr::string{"bitcask_index_agent_t::stage_deletes: the index has been dropped", resource()}};
         }
-        auto& bucket = pending_deletes_[txn_id];
-        bucket.reserve(bucket.size() + values.size());
-        for (const auto& [key, row_id] : values) {
-            // A NULL key was never stored, and this store queues a delete without a prior lookup.
-            if (index_key_is_null(key)) {
-                continue;
-            }
-            bucket.emplace_back(encode_key(key), static_cast<int64_t>(row_id));
-        }
+        append_key_batch(&pending_deletes_.try_emplace(txn_id, resource()).first->second, values, resource());
         co_return core::error_t::no_error();
     }
 
@@ -254,23 +198,8 @@ namespace services::index {
     // ONE bucket, not bucket 0 too (pinned by test_index_agent_commit_retry.cpp).
     template<typename ApplyFn>
     core::error_t bitcask_index_agent_t::publish_buckets(pending_txn_map_t& buckets, uint64_t txn_id, ApplyFn&& apply) {
-        // Refused rather than published: an NA key would hash like any other and answer a probe nobody made.
-        bool decode_ok = true;
         if (auto it = buckets.find(txn_id); it != buckets.end()) {
-            for (const auto& [encoded, row_id] : it->second) {
-                size_t pos = 0;
-                auto key = codec::read_logical_value(resource(), encoded, pos, &decode_ok);
-                if (!decode_ok) {
-                    break;
-                }
-                apply(key, static_cast<size_t>(row_id));
-            }
-        }
-        if (!decode_ok) {
-            return core::error_t{
-                core::error_code_t::data_corruption,
-                std::pmr::string{"bitcask_index_agent_t: a staged key could not be decoded for publication",
-                                 resource()}};
+            RETURN_IF_ERROR(apply(it->second));
         }
         // Erased only after the flush succeeds; re-publishing a kept bucket is safe since insert/remove are idempotent.
         auto flush_error = store_.force_flush();
@@ -294,32 +223,13 @@ namespace services::index {
                 std::pmr::string{"bitcask_index_agent_t::commit_inserts: the index has been dropped", resource()}};
         }
         if (txn_id != 0) {
-            // A key that fails to decode must not reach the durable txn log; the bucket erases only after.
-            std::vector<std::pair<value_t, size_t>> journal;
-            bool decode_ok = true;
-            if (auto it = pending_inserts_.find(txn_id); it != pending_inserts_.end()) {
-                journal.reserve(journal.size() + it->second.size());
-                for (const auto& [encoded, row_id] : it->second) {
-                    size_t pos = 0;
-                    auto key = codec::read_logical_value(resource(), encoded, pos, &decode_ok);
-                    if (!decode_ok) {
-                        break;
-                    }
-                    journal.emplace_back(std::move(key), static_cast<size_t>(row_id));
-                }
-            }
-            if (!decode_ok) {
-                co_return core::error_t{
-                    core::error_code_t::data_corruption,
-                    std::pmr::string{"bitcask_index_agent_t::commit_inserts: a staged key could not be decoded",
-                                     resource()}};
-            }
-            if (journal.empty()) {
-                // Legal (e.g. an untouched index or an INSERTed NULL); erased anyway, or it would leak.
+            auto it = pending_inserts_.find(txn_id);
+            if (it == pending_inserts_.end() || it->second.empty()) {
+                // erase empty inserts
                 pending_inserts_.erase(txn_id);
                 co_return core::error_t::no_error();
             }
-            auto apply_error = store_.apply_txn_inserts(txn_id, commit_id, journal);
+            auto apply_error = store_.apply_txn_inserts(txn_id, commit_id, it->second);
             if (!apply_error.contains_error()) {
                 pending_inserts_.erase(txn_id);
             }
@@ -333,8 +243,8 @@ namespace services::index {
                 ~bulk_guard_t() { store.set_bulk_mode(false); }
             } guard{store_};
             store_.set_bulk_mode(true);
-            publish_error = publish_buckets(pending_inserts_, txn_id, [this](const value_t& key, size_t row_id) {
-                store_.insert_bulk_unchecked(key, row_id);
+            publish_error = publish_buckets(pending_inserts_, txn_id, [this](key_batch_t& batch) {
+                return store_.apply_inserts(batch);
             });
         }
         // Outside the bulk window deliberately, or a merge would compact under a setting it's restoring.
@@ -354,39 +264,20 @@ namespace services::index {
                 std::pmr::string{"bitcask_index_agent_t::commit_deletes: the index has been dropped", resource()}};
         }
         if (txn_id != 0) {
-            std::vector<std::pair<value_t, size_t>> journal;
-            // Symmetric with commit_inserts, but worse if wrong: an NA-key frame removes nothing.
-            bool decode_ok = true;
-            if (auto it = pending_deletes_.find(txn_id); it != pending_deletes_.end()) {
-                journal.reserve(journal.size() + it->second.size());
-                for (const auto& [encoded, row_id] : it->second) {
-                    size_t pos = 0;
-                    auto key = codec::read_logical_value(resource(), encoded, pos, &decode_ok);
-                    if (!decode_ok) {
-                        break;
-                    }
-                    journal.emplace_back(std::move(key), static_cast<size_t>(row_id));
-                }
-            }
-            if (!decode_ok) {
-                co_return core::error_t{
-                    core::error_code_t::data_corruption,
-                    std::pmr::string{"bitcask_index_agent_t::commit_deletes: a staged key could not be decoded",
-                                     resource()}};
-            }
-            if (journal.empty()) {
-                // Same ruling as commit_inserts' empty-bucket case.
+            auto it = pending_deletes_.find(txn_id);
+            if (it == pending_deletes_.end() || it->second.empty()) {
+                // erase empty inserts
                 pending_deletes_.erase(txn_id);
                 co_return core::error_t::no_error();
             }
-            auto apply_error = store_.apply_txn_deletes(txn_id, commit_id, journal);
+            auto apply_error = store_.apply_txn_deletes(txn_id, commit_id, it->second);
             if (!apply_error.contains_error()) {
                 pending_deletes_.erase(txn_id);
             }
             co_return pay_merge_debt(std::move(apply_error));
         }
-        auto publish_error = publish_buckets(pending_deletes_, txn_id, [this](const value_t& key, size_t row_id) {
-            store_.remove_bulk_unchecked(key, row_id);
+        auto publish_error = publish_buckets(pending_deletes_, txn_id, [this](key_batch_t& batch) {
+            return store_.apply_deletes(batch);
         });
         co_return pay_merge_debt(std::move(publish_error));
     }
@@ -428,66 +319,79 @@ namespace services::index {
                 core::error_code_t::index_not_exists,
                 std::pmr::string{"bitcask_index_agent_t::read_rows: the index has been dropped", resource()}};
         }
-        if (index_key_is_null(key)) {
-            co_return std::pmr::vector<int64_t>(resource());
-        }
-        // If the upstream guard is ever bypassed, this must ERROR, not answer an empty range.
-        if (compare != components::expressions::compare_type::eq) {
-            co_return core::error_t{
-                core::error_code_t::index_not_exists,
-                std::pmr::string{"bitcask_index_agent_t::read_rows: a hashed index has no ordering and cannot "
-                                 "answer a range predicate",
-                                 resource()}};
-        }
+
+        using components::expressions::compare_type;
+        const bool is_not_null_test = compare == compare_type::is_not_null;
+        const value_t probe_key =
+            (compare == compare_type::is_null || is_not_null_test)
+                ? value_t(resource(), components::types::complex_logical_type{components::types::logical_type::NA})
+                : key;
+        assert((compare == compare_type::eq || compare == compare_type::is_null || is_not_null_test) &&
+               "bitcask_index_agent_t::read_rows: a hashed index has no ordering to answer a range predicate with");
         // find() unrolls the whole row list; the keydir alone keeps only `rows.back()` per key.
-        bitcask_index_disk_t::result found(resource());
+        std::pmr::vector<int64_t> rows(resource());
         // A committed half that could not be read is not an empty one, so the reason travels instead.
-        if (auto read_error = store_.find(key, found); read_error.contains_error()) {
+        if (is_not_null_test) {
+            if (auto read_error = store_.find_not_null(rows); read_error.contains_error()) {
+                co_return read_error;
+            }
+        } else if (auto read_error = store_.find(probe_key, rows); read_error.contains_error()) {
             co_return read_error;
         }
-        std::pmr::vector<int64_t> rows(resource());
-        rows.reserve(found.size());
-        for (auto row : found) {
-            rows.emplace_back(static_cast<int64_t>(row));
-        }
 
-        // Keys compare encoded, so the probe gets the same normalization as the stored bytes.
-        const auto encoded_probe = encode_key(key);
-        const std::string_view probe(encoded_probe);
+        // Keys compare encoded, so a staged key matches exactly when the store would match it.
+        std::pmr::string probe(resource());
+        codec::append_logical_value(probe, probe_key);
+        std::pmr::string key_buffer(resource());
 
-        const auto add_bucket = [&](uint64_t bucket_id) {
+        const auto for_each_match = [&](const key_batch_t& bucket, auto&& on_match) -> core::error_t {
+            size_t offset = 0;
+            for (const auto& [keys, rows] : bucket.keys) {
+                const int64_t* ids = bucket.ids.data() + offset;
+                offset += rows;
+                RETURN_IF_ERROR(
+                    for_each_key_bytes(keys, rows, &key_buffer, [&](size_t row, std::string_view staged_key) {
+                        if (key_satisfies(staged_key, probe) != is_not_null_test) {
+                            on_match(ids[row]);
+                        }
+                        return core::error_t::no_error();
+                    }));
+            }
+            return core::error_t::no_error();
+        };
+        const auto add_bucket = [&](uint64_t bucket_id) -> core::error_t {
             auto it = pending_inserts_.find(bucket_id);
             if (it == pending_inserts_.end()) {
-                return;
+                return core::error_t::no_error();
             }
-            for (const auto& [pending_key, row_id] : it->second) {
-                if (key_satisfies(pending_key, probe)) {
-                    rows.push_back(row_id);
-                }
-            }
+            return for_each_match(it->second, [&](int64_t row_id) { rows.push_back(row_id); });
         };
-        const auto drop_bucket = [&](uint64_t bucket_id) {
+        const auto drop_bucket = [&](uint64_t bucket_id) -> core::error_t {
             auto it = pending_deletes_.find(bucket_id);
             if (it == pending_deletes_.end()) {
-                return;
+                return core::error_t::no_error();
             }
-            for (const auto& [pending_key, row_id] : it->second) {
-                // Testing the key first keeps the erase from scanning `rows` for an id that can't be there.
-                if (!key_satisfies(pending_key, probe)) {
-                    continue;
-                }
+            return for_each_match(it->second, [&](int64_t row_id) {
                 rows.erase(std::remove(rows.begin(), rows.end(), row_id), rows.end());
-            }
+            });
         };
 
         // Inserts first, then deletes, so a row both inserted and deleted ends up absent.
-        add_bucket(0);
-        if (txn_id != 0) {
-            add_bucket(txn_id);
+        if (auto merge_error = add_bucket(0); merge_error.contains_error()) {
+            co_return merge_error;
         }
-        drop_bucket(0);
         if (txn_id != 0) {
-            drop_bucket(txn_id);
+            if (auto merge_error = add_bucket(txn_id); merge_error.contains_error()) {
+                co_return merge_error;
+            }
+        }
+        if (auto merge_error = drop_bucket(0); merge_error.contains_error()) {
+            co_return merge_error;
+        }
+        if (txn_id != 0) {
+            if (auto merge_error = drop_bucket(txn_id); merge_error.contains_error()) {
+                co_return merge_error;
+            }
         }
         co_return std::move(rows);
     }

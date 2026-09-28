@@ -1,5 +1,7 @@
 #pragma once
 
+#include "index_types.hpp"
+
 #include <actor-zeta/actor/address.hpp>
 #include <actor-zeta/actor/dispatch_traits.hpp>
 #include <actor-zeta/detail/future.hpp>
@@ -12,7 +14,6 @@
 #include <components/logical_plan/node_create_index.hpp>
 #include <components/session/session.hpp>
 #include <components/table/row_version_manager.hpp>
-#include <components/types/logical_value.hpp>
 #include <components/vector/data_chunk.hpp>
 
 #include <core/result_wrapper.hpp>
@@ -22,18 +23,6 @@ namespace services::index {
     using session_id_t = components::session::session_id_t;
     using transaction_data = components::table::transaction_data;
     using execution_context_t = components::execution_context_t;
-
-    // One contiguous run of physical row ids: [row_start, row_start + row_count).
-    struct index_row_range_t {
-        uint64_t row_start{0};
-        uint64_t row_count{0};
-    };
-
-    // built_compact_epoch is captured before the send, so a rebuild can only make it too LOW -- a refusal, not a lie.
-    struct index_search_result_t {
-        std::pmr::vector<int64_t> row_ids;
-        uint64_t built_compact_epoch{0};
-    };
 
     struct index_contract {
         template<typename T>

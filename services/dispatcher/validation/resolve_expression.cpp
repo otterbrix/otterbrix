@@ -280,6 +280,7 @@ namespace services::dispatcher::validation {
                     case compare_type::lte:
                     case compare_type::all_true:
                     case compare_type::all_false:
+                    case compare_type::all_unknown:
                         break;
                     case compare_type::regex: {
                         const auto subject = slot(comparison->left(), inside_aggregate);

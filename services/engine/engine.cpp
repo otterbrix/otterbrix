@@ -284,7 +284,6 @@ namespace services::engine {
                                                                           parts->disk->address(),
                                                                           parts->index->address(),
                                                                           config.execution.dml_flush_row_threshold,
-                                                                          primitives.create_plan_rule,
                                                                           primitives.optimizer_rules,
                                                                           config.execution.executor_pool_size,
                                                                           config.execution.pump);

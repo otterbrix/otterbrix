@@ -186,7 +186,6 @@ namespace services::collection::executor {
                            actor_zeta::address_t index_address,
                            log_t&& log,
                            uint64_t dml_flush_row_threshold,
-                           planner::create_plan_rule_t create_plan_rule,
                            std::span<const components::planner::optimizer_rule_t> optimizer_rules)
         : actor_zeta::basic_actor<executor_t>{resource}
         , parent_address_(std::move(parent_address))
@@ -196,7 +195,6 @@ namespace services::collection::executor {
         , log_(log)
         , function_registry_(resource)
         , cast_registry_(resource)
-        , create_plan_rule_(create_plan_rule)
         , optimizer_rules_(optimizer_rules.begin(), optimizer_rules.end(), resource)
         , dml_flush_row_threshold_(dml_flush_row_threshold)
         , explain_renderers_(resource) {
@@ -275,7 +273,6 @@ namespace services::collection::executor {
         }
 
         context_storage.parameters = &plan.parameters->parameters();
-        context_storage.create_plan_rule = create_plan_rule_;
         components::operators::operator_ptr node = planner::create_plan(context_storage,
                                                                         function_registry_,
                                                                         plan.sub_queries.back(),

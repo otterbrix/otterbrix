@@ -144,7 +144,6 @@ namespace services::collection::executor {
                    actor_zeta::address_t index_address,
                    log_t&& log,
                    uint64_t dml_flush_row_threshold = 0,
-                   planner::create_plan_rule_t create_plan_rule = &planner::no_custom_lowering,
                    std::span<const components::planner::optimizer_rule_t> optimizer_rules = {});
         ~executor_t() = default;
 
@@ -260,8 +259,7 @@ namespace services::collection::executor {
         log_t log_;
         components::compute::function_registry_t function_registry_;
         components::casts::cast_registry_t cast_registry_;
-        // Host-injected (dispatcher -> executor); never null — Null Object defaults.
-        planner::create_plan_rule_t create_plan_rule_{&planner::no_custom_lowering};
+        // Host customization, copied from the dispatcher's at spawn.
         std::pmr::vector<components::planner::optimizer_rule_t> optimizer_rules_;
         // Bound on buffered rows before the pump forces an incremental flush; 0 disables the gate.
         uint64_t dml_flush_row_threshold_{0};

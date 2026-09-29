@@ -57,7 +57,7 @@ namespace services::dispatcher {
             bool waiting{false};
         };
 
-        // The two host-customization hooks default to Null Objects, never null.
+        // Host customization: the dispatcher keeps a copy and hands every executor its own.
         manager_dispatcher_t(std::pmr::memory_resource*,
                              actor_zeta::scheduler_raw,
                              log_t& log,
@@ -65,7 +65,6 @@ namespace services::dispatcher {
                              actor_zeta::address_t disk_address,
                              actor_zeta::address_t index_address,
                              uint64_t dml_flush_row_threshold = 0,
-                             planner::create_plan_rule_t create_plan_rule = &planner::no_custom_lowering,
                              std::span<const components::planner::optimizer_rule_t> optimizer_rules = {},
                              std::size_t executor_pool_size = configuration::config_execution::default_executor_pool_size,
                              configuration::pump_intervals_t pump = {});
@@ -228,7 +227,6 @@ namespace services::dispatcher {
         actor_zeta::scheduler_raw scheduler_;
         log_t log_;
 
-        planner::create_plan_rule_t create_plan_rule_{&planner::no_custom_lowering};
         std::pmr::vector<components::planner::optimizer_rule_t> optimizer_rules_;
 
         std::pmr::vector<services::collection::executor::executor_ptr> executors_;

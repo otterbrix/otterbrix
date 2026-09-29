@@ -98,7 +98,6 @@ namespace services::dispatcher {
                                                actor_zeta::address_t disk_address,
                                                actor_zeta::address_t index_address,
                                                uint64_t dml_flush_row_threshold,
-                                               planner::create_plan_rule_t create_plan_rule,
                                                std::span<const components::planner::optimizer_rule_t> optimizer_rules,
                                                std::size_t executor_pool_size,
                                                configuration::pump_intervals_t pump)
@@ -106,7 +105,6 @@ namespace services::dispatcher {
         , resource_(resource_ptr)
         , scheduler_(scheduler)
         , log_(log.clone())
-        , create_plan_rule_(create_plan_rule)
         , optimizer_rules_(optimizer_rules.begin(), optimizer_rules.end(), resource_ptr)
         , executors_(resource_ptr)
         , executor_addresses_(resource_ptr)
@@ -134,7 +132,6 @@ namespace services::dispatcher {
                                                                             index_address_,
                                                                             log_.clone(),
                                                                             dml_flush_row_threshold,
-                                                                            create_plan_rule_,
                                                                             optimizer_rules_);
             executor_addresses_.push_back(exec->address());
             executors_.push_back(std::move(exec));

@@ -30,7 +30,6 @@
 #include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/node_delete.hpp>
 #include <components/logical_plan/node_drop.hpp>
-#include <components/logical_plan/node_extension.hpp>
 #include <components/logical_plan/node_group.hpp>
 #include <components/logical_plan/node_having.hpp>
 #include <components/logical_plan/node_insert.hpp>
@@ -355,10 +354,6 @@ namespace services::catalog_resolve {
                 }
                 case node_type::having_t: {
                     const auto* d = static_cast<const node_having_t*>(node);
-                    return {d->dbname(), d->relname(), {}};
-                }
-                case node_type::extension_t: {
-                    const auto* d = static_cast<const node_extension_t*>(node);
                     return {d->dbname(), d->relname(), {}};
                 }
                 case node_type::insert_t: {

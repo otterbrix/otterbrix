@@ -27,7 +27,6 @@ namespace services::engine {
 
     // Read once by spawn_engine: the dispatcher copies the rules, so the host's array need not outlive the call.
     struct primitives_t final {
-        planner::create_plan_rule_t create_plan_rule{&planner::no_custom_lowering};
         std::span<const components::planner::optimizer_rule_t> optimizer_rules{};
     };
 

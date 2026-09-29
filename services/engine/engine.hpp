@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <memory>
 #include <memory_resource>
+#include <span>
 
 // Engine assembly without a host facade: prepare_engine -> spawn_engine -> bootstrap -> start.
 // Each stage consumes the previous one, so the order is enforced by the types; the dispatcher
@@ -24,9 +25,10 @@ namespace services::engine {
         actor_zeta::scheduler_raw disk;
     };
 
+    // Read once by spawn_engine: the dispatcher copies the rules, so the host's array need not outlive the call.
     struct primitives_t final {
-        planner::create_plan_rule_t create_plan_rule{&planner::no_custom_lowering};
-        components::planner::optimizer_pass_t optimizer_pass{&components::planner::no_op_pass};
+        std::span<const components::planner::optimizer_rule_t> optimizer_rules{};
+        components::planner::name_resolution_hook_t name_resolution{};
     };
 
     // flock(LOCK_EX | LOCK_NB) on <directory>/.lock, held for the lifetime of the object. Bound to

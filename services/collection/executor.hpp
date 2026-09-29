@@ -27,6 +27,7 @@
 #include <core/date/date_types.hpp>
 #include <services/collection/context_storage.hpp>
 #include <services/collection/explain/explain_renderer.hpp>
+#include <span>
 #include <stack>
 #include <string>
 
@@ -143,8 +144,8 @@ namespace services::collection::executor {
                    actor_zeta::address_t index_address,
                    log_t&& log,
                    uint64_t dml_flush_row_threshold = 0,
-                   planner::create_plan_rule_t create_plan_rule = &planner::no_custom_lowering,
-                   components::planner::optimizer_pass_t optimizer_pass = &components::planner::no_op_pass);
+                   std::span<const components::planner::optimizer_rule_t> optimizer_rules = {},
+                   components::planner::name_resolution_hook_t name_resolution = {});
         ~executor_t() = default;
 
         // INTERNAL: called only from execute_plan_full via co_await, never through the mailbox. captured_subplans
@@ -201,6 +202,18 @@ namespace services::collection::executor {
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
 
     private:
+        // A read the host's name resolution asked for does not consult the host again.
+        enum class host_names_t : bool
+        {
+            resolve,
+            local_only
+        };
+
+        unique_future<execute_result_t> execute_statement_(components::session::session_id_t session,
+                                                           components::logical_plan::execution_plan_t plan,
+                                                           services::dispatcher::txn_session_context_t session_ctx,
+                                                           host_names_t host_names);
+
         plan_t traverse_plan_(components::operators::operator_ptr&& plan,
                               const components::logical_plan::storage_parameters& parameters,
                               services::context_storage_t&& context_storage);
@@ -259,9 +272,9 @@ namespace services::collection::executor {
         log_t log_;
         components::compute::function_registry_t function_registry_;
         components::casts::cast_registry_t cast_registry_;
-        // Host-injected (dispatcher -> executor); never null — Null Object defaults.
-        planner::create_plan_rule_t create_plan_rule_{&planner::no_custom_lowering};
-        components::planner::optimizer_pass_t optimizer_pass_{&components::planner::no_op_pass};
+        // Host customization, copied from the dispatcher's at spawn.
+        std::pmr::vector<components::planner::optimizer_rule_t> optimizer_rules_;
+        components::planner::name_resolution_hook_t name_resolution_;
         // Bound on buffered rows before the pump forces an incremental flush; 0 disables the gate.
         uint64_t dml_flush_row_threshold_{0};
         static constexpr uint32_t kExplainRendererSlotLimit = 1024;

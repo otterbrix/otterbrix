@@ -2,44 +2,78 @@
 
 #include "node.hpp"
 
-#include "identifier_types.hpp"
+#include <components/types/types.hpp>
+#include <core/result_wrapper.hpp>
+
+#include <memory_resource>
+#include <string>
+#include <string_view>
+
+namespace services {
+    struct context_storage_t;
+}
+namespace components::compute {
+    class function_registry_t;
+}
+namespace components::operators {
+    class operator_t;
+}
 
 namespace components::logical_plan {
 
     class node_extension_t;
     using node_extension_ptr = boost::intrusive_ptr<node_extension_t>;
 
-    // Extension carrier leaf — the host-customization source node. Pure DATA:
-    // just its (dbname, relname) logical identity. It carries NO host state and
-    // NO operator factory — a logical-plan node is not a storage slot. The host
-    // keeps its own per-source runtime data in its own structures, keyed by this
-    // node's identity ((db, rel) or the resolved oid); the physical-plan
-    // generator's injected create_plan rule reads that identity to build the
-    // host operator.
-    //
-    // Identity is a REGISTERED CATALOG TABLE: the host registers the external
-    // table in the engine catalog (create_collection) and gives the node its
-    // (dbname, relname). The node is then resolved / typed / named EXACTLY like
-    // any table — the catalog is the single source of truth for its schema and
-    // its display name (shown by EXPLAIN via the resolved oid). The ONE thing
-    // that differs from a normal table is LOWERING: a host operator instead of a
-    // disk scan.
+    // The host's own data for its node; the engine never looks inside. The host's operator function casts it
+    // back to the type it made.
+    class extension_payload_t : public boost::intrusive_ref_counter<extension_payload_t> {
+    public:
+        virtual ~extension_payload_t() = default;
+    };
+    using extension_payload_ptr = boost::intrusive_ptr<extension_payload_t>;
+
+    using extension_operator_fn = boost::intrusive_ptr<operators::operator_t> (*)(const services::context_storage_t&,
+                                                                                  const compute::function_registry_t&,
+                                                                                  const node_extension_t&);
+
+    // A host node: no catalog entry. Validation types it by its declared columns; the physical plan generator
+    // builds its operator by calling the host's function. A leaf is a source; a node with a child is a sink.
     class node_extension_t final : public node_t {
     public:
-        node_extension_t(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname);
-
-        const std::string& dbname() const noexcept { return dbname_; }
-        const std::string& relname() const noexcept { return relname_; }
+        const std::pmr::string& name() const noexcept { return name_; }
+        const std::pmr::vector<types::complex_logical_type>& columns() const noexcept { return columns_; }
+        extension_operator_fn operator_fn() const noexcept { return operator_fn_; }
+        const extension_payload_t* payload() const noexcept { return payload_.get(); }
 
     private:
+        node_extension_t(std::pmr::memory_resource* resource,
+                         std::string_view name,
+                         std::pmr::vector<types::complex_logical_type> columns,
+                         extension_operator_fn operator_fn,
+                         extension_payload_ptr payload);
+
+        friend core::result_wrapper_t<node_extension_ptr>
+        make_node_extension(std::pmr::memory_resource* resource,
+                            std::string_view name,
+                            std::pmr::vector<types::complex_logical_type> columns,
+                            extension_operator_fn operator_fn,
+                            extension_payload_ptr payload);
+
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
-        std::string dbname_;
-        std::string relname_;
+        std::pmr::string name_;
+        std::pmr::vector<types::complex_logical_type> columns_;
+        extension_operator_fn operator_fn_;
+        extension_payload_ptr payload_;
     };
 
-    node_extension_ptr
-    make_node_extension(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname);
+    // Columns carry their names as the type alias. A node without an operator function is refused.
+    core::result_wrapper_t<node_extension_ptr>
+    make_node_extension(std::pmr::memory_resource* resource,
+                        std::string_view name,
+                        std::pmr::vector<types::complex_logical_type> columns,
+                        extension_operator_fn operator_fn,
+                        extension_payload_ptr payload = {});
 
 } // namespace components::logical_plan

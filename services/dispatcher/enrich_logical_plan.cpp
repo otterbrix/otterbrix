@@ -30,7 +30,6 @@
 #include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/node_delete.hpp>
 #include <components/logical_plan/node_drop.hpp>
-#include <components/logical_plan/node_extension.hpp>
 #include <components/logical_plan/node_group.hpp>
 #include <components/logical_plan/node_having.hpp>
 #include <components/logical_plan/node_insert.hpp>
@@ -355,10 +354,6 @@ namespace services::catalog_resolve {
                 }
                 case node_type::having_t: {
                     const auto* d = static_cast<const node_having_t*>(node);
-                    return {d->dbname(), d->relname(), {}};
-                }
-                case node_type::extension_t: {
-                    const auto* d = static_cast<const node_extension_t*>(node);
                     return {d->dbname(), d->relname(), {}};
                 }
                 case node_type::insert_t: {
@@ -836,7 +831,8 @@ namespace services::catalog_resolve {
         }
         for (const auto& entry : resolves.tables->entries()) {
             // A missing database is the first thing wrong with such a name: validate reports it.
-            if (entry.schema.empty() || resolves.namespace_oid(entry.dbname) == components::catalog::INVALID_OID) {
+            if (entry.superseded || entry.schema.empty() ||
+                resolves.namespace_oid(entry.dbname) == components::catalog::INVALID_OID) {
                 continue;
             }
             std::pmr::string msg{"schema \"", resource};
@@ -857,14 +853,14 @@ namespace services::catalog_resolve {
         using namespace components::logical_plan;
         if (resolves.tables) {
             for (const auto& entry : resolves.tables->entries()) {
-                if (!entry.table_md.has_value()) {
+                if (!entry.superseded && !entry.table_md.has_value()) {
                     return true;
                 }
             }
         }
         if (resolves.namespaces) {
             for (const auto& entry : resolves.namespaces->entries()) {
-                if (entry.namespace_oid == components::catalog::INVALID_OID) {
+                if (!entry.superseded && entry.namespace_oid == components::catalog::INVALID_OID) {
                     return true;
                 }
             }
@@ -877,6 +873,55 @@ namespace services::catalog_resolve {
             }
         }
         return false;
+    }
+
+    std::pmr::vector<components::planner::unresolved_table_t> unresolved_tables(std::pmr::memory_resource* resource,
+                                                                                const catalog_resolves_t& resolves) {
+        std::pmr::vector<components::planner::unresolved_table_t> names{resource};
+        if (!resolves.tables) {
+            return names;
+        }
+        for (const auto& entry : resolves.tables->entries()) {
+            if (!entry.superseded && !entry.table_md.has_value()) {
+                names.push_back({entry.dbname, entry.schema, entry.relname});
+            }
+        }
+        return names;
+    }
+
+    std::size_t entry_count(const catalog_resolves_t& resolves) {
+        std::size_t count = 0;
+        for (const auto* slot :
+             {&resolves.database, &resolves.namespaces, &resolves.tables, &resolves.types, &resolves.constraints}) {
+            if (*slot) {
+                count += (*slot)->entries().size();
+            }
+        }
+        return count;
+    }
+
+    void supersede_unnamed_entries(std::pmr::memory_resource* resource,
+                                   catalog_resolves_t& resolves,
+                                   const components::logical_plan::node_t* root) {
+        catalog_resolves_t named;
+        register_plan_targets(resource, root, &named);
+        if (resolves.tables) {
+            for (auto& entry : resolves.tables->entries()) {
+                if (!entry.table_md.has_value() &&
+                    (!named.tables || named.tables->find(entry.dbname, entry.schema, entry.relname) ==
+                                          components::logical_plan::resolve_entry_t::no_target)) {
+                    entry.superseded = true;
+                }
+            }
+        }
+        if (resolves.namespaces) {
+            for (auto& entry : resolves.namespaces->entries()) {
+                if (entry.namespace_oid == components::catalog::INVALID_OID &&
+                    named.namespace_entry(entry.dbname) == nullptr) {
+                    entry.superseded = true;
+                }
+            }
+        }
     }
 
     const components::logical_plan::resolved_type_metadata_t*

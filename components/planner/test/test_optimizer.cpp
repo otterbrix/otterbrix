@@ -1021,12 +1021,24 @@ TEST_CASE("optimizer::pushdown_aggregate::cte_scan_child_is_skipped") {
     REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
 }
 
+namespace {
+    components::operators::operator_ptr no_host_operator(const services::context_storage_t&,
+                                                         const components::compute::function_registry_t&,
+                                                         const node_extension_t&) {
+        return {};
+    }
+} // namespace
+
 TEST_CASE("optimizer::pushdown_aggregate::extension_child_is_skipped") {
     auto resource = core::pmr::otterbrix_resource();
     auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
     auto agg = make_agg(&resource, group);
-    agg->append_child(
-        make_node_extension(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}));
+    auto ext = make_node_extension(&resource,
+                                   collection_name,
+                                   std::pmr::vector<components::types::complex_logical_type>{&resource},
+                                   &no_host_operator);
+    REQUIRE_FALSE(ext.has_error());
+    agg->append_child(ext.value());
     REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
 }
 
@@ -2070,4 +2082,73 @@ TEST_CASE("optimizer::constant_folding::non_numeric_constant_arithmetic_is_decli
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
     REQUIRE(s->params().size() == 2);
     REQUIRE(s->type() == scalar_type::add);
+}
+
+namespace {
+    std::vector<int>& rule_trace() {
+        static std::vector<int> trace;
+        return trace;
+    }
+
+    template<int Tag>
+    node_ptr
+    trace_rule(std::pmr::memory_resource*, node_ptr node, const components::planner::optimizer_rule_context_t&) {
+        rule_trace().push_back(Tag);
+        return node;
+    }
+
+    bool group_stamped(const node_ptr& node) {
+        for (const auto& child : node->children()) {
+            if (child->type() == node_type::group_t) {
+                return static_cast<const node_group_t*>(child.get())->pushdown();
+            }
+        }
+        return false;
+    }
+
+    // Records, per stage, whether pushdown_aggregate had stamped the group by then.
+    std::vector<std::pair<int, bool>>& stamp_trace() {
+        static std::vector<std::pair<int, bool>> trace;
+        return trace;
+    }
+
+    template<int Tag>
+    node_ptr
+    stamp_rule(std::pmr::memory_resource*, node_ptr node, const components::planner::optimizer_rule_context_t&) {
+        stamp_trace().emplace_back(Tag, group_stamped(node));
+        return node;
+    }
+} // namespace
+
+TEST_CASE("optimizer::host_rules::stage_order_then_registration_order") {
+    using components::planner::optimizer_stage;
+    auto resource = core::pmr::otterbrix_resource();
+    auto agg = make_agg(&resource, make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false));
+    const components::planner::optimizer_rule_t rules[] = {
+        {optimizer_stage::last, &trace_rule<5>},
+        {optimizer_stage::after_simplify, &trace_rule<1>},
+        {optimizer_stage::after_limit, &trace_rule<3>},
+        {optimizer_stage::after_filters_and_joins, &trace_rule<2>},
+        {optimizer_stage::after_simplify, &trace_rule<11>},
+        {optimizer_stage::after_aggregate_pushdown, &trace_rule<4>},
+    };
+    rule_trace().clear();
+    auto params = make_parameter_node(&resource);
+    components::planner::optimize(&resource, agg, params.get(), nullptr, /*can_push_to_agent=*/false, rules);
+    REQUIRE(rule_trace() == std::vector<int>{1, 11, 2, 3, 4, 5});
+}
+
+TEST_CASE("optimizer::host_rules::aggregate_pushdown_stage_sees_the_stamp") {
+    using components::planner::optimizer_stage;
+    auto resource = core::pmr::otterbrix_resource();
+    auto agg = make_agg(&resource, make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false));
+    const components::planner::optimizer_rule_t rules[] = {
+        {optimizer_stage::after_limit, &stamp_rule<3>},
+        {optimizer_stage::after_aggregate_pushdown, &stamp_rule<4>},
+        {optimizer_stage::last, &stamp_rule<5>},
+    };
+    stamp_trace().clear();
+    auto params = make_parameter_node(&resource);
+    components::planner::optimize(&resource, agg, params.get(), nullptr, /*can_push_to_agent=*/true, rules);
+    REQUIRE(stamp_trace() == std::vector<std::pair<int, bool>>{{3, false}, {4, true}, {5, true}});
 }

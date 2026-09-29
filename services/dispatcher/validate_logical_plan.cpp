@@ -797,19 +797,13 @@ namespace services::dispatcher {
                     if (child.has_error()) {
                         return child;
                     }
-                    return result;
                 }
-                const auto* tbl = node->table_metadata();
-                if (!tbl) {
-                    return core::error_t(
-                        core::error_code_t::table_not_exists,
-                        std::pmr::string{"extension table is not registered in the catalog", resource});
-                }
-                const std::string& visible_alias = node->result_alias().empty() ? ext->relname() : node->result_alias();
-                for (const auto& column : tbl->columns) {
+                const std::string visible_alias =
+                    node->result_alias().empty() ? std::string{ext->name()} : node->result_alias();
+                for (const auto& column : ext->columns()) {
                     type_from_t entry;
                     entry.result_alias = visible_alias;
-                    entry.type = column.type;
+                    entry.type = column;
                     result.push_back(std::move(entry));
                 }
                 return result;

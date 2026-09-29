@@ -186,8 +186,8 @@ namespace services::collection::executor {
                            actor_zeta::address_t index_address,
                            log_t&& log,
                            uint64_t dml_flush_row_threshold,
-                           planner::create_plan_rule_t create_plan_rule,
-                           components::planner::optimizer_pass_t optimizer_pass)
+                           std::span<const components::planner::optimizer_rule_t> optimizer_rules,
+                           components::planner::name_resolution_hook_t name_resolution)
         : actor_zeta::basic_actor<executor_t>{resource}
         , parent_address_(std::move(parent_address))
         , wal_address_(std::move(wal_address))
@@ -196,8 +196,8 @@ namespace services::collection::executor {
         , log_(log)
         , function_registry_(resource)
         , cast_registry_(resource)
-        , create_plan_rule_(create_plan_rule)
-        , optimizer_pass_(optimizer_pass)
+        , optimizer_rules_(optimizer_rules.begin(), optimizer_rules.end(), resource)
+        , name_resolution_(name_resolution)
         , dml_flush_row_threshold_(dml_flush_row_threshold)
         , explain_renderers_(resource) {
         register_default_functions(function_registry_);
@@ -275,7 +275,6 @@ namespace services::collection::executor {
         }
 
         context_storage.parameters = &plan.parameters->parameters();
-        context_storage.create_plan_rule = create_plan_rule_;
         components::operators::operator_ptr node = planner::create_plan(context_storage,
                                                                         function_registry_,
                                                                         plan.sub_queries.back(),
@@ -379,6 +378,14 @@ namespace services::collection::executor {
     executor_t::execute_plan_full(components::session::session_id_t session,
                                   components::logical_plan::execution_plan_t plan,
                                   services::dispatcher::txn_session_context_t session_ctx) {
+        co_return co_await execute_statement_(session, std::move(plan), std::move(session_ctx), host_names_t::resolve);
+    }
+
+    executor_t::unique_future<execute_result_t>
+    executor_t::execute_statement_(components::session::session_id_t session,
+                                   components::logical_plan::execution_plan_t plan,
+                                   services::dispatcher::txn_session_context_t session_ctx,
+                                   host_names_t host_names) {
         using node_type = components::logical_plan::node_type;
         using components::logical_plan::node_aggregate_t;
         using components::logical_plan::node_catalog_resolve_t;
@@ -411,7 +418,7 @@ namespace services::collection::executor {
                 sub_plan.explain = components::logical_plan::explain_type::analyze;
                 sub_plan.explain_capture_ir = true;
             }
-            auto sub_result = co_await execute_plan_full(session, std::move(sub_plan), session_ctx);
+            auto sub_result = co_await execute_statement_(session, std::move(sub_plan), session_ctx, host_names);
             if (sub_result.cursor->is_error()) {
                 co_return execute_result_t{std::move(sub_result.cursor)};
             }
@@ -607,6 +614,48 @@ namespace services::collection::executor {
                               "executor::execute_plan_full: view sub-plan resolve failed: {}",
                               pass2_result.cursor->get_error().what);
                         co_return execute_result_t{std::move(pass2_result.cursor)};
+                    }
+                }
+            }
+        }
+        // The host resolves what the catalog did not: its reads run here, in this statement's snapshot, and it
+        // rewrites the tree before validation. A statement whose names all resolved never reaches the host.
+        if (host_names == host_names_t::resolve && !needs_ddl_txn && plan.sub_queries.back()) {
+            auto unresolved = services::catalog_resolve::unresolved_tables(resource(), plan.catalog_resolves);
+            if (!unresolved.empty()) {
+                auto reads = name_resolution_.need(resource(), plan.sub_queries.back(), unresolved);
+                if (reads.has_error()) {
+                    co_return execute_result_t{make_cursor(resource(), reads.error())};
+                }
+                std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>> read_results{resource()};
+                read_results.reserve(reads.value().size());
+                for (auto& read : reads.value()) {
+                    auto read_result =
+                        co_await execute_statement_(session, std::move(read), session_ctx, host_names_t::local_only);
+                    if (read_result.cursor->is_error()) {
+                        co_return execute_result_t{std::move(read_result.cursor)};
+                    }
+                    read_results.push_back(std::move(read_result.cursor->chunks()));
+                }
+                auto rewritten =
+                    name_resolution_.decide(resource(), std::move(plan.sub_queries.back()), unresolved, read_results);
+                if (rewritten.has_error()) {
+                    co_return execute_result_t{make_cursor(resource(), rewritten.error())};
+                }
+                plan.sub_queries.back() = std::move(rewritten.value());
+                services::catalog_resolve::supersede_unnamed_entries(resource(),
+                                                                     plan.catalog_resolves,
+                                                                     plan.sub_queries.back().get());
+                const auto entries_before = services::catalog_resolve::entry_count(plan.catalog_resolves);
+                services::dispatcher::register_plan_targets(resource(),
+                                                            plan.sub_queries.back().get(),
+                                                            &plan.catalog_resolves);
+                if (services::catalog_resolve::entry_count(plan.catalog_resolves) != entries_before) {
+                    std::pmr::vector<components::logical_plan::node_ptr> resolve_nodes{resource()};
+                    collect_resolve_nodes(plan.catalog_resolves, resolve_nodes);
+                    auto host_pass_result = co_await run_resolve_subplan(this, std::move(resolve_nodes));
+                    if (host_pass_result.cursor->is_error()) {
+                        co_return execute_result_t{std::move(host_pass_result.cursor)};
                     }
                 }
             }
@@ -1649,7 +1698,7 @@ namespace services::collection::executor {
                                                                 plan.parameters.get(),
                                                                 &plan.catalog_resolves,
                                                                 can_push_to_agent,
-                                                                optimizer_pass_,
+                                                                optimizer_rules_,
                                                                 &deferred_parameters);
 
         if (can_push_to_agent) {

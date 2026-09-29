@@ -54,7 +54,8 @@ namespace {
     std::atomic<uint64_t> g_host_pass_calls{0};
 
     components::logical_plan::node_ptr counting_host_pass(std::pmr::memory_resource*,
-                                                          components::logical_plan::node_ptr node) {
+                                                          components::logical_plan::node_ptr node,
+                                                          const components::planner::optimizer_rule_context_t&) {
         g_host_pass_calls.fetch_add(1, std::memory_order_relaxed);
         return node;
     }
@@ -103,7 +104,7 @@ namespace {
 struct dispatcher_fixture : actor_zeta::actor::actor_mixin<dispatcher_fixture> {
     dispatcher_fixture(std::pmr::memory_resource* resource,
                        const std::string& disk_path,
-                       components::planner::optimizer_pass_t optimizer_pass = &components::planner::no_op_pass,
+                       std::span<const components::planner::optimizer_rule_t> optimizer_rules = {},
                        bool wire_index = true)
         : actor_zeta::actor::actor_mixin<dispatcher_fixture>()
         , resource_(resource)
@@ -135,8 +136,7 @@ struct dispatcher_fixture : actor_zeta::actor::actor_mixin<dispatcher_fixture> {
                                                                       wire_index ? manager_index_->address()
                                                                                  : components::pipeline::no_mailbox(),
                                                                       0,
-                                                                      &services::planner::no_custom_lowering,
-                                                                      optimizer_pass)) {
+                                                                      optimizer_rules)) {
         manager_wal_->set_manager_dispatcher_sync(manager_dispatcher_->address());
         manager_disk_->set_manager_wal_sync(manager_wal_->address());
         manager_index_->set_manager_dispatcher_sync(manager_dispatcher_->address());
@@ -310,11 +310,13 @@ TEST_CASE("services::dispatcher::array_equality_subquery_unstamped_schema_is_ref
     REQUIRE(cur->is_error());
 }
 
-// Storing optimizer_pass_ without forwarding it into optimize() would silently ignore it.
-TEST_CASE("services::dispatcher::host_optimizer_pass_reaches_optimize") {
+// Storing the host rules without forwarding them into optimize() would silently ignore them.
+TEST_CASE("services::dispatcher::host_optimizer_rules_reach_optimize") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     g_host_pass_calls.store(0, std::memory_order_relaxed);
-    dispatcher_fixture test(mr.get(), dispatcher_dir("host_pass"), &counting_host_pass);
+    const components::planner::optimizer_rule_t rules[] = {
+        {components::planner::optimizer_stage::last, &counting_host_pass}};
+    dispatcher_fixture test(mr.get(), dispatcher_dir("host_pass"), rules);
 
     REQUIRE(test.execute_sql("CREATE DATABASE db;")->is_success());
     REQUIRE(test.execute_sql("CREATE TABLE db.t (b bigint);")->is_success());
@@ -495,7 +497,7 @@ TEST_CASE("services::dispatcher::create_index_refuses_without_an_index_manager")
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     dispatcher_fixture test(mr.get(),
                             dispatcher_dir("create_index_no_index_manager"),
-                            &components::planner::no_op_pass,
+                            {},
                             /*wire_index=*/false);
 
     REQUIRE(test.execute_sql("CREATE DATABASE cim;")->is_success());

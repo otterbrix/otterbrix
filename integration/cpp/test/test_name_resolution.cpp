@@ -229,20 +229,26 @@ namespace {
             return out;
         }
 
-        collect_join_arities(result.node_ptr(), out.join_arities);
-        collect_joins(result.node_ptr(), out.joins);
+        auto plan = result.finalize();
+        if (plan.has_error()) {
+            out.rejected = true;
+            out.stage = "finalize";
+            out.code = plan.error().type;
+            out.message = to_std(plan.error().what);
+            return out;
+        }
+        const auto& root = plan.value().sub_queries.back();
+        collect_join_arities(root, out.join_arities);
+        collect_joins(root, out.joins);
         std::vector<found_key_t> keys;
-        collect_keys(result.node_ptr(), keys);
+        collect_keys(root, keys);
         for (const auto& key : keys) {
             // An empty name asks for every key, for cases that watch a statement's shape, not one reference.
             if (column.empty() || last_segment(key.path) == column) {
                 out.matches.push_back(key);
             }
         }
-        // Reads the plan, so it goes last: finalize() hands over what transform() built.
-        if (auto plan = result.finalize(); !plan.has_error()) {
-            collect_catalog_targets(plan.value().catalog_resolves, out.catalog_targets);
-        }
+        collect_catalog_targets(plan.value().catalog_resolves, out.catalog_targets);
         return out;
     }
 

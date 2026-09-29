@@ -974,6 +974,10 @@ namespace components::execution_dag {
         for (auto slot : node->input_indices()) {
             count = std::min(count, slot_sizes_[slot]);
         }
+        // A reduction folds every row of the chunk it is handed, even over constant arguments (count(1)).
+        if (node->reduces() && count == unconstrained_rows) {
+            count = ambient;
+        }
         for (auto slot : node->output_indices()) {
             slot_sizes_[slot] = count;
         }

@@ -66,10 +66,8 @@ namespace {
     // Parses + transforms the query, then swaps the two table aggregates for
     // raw node_data chunks. string_key=false makes campaign_name an INTEGER
     // column (the passing control case).
-    logical_plan::node_ptr build_plan(std::pmr::memory_resource* resource,
-                                      sql::transform::transformer& transformer,
-                                      logical_plan::parameter_node_ptr& out_params,
-                                      bool string_key) {
+    logical_plan::execution_plan_t
+    build_plan(std::pmr::memory_resource* resource, sql::transform::transformer& transformer, bool string_key) {
         const char* sql = R"(
             SELECT c.campaign_name, COUNT(p.product_id) as product_count, AVG(p.price) as avg_product_price
             FROM db1.campaigns c
@@ -84,9 +82,11 @@ namespace {
         auto* res = reinterpret_cast<::Node*>(linitial(raw));
         auto binder = transformer.transform(sql::transform::pg_cell_to_node_cast(res));
         REQUIRE_FALSE(binder.has_error());
-        auto root = binder.node_ptr();
+        auto finalized = binder.finalize();
+        REQUIRE_FALSE(finalized.has_error());
+        auto plan = std::move(finalized.value());
+        auto root = plan.sub_queries.back();
         REQUIRE(root);
-        out_params = binder.params_ptr();
 
         const auto name_type = string_key ? types::logical_type::STRING_LITERAL : types::logical_type::INTEGER;
         std::deque<logical_plan::node_ptr> walk{root};
@@ -125,7 +125,7 @@ namespace {
             }
         }
         REQUIRE(swapped == 2);
-        return root;
+        return plan;
     }
 
 } // namespace
@@ -138,11 +138,8 @@ TEST_CASE("group by over node_data: integer key (control, passes)") {
     auto* resource = dispatcher->resource();
 
     sql::transform::transformer transformer(resource);
-    logical_plan::parameter_node_ptr params;
-    auto root = build_plan(resource, transformer, params, /*string_key=*/false);
-
-    auto cursor =
-        dispatcher->execute_plan(otterbrix::session_id_t(), logical_plan::execution_plan_t{resource, root, params});
+    auto cursor = dispatcher->execute_plan(otterbrix::session_id_t(),
+                                           build_plan(resource, transformer, /*string_key=*/false));
     REQUIRE(cursor);
     REQUIRE_FALSE(cursor->is_error());
     REQUIRE(cursor->size() == 2);
@@ -174,11 +171,8 @@ TEST_CASE("group by over node_data: string key (SIGSEGV before the fix)") {
     auto* resource = dispatcher->resource();
 
     sql::transform::transformer transformer(resource);
-    logical_plan::parameter_node_ptr params;
-    auto root = build_plan(resource, transformer, params, /*string_key=*/true);
-
-    auto cursor =
-        dispatcher->execute_plan(otterbrix::session_id_t(), logical_plan::execution_plan_t{resource, root, params});
+    auto cursor = dispatcher->execute_plan(otterbrix::session_id_t(),
+                                           build_plan(resource, transformer, /*string_key=*/true));
     REQUIRE(cursor);
     REQUIRE_FALSE(cursor->is_error());
     REQUIRE(cursor->size() == 2);

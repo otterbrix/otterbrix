@@ -2025,6 +2025,16 @@ namespace services::collection::executor {
                     break; // 0-column drain sentinel (a schema'd 0-row batch is real input, e.g.
                            // the empty-guard a scalar aggregate needs to emit COUNT=0)
                 }
+                if (batch.size() > components::vector::DEFAULT_VECTOR_CAPACITY) {
+                    co_await release_source_cursor(resource());
+                    std::pmr::string what{"source batch of ", resource()};
+                    what += std::to_string(batch.size());
+                    what += " rows exceeds the ";
+                    what += std::to_string(components::vector::DEFAULT_VECTOR_CAPACITY);
+                    what += "-row limit per batch; the source must slice it";
+                    co_return core::result_wrapper_t<ops::chunks_vector_t>(
+                        core::error_t(core::error_code_t::invalid_parameter, std::move(what)));
+                }
                 if (analyze) {
                     source->record_analyze(batch.size(), scope.elapsed());
                 }

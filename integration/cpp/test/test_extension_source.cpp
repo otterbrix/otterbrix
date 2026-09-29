@@ -37,7 +37,13 @@ namespace {
         std::pmr::vector<types::complex_logical_type> types(res);
         types.emplace_back(types::logical_type::BIGINT, spec.col_a);
         types.emplace_back(types::logical_type::BIGINT, spec.col_b);
-        vector::data_chunk_t chunk(res, types, spec.rows.empty() ? 1 : spec.rows.size());
+        vector::data_chunk_t chunk(res,
+                                   types,
+                                   std::clamp<size_t>(spec.rows.size(), 1, vector::DEFAULT_VECTOR_CAPACITY));
+        // A backend page can be wider than one vector; resize() is how a host grows a chunk past it.
+        if (spec.rows.size() > chunk.capacity()) {
+            chunk.resize(spec.rows.size());
+        }
         chunk.set_cardinality(spec.rows.size());
         for (size_t i = 0; i < spec.rows.size(); ++i) {
             chunk.set_value(0, i, spec.rows[i].first);
@@ -412,13 +418,15 @@ namespace {
         auto binder = transformer.transform(ast_ref);
         REQUIRE_FALSE(binder.has_error());
 
-        auto plan = binder.node_ptr();
-        REQUIRE(plan);
+        auto finalized = binder.finalize();
+        REQUIRE_FALSE(finalized.has_error());
+        auto exec_plan = std::move(finalized.value());
+        REQUIRE(exec_plan.sub_queries.back());
 
         register_externals(dispatcher, externals);
-        swap_to_extension(plan, res, externals);
+        swap_to_extension(exec_plan.sub_queries.back(), res, externals);
+        auto plan = exec_plan.sub_queries.back();
 
-        logical_plan::execution_plan_t exec_plan{dispatcher->resource(), plan, binder.params_ptr()};
         const auto started = std::chrono::steady_clock::now();
         auto cursor = execute_within_deadline(dispatcher, std::move(exec_plan));
         return {std::move(cursor), std::move(plan), std::chrono::steady_clock::now() - started};
@@ -435,12 +443,13 @@ namespace {
         auto& ast_ref = sql::transform::pg_cell_to_node_cast(linitial(raw));
         auto binder = transformer.transform(ast_ref);
         REQUIRE_FALSE(binder.has_error());
-        auto plan = binder.node_ptr();
-        REQUIRE(plan);
+        auto finalized = binder.finalize();
+        REQUIRE_FALSE(finalized.has_error());
+        auto exec_plan = std::move(finalized.value());
+        REQUIRE(exec_plan.sub_queries.back());
         register_externals(dispatcher, externals);
-        swap_to_extension(plan, res, externals);
+        swap_to_extension(exec_plan.sub_queries.back(), res, externals);
 
-        logical_plan::execution_plan_t exec_plan{res, plan, binder.params_ptr()};
         exec_plan.explain = logical_plan::explain_type::plan;
         auto session = otterbrix::session_id_t();
         auto cursor = dispatcher->execute_plan(session, std::move(exec_plan));
@@ -689,7 +698,10 @@ TEST_CASE("integration::cpp::extension_source::sink_writes_backend") {
     auto& ast = sql::transform::pg_cell_to_node_cast(linitial(raw));
     auto binder = transformer.transform(ast);
     REQUIRE_FALSE(binder.has_error());
-    auto child = binder.node_ptr();
+    auto finalized = binder.finalize();
+    REQUIRE_FALSE(finalized.has_error());
+    auto exec_plan = std::move(finalized.value());
+    auto child = exec_plan.sub_queries.back();
     REQUIRE(child);
 
     std::vector<std::pair<int64_t, int64_t>> written;
@@ -698,7 +710,8 @@ TEST_CASE("integration::cpp::extension_source::sink_writes_backend") {
     sink->append_child(child);
 
     auto session = otterbrix::session_id_t();
-    auto cur = dispatcher->execute_plan(session, logical_plan::execution_plan_t{res, sink, binder.params_ptr()});
+    exec_plan.sub_queries.back() = sink;
+    auto cur = dispatcher->execute_plan(session, std::move(exec_plan));
     REQUIRE(cur->is_success());
 
     REQUIRE(written.size() == 3);
@@ -847,4 +860,49 @@ TEST_CASE("integration::cpp::extension_source::lateral_inner_source_opened_per_d
     CHECK(open_probe().opens.load() == 3);
     CHECK(open_probe().fetches_done.load() == 3);
     CHECK(open_probe().next_before_ready.load() == 0);
+}
+
+// The engine takes at most DEFAULT_VECTOR_CAPACITY rows per source batch; slicing a wider backend page is the
+// host's job, so a wider chunk is refused whatever the query does with it.
+TEST_CASE("integration::cpp::extension_source::chunk_over_vector_capacity") {
+    EXT_TEST_BOILERPLATE(integration_fixture_path("test_ext_wide_chunk/base"))
+    constexpr int64_t n = 2500;
+    std::vector<std::pair<int64_t, int64_t>> rows;
+    rows.reserve(n);
+    for (int64_t i = 0; i < n; ++i) {
+        rows.emplace_back(i, i % 3);
+    }
+    auto externals = one_source(res, "uid_w", "key", "grp", rows, /*async=*/false);
+    auto expect_refused = [&](const std::string& query) {
+        auto r = run_with_extension_sources(dispatcher, query, externals);
+        INFO(query);
+        REQUIRE(r.cursor);
+        REQUIRE_FALSE(r.cursor->is_success());
+        CHECK(r.cursor->get_error().type == core::error_code_t::invalid_parameter);
+        CHECK(std::string{r.cursor->get_error().what}.find(std::to_string(vector::DEFAULT_VECTOR_CAPACITY)) !=
+              std::string::npos);
+    };
+
+    SECTION("scan") { expect_refused("SELECT * FROM uid_w.remote.db1.t1;"); }
+    SECTION("filter") { expect_refused("SELECT key FROM uid_w.remote.db1.t1 WHERE key >= 2000;"); }
+    SECTION("projection") { expect_refused("SELECT key + 1 AS k FROM uid_w.remote.db1.t1;"); }
+    SECTION("group_by") { expect_refused("SELECT grp, COUNT(*) AS c FROM uid_w.remote.db1.t1 GROUP BY grp;"); }
+    SECTION("scalar_aggregate") { expect_refused("SELECT SUM(key) AS s FROM uid_w.remote.db1.t1;"); }
+    auto seed_local = [&] {
+        REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE DATABASE widedb;")->is_success());
+        REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE TABLE widedb.t (key BIGINT, amount BIGINT);")
+                    ->is_success());
+        REQUIRE(dispatcher
+                    ->execute_sql(otterbrix::session_id_t(),
+                                  "INSERT INTO widedb.t (key, amount) VALUES (1, 10), (1500, 20), (2499, 30);")
+                    ->is_success());
+    };
+    SECTION("join_wide_on_the_left") {
+        seed_local();
+        expect_refused("SELECT w.grp, t.amount FROM uid_w.remote.db1.t1 AS w JOIN widedb.t AS t ON w.key = t.key;");
+    }
+    SECTION("join_wide_on_the_right") {
+        seed_local();
+        expect_refused("SELECT w.grp, t.amount FROM widedb.t AS t JOIN uid_w.remote.db1.t1 AS w ON t.key = w.key;");
+    }
 }

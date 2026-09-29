@@ -73,15 +73,15 @@ namespace {
         auto binder = transformer.transform(ast_ref);
         REQUIRE_FALSE(binder.has_error());
 
-        auto plan = binder.node_ptr();
-        REQUIRE(plan);
+        auto finalized = binder.finalize();
+        REQUIRE_FALSE(finalized.has_error());
+        auto plan = std::move(finalized.value());
+        REQUIRE(plan.sub_queries.back());
 
-        swap_externals(plan, res, chunks_by_uid);
+        swap_externals(plan.sub_queries.back(), res, chunks_by_uid);
 
         auto session = otterbrix::session_id_t();
-        return dispatcher->execute_plan(
-            session,
-            logical_plan::execution_plan_t{dispatcher->resource(), plan, binder.params_ptr()});
+        return dispatcher->execute_plan(session, std::move(plan));
     }
 } // namespace
 

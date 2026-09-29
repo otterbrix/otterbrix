@@ -3,6 +3,7 @@
 #include <components/types/operations_helper.hpp>
 #include <core/operations_helper.hpp>
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 static const database_name_t database_name = "testdatabase";
@@ -228,7 +229,8 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                 dispatcher->execute_sql(session, "SELECT AVG(count) AS avg_val FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).value<int64_t>() == 49);
+            // AVG over an integer column answers DOUBLE: 4950 / 100
+            REQUIRE(cur->value(0, 0).value<double>() == Catch::Approx(49.5));
         }
     }
 
@@ -277,7 +279,7 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                                                "WHERE count < 10;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).value<int64_t>() == 4);
+            REQUIRE(cur->value(0, 0).value<double>() == Catch::Approx(4.5));
         }
     }
 
@@ -456,8 +458,8 @@ TEST_CASE("integration::cpp::test_collection::sql::group_by") {
             REQUIRE(cur->value(1, number).value<uint64_t>() == 10);
             REQUIRE(cur->value(2, number).value<int64_t>() ==
                     5 * (static_cast<int64_t>(number) % 20) + 5 * ((static_cast<int64_t>(number) + 10) % 20));
-            REQUIRE(cur->value(3, number).value<int64_t>() ==
-                    static_cast<int64_t>((number % 20 + (number + 10) % 20)) / 2);
+            REQUIRE(cur->value(3, number).value<double>() ==
+                    Catch::Approx(static_cast<double>(number % 20 + (number + 10) % 20) / 2));
             REQUIRE(cur->value(4, number).value<int64_t>() == static_cast<int64_t>(number) % 20);
             REQUIRE(cur->value(5, number).value<int64_t>() == (static_cast<int64_t>(number) + 10) % 20);
         }
@@ -480,8 +482,8 @@ TEST_CASE("integration::cpp::test_collection::sql::group_by") {
             REQUIRE(cur->value(0, row).value<std::string_view>() == "Name " + std::to_string(number));
             REQUIRE(cur->value(1, row).value<uint64_t>() == 10);
             REQUIRE(cur->value(2, row).value<int64_t>() == 5 * (number % 20) + 5 * ((number + 10) % 20));
-            REQUIRE(cur->value(3, row).value<int64_t>() ==
-                    static_cast<int64_t>((number % 20 + (number + 10) % 20)) / 2);
+            REQUIRE(cur->value(3, row).value<double>() ==
+                    Catch::Approx(static_cast<double>(number % 20 + (number + 10) % 20) / 2));
             REQUIRE(cur->value(4, row).value<int64_t>() == number % 20);
             REQUIRE(cur->value(5, row).value<int64_t>() == (number + 10) % 20);
         }

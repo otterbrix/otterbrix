@@ -47,9 +47,126 @@ namespace {
         uint64_t count{0};
     };
 
+    // avg over signed integers and decimals sums exactly in 128 bits, over real/double in double.
+    struct avg_wide_state_t {
+        int128_t exact{0};
+        double inexact{0};
+        uint64_t count{0};
+    };
+
     struct count_state_t {
         uint64_t value{0};
     };
+
+    // How sum/avg accumulate an argument type (Trino semantics). Unsigned integers and HUGEINT have no Trino
+    // counterpart and keep accumulating in their own type.
+    enum class accumulation
+    {
+        widened_integer,
+        decimal,
+        floating,
+        input_type
+    };
+
+    accumulation accumulation_of(const complex_logical_type& type) {
+        switch (type.type()) {
+            case logical_type::TINYINT:
+            case logical_type::SMALLINT:
+            case logical_type::INTEGER:
+            case logical_type::BIGINT:
+                return accumulation::widened_integer;
+            case logical_type::DECIMAL:
+                return accumulation::decimal;
+            case logical_type::FLOAT:
+            case logical_type::DOUBLE:
+                return accumulation::floating;
+            default:
+                return accumulation::input_type;
+        }
+    }
+
+    core::error_t one_argument_expected(std::pmr::memory_resource* resource) {
+        return core::error_t(core::error_code_t::incorrect_function_argument,
+                             std::pmr::string{"the aggregate takes exactly one argument", resource});
+    }
+
+    core::result_wrapper_t<complex_logical_type> sum_result_type(std::pmr::memory_resource* resource,
+                                                                 const std::pmr::vector<complex_logical_type>& inputs) {
+        if (inputs.size() != 1) {
+            return one_argument_expected(resource);
+        }
+        const auto& input = inputs.front();
+        switch (accumulation_of(input)) {
+            case accumulation::widened_integer:
+                return complex_logical_type{logical_type::BIGINT};
+            case accumulation::decimal:
+                return complex_logical_type::create_decimal(
+                    resource,
+                    DECIMAL_MAX_WIDTH,
+                    input.extension_as<decimal_logical_type_extension>()->scale());
+            case accumulation::floating:
+            case accumulation::input_type:
+                return input;
+        }
+        return input;
+    }
+
+    core::result_wrapper_t<complex_logical_type> avg_result_type(std::pmr::memory_resource* resource,
+                                                                 const std::pmr::vector<complex_logical_type>& inputs) {
+        if (inputs.size() != 1) {
+            return one_argument_expected(resource);
+        }
+        if (accumulation_of(inputs.front()) == accumulation::widened_integer) {
+            return complex_logical_type{logical_type::DOUBLE};
+        }
+        return inputs.front();
+    }
+
+    // Adds without ever wrapping: false means the total left the accumulator's range.
+    bool checked_add(int64_t& total, int64_t value) { return !__builtin_add_overflow(total, value, &total); }
+
+    // The largest unscaled DECIMAL(38, s) payload.
+    const int128_t& max_decimal_payload() {
+        static const int128_t limit = [] {
+            int128_t value{1};
+            for (uint8_t digit = 0; digit < DECIMAL_MAX_WIDTH; digit++) {
+                value *= 10;
+            }
+            return value - 1;
+        }();
+        return limit;
+    }
+
+    bool checked_add(int128_t& total, int128_t value) {
+        const auto& limit = max_decimal_payload();
+        if ((value > 0 && total > limit - value) || (value < 0 && total < -limit - value)) {
+            return false;
+        }
+        total += value;
+        return true;
+    }
+
+    // Folds every non-null row into its group's accumulator; stops at the first refused addition.
+    template<typename in_t, typename state_t, typename add_t>
+    bool fold(const vector_t& input, core::span<const uint32_t> groups, aggregate_states_t states, add_t add) {
+        const auto* data = input.data<in_t>();
+        const bool all_valid = input.validity().all_valid();
+        for (uint64_t row = 0; row < groups.size(); row++) {
+            if (!all_valid && input.is_null(row)) {
+                continue;
+            }
+            if (!add(states.at<state_t>(groups[row]), data[row])) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    core::error_t overflow(kernel_context& ctx, const char* name) {
+        std::pmr::string message{name, ctx.exec_context().resource()};
+        message += " overflow: the total leaves the range of its result type";
+        return core::error_t(core::error_code_t::arithmetics_failure, std::move(message));
+    }
 
     template<template<typename> class op_t, typename fallback_t, typename... args_t>
     auto arithmetic_dispatch(const complex_logical_type& type, fallback_t fallback, args_t&&... args)
@@ -155,6 +272,15 @@ namespace {
         if (inputs.size() != 1) {
             return {};
         }
+        switch (accumulation_of(inputs.front())) {
+            case accumulation::widened_integer:
+                return aggregate_state_of<numeric_state_t<int64_t>>();
+            case accumulation::decimal:
+                return aggregate_state_of<numeric_state_t<int128_t>>();
+            case accumulation::floating:
+            case accumulation::input_type:
+                break;
+        }
         return arithmetic_dispatch<numeric_layout_t>(inputs.front(), no_layout);
     }
 
@@ -190,6 +316,9 @@ namespace {
     aggregate_state_layout_t avg_layout(const std::pmr::vector<complex_logical_type>& inputs) {
         if (inputs.size() != 1) {
             return {};
+        }
+        if (accumulation_of(inputs.front()) != accumulation::input_type) {
+            return aggregate_state_of<avg_wide_state_t>();
         }
         return arithmetic_dispatch<avg_layout_t>(inputs.front(), no_layout);
     }
@@ -241,12 +370,57 @@ namespace {
                              core::span<const uint32_t> groups,
                              aggregate_states_t states) {
         const auto& column = input.data.front();
-        return arithmetic_dispatch<sum_update_t>(
-            column.type(),
-            [&ctx] { return unsupported_argument(ctx, "sum"); },
-            column,
-            groups,
-            states);
+        using sum64_t = numeric_state_t<int64_t>;
+        using sum128_t = numeric_state_t<int128_t>;
+        auto add64 = [](sum64_t& total, auto value) {
+            total.has_value = true;
+            return checked_add(total.value, static_cast<int64_t>(value));
+        };
+        auto add128 = [](sum128_t& total, auto value) {
+            total.has_value = true;
+            return checked_add(total.value, static_cast<int128_t>(value));
+        };
+        bool fits = true;
+        switch (column.type().type()) {
+            case logical_type::TINYINT:
+                fits = fold<int8_t, sum64_t>(column, groups, states, add64);
+                break;
+            case logical_type::SMALLINT:
+                fits = fold<int16_t, sum64_t>(column, groups, states, add64);
+                break;
+            case logical_type::INTEGER:
+                fits = fold<int32_t, sum64_t>(column, groups, states, add64);
+                break;
+            case logical_type::BIGINT:
+                fits = fold<int64_t, sum64_t>(column, groups, states, add64);
+                break;
+            case logical_type::DECIMAL:
+                switch (column.type().to_physical_type()) {
+                    case physical_type::INT16:
+                        fits = fold<int16_t, sum128_t>(column, groups, states, add128);
+                        break;
+                    case physical_type::INT32:
+                        fits = fold<int32_t, sum128_t>(column, groups, states, add128);
+                        break;
+                    case physical_type::INT64:
+                        fits = fold<int64_t, sum128_t>(column, groups, states, add128);
+                        break;
+                    case physical_type::INT128:
+                        fits = fold<int128_t, sum128_t>(column, groups, states, add128);
+                        break;
+                    default:
+                        return unsupported_argument(ctx, "sum");
+                }
+                break;
+            default:
+                return arithmetic_dispatch<sum_update_t>(
+                    column.type(),
+                    [&ctx] { return unsupported_argument(ctx, "sum"); },
+                    column,
+                    groups,
+                    states);
+        }
+        return fits ? core::error_t::no_error() : overflow(ctx, "sum");
     }
 
     // One update for every type MIN/MAX accepts: order the incoming row against the group's
@@ -294,12 +468,67 @@ namespace {
                              core::span<const uint32_t> groups,
                              aggregate_states_t states) {
         const auto& column = input.data.front();
-        return arithmetic_dispatch<avg_update_t>(
-            column.type(),
-            [&ctx] { return unsupported_argument(ctx, "avg"); },
-            column,
-            groups,
-            states);
+        auto add_integer = [](avg_wide_state_t& total, auto value) {
+            total.exact += static_cast<int128_t>(value);
+            total.count++;
+            return true;
+        };
+        auto add_decimal = [](avg_wide_state_t& total, auto value) {
+            total.count++;
+            return checked_add(total.exact, static_cast<int128_t>(value));
+        };
+        auto add_floating = [](avg_wide_state_t& total, auto value) {
+            total.inexact += static_cast<double>(value);
+            total.count++;
+            return true;
+        };
+        bool fits = true;
+        switch (column.type().type()) {
+            case logical_type::TINYINT:
+                fits = fold<int8_t, avg_wide_state_t>(column, groups, states, add_integer);
+                break;
+            case logical_type::SMALLINT:
+                fits = fold<int16_t, avg_wide_state_t>(column, groups, states, add_integer);
+                break;
+            case logical_type::INTEGER:
+                fits = fold<int32_t, avg_wide_state_t>(column, groups, states, add_integer);
+                break;
+            case logical_type::BIGINT:
+                fits = fold<int64_t, avg_wide_state_t>(column, groups, states, add_integer);
+                break;
+            case logical_type::FLOAT:
+                fits = fold<float, avg_wide_state_t>(column, groups, states, add_floating);
+                break;
+            case logical_type::DOUBLE:
+                fits = fold<double, avg_wide_state_t>(column, groups, states, add_floating);
+                break;
+            case logical_type::DECIMAL:
+                switch (column.type().to_physical_type()) {
+                    case physical_type::INT16:
+                        fits = fold<int16_t, avg_wide_state_t>(column, groups, states, add_decimal);
+                        break;
+                    case physical_type::INT32:
+                        fits = fold<int32_t, avg_wide_state_t>(column, groups, states, add_decimal);
+                        break;
+                    case physical_type::INT64:
+                        fits = fold<int64_t, avg_wide_state_t>(column, groups, states, add_decimal);
+                        break;
+                    case physical_type::INT128:
+                        fits = fold<int128_t, avg_wide_state_t>(column, groups, states, add_decimal);
+                        break;
+                    default:
+                        return unsupported_argument(ctx, "avg");
+                }
+                break;
+            default:
+                return arithmetic_dispatch<avg_update_t>(
+                    column.type(),
+                    [&ctx] { return unsupported_argument(ctx, "avg"); },
+                    column,
+                    groups,
+                    states);
+        }
+        return fits ? core::error_t::no_error() : overflow(ctx, "avg");
     }
 
     // COUNT(x) counts the rows where x is not null.
@@ -386,8 +615,61 @@ namespace {
         return core::error_t::no_error();
     }
 
+    template<typename out_t, typename value_of_t>
+    core::error_t
+    emit_averages(aggregate_states_t states, uint64_t first, uint64_t count, vector_t& output, value_of_t value_of) {
+        auto* data = output.data<out_t>();
+        for (uint64_t row = 0; row < count; row++) {
+            const auto& accumulator = states.at<avg_wide_state_t>(first + row);
+            output.set_null(row, accumulator.count == 0);
+            data[row] = accumulator.count == 0 ? out_t{} : value_of(accumulator);
+        }
+        return core::error_t::no_error();
+    }
+
+    // The unscaled DECIMAL mean, rounded half away from zero.
+    int128_t decimal_average(const avg_wide_state_t& accumulator) {
+        const int128_t count{accumulator.count};
+        int128_t quotient = accumulator.exact / count;
+        const int128_t remainder = accumulator.exact % count;
+        if ((remainder < 0 ? -remainder : remainder) * 2 >= count) {
+            quotient += accumulator.exact < 0 ? -1 : 1;
+        }
+        return quotient;
+    }
+
+    template<typename out_t>
+    out_t decimal_average_as(const avg_wide_state_t& accumulator) {
+        return static_cast<out_t>(decimal_average(accumulator));
+    }
+
     core::error_t
     avg_finalize(kernel_context& ctx, aggregate_states_t states, uint64_t first, uint64_t count, vector_t& output) {
+        switch (output.type().type()) {
+            case logical_type::DOUBLE:
+                return emit_averages<double>(states, first, count, output, [](const avg_wide_state_t& a) {
+                    return (static_cast<double>(a.exact) + a.inexact) / static_cast<double>(a.count);
+                });
+            case logical_type::FLOAT:
+                return emit_averages<float>(states, first, count, output, [](const avg_wide_state_t& a) {
+                    return static_cast<float>(a.inexact / static_cast<double>(a.count));
+                });
+            case logical_type::DECIMAL:
+                switch (output.type().to_physical_type()) {
+                    case physical_type::INT16:
+                        return emit_averages<int16_t>(states, first, count, output, decimal_average_as<int16_t>);
+                    case physical_type::INT32:
+                        return emit_averages<int32_t>(states, first, count, output, decimal_average_as<int32_t>);
+                    case physical_type::INT64:
+                        return emit_averages<int64_t>(states, first, count, output, decimal_average_as<int64_t>);
+                    case physical_type::INT128:
+                        return emit_averages<int128_t>(states, first, count, output, decimal_average);
+                    default:
+                        return unsupported_argument(ctx, "avg");
+                }
+            default:
+                break;
+        }
         return arithmetic_dispatch<avg_finalize_t>(
             output.type(),
             [&ctx] { return unsupported_argument(ctx, "avg"); },
@@ -440,7 +722,7 @@ namespace {
 
         kernel_signature_t sig(function_type_t::aggregate,
                                {parameter_type::variable(0, numeric_parameters(resource))},
-                               {output_type::computed(same_type_resolver(0))});
+                               {output_type::computed(&sum_result_type)});
         aggregate_kernel k{std::move(sig), sum_layout, sum_update, sum_finalize};
 
         register_kernel(resource, fn, std::move(k));
@@ -524,7 +806,7 @@ namespace {
 
         kernel_signature_t sig(function_type_t::aggregate,
                                {parameter_type::variable(0, numeric_parameters(resource))},
-                               {output_type::computed(same_type_resolver(0))});
+                               {output_type::computed(&avg_result_type)});
         aggregate_kernel k{std::move(sig), avg_layout, avg_update, avg_finalize};
 
         register_kernel(resource, fn, std::move(k));
@@ -538,7 +820,7 @@ namespace components::compute {
         r.add_builtin(make_sum_func(r.resource(),
                                     "sum",
                                     "Add all numeric values",
-                                    "Results in a single number of the same type as input"));
+                                    "BIGINT over integers, DECIMAL(38, s) over DECIMAL(p, s), else the input type"));
         r.add_builtin(make_min_func(r.resource(),
                                     "min",
                                     "Selects minimal value",
@@ -551,8 +833,8 @@ namespace components::compute {
             make_count_func(r.resource(), "count", "Return data size", "Results in a single number of uint64"));
         r.add_builtin(make_avg_func(r.resource(),
                                     "avg",
-                                    "Return data size",
-                                    "Results in a single number of the same type as input"));
+                                    "Average of all numeric values",
+                                    "DOUBLE over integers, else the input type"));
         register_string_functions(r);
         register_expand_functions(r);
         register_math_functions(r);

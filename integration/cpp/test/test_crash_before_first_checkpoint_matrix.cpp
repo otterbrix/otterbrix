@@ -175,10 +175,7 @@ TEST_CASE("integration::cpp::crash_first_ckpt::P3_after_write_through_multi_tabl
     config.log.level = log_t::level::off;
     const auto crash_dir = integration_fixture_path("crash_first_ckpt/p3_crash");
     constexpr int kRows = 3000;
-    std::uintmax_t image_bytes = 0;
-    {
-        test_spaces space(config);
-        sql_t exec{space.dispatcher()};
+    auto before_crash = [&](const sql_t& exec) {
         REQUIRE(exec("CREATE DATABASE a;")->is_success());
         REQUIRE(exec("CREATE DATABASE b;")->is_success());
         REQUIRE(exec("CREATE TABLE a.t (id bigint, payload text);")->is_success());
@@ -188,6 +185,16 @@ TEST_CASE("integration::cpp::crash_first_ckpt::P3_after_write_through_multi_tabl
         insert_rows(exec, "b.u", 0, kRows, kPayload);
         REQUIRE(exec("DELETE FROM a.t WHERE id < 100;")->is_success());
         REQUIRE(exec("UPDATE b.u SET payload = 'updated' WHERE id = 7;")->is_success());
+    };
+    auto after_reopen = [&](const sql_t& exec) {
+        insert_rows(exec, "a.t", kRows, kRows + 10, kPayload);
+        REQUIRE(exec("CHECKPOINT;")->is_success());
+    };
+    std::uintmax_t image_bytes = 0;
+    {
+        test_spaces space(config);
+        sql_t exec{space.dispatcher()};
+        before_crash(exec);
         take_crash_image(config, crash_dir, "p3_after_write_through");
         image_bytes = largest_otbx(config.main_path);
     }
@@ -218,14 +225,27 @@ TEST_CASE("integration::cpp::crash_first_ckpt::P3_after_write_through_multi_tabl
             auto cell = cur->value(0, 0);
             CHECK(cell.value<std::string_view>() == "updated");
         }
-        insert_rows(exec, "a.t", kRows, kRows + 10, kPayload);
-        REQUIRE(exec("CHECKPOINT;")->is_success());
+        after_reopen(exec);
         CHECK(count_rows(exec, "a.t") == kRows - 100 + 10);
         after_bytes = largest_otbx(crash_config.main_path);
     }
-    // Orphaned write-through blocks must be reused, not stacked: the file may not double.
-    WARN("P3 largest table.otbx after reopen + checkpoint: " << after_bytes << " (image " << image_bytes << ")");
-    CHECK(after_bytes < 2 * image_bytes);
+    // Orphaned write-through blocks must be reused, not stacked: the recovered file is exactly as large as the
+    // one a crash-free run of the same statements leaves behind.
+    std::uintmax_t control_bytes = 0;
+    {
+        auto control_config = test_create_config(integration_fixture_path("crash_first_ckpt/p3_control"));
+        test_clear_directory(control_config);
+        control_config.log.level = log_t::level::off;
+        test_spaces space(control_config);
+        sql_t exec{space.dispatcher()};
+        before_crash(exec);
+        after_reopen(exec);
+        CHECK(count_rows(exec, "a.t") == kRows - 100 + 10);
+        control_bytes = largest_otbx(control_config.main_path);
+    }
+    WARN("P3 largest table.otbx after reopen + checkpoint: " << after_bytes << " (crash-free run " << control_bytes
+                                                              << ", image " << image_bytes << ")");
+    CHECK(after_bytes == control_bytes);
     {
         auto crash_config = test_create_config(crash_dir);
         crash_config.log.level = log_t::level::warn;

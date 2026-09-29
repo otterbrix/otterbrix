@@ -102,6 +102,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_crash_before_first_checkpoint_matrix.cpp
         test_persistence.cpp
         test_alter_drop_column_positions.cpp
+        test_vacuum_drop_column_seal_refusal.cpp
         test_ddl_in_transaction.cpp
         test_cursor_under_concurrent_ddl.cpp
         test_alter_rename_column.cpp

@@ -2,6 +2,7 @@
 
 #include <components/table/standard_column_data.hpp>
 #include <components/table/storage/buffer_pool.hpp>
+#include <components/table/storage/partial_block_manager.hpp>
 #include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
 #include <core/file/local_file_system.hpp>
@@ -71,7 +72,11 @@ TEST_CASE("components::table::column") {
                 v.set_value(i, uint64_t(i));
             }
 
+            components::table::storage::partial_block_manager_t state_pbm(block_manager);
+
             column_append_state state;
+
+            state.pbm = &state_pbm;
             REQUIRE_FALSE(column->initialize_append(state).has_error());
             REQUIRE_FALSE(column->append(state, v, test_size).has_error());
         }
@@ -116,7 +121,11 @@ TEST_CASE("components::table::column") {
                 v.set_value(i, std::string_view{value});
             }
 
+            components::table::storage::partial_block_manager_t state_pbm(block_manager);
+
             column_append_state state;
+
+            state.pbm = &state_pbm;
             REQUIRE_FALSE(column->initialize_append(state).has_error());
             REQUIRE_FALSE(column->append(state, v, test_size).has_error());
         }
@@ -172,7 +181,11 @@ TEST_CASE("components::table::column") {
                 v.set_value(i, arr);
             }
 
+            components::table::storage::partial_block_manager_t state_pbm(block_manager);
+
             column_append_state state;
+
+            state.pbm = &state_pbm;
             REQUIRE_FALSE(column->initialize_append(state).has_error());
             REQUIRE_FALSE(column->append(state, v, test_size).has_error());
         }
@@ -240,7 +253,11 @@ TEST_CASE("components::table::column") {
                 v.set_value(i, arr);
             }
 
+            components::table::storage::partial_block_manager_t state_pbm(block_manager);
+
             column_append_state state;
+
+            state.pbm = &state_pbm;
             REQUIRE_FALSE(column->initialize_append(state).has_error());
             REQUIRE_FALSE(column->append(state, v, test_size).has_error());
         }
@@ -306,7 +323,11 @@ TEST_CASE("components::table::column") {
                 v.set_value(i, list);
             }
 
+            components::table::storage::partial_block_manager_t state_pbm(block_manager);
+
             column_append_state state;
+
+            state.pbm = &state_pbm;
             REQUIRE_FALSE(column->initialize_append(state).has_error());
             REQUIRE_FALSE(column->append(state, v, test_size).has_error());
         }
@@ -372,7 +393,11 @@ TEST_CASE("components::table::column") {
                 v.set_value(i, list);
             }
 
+            components::table::storage::partial_block_manager_t state_pbm(block_manager);
+
             column_append_state state;
+
+            state.pbm = &state_pbm;
             REQUIRE_FALSE(column->initialize_append(state).has_error());
             REQUIRE_FALSE(column->append(state, v, test_size).has_error());
         }
@@ -453,7 +478,11 @@ TEST_CASE("components::table::column") {
                 v.set_value(i, value);
             }
 
+            components::table::storage::partial_block_manager_t state_pbm(block_manager);
+
             column_append_state state;
+
+            state.pbm = &state_pbm;
             REQUIRE_FALSE(column->initialize_append(state).has_error());
             REQUIRE_FALSE(column->append(state, v, test_size).has_error());
         }

@@ -38,6 +38,20 @@ namespace components::table::storage {
         read_blocks(file_buffer_t& buffer, uint64_t start_block, uint64_t block_count) = 0;
         [[nodiscard]] virtual core::result_wrapper_t<bool> write(file_buffer_t& block, uint64_t block_id) = 0;
         [[nodiscard]] core::result_wrapper_t<bool> write(block_t& block) { return write(block, block.id); }
+        // Rewrites the checksum slot and payload bytes [offset, offset+length) of a block whose
+        // other bytes are already on disk unchanged. A manager without positional writes writes
+        // the whole block, which is the same bytes.
+        [[nodiscard]] virtual core::result_wrapper_t<bool>
+        write_range(file_buffer_t& block, uint64_t block_id, uint64_t /*offset*/, uint64_t /*length*/) {
+            return write(block, block_id);
+        }
+        // First write of a block whose payload beyond `length` is zero: a block past the end of the
+        // file is written as the prefix over a sparse extension; a reused id (old bytes on disk
+        // past the prefix) is written whole.
+        [[nodiscard]] virtual core::result_wrapper_t<bool>
+        write_prefix(file_buffer_t& block, uint64_t block_id, uint64_t /*length*/) {
+            return write(block, block_id);
+        }
 
         virtual void adopt_durable_root_data_blocks(const std::pmr::vector<uint64_t>& /*block_ids*/) {}
         // Frees root N once root N+1 is fully written; otherwise checkpointing an unchanged table grows the file.

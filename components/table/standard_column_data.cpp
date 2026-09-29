@@ -82,6 +82,7 @@ namespace components::table {
             return base; // out_of_memory: no exceptions across actors
         }
         column_append_state child_append;
+        child_append.pbm = state.pbm;
         auto child = validity.initialize_append(child_append);
         if (child.has_error()) {
             return child;

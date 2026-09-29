@@ -118,7 +118,8 @@ namespace services::disk {
 
         /// Rebuilds without col; block release waits for checkpoint(). Outside a checkpoint round the split
         /// free pool only spends space (measured +2.9 MB per VACUUM at agent_disk_t::maybe_cleanup_inner).
-        bool drop_column(const std::string& attname);
+        /// false: no such column; io_error: the append packer could not be sealed, table_ is untouched.
+        [[nodiscard]] core::result_wrapper_t<bool> drop_column(const std::string& attname);
 
         /// Storage half of ALTER TABLE RENAME COLUMN: in-memory only until the next checkpoint (a
         /// crash reloads the OLD name); closed by comparing attoid, not name, in reconcile_storage_with_catalog_sync.
@@ -188,9 +189,11 @@ namespace services::disk {
         }
 
         /// Recreates the storage adapter too, for the same reason.
-        bool drop_column(const std::string& attname, std::pmr::memory_resource* res) {
-            if (!table_storage.drop_column(attname)) {
-                return false;
+        [[nodiscard]] core::result_wrapper_t<bool> drop_column(const std::string& attname,
+                                                               std::pmr::memory_resource* res) {
+            auto dropped = table_storage.drop_column(attname);
+            if (dropped.has_error() || !dropped.value()) {
+                return dropped;
             }
             storage = std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(), res);
             return true;
@@ -406,9 +409,11 @@ namespace services::disk {
                             std::pmr::vector<std::uint64_t> projected_cols);
 
         // Drops every relkind='g' column not in `live_attnames` — subtractive, unlike drop_storage_column.
-        unique_future<std::uint64_t> compact_relkind_g_storage(execution_context_t ctx,
-                                                               components::catalog::oid_t table_oid,
-                                                               std::set<std::string> live_attnames);
+        // The count of columns dropped, or the io_error of a drop the storage refused.
+        unique_future<core::result_wrapper_t<std::uint64_t>>
+        compact_relkind_g_storage(execution_context_t ctx,
+                                  components::catalog::oid_t table_oid,
+                                  std::set<std::string> live_attnames);
 
         unique_future<core::error_t> add_storage_column(execution_context_t ctx,
                                                         components::catalog::oid_t table_oid,

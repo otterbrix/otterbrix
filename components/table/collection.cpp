@@ -28,6 +28,7 @@ namespace components::table {
                                uint64_t row_group_size)
         : resource_(resource)
         , block_manager_(block_manager)
+        , append_pbm_(block_manager, storage::partial_block_manager_t::FULL_THRESHOLD, true)
         , row_group_size_(row_group_size)
         , total_rows_(total_rows)
         , types_(std::move(types))
@@ -239,6 +240,7 @@ namespace components::table {
         state.start_row_group = row_groups_->last_segment(l);
         assert(row_start_ + static_cast<int64_t>(total_rows_.load()) ==
                state.start_row_group->start + static_cast<int64_t>(state.start_row_group->count));
+        state.append_state.pbm = &append_pbm_;
         return state.start_row_group->initialize_append(state.append_state); // out_of_memory
     }
 
@@ -283,9 +285,12 @@ namespace components::table {
             // Write-through: the row group we just closed is now complete (segments final, append state
             // moved on), so re-pointing it to disk lets the pool evict+reload it -> bounded memory at any
             // table size. A write/alloc failure surfaces as io_error/out_of_memory, never a throw.
-            auto transitioned = current_row_group->transition_to_disk();
+            auto transitioned = current_row_group->transition_to_disk(append_pbm_);
             if (transitioned.has_error()) {
                 return transitioned;
+            }
+            if (auto flushed = append_pbm_.flush_partial_blocks(); flushed.has_error()) {
+                return flushed; // io_error: the re-pointed segments' blocks are not on disk
             }
         }
         state.current_row += int64_t(total_append_count);
@@ -461,6 +466,11 @@ namespace components::table {
         // process-wide default resource instead of this one.
         std::pmr::vector<types::complex_logical_type> new_types(types_, resource_);
         new_types.push_back(new_column.type());
+        // The successor shares this collection's row groups and columns; its first checkpoint may
+        // name any tail block still open here, so none may be grown after this point.
+        if (auto sealed = append_pbm_.seal(); sealed.has_error()) {
+            return sealed.convert_error<boost::intrusive_ptr<collection_t>>(); // io_error
+        }
         // Plain `new`, never the pmr resource: the intrusive ref count lives inside the
         // object, so `delete` is the matching deallocation (no shared_ptr ever taken here).
         auto result = boost::intrusive_ptr<collection_t>(new collection_t(resource_,
@@ -484,12 +494,16 @@ namespace components::table {
         return result;
     }
 
-    boost::intrusive_ptr<collection_t> collection_t::remove_column(uint64_t col_idx) {
+    core::result_wrapper_t<boost::intrusive_ptr<collection_t>> collection_t::remove_column(uint64_t col_idx) {
         assert(col_idx < types_.size());
         // Same allocator-extended copy as add_column above.
         std::pmr::vector<types::complex_logical_type> new_types(types_, resource_);
         new_types.erase(new_types.begin() + static_cast<int64_t>(col_idx));
 
+        // Same sharing as add_column: no tail of this collection may be grown once a successor exists.
+        if (auto sealed = append_pbm_.seal(); sealed.has_error()) {
+            return sealed.convert_error<boost::intrusive_ptr<collection_t>>(); // io_error
+        }
         // Same allocation note as add_column above.
         auto result = boost::intrusive_ptr<collection_t>(new collection_t(resource_,
                                                                           block_manager_,
@@ -508,6 +522,11 @@ namespace components::table {
     core::result_wrapper_t<std::vector<storage::row_group_pointer_t>>
     collection_t::checkpoint(storage::partial_block_manager_t& partial_block_manager) {
         std::vector<storage::row_group_pointer_t> pointers;
+
+        // The root written below may name an open tail block; once named it must never be rewritten.
+        if (auto sealed = append_pbm_.seal(); sealed.has_error()) {
+            return sealed.convert_error<std::vector<storage::row_group_pointer_t>>(); // io_error
+        }
 
         auto l = row_groups_->lock();
         auto& segments = row_groups_->reference_segments(l);

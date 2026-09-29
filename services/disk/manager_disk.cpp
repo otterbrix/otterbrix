@@ -302,7 +302,7 @@ namespace services::disk {
         table_ = std::move(new_table);
     }
 
-    bool table_storage_t::drop_column(const std::string& attname) {
+    core::result_wrapper_t<bool> table_storage_t::drop_column(const std::string& attname) {
         if (!table_) {
             return false;
         }
@@ -320,10 +320,16 @@ namespace services::disk {
             return false;
         }
         // Names the blocks before the rebuild drops the only record of them (release happens later).
+        std::pmr::vector<uint64_t> released(pending_released_blocks_.get_allocator().resource());
         if (block_manager_) {
-            table_->collect_column_disk_block_ids(idx, pending_released_blocks_);
+            table_->collect_column_disk_block_ids(idx, released);
         }
         auto new_table = std::make_unique<components::table::data_table_t>(*table_, idx);
+        if (new_table->has_construction_error()) {
+            // The column is still live in table_, so its blocks must not be released either.
+            return core::error_t(new_table->construction_error());
+        }
+        pending_released_blocks_.insert(pending_released_blocks_.end(), released.begin(), released.end());
         table_ = std::move(new_table);
         return true;
     }

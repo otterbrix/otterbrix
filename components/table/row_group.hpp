@@ -123,8 +123,9 @@ namespace components::table {
         // A malformed pointer is data_corruption; the load fails loudly instead of returning a half-valid table.
         [[nodiscard]] core::result_wrapper_t<bool> create_from_pointer(const storage::row_group_pointer_t& pointer);
 
-        // Flushes every re-pointed segment's block before returning, so a later scan/eviction can safely load() it.
-        [[nodiscard]] core::result_wrapper_t<bool> transition_to_disk();
+        // Re-points every column's segments to disk through the caller's packer; the caller flushes
+        // it before a later scan/eviction can load() them.
+        [[nodiscard]] core::result_wrapper_t<bool> transition_to_disk(storage::partial_block_manager_t& pbm);
 
         uint64_t allocation_size() const { return allocation_size_; }
 

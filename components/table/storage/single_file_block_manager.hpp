@@ -108,6 +108,10 @@ namespace components::table::storage {
         [[nodiscard]] core::result_wrapper_t<bool>
         read_blocks(file_buffer_t& buffer, uint64_t start_block, uint64_t block_count) override;
         [[nodiscard]] core::result_wrapper_t<bool> write(file_buffer_t& block, uint64_t block_id) override;
+        [[nodiscard]] core::result_wrapper_t<bool>
+        write_range(file_buffer_t& block, uint64_t block_id, uint64_t offset, uint64_t length) override;
+        [[nodiscard]] core::result_wrapper_t<bool>
+        write_prefix(file_buffer_t& block, uint64_t block_id, uint64_t length) override;
 
         void adopt_durable_root_data_blocks(const std::pmr::vector<uint64_t>& block_ids) override;
         [[nodiscard]] core::result_wrapper_t<uint64_t>

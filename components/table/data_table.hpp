@@ -23,6 +23,7 @@ namespace components::table {
         // A failed backfill can't be returned from a constructor, so it LATCHES: has_construction_error()
         // answers true, and the parent stays root with writes to the new column refused.
         data_table_t(data_table_t& parent, column_definition_t& new_column);
+        // Same latch when the parent's append packer cannot be sealed (io_error): the parent stays root.
         data_table_t(data_table_t& parent, uint64_t removed_column);
 
         bool has_construction_error() const noexcept { return construction_error_.contains_error(); }

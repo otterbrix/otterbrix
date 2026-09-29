@@ -992,12 +992,14 @@ namespace services::disk {
             }
 
             for (const auto& attname : to_drop) {
-                if (!owned->drop_column(attname, resource())) {
+                auto dropped = owned->drop_column(attname, resource());
+                if (dropped.has_error() || !dropped.value()) {
                     error(log_,
                           "manager_disk_t::reconcile_storage_with_catalog_sync: oid={} column '{}' is in the "
-                          "storage schema but drop_column refused it — its blocks stay leaked",
+                          "storage schema but drop_column refused it ({}) — its blocks stay leaked",
                           static_cast<unsigned>(oid),
-                          attname);
+                          attname,
+                          dropped.has_error() ? dropped.error().what.c_str() : "not found");
                     continue;
                 }
                 trace(log_,

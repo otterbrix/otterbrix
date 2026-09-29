@@ -590,7 +590,8 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
     {
         std::set<std::string> live{"a", "c"};
         auto dropped = fx.invoke(&manager_disk_t::compact_relkind_g_storage, fx.ctx(), table_oid, std::move(live));
-        REQUIRE(dropped == 1);
+        REQUIRE_FALSE(dropped.has_error());
+        REQUIRE(dropped.value() == 1);
     }
 
     {
@@ -601,13 +602,15 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
     {
         std::set<std::string> live{"a", "c"};
         auto dropped = fx.invoke(&manager_disk_t::compact_relkind_g_storage, fx.ctx(), table_oid, std::move(live));
-        REQUIRE(dropped == 0);
+        REQUIRE_FALSE(dropped.has_error());
+        REQUIRE(dropped.value() == 0);
     }
 
     {
         std::set<std::string> live{};
         auto dropped = fx.invoke(&manager_disk_t::compact_relkind_g_storage, fx.ctx(), table_oid, std::move(live));
-        REQUIRE(dropped == 2);
+        REQUIRE_FALSE(dropped.has_error());
+        REQUIRE(dropped.value() == 2);
     }
     {
         auto types = disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::storage_types, session_id_t{}, table_oid));
@@ -618,7 +621,8 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
         const catalog::oid_t missing_oid{FIRST_USER_OID + 9999};
         std::set<std::string> live{};
         auto dropped = fx.invoke(&manager_disk_t::compact_relkind_g_storage, fx.ctx(), missing_oid, std::move(live));
-        REQUIRE(dropped == 0);
+        REQUIRE_FALSE(dropped.has_error());
+        REQUIRE(dropped.value() == 0);
     }
 }
 

@@ -138,6 +138,9 @@ namespace components::operators {
 
         void prepare();
 
+        // The executor opens every source of a plan before pumping any, so backend fetches overlap.
+        [[nodiscard]] actor_zeta::unique_future<core::error_t> open(pipeline::context_t* ctx) { return open_impl(ctx); }
+
         virtual actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx);
 
         // Default is `sink`; only a SOURCE or a STREAMING operator needs to override this.
@@ -236,6 +239,8 @@ namespace components::operators {
         operator_data_ptr constraint_input_{nullptr};
 
     private:
+        virtual actor_zeta::unique_future<core::error_t> open_impl(pipeline::context_t* ctx);
+
         // Non-pure: operator_t has concrete leaf subclasses that don't override it.
         virtual void explain_impl(const explain_sink& s) const {
             explain_begin(s, catalog::INVALID_OID);

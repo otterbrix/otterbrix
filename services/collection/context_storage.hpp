@@ -1,6 +1,5 @@
 #pragma once
 
-#include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/session_catalog.hpp>
 #include <components/execution_context/graph_execution_context.hpp>
@@ -117,12 +116,6 @@ namespace services {
         table_metadata_for(components::catalog::oid_t oid) const noexcept {
             auto it = table_metadata.find(oid);
             return it != table_metadata.end() ? it->second : nullptr;
-        }
-
-        // relkind 'f': no storage and no index to read — its rows come only from a connector.
-        bool is_foreign_table(components::catalog::oid_t oid) const noexcept {
-            const auto* md = table_metadata_for(oid);
-            return md != nullptr && md->relkind == components::catalog::relkind::foreign;
         }
 
         const table_index_info_t* index_info_for(components::catalog::oid_t oid) const noexcept {

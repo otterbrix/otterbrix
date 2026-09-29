@@ -27,7 +27,6 @@
 #include <core/date/date_types.hpp>
 #include <services/collection/context_storage.hpp>
 #include <services/collection/explain/explain_renderer.hpp>
-#include <services/collection/remote_servers.hpp>
 #include <stack>
 #include <string>
 
@@ -186,13 +185,6 @@ namespace services::collection::executor {
         // Fanned out from the dispatcher; POD fn-pointers stored per-executor, so there's no shared mutable state.
         unique_future<bool> set_explain_renderer(uint32_t id, explain_render_fn fn);
 
-        // This executor's copy of the dispatcher's server registry; false: the name was already / not registered.
-        unique_future<bool> register_server(std::pmr::string name, std::pmr::string type);
-        unique_future<bool> unregister_server(std::pmr::string name);
-
-        // Before the scheduler starts only.
-        void set_servers_sync(const services::remote_servers_t& servers);
-
         // Same seam as execute_sub_plan_; not in dispatch_traits, a synchronous in-coroutine call.
         [[nodiscard]] unique_future<core::result_wrapper_t<components::operators::chunks_vector_t>>
         run_subplan(components::operators::operator_ptr root, components::pipeline::context_t* ctx) override;
@@ -203,9 +195,7 @@ namespace services::collection::executor {
                                                             &executor_t::register_cast,
                                                             &executor_t::unregister_cast,
                                                             &executor_t::set_explain_renderer,
-                                                            &executor_t::unregister_udf_uid,
-                                                            &executor_t::register_server,
-                                                            &executor_t::unregister_server>;
+                                                            &executor_t::unregister_udf_uid>;
 
         auto make_type() const noexcept -> const char*;
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
@@ -269,7 +259,6 @@ namespace services::collection::executor {
         log_t log_;
         components::compute::function_registry_t function_registry_;
         components::casts::cast_registry_t cast_registry_;
-        services::remote_servers_t servers_;
         // Host-injected (dispatcher -> executor); never null — Null Object defaults.
         planner::create_plan_rule_t create_plan_rule_{&planner::no_custom_lowering};
         components::planner::optimizer_pass_t optimizer_pass_{&components::planner::no_op_pass};

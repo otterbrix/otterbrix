@@ -737,7 +737,7 @@ namespace components::sql::transform {
                         auto func = pg_ptr_cast<FuncCall>(res->val);
                         RETURN_IF_ERROR(refuse_dropped_call_decorations(resource_, *func));
 
-                        VALUE_OR_RETURN(auto called, this->called(func->funcname));
+                        VALUE_OR_RETURN(auto called, called_function(resource_, func->funcname));
                         std::pmr::vector<param_storage> args{resource_};
                         args.reserve(func->args->lst.size());
                         for (const auto& arg : func->args->lst) {

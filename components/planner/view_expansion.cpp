@@ -104,10 +104,11 @@ namespace components::planner {
                 auto* agg = static_cast<logical_plan::node_aggregate_t*>(n);
                 const std::string& relname = agg->relname().t;
                 if (!relname.empty()) {
-                    const auto* entry = resolves.table_entry(std::string_view{agg->uid().t},
-                                                             std::string_view{agg->dbname().t},
-                                                             std::string_view{agg->schema()},
-                                                             relname);
+                    // The uid form keeps its meaning database.name: its schema slot is not part of the key.
+                    const auto* entry =
+                        resolves.table_entry(std::string_view{agg->dbname().t},
+                                             agg->uid().t.empty() ? std::string_view{agg->schema()} : std::string_view{},
+                                             relname);
                     if (is_expandable_view(entry)) {
                         out.push_back(view_reference_t{agg, entry});
                     }

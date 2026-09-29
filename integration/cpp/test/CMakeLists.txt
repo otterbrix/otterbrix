@@ -158,7 +158,6 @@ set( ${PROJECT_NAME}_SOURCES
         test_production_scenarios.cpp
         test_join.cpp
         test_extension_source.cpp
-        test_foreign_tables.cpp
         test_host_tables.cpp
         test_join_raw.cpp
         test_name_resolution.cpp

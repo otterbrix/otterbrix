@@ -312,8 +312,7 @@ namespace services::planner::impl {
                 break;
             }
         }
-        if (pushdown_group != nullptr && reads_implicit_table_scan(node) &&
-            !context.is_foreign_table(node->table_oid())) {
+        if (pushdown_group != nullptr && reads_implicit_table_scan(node)) {
             if (auto pushdown_scan = build_pushdown_scan(context, node, pushdown_group, agg_node->projected_cols())) {
                 components::operators::operator_ptr executor = std::move(pushdown_scan);
                 components::operators::operator_ptr push_sort_op;
@@ -416,9 +415,6 @@ namespace services::planner::impl {
         } else {
             // The base scan comes from the declaration, not the oid: INVALID_OID means both no-FROM and unresolved.
             if (!match_op) {
-                if (context.is_foreign_table(node->table_oid())) {
-                    return nullptr;
-                }
                 switch (agg_node->source()) {
                     case components::logical_plan::match_source::none:
                         break;

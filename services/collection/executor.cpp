@@ -45,7 +45,6 @@
 #include <components/logical_plan/node_update.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
-#include <services/collection/foreign_connectors.hpp>
 #include <components/planner/optimizer.hpp>
 #include <components/planner/view_expansion.hpp>
 #include <core/executor.hpp>
@@ -102,8 +101,6 @@ namespace services::collection::executor {
             actor_zeta::msg_id<executor_t, &executor_t::unregister_cast>,
             actor_zeta::msg_id<executor_t, &executor_t::set_explain_renderer>,
             actor_zeta::msg_id<executor_t, &executor_t::unregister_udf_uid>,
-            actor_zeta::msg_id<executor_t, &executor_t::register_server>,
-            actor_zeta::msg_id<executor_t, &executor_t::unregister_server>,
         };
 
         constexpr bool behavior_covers_all_implements() noexcept {
@@ -199,7 +196,6 @@ namespace services::collection::executor {
         , log_(log)
         , function_registry_(resource)
         , cast_registry_(resource)
-        , servers_(resource)
         , create_plan_rule_(create_plan_rule)
         , optimizer_pass_(optimizer_pass)
         , dml_flush_row_threshold_(dml_flush_row_threshold)
@@ -207,18 +203,6 @@ namespace services::collection::executor {
         register_default_functions(function_registry_);
         components::casts::register_default_casts(cast_registry_);
         explain_renderers_.push_back(&render_postgres);
-    }
-
-    executor_t::unique_future<bool> executor_t::register_server(std::pmr::string name, std::pmr::string type) {
-        co_return !servers_.add(name, type).contains_error();
-    }
-
-    executor_t::unique_future<bool> executor_t::unregister_server(std::pmr::string name) {
-        co_return servers_.remove(name);
-    }
-
-    void executor_t::set_servers_sync(const services::remote_servers_t& servers) {
-        servers_ = services::remote_servers_t{resource(), servers};
     }
 
     actor_zeta::behavior_t executor_t::behavior(actor_zeta::mailbox::message* msg) {
@@ -229,14 +213,6 @@ namespace services::collection::executor {
             }
             case actor_zeta::msg_id<executor_t, &executor_t::register_udf>: {
                 co_await actor_zeta::dispatch(this, &executor_t::register_udf, msg);
-                break;
-            }
-            case actor_zeta::msg_id<executor_t, &executor_t::register_server>: {
-                co_await actor_zeta::dispatch(this, &executor_t::register_server, msg);
-                break;
-            }
-            case actor_zeta::msg_id<executor_t, &executor_t::unregister_server>: {
-                co_await actor_zeta::dispatch(this, &executor_t::unregister_server, msg);
                 break;
             }
             case actor_zeta::msg_id<executor_t, &executor_t::unregister_udf>: {
@@ -300,10 +276,6 @@ namespace services::collection::executor {
 
         context_storage.parameters = &plan.parameters->parameters();
         context_storage.create_plan_rule = create_plan_rule_;
-        if (auto err = check_foreign_connectors(resource(), plan.sub_queries.back(), context_storage);
-            err.contains_error()) {
-            co_return execute_result_t{make_cursor(resource(), std::move(err))};
-        }
         components::operators::operator_ptr node = planner::create_plan(context_storage,
                                                                         function_registry_,
                                                                         plan.sub_queries.back(),
@@ -572,7 +544,6 @@ namespace services::collection::executor {
         };
 
         {
-            classify_remote_names(plan.catalog_resolves, servers_);
             std::pmr::vector<components::logical_plan::node_ptr> resolve_nodes{resource()};
             collect_resolve_nodes(plan.catalog_resolves, resolve_nodes);
             if (!resolve_nodes.empty()) {
@@ -584,11 +555,6 @@ namespace services::collection::executor {
                     co_return execute_result_t{std::move(pass1_result.cursor)};
                 }
             }
-        }
-        if (auto remote =
-                check_remote_names(resource(), plan.sub_queries.back().get(), plan.catalog_resolves, servers_);
-            remote.contains_error()) {
-            co_return execute_result_t{make_cursor(resource(), std::move(remote))};
         }
         if (plan.sub_queries.back()) {
             auto* root = plan.sub_queries.back().get();
@@ -632,7 +598,6 @@ namespace services::collection::executor {
                         services::dispatcher::merge_catalog_resolves(resource(), plan.catalog_resolves, *body.resolves);
                     }
                 }
-                classify_remote_names(plan.catalog_resolves, servers_);
                 if (services::catalog_resolve::has_unresolved_entries(plan.catalog_resolves)) {
                     std::pmr::vector<components::logical_plan::node_ptr> resolve_nodes{resource()};
                     collect_resolve_nodes(plan.catalog_resolves, resolve_nodes);
@@ -650,7 +615,6 @@ namespace services::collection::executor {
             segment.contains_error()) {
             co_return execute_result_t{make_cursor(resource(), std::move(segment))};
         }
-        services::catalog_resolve::reslot_classified_names(plan.sub_queries.back().get(), plan.catalog_resolves);
         if (auto segment = services::catalog_resolve::refuse_local_schema_segments(resource(), plan.catalog_resolves);
             segment.contains_error()) {
             co_return execute_result_t{make_cursor(resource(), std::move(segment))};

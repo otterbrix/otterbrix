@@ -53,25 +53,14 @@ namespace services::catalog_resolve {
 
     bool has_unresolved_entries(const components::logical_plan::catalog_resolves_t& resolves);
 
-    // After the one classification of names (classify_remote_names asked the server registry): uid = server and the
-    // remote path in the remaining slots for a remote name; no uid for a local one (a uid that is no server keeps
-    // its old meaning, database.name). Resolve records and the FROM nodes that carry the written name move
-    // together; from here on a non-empty uid alone means remote.
-    void reslot_classified_names(components::logical_plan::node_t* root,
-                                 components::logical_plan::catalog_resolves_t& resolves);
-
-    // A REFERENCES target with a uid or schema segment (its first part no server) is refused, not dropped.
+    // A REFERENCES target with a uid or schema segment is refused, not dropped.
     core::error_t refuse_referenced_segments(std::pmr::memory_resource* resource,
                                              const components::logical_plan::catalog_resolves_t& resolves);
 
-    // A read never drops part of a name: a schema segment on a local relation (database.schema.name, first part
-    // not a server) is refused. The uid form keeps its meaning for the host's swap hooks.
+    // A read never drops part of a name: a schema segment (database.schema.name) is refused. The uid form keeps its
+    // meaning for the host's swap hooks.
     core::error_t refuse_local_schema_segments(std::pmr::memory_resource* resource,
                                                const components::logical_plan::catalog_resolves_t& resolves);
-
-    // The first part of the name a statement writes to: the uid of a 4-part target, else its database.
-    std::string_view statement_target_first_part(const components::logical_plan::node_t* root,
-                                                 const components::logical_plan::catalog_resolves_t& resolves);
 
     // search_dbnames is ordered by precedence over the type-name search path.
     const components::logical_plan::resolved_type_metadata_t*

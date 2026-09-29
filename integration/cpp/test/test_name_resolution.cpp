@@ -417,17 +417,6 @@ TEST_CASE("name_resolution::qualification::schema_alone_does_not_qualify") {
     require_rejected(result, core::error_code_t::table_not_exists);
 }
 
-// D7: a column of a remote table is qualified slot-wise like any other: m2 fills the database slot.
-TEST_CASE("name_resolution::qualification::server_table_column_skips_the_remote_schema") {
-    auto result = probe("SELECT m2.orders.id FROM m2.shop.orders;", "id");
-    require_resolved(result, side_t::left, "orders");
-}
-
-TEST_CASE("name_resolution::qualification::remote_schema_alone_does_not_qualify") {
-    auto result = probe("SELECT shop.orders.id FROM m2.shop.orders;", "id");
-    require_rejected(result, core::error_code_t::table_not_exists);
-}
-
 TEST_CASE("name_resolution::qualification::schema_alone_does_not_qualify_under_uid") {
     auto result = probe("SELECT s.t.id FROM u.d.s.t;", "id");
     require_rejected(result, core::error_code_t::table_not_exists);
@@ -1226,8 +1215,7 @@ TEST_CASE("name_resolution::alter::alter_table_if_exists_rename_column_on_a_miss
     CHECK(refused.type != core::error_code_t::none);
 }
 
-// B2: a REFERENCES target with a schema or uid segment is refused (after resolve: a server first part is refused
-// as "not a table" instead).
+// B2: a REFERENCES target with a schema or uid segment is refused.
 TEST_CASE("name_resolution::fk_target::schema_or_uid_segment_is_refused") {
     database_t db(integration_fixture_path("test_name_resolution/fk_segments"));
     db.seed({"CREATE DATABASE d;", "CREATE TABLE d.p (id BIGINT PRIMARY KEY);", "CREATE TABLE d.c (id BIGINT);"});

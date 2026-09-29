@@ -130,8 +130,6 @@ public:
                 services::planner::create_plan_rule_t create_plan_rule = &services::planner::no_custom_lowering,
                 components::planner::optimizer_pass_t optimizer_pass = &components::planner::no_op_pass)
         : otterbrix::base_otterbrix_t(test_open_engine(config, {create_plan_rule, optimizer_pass})) {}
-    test_spaces(const configuration::config& config, services::engine::primitives_t primitives)
-        : otterbrix::base_otterbrix_t(test_open_engine(config, primitives)) {}
 };
 
 // Named, not global, so it can't collide with anonymous-namespace exec/seed helpers other test files define.

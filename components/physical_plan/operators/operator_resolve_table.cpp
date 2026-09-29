@@ -92,9 +92,7 @@ namespace components::operators {
         std::unordered_map<std::string, catalog::oid_t> namespace_cache;
 
         for (auto& entry : node_->entries()) {
-            // A remote name (first part a registered server) has no catalog rows.
-            if (ctx->disk_address == actor_zeta::address_t::empty_address() || entry.relname.empty() ||
-                entry.remote) {
+            if (ctx->disk_address == actor_zeta::address_t::empty_address() || entry.relname.empty()) {
                 continue;
             }
 

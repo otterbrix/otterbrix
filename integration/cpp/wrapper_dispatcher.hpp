@@ -64,9 +64,6 @@ namespace otterbrix {
         auto unregister_cast(const session_id_t& session,
                              const components::types::complex_logical_type& source,
                              const components::types::complex_logical_type& target) -> core::error_t;
-        // Server name -> connector type (in memory only); see manager_dispatcher_t::register_server.
-        auto add_server(std::string_view name, std::string_view type) -> core::error_t;
-        auto remove_server(std::string_view name) -> core::error_t;
         auto execute_plan(const session_id_t& session, components::logical_plan::execution_plan_t plan)
             -> components::cursor::cursor_t_ptr;
         // `render_id` selects the per-query EXPLAIN renderer slot (0 = built-in postgres default);

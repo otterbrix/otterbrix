@@ -64,7 +64,7 @@ namespace components::sql::transform {
                                 construct(table->relname)};
     }
 
-    // A REFERENCES target as written; whether it is refused waits for resolve (a server first part or a segment).
+    // A REFERENCES target as written; one with a uid or schema segment is refused after resolve.
     qualified_name_t referenced_table_as_written(RangeVar* target);
     // Every REFERENCES target of a CREATE TABLE element list, into resolves->referenced_tables.
     void register_referenced_tables(logical_plan::catalog_resolves_t* resolves, PGList& table_elts);
@@ -417,8 +417,8 @@ namespace components::sql::transform {
     name_catalog_target(const std::string& dbname, const std::string& relname, logical_plan::node_ptr node);
 
     // with_constraints gathers INSERT/UPDATE's outgoing or DELETE's referencing constraints.
-    // A FROM table with every slot as written: the uid/schema slots decide nothing for a local name but are the
-    // path inside the server for a remote one.
+    // A FROM table as written: database.schema.name keeps its schema slot (to be refused); the uid form keeps its
+    // meaning database.name.
     void register_catalog_resolve_written_table(std::pmr::memory_resource* resource,
                                                 logical_plan::catalog_resolves_t* resolves,
                                                 const logical_plan::node_aggregate_t& from);

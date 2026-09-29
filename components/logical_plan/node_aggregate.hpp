@@ -36,15 +36,9 @@ namespace components::logical_plan {
         match_source source() const noexcept { return relname_.t.empty() ? match_source::none : match_source::table; }
         // External identifier from a SQL `<uid>.<db>.<schema>.<rel>` form; empty when omitted (see swap_externals).
         const core::uid_t& uid() const noexcept { return uid_; }
-        // The schema slot as written: a local name ignores it, a remote one (first part a server) keeps it.
+        // The schema slot as written (database.schema.name, or the uid form's third part).
         const std::string& schema() const noexcept { return schema_; }
         void set_schema(std::string schema) { schema_ = std::move(schema); }
-        // Once resolve has classified the name: uid = server and the remote path in the other slots, or no uid.
-        void reslot(std::string uid, std::string dbname, std::string schema) {
-            uid_.t = std::move(uid);
-            dbname_.t = std::move(dbname);
-            schema_ = std::move(schema);
-        }
 
         // Populated by the post-validate column_pruning pass; empty means no projection (scan all columns).
         const std::vector<size_t>& projected_cols() const { return projected_cols_; }

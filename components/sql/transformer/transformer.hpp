@@ -411,9 +411,6 @@ namespace components::sql::transform {
             return dbname;
         }
 
-        // called_function; a qualifier other than pg_catalog/public is kept for the server check.
-        core::result_wrapper_t<qualified_name_t> called(const List* funcname);
-
         // TODO: wrapp expressions in resolve node, and it won't be needed
         std::vector<std::string> cast_type_names_;
 

@@ -35,7 +35,6 @@
 #include <components/table/transaction_manager.hpp>
 #include <core/result_wrapper.hpp>
 #include <services/collection/executor.hpp>
-#include <services/collection/remote_servers.hpp>
 #include <services/dispatcher/txn_messages.hpp>
 
 namespace services::disk {
@@ -86,9 +85,6 @@ namespace services::dispatcher {
         void seed_clocks_sync(uint64_t commit_frontier, uint64_t txn_id_high_water);
 
         void cache_settings_sync(const components::catalog::session_catalog_t& settings);
-
-        // The servers the host named at spawn, already checked; copied into every executor.
-        void install_servers_sync(services::remote_servers_t servers);
 
         // Sync twin of on_drop_resource_marked(), for use before scheduler.start. Idempotent.
         void set_disk_has_dropped_sync(bool value) noexcept { disk_has_dropped_ = value; }
@@ -146,12 +142,6 @@ namespace services::dispatcher {
         // Shutdown: every statement arriving after this is refused, except CHECKPOINT.
         unique_future<void> begin_shutdown();
 
-        // Server name -> connector type. A name a database already has (committed, or created by a transaction
-        // still running) is refused, and so is CREATE DATABASE of a registered or registering server's name; both
-        // are decided here, on the dispatcher's loop. Removal does not reach statements that already resolved.
-        unique_future<core::error_t> register_server(std::pmr::string name, std::pmr::string type);
-        unique_future<core::error_t> unregister_server(std::pmr::string name);
-
         using dispatch_traits = actor_zeta::dispatch_traits<&manager_dispatcher_t::execute_plan,
                                                             &manager_dispatcher_t::refuse_statement,
                                                             &manager_dispatcher_t::register_udf,
@@ -169,9 +159,7 @@ namespace services::dispatcher {
                                                             &manager_dispatcher_t::txn_compact_watermark_msg,
                                                             &manager_dispatcher_t::on_drop_resource_marked,
                                                             &manager_dispatcher_t::on_subscriber_empty,
-                                                            &manager_dispatcher_t::begin_shutdown,
-                                                            &manager_dispatcher_t::register_server,
-                                                            &manager_dispatcher_t::unregister_server>;
+                                                            &manager_dispatcher_t::begin_shutdown>;
 
     private:
         // Member coroutine, not a lambda, so `this` supplies the frame memory_resource.
@@ -278,21 +266,6 @@ namespace services::dispatcher {
         components::casts::cast_registry_t cast_registry_;
         // The engine's master: builtins plus host UDFs. Executors hold copies, updated by fan-out.
         components::compute::function_registry_t function_registry_;
-        // The master; executors hold copies, updated by fan-out.
-        services::remote_servers_t servers_;
-        // Names register_server has claimed while it asks the disk whether a database has them.
-        std::pmr::vector<std::pmr::string> registering_servers_{resource_};
-        // CREATE DATABASE names of transactions that have not ended; commit_id is set by the commit drain, and the
-        // entry lives until that commit is published or discarded.
-        struct creating_database_t {
-            std::pmr::string name;
-            components::session::session_id_t session;
-            uint64_t transaction_id{0};
-            uint64_t commit_id{0};
-        };
-        std::pmr::vector<creating_database_t> creating_databases_{resource_};
-        bool server_name_taken_(std::string_view name) const noexcept;
-        bool database_being_created_(std::string_view name);
         // global cached settings. updated on every set.
         // TODO: settings for the session
         components::catalog::session_catalog_t default_settings_;

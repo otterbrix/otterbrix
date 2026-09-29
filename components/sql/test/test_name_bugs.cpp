@@ -96,8 +96,7 @@ TEST_CASE("components::sql::name_bugs::type_outside_public_or_too_long_is_refuse
     require_refused("CREATE TABLE t (a x.y.mytype);", core::error_code_t::invalid_parameter);
 }
 
-// B2: a REFERENCES target keeps every written slot; the refusal waits for resolve (a server first part is refused
-// as "not a table" instead, see test_foreign_tables).
+// B2: a REFERENCES target keeps every written slot; the refusal comes after resolve.
 TEST_CASE("components::sql::name_bugs::fk_target_keeps_its_schema_and_uid") {
     for (const std::string sql : {"CREATE TABLE c (id BIGINT REFERENCES d.s.p (id));",
                                   "CREATE TABLE c (id BIGINT, FOREIGN KEY (id) REFERENCES d.s.p (id));",
@@ -140,9 +139,8 @@ TEST_CASE("components::sql::name_bugs::alter_of_another_object_kind_is_refused")
     REQUIRE(table.ok);
 }
 
-// TRUNCATE has no local implementation; a remote one goes to the connector in federation.
 TEST_CASE("components::sql::name_bugs::truncate_is_refused_clearly") {
-    for (const std::string sql : {"TRUNCATE t;", "TRUNCATE TABLE d.t;", "TRUNCATE m2.shop.orders;"}) {
+    for (const std::string sql : {"TRUNCATE t;", "TRUNCATE TABLE d.t;"}) {
         auto t = transform_one(sql);
         INFO(sql << ": " << t.what);
         REQUIRE_FALSE(t.ok);

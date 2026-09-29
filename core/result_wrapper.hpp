@@ -68,10 +68,6 @@ namespace core {
 
         actor_agent_missing,
         connection_closed,
-
-        server_already_exists,
-        server_not_exists,
-        connector_not_exists,
     };
 
     struct [[nodiscard]] error_t {

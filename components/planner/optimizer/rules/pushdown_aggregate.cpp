@@ -4,7 +4,6 @@
 #include <string>
 #include <string_view>
 
-#include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/compare_expression.hpp>
@@ -12,7 +11,6 @@
 #include <components/expressions/scalar_expression.hpp>
 #include <components/expressions/udf_references.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
-#include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/node_group.hpp>
 
 namespace components::planner::optimizer {
@@ -104,11 +102,6 @@ namespace components::planner::optimizer {
             // Must target ONE resolved owned table. enrich stamps table_oid()
             // before optimize() runs; INVALID_OID => not a single owned table.
             if (node->table_oid() == components::catalog::INVALID_OID) {
-                return;
-            }
-            // A foreign table has no owning disk agent to reduce on.
-            if (const auto* md = node->table_metadata();
-                md != nullptr && md->relkind == components::catalog::relkind::foreign) {
                 return;
             }
             // Skip (a): any shape-breaking child means it is not one owned table.

@@ -1975,9 +1975,10 @@ namespace components::sql::transform {
             return;
         }
         logical_plan::resolve_entry_t entry;
-        entry.uid = static_cast<const std::string&>(from.uid());
         entry.dbname = dbname;
-        entry.schema = from.schema();
+        if (static_cast<const std::string&>(from.uid()).empty()) {
+            entry.schema = from.schema();
+        }
         entry.relname = relname;
         resolves->ensure(resource, logical_plan::resolve_kind::table).add(std::move(entry));
     }

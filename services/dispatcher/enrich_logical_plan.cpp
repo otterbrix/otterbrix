@@ -319,8 +319,8 @@ namespace services::catalog_resolve {
             std::string_view namespace_dbname{};
             std::string_view type_name{};
             std::string_view secondary_dbname{};
-            // The uid/schema slots of (dbname, relname) as written; they matter only when the name is remote.
-            std::string_view uid{};
+            // The schema slot of database.schema.name (refused later); empty for the uid form, which keeps its
+            // meaning database.name.
             std::string_view schema{};
         };
 
@@ -331,8 +331,7 @@ namespace services::catalog_resolve {
                     const auto* d = static_cast<const node_aggregate_t*>(node);
                     return {.dbname = d->dbname().t,
                             .relname = d->relname().t,
-                            .uid = d->uid().t,
-                            .schema = d->schema()};
+                            .schema = d->uid().t.empty() ? std::string_view{d->schema()} : std::string_view{}};
                 }
                 case node_type::match_t: {
                     const auto* d = static_cast<const node_match_t*>(node);
@@ -431,9 +430,8 @@ namespace services::catalog_resolve {
         }
 
         // A clause node (match, group, sort, ...) of a FROM aggregate is built with the aggregate's (dbname, relname)
-        // only; it names the aggregate's table, so it takes the aggregate's uid/schema slots.
+        // only; it names the aggregate's table, so it takes the aggregate's schema slot.
         struct names_scope_t {
-            std::string_view uid{};
             std::string_view dbname{};
             std::string_view schema{};
             std::string_view relname{};
@@ -441,13 +439,8 @@ namespace services::catalog_resolve {
 
         target_names_t scoped_names(const components::logical_plan::node_t* node, const names_scope_t& scope) {
             auto names = target_names_of(node);
-            // A remote server.schema.name aggregate, re-slotted, has lost the database slot its clause nodes copied:
-            // they carry the server there.
-            const bool copies_scope_database =
-                names.dbname == scope.dbname || (scope.dbname.empty() && names.dbname == scope.uid);
-            if (node->type() != components::logical_plan::node_type::aggregate_t && names.uid.empty() &&
-                names.schema.empty() && copies_scope_database && names.relname == scope.relname) {
-                names.uid = scope.uid;
+            if (node->type() != components::logical_plan::node_type::aggregate_t && names.schema.empty() &&
+                names.dbname == scope.dbname && names.relname == scope.relname) {
                 names.schema = scope.schema;
             }
             return names;
@@ -457,7 +450,7 @@ namespace services::catalog_resolve {
                                   const target_names_t& names,
                                   const names_scope_t& scope) {
             if (node->type() == components::logical_plan::node_type::aggregate_t && !names.relname.empty()) {
-                return names_scope_t{names.uid, names.dbname, names.schema, names.relname};
+                return names_scope_t{names.dbname, names.schema, names.relname};
             }
             return scope;
         }
@@ -566,7 +559,7 @@ namespace services::catalog_resolve {
             {
                 const entry_view_t rn{
                     resolves.namespace_entry(names.namespace_dbname.empty() ? names.dbname : names.namespace_dbname)};
-                const entry_view_t rt{resolves.table_entry(names.uid, names.dbname, names.schema, names.relname)};
+                const entry_view_t rt{resolves.table_entry(names.dbname, names.schema, names.relname)};
                 const entry_view_t rt_index{
                     resolves.table_entry(names.secondary_dbname.empty() ? names.dbname : names.secondary_dbname,
                                          names.secondary_relname)};
@@ -773,7 +766,6 @@ namespace services::catalog_resolve {
             std::size_t primary_index = resolve_entry_t::no_target;
             if (!names.relname.empty()) {
                 resolve_entry_t entry;
-                entry.uid = names.uid;
                 entry.dbname = names.dbname;
                 entry.schema = names.schema;
                 entry.relname = names.relname;
@@ -823,55 +815,6 @@ namespace services::catalog_resolve {
         }
     }
 
-    void reslot_classified_names(components::logical_plan::node_t* root, catalog_resolves_t& resolves) {
-        using namespace components::logical_plan;
-        if (!resolves.tables) {
-            return;
-        }
-        struct move_t {
-            std::string uid, dbname, schema, relname;
-            std::string new_uid, new_dbname, new_schema;
-        };
-        std::vector<move_t> moves;
-        for (auto& entry : resolves.tables->entries()) {
-            const bool remote = entry.remote;
-            if (remote && entry.uid.empty()) {
-                moves.push_back({entry.uid, entry.dbname, entry.schema, entry.relname, entry.dbname, "", entry.schema});
-            } else if (!remote && !entry.uid.empty()) {
-                moves.push_back({entry.uid, entry.dbname, entry.schema, entry.relname, "", entry.dbname, ""});
-            } else {
-                continue;
-            }
-            entry.uid = moves.back().new_uid;
-            entry.dbname = moves.back().new_dbname;
-            entry.schema = moves.back().new_schema;
-        }
-        if (moves.empty() || root == nullptr) {
-            return;
-        }
-        std::queue<node_t*> q;
-        q.push(root);
-        while (!q.empty()) {
-            auto* n = q.front();
-            q.pop();
-            if (n->type() == node_type::aggregate_t) {
-                auto* agg = static_cast<node_aggregate_t*>(n);
-                for (const auto& move : moves) {
-                    if (agg->uid().t == move.uid && agg->dbname().t == move.dbname && agg->schema() == move.schema &&
-                        agg->relname().t == move.relname) {
-                        agg->reslot(move.new_uid, move.new_dbname, move.new_schema);
-                        break;
-                    }
-                }
-            }
-            for (const auto& c : n->children()) {
-                if (c) {
-                    q.push(c.get());
-                }
-            }
-        }
-    }
-
     core::error_t refuse_referenced_segments(std::pmr::memory_resource* resource, const catalog_resolves_t& resolves) {
         for (const auto& written : resolves.referenced_tables) {
             if (written.unique_identifier.empty() && written.schema.empty()) {
@@ -893,8 +836,7 @@ namespace services::catalog_resolve {
         }
         for (const auto& entry : resolves.tables->entries()) {
             // A missing database is the first thing wrong with such a name: validate reports it.
-            if (entry.schema.empty() || !entry.uid.empty() ||
-                resolves.namespace_oid(entry.dbname) == components::catalog::INVALID_OID) {
+            if (entry.schema.empty() || resolves.namespace_oid(entry.dbname) == components::catalog::INVALID_OID) {
                 continue;
             }
             std::pmr::string msg{"schema \"", resource};
@@ -909,17 +851,6 @@ namespace services::catalog_resolve {
             return core::error_t{core::error_code_t::invalid_parameter, std::move(msg)};
         }
         return core::error_t::no_error();
-    }
-
-    std::string_view statement_target_first_part(const components::logical_plan::node_t* root,
-                                                 const catalog_resolves_t& resolves) {
-        if (!resolves.external_targets.empty()) {
-            const auto& written = resolves.external_targets.front().written;
-            return written.unique_identifier.empty() ? std::string_view{written.database}
-                                                     : std::string_view{written.unique_identifier};
-        }
-        const auto names = target_names_of(root);
-        return names.namespace_dbname.empty() ? names.dbname : names.namespace_dbname;
     }
 
     bool has_unresolved_entries(const catalog_resolves_t& resolves) {

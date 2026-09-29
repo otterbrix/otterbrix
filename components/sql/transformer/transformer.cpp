@@ -208,7 +208,6 @@ namespace components::sql::transform {
                 log_node = transform_create_view(pg_cast<ViewStmt>(node));
                 break;
             case T_TruncateStmt:
-                // A server-first name goes to the connector in federation; locally there is no TRUNCATE.
                 log_node = core::error_t(core::error_code_t::unimplemented_yet,
                                          std::pmr::string{"TRUNCATE is not supported: delete the rows with DELETE; "
                                                           "nothing was truncated",
@@ -316,14 +315,4 @@ namespace components::sql::transform {
         // Lower the inner statement normally so sub_queries.back() stays the real query node.
         return transform(*node.query, plan);
     }
-
-    core::result_wrapper_t<qualified_name_t> transformer::called(const List* funcname) {
-        VALUE_OR_RETURN(auto name, called_function(resource_, funcname));
-        const std::string& first = name.unique_identifier.empty() ? name.database : name.unique_identifier;
-        if (!first.empty() && first != "pg_catalog" && first != "public") {
-            catalog_resolves_.qualified_functions.push_back(name);
-        }
-        return name;
-    }
-
 } // namespace components::sql::transform

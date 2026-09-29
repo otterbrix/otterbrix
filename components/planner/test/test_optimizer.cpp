@@ -2,7 +2,6 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <components/casts/default_casts.hpp>
-#include <components/catalog/catalog_codes.hpp>
 #include <components/compute/function.hpp>
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/compare_expression.hpp>
@@ -911,34 +910,6 @@ TEST_CASE("create_plan_match::key_on_right_mirrors_compare_type_for_index_scan")
     REQUIRE(scan->compare_type() == compare_type::gt);
 }
 
-// A foreign table (relkind 'f') has no storage and no index: until a connector exists there is no scan to build.
-TEST_CASE("create_plan_match::foreign_table_builds_no_disk_scan") {
-    auto resource = core::pmr::otterbrix_resource();
-    auto params = make_parameter_node(&resource);
-    auto pid = params->add_parameter(int64_t(30));
-    constexpr auto table_oid = components::catalog::oid_t{782};
-
-    auto ctx = make_context_with_oid(&resource, table_oid, params.get());
-    add_single_field_index(ctx, &resource, table_oid, "age", components::logical_plan::index_type::hashed);
-    components::logical_plan::resolved_table_metadata_t md;
-    md.table_oid = table_oid;
-    md.relkind = components::catalog::relkind::foreign;
-    ctx.table_metadata[table_oid] = &md;
-
-    auto filtered = make_node_match(&resource,
-                                    core::dbname_t{database_name},
-                                    core::relname_t{collection_name},
-                                    make_compare_expression(&resource, compare_type::eq, key(&resource, "age"), pid));
-    filtered->set_table_oid(table_oid);
-    REQUIRE(services::planner::impl::create_plan_match(ctx, filtered, components::logical_plan::limit_t::unlimit()) ==
-            nullptr);
-
-    auto whole = make_node_match(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, nullptr);
-    whole->set_table_oid(table_oid);
-    REQUIRE(services::planner::impl::create_plan_match(ctx, whole, components::logical_plan::limit_t::unlimit()) ==
-            nullptr);
-}
-
 TEST_CASE("create_plan_match::union_compare_uses_full_scan") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
@@ -1047,17 +1018,6 @@ TEST_CASE("optimizer::pushdown_aggregate::cte_scan_child_is_skipped") {
     auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
     auto agg = make_agg(&resource, group);
     agg->append_child(make_node_cte_scan(&resource, std::pmr::string("cte")));
-    REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
-}
-
-TEST_CASE("optimizer::pushdown_aggregate::foreign_table_is_skipped") {
-    auto resource = core::pmr::otterbrix_resource();
-    auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
-    auto agg = make_agg(&resource, group);
-    components::logical_plan::resolved_table_metadata_t md;
-    md.table_oid = pushable_oid;
-    md.relkind = components::catalog::relkind::foreign;
-    agg->set_table_metadata(&md);
     REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
 }
 

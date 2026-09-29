@@ -14,9 +14,7 @@
 #include <components/compute/function.hpp>
 #include <components/expressions/key.hpp>
 #include <components/expressions/scalar_expression.hpp>
-#include <components/catalog/catalog_codes.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
-#include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/node_extension.hpp>
 #include <components/logical_plan/node_group.hpp>
 #include <components/logical_plan/param_storage.hpp>
@@ -134,23 +132,4 @@ TEST_CASE("create_plan: pushdown stamp over an extension source child does not l
     REQUIRE(plan != nullptr);
     REQUIRE_FALSE(contains_operator(plan.get(), op::operator_type::pushed_reduce_scan));
     REQUIRE(plan->type() == op::operator_type::aggregate);
-}
-
-// A pushdown stamp over a foreign table (relkind 'f') must not become a disk reduce of storage it does not have.
-TEST_CASE("create_plan: pushdown stamp over a foreign table builds no pushed_reduce_scan") {
-    core::pmr::otterbrix_resource resource;
-    services::context_storage_t context(&resource, log_t{}, components::catalog::session_catalog_t{});
-    context.known_oids.insert(components::catalog::oid_t{123});
-    components::logical_plan::resolved_table_metadata_t md;
-    md.table_oid = components::catalog::oid_t{123};
-    md.relkind = components::catalog::relkind::foreign;
-    context.table_metadata[md.table_oid] = &md;
-    components::compute::function_registry_t registry(&resource);
-
-    auto node = build_agg(&resource, /*pushdown=*/true);
-    auto plan =
-        services::planner::create_plan(context, registry, node, components::logical_plan::limit_t::unlimit(), nullptr);
-
-    REQUIRE_FALSE(contains_operator(plan.get(), op::operator_type::pushed_reduce_scan));
-    REQUIRE_FALSE(contains_operator(plan.get(), op::operator_type::transfer_scan));
 }

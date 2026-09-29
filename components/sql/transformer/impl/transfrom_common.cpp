@@ -401,7 +401,7 @@ namespace components::sql::transform {
                     VALUE_OR_RETURN(auto call, transform_a_expr_func(func, names, context.plan));
                     return param_storage{std::move(call)};
                 }
-                VALUE_OR_RETURN(auto called, this->called(func->funcname));
+                VALUE_OR_RETURN(auto called, called_function(resource_, func->funcname));
                 std::pmr::vector<param_storage> args(resource_);
                 if (!func->agg_star && func->args) {
                     expression_context_t argument_context = context;
@@ -1076,7 +1076,7 @@ namespace components::sql::transform {
                                                                               logical_plan::execution_plan_t* plan) {
         RETURN_IF_ERROR(refuse_dropped_call_decorations(resource_, *node));
         auto* params = plan->parameters.get();
-        VALUE_OR_RETURN(auto called, this->called(node->funcname));
+        VALUE_OR_RETURN(auto called, called_function(resource_, node->funcname));
         std::pmr::vector<param_storage> args;
         args.reserve(node->args->lst.size());
         // create_value_getter rejects a still-undefined side, so default to left when there's no right table.
@@ -1347,7 +1347,7 @@ namespace components::sql::transform {
         }
         auto list = pg_ptr_cast<List>(node.functions->lst.front().data);
         auto func_call = pg_ptr_cast<FuncCall>(list->lst.front().data);
-        VALUE_OR_RETURN(auto called, this->called(func_call->funcname));
+        VALUE_OR_RETURN(auto called, called_function(resource_, func_call->funcname));
         std::pmr::vector<param_storage> args{resource_};
         // func_call->args is null for a zero-argument call (e.g. `FROM foo()`); don't deref it.
         if (func_call->args) {
@@ -1373,7 +1373,7 @@ namespace components::sql::transform {
     transformer::transform_function(FuncCall& node,
                                     const name_collection_t& names,
                                     logical_plan::parameter_node_t* params) {
-        VALUE_OR_RETURN(auto called, this->called(node.funcname));
+        VALUE_OR_RETURN(auto called, called_function(resource_, node.funcname));
         std::pmr::vector<param_storage> args;
         args.reserve(node.args->lst.size());
         for (const auto& arg : node.args->lst) {

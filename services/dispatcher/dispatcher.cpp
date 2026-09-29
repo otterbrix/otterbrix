@@ -4,7 +4,6 @@
 #include <components/casts/default_casts.hpp>
 #include <components/context/context.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
-#include <components/logical_plan/node_create_database.hpp>
 #include <components/logical_plan/node_register_cast.hpp>
 #include <components/logical_plan/node_register_udf.hpp>
 #include <components/logical_plan/node_sequence.hpp>
@@ -68,8 +67,6 @@ namespace services::dispatcher {
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::on_drop_resource_marked>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::on_subscriber_empty>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::begin_shutdown>,
-            actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::register_server>,
-            actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::unregister_server>,
         };
 
         constexpr bool behavior_covers_all_implements() noexcept {
@@ -120,7 +117,6 @@ namespace services::dispatcher {
         , txn_manager_(resource_ptr)
         , cast_registry_(resource_ptr)
         , function_registry_(resource_ptr)
-        , servers_(resource_ptr)
         , pending_void_(resource_ptr) {
         ZoneScoped;
         trace(log_, "manager_dispatcher_t::manager_dispatcher_t");
@@ -333,14 +329,6 @@ namespace services::dispatcher {
                 co_await actor_zeta::dispatch(this, &manager_dispatcher_t::begin_shutdown, msg);
                 break;
             }
-            case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::register_server>: {
-                co_await actor_zeta::dispatch(this, &manager_dispatcher_t::register_server, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::unregister_server>: {
-                co_await actor_zeta::dispatch(this, &manager_dispatcher_t::unregister_server, msg);
-                break;
-            }
             default:
                 break;
         }
@@ -474,20 +462,6 @@ namespace services::dispatcher {
         }
         auto session_ctx = std::move(resolved.value());
         const uint64_t statement_txn_id = session_ctx.txn.transaction_id;
-        if (const auto* root = executed.sub_queries.back().get();
-            root != nullptr && root->type() == components::logical_plan::node_type::create_database_t) {
-            const auto& name = static_cast<const components::logical_plan::node_create_database_t*>(root)->dbname();
-            if (server_name_taken_(name)) {
-                co_await finish_failed_statement_(session, statement_txn_id);
-                std::pmr::string msg{"a server named \"", resource()};
-                msg.append(name);
-                msg.append("\" already exists");
-                co_return components::cursor::make_cursor(
-                    resource(),
-                    core::error_t{core::error_code_t::already_exists, std::move(msg)});
-            }
-            creating_databases_.push_back({std::pmr::string{name, resource()}, session, statement_txn_id, 0});
-        }
         const std::size_t pool_idx = next_executor_index();
         trace(log_, "manager_dispatcher_t::execute_plan: routing to executor[{}]", pool_idx);
         auto [needs_sched, future] = actor_zeta::otterbrix::send(executor_addresses_[pool_idx],
@@ -680,121 +654,6 @@ namespace services::dispatcher {
             }
         }
         co_return;
-    }
-
-    void manager_dispatcher_t::install_servers_sync(services::remote_servers_t servers) {
-        servers_ = std::move(servers);
-        for (auto& executor : executors_) {
-            executor->set_servers_sync(servers_);
-        }
-    }
-
-    bool manager_dispatcher_t::server_name_taken_(std::string_view name) const noexcept {
-        return servers_.type_of(name) != nullptr ||
-               std::find(registering_servers_.begin(), registering_servers_.end(), name) != registering_servers_.end();
-    }
-
-    bool manager_dispatcher_t::database_being_created_(std::string_view name) {
-        // An entry without a commit_id whose transaction is gone was rolled back.
-        std::erase_if(creating_databases_, [this](const creating_database_t& creating) {
-            if (creating.commit_id != 0) {
-                return false;
-            }
-            const auto* txn = txn_manager_.find_transaction(creating.session);
-            return txn == nullptr || txn->transaction_id() != creating.transaction_id;
-        });
-        return std::any_of(creating_databases_.begin(),
-                           creating_databases_.end(),
-                           [name](const creating_database_t& creating) { return creating.name == name; });
-    }
-
-    manager_dispatcher_t::unique_future<core::error_t>
-    manager_dispatcher_t::register_server(std::pmr::string name, std::pmr::string type) {
-        trace(log_, "dispatcher_t::register_server: {} type {}", name, type);
-        if (name.empty() || type.empty()) {
-            co_return core::error_t{core::error_code_t::invalid_parameter,
-                                    std::pmr::string{"a remote server needs a name and a connector type", resource()}};
-        }
-        if (server_name_taken_(name)) {
-            std::pmr::string msg{"server \"", resource()};
-            msg.append(name);
-            msg.append("\" is already registered");
-            co_return core::error_t{core::error_code_t::server_already_exists, std::move(msg)};
-        }
-        std::pmr::string database_exists{"a database named \"", resource()};
-        database_exists.append(name);
-        database_exists.append("\" already exists");
-        if (database_being_created_(name)) {
-            co_return core::error_t{core::error_code_t::already_exists, std::move(database_exists)};
-        }
-        // Claimed before the wait: a CREATE DATABASE admitted meanwhile is refused, and one admitted before is
-        // in creating_databases_ until its commit is visible to the committed read below.
-        registering_servers_.push_back(name);
-        components::execution_context_t committed{components::session::session_id_t{},
-                                                  components::table::transaction_data::committed(),
-                                                  {}};
-        auto [_ns, namespace_future] = actor_zeta::otterbrix::send(disk_address_,
-                                                                   &services::disk::manager_disk_t::resolve_namespace,
-                                                                   committed,
-                                                                   std::string{name});
-        auto database = co_await std::move(namespace_future);
-        registering_servers_.erase(std::find(registering_servers_.begin(), registering_servers_.end(), name));
-        if (database.has_error()) {
-            co_return database.error();
-        }
-        if (database.value().found) {
-            co_return core::error_t{core::error_code_t::already_exists, std::move(database_exists)};
-        }
-        if (auto err = servers_.add(name, type); err.contains_error()) {
-            co_return err;
-        }
-        std::pmr::vector<actor_zeta::unique_future<bool>> ack_futures(resource());
-        ack_futures.reserve(executor_addresses_.size());
-        for (std::size_t i = 0; i < executor_addresses_.size(); ++i) {
-            auto [needs_sched, fut] = actor_zeta::otterbrix::send(executor_addresses_[i],
-                                                                  &collection::executor::executor_t::register_server,
-                                                                  std::pmr::string{name, resource()},
-                                                                  std::pmr::string{type, resource()});
-            if (needs_sched && executors_[i]) {
-                scheduler_->enqueue(executors_[i].get());
-            }
-            ack_futures.push_back(std::move(fut));
-        }
-        for (auto& ack : ack_futures) {
-            if (!co_await std::move(ack)) {
-                error(log_, "dispatcher_t::register_server: an executor already held '{}'", name);
-                assert(false && "an executor's server registry diverged from the master");
-            }
-        }
-        co_return core::error_t::no_error();
-    }
-
-    manager_dispatcher_t::unique_future<core::error_t> manager_dispatcher_t::unregister_server(std::pmr::string name) {
-        trace(log_, "dispatcher_t::unregister_server: {}", name);
-        if (!servers_.remove(name)) {
-            std::pmr::string msg{"server \"", resource()};
-            msg.append(name);
-            msg.append("\" is not registered");
-            co_return core::error_t{core::error_code_t::server_not_exists, std::move(msg)};
-        }
-        std::pmr::vector<actor_zeta::unique_future<bool>> ack_futures(resource());
-        ack_futures.reserve(executor_addresses_.size());
-        for (std::size_t i = 0; i < executor_addresses_.size(); ++i) {
-            auto [needs_sched, fut] = actor_zeta::otterbrix::send(executor_addresses_[i],
-                                                                  &collection::executor::executor_t::unregister_server,
-                                                                  std::pmr::string{name, resource()});
-            if (needs_sched && executors_[i]) {
-                scheduler_->enqueue(executors_[i].get());
-            }
-            ack_futures.push_back(std::move(fut));
-        }
-        for (auto& ack : ack_futures) {
-            if (!co_await std::move(ack)) {
-                error(log_, "dispatcher_t::unregister_server: an executor held no '{}'", name);
-                assert(false && "an executor's server registry diverged from the master");
-            }
-        }
-        co_return core::error_t::no_error();
     }
 
     manager_dispatcher_t::unique_future<core::error_t>
@@ -1448,11 +1307,6 @@ namespace services::dispatcher {
         out.created_indexes = txn_t->drain_created_indexes();
         // No publish barrier here — txn_publish_msg runs it after storage/WAL, so no snapshot sees it half-flipped.
         out.commit_id = txn_manager_.commit(session);
-        for (auto& creating : creating_databases_) {
-            if (creating.transaction_id == transaction_id) {
-                creating.commit_id = out.commit_id;
-            }
-        }
         co_return out;
     }
 
@@ -1550,8 +1404,6 @@ namespace services::dispatcher {
     manager_dispatcher_t::unique_future<uint64_t> manager_dispatcher_t::txn_publish_msg(uint64_t commit_id) {
         trace(log_, "manager_dispatcher_t::txn_publish_msg, commit_id: {}", commit_id);
         txn_manager_.publish(commit_id);
-        std::erase_if(creating_databases_,
-                      [commit_id](const creating_database_t& creating) { return creating.commit_id == commit_id; });
         try_trigger_cleanup_if_horizon_advanced();
         co_return txn_manager_.compact_watermark();
     }
@@ -1559,8 +1411,6 @@ namespace services::dispatcher {
     manager_dispatcher_t::unique_future<void> manager_dispatcher_t::txn_discard_msg(uint64_t commit_id) {
         trace(log_, "manager_dispatcher_t::txn_discard_msg, commit_id: {}", commit_id);
         txn_manager_.discard(commit_id);
-        std::erase_if(creating_databases_,
-                      [commit_id](const creating_database_t& creating) { return creating.commit_id == commit_id; });
         try_trigger_cleanup_if_horizon_advanced();
         co_return;
     }

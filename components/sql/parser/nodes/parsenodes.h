@@ -2230,6 +2230,11 @@ typedef struct AlterForeignServerStmt {
 * ----------------------
 */
 
+typedef struct CreateForeignTableStmt {
+    CreateStmt base;
+    char* servername;
+    List* options;
+} CreateForeignTableStmt;
 
 /* ----------------------
 *		Create/Drop USER MAPPING Statements

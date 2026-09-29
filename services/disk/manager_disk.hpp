@@ -325,8 +325,6 @@ namespace services::disk {
 
         // Names a table's `.otbx` directory, not well_known_oid::main_database.
         components::catalog::oid_t relnamespace_for_oid_sync(components::catalog::oid_t table_oid) const;
-        // pg_namespace.oid of a committed database named `name`; INVALID_OID when there is none.
-        components::catalog::oid_t namespace_oid_sync(std::string_view name) const;
 
         std::pmr::vector<components::catalog::oid_t> scan_live_table_oids_sync() const;
 

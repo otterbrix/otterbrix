@@ -6,12 +6,10 @@
 #include <core/executor.hpp>
 #include <core/result_wrapper.hpp>
 #include <services/collection/context_storage.hpp>
-#include <services/collection/remote_servers.hpp>
 
 #include <filesystem>
 #include <memory>
 #include <memory_resource>
-#include <span>
 
 // Engine assembly without a host facade: prepare_engine -> spawn_engine -> bootstrap -> start.
 // Each stage consumes the previous one, so the order is enforced by the types; the dispatcher
@@ -29,8 +27,6 @@ namespace services::engine {
     struct primitives_t final {
         planner::create_plan_rule_t create_plan_rule{&planner::no_custom_lowering};
         components::planner::optimizer_pass_t optimizer_pass{&components::planner::no_op_pass};
-        // Server name -> connector type; copied by spawn_engine, checked by bootstrap.
-        std::span<const services::remote_server_t> servers{};
     };
 
     // flock(LOCK_EX | LOCK_NB) on <directory>/.lock, held for the lifetime of the object. Bound to
@@ -75,8 +71,7 @@ namespace services::engine {
                                   log_t& log,
                                   primitives_t primitives);
 
-    // Catalog, WAL replay, oid/commit clocks, tombstones and indexes; the pools are not running yet. A spawn-time
-    // server that repeats a name, lacks a name or a type, or names an existing database refuses the start.
+    // Catalog, WAL replay, oid/commit clocks, tombstones and indexes; the pools are not running yet.
     [[nodiscard]] core::result_wrapper_t<bootstrapped_engine_t> bootstrap(spawned_engine_t spawned);
 
     engine_t start(bootstrapped_engine_t bootstrapped);

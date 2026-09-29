@@ -25,6 +25,7 @@
 #include <services/wal/wal_sync_mode.hpp>
 #include <thread>
 #include <unistd.h>
+#include <components/log/test_log.hpp>
 
 // A directory name that doesn't round-trip through to_string(oid) is foreign and must be skipped by both
 // manager_wal_replicate_t's classification and wal_reader_t's replay, or its ids escape next_wal_id()
@@ -64,7 +65,7 @@ namespace {
     struct journal_writer_t {
         explicit journal_writer_t(const std::filesystem::path& path)
             : resource_()
-            , log_(initialization_logger("python", "/tmp/docker_logs/"))
+            , log_(make_test_log("python", "/tmp/docker_logs/"))
             , scheduler_(new actor_zeta::shared_work(2, 1000))
             , config_([&]() {
                 configuration::config_wal c(path);
@@ -131,7 +132,7 @@ TEST_CASE("wal::classification::replay_skips_a_foreign_named_directory") {
         writer.write_committed_insert(/*txn_id=*/7, /*rows=*/4);
     }
 
-    auto log = initialization_logger("python", "/tmp/docker_logs/");
+    auto log = make_test_log("python", "/tmp/docker_logs/");
     core::pmr::otterbrix_resource resource;
     configuration::config_wal config(path);
 

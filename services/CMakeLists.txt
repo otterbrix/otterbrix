@@ -30,6 +30,9 @@ set(${PROJECT_NAME}_SOURCES
        dispatcher/validation/schema.cpp
        dispatcher/validation/resolve_expression.cpp
 
+    # engine
+        engine/engine.cpp
+
     # index
         index/bitcask_index_disk.cpp
         index/disk_hash_table.cpp
@@ -101,6 +104,7 @@ if (DEV_MODE)
     add_definitions(-DDEV_MODE)
     add_subdirectory(disk/tests)
     add_subdirectory(dispatcher/tests)
+    add_subdirectory(engine/tests)
     add_subdirectory(index/tests)
     add_subdirectory(wal/tests)
 endif()

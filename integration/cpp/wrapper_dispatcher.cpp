@@ -13,12 +13,12 @@ using namespace components::cursor;
 namespace otterbrix {
 
     wrapper_dispatcher_t::wrapper_dispatcher_t(std::pmr::memory_resource* resource,
-                                               services::dispatcher::manager_dispatcher_t* manager_dispatcher,
+                                               actor_zeta::address_t manager_dispatcher,
                                                actor_zeta::scheduler_raw scheduler,
                                                log_t& log)
         : actor_zeta::actor::actor_mixin<wrapper_dispatcher_t>()
         , resource_(resource)
-        , manager_dispatcher_(manager_dispatcher)
+        , manager_dispatcher_(std::move(manager_dispatcher))
         , scheduler_(scheduler)
         , log_(log.clone()) {
         (void) scheduler_;
@@ -36,7 +36,7 @@ namespace otterbrix {
         // only to satisfy the has_enqueue_impl concept; do not delete. The
         // schedule hint is ignored because manager_dispatcher is an actor_mixin
         // whose drain loop runs from its own resume(), not scheduler->enqueue.
-        auto [_, res] = manager_dispatcher_->enqueue_impl(std::move(msg));
+        auto [_, res] = manager_dispatcher_.enqueue_impl(std::move(msg));
         return {false, res};
     }
 
@@ -57,7 +57,7 @@ namespace otterbrix {
               "wrapper_dispatcher_t::register_udf session: {}, function name : {} ",
               session.data(),
               function->name());
-        auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_->address(),
+        auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_,
                                                        &services::dispatcher::manager_dispatcher_t::register_udf,
                                                        session,
                                                        std::move(function));
@@ -69,7 +69,7 @@ namespace otterbrix {
         // Host→dispatcher half of the renderer send; the dispatcher→executor fan-out lives in
         // dispatcher.cpp — keep the two send sites in step.
         auto [_, future] =
-            actor_zeta::otterbrix::send(manager_dispatcher_->address(),
+            actor_zeta::otterbrix::send(manager_dispatcher_,
                                         &services::dispatcher::manager_dispatcher_t::set_explain_renderer,
                                         id,
                                         fn);
@@ -84,7 +84,7 @@ namespace otterbrix {
               "wrapper_dispatcher_t::unregister_udf session: {}, function name : {} ",
               session.data(),
               function_name);
-        auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_->address(),
+        auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_,
                                                        &services::dispatcher::manager_dispatcher_t::unregister_udf,
                                                        session,
                                                        function_name,
@@ -97,7 +97,7 @@ namespace otterbrix {
                                              const components::types::complex_logical_type& target,
                                              components::casts::cast_entry entry) -> core::error_t {
         trace(log_, "wrapper_dispatcher_t::register_cast session: {}", session.data());
-        auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_->address(),
+        auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_,
                                                        &services::dispatcher::manager_dispatcher_t::register_cast,
                                                        session,
                                                        source,
@@ -110,7 +110,7 @@ namespace otterbrix {
                                                const components::types::complex_logical_type& source,
                                                const components::types::complex_logical_type& target) -> core::error_t {
         trace(log_, "wrapper_dispatcher_t::unregister_cast session: {}", session.data());
-        auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_->address(),
+        auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_,
                                                        &services::dispatcher::manager_dispatcher_t::unregister_cast,
                                                        session,
                                                        source,
@@ -271,7 +271,7 @@ namespace otterbrix {
         }
         assert(plan.parameters);
 
-        auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_->address(),
+        auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_,
                                                        &services::dispatcher::manager_dispatcher_t::execute_plan,
                                                        session,
                                                        std::move(plan));
@@ -280,7 +280,7 @@ namespace otterbrix {
     }
 
     cursor_t_ptr wrapper_dispatcher_t::send_failed_plan(const session_id_t& session, core::error_t error) {
-        auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_->address(),
+        auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_,
                                                        &services::dispatcher::manager_dispatcher_t::refuse_statement,
                                                        session,
                                                        std::move(error));

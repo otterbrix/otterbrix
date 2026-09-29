@@ -72,7 +72,7 @@ namespace components::operators {
                                                 ctx->session,
                                                 kPgClass,
                                                 cursor_id,
-                                                std::unique_ptr<components::table::table_filter_t>(nullptr),
+                                                std::unique_ptr<components::table::pushed_filter_t>(nullptr),
                                                 /*limit=*/int64_t{-1},
                                                 std::vector<size_t>{},
                                                 ctx->txn);

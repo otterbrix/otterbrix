@@ -28,6 +28,7 @@
 #include <services/wal/wal_page.hpp>
 #include <services/wal/wal_page_reader.hpp>
 #include <services/wal/wal_reader.hpp>
+#include <components/log/test_log.hpp>
 
 // A CRC break must not make the allocator forget what is on disk: recover_from_disk() took the id
 // allocator's resume point from the same replay scan, so it resumed below ids still on disk and reissued them.
@@ -84,7 +85,7 @@ namespace {
 
     struct wal_env_t {
         explicit wal_env_t(const std::filesystem::path& path, size_t max_segment_size = 0)
-            : log_(initialization_logger("python", "/tmp/docker_logs/"))
+            : log_(make_test_log("python", "/tmp/docker_logs/"))
             , scheduler_(new actor_zeta::shared_work(2, 1000))
             , config_(reopen_config(path))
             , manager_(nullptr, actor_zeta::pmr::deleter_t(&resource_)) {

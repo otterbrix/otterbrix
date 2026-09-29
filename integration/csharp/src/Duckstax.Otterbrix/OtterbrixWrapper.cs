@@ -30,6 +30,13 @@ namespace Duckstax.Otterbrix
         public string what;
     }
 
+    // Thrown by the OtterbrixWrapper constructor when the engine refuses to start.
+    public class OtterbrixStartupException : Exception {
+        public OtterbrixStartupException(ErrorMessage error)
+            : base(error.what) { Error = error; }
+        public ErrorMessage Error { get; }
+    }
+
     public struct Config {
         public enum LogLevel : int {
             Trace = 0,
@@ -95,7 +102,19 @@ namespace Duckstax.Otterbrix
                    ExactSpelling = false,
                    CallingConvention = CallingConvention.Cdecl)]
         private static extern IntPtr
-        OtterbrixCreate(TransferConfig config);
+        OtterbrixCreate(TransferConfig config, out TransferErrorMessage error);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct TransferErrorMessage {
+            public int type;
+            public IntPtr what;
+        }
+
+        [DllImport(libotterbrix,
+                   EntryPoint = "otterbrix_free_string",
+                   ExactSpelling = false,
+                   CallingConvention = CallingConvention.Cdecl)]
+        private static extern void OtterbrixFreeString(IntPtr str);
 
         [DllImport(libotterbrix,
                    EntryPoint = "otterbrix_destroy",
@@ -120,9 +139,20 @@ namespace Duckstax.Otterbrix
         private static extern IntPtr CreateCollection(IntPtr otterprixPtr, StringPasser databaseName, StringPasser collectionName);
 
         public OtterbrixWrapper(Config config) {
-            otterbrixPtr = OtterbrixCreate(new TransferConfig(ref config));
+            otterbrixPtr = OtterbrixCreate(new TransferConfig(ref config), out TransferErrorMessage refusal);
+            if (otterbrixPtr == IntPtr.Zero) {
+                ErrorMessage error = new ErrorMessage();
+                error.type = (ErrorCode)refusal.type;
+                error.what = Marshal.PtrToStringAnsi(refusal.what) ?? "";
+                OtterbrixFreeString(refusal.what);
+                throw new OtterbrixStartupException(error);
+            }
         }
-        ~OtterbrixWrapper() { OtterbrixDestroy(otterbrixPtr); }
+        ~OtterbrixWrapper() {
+            if (otterbrixPtr != IntPtr.Zero) {
+                OtterbrixDestroy(otterbrixPtr);
+            }
+        }
         public CursorWrapper Execute(string sql) {
             return new CursorWrapper(ExecuteSQL(otterbrixPtr, new StringPasser(ref sql)));
         }

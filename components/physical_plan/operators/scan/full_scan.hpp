@@ -6,15 +6,17 @@
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/storage/storage.hpp>
 #include <components/table/column_state.hpp>
+#include <components/table/pushed_filter.hpp>
 #include <core/result_wrapper.hpp>
 
 namespace components::operators {
 
-    // Compiled eagerly here so the filter carries its execution graph across the mailbox.
-    core::result_wrapper_t<std::unique_ptr<table::table_filter_t>>
+    // The predicate as it travels to the disk agent, copied onto `target` (the agent side's resource);
+    // the agent compiles it. nullptr when there is nothing to filter.
+    core::result_wrapper_t<std::unique_ptr<table::pushed_filter_t>>
     transform_predicate(std::pmr::memory_resource* resource,
+                        std::pmr::memory_resource* target,
                         const expressions::compare_expression_ptr& expression,
-                        const std::pmr::vector<types::complex_logical_type>& types,
                         const logical_plan::storage_parameters* parameters,
                         const components::graph_execution_context& context);
 

@@ -23,6 +23,7 @@
 #include <core/result_wrapper.hpp>
 #include <services/disk/manager_disk.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
+#include <components/log/test_log.hpp>
 
 // Pins that the pool-admin API answers a typed error, not a bare `bool`; that an executor
 // refusing to drop an overload stops the catalog purge; and that txn_accumulate_msg on a session
@@ -78,7 +79,7 @@ namespace {
         return core::error_t::no_error();
     }
 
-    // The name is a parameter so each test owns its own entry in the process-global default registry.
+    // The name is a parameter so each test names its own function.
     std::unique_ptr<components::compute::vector_function> make_probe_func(std::pmr::memory_resource* resource,
                                                                           const std::string& name) {
         using namespace components::compute;
@@ -112,7 +113,7 @@ struct admin_fixture : actor_zeta::actor::actor_mixin<admin_fixture> {
         : actor_zeta::actor::actor_mixin<admin_fixture>()
         , resource_(resource)
         , disk_path_(scrubbed(disk_path))
-        , log_(initialization_logger("python", "/tmp/docker_logs/"))
+        , log_(make_test_log("python", "/tmp/docker_logs/"))
         , scheduler_(new core::non_thread_scheduler::scheduler_test_t(1, 1))
         , disk_config_(disk_path)
         , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource, scheduler_, scheduler_, disk_config_, log_))
@@ -132,7 +133,7 @@ struct admin_fixture : actor_zeta::actor::actor_mixin<admin_fixture> {
                                                                       components::pipeline::no_mailbox())) {
         manager_wal_->set_manager_dispatcher_sync(manager_dispatcher_->address());
         manager_disk_->set_manager_wal_sync(manager_wal_->address());
-        manager_disk_->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(manager_disk_->bootstrap_system_tables_sync().contains_error());
     }
 
     ~admin_fixture() {
@@ -227,7 +228,6 @@ private:
 // Every refusal names itself.
 
 TEST_CASE("services::dispatcher::admin_errors::register_udf_duplicate_keeps_executor_error") {
-    components::compute::function_registry_t::reset_default();
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     admin_fixture test(mr.get(), admin_dir("udf_dup"));
 
@@ -246,11 +246,9 @@ TEST_CASE("services::dispatcher::admin_errors::register_udf_duplicate_keeps_exec
         REQUIRE(err.type == core::error_code_t::function_registry_error);
         REQUIRE(mentions(err, "already registered"));
     }
-    components::compute::function_registry_t::reset_default();
 }
 
 TEST_CASE("services::dispatcher::admin_errors::cast_refusals_are_distinguishable") {
-    components::compute::function_registry_t::reset_default();
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     admin_fixture test(mr.get(), admin_dir("cast_reasons"));
 
@@ -291,11 +289,9 @@ TEST_CASE("services::dispatcher::admin_errors::cast_refusals_are_distinguishable
         REQUIRE(err.type == core::error_code_t::schema_error);
         REQUIRE(mentions(err, "already registered"));
     }
-    components::compute::function_registry_t::reset_default();
 }
 
 TEST_CASE("services::dispatcher::admin_errors::set_explain_renderer_refusals_named") {
-    components::compute::function_registry_t::reset_default();
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     admin_fixture test(mr.get(), admin_dir("renderer"));
 
@@ -321,24 +317,16 @@ TEST_CASE("services::dispatcher::admin_errors::set_explain_renderer_refusals_nam
                                           &services::collection::render_postgres);
         REQUIRE_FALSE(err.contains_error());
     }
-    components::compute::function_registry_t::reset_default();
 }
 
 // An executor that refused to drop the overload stops the catalog purge.
 
 TEST_CASE("services::dispatcher::admin_errors::unregister_udf_executor_refusal_keeps_pg_proc") {
-    components::compute::function_registry_t::reset_default();
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     admin_fixture test(mr.get(), admin_dir("unreg_refusal"));
 
     const std::string fname = "admin_probe_orphan";
-    // The process-global default registry (what operator_unregister_udf_t probes) knows the
-    // overload and the catalog carries its pg_proc row — but no executor registry holds it.
-    {
-        auto added =
-            components::compute::function_registry_t::get_default()->add_function(make_probe_func(mr.get(), fname));
-        REQUIRE_FALSE(added.has_error());
-    }
+    // The catalog carries the overload's pg_proc row — but no executor registry holds it.
     test.seed_pg_proc_row(fname);
     REQUIRE(test.pg_proc_rows(fname) == 1);
 
@@ -350,15 +338,12 @@ TEST_CASE("services::dispatcher::admin_errors::unregister_udf_executor_refusal_k
     REQUIRE(err.contains_error());
     REQUIRE(err.type == core::error_code_t::unrecognized_function);
     REQUIRE(mentions(err, "executor"));
-
-    components::compute::function_registry_t::reset_default();
 }
 
 // A per-executor divergence isn't constructible through the public API (all fan-outs share the
 // same registries), so this pins the success half: when every executor confirms, the pg_cast
 // row must actually go.
 TEST_CASE("services::dispatcher::admin_errors::unregister_cast_success_removes_pg_cast_row") {
-    components::compute::function_registry_t::reset_default();
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     admin_fixture test(mr.get(), admin_dir("unreg_cast"));
 
@@ -380,13 +365,11 @@ TEST_CASE("services::dispatcher::admin_errors::unregister_cast_success_removes_p
         REQUIRE_FALSE(err.contains_error());
     }
     REQUIRE(test.pg_cast_oid(source_oid, target_oid) == components::catalog::INVALID_OID);
-    components::compute::function_registry_t::reset_default();
 }
 
 // Accumulating onto a session with no transaction is a refusal, not silence.
 
 TEST_CASE("services::dispatcher::admin_errors::txn_accumulate_without_transaction_is_refused") {
-    components::compute::function_registry_t::reset_default();
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     admin_fixture test(mr.get(), admin_dir("accumulate"));
 
@@ -404,6 +387,4 @@ TEST_CASE("services::dispatcher::admin_errors::txn_accumulate_without_transactio
         test.dispatcher_invoke(&manager_dispatcher_t::txn_accumulate_msg, orphan_session, no_such_transaction, payload);
     REQUIRE(err.contains_error());
     REQUIRE(err.type == core::error_code_t::transaction_inactive);
-
-    components::compute::function_registry_t::reset_default();
 }

@@ -1,3 +1,4 @@
+#include <components/expressions/clone_expression.hpp>
 #include "create_plan_aggregate.hpp"
 #include "create_plan_match.hpp"
 #include "create_plan_select.hpp"
@@ -113,7 +114,7 @@ namespace services::planner::impl {
                 const auto& expr = group->expressions()[i];
                 if (expr->group() == ce::expression_group::scalar) {
                     if (output_key_of[i] != SIZE_MAX) {
-                        out.outputs.push_back(expr); // the target list naming this key
+                        out.outputs.push_back(ce::detached_expression_t::detach(resource, expr)); // the target list naming this key
                     }
                     continue; // the key itself was added in pass 1
                 }
@@ -140,7 +141,7 @@ namespace services::planner::impl {
                     } else {
                         return false;
                     }
-                    out.outputs.push_back(expr);
+                    out.outputs.push_back(ce::detached_expression_t::detach(resource, expr));
                     out.aggregates.push_back(std::move(pa));
                 } else {
                     return false;

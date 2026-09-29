@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <set>
+#include <system_error>
 
 #include <services/wal/wal.hpp>
 #include <services/wal/wal_page_reader.hpp>
@@ -15,17 +16,34 @@ namespace services::wal {
         trace(log_, "wal_reader::create , path : {}", config_.path.string());
     }
 
+    core::error_t wal_reader_t::listing_refused(const std::filesystem::path& dir, const std::error_code& ec) {
+        core::error_t refusal(core::error_code_t::io_error,
+                              std::pmr::string{"wal_reader: the directory " + dir.string() +
+                                                   " could not be listed, replay refuses rather than coming up "
+                                                   "without what it holds: " + ec.message(),
+                                               resource_});
+        error(log_, "{}", refusal.what);
+        return refusal;
+    }
+
     core::result_wrapper_t<std::vector<record_t>>
     wal_reader_t::read_committed_records(id_t after_wal_id, std::set<std::uint64_t>* committed_out) {
         std::vector<record_t> merged;
 
-        if (!std::filesystem::exists(config_.path)) {
+        std::error_code ec;
+        if (!std::filesystem::exists(config_.path, ec)) {
+            if (ec) {
+                return listing_refused(config_.path, ec);
+            }
             trace(log_, "wal_reader::read_committed_records , WAL path does not exist : {}", config_.path.string());
             return merged;
         }
 
-        for (const auto& entry : std::filesystem::directory_iterator(config_.path)) {
-            if (!entry.is_directory()) {
+        std::filesystem::directory_iterator it(config_.path, ec);
+        for (const std::filesystem::directory_iterator end; !ec && it != end; it.increment(ec)) {
+            const auto& entry = *it;
+            std::error_code kind_ec;
+            if (!entry.is_directory(kind_ec)) {
                 continue;
             }
 
@@ -49,6 +67,9 @@ namespace services::wal {
                 merged.push_back(std::move(r));
             }
         }
+        if (ec) {
+            return listing_refused(config_.path, ec);
+        }
 
         std::sort(merged.begin(), merged.end(), [](const record_t& a, const record_t& b) { return a.id < b.id; });
 
@@ -62,14 +83,21 @@ namespace services::wal {
                                          std::set<std::uint64_t>* committed_out) {
         std::vector<std::filesystem::path> segments;
 
-        for (const auto& entry : std::filesystem::directory_iterator(db_dir)) {
-            if (!entry.is_regular_file()) {
+        std::error_code ec;
+        std::filesystem::directory_iterator it(db_dir, ec);
+        for (const std::filesystem::directory_iterator end; !ec && it != end; it.increment(ec)) {
+            const auto& entry = *it;
+            std::error_code kind_ec;
+            if (!entry.is_regular_file(kind_ec)) {
                 continue;
             }
             auto fname = entry.path().filename().string();
             if (fname.size() >= 4 && fname.compare(0, 4, "wal_") == 0) {
                 segments.push_back(entry.path());
             }
+        }
+        if (ec) {
+            return listing_refused(db_dir, ec);
         }
 
         std::sort(segments.begin(), segments.end());

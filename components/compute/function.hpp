@@ -6,7 +6,6 @@
 #include <components/types/types.hpp>
 #include <memory>
 #include <memory_resource>
-#include <mutex>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -268,22 +267,14 @@ namespace components::compute {
         [[nodiscard]] std::unique_ptr<function> get_copy(std::pmr::memory_resource* resource) const override;
     };
 
-    // WARNING: function_registry_t does not provide thread-safety guarantees, use mutex
+    // Owned by one actor: the dispatcher holds the engine's master, every executor its own copy.
     class function_registry_t {
     public:
         explicit function_registry_t(std::pmr::memory_resource* resource);
 
-        static function_registry_t* get_default();
-
-        // Replace the process-global default registry with a fresh one holding only the builtin
-        // functions, so a UDF registered by one test cannot leak into get_default() and corrupt the
-        // next. Not thread-safe -- call only when no queries are in flight.
-        static void reset_default();
-
         [[nodiscard]] core::result_wrapper_t<function_uid> add_function(function_ptr function);
-        // Used when the canonical UID was chosen by another registry (e.g. the global default) and
-        // per-executor local registries must agree, so validate/predicate lookups stay cross-registry
-        // stable.
+        // Used when the canonical UID was chosen by the executors' copies, so the dispatcher's master
+        // names a function by the same uid they do.
         [[nodiscard]] core::result_wrapper_t<function_uid> add_function_with_uid(function_uid uid,
                                                                                  function_ptr function);
         // Registration order must match the function's DEFAULT_FUNCTIONS row exactly: a
@@ -306,13 +297,10 @@ namespace components::compute {
         std::pmr::memory_resource* resource() const noexcept;
 
     private:
-        void register_builtin_functions();
         // Record the first builtin-registration failure and drop every function
         // so a shifted table can never be served. See add_builtin.
         void poison_builtins_(core::error_t error);
 
-        static std::once_flag init_flag_;
-        static std::unique_ptr<function_registry_t> default_registry_;
         std::pmr::memory_resource* resource_;
         std::pmr::unordered_map<function_uid, function_ptr> functions_;
         function_uid current_uid_{0};

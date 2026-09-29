@@ -823,21 +823,16 @@ TEST_CASE("integration::cpp::production::corrupted_otbx_recovery") {
 
     INFO("restart after corruption: must not crash");
     {
-        // The real assertion is that the PROCESS doesn't SIGSEGV/abort; a caught exception or empty load is fine.
-        bool crashed = false;
-        try {
-            test_spaces space(config);
+        // The real assertion is that the PROCESS doesn't SIGSEGV/abort; a refused start or empty load is fine.
+        auto opened = otterbrix::base_otterbrix_t::open(config);
+        if (!opened.has_error()) {
+            otterbrix::otterbrix_t space(std::move(opened.value()));
             auto* dispatcher = space.dispatcher();
 
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
             REQUIRE(cur != nullptr);
-        } catch (const std::exception& /*e*/) {
-            crashed = false;
-        } catch (...) {
-            crashed = false;
         }
-        REQUIRE_FALSE(crashed);
     }
 }
 

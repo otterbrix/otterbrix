@@ -28,6 +28,7 @@
 #include <services/wal/manager_wal_replicate.hpp>
 #include <services/wal/wal_page.hpp>
 #include <services/wal/wal_page_reader.hpp>
+#include <components/log/test_log.hpp>
 
 using namespace services;
 using namespace services::wal;
@@ -115,7 +116,7 @@ namespace {
     struct wal_env_t {
         explicit wal_env_t(const std::filesystem::path& path, size_t max_segment_size = 0)
             : path_(path)
-            , log_(initialization_logger("python", "/tmp/docker_logs/"))
+            , log_(make_test_log("python", "/tmp/docker_logs/"))
             , scheduler_(new actor_zeta::shared_work(2, 1000))
             , config_(make_config(path, max_segment_size))
             , manager_(actor_zeta::spawn<manager_wal_replicate_t>(&resource_,

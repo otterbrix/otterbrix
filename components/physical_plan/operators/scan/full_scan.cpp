@@ -1,19 +1,18 @@
 #include "full_scan.hpp"
 
 #include <components/expressions/compare_expression.hpp>
-#include <components/expressions/execution_dag_builder.hpp>
 #include <services/disk/manager_disk.hpp>
 
 namespace components::operators {
 
-    core::result_wrapper_t<std::unique_ptr<table::table_filter_t>>
+    core::result_wrapper_t<std::unique_ptr<table::pushed_filter_t>>
     transform_predicate(std::pmr::memory_resource* resource,
+                        std::pmr::memory_resource* target,
                         const expressions::compare_expression_ptr& expression,
-                        const std::pmr::vector<types::complex_logical_type>& types,
                         const logical_plan::storage_parameters* parameters,
                         const components::graph_execution_context& context) {
         if (!expression || expression->type() == expressions::compare_type::all_true) {
-            return std::unique_ptr<table::table_filter_t>{};
+            return std::unique_ptr<table::pushed_filter_t>{};
         }
         // pushing graph that never selects a row is pessimization, and should be caught earlier
         if (expression->type() == expressions::compare_type::all_false ||
@@ -22,20 +21,7 @@ namespace components::operators {
                 core::error_code_t::physical_plan_error,
                 std::pmr::string{"a predicate that selects nothing reached filter construction", resource}};
         }
-
-        const auto condition = expressions::classify_condition(expression);
-        std::unique_ptr<execution_dag::execution_dag_t> graph;
-        if (condition == expressions::condition_kind::computed) {
-            auto built = expressions::build_condition_graph(resource, parameters->parameters, expression.get(), types);
-            if (built.has_error()) {
-                return built.error();
-            }
-            graph = std::move(built.value());
-        }
-        types::parameter_map_t snapshot{resource};
-        snapshot.insert(parameters->parameters.begin(), parameters->parameters.end());
-        return std::unique_ptr<table::table_filter_t>(
-            std::make_unique<table::table_filter_t>(std::move(snapshot), context, std::move(graph), condition));
+        return table::make_pushed_filter(target, expression, parameters->parameters, context);
     }
 
     full_scan::full_scan(std::pmr::memory_resource* resource,
@@ -127,10 +113,13 @@ namespace components::operators {
                 }
             }
 
-            std::unique_ptr<table::table_filter_t> filter;
+            std::unique_ptr<table::pushed_filter_t> filter;
             if (!null_param_skip_filter) {
-                auto filter_result =
-                    transform_predicate(resource_, expression_, guard_types_, &ctx->parameters, ctx->execution_context);
+                auto filter_result = transform_predicate(resource_,
+                                                         ctx->disk_address.resource(),
+                                                         expression_,
+                                                         &ctx->parameters,
+                                                         ctx->execution_context);
                 if (filter_result.has_error()) {
                     set_error(filter_result.error());
                     mark_failed();
@@ -191,7 +180,7 @@ namespace components::operators {
                                                     ctx->session,
                                                     table_oid_,
                                                     cursor_id_,
-                                                    std::unique_ptr<table::table_filter_t>(nullptr),
+                                                    std::unique_ptr<table::pushed_filter_t>(nullptr),
                                                     int64_t{-1},
                                                     projected_cols_,
                                                     ctx->txn);

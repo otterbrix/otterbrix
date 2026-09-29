@@ -8,12 +8,21 @@
 #include <core/result_wrapper.hpp>
 #include <services/disk/manager_disk.hpp>
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
 
 namespace components::operators {
+
+#ifdef DEV_MODE
+    namespace {
+        std::atomic<bool> g_unregister_udf_purge_refusal{false};
+    } // namespace
+
+    void dev_set_unregister_udf_purge_refusal(bool refuse) noexcept { g_unregister_udf_purge_refusal.store(refuse); }
+#endif
     operator_unregister_udf_t::operator_unregister_udf_t(std::pmr::memory_resource* resource,
                                                          log_t log,
                                                          std::string function_name,
@@ -25,28 +34,24 @@ namespace components::operators {
     actor_zeta::unique_future<void> operator_unregister_udf_t::await_async_and_resume(pipeline::context_t* ctx) {
         success_ = false;
 
-        // 1. Existence check via the global default registry (V4 invariant:
-        //    UDFs registered through register_udf land both in per-executor
-        //    registries and in the default registry; the default one is the
-        //    authoritative "exists?" check at runtime).
-        auto* reg = components::compute::function_registry_t::get_default();
+        // 1. Existence check against the dispatcher's master registry; the dispatcher drops the
+        //    overload from the master only once this operator succeeds.
+        const auto* reg = ctx->function_registry;
         bool exists = false;
-        if (reg) {
-            for (auto& [n, uid] : reg->get_functions()) {
-                if (n != function_name_)
-                    continue;
-                auto* fn = reg->get_function(uid);
-                if (!fn)
-                    continue;
-                for (auto& sig : fn->get_signatures()) {
-                    if (sig.matches_inputs(inputs_)) {
-                        exists = true;
-                        break;
-                    }
-                }
-                if (exists)
+        for (auto& [n, uid] : reg->get_functions()) {
+            if (n != function_name_)
+                continue;
+            auto* fn = reg->get_function(uid);
+            if (!fn)
+                continue;
+            for (auto& sig : fn->get_signatures()) {
+                if (sig.matches_inputs(inputs_)) {
+                    exists = true;
                     break;
+                }
             }
+            if (exists)
+                break;
         }
         if (!exists) {
             set_error(core::error_t{core::error_code_t::unrecognized_function,
@@ -57,10 +62,16 @@ namespace components::operators {
             co_return;
         }
 
-        // 2. Purge pg_proc + pg_depend rows for every namespace match, AHEAD of the registry removal below
-        //    (the operator's only mutation): the pg_proc read here can refuse, and refusing after the
-        //    removal would leave the function gone from the registry while its catalog rows still claim
-        //    it exists.
+        // 2. Purge pg_proc + pg_depend rows for every namespace match.
+#ifdef DEV_MODE
+        if (g_unregister_udf_purge_refusal.load()) {
+            set_error(core::error_t{core::error_code_t::io_error,
+                                    std::pmr::string{"unregister_udf: the pg_proc purge was refused (test seam)",
+                                                     resource_}});
+            mark_failed();
+            co_return;
+        }
+#endif
         if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
             components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
             auto [_rfbn, rfbnf] = actor_zeta::otterbrix::send(ctx->disk_address,
@@ -90,8 +101,6 @@ namespace components::operators {
                                                 exec_ctx,
                                                 std::move(specs));
                 auto deleted_r = co_await std::move(df);
-                // Still ahead of the registry removal: a refused scrub must be known before the only
-                // mutation runs.
                 if (deleted_r.has_error()) {
                     set_error(deleted_r.error());
                     mark_failed();
@@ -108,19 +117,6 @@ namespace components::operators {
                     co_return;
                 }
             }
-        }
-
-        // 3. Drop the matching overload from the default registry — the operator's ONLY mutation, done
-        //    last. The answer IS checked: remove_function_by_signature returning false means the registry
-        //    changed between the pre-check and here, and reporting success would paper over that.
-        if (reg && !reg->remove_function_by_signature(function_name_, inputs_)) {
-            set_error(core::error_t{core::error_code_t::other_error,
-                                    std::pmr::string{"unregister_udf: the registry no longer holds the overload of '" +
-                                                         function_name_ +
-                                                         "' that the pre-check matched — nothing was removed",
-                                                     resource_}});
-            mark_failed();
-            co_return;
         }
 
         success_ = true;

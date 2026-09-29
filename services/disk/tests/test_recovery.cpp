@@ -22,6 +22,7 @@
 #include <limits>
 #include <thread>
 #include <unistd.h>
+#include <components/log/test_log.hpp>
 
 using namespace services::disk;
 using namespace components::catalog;
@@ -44,7 +45,7 @@ namespace {
         std::unique_ptr<services::wal::manager_wal_replicate_t, actor_zeta::pmr::deleter_t> wal;
 
         explicit recovery_fixture(const std::string& dir, bool bootstrap = true)
-            : log(initialization_logger("python", "/tmp/docker_logs/"))
+            : log(make_test_log("python", "/tmp/docker_logs/"))
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , wal_config([&]() {
                 configuration::config_wal c;
@@ -66,7 +67,7 @@ namespace {
             std::filesystem::create_directories(dir);
             disk->set_manager_wal_sync(wal->address());
             if (bootstrap) {
-                disk->bootstrap_system_tables_sync();
+                REQUIRE_FALSE(disk->bootstrap_system_tables_sync().contains_error());
             }
         }
         ~recovery_fixture() {
@@ -110,7 +111,7 @@ TEST_CASE("test_recovery_system_wal_before_user") {
 
     {
         recovery_fixture fx(dir, /*bootstrap=*/false);
-        REQUIRE_NOTHROW(fx.disk->bootstrap_system_tables_sync());
+        REQUIRE_FALSE(fx.disk->bootstrap_system_tables_sync().contains_error());
         REQUIRE_NOTHROW(fx.disk->restore_oid_generator_sync());
     }
     cleanup_dir(dir);
@@ -147,7 +148,7 @@ TEST_CASE("test_recovery_ddl_then_dml") {
 
     {
         recovery_fixture fx(dir, /*bootstrap=*/false);
-        REQUIRE_NOTHROW(fx.disk->bootstrap_system_tables_sync());
+        REQUIRE_FALSE(fx.disk->bootstrap_system_tables_sync().contains_error());
         REQUIRE_NOTHROW(fx.disk->restore_oid_generator_sync());
 
         const auto post_ns_oid = disk_test_helpers::test_create_namespace(fx, std::string("post_recovery_ns"));
@@ -177,7 +178,7 @@ TEST_CASE("test_recovery_orphaned_uncommitted_ddl") {
 
     {
         recovery_fixture fx(dir, /*bootstrap=*/false);
-        REQUIRE_NOTHROW(fx.disk->bootstrap_system_tables_sync());
+        REQUIRE_FALSE(fx.disk->bootstrap_system_tables_sync().contains_error());
         REQUIRE_NOTHROW(fx.disk->restore_oid_generator_sync());
 
         auto res = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("orphaned_ns"));
@@ -226,7 +227,7 @@ TEST_CASE("services::disk::recovery::dynamic_schema_persists_across_restart") {
 
     {
         recovery_fixture fx_reopen(dir, /*bootstrap=*/false);
-        REQUIRE_NOTHROW(fx_reopen.disk->bootstrap_system_tables_sync());
+        REQUIRE_FALSE(fx_reopen.disk->bootstrap_system_tables_sync().contains_error());
         REQUIRE_NOTHROW(fx_reopen.disk->restore_oid_generator_sync());
 
         constexpr components::catalog::oid_t pg_cc = components::catalog::well_known_oid::pg_computed_column_table;

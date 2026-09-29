@@ -34,10 +34,16 @@ namespace services::wal {
         , encode_buf_(this->resource()) {
         trace(log_, "wal_worker::create for database_oid={}", static_cast<unsigned>(database_oid_));
 
-        std::filesystem::create_directories(database_dir_);
+        std::error_code dir_ec;
+        std::filesystem::create_directories(database_dir_, dir_ec);
 
         // A refusal here is latched, not dropped: a constructor has no caller to answer, but every handler below does.
-        recovery_error_ = recover_from_disk();
+        recovery_error_ = dir_ec ? core::error_t(core::error_code_t::io_error,
+                                                 std::pmr::string{"wal_worker: the journal directory " +
+                                                                      database_dir_.string() +
+                                                                      " could not be created: " + dir_ec.message(),
+                                                                  this->resource()})
+                                 : recover_from_disk();
         if (recovery_error_.contains_error()) {
             error(log_,
                   "wal_worker::create , db_oid={} , the journal could not be read at startup , "
@@ -397,7 +403,11 @@ namespace services::wal {
             }
         }
 
-        auto segments = discover_segments();
+        auto discovered = discover_segments();
+        if (discovered.has_error()) {
+            co_return core::result_wrapper_t<std::vector<record_t>>{discovered.error()};
+        }
+        auto segments = std::move(discovered.value());
 
         // discover_segments() returns files in ascending name/index/id order; the walk below relies on that alone.
         std::vector<record_t> all_records;
@@ -518,7 +528,11 @@ namespace services::wal {
             co_return recovery_error_;
         }
 
-        auto segments = discover_segments();
+        auto discovered = discover_segments();
+        if (discovered.has_error()) {
+            co_return discovered.error();
+        }
+        const auto segments = std::move(discovered.value());
         for (const auto& seg_path : segments) {
             if (writer_ && seg_path == writer_->current_segment_path()) {
                 continue;
@@ -576,7 +590,7 @@ namespace services::wal {
 
     // A CRC break here does not truncate anything, only bounds the high-water mark; replay stops at the break (STOP-A).
     core::error_t wal_worker_t::recover_from_disk() {
-        auto segments = discover_segments();
+        VALUE_OR_RETURN(auto segments, discover_segments());
         if (segments.empty()) {
             trace(log_,
                   "wal_worker::recover , no existing segments for db_oid={}",
@@ -730,23 +744,34 @@ namespace services::wal {
         return database_dir_ / segment_filename(database_dir_name_, seg_index);
     }
 
-    std::vector<std::filesystem::path> wal_worker_t::discover_segments() const {
+    core::result_wrapper_t<std::vector<std::filesystem::path>> wal_worker_t::discover_segments() {
         std::vector<std::filesystem::path> result;
 
-        if (!std::filesystem::exists(database_dir_)) {
+        std::error_code ec;
+        if (!std::filesystem::exists(database_dir_, ec) && !ec) {
             return result;
         }
 
         std::string prefix = "wal_" + database_dir_name_ + "_";
 
-        for (const auto& entry : std::filesystem::directory_iterator(database_dir_)) {
-            if (!entry.is_regular_file()) {
+        std::filesystem::directory_iterator it(database_dir_, ec);
+        for (const std::filesystem::directory_iterator end; !ec && it != end; it.increment(ec)) {
+            const auto& entry = *it;
+            std::error_code kind_ec;
+            if (!entry.is_regular_file(kind_ec)) {
                 continue;
             }
             auto fname = entry.path().filename().string();
             if (fname.size() >= prefix.size() && fname.compare(0, prefix.size(), prefix) == 0) {
                 result.push_back(entry.path());
             }
+        }
+
+        if (ec) {
+            return core::error_t(core::error_code_t::io_error,
+                                 std::pmr::string{"wal_worker: the journal directory " + database_dir_.string() +
+                                                      " could not be listed: " + ec.message(),
+                                                  this->resource()});
         }
 
         // Sorted lexicographically, which works because the suffix is zero-padded.

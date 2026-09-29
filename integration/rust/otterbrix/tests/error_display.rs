@@ -22,6 +22,17 @@ fn display_query_error() {
 }
 
 #[test]
+fn display_open_error() {
+    let msg = Error::Open {
+        code: 1,
+        message: "directory taken".to_string(),
+    }
+    .to_string();
+    assert!(msg.contains("refused to open"), "missing prefix: {msg:?}");
+    assert!(msg.contains("directory taken"), "missing message: {msg:?}");
+}
+
+#[test]
 fn display_invalid_path() {
     let msg = Error::InvalidPath("/no/such/path".to_string()).to_string();
     assert!(msg.contains("invalid path"), "missing prefix: {msg:?}");

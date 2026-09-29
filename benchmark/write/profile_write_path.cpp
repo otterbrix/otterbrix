@@ -96,9 +96,17 @@ namespace {
     class write_space_t final : public otterbrix::base_otterbrix_t {
     public:
         explicit write_space_t(const options_t& o)
-            : base_otterbrix_t(make_config(o)) {}
+            : base_otterbrix_t(open_or_exit(make_config(o))) {}
 
     private:
+        static host_ptr open_or_exit(const configuration::config& config) {
+            auto host = open(config);
+            if (host.has_error()) {
+                std::cerr << "otterbrix refused to start: " << host.error().what << '\n';
+                std::exit(EXIT_FAILURE);
+            }
+            return std::move(host.value());
+        }
         static configuration::config make_config(const options_t& o) {
             // One named base dir via create_config -- hand-assigning `current_path()/"disk"`
             // and `.../"wal"` instead scatters both into whatever directory the profiler was

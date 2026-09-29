@@ -80,7 +80,7 @@ namespace components::operators {
                                                         ctx->session,
                                                         table_oid_,
                                                         cursor_id_, // 0 == OPEN
-                                                        std::unique_ptr<table::table_filter_t>(nullptr),
+                                                        std::unique_ptr<table::pushed_filter_t>(nullptr),
                                                         scan_limit,
                                                         projected_cols_,
                                                         ctx->txn);
@@ -122,7 +122,7 @@ namespace components::operators {
                                                     ctx->session,
                                                     table_oid_,
                                                     cursor_id_,
-                                                    std::unique_ptr<table::table_filter_t>(nullptr),
+                                                    std::unique_ptr<table::pushed_filter_t>(nullptr),
                                                     int64_t{-1},
                                                     projected_cols_,
                                                     ctx->txn);

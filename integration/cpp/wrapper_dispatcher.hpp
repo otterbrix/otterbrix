@@ -41,7 +41,7 @@ namespace otterbrix {
 
         /// blocking method
         wrapper_dispatcher_t(std::pmr::memory_resource*,
-                             services::dispatcher::manager_dispatcher_t* manager_dispatcher,
+                             actor_zeta::address_t manager_dispatcher,
                              actor_zeta::scheduler_raw scheduler,
                              log_t& log);
         ~wrapper_dispatcher_t();
@@ -86,7 +86,7 @@ namespace otterbrix {
 
     private:
         std::pmr::memory_resource* resource_;
-        services::dispatcher::manager_dispatcher_t* manager_dispatcher_;
+        actor_zeta::address_t manager_dispatcher_;
         actor_zeta::scheduler_raw scheduler_;
         log_t log_;
         components::sql::parser::parser_extension_registry_t parser_extensions_;
@@ -112,7 +112,7 @@ namespace otterbrix {
             if (!future.is_ready()) {
                 // 100µs poll: event-loop managers return from enqueue instantly
                 // and never notify event_loop_cv_, so the tick bounds per-query
-                // handoff latency. Matched to the manager loops' 100µs cadence.
+                // handoff latency.
                 event_loop_cv_.wait_for(lock, std::chrono::microseconds(100));
             }
         }

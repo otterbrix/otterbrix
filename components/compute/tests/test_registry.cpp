@@ -5,13 +5,19 @@ using namespace components::compute;
 
 TEST_CASE("components::compute::registry::basic") {
     core::pmr::otterbrix_resource resource;
-    auto* reg = function_registry_t::get_default();
-    REQUIRE(reg != nullptr);
+    function_registry_t builtins(&resource);
+    register_default_functions(builtins);
+    auto* reg = &builtins;
     auto registered_functions = reg->get_functions();
 
-    SECTION("singleton") {
-        auto* reg2 = function_registry_t::get_default();
-        REQUIRE(reg == reg2);
+    SECTION("registries are independent") {
+        function_registry_t other(&resource);
+        register_default_functions(other);
+        auto added = other.add_function(
+            std::make_unique<vector_function>("only_in_other", arity::unary(), function_doc{}, /*available_kernel_slots=*/1));
+        REQUIRE_FALSE(added.has_error());
+        REQUIRE(other.find_functions("only_in_other").size() == 1);
+        REQUIRE(reg->find_functions("only_in_other").empty());
     }
 
     SECTION("all function names present") { REQUIRE(registered_functions.size() >= 5); }

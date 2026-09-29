@@ -22,6 +22,7 @@
 #include <components/storage/storage.hpp>
 #include <components/table/column_definition.hpp>
 #include <components/table/column_state.hpp>
+#include <components/table/pushed_filter.hpp>
 #include <components/table/row_version_manager.hpp>
 #include <components/types/logical_value.hpp>
 #include <components/vector/data_chunk.hpp>
@@ -129,7 +130,7 @@ namespace services::disk {
         actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
         storage_reduce(session_id_t session,
                        components::catalog::oid_t table_oid,
-                       std::unique_ptr<components::table::table_filter_t> filter,
+                       std::unique_ptr<components::table::pushed_filter_t> filter,
                        std::vector<size_t> projected_cols,
                        components::table::transaction_data txn,
                        components::operators::pushed_aggregate_spec_t spec);
@@ -175,7 +176,7 @@ namespace services::disk {
         storage_fetch_next_batch(session_id_t session,
                                  components::catalog::oid_t table_oid,
                                  uint64_t cursor_id,
-                                 std::unique_ptr<components::table::table_filter_t> filter,
+                                 std::unique_ptr<components::table::pushed_filter_t> filter,
                                  int64_t limit,
                                  std::vector<size_t> projected_cols,
                                  components::table::transaction_data txn);

@@ -36,6 +36,7 @@
 #include <vector>
 
 #include "index_fixture_path.hpp"
+#include <components/log/test_log.hpp>
 
 using components::expressions::compare_type;
 using components::session::session_id_t;
@@ -133,7 +134,7 @@ namespace {
 // staged-delete bucket would answer {0, 2} for the build's own read; a full scan still answers all three.
 TEST_CASE("services::index::a CREATE INDEX catchup delete never shrinks the built index") {
     auto resource = core::pmr::otterbrix_resource();
-    auto log = initialization_logger("python", "/tmp/docker_logs/");
+    auto log = make_test_log("python", "/tmp/docker_logs/");
     const auto path = fresh_index_root("otterbrix_test_index_catchup_delete_bucket");
 
     // Never started: everything below is driven by hand.
@@ -236,7 +237,7 @@ TEST_CASE("services::index::a CREATE INDEX catchup delete never shrinks the buil
 // Nothing committed the catchup's undecided deletes, so the horizon has no opinion on them.
 TEST_CASE("services::index::the horizon does not erase what a CREATE INDEX catchup read") {
     auto resource = core::pmr::otterbrix_resource();
-    auto log = initialization_logger("python", "/tmp/docker_logs/");
+    auto log = make_test_log("python", "/tmp/docker_logs/");
     const auto path = fresh_index_root("otterbrix_test_index_catchup_delete_horizon");
 
     auto scheduler = std::make_unique<actor_zeta::shared_work>(1, 100);

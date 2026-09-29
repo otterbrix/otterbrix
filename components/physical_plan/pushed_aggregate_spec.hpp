@@ -1,6 +1,7 @@
 #pragma once
 
 #include <components/compute/function.hpp>
+#include <components/expressions/clone_expression.hpp>
 #include <components/expressions/expression.hpp>
 #include <components/types/types.hpp>
 
@@ -11,8 +12,9 @@
 
 // The coordinator ships this inside pushed_reduce_scan; the agent rebuilds operator_hash_group from it.
 //
-// R10/R14: no node_ptr/expression_ptr/variant/any/tuple/shared_ptr — only POD + pmr containers,
-// so it crosses the mailbox by value without a non-atomic refcount hazard; not default-constructible on purpose.
+// Crosses the mailbox by value and owns everything in it: pmr containers, and the output expressions
+// as detached deep copies the agent attaches onto its own resource. services/disk/mailbox_payload.hpp
+// refuses to compile a disk message carrying anything else. Not default-constructible on purpose.
 //
 // The WHERE predicate and scan projection ride storage_reduce's own filter/projected_cols params, not this POD.
 
@@ -48,7 +50,7 @@ namespace components::operators {
     struct pushed_aggregate_spec_t {
         std::pmr::vector<pushed_group_key_t> group_keys;
         std::pmr::vector<pushed_aggregate_t> aggregates;
-        std::pmr::vector<expressions::expression_ptr> outputs;
+        std::pmr::vector<expressions::detached_expression_t> outputs;
         std::pmr::vector<types::complex_logical_type> output_types;
         std::pmr::vector<types::complex_logical_type> input_types;
         explicit pushed_aggregate_spec_t(std::pmr::memory_resource* resource)

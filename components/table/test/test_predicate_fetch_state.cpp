@@ -103,7 +103,9 @@ TEST_CASE("components::table::predicate::two_long_string_columns_in_one_predicat
         expr::make_compare_expression(&env.resource, expr::compare_type::gte, column_key(0), lo_id));
     predicate->append_child(expr::make_compare_expression(&env.resource, expr::compare_type::lt, column_key(1), hi_id));
 
-    auto built = expr::build_condition_graph(&env.resource, parameters, predicate.get(), table->copy_types());
+    components::compute::function_registry_t functions(&env.resource);
+    auto built =
+        expr::build_condition_graph(&env.resource, functions, parameters, predicate.get(), table->copy_types());
     REQUIRE_FALSE(built.has_error());
     table_filter_t filter{parameters,
                           components::graph_execution_context{},

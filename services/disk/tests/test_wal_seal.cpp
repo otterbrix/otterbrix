@@ -21,6 +21,7 @@
 #include <limits>
 #include <thread>
 #include <unistd.h>
+#include <components/log/test_log.hpp>
 
 // checkpoint_all's WAL floor is min(prev_checkpoint_wal_id) over every entry the agents own, so a deferred
 // entry's unchanged prev pins the floor below its unpersisted records (see test_checkpoint_dirty.cpp).
@@ -44,7 +45,7 @@ namespace {
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
 
         explicit fresh_disk(const std::filesystem::path& path)
-            : log(initialization_logger("python", "/tmp/docker_logs/"))
+            : log(make_test_log("python", "/tmp/docker_logs/"))
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
                 configuration::config_disk c;
@@ -124,7 +125,7 @@ namespace {
                                session_id_t{},
                                table_oid,
                                uint64_t{0}, // 0 == OPEN
-                               std::unique_ptr<components::table::table_filter_t>(nullptr),
+                               std::unique_ptr<components::table::pushed_filter_t>(nullptr),
                                int64_t{-1},
                                std::vector<size_t>{},
                                with_open_snapshot(0, 0));
@@ -145,7 +146,7 @@ TEST_CASE("services::disk::wal_seal::floor_pinned_by_deferred_table") {
 
     {
         fresh_disk fd(dir);
-        fd.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
         table_oid = make_seeded_table(fd, kRowsBeforeSeal);
 
         REQUIRE(fd.checkpoint_round(services::wal::id_t{100}) == services::wal::id_t{0});
@@ -170,9 +171,9 @@ TEST_CASE("services::disk::wal_seal::floor_pinned_by_deferred_table") {
     // A fresh manager reopens the table from the round-2 root, so rows appended after it exist only in the WAL.
     {
         fresh_disk fd2(dir);
-        fd2.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fd2.manager->bootstrap_system_tables_sync().contains_error());
         fd2.manager->restore_oid_generator_sync();
-        fd2.manager->load_user_table_storages_sync();
+        REQUIRE_FALSE(fd2.manager->load_user_table_storages_sync().contains_error());
 
         const auto durable_rows =
             disk_test_helpers::read_ok(fd2.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, table_oid));

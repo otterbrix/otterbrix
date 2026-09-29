@@ -25,6 +25,7 @@
 #include <services/disk/manager_disk.hpp>
 #include <services/disk/tests/catalog_probe.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
+#include <components/log/test_log.hpp>
 
 using namespace services;
 using namespace services::wal;
@@ -55,7 +56,7 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
         : actor_zeta::actor::actor_mixin<test_dispatcher>()
         , resource_(resource)
         , disk_path_(scrubbed(disk_path))
-        , log_(initialization_logger("python", "/tmp/docker_logs/"))
+        , log_(make_test_log("python", "/tmp/docker_logs/"))
         , scheduler_(new core::non_thread_scheduler::scheduler_test_t(1, 1))
         , disk_config_(disk_path)
         , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource, scheduler_, scheduler_, disk_config_, log_))
@@ -75,7 +76,7 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
         manager_wal_->set_manager_dispatcher_sync(manager_dispatcher_->address());
         manager_disk_->set_manager_wal_sync(manager_wal_->address());
 
-        manager_disk_->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(manager_disk_->bootstrap_system_tables_sync().contains_error());
     }
 
     ~test_dispatcher() {

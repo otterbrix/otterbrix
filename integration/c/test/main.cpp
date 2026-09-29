@@ -41,7 +41,9 @@ namespace {
             cfg.disk_path = sv(disk_path);
             cfg.main_path = sv(main_path);
 
-            ptr = otterbrix_create(cfg);
+            error_message refusal{};
+            ptr = otterbrix_create(cfg, &refusal);
+            REQUIRE(refusal.message == nullptr);
         }
 
         ~test_db_t() {
@@ -351,4 +353,32 @@ TEST_CASE("c-api: config_t carries no boolean switches", "[c-api][abi]") {
     // Now that both bools are gone, main_path really is the last field, and sizeof says so --
     // it could not while a trailing bool hid inside the tail padding.
     CHECK(sizeof(config_t) == offsetof(config_t, main_path) + sizeof(string_view_t));
+}
+
+TEST_CASE("c-api: a second engine on the same main_path is refused", "[c-api][lifecycle]") {
+    test_db_t first("same_main_path");
+    REQUIRE(first.ptr != nullptr);
+
+    config_t cfg{};
+    cfg.level = 0;
+    cfg.log_path = sv(first.log_path);
+    cfg.wal_path = sv(first.wal_path);
+    cfg.disk_path = sv(first.disk_path);
+    cfg.main_path = sv(first.main_path);
+
+    error_message refusal{};
+    REQUIRE(otterbrix_create(cfg, &refusal) == nullptr);
+    REQUIRE(refusal.code != 0);
+    REQUIRE(refusal.message != nullptr);
+    const std::string reason{refusal.message};
+    otterbrix_free_string(refusal.message);
+    INFO("refusal: " << reason);
+    CHECK(reason.find("unique directory") != std::string::npos);
+
+    otterbrix_destroy(first.ptr);
+    error_message none{};
+    first.ptr = otterbrix_create(cfg, &none);
+    REQUIRE(first.ptr != nullptr);
+    CHECK(none.code == 0);
+    CHECK(none.message == nullptr);
 }

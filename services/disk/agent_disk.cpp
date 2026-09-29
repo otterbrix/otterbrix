@@ -75,6 +75,7 @@ namespace services::disk {
         , log_(log.clone())
         , path_(path_db)
         , pool_idx_(pool_idx)
+        , function_registry_(resource)
         , storages_(resource)
         , active_scans_(resource)
         , dropped_storages_(resource) {
@@ -82,7 +83,12 @@ namespace services::disk {
               "agent_disk::create (role={}, pool_idx={})",
               role == agent_role_t::CATALOG ? "CATALOG" : "USER_POOL",
               pool_idx);
-        create_directories(path_);
+        components::compute::register_default_functions(function_registry_);
+        std::error_code ec;
+        std::filesystem::create_directories(path_, ec);
+        if (ec) {
+            error(log_, "agent_disk::create: directory {} could not be created: {}", path_.string(), ec.message());
+        }
     }
 
     agent_disk_t::~agent_disk_t() { trace(log_, "delete agent_disk_t"); }
@@ -1003,12 +1009,32 @@ namespace services::disk {
 
     agent_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
     agent_disk_t::storage_scan_inner(components::catalog::oid_t table_oid,
-                                     std::unique_ptr<components::table::table_filter_t> filter,
+                                     std::unique_ptr<components::table::pushed_filter_t> filter,
                                      int64_t limit,
                                      std::vector<size_t> projected_cols,
                                      components::table::transaction_data txn) {
+        auto built = build_filter_(table_oid, filter.get());
+        if (built.has_error()) {
+            co_return built.error();
+        }
         const std::vector<size_t>* projected_ptr = projected_cols.empty() ? nullptr : &projected_cols;
-        co_return scan_local(table_oid, filter.get(), limit, projected_ptr, txn);
+        co_return scan_local(table_oid, built.value().get(), limit, projected_ptr, txn);
+    }
+
+    core::result_wrapper_t<std::unique_ptr<components::table::table_filter_t>>
+    agent_disk_t::build_filter_(components::catalog::oid_t table_oid, const components::table::pushed_filter_t* filter) {
+        if (filter == nullptr) {
+            return std::unique_ptr<components::table::table_filter_t>{};
+        }
+        auto it = storages_.find(table_oid);
+        if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
+            return core::error_t{core::error_code_t::missing_table,
+                                 std::pmr::string{"scan filter: storage is not owned by this agent", resource()}};
+        }
+        return components::table::build_table_filter(resource(),
+                                                     function_registry_,
+                                                     *filter,
+                                                     it->second->storage->types());
     }
 
     template<typename PerBatch>
@@ -1072,7 +1098,7 @@ namespace services::disk {
             group.add_value(agg.alias, agg.result_type);
         }
         for (const auto& output : spec.outputs) {
-            group.add_output(output);
+            group.add_output(output.attach(resource));
         }
         group.set_input_types(spec.input_types);
         group.set_output_types(spec.output_types);
@@ -1116,7 +1142,7 @@ namespace services::disk {
     agent_disk_t::storage_fetch_next_batch_inner(session_id_t session,
                                                  components::catalog::oid_t table_oid,
                                                  uint64_t cursor_id,
-                                                 std::unique_ptr<components::table::table_filter_t> filter,
+                                                 std::unique_ptr<components::table::pushed_filter_t> filter,
                                                  int64_t limit,
                                                  std::vector<size_t> projected_cols,
                                                  components::table::transaction_data txn) {
@@ -1146,11 +1172,15 @@ namespace services::disk {
                 what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
                 co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
             }
+            auto built = build_filter_(table_oid, filter.get());
+            if (built.has_error()) {
+                co_return built.error();
+            }
             active_scan_t scan{};
             scan.table_oid = table_oid;
             scan.pos.next_row = 0;
             scan.pos.max_row = static_cast<int64_t>(it->second->storage->total_rows());
-            scan.filter = std::move(filter);
+            scan.filter = std::move(built.value());
             scan.projected_cols = std::move(projected_cols);
             scan.txn = txn;
             scan.matched_limit = limit;
@@ -1383,7 +1413,7 @@ namespace services::disk {
     agent_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
     agent_disk_t::storage_reduce_inner(session_id_t session,
                                        components::catalog::oid_t table_oid,
-                                       std::unique_ptr<components::table::table_filter_t> filter,
+                                       std::unique_ptr<components::table::pushed_filter_t> filter,
                                        std::vector<size_t> projected_cols,
                                        components::table::transaction_data txn,
                                        components::operators::pushed_aggregate_spec_t spec) {
@@ -1393,12 +1423,16 @@ namespace services::disk {
             what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
             co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
         }
+        auto built = build_filter_(table_oid, filter.get());
+        if (built.has_error()) {
+            co_return built.error();
+        }
         auto reduced_r = reduce_pushed_aggregate(resource(),
                                                  log_.clone(),
                                                  it->second->storage.get(),
                                                  session,
                                                  address(),
-                                                 filter.get(),
+                                                 built.value().get(),
                                                  projected_cols,
                                                  txn,
                                                  spec);
@@ -1746,7 +1780,11 @@ namespace services::disk {
                 all_predicate->append_child(std::move(tuple_predicate));
             }
             auto key_built =
-                expr::build_condition_graph(resource(), key_parameters, key_predicate.get(), entry->storage->types());
+                expr::build_condition_graph(resource(),
+                                            function_registry_,
+                                            key_parameters,
+                                            key_predicate.get(),
+                                            entry->storage->types());
             if (key_built.has_error()) {
                 co_return key_built.error();
             }
@@ -1763,7 +1801,11 @@ namespace services::disk {
             scan_filter = std::move(key_filters.front());
         } else {
             auto all_built =
-                expr::build_condition_graph(resource(), all_parameters, all_predicate.get(), entry->storage->types());
+                expr::build_condition_graph(resource(),
+                                            function_registry_,
+                                            all_parameters,
+                                            all_predicate.get(),
+                                            entry->storage->types());
             if (all_built.has_error()) {
                 co_return all_built.error();
             }

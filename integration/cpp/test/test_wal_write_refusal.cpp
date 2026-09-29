@@ -113,14 +113,9 @@ TEST_CASE("integration::cpp::test_wal_write_refusal::startup_refuses_a_wal_segme
     wal_fault_scope_t fault;
     fault.refuse_open_marker = "wal_";
 
-    bool refused = false;
-    std::string reason;
-    try {
-        test_spaces space(config);
-    } catch (const std::runtime_error& e) {
-        refused = true;
-        reason = e.what();
-    }
+    auto opened = otterbrix::base_otterbrix_t::open(config);
+    const bool refused = opened.has_error();
+    const std::string reason = refused ? std::string(opened.error().what.c_str()) : std::string{};
 
     INFO("a startup that cannot read a WAL segment must refuse, not come up without it");
     REQUIRE(refused);

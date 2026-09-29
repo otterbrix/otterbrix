@@ -7,6 +7,7 @@ set(${PROJECT_NAME}_SOURCES
         test_resource_tracer.cpp
         test_regex.cpp
         test_error_residency.cpp
+        test_pmr_overflow_visibility.cpp
         )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

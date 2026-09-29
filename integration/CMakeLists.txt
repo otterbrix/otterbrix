@@ -9,6 +9,7 @@ add_subdirectory(cpp)
 # libotterbrix.a: the whole engine in one archive, built from the objects of the component archives
 # (tests and benchmarks keep linking the components).
 set(otterbrix_engine_targets
+        otterbrix_pmr
         otterbrix_assert
         otterbrix_b_plus_tree
         otterbrix_date

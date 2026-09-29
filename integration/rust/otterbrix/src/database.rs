@@ -185,7 +185,8 @@ impl Database {
     /// # Errors
     ///
     /// - [`Error::InvalidPath`] — at least one path in `config` is not valid UTF-8.
-    /// - [`Error::NullPointer`] — the engine failed to allocate the instance.
+    /// - [`Error::Open`] — the engine refused to start, e.g. another engine already owns
+    ///   `main_path`; carries the engine's code and reason.
     ///
     /// # Examples
     ///
@@ -209,9 +210,17 @@ impl Database {
             main_path: make_sv(main_path),
         };
 
-        let ptr = unsafe { otterbrix_sys::otterbrix_create(cfg) };
+        let mut refusal = otterbrix_sys::error_message {
+            code: 0,
+            message: std::ptr::null_mut(),
+        };
+        let ptr = unsafe { otterbrix_sys::otterbrix_create(cfg, &mut refusal) };
         if ptr.is_null() {
-            return Err(Error::NullPointer);
+            let message = unsafe { string_from_c(refusal.message) };
+            return Err(Error::Open {
+                code: refusal.code,
+                message,
+            });
         }
         Ok(Database { ptr })
     }

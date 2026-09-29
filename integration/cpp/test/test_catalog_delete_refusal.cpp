@@ -52,11 +52,9 @@ namespace {
     class delete_refusal_spaces_t final : public otterbrix::base_otterbrix_t {
     public:
         explicit delete_refusal_spaces_t(const configuration::config& config)
-            : otterbrix::base_otterbrix_t(config) {
-            components::compute::function_registry_t::reset_default();
-        }
+            : otterbrix::base_otterbrix_t(test_open_engine(config)) {}
 
-        services::disk::manager_disk_t* disk() noexcept { return manager_disk_.get(); }
+        actor_zeta::address_t disk_address() const noexcept { return engine().disk_address(); }
     };
 
     // "the read refused" — distinct from every honest row count, including zero.
@@ -66,12 +64,12 @@ namespace {
     template<typename Key>
     core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>
     catalog_chunks_with(delete_refusal_spaces_t& space, catalog::oid_t table_oid, std::uint64_t key_col, Key key) {
-        auto* resource = space.disk()->resource();
+        auto* resource = space.dispatcher()->resource();
         auto td = table::transaction_data::committed();
         execution_context_t exec_ctx{otterbrix::session_id_t{}, td, {}};
         std::pmr::vector<std::uint64_t> key_cols(resource);
         key_cols.emplace_back(key_col);
-        auto [_, fut] = actor_zeta::otterbrix::send(space.disk()->address(),
+        auto [_, fut] = actor_zeta::otterbrix::send(space.disk_address(),
                                                     &services::disk::manager_disk_t::read_chunks_by_key,
                                                     exec_ctx,
                                                     table_oid,

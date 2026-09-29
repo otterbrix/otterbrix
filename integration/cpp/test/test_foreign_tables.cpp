@@ -390,3 +390,32 @@ TEST_CASE("integration::cpp::foreign_tables::a_foreign_key_to_a_remote_table_is_
     }
     REQUIRE(rows_of(dispatcher, "SELECT oid FROM pg_catalog.pg_class WHERE relname = 'c1';") == 0);
 }
+
+// An uncommitted CREATE DATABASE already owns its name: a server of that name is refused while it runs and once it
+// commits; a rollback frees the name.
+TEST_CASE("integration::cpp::foreign_tables::uncommitted_database_blocks_a_server_name") {
+    auto config = test_create_config(integration_fixture_path("test_foreign_tables/uncommitted_database"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    auto session = otterbrix::session_id_t();
+
+    REQUIRE(dispatcher->execute_sql(session, "BEGIN;")->is_success());
+    REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE x;")->is_success());
+    auto during = space.add_server("x", "mysql");
+    INFO(what_of(during));
+    REQUIRE(during.type == core::error_code_t::already_exists);
+    REQUIRE(dispatcher->execute_sql(session, "ROLLBACK;")->is_success());
+
+    auto freed = space.add_server("x", "mysql");
+    INFO(what_of(freed));
+    REQUIRE_FALSE(freed.contains_error());
+    REQUIRE_FALSE(space.remove_server("x").contains_error());
+
+    REQUIRE(dispatcher->execute_sql(session, "BEGIN;")->is_success());
+    REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE x;")->is_success());
+    REQUIRE(space.add_server("x", "mysql").type == core::error_code_t::already_exists);
+    REQUIRE(dispatcher->execute_sql(session, "COMMIT;")->is_success());
+    REQUIRE(space.add_server("x", "mysql").type == core::error_code_t::already_exists);
+    REQUIRE(rows_of(dispatcher, "SELECT oid FROM pg_catalog.pg_namespace WHERE nspname = 'x';") == 1);
+}

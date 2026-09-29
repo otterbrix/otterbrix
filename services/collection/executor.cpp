@@ -812,16 +812,6 @@ namespace services::collection::executor {
         };
         switch (original_type) {
             case node_type::create_database_t:
-                if (servers_.type_of(id.database()) != nullptr) {
-                    // A database and a server share the first slot of a name.
-                    error = make_cursor(resource(),
-                                        core::error_t{core::error_code_t::already_exists,
-                                                      std::pmr::string{"a server named \"" +
-                                                                           std::string{id.database()} +
-                                                                           "\" already exists",
-                                                                       resource()}});
-                    break;
-                }
                 if (!services::dispatcher::check_namespace_exists(resource(), &plan.catalog_resolves, id)
                          .contains_error()) {
                     auto* d = static_cast<const node_create_database_t*>(plan.sub_queries.back().get());

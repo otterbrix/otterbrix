@@ -146,8 +146,9 @@ namespace services::dispatcher {
         // Shutdown: every statement arriving after this is refused, except CHECKPOINT.
         unique_future<void> begin_shutdown();
 
-        // Server name -> connector type. A name a database already has is refused, and so is CREATE DATABASE of
-        // a registered server's name. Removal does not reach statements that already resolved their names.
+        // Server name -> connector type. A name a database already has (committed, or created by a transaction
+        // still running) is refused, and so is CREATE DATABASE of a registered or registering server's name; both
+        // are decided here, on the dispatcher's loop. Removal does not reach statements that already resolved.
         unique_future<core::error_t> register_server(std::pmr::string name, std::pmr::string type);
         unique_future<core::error_t> unregister_server(std::pmr::string name);
 
@@ -279,6 +280,19 @@ namespace services::dispatcher {
         components::compute::function_registry_t function_registry_;
         // The master; executors hold copies, updated by fan-out.
         services::remote_servers_t servers_;
+        // Names register_server has claimed while it asks the disk whether a database has them.
+        std::pmr::vector<std::pmr::string> registering_servers_{resource_};
+        // CREATE DATABASE names of transactions that have not ended; commit_id is set by the commit drain, and the
+        // entry lives until that commit is published or discarded.
+        struct creating_database_t {
+            std::pmr::string name;
+            components::session::session_id_t session;
+            uint64_t transaction_id{0};
+            uint64_t commit_id{0};
+        };
+        std::pmr::vector<creating_database_t> creating_databases_{resource_};
+        bool server_name_taken_(std::string_view name) const noexcept;
+        bool database_being_created_(std::string_view name);
         // global cached settings. updated on every set.
         // TODO: settings for the session
         components::catalog::session_catalog_t default_settings_;

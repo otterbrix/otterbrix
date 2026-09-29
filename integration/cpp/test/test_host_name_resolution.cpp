@@ -401,3 +401,33 @@ TEST_CASE("integration::cpp::host_names::local_statements_never_reach_the_host")
     CHECK(counters().reads.load() == 1);
     CHECK(counters().decide.load() == 1);
 }
+
+TEST_CASE("integration::cpp::host_names::dml_with_an_embedded_query") {
+    HOST_TEST_BOILERPLATE("test_host_names/dml_embedded")
+    REQUIRE(run(dispatcher, declare_orders)->is_success());
+    REQUIRE(run(dispatcher, "CREATE DATABASE loc;")->is_success());
+    REQUIRE(run(dispatcher, "CREATE TABLE loc.t (id BIGINT, amount BIGINT);")->is_success());
+
+    SECTION("INSERT ... SELECT copies the host rows") {
+        REQUIRE(run(dispatcher, "INSERT INTO loc.t (id, amount) SELECT id, amount FROM m2.shop.orders;")->is_success());
+        auto copied = run(dispatcher, "SELECT id, amount FROM loc.t;");
+        REQUIRE(copied->is_success());
+        REQUIRE(sorted_int_rows(copied) == std::vector<std::vector<int64_t>>{{1, 100}, {2, 200}, {3, 300}});
+    }
+    SECTION("UPDATE ... FROM reads the host rows") {
+        REQUIRE(run(dispatcher, "INSERT INTO loc.t (id, amount) VALUES (1, 0), (5, 0);")->is_success());
+        auto upd = run(dispatcher, "UPDATE loc.t SET amount = o.amount FROM m2.shop.orders AS o WHERE loc.t.id = o.id;");
+        INFO((upd->is_error() ? std::string{upd->get_error().what} : std::string{"ok"}));
+        REQUIRE(upd->is_success());
+        auto updated = run(dispatcher, "SELECT id, amount FROM loc.t;");
+        REQUIRE(sorted_int_rows(updated) == std::vector<std::vector<int64_t>>{{1, 100}, {5, 0}});
+    }
+    SECTION("DELETE ... USING reads the host rows") {
+        REQUIRE(run(dispatcher, "INSERT INTO loc.t (id, amount) VALUES (2, 0), (7, 0);")->is_success());
+        auto del = run(dispatcher, "DELETE FROM loc.t USING m2.shop.orders AS o WHERE loc.t.id = o.id;");
+        INFO((del->is_error() ? std::string{del->get_error().what} : std::string{"ok"}));
+        REQUIRE(del->is_success());
+        auto left = run(dispatcher, "SELECT id, amount FROM loc.t;");
+        REQUIRE(sorted_int_rows(left) == std::vector<std::vector<int64_t>>{{7, 0}});
+    }
+}

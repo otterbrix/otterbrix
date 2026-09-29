@@ -1511,16 +1511,14 @@ namespace components::sql::transform {
         return written;
     }
 
-    void register_referenced_tables(std::pmr::memory_resource* resource,
-                                    logical_plan::catalog_resolves_t* resolves,
-                                    PGList& table_elts) {
+    void register_referenced_tables(logical_plan::catalog_resolves_t* resolves, PGList& table_elts) {
         const auto take = [&](Node* data) {
             if (data == nullptr || nodeTag(data) != T_Constraint) {
                 return;
             }
             const auto* constraint = pg_ptr_cast<Constraint>(data);
             if (constraint->contype == CONSTR_FOREIGN && constraint->pktable) {
-                register_referenced_table(resource, resolves, referenced_table_as_written(constraint->pktable));
+                resolves->referenced_tables.push_back(referenced_table_as_written(constraint->pktable));
             }
         };
         for (auto data : table_elts.lst) {
@@ -1535,20 +1533,6 @@ namespace components::sql::transform {
                 take(pg_ptr_cast<Node>(data.data));
             }
         }
-    }
-
-    void register_referenced_table(std::pmr::memory_resource* resource,
-                                   logical_plan::catalog_resolves_t* resolves,
-                                   qualified_name_t written) {
-        // A 2-part target's first part is a database slot, probed for a server when no database has the name;
-        // a longer one asks for its first part explicitly.
-        if (!written.unique_identifier.empty() || !written.schema.empty()) {
-            register_catalog_resolve_server(
-                resource,
-                resolves,
-                written.unique_identifier.empty() ? written.database : written.unique_identifier);
-        }
-        resolves->referenced_tables.push_back(std::move(written));
     }
 
     namespace {
@@ -2023,17 +2007,6 @@ namespace components::sql::transform {
                                          : logical_plan::resolve_direction::outgoing;
         constraint_entry.names_only = (with_constraints == constraint_resolve_kind::names_only);
         resolves->ensure(resource, logical_plan::resolve_kind::constraint).add(std::move(constraint_entry));
-    }
-
-    void register_catalog_resolve_server(std::pmr::memory_resource* resource,
-                                         logical_plan::catalog_resolves_t* resolves,
-                                         const std::string& server_name) {
-        if (server_name.empty()) {
-            return;
-        }
-        logical_plan::resolve_entry_t entry;
-        entry.relname = server_name;
-        resolves->ensure(resource, logical_plan::resolve_kind::server).add(std::move(entry));
     }
 
     void register_catalog_resolve_tables(std::pmr::memory_resource* resource,

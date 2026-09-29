@@ -136,7 +136,6 @@ namespace services::collection {
                 case ops::operator_type::resolve_database:
                 case ops::operator_type::resolve_type:
                 case ops::operator_type::resolve_constraint:
-                case ops::operator_type::resolve_server:
                 case ops::operator_type::allocate_oids:
                 case ops::operator_type::batch:
                     label = "?";

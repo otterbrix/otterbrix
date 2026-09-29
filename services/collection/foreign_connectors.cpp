@@ -4,7 +4,6 @@
 
 #include <components/catalog/catalog_codes.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
-#include <components/logical_plan/node_create_collection.hpp>
 #include <components/logical_plan/node_drop.hpp>
 #include <services/dispatcher/enrich_logical_plan.hpp>
 
@@ -15,44 +14,6 @@ namespace services {
     namespace {
         using components::logical_plan::catalog_resolves_t;
         using components::logical_plan::node_type;
-
-        struct named_server_t {
-            bool found{false};
-            std::string_view type{};
-        };
-
-        // Every resolve kind that probes a name's first part records the server it turned out to be.
-        named_server_t server_named(const catalog_resolves_t& resolves, std::string_view name) {
-            if (name.empty()) {
-                return {};
-            }
-            const auto matches = [name](const components::logical_plan::resolve_entry_t& entry,
-                                        std::string_view first) {
-                return entry.server_oid != components::catalog::INVALID_OID && first == name;
-            };
-            if (resolves.servers) {
-                for (const auto& entry : resolves.servers->entries()) {
-                    if (matches(entry, entry.relname)) {
-                        return {true, entry.server_type};
-                    }
-                }
-            }
-            if (resolves.namespaces) {
-                for (const auto& entry : resolves.namespaces->entries()) {
-                    if (matches(entry, entry.dbname)) {
-                        return {true, entry.server_type};
-                    }
-                }
-            }
-            if (resolves.tables) {
-                for (const auto& entry : resolves.tables->entries()) {
-                    if (matches(entry, entry.uid.empty() ? entry.dbname : entry.uid)) {
-                        return {true, entry.server_type};
-                    }
-                }
-            }
-            return {};
-        }
 
         bool writes_or_changes_a_target(node_type type) {
             switch (type) {
@@ -76,20 +37,6 @@ namespace services {
             }
         }
 
-        // The cache writes federation's describe and the host's reset make: not statements on the remote object.
-        bool writes_the_cache(const components::logical_plan::node_t* root) {
-            if (root->type() == node_type::create_collection_t) {
-                return static_cast<const components::logical_plan::node_create_collection_t*>(root)->relkind() ==
-                       components::catalog::relkind::foreign;
-            }
-            if (root->type() == node_type::drop_t) {
-                const auto kind = static_cast<const components::logical_plan::node_drop_t*>(root)->kind();
-                return kind == components::logical_plan::drop_target_kind::remote_table ||
-                       kind == components::logical_plan::drop_target_kind::server_cache;
-            }
-            return false;
-        }
-
         bool touches_an_index(const components::logical_plan::node_t* root) {
             if (root->type() == node_type::create_index_t) {
                 return true;
@@ -99,8 +46,7 @@ namespace services {
                        components::logical_plan::drop_target_kind::index;
         }
 
-        // server.name: the schema would have to be guessed (a connector default or whatever happens to be cached),
-        // so the meaning of the query would depend on the cache. Refused before any lookup.
+        // server.name: the schema would have to be guessed. Refused before any connector call.
         core::error_t full_path_demanded(std::pmr::memory_resource* resource, std::string_view written) {
             std::pmr::string msg{"remote table \"", resource};
             msg.append(written);
@@ -117,12 +63,31 @@ namespace services {
         }
     } // namespace
 
+    void classify_remote_names(catalog_resolves_t& resolves, const remote_servers_t& servers) {
+        if (!resolves.tables) {
+            return;
+        }
+        for (auto& entry : resolves.tables->entries()) {
+            if (entry.remote) {
+                continue;
+            }
+            if (const auto* type = servers.type_of(entry.uid.empty() ? entry.dbname : entry.uid)) {
+                entry.remote = true;
+                entry.server_type.assign(type->begin(), type->end());
+            }
+        }
+    }
+
     core::error_t check_remote_names(std::pmr::memory_resource* resource,
                                      const components::logical_plan::node_t* root,
-                                     const catalog_resolves_t& resolves) {
+                                     const catalog_resolves_t& resolves,
+                                     const remote_servers_t& servers) {
+        const auto server_named = [&servers](std::string_view name) {
+            return name.empty() ? nullptr : servers.type_of(name);
+        };
         for (const auto& function : resolves.qualified_functions) {
             const auto& first = function.unique_identifier.empty() ? function.database : function.unique_identifier;
-            if (server_named(resolves, first).found) {
+            if (server_named(first) != nullptr) {
                 std::pmr::string msg{"function '", resource};
                 msg.append(function.to_string());
                 msg.append("': functions of a remote server are not supported");
@@ -143,7 +108,7 @@ namespace services {
         for (const auto& referenced : resolves.referenced_tables) {
             const auto& first =
                 referenced.unique_identifier.empty() ? referenced.database : referenced.unique_identifier;
-            if (server_named(resolves, first).found) {
+            if (server_named(first) != nullptr) {
                 std::pmr::string msg{"referenced relation \"", resource};
                 msg.append(referenced.to_string());
                 msg.append("\" is not a table");
@@ -152,8 +117,7 @@ namespace services {
         }
         if (resolves.tables) {
             for (const auto& entry : resolves.tables->entries()) {
-                if (entry.server_oid != components::catalog::INVALID_OID && entry.uid.empty() &&
-                    entry.schema.empty() && !written_longer(entry)) {
+                if (entry.remote && entry.uid.empty() && entry.schema.empty() && !written_longer(entry)) {
                     std::pmr::string written{entry.dbname, resource};
                     written.append(".");
                     written.append(entry.relname);
@@ -161,12 +125,12 @@ namespace services {
                 }
             }
         }
-        if (root == nullptr || writes_the_cache(root)) {
+        if (root == nullptr) {
             return core::error_t::no_error();
         }
         if (writes_or_changes_a_target(root->type())) {
             const auto first = services::catalog_resolve::statement_target_first_part(root, resolves);
-            if (const auto server = server_named(resolves, first); server.found) {
+            if (const auto* server_type = server_named(first)) {
                 // Only a uid or a schema slot carries the rest of a remote path past its table name.
                 const bool full_path = !resolves.external_targets.empty() &&
                                        (!resolves.external_targets.front().written.unique_identifier.empty() ||
@@ -182,17 +146,17 @@ namespace services {
                     msg.append("\": indexes on remote tables are not supported");
                     return core::error_t{core::error_code_t::invalid_parameter, std::move(msg)};
                 }
-                if (!has_connector(server.type)) {
+                if (!has_connector(*server_type)) {
                     std::pmr::string what{"server \"", resource};
                     what.append(first);
                     what.append("\"");
-                    return no_connector(resource, what, server.type);
+                    return no_connector(resource, what, *server_type);
                 }
             }
         }
         if (resolves.tables) {
             for (const auto& entry : resolves.tables->entries()) {
-                if (entry.server_oid == components::catalog::INVALID_OID || entry.table_md.has_value()) {
+                if (!entry.remote) {
                     continue;
                 }
                 if (!has_connector(entry.server_type)) {

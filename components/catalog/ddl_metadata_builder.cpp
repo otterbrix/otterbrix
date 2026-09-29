@@ -95,10 +95,6 @@ namespace components::catalog {
         constexpr oid_t pg_constraint_oid = well_known_oid::pg_constraint_table;
         constexpr oid_t pg_cast_oid = well_known_oid::pg_cast_table;
         constexpr oid_t pg_computed_column_oid = well_known_oid::pg_computed_column_table;
-        constexpr oid_t pg_foreign_server_oid = well_known_oid::pg_foreign_server_table;
-        constexpr oid_t pg_foreign_table_oid = well_known_oid::pg_foreign_table_table;
-        constexpr oid_t pg_foreign_option_oid = well_known_oid::pg_foreign_option_table;
-        constexpr oid_t pg_foreign_namespace_oid = well_known_oid::pg_foreign_namespace_table;
 
         catalog_write_t make_write(oid_t target_oid, vector::data_chunk_t chunk) {
             return {target_oid, std::move(chunk)};
@@ -111,27 +107,6 @@ namespace components::catalog {
                 std::abort();
             }
             return *def;
-        }
-
-        void append_option_writes(std::pmr::memory_resource* resource,
-                                  oid_t owner_oid,
-                                  const generic_options_t& options,
-                                  std::vector<catalog_write_t>& result) {
-            if (options.empty()) {
-                return;
-            }
-            const auto& def = system_table(pg_foreign_option_oid);
-            auto chunk = make_pg_rows(resource,
-                                      def.columns,
-                                      options.size(),
-                                      [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
-                                          for (std::size_t i = 0; i < options.size(); ++i) {
-                                              set_oid(c, pg_foreign_option_col::owner_oid, i, owner_oid);
-                                              set_str(c, pg_foreign_option_col::key, i, options[i].name, r);
-                                              set_str(c, pg_foreign_option_col::value, i, options[i].value, r);
-                                          }
-                                      });
-            result.push_back(make_write(pg_foreign_option_oid, std::move(chunk)));
         }
 
     } // anonymous namespace
@@ -151,10 +126,9 @@ namespace components::catalog {
 
         {
             const auto& def = system_table(pg_class_oid);
+            // Every table is disk-backed, so relstoragemode is a write-only column, always 'd'.
             const std::string relkind_str(1, relkind_char);
-            const std::string storagemode_str(1,
-                                              relkind_char == relkind::foreign ? relstoragemode::none
-                                                                               : relstoragemode::disk);
+            const std::string storagemode_str(1, relstoragemode::disk);
 
             auto chunk =
                 make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
@@ -258,81 +232,15 @@ namespace components::catalog {
                                               ++i;
                                           }
                                           // Table → namespace dependency (always last).
-                                          const bool cached = relkind_char == relkind::foreign;
                                           set_oid(c, 0, i, well_known_oid::pg_class_table);
                                           set_oid(c, 1, i, table_oid);
-                                          set_oid(c,
-                                                  2,
-                                                  i,
-                                                  cached ? well_known_oid::pg_foreign_namespace_table
-                                                         : well_known_oid::pg_namespace_table);
+                                          set_oid(c, 2, i, well_known_oid::pg_namespace_table);
                                           set_oid(c, 3, i, namespace_oid);
-                                          set_str(c, 4, i, cached ? "a" : "n", r);
+                                          set_str(c, 4, i, "n", r);
                                       });
             result.push_back(make_write(pg_depend_oid, std::move(chunk)));
         }
 
-        return result;
-    }
-
-    std::vector<catalog_write_t> build_create_server_writes(std::pmr::memory_resource* resource,
-                                                            oid_t server_oid,
-                                                            const std::string& name,
-                                                            const std::string& type,
-                                                            const generic_options_t& options) {
-        std::vector<catalog_write_t> result;
-        const auto& def = system_table(pg_foreign_server_oid);
-        auto chunk = make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
-            set_oid(c, pg_foreign_server_col::oid, 0, server_oid);
-            set_str(c, pg_foreign_server_col::srvname, 0, name, r);
-            set_str(c, pg_foreign_server_col::srvtype, 0, type, r);
-        });
-        result.push_back(make_write(pg_foreign_server_oid, std::move(chunk)));
-        append_option_writes(resource, server_oid, options, result);
-        return result;
-    }
-
-    std::vector<catalog_write_t> build_foreign_namespace_writes(std::pmr::memory_resource* resource,
-                                                                oid_t namespace_oid,
-                                                                oid_t server_oid,
-                                                                const std::string& remote_db,
-                                                                const std::string& remote_schema) {
-        std::vector<catalog_write_t> result;
-        {
-            const auto& def = system_table(pg_foreign_namespace_oid);
-            auto chunk =
-                make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
-                    set_oid(c, pg_foreign_namespace_col::oid, 0, namespace_oid);
-                    set_oid(c, pg_foreign_namespace_col::nspserver, 0, server_oid);
-                    set_str(c, pg_foreign_namespace_col::nspdb, 0, remote_db, r);
-                    set_str(c, pg_foreign_namespace_col::nspname, 0, remote_schema, r);
-                });
-            result.push_back(make_write(pg_foreign_namespace_oid, std::move(chunk)));
-        }
-        {
-            const auto& def = system_table(pg_depend_oid);
-            auto chunk =
-                make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
-                    set_oid(c, pg_depend_col::classid, 0, pg_foreign_namespace_oid);
-                    set_oid(c, pg_depend_col::objid, 0, namespace_oid);
-                    set_oid(c, pg_depend_col::refclassid, 0, pg_foreign_server_oid);
-                    set_oid(c, pg_depend_col::refobjid, 0, server_oid);
-                    set_str(c, pg_depend_col::deptype, 0, "a", r);
-                });
-            result.push_back(make_write(pg_depend_oid, std::move(chunk)));
-        }
-        return result;
-    }
-
-    std::vector<catalog_write_t>
-    build_foreign_table_writes(std::pmr::memory_resource* resource, oid_t table_oid, oid_t server_oid) {
-        std::vector<catalog_write_t> result;
-        const auto& def = system_table(pg_foreign_table_oid);
-        auto chunk = make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource*) {
-            set_oid(c, pg_foreign_table_col::ftrelid, 0, table_oid);
-            set_oid(c, pg_foreign_table_col::ftserver, 0, server_oid);
-        });
-        result.push_back(make_write(pg_foreign_table_oid, std::move(chunk)));
         return result;
     }
 

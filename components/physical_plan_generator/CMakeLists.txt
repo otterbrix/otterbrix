@@ -40,7 +40,6 @@ set(${PROJECT_NAME}_SOURCES
         impl/create_plan_resolve_database.cpp
         impl/create_plan_resolve_table.cpp
         impl/create_plan_resolve_type.cpp
-        impl/create_plan_resolve_server.cpp
         impl/create_plan_resolve_constraint.cpp
         impl/create_plan_allocate_oids.cpp
 )

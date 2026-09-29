@@ -45,7 +45,6 @@
 #include <components/logical_plan/node_update.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
-#include <components/logical_plan/node_create_server.hpp>
 #include <services/collection/foreign_connectors.hpp>
 #include <components/planner/optimizer.hpp>
 #include <components/planner/view_expansion.hpp>
@@ -103,6 +102,8 @@ namespace services::collection::executor {
             actor_zeta::msg_id<executor_t, &executor_t::unregister_cast>,
             actor_zeta::msg_id<executor_t, &executor_t::set_explain_renderer>,
             actor_zeta::msg_id<executor_t, &executor_t::unregister_udf_uid>,
+            actor_zeta::msg_id<executor_t, &executor_t::register_server>,
+            actor_zeta::msg_id<executor_t, &executor_t::unregister_server>,
         };
 
         constexpr bool behavior_covers_all_implements() noexcept {
@@ -198,6 +199,7 @@ namespace services::collection::executor {
         , log_(log)
         , function_registry_(resource)
         , cast_registry_(resource)
+        , servers_(resource)
         , create_plan_rule_(create_plan_rule)
         , optimizer_pass_(optimizer_pass)
         , dml_flush_row_threshold_(dml_flush_row_threshold)
@@ -205,6 +207,18 @@ namespace services::collection::executor {
         register_default_functions(function_registry_);
         components::casts::register_default_casts(cast_registry_);
         explain_renderers_.push_back(&render_postgres);
+    }
+
+    executor_t::unique_future<bool> executor_t::register_server(std::pmr::string name, std::pmr::string type) {
+        co_return !servers_.add(name, type).contains_error();
+    }
+
+    executor_t::unique_future<bool> executor_t::unregister_server(std::pmr::string name) {
+        co_return servers_.remove(name);
+    }
+
+    void executor_t::set_servers_sync(const services::remote_servers_t& servers) {
+        servers_ = services::remote_servers_t{resource(), servers};
     }
 
     actor_zeta::behavior_t executor_t::behavior(actor_zeta::mailbox::message* msg) {
@@ -215,6 +229,14 @@ namespace services::collection::executor {
             }
             case actor_zeta::msg_id<executor_t, &executor_t::register_udf>: {
                 co_await actor_zeta::dispatch(this, &executor_t::register_udf, msg);
+                break;
+            }
+            case actor_zeta::msg_id<executor_t, &executor_t::register_server>: {
+                co_await actor_zeta::dispatch(this, &executor_t::register_server, msg);
+                break;
+            }
+            case actor_zeta::msg_id<executor_t, &executor_t::unregister_server>: {
+                co_await actor_zeta::dispatch(this, &executor_t::unregister_server, msg);
                 break;
             }
             case actor_zeta::msg_id<executor_t, &executor_t::unregister_udf>: {
@@ -512,7 +534,7 @@ namespace services::collection::executor {
             original_type == node_type::create_macro_t || original_type == node_type::create_type_t ||
             original_type == node_type::create_index_t || original_type == node_type::drop_t ||
             original_type == node_type::create_database_t || original_type == node_type::alter_table_t ||
-            original_type == node_type::create_matview_t || original_type == node_type::create_server_t;
+            original_type == node_type::create_matview_t;
         const bool is_plan_only_explain = plan.explain == components::logical_plan::explain_type::plan;
         const bool needs_dml_txn =
             !is_plan_only_explain && (original_type == node_type::insert_t || original_type == node_type::update_t ||
@@ -541,12 +563,8 @@ namespace services::collection::executor {
 
         auto collect_resolve_nodes = [](const components::logical_plan::catalog_resolves_t& resolves,
                                         std::pmr::vector<components::logical_plan::node_ptr>& out) {
-            for (const auto* slot : {&resolves.database,
-                                     &resolves.namespaces,
-                                     &resolves.tables,
-                                     &resolves.types,
-                                     &resolves.constraints,
-                                     &resolves.servers}) {
+            for (const auto* slot :
+                 {&resolves.database, &resolves.namespaces, &resolves.tables, &resolves.types, &resolves.constraints}) {
                 if (*slot && !(*slot)->empty()) {
                     out.push_back(*slot);
                 }
@@ -554,6 +572,7 @@ namespace services::collection::executor {
         };
 
         {
+            classify_remote_names(plan.catalog_resolves, servers_);
             std::pmr::vector<components::logical_plan::node_ptr> resolve_nodes{resource()};
             collect_resolve_nodes(plan.catalog_resolves, resolve_nodes);
             if (!resolve_nodes.empty()) {
@@ -566,7 +585,8 @@ namespace services::collection::executor {
                 }
             }
         }
-        if (auto remote = check_remote_names(resource(), plan.sub_queries.back().get(), plan.catalog_resolves);
+        if (auto remote =
+                check_remote_names(resource(), plan.sub_queries.back().get(), plan.catalog_resolves, servers_);
             remote.contains_error()) {
             co_return execute_result_t{make_cursor(resource(), std::move(remote))};
         }
@@ -612,6 +632,7 @@ namespace services::collection::executor {
                         services::dispatcher::merge_catalog_resolves(resource(), plan.catalog_resolves, *body.resolves);
                     }
                 }
+                classify_remote_names(plan.catalog_resolves, servers_);
                 if (services::catalog_resolve::has_unresolved_entries(plan.catalog_resolves)) {
                     std::pmr::vector<components::logical_plan::node_ptr> resolve_nodes{resource()};
                     collect_resolve_nodes(plan.catalog_resolves, resolve_nodes);
@@ -791,8 +812,7 @@ namespace services::collection::executor {
         };
         switch (original_type) {
             case node_type::create_database_t:
-                if (const auto* ns = plan.catalog_resolves.namespace_entry(id.database());
-                    ns != nullptr && ns->server_oid != components::catalog::INVALID_OID) {
+                if (servers_.type_of(id.database()) != nullptr) {
                     // A database and a server share the first slot of a name.
                     error = make_cursor(resource(),
                                         core::error_t{core::error_code_t::already_exists,
@@ -1057,10 +1077,6 @@ namespace services::collection::executor {
                         }
                         break;
                     }
-                    case drop_target_kind::server:
-                    case drop_target_kind::remote_table:
-                    case drop_target_kind::server_cache:
-                        break;
                     case drop_target_kind::index: {
                         auto vt_err = services::dispatcher::validate_types(resource(),
                                                                            &plan.catalog_resolves,
@@ -1096,19 +1112,6 @@ namespace services::collection::executor {
             case node_type::create_view_t:
             case node_type::create_macro_t:
                 break;
-            case node_type::create_server_t: {
-                const auto* server = static_cast<const components::logical_plan::node_create_server_t*>(
-                    plan.sub_queries.back().get());
-                if (plan.catalog_resolves.namespace_oid(server->servername()) != components::catalog::INVALID_OID) {
-                    // A server and a database share the first slot of a name.
-                    error = make_cursor(resource(),
-                                        core::error_t{core::error_code_t::already_exists,
-                                                      std::pmr::string{"a database named \"" + server->servername() +
-                                                                           "\" already exists",
-                                                                       resource()}});
-                }
-                break;
-            }
             case node_type::alter_table_t: {
                 const auto* alter_node =
                     static_cast<const components::logical_plan::node_alter_table_t*>(plan.sub_queries.back().get());
@@ -1540,7 +1543,6 @@ namespace services::collection::executor {
                     case node_type::create_macro_t:
                     case node_type::create_matview_t:
                     case node_type::create_index_t:
-                    case node_type::create_server_t:
                     case node_type::drop_t:
                     case node_type::alter_table_t:
                     case node_type::create_constraint_t:
@@ -1592,9 +1594,8 @@ namespace services::collection::executor {
                                                          std::move(allocated_oids),
                                                          need);
                 if (rewritten.has_error()) {
-                    // DROP INDEX / DROP SERVER learn that their target is missing only here.
-                    const bool target_missing = rewritten.error().type == core::error_code_t::index_not_exists ||
-                                                rewritten.error().type == core::error_code_t::server_not_exists;
+                    // DROP INDEX learns that its target is missing only here.
+                    const bool target_missing = rewritten.error().type == core::error_code_t::index_not_exists;
                     co_return execute_result_t{target_missing ? refuse_missing_target(rewritten.error())
                                                               : make_cursor(resource(), rewritten.error())};
                 }

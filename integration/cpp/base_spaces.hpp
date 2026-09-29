@@ -32,6 +32,9 @@ namespace otterbrix {
 
         log_t& get_log();
         wrapper_dispatcher_t* dispatcher();
+        // Remote servers after start; spawn-time ones go in primitives_t::servers.
+        [[nodiscard]] core::error_t add_server(std::string_view name, std::string_view type);
+        [[nodiscard]] core::error_t remove_server(std::string_view name);
         const services::engine::engine_t& engine() const;
 
     protected:

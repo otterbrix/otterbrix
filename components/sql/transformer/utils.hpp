@@ -65,14 +65,9 @@ namespace components::sql::transform {
     }
 
     // A REFERENCES target as written; whether it is refused waits for resolve (a server first part or a segment).
-    void register_referenced_table(std::pmr::memory_resource* resource,
-                                   logical_plan::catalog_resolves_t* resolves,
-                                   qualified_name_t written);
     qualified_name_t referenced_table_as_written(RangeVar* target);
-    // Every REFERENCES target of a CREATE TABLE element list.
-    void register_referenced_tables(std::pmr::memory_resource* resource,
-                                    logical_plan::catalog_resolves_t* resolves,
-                                    PGList& table_elts);
+    // Every REFERENCES target of a CREATE TABLE element list, into resolves->referenced_tables.
+    void register_referenced_tables(logical_plan::catalog_resolves_t* resolves, PGList& table_elts);
 
     enum table_name
     {
@@ -436,10 +431,6 @@ namespace components::sql::transform {
                                                           const std::string& owner_rel,
                                                           const std::string& relname,
                                                           constraint_resolve_kind with_constraints);
-
-    void register_catalog_resolve_server(std::pmr::memory_resource* resource,
-                                         logical_plan::catalog_resolves_t* resolves,
-                                         const std::string& server_name);
 
     void register_catalog_resolve_table(std::pmr::memory_resource* resource,
                                         logical_plan::catalog_resolves_t* resolves,

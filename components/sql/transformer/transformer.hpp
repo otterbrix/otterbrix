@@ -116,7 +116,6 @@ namespace components::sql::transform {
         core::result_wrapper_t<logical_plan::node_ptr> transform_create_enum_type(CreateEnumStmt& node);
         core::result_wrapper_t<logical_plan::node_ptr> transform_create_sequence(CreateSeqStmt& node);
         core::result_wrapper_t<logical_plan::node_ptr> transform_create_view(ViewStmt& node);
-        core::result_wrapper_t<logical_plan::node_ptr> transform_create_server(CreateForeignServerStmt& node);
         // CREATE MATERIALIZED VIEW … AS SELECT … (PostgreSQL-canonical, relkind='m').
         // Body is transformed via transform_select; source's catalog_resolve_table
         // is hoisted to the outer sequence_t front so Pass 1 stamps source's
@@ -408,16 +407,11 @@ namespace components::sql::transform {
                                          (!written.database.empty() && written.database != dbname);
             if (leads_elsewhere) {
                 catalog_resolves_.external_targets.push_back(logical_plan::external_target_t{written, base.type()});
-                // Refused unless the first part is a server, which only the catalog can tell.
-                register_catalog_resolve_server(
-                    resource_,
-                    &catalog_resolves_,
-                    written.unique_identifier.empty() ? written.database : written.unique_identifier);
             }
             return dbname;
         }
 
-        // called_function plus the catalog question its qualifier raises: is the first part a server?
+        // called_function; a qualifier other than pg_catalog/public is kept for the server check.
         core::result_wrapper_t<qualified_name_t> called(const List* funcname);
 
         // TODO: wrapp expressions in resolve node, and it won't be needed

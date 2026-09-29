@@ -20,13 +20,11 @@ namespace components::logical_plan {
         node_dynamic_cascade_delete_t(std::pmr::memory_resource* resource,
                                       components::catalog::oid_t seed_classid,
                                       components::catalog::oid_t seed_objid,
-                                      components::catalog::drop_behavior_t behavior,
-                                      components::catalog::cascade_seed_t seed);
+                                      components::catalog::drop_behavior_t behavior);
 
         components::catalog::oid_t seed_classid() const noexcept { return seed_classid_; }
         components::catalog::oid_t seed_objid() const noexcept { return seed_objid_; }
         components::catalog::drop_behavior_t behavior() const noexcept { return behavior_; }
-        components::catalog::cascade_seed_t seed() const noexcept { return seed_; }
 
     private:
         hash_t hash_impl() const override;
@@ -35,7 +33,6 @@ namespace components::logical_plan {
         components::catalog::oid_t seed_classid_;
         components::catalog::oid_t seed_objid_;
         components::catalog::drop_behavior_t behavior_;
-        components::catalog::cascade_seed_t seed_;
     };
 
     using node_dynamic_cascade_delete_ptr = boost::intrusive_ptr<node_dynamic_cascade_delete_t>;

@@ -49,7 +49,6 @@ namespace services::planner::impl {
                                                                         context.log.clone(),
                                                                         cc->table_oid(),
                                                                         cc->namespace_oid(),
-                                                                        cc->relkind(),
                                                                         cc->column_definitions(),
                                                                         std::move(writes)));
         }

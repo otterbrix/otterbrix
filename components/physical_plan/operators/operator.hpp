@@ -86,7 +86,6 @@ namespace components::operators {
         // Composite-type reconstruction (relkind='c') is out of scope; stays on resolve_type_sync.
         resolve_type,
         resolve_constraint,
-        resolve_server,
         allocate_oids,
         extension,
         batch

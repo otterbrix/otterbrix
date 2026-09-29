@@ -13,7 +13,6 @@
 #include <services/index/manager_index.hpp>
 
 #include <cstdint>
-#include <span>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -44,7 +43,6 @@ namespace components::operators {
                 out.push_back({pg_index_table, 1});           // pg_index.indrelid
                 out.push_back({pg_sequence_table, 0});        // pg_sequence.seqrelid
                 out.push_back({pg_rewrite_table, 2});         // pg_rewrite.ev_class
-                out.push_back({pg_foreign_table_table, 0});   // pg_foreign_table.ftrelid (relkind='f' tables)
                 out.push_back({pg_attribute_table, 1});       // pg_attribute.attrelid
                 out.push_back({pg_computed_column_table, 0}); // pg_computed_column.relid (relkind='g' tables)
                 out.push_back({pg_constraint_table, 2});      // pg_constraint.conrelid
@@ -64,15 +62,6 @@ namespace components::operators {
                 out.push_back({pg_proc_table, 0});
                 out.push_back({pg_depend_table, 1});
                 out.push_back({pg_depend_table, 3});
-            } else if (classid == pg_foreign_server_table) {
-                out.push_back({pg_foreign_option_table, 0});
-                out.push_back({pg_foreign_server_table, 0});
-                out.push_back({pg_depend_table, 1});
-                out.push_back({pg_depend_table, 3});
-            } else if (classid == pg_foreign_namespace_table) {
-                out.push_back({pg_foreign_namespace_table, 0});
-                out.push_back({pg_depend_table, 1});
-                out.push_back({pg_depend_table, 3});
             } else if (classid == pg_namespace_table) {
                 out.push_back({pg_namespace_table, 0});
                 out.push_back({pg_depend_table, 1});
@@ -87,13 +76,11 @@ namespace components::operators {
                                                                          log_t log,
                                                                          catalog::oid_t seed_classid,
                                                                          catalog::oid_t seed_objid,
-                                                                         catalog::drop_behavior_t behavior,
-                                                                         catalog::cascade_seed_t seed)
+                                                                         catalog::drop_behavior_t behavior)
         : read_write_operator_t(resource, std::move(log), operator_type::dynamic_cascade_delete)
         , seed_classid_(seed_classid)
         , seed_objid_(seed_objid)
-        , behavior_(behavior)
-        , seed_(seed) {}
+        , behavior_(behavior) {}
 
     actor_zeta::unique_future<void>
     operator_dynamic_cascade_delete_t::await_async_and_resume(pipeline::context_t* ctx) {
@@ -189,10 +176,8 @@ namespace components::operators {
         }
 
         // topological_drop_order already emits each object once, so a caller-side dedup is deliberately
-        // omitted here. The seed is the last step.
-        std::span<const catalog::drop_step_t> steps{plan.steps.data(),
-                                                       seed_ == catalog::cascade_seed_t::keep ? plan.steps.size() - 1
-                                                                                              : plan.steps.size()};
+        // omitted here.
+        const auto& steps = plan.steps;
 
         struct pending_storage_drop_t {
             catalog::oid_t table_oid{catalog::INVALID_OID};

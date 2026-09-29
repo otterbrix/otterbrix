@@ -214,9 +214,6 @@ namespace components::sql::transform {
                                                           "nothing was truncated",
                                                           resource_});
                 break;
-            case T_CreateForeignServerStmt:
-                log_node = transform_create_server(pg_cast<CreateForeignServerStmt>(node));
-                break;
             case T_CreateTableAsStmt: {
                 auto& cs = pg_cast<CreateTableAsStmt>(node);
                 if (cs.relkind == OBJECT_MATVIEW) {
@@ -325,7 +322,6 @@ namespace components::sql::transform {
         const std::string& first = name.unique_identifier.empty() ? name.database : name.unique_identifier;
         if (!first.empty() && first != "pg_catalog" && first != "public") {
             catalog_resolves_.qualified_functions.push_back(name);
-            register_catalog_resolve_server(resource_, &catalog_resolves_, first);
         }
         return name;
     }

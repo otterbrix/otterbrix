@@ -118,6 +118,23 @@ namespace otterbrix {
         return wait_future(future);
     }
 
+    auto wrapper_dispatcher_t::add_server(std::string_view name, std::string_view type) -> core::error_t {
+        trace(log_, "wrapper_dispatcher_t::add_server: {} type {}", name, type);
+        auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_,
+                                                       &services::dispatcher::manager_dispatcher_t::register_server,
+                                                       std::pmr::string{name, resource()},
+                                                       std::pmr::string{type, resource()});
+        return wait_future(future);
+    }
+
+    auto wrapper_dispatcher_t::remove_server(std::string_view name) -> core::error_t {
+        trace(log_, "wrapper_dispatcher_t::remove_server: {}", name);
+        auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_,
+                                                       &services::dispatcher::manager_dispatcher_t::unregister_server,
+                                                       std::pmr::string{name, resource()});
+        return wait_future(future);
+    }
+
     auto wrapper_dispatcher_t::execute_plan(const session_id_t& session,
                                             components::logical_plan::execution_plan_t plan) -> cursor_t_ptr {
         using namespace components::logical_plan;

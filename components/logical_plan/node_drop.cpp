@@ -21,9 +21,6 @@ namespace components::logical_plan {
         boost::hash_combine(hash_value, dbname_);
         boost::hash_combine(hash_value, relname_);
         boost::hash_combine(hash_value, index_name_);
-        boost::hash_combine(hash_value, server_name_);
-        boost::hash_combine(hash_value, uid_);
-        boost::hash_combine(hash_value, schema_);
         boost::hash_combine(hash_value, static_cast<uint8_t>(behavior_));
         switch (kind_) {
             case drop_target_kind::database:
@@ -45,13 +42,6 @@ namespace components::logical_plan {
             case drop_target_kind::index:
                 boost::hash_combine(hash_value, static_cast<hash_t>(namespace_oid_));
                 boost::hash_combine(hash_value, static_cast<hash_t>(index_oid_));
-                boost::hash_combine(hash_value, static_cast<hash_t>(table_oid()));
-                break;
-            case drop_target_kind::server:
-            case drop_target_kind::server_cache:
-                boost::hash_combine(hash_value, static_cast<hash_t>(server_oid_));
-                break;
-            case drop_target_kind::remote_table:
                 boost::hash_combine(hash_value, static_cast<hash_t>(table_oid()));
                 break;
         }
@@ -85,47 +75,12 @@ namespace components::logical_plan {
             case drop_target_kind::index:
                 stream << "$drop_index: <oid:" << static_cast<std::uint64_t>(index_oid_) << ">";
                 break;
-            case drop_target_kind::server:
-                stream << "$drop_server: <oid:" << static_cast<std::uint64_t>(server_oid_) << ">";
-                break;
-            case drop_target_kind::remote_table:
-                stream << "$forget_remote_table: <oid:" << static_cast<std::uint64_t>(table_oid()) << ">";
-                break;
-            case drop_target_kind::server_cache:
-                stream << "$forget_server_cache: <oid:" << static_cast<std::uint64_t>(server_oid_) << ">";
-                break;
         }
         return stream.str();
     }
 
     node_drop_ptr make_node_drop(std::pmr::memory_resource* resource, drop_target_kind kind) {
         return {new node_drop_t{resource, kind}};
-    }
-
-    core::result_wrapper_t<node_ptr>
-    make_node_forget_remote_table(std::pmr::memory_resource* resource,
-                                  std::string server,
-                                  std::vector<std::string> path) {
-        if (path.size() != 2 && path.size() != 3) {
-            return core::error_t{core::error_code_t::invalid_parameter,
-                                 std::pmr::string{"a recorded remote table is named by its canonical path inside the "
-                                                  "server: schema.table or db.schema.table",
-                                                  resource}};
-        }
-        auto node = make_node_drop(resource, drop_target_kind::remote_table);
-        node->set_relname(path.back());
-        node->set_behavior(components::catalog::drop_behavior_t::cascade_);
-        const bool has_db = path.size() == 3;
-        node->set_dbname(has_db ? std::move(path[0]) : std::string{});
-        node->set_remote_slots(std::move(server), std::move(path[has_db ? 1 : 0]));
-        return node_ptr{std::move(node)};
-    }
-
-    node_ptr make_node_forget_server_cache(std::pmr::memory_resource* resource, std::string server) {
-        auto node = make_node_drop(resource, drop_target_kind::server_cache);
-        node->set_server_name(std::move(server));
-        node->set_behavior(components::catalog::drop_behavior_t::cascade_);
-        return node;
     }
 
 } // namespace components::logical_plan

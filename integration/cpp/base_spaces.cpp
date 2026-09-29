@@ -70,6 +70,12 @@ namespace otterbrix {
 
     wrapper_dispatcher_t* base_otterbrix_t::dispatcher() { return host_->wrapper.get(); }
 
+    core::error_t base_otterbrix_t::add_server(std::string_view name, std::string_view type) {
+        return host_->wrapper->add_server(name, type);
+    }
+
+    core::error_t base_otterbrix_t::remove_server(std::string_view name) { return host_->wrapper->remove_server(name); }
+
     const services::engine::engine_t& base_otterbrix_t::engine() const { return *host_->engine; }
 
 } // namespace otterbrix

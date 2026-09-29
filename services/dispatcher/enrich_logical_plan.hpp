@@ -53,7 +53,7 @@ namespace services::catalog_resolve {
 
     bool has_unresolved_entries(const components::logical_plan::catalog_resolves_t& resolves);
 
-    // After the one classification of names (resolve probed which first parts are servers): uid = server and the
+    // After the one classification of names (classify_remote_names asked the server registry): uid = server and the
     // remote path in the remaining slots for a remote name; no uid for a local one (a uid that is no server keeps
     // its old meaning, database.name). Resolve records and the FROM nodes that carry the written name move
     // together; from here on a non-empty uid alone means remote.

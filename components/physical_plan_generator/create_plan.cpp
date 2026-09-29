@@ -28,7 +28,6 @@
 #include "impl/create_plan_resolve_constraint.hpp"
 #include "impl/create_plan_resolve_database.hpp"
 #include "impl/create_plan_resolve_namespace.hpp"
-#include "impl/create_plan_resolve_server.hpp"
 #include "impl/create_plan_resolve_table.hpp"
 #include "impl/create_plan_resolve_type.hpp"
 #include "impl/create_plan_select.hpp"
@@ -170,8 +169,6 @@ namespace services::planner {
                         return impl::create_plan_resolve_type(context, node);
                     case components::logical_plan::resolve_kind::constraint:
                         return impl::create_plan_resolve_constraint(context, node);
-                    case components::logical_plan::resolve_kind::server:
-                        return impl::create_plan_resolve_server(context, node);
                 }
                 return nullptr;
             }

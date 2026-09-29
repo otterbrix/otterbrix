@@ -43,6 +43,7 @@ namespace services::engine {
                 , log(log.clone())
                 , config(config)
                 , lock(std::move(lock))
+                , servers(resource)
                 , dispatcher(nullptr, actor_zeta::pmr::deleter_t(resource))
                 , disk(nullptr, actor_zeta::pmr::deleter_t(resource))
                 , wal(nullptr, actor_zeta::pmr::deleter_t(resource))
@@ -76,6 +77,7 @@ namespace services::engine {
             // Index txn-log frames are durable before the WAL commit marker, so uncommitted entries need this set.
             std::set<std::uint64_t> commit_ids;
             schedulers_t schedulers{nullptr, nullptr, nullptr};
+            std::pmr::vector<remote_server_entry_t> servers;
             std::unique_ptr<dispatcher::manager_dispatcher_t, actor_zeta::pmr::deleter_t> dispatcher;
             std::unique_ptr<disk::manager_disk_t, actor_zeta::pmr::deleter_t> disk;
             std::unique_ptr<wal::manager_wal_replicate_t, actor_zeta::pmr::deleter_t> wal;
@@ -249,6 +251,10 @@ namespace services::engine {
         parts->schedulers = schedulers;
         parts->log = log.clone();
         auto& own_log = parts->log;
+        for (const auto& server : primitives.servers) {
+            parts->servers.push_back(
+                {std::pmr::string{server.name, resource}, std::pmr::string{server.type, resource}});
+        }
 
         // The dispatcher's own address — born last — is wired back into each manager below, post-construction.
         trace(own_log, "engine::spawn manager_disk");
@@ -854,12 +860,32 @@ namespace services::engine {
         return bootstrap_indexes(parts);
     }
 
+    core::error_t install_servers(engine_parts_t& parts) {
+        remote_servers_t servers(parts.resource);
+        for (const auto& server : parts.servers) {
+            RETURN_IF_ERROR(servers.add(server.name, server.type));
+            if (parts.disk->namespace_oid_sync(server.name) != components::catalog::INVALID_OID) {
+                return startup_error(parts.resource,
+                                     core::error_code_t::already_exists,
+                                     "server \"" + std::string{server.name} +
+                                         "\": a database with that name already exists");
+            }
+        }
+        parts.dispatcher->install_servers_sync(std::move(servers));
+        parts.servers.clear();
+        return core::error_t::no_error();
+    }
+
     } // namespace
 
     core::result_wrapper_t<bootstrapped_engine_t> bootstrap(spawned_engine_t spawned) {
         auto parts = std::move(spawned.parts_);
         assert(parts != nullptr);
         if (auto err = bootstrap_parts(*parts); err.contains_error()) {
+            error(parts->log, "engine::bootstrap REFUSED: {}", err.what);
+            return err;
+        }
+        if (auto err = install_servers(*parts); err.contains_error()) {
             error(parts->log, "engine::bootstrap REFUSED: {}", err.what);
             return err;
         }

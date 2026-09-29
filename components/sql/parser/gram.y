@@ -297,7 +297,8 @@ TypeName *SystemTypeName(std::pmr::memory_resource* resource, char *name);
 %type <defelt>	CreateOptRoleElem AlterOptRoleElem
 %type <defelt>	AlterOnlyOptRoleElem
 
-%type <str>		foreign_server_version
+%type <str>		opt_type
+%type <str>		foreign_server_version opt_foreign_server_version
 %type <str>		auth_ident
 %type <str>		opt_in_database
 
@@ -6643,24 +6644,37 @@ generic_option_arg:
 /*****************************************************************************
  *
  *		QUERY:
- *             CREATE SERVER name TYPE 'type' [OPTIONS]
+ *             CREATE SERVER name [TYPE] [VERSION] [OPTIONS]
  *
  *****************************************************************************/
 
-CreateForeignServerStmt: CREATE SERVER name TYPE_P Sconst create_generic_options
+CreateForeignServerStmt: CREATE SERVER name opt_type opt_foreign_server_version
+						 FOREIGN DATA_P WRAPPER name create_generic_options
 				{
 					CreateForeignServerStmt *n = makeNode(resource, CreateForeignServerStmt);
 					n->servername = $3;
-					n->servertype = $5;
-					n->options = $6;
+					n->servertype = $4;
+					n->version = $5;
+					n->fdwname = $9;
+					n->options = $10;
 					$$ = (Node *) n;
 				}
+		;
+
+opt_type:
+			TYPE_P Sconst			{ $$ = $2; }
+			| /*EMPTY*/				{ $$ = NULL; }
 		;
 
 
 foreign_server_version:
 			VERSION_P Sconst		{ $$ = $2; }
 		|	VERSION_P NULL_P		{ $$ = NULL; }
+		;
+
+opt_foreign_server_version:
+			foreign_server_version	{ $$ = $1; }
+			| /*EMPTY*/				{ $$ = NULL; }
 		;
 
 /*****************************************************************************

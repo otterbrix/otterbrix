@@ -432,9 +432,7 @@ namespace components::sql::transform {
                         return core::error_t(core::error_code_t::unimplemented_yet, std::move(msg));
                     }
                     if (constr->contype == CONSTR_FOREIGN && constr->pktable) {
-                        register_referenced_table(resource_,
-                                                  &catalog_resolves_,
-                                                  referenced_table_as_written(constr->pktable));
+                        catalog_resolves_.referenced_tables.push_back(referenced_table_as_written(constr->pktable));
                         std::string con_name = constr->conname ? constr->conname : "";
                         std::string ref_db;
                         if (constr->pktable->catalogname) {

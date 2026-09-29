@@ -319,7 +319,6 @@ namespace services::catalog_resolve {
             std::string_view namespace_dbname{};
             std::string_view type_name{};
             std::string_view secondary_dbname{};
-            std::string_view server_name{};
             // The uid/schema slots of (dbname, relname) as written; they matter only when the name is remote.
             std::string_view uid{};
             std::string_view schema{};
@@ -380,12 +379,6 @@ namespace services::catalog_resolve {
                     if (d->kind() == drop_target_kind::type) {
                         return {d->dbname(), {}, {}, {}, d->relname()};
                     }
-                    if (d->kind() == drop_target_kind::server || d->kind() == drop_target_kind::server_cache) {
-                        return {.server_name = d->server_name()};
-                    }
-                    if (d->kind() == drop_target_kind::remote_table) {
-                        return {.dbname = d->dbname(), .relname = d->relname(), .uid = d->uid(), .schema = d->schema()};
-                    }
                     return {d->dbname(), d->relname(), d->index_name()};
                 }
                 case node_type::create_database_t: {
@@ -394,10 +387,7 @@ namespace services::catalog_resolve {
                 }
                 case node_type::create_collection_t: {
                     const auto* d = static_cast<const node_create_collection_t*>(node);
-                    return {.dbname = d->dbname(),
-                            .relname = d->relname(),
-                            .uid = d->uid_slot(),
-                            .schema = d->schema_slot()};
+                    return {d->dbname(), d->relname(), {}};
                 }
                 case node_type::create_sequence_t: {
                     const auto* d = static_cast<const node_create_sequence_t*>(node);
@@ -581,7 +571,6 @@ namespace services::catalog_resolve {
                     resolves.table_entry(names.secondary_dbname.empty() ? names.dbname : names.secondary_dbname,
                                          names.secondary_relname)};
                 const entry_view_t ry{resolves.type_entry(names.dbname, names.type_name)};
-                const auto* rs = resolves.server_entry(names.server_name);
                 // Pasted whole, except relkind='v': a view's oid would make create_plan_match_ scan the empty heap.
                 const bool targets_a_view =
                     rt && rt.resolved_metadata().has_value() &&
@@ -646,15 +635,6 @@ namespace services::catalog_resolve {
                                     }
                                     break;
                                 }
-                                case drop_target_kind::server:
-                                case drop_target_kind::server_cache: {
-                                    if (rs != nullptr) {
-                                        d->set_server_oid(rs->server_oid);
-                                    }
-                                    break;
-                                }
-                                case drop_target_kind::remote_table:
-                                    break;
                             }
                             break;
                         }
@@ -662,10 +642,6 @@ namespace services::catalog_resolve {
                             auto* d = static_cast<node_create_collection_t*>(n);
                             if (rn && rn->namespace_oid() != components::catalog::INVALID_OID) {
                                 d->set_namespace_oid(rn->namespace_oid());
-                            }
-                            if (rt) {
-                                d->set_server_oid(rt.entry->server_oid);
-                                d->set_remote_namespace_oid(rt.entry->remote_namespace_oid);
                             }
                             break;
                         }
@@ -819,11 +795,6 @@ namespace services::catalog_resolve {
                 entry.type_name = names.type_name;
                 resolves->ensure(resource, resolve_kind::type).add(std::move(entry));
             }
-            if (!names.server_name.empty()) {
-                resolve_entry_t entry;
-                entry.relname = names.server_name;
-                resolves->ensure(resource, resolve_kind::server).add(std::move(entry));
-            }
             const auto child_scope = scope_below(n, names, scope);
             for (const auto& c : n->children()) {
                 if (c) {
@@ -841,8 +812,7 @@ namespace services::catalog_resolve {
                                          std::pair{resolve_kind::namespace_, &src.namespaces},
                                          std::pair{resolve_kind::table, &src.tables},
                                          std::pair{resolve_kind::type, &src.types},
-                                         std::pair{resolve_kind::constraint, &src.constraints},
-                                         std::pair{resolve_kind::server, &src.servers}}) {
+                                         std::pair{resolve_kind::constraint, &src.constraints}}) {
             if (!*slot || (*slot)->empty()) {
                 continue;
             }
@@ -864,7 +834,7 @@ namespace services::catalog_resolve {
         };
         std::vector<move_t> moves;
         for (auto& entry : resolves.tables->entries()) {
-            const bool remote = entry.server_oid != components::catalog::INVALID_OID;
+            const bool remote = entry.remote;
             if (remote && entry.uid.empty()) {
                 moves.push_back({entry.uid, entry.dbname, entry.schema, entry.relname, entry.dbname, "", entry.schema});
             } else if (!remote && !entry.uid.empty()) {

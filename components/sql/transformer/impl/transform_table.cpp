@@ -46,7 +46,7 @@ namespace components::sql::transform {
         auto coldefs = reinterpret_cast<List*>(node.tableElts);
 
         VALUE_OR_RETURN(auto col_defs, get_column_definitions(resource_, *coldefs));
-        register_referenced_tables(resource_, &catalog_resolves_, *coldefs);
+        register_referenced_tables(&catalog_resolves_, *coldefs);
 
         auto qn = rangevar_to_qualified_name(node.relation);
         const std::string dbname = database_for(qn, namespace_policy::default_public);
@@ -327,19 +327,6 @@ namespace components::sql::transform {
                                 qualified_name_of(resource_, *reinterpret_cast<List*>(node.objects->lst.front().data)));
                 auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::macro);
                 return wrap_one(written, std::move(n));
-            }
-            case OBJECT_FOREIGN_SERVER: {
-                // A server is catalog-wide: one name, no database.
-                const auto& parts = pg_ptr_cast<List>(node.objects->lst.front().data)->lst;
-                if (parts.size() != 1) {
-                    return core::error_t(core::error_code_t::sql_parse_error,
-                                         std::pmr::string{"DROP SERVER: a server name has no qualifier", resource_});
-                }
-                auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::server);
-                n->set_server_name(strVal(parts.front().data));
-                if_exists_ = node.missing_ok;
-                n->set_behavior(drop_behavior_of(node.behavior));
-                return logical_plan::node_ptr{std::move(n)};
             }
             default:
                 return core::error_t(core::error_code_t::sql_parse_error,

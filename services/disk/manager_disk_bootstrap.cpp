@@ -1293,6 +1293,47 @@ namespace services::disk {
         return result;
     }
 
+    components::catalog::oid_t manager_disk_t::namespace_oid_sync(std::string_view name) const {
+        auto result = catalog::INVALID_OID;
+        if (agents_.empty() || agents_[0] == nullptr) {
+            return result;
+        }
+        const collection_storage_entry_t* entry = agents_[0]->storage_entry_sync(pg_namespace_oid_tbl);
+        if (entry == nullptr) {
+            return result;
+        }
+        auto& table = const_cast<collection_storage_entry_t*>(entry)->table_storage.table();
+        if (table.column_count() < 2 || table.calculate_size() == 0) {
+            return result;
+        }
+        core::pmr::otterbrix_resource scan_resource;
+        std::vector<components::table::storage_index_t> col_indices;
+        col_indices.emplace_back(static_cast<int64_t>(0));
+        col_indices.emplace_back(static_cast<int64_t>(1));
+        components::table::table_scan_state scan_state(&scan_resource);
+        table.initialize_scan(scan_state, col_indices, components::table::transaction_data::committed());
+        std::pmr::vector<components::types::complex_logical_type> types(&scan_resource);
+        types.push_back(table.columns()[0].type());
+        types.push_back(table.columns()[1].type());
+        while (result == catalog::INVALID_OID) {
+            components::vector::data_chunk_t chunk(&scan_resource, types, components::vector::DEFAULT_VECTOR_CAPACITY);
+            table.scan(chunk, scan_state);
+            if (chunk.size() == 0) {
+                break;
+            }
+            for (uint64_t i = 0; i < chunk.size(); ++i) {
+                if (chunk.is_null(0, i) || chunk.is_null(1, i)) {
+                    continue;
+                }
+                if (chunk.get_value<std::string_view>(1, i) == name) {
+                    result = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
+                    break;
+                }
+            }
+        }
+        return result;
+    }
+
     components::catalog::oid_t manager_disk_t::relnamespace_for_oid_sync(components::catalog::oid_t table_oid) const {
         auto result = catalog::INVALID_OID;
         if (agents_.empty() || agents_[0] == nullptr) {

@@ -9,6 +9,7 @@ set(${PROJECT_NAME}_SOURCES
     # collection
         collection/executor.cpp
         collection/foreign_connectors.cpp
+        collection/remote_servers.cpp
         collection/explain/explain_plan.cpp
         collection/explain/renderer_postgres.cpp
 

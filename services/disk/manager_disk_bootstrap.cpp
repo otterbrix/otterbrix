@@ -710,9 +710,11 @@ namespace services::disk {
             // refused by the loader, which is still every byte the operator has; creating over it destroys that.
             std::error_code file_ec;
             if (std::filesystem::exists(otbx, file_ec) && !file_ec) {
-                // BLOCK_START byte count is the on-disk signature of a never-checkpointed file.
-                const auto file_bytes = std::filesystem::file_size(otbx, file_ec);
-                if (!file_ec && file_bytes == components::table::storage::BLOCK_START) {
+                // The CREATE-time root is the on-disk signature of a never-checkpointed file, whatever its size.
+                auto young = components::table::storage::single_file_block_manager_t::file_is_never_checkpointed(
+                    otbx.string(),
+                    resource());
+                if (!young.has_error() && young.value()) {
                     trace(log_,
                           "manager_disk_t::rehydrate_missing_user_storages_sync: oid={} has a never-checkpointed "
                           "{} — deferred to the post-replay walk, not rehydrated",

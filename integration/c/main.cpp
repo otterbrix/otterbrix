@@ -9,9 +9,12 @@
 #include <core/result_wrapper.hpp>
 #include <integration/cpp/base_spaces.hpp>
 
+#include <cassert>
+#include <cstring>
 #include <exception>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -43,8 +46,8 @@ namespace {
     public:
         spaces_t(spaces_t& other) = delete;
         void operator=(const spaces_t&) = delete;
-        spaces_t(const configuration::config& config)
-            : base_otterbrix_t(config) {}
+        explicit spaces_t(host_ptr host)
+            : base_otterbrix_t(std::move(host)) {}
     };
 
     pod_space_t* convert_otterbrix(otterbrix_ptr ptr) {
@@ -103,6 +106,19 @@ namespace {
         }
     }
 
+    // Freed by the caller with otterbrix_free_string.
+    char* copy_to_c_string(std::string_view text) {
+        auto* copy = new char[text.size() + 1];
+        std::memcpy(copy, text.data(), text.size());
+        copy[text.size()] = '\0';
+        return copy;
+    }
+
+    error_message make_error_message(const core::error_t& error) {
+        return error_message{static_cast<int32_t>(error.type),
+                             copy_to_c_string(std::string_view{error.what.data(), error.what.size()})};
+    }
+
     std::string string_view_to_string(string_view_t sv) {
         if (sv.size == 0) {
             return {};
@@ -114,7 +130,12 @@ namespace {
     }
 } // namespace
 
-extern "C" otterbrix_ptr otterbrix_create(config_t cfg) {
+extern "C" otterbrix_ptr otterbrix_create(config_t cfg, error_message* out_error) {
+    assert(out_error != nullptr && "otterbrix_create: out_error is required");
+    if (out_error == nullptr) {
+        return nullptr;
+    }
+    *out_error = error_message{static_cast<int32_t>(core::error_code_t::none), nullptr};
     try {
         auto config = create_config();
         config.log.level = static_cast<log_t::level>(cfg.level);
@@ -123,11 +144,18 @@ extern "C" otterbrix_ptr otterbrix_create(config_t cfg) {
         config.disk.path = std::pmr::string(cfg.disk_path.data, cfg.disk_path.size);
         config.main_path = std::pmr::string(cfg.main_path.data, cfg.main_path.size);
 
+        auto host = otterbrix::base_otterbrix_t::open(config);
+        if (host.has_error()) {
+            *out_error = make_error_message(host.error());
+            return nullptr;
+        }
         auto pod_space = std::make_unique<pod_space_t>();
-        pod_space->space = std::make_unique<spaces_t>(config);
+        pod_space->space = std::make_unique<spaces_t>(std::move(host.value()));
         pod_space->state = state_t::created;
         return reinterpret_cast<void*>(pod_space.release());
     } catch (...) {
+        *out_error = error_message{static_cast<int32_t>(core::error_code_t::other_error),
+                                   copy_to_c_string("otterbrix_create: unknown C++ exception")};
         return nullptr;
     }
 }
@@ -336,13 +364,7 @@ extern "C" bool cursor_is_error(cursor_ptr ptr) {
 extern "C" error_message cursor_get_error(cursor_ptr ptr) {
     try {
         auto storage = convert_cursor(ptr);
-        auto error = storage->cursor->get_error();
-        error_message msg;
-        msg.code = static_cast<int32_t>(error.type);
-        std::string str = std::string{error.what};
-        msg.message = new char[str.size() + 1];
-        std::strcpy(msg.message, str.data());
-        return msg;
+        return make_error_message(storage->cursor->get_error());
     } catch (...) {
         return error_message{static_cast<int32_t>(core::error_code_t::other_error), nullptr};
     }

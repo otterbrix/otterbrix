@@ -385,22 +385,32 @@ namespace services::disk {
                                    actor_zeta::scheduler_raw scheduler,
                                    actor_zeta::scheduler_raw scheduler_disk,
                                    configuration::config_disk config,
-                                   log_t& log)
+                                   log_t& log,
+                                   configuration::pump_intervals_t pump)
         : actor_zeta::actor::actor_mixin<manager_disk_t>()
         , resource_(resource)
         , scheduler_(scheduler)
         , scheduler_disk_(scheduler_disk)
         , log_(log.clone())
-        , config_(std::move(config)) {
+        , config_(std::move(config))
+        , pump_(pump) {
         trace(log_, "manager_disk start");
         if (!config_.path.empty()) {
-            create_directories(config_.path);
+            std::error_code ec;
+            std::filesystem::create_directories(config_.path, ec);
+            if (ec) {
+                error(log_,
+                      "manager_disk: the table directory {} could not be created ({}); pg_catalog bootstrap "
+                      "refuses the start",
+                      config_.path.string(),
+                      ec.message());
+            }
             create_agent(config.agent);
         }
-        // This thread owns all message processing; senders only push into inbox_ and notify pump_cv_.
+        // This thread owns all message processing; senders only push into inbox_ and wake it.
         loop_thread_ = std::thread([this] {
             // this->resource(): the ctor parameter `resource` shadows the member fn.
-            std::pmr::list<in_flight_entry_t> in_flight(this->resource());
+            auto& in_flight = in_flight_;
             while (loop_running_.load(std::memory_order_acquire)) {
                 actor_zeta::mailbox::message* raw = nullptr;
                 while (inbox_.pop(raw)) {
@@ -446,16 +456,25 @@ namespace services::disk {
                     }
                 }
                 std::unique_lock<std::mutex> lk(mutex_);
+                pump_cv_.wait_for(lk, in_flight.empty() ? pump_.idle : pump_.in_flight, [this] {
+                    return !inbox_.empty() || !loop_running_.load(std::memory_order_acquire);
+                });
             }
         });
         trace(log_, "manager_disk finish");
     }
 
-    manager_disk_t::~manager_disk_t() {
+    void manager_disk_t::stop_loop() noexcept {
         loop_running_.store(false, std::memory_order_release);
+        wake_loop_();
         if (loop_thread_.joinable()) {
             loop_thread_.join();
         }
+    }
+
+    manager_disk_t::~manager_disk_t() {
+        stop_loop();
+        in_flight_.clear();
         actor_zeta::mailbox::message* raw = nullptr;
         while (inbox_.pop(raw)) {
             actor_zeta::mailbox::message_ptr drained{raw};
@@ -474,7 +493,17 @@ namespace services::disk {
                   "dropped and its future completes as abandoned");
             return {false, actor_zeta::detail::enqueue_result::queue_closed};
         }
+        wake_loop_();
         return {false, actor_zeta::detail::enqueue_result::success};
+    }
+
+    // The mutex is taken between the push and the notify, so the loop either sees the message before
+    // it sleeps or is already waiting when the notify comes.
+    void manager_disk_t::wake_loop_() noexcept {
+        {
+            std::lock_guard<std::mutex> guard(mutex_);
+        }
+        pump_cv_.notify_one();
     }
 
     actor_zeta::behavior_t manager_disk_t::behavior(actor_zeta::mailbox::message* msg) {

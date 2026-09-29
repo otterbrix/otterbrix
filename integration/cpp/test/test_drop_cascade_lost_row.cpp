@@ -29,24 +29,22 @@ namespace {
     class lost_row_spaces_t final : public otterbrix::base_otterbrix_t {
     public:
         explicit lost_row_spaces_t(const configuration::config& config)
-            : otterbrix::base_otterbrix_t(config) {
-            components::compute::function_registry_t::reset_default();
-        }
+            : otterbrix::base_otterbrix_t(test_open_engine(config)) {}
 
-        services::disk::manager_disk_t* disk() noexcept { return manager_disk_.get(); }
+        actor_zeta::address_t disk_address() const noexcept { return engine().disk_address(); }
     };
 
     // snapshot_horizon = max reads every committed row, not the calling transaction's view.
     template<typename Key>
     core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>
     catalog_chunks_with(lost_row_spaces_t& space, catalog::oid_t table_oid, std::uint64_t key_col, Key key) {
-        auto* resource = space.disk()->resource();
+        auto* resource = space.dispatcher()->resource();
         components::table::transaction_data td{0, 0};
         td.snapshot_horizon = std::numeric_limits<uint64_t>::max();
         components::execution_context_t exec_ctx{otterbrix::session_id_t{}, td, {}};
         std::pmr::vector<std::uint64_t> key_cols(resource);
         key_cols.emplace_back(key_col);
-        auto [_, fut] = actor_zeta::otterbrix::send(space.disk()->address(),
+        auto [_, fut] = actor_zeta::otterbrix::send(space.disk_address(),
                                                     &services::disk::manager_disk_t::read_chunks_by_key,
                                                     exec_ctx,
                                                     table_oid,
@@ -115,12 +113,12 @@ namespace {
                            catalog::oid_t objid,
                            catalog::oid_t refclassid,
                            catalog::oid_t refobjid) {
-        auto* resource = space.disk()->resource();
+        auto* resource = space.dispatcher()->resource();
         components::table::transaction_data td{0, 0};
         td.snapshot_horizon = std::numeric_limits<uint64_t>::max();
         components::execution_context_t exec_ctx{otterbrix::session_id_t{}, td, {}};
         auto row = catalog::build_pg_depend_row(resource, classid, objid, refclassid, refobjid, /*deptype=*/'n');
-        auto [_, fut] = actor_zeta::otterbrix::send(space.disk()->address(),
+        auto [_, fut] = actor_zeta::otterbrix::send(space.disk_address(),
                                                     &services::disk::manager_disk_t::append_pg_catalog_row,
                                                     exec_ctx,
                                                     catalog::well_known_oid::pg_depend_table,

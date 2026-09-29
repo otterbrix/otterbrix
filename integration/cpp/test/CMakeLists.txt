@@ -4,6 +4,13 @@ add_definitions(-DDEV_MODE)
 
 set( ${PROJECT_NAME}_SOURCES
         test_instances.cpp
+        test_engine_startup_refusal.cpp
+        test_engine_logs.cpp
+        test_engine_shutdown.cpp
+        test_function_registry_per_engine.cpp
+        test_builtin_unregister.cpp
+        test_pmr_abi.cpp
+        test_pmr_abi_sanitizer_host.cpp
         test_collection.cpp
         test_collection_logical_plan.cpp
         test_collection_sql.cpp
@@ -216,6 +223,9 @@ set( ${PROJECT_NAME}_SOURCES
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})
+
+set_source_files_properties(test_pmr_abi_sanitizer_host.cpp
+                            PROPERTIES COMPILE_DEFINITIONS "_ADDRESS_SANITIZER=1;OTTERBRIX_TSAN_ENABLED")
 
 # The fixture-root guard scans this directory's sources at run time; it needs to know where
 # they are. PRIVATE and not a header constant: the path is a property of THIS build.

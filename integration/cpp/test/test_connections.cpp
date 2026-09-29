@@ -85,7 +85,7 @@ TEST_CASE("integration::cpp::test_otterbrix_multithread") {
 TEST_CASE("integration::cpp::test_connectors") {
     auto config = test_create_config(integration_fixture_path("test_connectors"));
     test_clear_directory(config);
-    auto otterbrix = otterbrix::make_otterbrix(config);
+    auto otterbrix = test_make_otterbrix(config);
 
     INFO("initialization");
     {
@@ -176,7 +176,7 @@ TEST_CASE("integration::cpp::connection") {
     auto config = test_create_config(integration_fixture_path("connection") / std::to_string(::getpid()));
     test_clear_directory(config);
     config.log.level = log_t::level::off;
-    auto instance = otterbrix::make_otterbrix(config);
+    auto instance = test_make_otterbrix(config);
 
     SECTION("statements share the connection's session") {
         otterbrix::connection_t writer(instance);

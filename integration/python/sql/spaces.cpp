@@ -2,14 +2,25 @@
 
 namespace otterbrix {
 
-    spaces_ptr spaces::get_instance() { return new spaces(); }
+    namespace {
+        core::result_wrapper_t<spaces_ptr> open_spaces(const configuration::config& config) {
+            auto host = base_otterbrix_t::open(config);
+            if (host.has_error()) {
+                return host.error();
+            }
+            return spaces_ptr{new spaces(std::move(host.value()))};
+        }
+    } // namespace
 
-    spaces_ptr spaces::get_instance(const std::filesystem::path& path) { return new spaces(path); }
+    spaces::spaces(host_ptr host)
+        : base_otterbrix_t(std::move(host)) {}
 
-    spaces::spaces()
-        : base_otterbrix_t(configuration::config::default_config()) {}
+    core::result_wrapper_t<spaces_ptr> spaces::get_instance() {
+        return open_spaces(configuration::config::default_config());
+    }
 
-    spaces::spaces(const std::filesystem::path& path)
-        : base_otterbrix_t(configuration::config::create_config(path)) {}
+    core::result_wrapper_t<spaces_ptr> spaces::get_instance(const std::filesystem::path& path) {
+        return open_spaces(configuration::config::create_config(path));
+    }
 
 } // namespace otterbrix

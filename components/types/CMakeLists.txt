@@ -22,8 +22,8 @@ target_include_directories(
 )
 
 target_link_libraries(
-        otterbrix_${PROJECT_NAME}
-
+        otterbrix_${PROJECT_NAME} PUBLIC
+        otterbrix::pmr
         absl::int128
         Boost::boost
 )

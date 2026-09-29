@@ -21,6 +21,7 @@
 #include <filesystem>
 #include <thread>
 #include <unistd.h>
+#include <components/log/test_log.hpp>
 
 // storage_fetch_next_batch mints a cursor in active_scans_ and erases it only along the drain
 // paths, so a source that stops early (error mid-pump, satisfied LIMIT, dropped sub-plan) leaves
@@ -52,7 +53,7 @@ namespace {
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
 
         fixture()
-            : log(initialization_logger("python", "/tmp/docker_logs/"))
+            : log(make_test_log("python", "/tmp/docker_logs/"))
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
                 configuration::config_disk c;
@@ -62,7 +63,7 @@ namespace {
             , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {
             cleanup();
             std::filesystem::create_directories(cursor_dir());
-            manager->bootstrap_system_tables_sync();
+            REQUIRE_FALSE(manager->bootstrap_system_tables_sync().contains_error());
         }
         ~fixture() {
             manager.reset();
@@ -128,7 +129,7 @@ namespace {
                                session_id_t{},
                                table_oid,
                                uint64_t{0}, // 0 == OPEN
-                               std::unique_ptr<components::table::table_filter_t>(nullptr),
+                               std::unique_ptr<components::table::pushed_filter_t>(nullptr),
                                int64_t{-1},
                                std::vector<size_t>{},
                                with_open_snapshot(0, 0));

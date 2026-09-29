@@ -2,114 +2,43 @@
 
 #include "wrapper_dispatcher.hpp"
 
-#include <actor-zeta/detail/memory.hpp>
 #include <components/configuration/configuration.hpp>
 #include <components/log/log.hpp>
-#include <components/physical_plan_generator/create_plan.hpp>
-#include <components/planner/optimizer.hpp>
-#include <core/executor.hpp>
+#include <core/result_wrapper.hpp>
+#include <services/engine/engine.hpp>
 
-#include <core/config.hpp>
-#include <core/file/file_system.hpp>
-
-#include <cstdint>
 #include <memory>
-#include <memory_resource>
-#include <set>
-
-namespace services {
-
-    namespace dispatcher {
-        class manager_dispatcher_t;
-        using manager_dispatcher_ptr = std::unique_ptr<manager_dispatcher_t, actor_zeta::pmr::deleter_t>;
-    } // namespace dispatcher
-
-    namespace disk {
-        class manager_disk_t;
-        using manager_disk_ptr = std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t>;
-    } // namespace disk
-
-    namespace index {
-        class manager_index_t;
-        using manager_index_ptr = std::unique_ptr<manager_index_t, actor_zeta::pmr::deleter_t>;
-    } // namespace index
-
-    namespace wal {
-        class manager_wal_replicate_t;
-        using manager_wal_ptr = std::unique_ptr<manager_wal_replicate_t, actor_zeta::pmr::deleter_t>;
-    } // namespace wal
-
-} // namespace services
 
 namespace otterbrix {
 
+    // A complete host over services::engine: owns the memory resource, the logger, the three pools,
+    // the engine and the blocking wrapper_dispatcher_t.
     class base_otterbrix_t {
     public:
-        base_otterbrix_t(base_otterbrix_t& other) = delete;
-        void operator=(const base_otterbrix_t&) = delete;
+        struct host_t;
+        struct host_deleter_t final {
+            void operator()(host_t* host) const noexcept;
+        };
+        using host_ptr = std::unique_ptr<host_t, host_deleter_t>;
 
-        log_t& get_log();
-        otterbrix::wrapper_dispatcher_t* dispatcher();
+        // A refused start answers the error; its message lives on new_delete_resource, since the
+        // engine's own arena is gone by the time the caller reads it.
+        [[nodiscard]] static core::result_wrapper_t<host_ptr> open(const configuration::config& config,
+                                                                   services::engine::primitives_t primitives = {});
+
+        base_otterbrix_t(const base_otterbrix_t&) = delete;
+        base_otterbrix_t& operator=(const base_otterbrix_t&) = delete;
         ~base_otterbrix_t();
 
+        log_t& get_log();
+        wrapper_dispatcher_t* dispatcher();
+        const services::engine::engine_t& engine() const;
+
     protected:
-        // CLOSED default surface: normal (non-federation) embeddings get the
-        // Null-Object hooks, hardcoded here — base_spaces exposes no customization.
-        explicit base_otterbrix_t(const configuration::config& config)
-            : base_otterbrix_t(config, &services::planner::no_custom_lowering, &components::planner::no_op_pass) {}
-
-        // Federation seam: a subclass injects host customization EXPLICITLY (no
-        // defaults) — threaded on through manager_dispatcher_t -> executor_t ctors:
-        //   create_plan_rule — lowers a node the engine does not lower itself
-        //     (node_extension / any host-custom node) to a host operator (physgen);
-        //   optimizer_pass   — a final host rewrite on the optimized logical tree.
-        base_otterbrix_t(const configuration::config& config,
-                         services::planner::create_plan_rule_t create_plan_rule,
-                         components::planner::optimizer_pass_t optimizer_pass);
-        std::filesystem::path main_path_;
-#if defined(OTTERBRIX_TSAN_ENABLED)
-        // TSAN cannot see through synchronized_pool_resource's internal mutex,
-        // causing false positive data race reports on memory reuse between threads.
-        // Under TSAN, delegate to new_delete_resource() which TSAN understands natively.
-        struct tsan_resource_t final : std::pmr::memory_resource {
-        protected:
-            void* do_allocate(size_t bytes, size_t align) override {
-                return std::pmr::new_delete_resource()->allocate(bytes, align);
-            }
-            void do_deallocate(void* p, size_t bytes, size_t align) override {
-                std::pmr::new_delete_resource()->deallocate(p, bytes, align);
-            }
-            bool do_is_equal(const memory_resource& other) const noexcept override { return this == &other; }
-        } resource;
-#else
-        core::pmr::otterbrix_resource resource;
-#endif
-        log_t log_;
-        actor_zeta::scheduler_ptr scheduler_;
-        actor_zeta::scheduler_ptr scheduler_dispatcher_;
-        // Declared before every manager so all three schedulers are destroyed
-        // AFTER the actors under implicit reverse-declaration destruction
-        // (manager_disk_ holds a raw pointer to scheduler_disk_).
-        actor_zeta::scheduler_ptr scheduler_disk_;
-        services::dispatcher::manager_dispatcher_ptr manager_dispatcher_;
-        services::disk::manager_disk_ptr manager_disk_;
-        services::wal::manager_wal_ptr manager_wal_;
-        services::index::manager_index_ptr manager_index_;
-        std::unique_ptr<otterbrix::wrapper_dispatcher_t, actor_zeta::pmr::deleter_t> wrapper_dispatcher_;
-
-        // Catalog-driven index bootstrap. Called once during construction, after
-        // WAL replay and before scheduler.start, while single-threaded. Scans
-        // pg_class / pg_index via manager_disk_ sync helpers, then:
-        //   - registers every live table oid with manager_index_;
-        //   - asks manager_index_ to raise one index agent per alive pg_index row
-        //     (by indtype family), which owns it;
-        //   - restores per-oid dropped-table tombstones.
-        //
-        void bootstrap_indexes_sync(const std::set<std::uint64_t>& commit_ids);
+        explicit base_otterbrix_t(host_ptr host);
 
     private:
-        inline static std::unordered_set<std::filesystem::path, core::filesystem::path_hash> paths_ = {};
-        inline static std::mutex m_;
+        host_ptr host_;
     };
 
 } // namespace otterbrix

@@ -25,6 +25,7 @@
 #include <services/wal/wal_sync_mode.hpp>
 #include <thread>
 #include <unistd.h>
+#include <components/log/test_log.hpp>
 
 // Txn ids are reused across restarts while wal ids keep growing, so a COMMIT marker from a prior
 // process could vouch for records written under a recycled id. Fixed rule: a record at wal id r
@@ -64,7 +65,7 @@ namespace {
     struct journal_session_t {
         explicit journal_session_t(const std::filesystem::path& path)
             : resource_()
-            , log_(initialization_logger("python", "/tmp/docker_logs/"))
+            , log_(make_test_log("python", "/tmp/docker_logs/"))
             , scheduler_(new actor_zeta::shared_work(2, 1000))
             , config_([&]() {
                 configuration::config_wal c(path);
@@ -180,7 +181,7 @@ TEST_CASE("wal::txn_reuse::bootstrap_replay_rejects_the_recycled_uncommitted_txn
     REQUIRE(committed_insert_id < commit_marker_id);
     REQUIRE(commit_marker_id < orphan_insert_id);
 
-    auto log = initialization_logger("python", "/tmp/docker_logs/");
+    auto log = make_test_log("python", "/tmp/docker_logs/");
     core::pmr::otterbrix_resource resource;
     configuration::config_wal config(path);
 

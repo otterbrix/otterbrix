@@ -26,6 +26,8 @@
 #include <limits>
 #include <list>
 #include <mutex>
+
+#include <components/configuration/configuration.hpp>
 #include <set>
 #include <thread>
 #include <unordered_map>
@@ -101,8 +103,12 @@ namespace services::index {
                         std::filesystem::path path_db = {},
                         uint64_t bitcask_flush_threshold = 1000,
                         uint64_t bitcask_segment_record_limit = 100,
-                        uint64_t btree_flush_threshold = 1000);
+                        uint64_t btree_flush_threshold = 1000,
+                        configuration::pump_intervals_t pump = {});
         ~manager_index_t();
+        // Joins the loop thread and keeps its suspended coroutines: a neighbour's loop must not
+        // resume against them while they are torn down. Idempotent; the destructor calls it too.
+        void stop_loop() noexcept;
 
         std::pmr::memory_resource* resource() const noexcept { return resource_; }
         auto make_type() const noexcept -> const char*;
@@ -398,6 +404,10 @@ namespace services::index {
 
         // mutex_ guards only the cv idle-wait, so the DML/DDL path stays lock-free.
         std::mutex mutex_;
+        std::condition_variable pump_cv_;
+        configuration::pump_intervals_t pump_;
+        void wake_loop_() noexcept;
+        std::pmr::list<in_flight_entry_t> in_flight_{resource_};
         std::thread loop_thread_;
         std::atomic<bool> loop_running_{true};
         boost::lockfree::queue<actor_zeta::mailbox::message*> inbox_{128};

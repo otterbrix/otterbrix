@@ -209,6 +209,7 @@ namespace components::operators {
                             continue;
                         }
                         auto proj = evaluate_projection(resource_,
+                                                        *ctx->function_registry,
                                                         returning_,
                                                         &seg,
                                                         ctx->parameters,
@@ -268,6 +269,7 @@ namespace components::operators {
                 vector::data_chunk_t empty(resource_, returning_types.value(), 0);
                 empty.set_cardinality(0);
                 auto proj = evaluate_projection(resource_,
+                                                *ctx->function_registry,
                                                 returning_,
                                                 &empty,
                                                 ctx->parameters,

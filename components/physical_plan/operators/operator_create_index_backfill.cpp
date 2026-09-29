@@ -116,7 +116,7 @@ namespace components::operators {
                                                             ctx->session,
                                                             table_oid_,
                                                             uint64_t{0},
-                                                            std::unique_ptr<components::table::table_filter_t>(nullptr),
+                                                            std::unique_ptr<components::table::pushed_filter_t>(nullptr),
                                                             int64_t{-1},
                                                             std::vector<size_t>{0},
                                                             ctx->txn);

@@ -73,6 +73,7 @@ namespace components::operators {
         if (condition_ == expressions::condition_kind::computed) {
             if (!graph_) {
                 auto built = expressions::build_condition_graph(resource_,
+                                                                *pipeline_context->function_registry,
                                                                 pipeline_context->parameters.parameters,
                                                                 expression_.get(),
                                                                 types);
@@ -136,6 +137,7 @@ namespace components::operators {
             affected.set_cardinality(index);
             if (affected.size() != 0) {
                 auto proj = evaluate_projection(resource_,
+                                                *pipeline_context->function_registry,
                                                 returning_,
                                                 &affected,
                                                 pipeline_context->parameters,
@@ -180,6 +182,7 @@ namespace components::operators {
                 merged_types.insert(merged_types.end(), types_left.begin(), types_left.end());
                 merged_types.insert(merged_types.end(), types_right.begin(), types_right.end());
                 auto built = expressions::build_condition_graph(resource_,
+                                                                *pipeline_context->function_registry,
                                                                 pipeline_context->parameters.parameters,
                                                                 expression_.get(),
                                                                 merged_types,
@@ -281,6 +284,7 @@ namespace components::operators {
 
             if (affected_left.size() != 0) {
                 auto proj = evaluate_projection(resource_,
+                                                *pipeline_context->function_registry,
                                                 returning_,
                                                 &affected_left,
                                                 pipeline_context->parameters,
@@ -491,6 +495,7 @@ namespace components::operators {
                 data_chunk_t empty(resource_, returning_types.value(), 0);
                 empty.set_cardinality(0);
                 auto proj = evaluate_projection(resource_,
+                                                *ctx->function_registry,
                                                 returning_,
                                                 &empty,
                                                 ctx->parameters,

@@ -43,7 +43,12 @@ namespace {
     }
 
     const components::compute::function_registry_t& functions() {
-        return *components::compute::function_registry_t::get_default();
+        static components::compute::function_registry_t registry(resource());
+        [[maybe_unused]] static const bool loaded = [] {
+            components::compute::register_default_functions(registry);
+            return true;
+        }();
+        return registry;
     }
 
     std::pmr::vector<complex_logical_type> args(std::initializer_list<logical_type> types) {

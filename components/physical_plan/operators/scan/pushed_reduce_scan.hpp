@@ -26,12 +26,9 @@ namespace components::operators {
                            pushed_aggregate_spec_t spec);
 
         // role()==source drives the streaming push/finalize pipeline. The FIRST
-        // source_next call lowers the WHERE (a storage_types await only when a real
-        // predicate needs typing), sends ONE storage_reduce, and stashes the reply;
-        // each subsequent call emits one stashed chunk, then the 0-column drain
-        // sentinel. The (at most two) sequential cross-actor awaits live in this
-        // NESTED operator coroutine, so the single-slot awaited continuation is
-        // republished+cleared between them — no lost wakeup.
+        // source_next call sends ONE storage_reduce carrying the WHERE description and
+        // stashes the reply; each subsequent call emits one stashed chunk, then the
+        // 0-column drain sentinel.
         [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::source; }
         [[nodiscard]] actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
         source_next(pipeline::context_t* ctx) override;
@@ -39,9 +36,7 @@ namespace components::operators {
         // Rewind for a re-driven sub-plan (a correlated LATERAL scalar-aggregate
         // subquery re-drives THIS SAME instance once per outer row): the next
         // source_next re-runs the WHOLE reduce. spec_ is untouched — every OPEN ships
-        // open_spec(), a copy. cached_types_/types_cached_ are DELIBERATELY not reset:
-        // the table schema is invariant across re-drives, so the storage_types
-        // round-trip is paid once and reused on every subsequent open.
+        // open_spec(), a copy.
         void reset_pipeline_state() noexcept override {
             opened_ = false;
             emit_idx_ = 0;
@@ -52,7 +47,7 @@ namespace components::operators {
         // operator's resource (field-by-field — the pmr members' plain copy ctors
         // would SOCCC onto the default resource). The armed spec_ survives every
         // send, so a re-driven scan re-runs the SAME reduce.
-        [[nodiscard]] pushed_aggregate_spec_t open_spec();
+        [[nodiscard]] pushed_aggregate_spec_t open_spec(std::pmr::memory_resource* target) const;
 
     private:
         void explain_impl(const explain_sink& s) const override {
@@ -71,12 +66,6 @@ namespace components::operators {
         std::size_t emit_idx_{0};
         std::pmr::vector<vector::data_chunk_t> reduced_{resource_};
 
-        // storage_types cache: the table schema is invariant across re-drives, so the
-        // one storage_types round-trip is paid on the first real-predicate open and the
-        // types reused thereafter. survives reset_pipeline_state() (a re-driven open
-        // rebuilds only the filter, whose correlated parameter changes per outer row).
-        std::pmr::vector<components::types::complex_logical_type> cached_types_{resource_};
-        bool types_cached_{false};
     };
 
 } // namespace components::operators

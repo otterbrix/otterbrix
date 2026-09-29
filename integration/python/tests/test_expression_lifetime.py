@@ -6,7 +6,7 @@ belong to the connection:
 
   * a COLUMN expression is a `key_t` whose characters are `std::pmr::string`s cut
     from the space's arena, and that arena is a MEMBER of the space
-    (`base_otterbrix_t::resource`, integration/cpp/base_spaces.hpp), so it dies
+    (`base_otterbrix_t::host_t::resource`, integration/cpp/base_spaces.cpp), so it dies
     with the space;
   * a CONSTANT expression is a parameter id, and the value it names lives in
     `expression_factory_t::values` -- a member of the connection OBJECT.

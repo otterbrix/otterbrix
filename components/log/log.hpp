@@ -1,7 +1,11 @@
 #pragma once
 
+#include <core/result_wrapper.hpp>
 #include <spdlog/async_logger.h>
+
+#include <filesystem>
 #include <string>
+#include <string_view>
 
 class log_t final {
 public:
@@ -120,9 +124,9 @@ auto trace(log_t& log, const S& format_str) -> void {
     log->trace(format_str);
 }
 
-auto get_logger(const std::string&) -> log_t;
-auto get_logger() -> log_t;
-auto initialization_logger(std::shared_ptr<spdlog::logger>) -> void;
-auto initialization_logger(std::string_view name, std::string prefix) -> log_t;
-auto drop_logger(const std::string&) -> void;
-auto drop_all_loggers() -> void;
+// A logger owned by its caller: nothing is registered with spdlog, so two engines in one process
+// never share one. Writes to stdout and to <directory>/<name>-<seconds>.txt. A directory that cannot
+// be created or a file that cannot be opened is answered as an error on `resource`, never thrown.
+[[nodiscard]] auto make_log(std::string_view name,
+                            const std::filesystem::path& directory,
+                            std::pmr::memory_resource* resource) -> core::result_wrapper_t<log_t>;

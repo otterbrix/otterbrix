@@ -7,16 +7,14 @@
 
 namespace components::operators {
 
-    // Operator implementation of manager_dispatcher_t::unregister_udf.
-    //
-    // Steps:
-    //   1. Probe function_registry_t::get_default() for an overload of
-    //      `function_name` whose signature matches `inputs`. Bail with
-    //      success_=false if no match exists.
-    //   2. Drop the matching overload from the default registry so subsequent
-    //      validate_logical_plan calls cannot see it.
-    //   3. Resolve every pg_proc row sharing this name (across all namespaces),
-    //      delete the pg_proc row + pg_depend rows referencing it.
+#ifdef DEV_MODE
+    // Test seam: while armed, the pg_proc/pg_depend purge refuses as an unreadable catalog would.
+    void dev_set_unregister_udf_purge_refusal(bool refuse) noexcept;
+#endif
+
+    // Operator implementation of manager_dispatcher_t::unregister_udf: checks the overload exists in
+    // the dispatcher's master registry (ctx->function_registry), then deletes its pg_proc and
+    // pg_depend rows. The dispatcher drops the overload from the master once this succeeds.
     class operator_unregister_udf_t final : public read_only_operator_t {
     public:
         operator_unregister_udf_t(std::pmr::memory_resource* resource,
@@ -27,7 +25,7 @@ namespace components::operators {
         bool success() const noexcept { return success_; }
 
         // Sourceless SINK leaf (no data pipeline, no children): the registry
-        // existence-check + overload drop and the pg_proc/pg_depend purge run in
+        // existence-check and the pg_proc/pg_depend purge run in
         // await_async_and_resume. The dispatcher drives this operator's async
         // finalize directly (a single await_async_and_resume).
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }

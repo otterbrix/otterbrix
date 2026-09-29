@@ -100,17 +100,24 @@ namespace services::disk {
         }
     } // namespace
 
-    void manager_disk_t::bootstrap_system_tables_sync() {
+    core::error_t manager_disk_t::bootstrap_system_tables_sync() {
         // Refuses a relative-path database under the process CWD (every binding fills config_disk::path).
         if (config_.path.empty()) {
             error(log_,
                   "manager_disk_t::bootstrap_system_tables_sync: config_disk::path is empty — there is no "
                   "directory to bootstrap pg_catalog into; refusing");
-            return;
+            return core::error_t::no_error();
         }
         const auto sys_db_oid = catalog::well_known_oid::main_database;
         const std::filesystem::path sys_dir = config_.path / std::to_string(static_cast<unsigned>(sys_db_oid));
-        std::filesystem::create_directories(sys_dir);
+        std::error_code dir_ec;
+        std::filesystem::create_directories(sys_dir, dir_ec);
+        if (dir_ec) {
+            return core::error_t(core::error_code_t::io_error,
+                                 std::pmr::string{"bootstrap REFUSED , the pg_catalog directory " + sys_dir.string() +
+                                                      " could not be created: " + dir_ec.message(),
+                                                  resource()});
+        }
 
         auto has_builtin_seed_rows = [](catalog::oid_t tbl_oid) {
             return tbl_oid == catalog::well_known_oid::pg_settings_table || tbl_oid == pg_database_oid ||
@@ -130,7 +137,7 @@ namespace services::disk {
             return const_cast<collection_storage_entry_t*>(entry)->table_storage.table().calculate_size();
         };
 
-        auto bootstrap_one = [&](const components::catalog::system_table_def_t& def) -> bool {
+        auto bootstrap_one = [&](const components::catalog::system_table_def_t& def) -> core::result_wrapper_t<bool> {
             const auto tbl_oid = def.relation_oid;
             if (!agents_.empty() && agents_[0] != nullptr) {
                 if (agents_[0]->has_storage_sync(tbl_oid))
@@ -140,13 +147,21 @@ namespace services::disk {
             bool took_create_leg = false;
             const auto otbx = sys_dir / std::to_string(static_cast<unsigned>(tbl_oid)) / "table.otbx";
             {
-                std::filesystem::create_directories(otbx.parent_path());
-                if (std::filesystem::exists(otbx)) {
+                std::error_code table_dir_ec;
+                std::filesystem::create_directories(otbx.parent_path(), table_dir_ec);
+                if (table_dir_ec) {
+                    return core::error_t(core::error_code_t::io_error,
+                                         std::pmr::string{"bootstrap REFUSED , the directory of system table " +
+                                                              std::string(def.name) + " could not be created: " +
+                                                              table_dir_ec.message(),
+                                                          resource()});
+                }
+                std::error_code exists_ec;
+                if (std::filesystem::exists(otbx, exists_ec)) {
                     trace(log_,
                           "manager_disk_t::bootstrap_system_tables_sync loading : {} oid={}",
                           std::string(def.name),
                           static_cast<unsigned>(tbl_oid));
-                    // Throws: pre-scheduler here makes std::runtime_error catchable by the embedder.
                     if (auto err = load_storage_disk_sync(tbl_oid, sys_db_oid, otbx, def.columns);
                         err.contains_error()) {
                         error(log_,
@@ -154,8 +169,11 @@ namespace services::disk {
                               std::string(def.name),
                               static_cast<unsigned>(tbl_oid),
                               err.what.c_str());
-                        throw std::runtime_error("a pg_catalog system table could not be opened, refusing to start: " +
-                                                 std::string(err.what.c_str()));
+                        return core::error_t(core::error_code_t::io_error,
+                                             std::pmr::string{"a pg_catalog system table could not be opened, "
+                                                              "refusing to start: " +
+                                                                  std::string(err.what.c_str()),
+                                                              resource()});
                     }
                     // A crash before first-checkpoint leaves an empty file treated as fresh for the 5 builtin tables.
                     needs_seeding = has_builtin_seed_rows(tbl_oid) && rows_in_sync(tbl_oid) == 0;
@@ -184,8 +202,10 @@ namespace services::disk {
                       static_cast<unsigned>(tbl_oid),
                       took_create_leg ? "create" : "load",
                       otbx.string());
-                throw std::runtime_error("a pg_catalog system table did not come up, refusing to start: " +
-                                         std::string(def.name));
+                return core::error_t(core::error_code_t::io_error,
+                                     std::pmr::string{"a pg_catalog system table did not come up, refusing to start: " +
+                                                          std::string(def.name),
+                                                      resource()});
             }
             return needs_seeding;
         };
@@ -202,7 +222,8 @@ namespace services::disk {
             }
         };
 
-        auto require_seeded = [&](catalog::oid_t tbl_oid, std::string_view tbl_name, std::uint64_t expected) {
+        auto require_seeded =
+            [&](catalog::oid_t tbl_oid, std::string_view tbl_name, std::uint64_t expected) -> core::error_t {
             const auto seeded = rows_in_sync(tbl_oid);
             if (seeded != expected) {
                 error(log_,
@@ -211,16 +232,21 @@ namespace services::disk {
                       static_cast<unsigned>(tbl_oid),
                       seeded,
                       expected);
-                throw std::runtime_error("a pg_catalog system table could not be seeded, refusing to start: " +
-                                         std::string(tbl_name));
+                return core::error_t(core::error_code_t::io_error,
+                                     std::pmr::string{"a pg_catalog system table could not be seeded, refusing to "
+                                                      "start: " +
+                                                          std::string(tbl_name),
+                                                      resource()});
             }
+            return core::error_t::no_error();
         };
 
         std::unordered_set<catalog::oid_t> freshly_created;
 
         // pg_settings must bootstrap first — seeding elsewhere reads the timezone via append_sync.
         if (const auto* settings_def = catalog::find_system_table(pg_settings_oid)) {
-            if (bootstrap_one(*settings_def)) {
+            VALUE_OR_RETURN(const bool settings_fresh, bootstrap_one(*settings_def));
+            if (settings_fresh) {
                 freshly_created.insert(catalog::well_known_oid::pg_settings_table);
                 catalog::session_catalog_t defaults;
                 for (const auto& def : catalog::all_settings()) {
@@ -233,13 +259,13 @@ namespace services::disk {
                     });
                     seed_row(catalog::well_known_oid::pg_settings_table, settings_def->name, row);
                 }
-                require_seeded(catalog::well_known_oid::pg_settings_table,
-                               settings_def->name,
-                               catalog::all_settings().size());
+                RETURN_IF_ERROR(require_seeded(catalog::well_known_oid::pg_settings_table,
+                                               settings_def->name,
+                                               catalog::all_settings().size()));
             }
             // pg_settings is append-only, so this reads what SET last wrote, or the seed.
             for (const auto& def : catalog::all_settings()) {
-                auto stored = read_setting_sync(def.catalog_name);
+                VALUE_OR_RETURN(auto stored, read_setting_sync(def.catalog_name));
                 if (stored.empty()) {
                     continue;
                 }
@@ -251,7 +277,8 @@ namespace services::disk {
         }
 
         for (const auto& def : components::catalog::all_system_tables()) {
-            if (bootstrap_one(def)) {
+            VALUE_OR_RETURN(const bool fresh, bootstrap_one(def));
+            if (fresh) {
                 freshly_created.insert(def.relation_oid);
             }
         }
@@ -281,7 +308,7 @@ namespace services::disk {
                         seed_row(pg_class_oid, cls_def->name, row);
                         ++written;
                     }
-                    require_seeded(pg_class_oid, cls_def->name, before + written);
+                    RETURN_IF_ERROR(require_seeded(pg_class_oid, cls_def->name, before + written));
                 }
                 if (const auto* att_def = catalog::find_system_table(pg_attribute_oid)) {
                     const auto before = rows_in_sync(pg_attribute_oid);
@@ -313,7 +340,7 @@ namespace services::disk {
                             ++written;
                         }
                     }
-                    require_seeded(pg_attribute_oid, att_def->name, before + written);
+                    RETURN_IF_ERROR(require_seeded(pg_attribute_oid, att_def->name, before + written));
                 }
             }
             if (self_rows_catch_up) {
@@ -350,7 +377,7 @@ namespace services::disk {
                 }
             }
             if (freshly_created.size() <= 1)
-                return;
+                return core::error_t::no_error();
         }
 
         trace(log_,
@@ -367,7 +394,7 @@ namespace services::disk {
                     chunk.set_value(1, 0, db.name);
                 });
                 seed_row(pg_database_oid, def->name, row);
-                require_seeded(pg_database_oid, def->name, 1);
+                RETURN_IF_ERROR(require_seeded(pg_database_oid, def->name, 1));
             }
         }
 
@@ -382,7 +409,7 @@ namespace services::disk {
                     seed_row(pg_namespace_oid_tbl, def->name, row);
                     ++written;
                 }
-                require_seeded(pg_namespace_oid_tbl, def->name, written);
+                RETURN_IF_ERROR(require_seeded(pg_namespace_oid_tbl, def->name, written));
             }
         }
 
@@ -398,7 +425,7 @@ namespace services::disk {
                     seed_row(pg_type_oid, def->name, row);
                     ++written;
                 }
-                require_seeded(pg_type_oid, def->name, written);
+                RETURN_IF_ERROR(require_seeded(pg_type_oid, def->name, written));
             }
         }
 
@@ -414,7 +441,7 @@ namespace services::disk {
                     seed_row(pg_proc_oid, def->name, row);
                     ++written;
                 }
-                require_seeded(pg_proc_oid, def->name, written);
+                RETURN_IF_ERROR(require_seeded(pg_proc_oid, def->name, written));
             }
         }
 
@@ -432,6 +459,7 @@ namespace services::disk {
                 }
             }
         }
+        return core::error_t::no_error();
     }
 
     void manager_disk_t::restore_oid_generator_sync() {
@@ -547,33 +575,49 @@ namespace services::disk {
         return max_commit_id;
     }
 
-    void manager_disk_t::load_user_table_storages_sync() {
+    core::error_t manager_disk_t::load_user_table_storages_sync() {
         if (config_.path.empty()) {
-            return;
+            return core::error_t::no_error();
         }
-        if (!std::filesystem::exists(config_.path)) {
-            return;
+        const auto listing_refused = [this](const std::filesystem::path& dir, const std::error_code& ec) {
+            return core::error_t(core::error_code_t::io_error,
+                                 std::pmr::string{"load_user_table_storages_sync: the directory " + dir.string() +
+                                                      " could not be listed, so the tables under it cannot be "
+                                                      "loaded: " + ec.message(),
+                                                  resource()});
+        };
+        std::error_code ec;
+        if (!std::filesystem::exists(config_.path, ec)) {
+            return ec ? listing_refused(config_.path, ec) : core::error_t::no_error();
         }
         // Layout: ${config_.path}/${database_oid}/${table_oid}/table.otbx; system tables are already loaded here.
-        for (const auto& db_entry : std::filesystem::directory_iterator(config_.path)) {
-            if (!db_entry.is_directory())
+        std::filesystem::directory_iterator db_it(config_.path, ec);
+        for (const std::filesystem::directory_iterator end; !ec && db_it != end; db_it.increment(ec)) {
+            const auto& db_entry = *db_it;
+            std::error_code kind_ec;
+            if (!db_entry.is_directory(kind_ec))
                 continue;
             const auto db_name = db_entry.path().filename().string();
             std::uint64_t db_oid_raw = 0;
             {
-                auto [ptr, ec] = std::from_chars(db_name.data(), db_name.data() + db_name.size(), db_oid_raw);
-                if (ec != std::errc{})
+                auto [ptr, parse_ec] = std::from_chars(db_name.data(), db_name.data() + db_name.size(), db_oid_raw);
+                if (parse_ec != std::errc{})
                     continue; // non-numeric (e.g. wal segment dirs at the same level)
             }
             const auto db_oid = static_cast<catalog::oid_t>(db_oid_raw);
-            for (const auto& tbl_entry : std::filesystem::directory_iterator(db_entry.path())) {
-                if (!tbl_entry.is_directory())
+            std::error_code tbl_ec;
+            std::filesystem::directory_iterator tbl_it(db_entry.path(), tbl_ec);
+            for (const std::filesystem::directory_iterator tbl_end; !tbl_ec && tbl_it != tbl_end;
+                 tbl_it.increment(tbl_ec)) {
+                const auto& tbl_entry = *tbl_it;
+                if (!tbl_entry.is_directory(kind_ec))
                     continue;
                 const auto tbl_name = tbl_entry.path().filename().string();
                 std::uint64_t tbl_oid_raw = 0;
                 {
-                    auto [ptr, ec] = std::from_chars(tbl_name.data(), tbl_name.data() + tbl_name.size(), tbl_oid_raw);
-                    if (ec != std::errc{})
+                    auto [ptr, parse_ec] =
+                        std::from_chars(tbl_name.data(), tbl_name.data() + tbl_name.size(), tbl_oid_raw);
+                    if (parse_ec != std::errc{})
                         continue;
                 }
                 const auto tbl_oid = static_cast<catalog::oid_t>(tbl_oid_raw);
@@ -582,8 +626,13 @@ namespace services::disk {
                 if (has_storage(tbl_oid))
                     continue;
                 auto otbx = tbl_entry.path() / "table.otbx";
-                if (!std::filesystem::exists(otbx))
+                std::error_code exists_ec;
+                if (!std::filesystem::exists(otbx, exists_ec)) {
+                    if (exists_ec) {
+                        return listing_refused(tbl_entry.path(), exists_ec);
+                    }
                     continue;
+                }
                 trace(log_,
                       "manager_disk_t::load_user_table_storages_sync : oid={} db_oid={}",
                       static_cast<unsigned>(tbl_oid),
@@ -596,7 +645,14 @@ namespace services::disk {
                          err.what.c_str());
                 }
             }
+            if (tbl_ec) {
+                return listing_refused(db_entry.path(), tbl_ec);
+            }
         }
+        if (ec) {
+            return listing_refused(config_.path, ec);
+        }
+        return core::error_t::no_error();
     }
 
     core::result_wrapper_t<std::size_t> manager_disk_t::rehydrate_missing_user_storages_sync() {
@@ -1279,7 +1335,7 @@ namespace services::disk {
         return result;
     }
 
-    std::pmr::vector<pg_index_row_t> manager_disk_t::scan_alive_pg_index_sync() const {
+    core::result_wrapper_t<std::pmr::vector<pg_index_row_t>> manager_disk_t::scan_alive_pg_index_sync() const {
         std::pmr::vector<pg_index_row_t> result{resource_};
         if (agents_.empty() || agents_[0] == nullptr) {
             return result;
@@ -1297,8 +1353,10 @@ namespace services::disk {
                   "manager_disk_t::scan_alive_pg_index_sync: pg_index has {} columns, expected 5 "
                   "(indtype missing?) — catalog is corrupt, refusing to start",
                   idx_table.column_count());
-            throw std::runtime_error("pg_index has " + std::to_string(idx_table.column_count()) +
-                                     " columns, expected 5 — catalog is corrupt, refusing to start");
+            return core::error_t(core::error_code_t::data_corruption,
+                                 std::pmr::string{"pg_index has " + std::to_string(idx_table.column_count()) +
+                                                      " columns, expected 5 — catalog is corrupt, refusing to start",
+                                                  resource_});
         }
         if (idx_table.calculate_size() == 0) {
             return result;
@@ -1342,9 +1400,12 @@ namespace services::disk {
                               "(indexrelid={}, indrelid={}) has NULL indtype — catalog is corrupt, refusing to start",
                               static_cast<unsigned>(row.oid),
                               static_cast<unsigned>(row.table_oid));
-                        throw std::runtime_error(
-                            "pg_index row (indexrelid=" + std::to_string(static_cast<unsigned>(row.oid)) +
-                            ") has NULL indtype — catalog is corrupt, refusing to start");
+                        return core::error_t(core::error_code_t::data_corruption,
+                                             std::pmr::string{"pg_index row (indexrelid=" +
+                                                                  std::to_string(static_cast<unsigned>(row.oid)) +
+                                                                  ") has NULL indtype — catalog is corrupt, "
+                                                                  "refusing to start",
+                                                              resource_});
                     }
                     const auto indtype_v = chunk.get_value<std::string_view>(4, i);
                     row.type = indtype_v.size() == 1
@@ -1358,10 +1419,13 @@ namespace services::disk {
                               static_cast<unsigned>(row.oid),
                               static_cast<unsigned>(row.table_oid),
                               std::string(indtype_v.data(), indtype_v.size()));
-                        throw std::runtime_error(
-                            "pg_index row (indexrelid=" + std::to_string(static_cast<unsigned>(row.oid)) +
-                            ") has unknown indtype '" + std::string(indtype_v.data(), indtype_v.size()) +
-                            "' — catalog is corrupt, refusing to start");
+                        return core::error_t(core::error_code_t::data_corruption,
+                                             std::pmr::string{"pg_index row (indexrelid=" +
+                                                                  std::to_string(static_cast<unsigned>(row.oid)) +
+                                                                  ") has unknown indtype '" +
+                                                                  std::string(indtype_v.data(), indtype_v.size()) +
+                                                                  "' — catalog is corrupt, refusing to start",
+                                                              resource_});
                     }
                     std::pmr::string raw_indkey{resource_};
                     if (!chunk.is_null(2, i)) {
@@ -1551,26 +1615,31 @@ namespace services::disk {
         return result;
     }
 
-    std::string manager_disk_t::read_setting_sync(std::string_view name) {
+    core::result_wrapper_t<std::string> manager_disk_t::read_setting_sync(std::string_view name) {
         // Empty means exactly "no row with that name" — never "not loaded" or "wrong shape", which can't occur
         // after bootstrap (which seeds pg_settings first and refuses the start otherwise).
         const auto settings_oid = catalog::well_known_oid::pg_settings_table;
         if (agents_.empty() || agents_[0] == nullptr) {
-            return {};
+            return std::string{};
         }
         const collection_storage_entry_t* entry = agents_[0]->storage_entry_sync(settings_oid);
         if (entry == nullptr) {
-            throw std::runtime_error("read_setting_sync: pg_settings is not loaded — called before "
-                                     "bootstrap_system_tables_sync, refusing to answer 'setting absent'");
+            return core::error_t(core::error_code_t::other_error,
+                                 std::pmr::string{"read_setting_sync: pg_settings is not loaded — called before "
+                                                  "bootstrap_system_tables_sync, refusing to answer 'setting absent'",
+                                                  resource_});
         }
         auto& table = const_cast<collection_storage_entry_t*>(entry)->table_storage.table();
         if (table.column_count() < 2) {
-            throw std::runtime_error("read_setting_sync: pg_settings has " + std::to_string(table.column_count()) +
-                                     " columns, expected at least 2 — catalog is corrupt, refusing to answer "
-                                     "'setting absent'");
+            return core::error_t(core::error_code_t::data_corruption,
+                                 std::pmr::string{"read_setting_sync: pg_settings has " +
+                                                      std::to_string(table.column_count()) +
+                                                      " columns, expected at least 2 — catalog is corrupt, refusing "
+                                                      "to answer 'setting absent'",
+                                                  resource_});
         }
         if (table.calculate_size() == 0) {
-            return {};
+            return std::string{};
         }
         core::pmr::otterbrix_resource scan_resource;
         std::vector<components::table::storage_index_t> col_indices;

@@ -36,6 +36,7 @@
 #include <services/disk/manager_disk.hpp>
 #include <services/index/manager_index.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
+#include <components/log/test_log.hpp>
 
 // dispatcher_dir() carries ::getpid() so parallel ctest shards never share a disk directory.
 
@@ -107,7 +108,7 @@ struct dispatcher_fixture : actor_zeta::actor::actor_mixin<dispatcher_fixture> {
         : actor_zeta::actor::actor_mixin<dispatcher_fixture>()
         , resource_(resource)
         , disk_path_(scrubbed(disk_path))
-        , log_(initialization_logger("python", "/tmp/docker_logs/"))
+        , log_(make_test_log("python", "/tmp/docker_logs/"))
         , scheduler_(new core::non_thread_scheduler::scheduler_test_t(1, 1))
         , disk_config_(disk_path)
         , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource, scheduler_, scheduler_, disk_config_, log_))
@@ -139,7 +140,7 @@ struct dispatcher_fixture : actor_zeta::actor::actor_mixin<dispatcher_fixture> {
         manager_wal_->set_manager_dispatcher_sync(manager_dispatcher_->address());
         manager_disk_->set_manager_wal_sync(manager_wal_->address());
         manager_index_->set_manager_dispatcher_sync(manager_dispatcher_->address());
-        manager_disk_->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(manager_disk_->bootstrap_system_tables_sync().contains_error());
     }
 
     ~dispatcher_fixture() {
@@ -354,7 +355,6 @@ TEST_CASE("services::dispatcher::cross_db_foreign_key_binds") {
 
 // register_udf fans out to every per-executor registry BEFORE the operator's catalog work.
 TEST_CASE("services::dispatcher::register_udf_operator_refusal_unwinds_executors") {
-    components::compute::function_registry_t::reset_default();
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     dispatcher_fixture test(mr.get(), dispatcher_dir("udf_unwind"));
 
@@ -376,7 +376,6 @@ TEST_CASE("services::dispatcher::register_udf_operator_refusal_unwinds_executors
         REQUIRE(mentions(err, "already exists in the catalog"));
         REQUIRE(err.type == core::error_code_t::already_exists);
     }
-    components::compute::function_registry_t::reset_default();
 }
 
 // SQL can't spell a too-deep type (CREATE TYPE gates its own depth), so this hands a hand-built plan.

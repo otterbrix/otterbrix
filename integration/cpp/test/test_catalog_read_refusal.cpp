@@ -127,11 +127,9 @@ namespace {
     class read_refusal_spaces_t final : public otterbrix::base_otterbrix_t {
     public:
         explicit read_refusal_spaces_t(const configuration::config& config)
-            : otterbrix::base_otterbrix_t(config) {
-            components::compute::function_registry_t::reset_default();
-        }
+            : otterbrix::base_otterbrix_t(test_open_engine(config)) {}
 
-        services::disk::manager_disk_t* disk() noexcept { return manager_disk_.get(); }
+        actor_zeta::address_t disk_address() const noexcept { return engine().disk_address(); }
     };
 
     core::error_t probe_exec_unary(compute::kernel_context&, const vector::data_chunk_t& in, vector::vector_t& out) {
@@ -185,7 +183,7 @@ namespace {
     std::size_t pg_proc_rows_named(read_refusal_spaces_t& space, const std::string& name) {
         auto td = table::transaction_data::committed();
         execution_context_t exec_ctx{otterbrix::session_id_t{}, td, {}};
-        auto [_, fut] = actor_zeta::otterbrix::send(space.disk()->address(),
+        auto [_, fut] = actor_zeta::otterbrix::send(space.disk_address(),
                                                     &services::disk::manager_disk_t::resolve_function_by_name,
                                                     exec_ctx,
                                                     name);

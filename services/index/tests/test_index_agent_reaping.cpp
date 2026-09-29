@@ -25,6 +25,7 @@
 #include <set>
 
 #include "index_fixture_path.hpp"
+#include <components/log/test_log.hpp>
 
 using components::session::session_id_t;
 using services::index::live_index_agents;
@@ -77,7 +78,7 @@ namespace {
 
 TEST_CASE("services::index::on_horizon_advanced frees the agents of a reclaimed table") {
     auto resource = core::pmr::otterbrix_resource();
-    auto log = initialization_logger("python", "/tmp/docker_logs/");
+    auto log = make_test_log("python", "/tmp/docker_logs/");
     const auto path = fresh_index_root("otterbrix_test_index_agent_reaping_horizon");
 
     auto scheduler = std::make_unique<actor_zeta::shared_work>(1, 100);
@@ -128,7 +129,7 @@ TEST_CASE("services::index::on_horizon_advanced frees the agents of a reclaimed 
 
 TEST_CASE("services::index::unregister_collection frees the agents of the table it tears down") {
     auto resource = core::pmr::otterbrix_resource();
-    auto log = initialization_logger("python", "/tmp/docker_logs/");
+    auto log = make_test_log("python", "/tmp/docker_logs/");
     const auto path = fresh_index_root("otterbrix_test_index_agent_reaping_unregister");
 
     auto scheduler = std::make_unique<actor_zeta::shared_work>(1, 100);

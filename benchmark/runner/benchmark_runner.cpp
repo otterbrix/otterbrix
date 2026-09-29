@@ -1,6 +1,7 @@
 #include "benchmark_runner.hpp"
 
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -24,9 +25,17 @@ namespace {
 class benchmark_instance_t final : public base_otterbrix_t {
 public:
     benchmark_instance_t()
-        : base_otterbrix_t(make_config()) {}
+        : base_otterbrix_t(open_or_exit(make_config())) {}
 
 private:
+    static host_ptr open_or_exit(const configuration::config& config) {
+        auto host = open(config);
+        if (host.has_error()) {
+            std::cerr << "otterbrix refused to start: " << host.error().what << '\n';
+            std::exit(EXIT_FAILURE);
+        }
+        return std::move(host.value());
+    }
     static configuration::config make_config() {
         // One named base dir via create_config -- not bare `current_path()/"disk"` and
         // `.../"wal"`, which scatter both into whatever directory the runner was launched from.

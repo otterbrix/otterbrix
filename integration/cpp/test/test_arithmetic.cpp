@@ -8,6 +8,8 @@
 #include <core/date/date_parse.hpp>
 #include <core/operations_helper.hpp>
 
+#include <map>
+
 static const database_name_t database_name = "testdatabase";
 static const collection_name_t collection_name = "testcollection";
 

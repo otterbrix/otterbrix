@@ -21,6 +21,7 @@
 #include <limits>
 #include <thread>
 #include <unistd.h>
+#include <components/log/test_log.hpp>
 
 using namespace services::disk;
 namespace catalog = components::catalog;
@@ -44,7 +45,7 @@ namespace {
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
 
         fixture()
-            : log(initialization_logger("python", "/tmp/docker_logs/"))
+            : log(make_test_log("python", "/tmp/docker_logs/"))
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
                 configuration::config_disk c;
@@ -54,7 +55,7 @@ namespace {
             , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {
             cleanup();
             std::filesystem::create_directories(err_dir());
-            manager->bootstrap_system_tables_sync();
+            REQUIRE_FALSE(manager->bootstrap_system_tables_sync().contains_error());
         }
         ~fixture() {
             // The manager's dtor joins its loop thread, which may still enqueue onto the scheduler; destroy it first.
@@ -474,7 +475,7 @@ TEST_CASE("services::disk::error::scan_open_refusal_is_not_a_drained_cursor") {
                            session_id_t{},
                            table_oid,
                            std::uint64_t{0},
-                           std::unique_ptr<components::table::table_filter_t>(nullptr),
+                           std::unique_ptr<components::table::pushed_filter_t>(nullptr),
                            std::int64_t{-1},
                            std::vector<size_t>{},
                            with_open_snapshot(0, 0));
@@ -489,7 +490,7 @@ TEST_CASE("services::disk::error::scan_open_refusal_is_not_a_drained_cursor") {
                            session_id_t{},
                            nowhere,
                            std::uint64_t{0},
-                           std::unique_ptr<components::table::table_filter_t>(nullptr),
+                           std::unique_ptr<components::table::pushed_filter_t>(nullptr),
                            std::int64_t{-1},
                            std::vector<size_t>{},
                            with_open_snapshot(0, 0));
@@ -604,7 +605,7 @@ TEST_CASE("services::disk::error::fetch_limit_counts_visible_rows_not_requested_
 TEST_CASE("services::disk::error::a_manager_with_no_agents_refuses_instead_of_answering_empty") {
     // No bootstrap: zero agents means no system tables to seed, and seeding isn't under test.
     core::pmr::otterbrix_resource resource;
-    auto log = initialization_logger("python", "/tmp/docker_logs/");
+    auto log = make_test_log("python", "/tmp/docker_logs/");
     auto* scheduler = new core::non_thread_scheduler::scheduler_test_t(1, 1);
     configuration::config_disk cfg;
     cfg.path = err_dir() + "/no_agents";
@@ -643,7 +644,7 @@ TEST_CASE("services::disk::error::a_manager_with_no_agents_refuses_instead_of_an
                      session_id_t{},
                      oid,
                      std::uint64_t{0},
-                     std::unique_ptr<components::table::table_filter_t>(nullptr),
+                     std::unique_ptr<components::table::pushed_filter_t>(nullptr),
                      std::int64_t{-1},
                      std::vector<size_t>{},
                      with_open_snapshot(0, 0))

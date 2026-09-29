@@ -223,6 +223,7 @@ namespace components::operators {
                 values.push_back(update.get());
             }
             auto built = expressions::build_update_graph(resource_,
+                                                         *pipeline_context->function_registry,
                                                          pipeline_context->parameters.parameters,
                                                          values,
                                                          input.types(),
@@ -277,6 +278,7 @@ namespace components::operators {
         if (condition_ == expressions::condition_kind::computed) {
             if (!graph_) {
                 auto built = expressions::build_condition_graph(resource,
+                                                                *pipeline_context->function_registry,
                                                                 pipeline_context->parameters.parameters,
                                                                 expr_.get(),
                                                                 types);
@@ -368,6 +370,7 @@ namespace components::operators {
                 merged_types.insert(merged_types.end(), types_left.begin(), types_left.end());
                 merged_types.insert(merged_types.end(), types_right.begin(), types_right.end());
                 auto built = expressions::build_condition_graph(resource,
+                                                                *pipeline_context->function_registry,
                                                                 pipeline_context->parameters.parameters,
                                                                 expr_.get(),
                                                                 merged_types,
@@ -585,6 +588,7 @@ namespace components::operators {
                         data_chunk_t* right_batch =
                             i < returning_from_chunks_.size() ? &returning_from_chunks_[i] : nullptr;
                         auto proj = evaluate_projection(resource_,
+                                                        *ctx->function_registry,
                                                         returning_,
                                                         &out_chunk,
                                                         ctx->parameters,
@@ -714,6 +718,7 @@ namespace components::operators {
                 vector::data_chunk_t empty(resource_, returning_types.value(), 0);
                 empty.set_cardinality(0);
                 auto proj = evaluate_projection(resource_,
+                                                *ctx->function_registry,
                                                 returning_,
                                                 &empty,
                                                 ctx->parameters,

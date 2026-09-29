@@ -28,6 +28,7 @@
 #include <thread>
 #include <unistd.h>
 #include <vector>
+#include <components/log/test_log.hpp>
 
 namespace pushdown_reduce_test {
 
@@ -49,7 +50,7 @@ namespace pushdown_reduce_test {
         std::unique_ptr<services::disk::manager_disk_t, actor_zeta::pmr::deleter_t> manager;
 
         fixture()
-            : log(initialization_logger("python", "/tmp/docker_logs/"))
+            : log(make_test_log("python", "/tmp/docker_logs/"))
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
                 configuration::config_disk c;
@@ -63,7 +64,7 @@ namespace pushdown_reduce_test {
                                                                         log)) {
             cleanup();
             std::filesystem::create_directories(reduce_dir());
-            manager->bootstrap_system_tables_sync();
+            REQUIRE_FALSE(manager->bootstrap_system_tables_sync().contains_error());
         }
         ~fixture() {
             manager.reset();
@@ -91,7 +92,7 @@ namespace pushdown_reduce_test {
             auto r = invoke(&services::disk::manager_disk_t::storage_reduce,
                             session_id_t{},
                             oid,
-                            std::unique_ptr<components::table::table_filter_t>(nullptr),
+                            std::unique_ptr<components::table::pushed_filter_t>(nullptr),
                             std::vector<size_t>{},
                             txn,
                             std::move(spec));

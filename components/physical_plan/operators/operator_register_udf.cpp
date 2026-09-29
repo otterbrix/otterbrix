@@ -19,12 +19,8 @@
 namespace components::operators {
     namespace catalog = components::catalog;
     namespace {
-        bool function_exists(const std::string& name) {
-            const auto* registry = components::compute::function_registry_t::get_default();
-            if (registry == nullptr) {
-                return true;
-            }
-            const auto functions = registry->get_functions();
+        bool function_exists(const components::compute::function_registry_t& registry, const std::string& name) {
+            const auto functions = registry.get_functions();
             return std::any_of(functions.begin(), functions.end(), [&name](const auto& function) {
                 return function.first == name;
             });
@@ -52,19 +48,6 @@ namespace components::operators {
         const std::string func_name = function_->name();
         const auto func_signatures = function_->get_signatures();
 
-        // Copied here, ahead of every disk step: copying is the only part of the registry mirror (at the end
-        // of this coroutine) that can fail, so once it succeeds the mirror cannot, and there's no window where
-        // the pg_proc row is durable but the registry refuses to hold it.
-        components::compute::function_ptr registry_copy = function_->get_copy(resource_);
-        if (!registry_copy) {
-            set_error(core::error_t{
-                core::error_code_t::function_registry_error,
-                std::pmr::string{"register_udf: the function payload could not be copied for the default registry",
-                                 resource_}});
-            mark_failed();
-            co_return;
-        }
-
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
         // 1. Cross-namespace conflict detection: a pg_proc row with this function name, in any namespace, is
@@ -89,7 +72,7 @@ namespace components::operators {
             const bool engine_row = std::any_of(matches.begin(), matches.end(), [](const auto& m) {
                 return m.namespace_oid == catalog::well_known_oid::pg_catalog_namespace;
             });
-            if (!matches.empty() && (engine_row || function_exists(func_name))) {
+            if (!matches.empty() && (engine_row || function_exists(*ctx->function_registry, func_name))) {
                 // A pg_proc row with this name already exists in SOME namespace. Name it:
                 // "collision" and "the catalog write failed" are different accidents and the
                 // caller has to be able to tell them apart.
@@ -126,9 +109,8 @@ namespace components::operators {
         }
 
         // 3. Everything that can refuse (oid round, namespace lookup/resolve, pg_proc/pg_depend appends) runs
-        //    BEFORE the registry mirror below (the operator's only mutation), so a refusal leaves nothing
-        //    changed. Hoisting only the oid round would not be enough: an unreadable pg_namespace left behind
-        //    it would let the mirror answer for a function the catalog has no row for.
+        //    here, before the dispatcher adds the function to its master registry, so a refusal leaves the
+        //    master without a function the catalog has no row for.
         if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
             catalog::oid_t fn_oid = catalog::INVALID_OID;
             {
@@ -267,22 +249,6 @@ namespace components::operators {
             }
             if (append_error.contains_error()) {
                 set_error(std::move(append_error));
-                mark_failed();
-                co_return;
-            }
-        }
-
-        // 5. Mirror into the global default registry (for validate_logical_plan's get_default() lookups),
-        //    reusing the LOCAL uid — otherwise the global counter and the per-executor counters diverge, and
-        //    a plan's function_uid() matches no local entry at runtime. Runs LAST on purpose: the operator's
-        //    only mutation, so it happens only once every refusal above is already known.
-        if (auto* def_reg = components::compute::function_registry_t::get_default()) {
-            auto res = uids.empty() ? def_reg->add_function(std::move(registry_copy))
-                                    : def_reg->add_function_with_uid(uids.front(), std::move(registry_copy));
-            if (res.has_error()) {
-                // The default registry already carries its own typed reason — pass it through
-                // rather than minting a second, vaguer one.
-                set_error(res.error());
                 mark_failed();
                 co_return;
             }

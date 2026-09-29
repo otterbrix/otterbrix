@@ -27,6 +27,7 @@
 #include <limits>
 #include <thread>
 #include <unistd.h>
+#include <components/log/test_log.hpp>
 
 using namespace services::disk;
 using namespace components::catalog;
@@ -55,7 +56,7 @@ namespace {
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
 
         explicit fresh_disk(const std::filesystem::path& path)
-            : log(initialization_logger("python", integration_fixture_path("test_clean_break_startup/logs").string()))
+            : log(make_test_log("python", integration_fixture_path("test_clean_break_startup/logs").string()))
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
                 configuration::config_disk c;
@@ -87,7 +88,7 @@ TEST_CASE("integration::clean_break_startup::fresh_install_creates_pg_catalog") 
     std::filesystem::create_directories(dir);
     {
         fresh_disk fd(dir);
-        fd.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
     }
     // On-disk layout is oid-keyed (<db_oid>/<tbl_oid>/table.otbx); system tables live under
     // well_known_oid::main_database.
@@ -110,11 +111,11 @@ TEST_CASE("integration::clean_break_startup::existing_pg_catalog_loads") {
     std::filesystem::create_directories(dir);
     {
         fresh_disk fd(dir);
-        fd.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
     }
     {
         fresh_disk fd2(dir);
-        REQUIRE_NOTHROW(fd2.manager->bootstrap_system_tables_sync());
+        REQUIRE_FALSE(fd2.manager->bootstrap_system_tables_sync().contains_error());
         REQUIRE_NOTHROW(fd2.manager->restore_oid_generator_sync());
     }
     std::filesystem::remove_all(dir);
@@ -127,7 +128,7 @@ TEST_CASE("integration::clean_break_startup::oid_generator_seeded_max_plus_1") {
     components::catalog::oid_t high_oid = 0;
     {
         fresh_disk fd(dir);
-        fd.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
         for (int i = 0; i < 5; ++i) {
             auto ns_oid = test_create_namespace(fd, std::string("ns_") + std::to_string(i));
             high_oid = std::max(high_oid, ns_oid);
@@ -142,7 +143,7 @@ TEST_CASE("integration::clean_break_startup::oid_generator_seeded_max_plus_1") {
     }
     {
         fresh_disk fd2(dir);
-        fd2.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fd2.manager->bootstrap_system_tables_sync().contains_error());
         fd2.manager->restore_oid_generator_sync();
         auto new_ns_oid = test_create_namespace(fd2, "after_restart");
         REQUIRE(new_ns_oid > high_oid);
@@ -157,7 +158,7 @@ TEST_CASE("integration::clean_break_startup::namespace_round_trip") {
     components::catalog::oid_t ns_oid = 0;
     {
         fresh_disk fd(dir);
-        fd.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
         ns_oid = test_create_namespace(fd, "durable_ns");
         auto [_, cf] = actor_zeta::otterbrix::send(fd.manager->address(),
                                                    &manager_disk_t::checkpoint_all,
@@ -169,7 +170,7 @@ TEST_CASE("integration::clean_break_startup::namespace_round_trip") {
     }
     {
         fresh_disk fd2(dir);
-        fd2.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fd2.manager->bootstrap_system_tables_sync().contains_error());
         fd2.manager->restore_oid_generator_sync();
         components::table::transaction_data _td_open(0, 0);
         _td_open.snapshot_horizon = std::numeric_limits<uint64_t>::max();
@@ -194,7 +195,7 @@ TEST_CASE("integration::clean_break_startup::table_round_trip_with_columns") {
     components::catalog::oid_t tbl_oid = 0;
     {
         fresh_disk fd(dir);
-        fd.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
         auto ns_oid = test_create_namespace(fd, "ns");
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
@@ -209,7 +210,7 @@ TEST_CASE("integration::clean_break_startup::table_round_trip_with_columns") {
     }
     {
         fresh_disk fd2(dir);
-        fd2.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fd2.manager->bootstrap_system_tables_sync().contains_error());
         fd2.manager->restore_oid_generator_sync();
         components::table::transaction_data _td_open(0, 0);
         _td_open.snapshot_horizon = std::numeric_limits<uint64_t>::max();
@@ -242,7 +243,7 @@ TEST_CASE("integration::clean_break_startup::index_round_trip") {
     components::catalog::oid_t ns_oid = 0;
     {
         fresh_disk fd(dir);
-        fd.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
         ns_oid = test_create_namespace(fd, "idx_ns");
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
@@ -259,7 +260,7 @@ TEST_CASE("integration::clean_break_startup::index_round_trip") {
     }
     {
         fresh_disk fd2(dir);
-        fd2.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fd2.manager->bootstrap_system_tables_sync().contains_error());
         fd2.manager->restore_oid_generator_sync();
         components::table::transaction_data _td_open(0, 0);
         _td_open.snapshot_horizon = std::numeric_limits<uint64_t>::max();
@@ -278,7 +279,7 @@ TEST_CASE("integration::clean_break_startup::resolve_after_restart") {
     std::filesystem::create_directories(dir);
     {
         fresh_disk fd(dir);
-        fd.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
         test_create_namespace(fd, "post_restart");
         auto [_, cf] = actor_zeta::otterbrix::send(fd.manager->address(),
                                                    &manager_disk_t::checkpoint_all,
@@ -290,7 +291,7 @@ TEST_CASE("integration::clean_break_startup::resolve_after_restart") {
     }
     {
         fresh_disk fd2(dir);
-        fd2.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fd2.manager->bootstrap_system_tables_sync().contains_error());
         fd2.manager->restore_oid_generator_sync();
         components::table::transaction_data _td_open(0, 0);
         _td_open.snapshot_horizon = std::numeric_limits<uint64_t>::max();
@@ -317,7 +318,7 @@ TEST_CASE("integration::clean_break_startup::sequence_view_macro_via_pg_class") 
     components::catalog::oid_t macro_oid = 0;
     {
         fresh_disk fd(dir);
-        fd.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
         auto ns_oid = test_create_namespace(fd, "ns");
         seq_oid = test_create_sequence(fd, ns_oid, "seq1", 1, 1, 1, std::numeric_limits<std::int64_t>::max(), false);
         view_oid = test_create_view(fd, ns_oid, "v1");
@@ -333,7 +334,7 @@ TEST_CASE("integration::clean_break_startup::sequence_view_macro_via_pg_class") 
     }
     {
         fresh_disk fd2(dir);
-        fd2.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fd2.manager->bootstrap_system_tables_sync().contains_error());
         fd2.manager->restore_oid_generator_sync();
         auto after_oid = test_create_namespace(fd2, "after");
         REQUIRE(after_oid > seq_oid);
@@ -344,40 +345,32 @@ TEST_CASE("integration::clean_break_startup::sequence_view_macro_via_pg_class") 
 }
 
 // Clean-break: the operator must migrate or remove the legacy catalog.otbx before booting on the new
-// code, so base_otterbrix_t throws on construction rather than working around it.
+// code, so base_otterbrix_t::open refuses the start rather than working around it.
 TEST_CASE("integration::clean_break_startup::hard_fail_on_legacy_catalog_otbx") {
     auto dir = std::filesystem::path(clean_break_dir() + "/hard_fail");
     std::filesystem::remove_all(dir);
     std::filesystem::create_directories(dir);
     auto disk_subdir = dir / "wal";
     std::filesystem::create_directories(disk_subdir);
-    // The stub content doesn't matter: base_otterbrix_t checks existence first and throws before opening it.
+    // The stub content doesn't matter: the engine checks existence first and refuses before opening it.
     std::ofstream out((disk_subdir / "catalog.otbx").string(), std::ios::binary);
     out << "legacy_marker";
     out.close();
     REQUIRE(std::filesystem::exists(disk_subdir / "catalog.otbx"));
 
     auto config = test_create_config(dir);
-    bool threw_with_expected_message = false;
-    try {
-        test_spaces space(config);
-    } catch (const std::runtime_error& e) {
-        std::string msg = e.what();
-        if (msg.find("Legacy catalog format detected") != std::string::npos &&
-            msg.find("catalog.otbx") != std::string::npos) {
-            threw_with_expected_message = true;
-        }
-    } catch (...) {
-        // Other exception types are not what we want here.
-    }
-    REQUIRE(threw_with_expected_message);
+    auto opened = otterbrix::base_otterbrix_t::open(config);
+    REQUIRE(opened.has_error());
+    const std::string msg{opened.error().what.c_str()};
+    INFO("refusal: " << msg);
+    REQUIRE(msg.find("Legacy catalog format detected") != std::string::npos);
+    REQUIRE(msg.find("catalog.otbx") != std::string::npos);
     std::filesystem::remove_all(dir);
 }
 
-// base_otterbrix_t registers main_path_ in a process-wide set before anything that can throw, and only
-// the destructor erases it -- a constructor that throws never gets one. Without a scope guard releasing
-// the registration on the way out, retrying in the same process after fixing the real fault would wrongly
-// answer "otterbrix instance has to have unique directory" for a directory that is actually free.
+// The directory lock is taken before anything that can refuse the start; a refused start must release
+// it, or retrying in the same process after fixing the real fault would wrongly answer "otterbrix
+// instance has to have unique directory" for a directory that is actually free.
 TEST_CASE("integration::clean_break_startup::a_refused_startup_releases_the_directory") {
     auto dir = std::filesystem::path(clean_break_dir() + "/refused_release");
     std::filesystem::remove_all(dir);
@@ -392,29 +385,23 @@ TEST_CASE("integration::clean_break_startup::a_refused_startup_releases_the_dire
     REQUIRE(std::filesystem::exists(legacy));
 
     auto config = test_create_config(dir);
-    bool first_refused = false;
-    try {
-        test_spaces space(config);
-    } catch (const std::runtime_error& e) {
-        first_refused = std::string(e.what()).find("Legacy catalog format detected") != std::string::npos;
+    {
+        auto first = otterbrix::base_otterbrix_t::open(config);
+        REQUIRE(first.has_error());
+        REQUIRE(std::string(first.error().what.c_str()).find("Legacy catalog format detected") != std::string::npos);
     }
-    REQUIRE(first_refused);
 
     std::filesystem::remove(legacy);
     REQUIRE_FALSE(std::filesystem::exists(legacy));
 
     // The retry must now start, not report the directory as taken.
-    std::string retry_error;
-    bool retry_started = false;
-    try {
-        test_spaces space(config);
-        retry_started = true;
-    } catch (const std::runtime_error& e) {
-        retry_error = e.what();
+    {
+        auto retry = otterbrix::base_otterbrix_t::open(config);
+        const std::string retry_error = retry.has_error() ? std::string(retry.error().what.c_str()) : std::string{};
+        INFO("retry refused with: " << retry_error);
+        CHECK(retry_error.find("unique directory") == std::string::npos);
+        REQUIRE_FALSE(retry.has_error());
     }
-    INFO("retry refused with: " << retry_error);
-    CHECK(retry_error.find("unique directory") == std::string::npos);
-    REQUIRE(retry_started);
 
     std::filesystem::remove_all(dir);
 }

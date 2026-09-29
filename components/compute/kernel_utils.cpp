@@ -17,7 +17,7 @@ namespace components::compute {
 
     exec_context_t::exec_context_t(std::pmr::memory_resource* resource, function_registry_t* registry)
         : resource_(resource)
-        , func_registry_(registry ? registry : function_registry_t::get_default()) {
+        , func_registry_(registry) {
         assert(resource);
     }
 

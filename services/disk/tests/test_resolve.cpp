@@ -26,6 +26,7 @@
 #include <unistd.h>
 #include <utility>
 #include <vector>
+#include <components/log/test_log.hpp>
 
 using namespace services::disk;
 namespace catalog = components::catalog;
@@ -56,7 +57,7 @@ namespace {
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
 
         fixture()
-            : log(initialization_logger("python", "/tmp/docker_logs/"))
+            : log(make_test_log("python", "/tmp/docker_logs/"))
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
                 configuration::config_disk c;
@@ -66,7 +67,7 @@ namespace {
             , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {
             cleanup();
             std::filesystem::create_directories(resolve_dir());
-            manager->bootstrap_system_tables_sync();
+            REQUIRE_FALSE(manager->bootstrap_system_tables_sync().contains_error());
         }
         ~fixture() {
             // Destroy the manager first: its dtor joins the loop thread, which may still enqueue onto the scheduler.
@@ -462,7 +463,7 @@ namespace {
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
 
         explicit reopenable_disk(const std::filesystem::path& path)
-            : log(initialization_logger("python", "/tmp/docker_logs/"))
+            : log(make_test_log("python", "/tmp/docker_logs/"))
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
                 configuration::config_disk c;
@@ -522,7 +523,7 @@ TEST_CASE("services::disk::resolve::a_failed_catalog_scan_is_not_no_rows") {
 
     {
         reopenable_disk fd(dir);
-        fd.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
         fd.checkpoint(services::wal::id_t{100});
     }
 
@@ -530,7 +531,7 @@ TEST_CASE("services::disk::resolve::a_failed_catalog_scan_is_not_no_rows") {
     one_table_fault_scope_t scope(plan, marker);
 
     reopenable_disk fd2(dir);
-    fd2.manager->bootstrap_system_tables_sync();
+    REQUIRE_FALSE(fd2.manager->bootstrap_system_tables_sync().contains_error());
 
     plan.crashed = true;
     auto poisoned = fd2.invoke(&manager_disk_t::resolve_function_by_name, fd2.ctx(), std::string("count"));

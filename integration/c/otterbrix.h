@@ -45,7 +45,10 @@ typedef struct error_message {
     char* message;
 } error_message;
 
-otterbrix_ptr otterbrix_create(config_t cfg);
+// A refused start answers nullptr and fills *out_error; the caller frees out_error->message with
+// otterbrix_free_string. On success out_error->code is 0 and out_error->message is nullptr.
+// out_error must not be null.
+otterbrix_ptr otterbrix_create(config_t cfg, error_message* out_error);
 void otterbrix_destroy(otterbrix_ptr);
 
 cursor_ptr execute_sql(otterbrix_ptr ptr, string_view_t query);

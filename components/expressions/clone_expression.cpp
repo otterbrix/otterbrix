@@ -111,4 +111,19 @@ namespace components::expressions {
         copy->set_result_type(expr->result_type());
         return copy;
     }
+
+    detached_expression_t::detached_expression_t(expression_ptr tree) noexcept
+        : tree_(std::move(tree)) {}
+
+    detached_expression_t detached_expression_t::detach(std::pmr::memory_resource* target, const expression_ptr& expr) {
+        return detached_expression_t{clone_expression(target, expr)};
+    }
+
+    expression_ptr detached_expression_t::attach(std::pmr::memory_resource* resource) const {
+        return clone_expression(resource, tree_);
+    }
+
+    detached_expression_t detached_expression_t::copy(std::pmr::memory_resource* target) const {
+        return detach(target, tree_);
+    }
 } // namespace components::expressions

@@ -32,9 +32,11 @@ namespace components::logical_plan {
     };
     using extension_payload_ptr = boost::intrusive_ptr<extension_payload_t>;
 
-    using extension_operator_fn = boost::intrusive_ptr<operators::operator_t> (*)(const services::context_storage_t&,
-                                                                                  const compute::function_registry_t&,
-                                                                                  const node_extension_t&);
+    // The host's error reaches the statement's cursor as it is.
+    using extension_operator_fn =
+        core::result_wrapper_t<boost::intrusive_ptr<operators::operator_t>> (*)(const services::context_storage_t&,
+                                                                                const compute::function_registry_t&,
+                                                                                const node_extension_t&);
 
     // A host node: no catalog entry. Validation types it by its declared columns; the physical plan generator
     // builds its operator by calling the host's function. A leaf is a source; a node with a child is a sink.

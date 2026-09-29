@@ -23,7 +23,7 @@
 #include <string>
 
 // A named table that never resolved carries INVALID_OID, same as a no-FROM SELECT; create_plan_match
-// refuses the named case with a null root, which these tests' CALLERS must propagate, not swallow.
+// refuses the named case with an error, which these tests' CALLERS must propagate, not swallow.
 
 namespace {
 
@@ -53,6 +53,10 @@ namespace {
         return result.value().size();
     }
 
+    std::string refusal(const services::planner::plan_result_t& plan) {
+        return plan.has_error() ? std::string{plan.error().what} : std::string{};
+    }
+
     struct harness_t {
         std::pmr::monotonic_buffer_resource arena;
         services::context_storage_t context;
@@ -79,8 +83,8 @@ TEST_CASE("physical_plan_generator::unresolved_source::no_from_select_keeps_the_
     auto agg = lp::make_node_aggregate(&h.arena, core::dbname_t{std::string{}}, core::relname_t{std::string{}});
     auto plan = services::planner::create_plan(h.context, h.registry, agg, lp::limit_t::unlimit(), nullptr);
 
-    REQUIRE(plan);
-    CHECK(fabricated_rows(plan, &h.pipeline_ctx) == 1);
+    REQUIRE_FALSE(plan.has_error());
+    CHECK(fabricated_rows(plan.value(), &h.pipeline_ctx) == 1);
 }
 
 TEST_CASE("physical_plan_generator::unresolved_source::aggregate_over_a_resolved_table_still_lowers") {
@@ -92,8 +96,8 @@ TEST_CASE("physical_plan_generator::unresolved_source::aggregate_over_a_resolved
     auto plan = services::planner::create_plan(h.context, h.registry, agg, lp::limit_t::unlimit(), nullptr);
 
     INFO("a resolved, known table keeps its scan; the refusal below is only for the unresolved case");
-    REQUIRE(plan);
-    CHECK(plan->type() == ops::operator_type::transfer_scan);
+    REQUIRE_FALSE(plan.has_error());
+    CHECK(plan.value()->type() == ops::operator_type::transfer_scan);
 }
 
 TEST_CASE("physical_plan_generator::unresolved_source::aggregate_over_an_unresolved_table_refuses") {
@@ -102,11 +106,10 @@ TEST_CASE("physical_plan_generator::unresolved_source::aggregate_over_an_unresol
     auto agg = make_named_aggregate(&h.arena);
     auto plan = services::planner::create_plan(h.context, h.registry, agg, lp::limit_t::unlimit(), nullptr);
 
-    if (plan) {
-        CHECK(fabricated_rows(plan, &h.pipeline_ctx) == 0);
-    }
-    INFO("a table that never resolved must refuse with a null root, not scan a synthetic row");
-    REQUIRE(plan == nullptr);
+    INFO("a table that never resolved must refuse, not scan a synthetic row");
+    REQUIRE(plan.has_error());
+    CHECK(plan.error().type == core::error_code_t::create_physical_plan_error);
+    CHECK(refusal(plan) == "relation \"edb.ghost\" has no resolved table in this plan");
 }
 
 TEST_CASE("physical_plan_generator::unresolved_source::aggregate_with_an_unlowerable_match_child_refuses") {
@@ -120,11 +123,9 @@ TEST_CASE("physical_plan_generator::unresolved_source::aggregate_with_an_unlower
                                           nullptr));
     auto plan = services::planner::create_plan(h.context, h.registry, agg, lp::limit_t::unlimit(), nullptr);
 
-    if (plan) {
-        CHECK(fabricated_rows(plan, &h.pipeline_ctx) == 0);
-    }
     INFO("a refused scan child must refuse the aggregate, not degrade into an unfiltered scan");
-    REQUIRE(plan == nullptr);
+    REQUIRE(plan.has_error());
+    CHECK(refusal(plan) == "relation \"edb.ghost\" has no resolved table in this plan");
 }
 
 TEST_CASE("physical_plan_generator::unresolved_source::union_arm_refusal_reaches_the_root") {
@@ -138,9 +139,9 @@ TEST_CASE("physical_plan_generator::unresolved_source::union_arm_refusal_reaches
 
     auto plan = services::planner::create_plan(h.context, h.registry, union_node, lp::limit_t::unlimit(), nullptr);
 
-    INFO("one refused arm must refuse the whole union: a null arm swallowed by set_children "
-         "would execute as a half-union answering partial data");
-    REQUIRE(plan == nullptr);
+    INFO("one refused arm must refuse the whole union, not execute as a half-union answering partial data");
+    REQUIRE(plan.has_error());
+    CHECK(refusal(plan) == "relation \"edb.ghost\" has no resolved table in this plan");
 }
 
 TEST_CASE("physical_plan_generator::unresolved_source::delete_over_an_unresolved_table_refuses") {
@@ -160,9 +161,10 @@ TEST_CASE("physical_plan_generator::unresolved_source::delete_over_an_unresolved
 
     auto plan = services::planner::create_plan(h.context, h.registry, del, lp::limit_t::unlimit(), nullptr);
 
-    INFO("a DELETE whose target never resolved must refuse with a null root; lowering it "
-         "produces a sink with no table behind it, which executes as a no-op reporting success");
-    REQUIRE(plan == nullptr);
+    INFO("a DELETE whose target never resolved must refuse; lowering it produces a sink with no table behind "
+         "it, which executes as a no-op reporting success");
+    REQUIRE(plan.has_error());
+    CHECK(refusal(plan) == "relation \"edb.ghost\" has no resolved table in this plan");
 }
 
 TEST_CASE("physical_plan_generator::unresolved_source::delete_with_an_unlowerable_match_child_refuses") {
@@ -183,10 +185,8 @@ TEST_CASE("physical_plan_generator::unresolved_source::delete_with_an_unlowerabl
 
     auto plan = services::planner::create_plan(h.context, h.registry, del, lp::limit_t::unlimit(), nullptr);
 
-    if (plan) {
-        CHECK(plan->left() != nullptr);
-    }
-    REQUIRE(plan == nullptr);
+    REQUIRE(plan.has_error());
+    CHECK(refusal(plan) == "relation \"edb.ghost\" has no resolved table in this plan");
 }
 
 TEST_CASE("physical_plan_generator::unresolved_source::delete_with_an_unlowerable_using_source_refuses") {
@@ -209,7 +209,8 @@ TEST_CASE("physical_plan_generator::unresolved_source::delete_with_an_unlowerabl
     auto plan = services::planner::create_plan(h.context, h.registry, del, lp::limit_t::unlimit(), nullptr);
 
     INFO("a USING source that failed to lower must refuse the DELETE, not join against a missing side");
-    REQUIRE(plan == nullptr);
+    REQUIRE(plan.has_error());
+    CHECK(refusal(plan).starts_with("no physical plan for a logical node of this kind: "));
 }
 
 TEST_CASE("physical_plan_generator::unresolved_source::update_over_an_unresolved_table_refuses") {
@@ -228,6 +229,7 @@ TEST_CASE("physical_plan_generator::unresolved_source::update_over_an_unresolved
 
     auto plan = services::planner::create_plan(h.context, h.registry, upd, lp::limit_t::unlimit(), nullptr);
 
-    INFO("an UPDATE whose target never resolved must refuse with a null root, same as DELETE");
-    REQUIRE(plan == nullptr);
+    INFO("an UPDATE whose target never resolved must refuse, same as DELETE");
+    REQUIRE(plan.has_error());
+    CHECK(plan.error().type == core::error_code_t::create_physical_plan_error);
 }

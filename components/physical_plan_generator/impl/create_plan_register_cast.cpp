@@ -6,8 +6,8 @@
 
 namespace services::planner::impl {
 
-    components::operators::operator_ptr create_plan_register_cast(const context_storage_t& context,
-                                                                  const components::logical_plan::node_ptr& node) {
+    plan_result_t create_plan_register_cast(const context_storage_t& context,
+                                            const components::logical_plan::node_ptr& node) {
         auto* n = static_cast<components::logical_plan::node_register_cast_t*>(node.get());
         const auto source_oid = components::catalog::builtin_type_to_oid(n->source().type());
         const auto target_oid = components::catalog::builtin_type_to_oid(n->target().type());
@@ -17,8 +17,8 @@ namespace services::planner::impl {
                                                                                         target_oid));
     }
 
-    components::operators::operator_ptr create_plan_unregister_cast(const context_storage_t& context,
-                                                                    const components::logical_plan::node_ptr& node) {
+    plan_result_t create_plan_unregister_cast(const context_storage_t& context,
+                                              const components::logical_plan::node_ptr& node) {
         auto* n = static_cast<components::logical_plan::node_unregister_cast_t*>(node.get());
         const auto source_oid = components::catalog::builtin_type_to_oid(n->source().type());
         const auto target_oid = components::catalog::builtin_type_to_oid(n->target().type());

@@ -113,10 +113,20 @@ namespace {
         bool drained_{false};
     };
 
-    operators::operator_ptr make_remote_source(const services::context_storage_t& context,
-                                               const compute::function_registry_t&,
-                                               const logical_plan::node_extension_t& node) {
+    // Names whose backend cannot be reached: the host's operator function refuses them with its own reason.
+    std::map<std::string, std::string>& unreachable() {
+        static std::map<std::string, std::string> reasons;
+        return reasons;
+    }
+
+    services::planner::plan_result_t make_remote_source(const services::context_storage_t& context,
+                                                        const compute::function_registry_t&,
+                                                        const logical_plan::node_extension_t& node) {
         const auto* payload = static_cast<const remote_payload_t*>(node.payload());
+        if (auto it = unreachable().find(payload->name); it != unreachable().end()) {
+            return core::error_t{core::error_code_t::connection_closed,
+                                 std::pmr::string{it->second.c_str(), context.resource}};
+        }
         std::pmr::vector<types::complex_logical_type> columns(node.columns(), context.resource);
         return {
             new remote_source_t(context.resource, context.log.clone(), std::move(columns), backend()[payload->name])};
@@ -281,6 +291,7 @@ namespace {
     test_clear_directory(config);                                                                                      \
     backend().clear();                                                                                                 \
     backend()["m2.shop.orders"] = {{1, 100}, {2, 200}, {3, 300}};                                                      \
+    unreachable().clear();                                                                                             \
     counters().reset();                                                                                                \
     test_spaces space(config, host_primitives());                                                                      \
     auto* dispatcher = space.dispatcher();                                                                             \
@@ -400,4 +411,53 @@ TEST_CASE("integration::cpp::host_names::local_statements_never_reach_the_host")
     CHECK(counters().need.load() == 1);
     CHECK(counters().reads.load() == 1);
     CHECK(counters().decide.load() == 1);
+}
+
+TEST_CASE("integration::cpp::host_names::dml_with_an_embedded_query") {
+    HOST_TEST_BOILERPLATE("test_host_names/dml_embedded")
+    REQUIRE(run(dispatcher, declare_orders)->is_success());
+    REQUIRE(run(dispatcher, "CREATE DATABASE loc;")->is_success());
+    REQUIRE(run(dispatcher, "CREATE TABLE loc.t (id BIGINT, amount BIGINT);")->is_success());
+
+    SECTION("INSERT ... SELECT copies the host rows") {
+        REQUIRE(run(dispatcher, "INSERT INTO loc.t (id, amount) SELECT id, amount FROM m2.shop.orders;")->is_success());
+        auto copied = run(dispatcher, "SELECT id, amount FROM loc.t;");
+        REQUIRE(copied->is_success());
+        REQUIRE(sorted_int_rows(copied) == std::vector<std::vector<int64_t>>{{1, 100}, {2, 200}, {3, 300}});
+    }
+    SECTION("UPDATE ... FROM reads the host rows") {
+        REQUIRE(run(dispatcher, "INSERT INTO loc.t (id, amount) VALUES (1, 0), (5, 0);")->is_success());
+        auto upd = run(dispatcher, "UPDATE loc.t SET amount = o.amount FROM m2.shop.orders AS o WHERE loc.t.id = o.id;");
+        INFO((upd->is_error() ? std::string{upd->get_error().what} : std::string{"ok"}));
+        REQUIRE(upd->is_success());
+        auto updated = run(dispatcher, "SELECT id, amount FROM loc.t;");
+        REQUIRE(sorted_int_rows(updated) == std::vector<std::vector<int64_t>>{{1, 100}, {5, 0}});
+    }
+    SECTION("DELETE ... USING reads the host rows") {
+        REQUIRE(run(dispatcher, "INSERT INTO loc.t (id, amount) VALUES (2, 0), (7, 0);")->is_success());
+        auto del = run(dispatcher, "DELETE FROM loc.t USING m2.shop.orders AS o WHERE loc.t.id = o.id;");
+        INFO((del->is_error() ? std::string{del->get_error().what} : std::string{"ok"}));
+        REQUIRE(del->is_success());
+        auto left = run(dispatcher, "SELECT id, amount FROM loc.t;");
+        REQUIRE(sorted_int_rows(left) == std::vector<std::vector<int64_t>>{{7, 0}});
+    }
+}
+
+TEST_CASE("integration::cpp::host_names::host_operator_error_reaches_the_cursor") {
+    HOST_TEST_BOILERPLATE("test_host_names/operator_error")
+    REQUIRE(run(dispatcher, declare_orders)->is_success());
+    unreachable()["m2.shop.orders"] = "server m2: connection refused";
+    REQUIRE(run(dispatcher, "CREATE DATABASE loc;")->is_success());
+    REQUIRE(run(dispatcher, "CREATE TABLE loc.c (id BIGINT);")->is_success());
+
+    for (const char* sql : {"SELECT * FROM m2.shop.orders;",
+                            "SELECT count(*) FROM m2.shop.orders;",
+                            "SELECT o.id FROM m2.shop.orders AS o JOIN loc.c AS c ON o.id = c.id;",
+                            "INSERT INTO loc.c (id) SELECT id FROM m2.shop.orders;"}) {
+        INFO(sql);
+        auto cursor = run(dispatcher, sql);
+        REQUIRE(cursor->is_error());
+        CHECK(cursor->get_error().type == core::error_code_t::connection_closed);
+        CHECK(std::string{cursor->get_error().what} == "server m2: connection refused");
+    }
 }

@@ -86,8 +86,10 @@ TEST_CASE("integration::cpp::hash_join::substitution") {
         join->append_child(logical_plan::make_node_raw_data(res, build_two_int_chunk(res)));
         join->append_expression(cond);
         auto optimized = planner::optimizer::rewrite_hash_joins(res, join);
-        auto plan =
+        auto plan_planned =
             services::planner::create_plan(context, registry, optimized, logical_plan::limit_t::unlimit(), nullptr);
+        REQUIRE_FALSE(plan_planned.has_error());
+        auto plan = plan_planned.value();
         REQUIRE(plan);
         return plan->type();
     };
@@ -134,8 +136,10 @@ TEST_CASE("integration::cpp::hash_join::substitution") {
         join->append_child(logical_plan::make_node_raw_data(res, build_two_int_chunk(res)));
         join->append_expression(cond);
         auto optimized = planner::optimizer::rewrite_hash_joins(res, join);
-        auto plan =
+        auto plan_planned =
             services::planner::create_plan(context, registry, optimized, logical_plan::limit_t::unlimit(), nullptr);
+        REQUIRE_FALSE(plan_planned.has_error());
+        auto plan = plan_planned.value();
         REQUIRE(plan);
         CHECK(plan->type() == operator_type::join);
     }
@@ -321,8 +325,10 @@ TEST_CASE("integration::cpp::hash_join::build_side_selection") {
         join->append_expression(cond);
 
         auto optimized = planner::optimizer::rewrite_hash_joins(res, join);
-        auto plan =
+        auto plan_planned =
             services::planner::create_plan(context, registry, optimized, logical_plan::limit_t::unlimit(), nullptr);
+        REQUIRE_FALSE(plan_planned.has_error());
+        auto plan = plan_planned.value();
         REQUIRE(plan);
         REQUIRE(plan->type() == operator_type::hash_join);
         REQUIRE(plan->right()); // physical build side
@@ -524,7 +530,10 @@ TEST_CASE("integration::cpp::hash_join::filtered_side_swap_requires_size_evidenc
         join->append_expression(cond);
         join->set_equi_columns(0, 0); // post-rewrite_hash_joins state: algo -> hash
 
-        auto plan = services::planner::create_plan(context, registry, join, logical_plan::limit_t::unlimit(), nullptr);
+        auto plan_planned =
+            services::planner::create_plan(context, registry, join, logical_plan::limit_t::unlimit(), nullptr);
+        REQUIRE_FALSE(plan_planned.has_error());
+        auto plan = plan_planned.value();
         REQUIRE(plan);
         REQUIRE(plan->type() == operator_type::hash_join);
         REQUIRE(plan->right()); // physical build side

@@ -841,7 +841,10 @@ TEST_CASE("create_plan_match::eq_uses_index_scan_hashed_preferred") {
                                 make_compare_expression(&resource, compare_type::eq, key(&resource, "age"), pid));
     node->set_table_oid(table_oid);
 
-    auto op = services::planner::impl::create_plan_match(ctx, node, components::logical_plan::limit_t::unlimit());
+    auto op_planned =
+        services::planner::impl::create_plan_match(ctx, node, components::logical_plan::limit_t::unlimit());
+    REQUIRE_FALSE(op_planned.has_error());
+    auto op = op_planned.value();
     REQUIRE(op->type() == components::operators::operator_type::index_scan);
     auto* scan = static_cast<components::operators::index_scan*>(op.get());
     REQUIRE(scan->compare_type() == compare_type::eq);
@@ -863,7 +866,10 @@ TEST_CASE("create_plan_match::range_uses_index_scan_single_preferred") {
                                 make_compare_expression(&resource, compare_type::gte, key(&resource, "age"), pid));
     node->set_table_oid(table_oid);
 
-    auto op = services::planner::impl::create_plan_match(ctx, node, components::logical_plan::limit_t::unlimit());
+    auto op_planned =
+        services::planner::impl::create_plan_match(ctx, node, components::logical_plan::limit_t::unlimit());
+    REQUIRE_FALSE(op_planned.has_error());
+    auto op = op_planned.value();
     REQUIRE(op->type() == components::operators::operator_type::index_scan);
     auto* scan = static_cast<components::operators::index_scan*>(op.get());
     REQUIRE(scan->compare_type() == compare_type::gte);
@@ -885,7 +891,10 @@ TEST_CASE("create_plan_match::range_with_only_hashed_falls_back_to_full_scan") {
                                 make_compare_expression(&resource, compare_type::gt, key(&resource, "age"), pid));
     node->set_table_oid(table_oid);
 
-    auto op = services::planner::impl::create_plan_match(ctx, node, components::logical_plan::limit_t::unlimit());
+    auto op_planned =
+        services::planner::impl::create_plan_match(ctx, node, components::logical_plan::limit_t::unlimit());
+    REQUIRE_FALSE(op_planned.has_error());
+    auto op = op_planned.value();
     REQUIRE(op->type() == components::operators::operator_type::full_scan);
 }
 
@@ -904,7 +913,10 @@ TEST_CASE("create_plan_match::key_on_right_mirrors_compare_type_for_index_scan")
                                 make_compare_expression(&resource, compare_type::lt, pid, key(&resource, "age")));
     node->set_table_oid(table_oid);
 
-    auto op = services::planner::impl::create_plan_match(ctx, node, components::logical_plan::limit_t::unlimit());
+    auto op_planned =
+        services::planner::impl::create_plan_match(ctx, node, components::logical_plan::limit_t::unlimit());
+    REQUIRE_FALSE(op_planned.has_error());
+    auto op = op_planned.value();
     REQUIRE(op->type() == components::operators::operator_type::index_scan);
     auto* scan = static_cast<components::operators::index_scan*>(op.get());
     REQUIRE(scan->compare_type() == compare_type::gt);
@@ -925,7 +937,10 @@ TEST_CASE("create_plan_match::union_compare_uses_full_scan") {
     auto node = make_node_match(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, union_expr);
     node->set_table_oid(table_oid);
 
-    auto op = services::planner::impl::create_plan_match(ctx, node, components::logical_plan::limit_t::unlimit());
+    auto op_planned =
+        services::planner::impl::create_plan_match(ctx, node, components::logical_plan::limit_t::unlimit());
+    REQUIRE_FALSE(op_planned.has_error());
+    auto op = op_planned.value();
     REQUIRE(op->type() == components::operators::operator_type::full_scan);
 }
 
@@ -1022,10 +1037,10 @@ TEST_CASE("optimizer::pushdown_aggregate::cte_scan_child_is_skipped") {
 }
 
 namespace {
-    components::operators::operator_ptr no_host_operator(const services::context_storage_t&,
-                                                         const components::compute::function_registry_t&,
-                                                         const node_extension_t&) {
-        return {};
+    services::planner::plan_result_t no_host_operator(const services::context_storage_t& context,
+                                                      const components::compute::function_registry_t&,
+                                                      const node_extension_t&) {
+        return services::planner::plan_refusal(context.resource, "never lowered in these tests");
     }
 } // namespace
 

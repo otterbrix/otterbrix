@@ -268,12 +268,13 @@ namespace {
     };
 
     // Dispatch by shape: a leaf is a source (reads a backend), a node with a child is a sink (writes one).
-    operators::operator_ptr make_mock_extension(const services::context_storage_t& context,
-                                                const compute::function_registry_t&,
-                                                const logical_plan::node_extension_t& node) {
+    services::planner::plan_result_t make_mock_extension(const services::context_storage_t& context,
+                                                         const compute::function_registry_t&,
+                                                         const logical_plan::node_extension_t& node) {
         const auto& data = static_cast<const mock_payload_t*>(node.payload())->data;
         if (data.no_operator) {
-            return {};
+            // A successful result without an operator breaks the contract.
+            return operators::operator_ptr{};
         }
         if (node.children().empty() && data.fetch_on_open) {
             return {new fetch_on_open_source_op_t(context.resource,
@@ -661,6 +662,8 @@ TEST_CASE("integration::cpp::extension_source::missing_operator_errors_not_crash
                                             "JOIN extdb.local_t AS t ON e.key = t.key;",
                                             externals);
         REQUIRE(r.cursor->is_error());
+        CHECK(std::string{r.cursor->get_error().what} ==
+              "the physical plan generator built no operator for $extension: uid_l");
     }
     {
         auto externals = one_source(res, "uid_g", "key", "val", {{1, 10}}, /*async=*/false);
@@ -669,6 +672,8 @@ TEST_CASE("integration::cpp::extension_source::missing_operator_errors_not_crash
                                             "SELECT key, count(val) FROM uid_g.remote.db1.t1 GROUP BY key;",
                                             externals);
         REQUIRE(r.cursor->is_error());
+        CHECK(std::string{r.cursor->get_error().what} ==
+              "the physical plan generator built no operator for $extension: uid_g");
     }
 }
 

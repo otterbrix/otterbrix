@@ -5,8 +5,8 @@
 
 namespace services::planner::impl {
 
-    components::operators::operator_ptr create_plan_alter_column_drop(const context_storage_t& context,
-                                                                      const components::logical_plan::node_ptr& node) {
+    plan_result_t create_plan_alter_column_drop(const context_storage_t& context,
+                                                const components::logical_plan::node_ptr& node) {
         auto* n = static_cast<components::logical_plan::node_alter_column_t*>(node.get());
         return boost::intrusive_ptr(new components::operators::operator_alter_column_drop_t(context.resource,
                                                                                             context.log.clone(),

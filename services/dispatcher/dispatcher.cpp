@@ -578,14 +578,12 @@ namespace services::dispatcher {
         auto master_copy = plan->function()->get_copy(resource());
         const auto uid = executor_uids.front();
         services::context_storage_t cstor{resource(), log_.clone(), session_settings(session)};
-        auto op = services::planner::impl::create_plan_register_udf(cstor, plan, std::move(executor_uids));
-        if (!op) {
+        auto planned = services::planner::impl::create_plan_register_udf(cstor, plan, std::move(executor_uids));
+        if (planned.has_error()) {
             co_await unwind_udf_fanout_(session, std::move(registered));
-            co_return core::error_t{core::error_code_t::create_physical_plan_error,
-                                    std::pmr::string{"register_udf: node_register_udf_t could not be lowered into an "
-                                                     "operator",
-                                                     resource()}};
+            co_return core::error_on(resource(), planned.error());
         }
+        auto op = std::move(planned.value());
         op->set_as_root();
 
         components::logical_plan::storage_parameters params(resource());
@@ -745,17 +743,15 @@ namespace services::dispatcher {
                                                                 std::move(inputs)));
 
         services::context_storage_t cstor{resource(), log_.clone(), session_settings(session)};
-        auto op = services::planner::create_plan(cstor,
-                                                 function_registry_,
-                                                 plan,
-                                                 components::logical_plan::limit_t::unlimit(),
-                                                 /*params=*/nullptr);
-        if (!op) {
-            co_return core::error_t{core::error_code_t::create_physical_plan_error,
-                                    std::pmr::string{"unregister_udf: node_unregister_udf_t could not be lowered into "
-                                                     "an operator",
-                                                     resource()}};
+        auto planned = services::planner::create_plan(cstor,
+                                                      function_registry_,
+                                                      plan,
+                                                      components::logical_plan::limit_t::unlimit(),
+                                                      /*params=*/nullptr);
+        if (planned.has_error()) {
+            co_return core::error_on(resource(), planned.error());
         }
+        auto op = std::move(planned.value());
         op->set_as_root();
 
         components::logical_plan::storage_parameters params(resource());
@@ -941,13 +937,11 @@ namespace services::dispatcher {
         auto write_leaf = boost::intrusive_ptr(
             new components::logical_plan::node_register_cast_t(resource(), resolved_source, resolved_target, entry));
         services::context_storage_t cstor{resource(), log_.clone(), session_settings(session)};
-        auto op = services::planner::impl::create_plan_register_cast(cstor, write_leaf);
-        if (!op) {
-            co_return core::error_t{core::error_code_t::create_physical_plan_error,
-                                    std::pmr::string{"register_cast: node_register_cast_t could not be lowered into an "
-                                                     "operator",
-                                                     resource()}};
+        auto planned = services::planner::impl::create_plan_register_cast(cstor, write_leaf);
+        if (planned.has_error()) {
+            co_return core::error_on(resource(), planned.error());
         }
+        auto op = std::move(planned.value());
         op->set_as_root();
         components::logical_plan::storage_parameters params(resource());
         components::pipeline::context_t pctx{session,
@@ -1073,13 +1067,11 @@ namespace services::dispatcher {
         auto write_leaf = boost::intrusive_ptr(
             new components::logical_plan::node_unregister_cast_t(resource(), resolved_source, resolved_target));
         services::context_storage_t cstor{resource(), log_.clone(), session_settings(session)};
-        auto op = services::planner::impl::create_plan_unregister_cast(cstor, write_leaf);
-        if (!op) {
-            co_return core::error_t{core::error_code_t::create_physical_plan_error,
-                                    std::pmr::string{"unregister_cast: node_unregister_cast_t could not be lowered "
-                                                     "into an operator",
-                                                     resource()}};
+        auto planned = services::planner::impl::create_plan_unregister_cast(cstor, write_leaf);
+        if (planned.has_error()) {
+            co_return core::error_on(resource(), planned.error());
         }
+        auto op = std::move(planned.value());
         op->set_as_root();
         components::logical_plan::storage_parameters params(resource());
         components::pipeline::context_t pctx{session,

@@ -908,7 +908,9 @@ TEST_CASE("integration::cpp::test_index::drop_index_folds_catalog_deletes") {
         di->set_index_oid(index_oid);
         seq->append_child(di);
 
-        auto plan = services::planner::create_plan(context, registry, seq, lp::limit_t::unlimit(), nullptr);
+        auto plan_planned = services::planner::create_plan(context, registry, seq, lp::limit_t::unlimit(), nullptr);
+        REQUIRE_FALSE(plan_planned.has_error());
+        auto plan = plan_planned.value();
         REQUIRE(plan);
 
         CHECK(plan->type() == ops::operator_type::create_collection);
@@ -923,7 +925,9 @@ TEST_CASE("integration::cpp::test_index::drop_index_folds_catalog_deletes") {
         auto seq = boost::intrusive_ptr(new lp::node_sequence_t(res));
         append_delete_leaves(seq);
 
-        auto plan = services::planner::create_plan(context, registry, seq, lp::limit_t::unlimit(), nullptr);
+        auto plan_planned = services::planner::create_plan(context, registry, seq, lp::limit_t::unlimit(), nullptr);
+        REQUIRE_FALSE(plan_planned.has_error());
+        auto plan = plan_planned.value();
         REQUIRE(plan);
         CHECK(count_ops_of_type(plan, ops::operator_type::remove) == delete_specs.size());
     }

@@ -77,11 +77,10 @@ namespace services::planner::impl {
         }
     } // namespace
 
-    components::operators::operator_ptr
-    create_plan_delete(const context_storage_t& context,
-                       const components::compute::function_registry_t& function_registry,
-                       const components::logical_plan::node_ptr& node,
-                       const components::logical_plan::storage_parameters* params) {
+    plan_result_t create_plan_delete(const context_storage_t& context,
+                                     const components::compute::function_registry_t& function_registry,
+                                     const components::logical_plan::node_ptr& node,
+                                     const components::logical_plan::storage_parameters* params) {
         const auto* node_delete = static_cast<const components::logical_plan::node_delete_t*>(node.get());
 
         // Catalog-delete leaf (DDL pg_catalog row scrub): lower straight to
@@ -120,10 +119,9 @@ namespace services::planner::impl {
         // context cannot vouch for is a table that never resolved. Validation refuses
         // this before plan generation; if that refusal is ever lost again, lowering
         // anyway builds a sink with no table behind it, which the streaming executor
-        // admits as a sourceless sink — a DELETE that removes nothing and reports
-        // SUCCESS. A null root surfaces as create_physical_plan_error instead.
+        // admits as a sourceless sink — a DELETE that removes nothing and reports SUCCESS.
         if (!context.has_table_oid(table_oid)) {
-            return nullptr;
+            return unresolved_table_refusal(context.resource, node_delete->dbname(), node_delete->relname());
         }
         if (!node_source) {
             auto plan = boost::intrusive_ptr(new components::operators::operator_delete(context.resource,
@@ -131,13 +129,9 @@ namespace services::planner::impl {
                                                                                         table_oid,
                                                                                         std::move(returning)));
             plan->set_table_has_indexes(node->table_has_indexes());
-            auto scan =
-                create_plan_match(context, node_match, limit, delete_projection(context, node_delete, has_returning));
-            // A refused scan child must refuse the DELETE: set_children would swallow
-            // the null into the same childless-sink success-without-deleting shape.
-            if (!scan) {
-                return nullptr;
-            }
+            VALUE_OR_RETURN(
+                auto scan,
+                create_plan_match(context, node_match, limit, delete_projection(context, node_delete, has_returning)));
             plan->set_children(std::move(scan));
 
             return plan;
@@ -155,13 +149,9 @@ namespace services::planner::impl {
                                                                                     *expr,
                                                                                     limit.limit()));
         plan->set_table_has_indexes(node->table_has_indexes());
-        auto source_op =
-            create_plan(context, function_registry, node_source, components::logical_plan::limit_t::unlimit(), params);
-        // A refused USING source must refuse the DELETE: set_children would swallow the
-        // null and the semi-join would run against a missing side.
-        if (!source_op) {
-            return nullptr;
-        }
+        VALUE_OR_RETURN(
+            auto source_op,
+            create_plan(context, function_registry, node_source, components::logical_plan::limit_t::unlimit(), params));
         plan->set_children(
             boost::intrusive_ptr(new components::operators::full_scan(context.resource,
                                                                       context.log.clone(),

@@ -6,7 +6,7 @@
 
 namespace services::planner::impl {
 
-    components::operators::operator_ptr
+    plan_result_t
     create_plan_create_matview(const context_storage_t& context,
                                [[maybe_unused]] const components::compute::function_registry_t& function_registry,
                                const components::logical_plan::node_ptr& node,
@@ -14,9 +14,8 @@ namespace services::planner::impl {
         using namespace components::logical_plan;
         auto* cm = static_cast<node_create_matview_t*>(node.get());
         if (cm->inferred_columns().empty() || cm->catalog_writes().empty()) {
-            // enrich/planner couldn't derive schema or build writes — surface
-            // as "invalid query plan" via the standard executor error path.
-            return nullptr;
+            return plan_refusal(context.resource,
+                                "materialized view has no derived columns or no catalog rows to write");
         }
         // Body plan is NOT compiled (only WITH NO DATA reaches here, so it has no consumer); it
         // still shapes the matview via enrich's inferred_columns and the planner's pg_rewrite SQL.

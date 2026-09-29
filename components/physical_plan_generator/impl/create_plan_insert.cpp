@@ -7,11 +7,10 @@
 
 namespace services::planner::impl {
 
-    components::operators::operator_ptr
-    create_plan_insert(const context_storage_t& context,
-                       const components::compute::function_registry_t& function_registry,
-                       const components::logical_plan::node_ptr& node,
-                       const components::logical_plan::storage_parameters* params) {
+    plan_result_t create_plan_insert(const context_storage_t& context,
+                                     const components::compute::function_registry_t& function_registry,
+                                     const components::logical_plan::node_ptr& node,
+                                     const components::logical_plan::storage_parameters* params) {
         const auto* node_insert = static_cast<const components::logical_plan::node_insert_t*>(node.get());
         auto returning = build_returning_columns(context.resource, node_insert->returning());
         auto plan = boost::intrusive_ptr(new components::operators::operator_insert(context.resource,
@@ -43,11 +42,13 @@ namespace services::planner::impl {
                                                                column.value});
         }
         plan->set_fill_list(std::move(fill));
-        plan->set_children(create_plan(context,
-                                       function_registry,
-                                       node->children().front(),
-                                       components::logical_plan::limit_t::unlimit(),
-                                       params));
+        VALUE_OR_RETURN(auto child,
+                        create_plan(context,
+                                    function_registry,
+                                    node->children().front(),
+                                    components::logical_plan::limit_t::unlimit(),
+                                    params));
+        plan->set_children(std::move(child));
 
         return plan;
     }

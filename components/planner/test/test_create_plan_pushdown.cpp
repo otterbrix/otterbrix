@@ -62,8 +62,10 @@ TEST_CASE("create_plan: aggregate with pushdown group child lowers to merge over
     components::compute::function_registry_t registry(&resource);
 
     auto node = build_agg(&resource, /*pushdown=*/true);
-    auto plan =
+    auto plan_planned =
         services::planner::create_plan(context, registry, node, components::logical_plan::limit_t::unlimit(), nullptr);
+    REQUIRE_FALSE(plan_planned.has_error());
+    auto plan = plan_planned.value();
 
     REQUIRE(plan != nullptr);
     // The plan keeps a truthful aggregate-shaped terminal (group_merge) whose child is
@@ -83,8 +85,10 @@ TEST_CASE("create_plan: aggregate WITHOUT pushdown lowers to the normal aggregat
     context.known_oids.insert(components::catalog::oid_t{123});
 
     auto node = build_agg(&resource, /*pushdown=*/false);
-    auto plan =
+    auto plan_planned =
         services::planner::create_plan(context, registry, node, components::logical_plan::limit_t::unlimit(), nullptr);
+    REQUIRE_FALSE(plan_planned.has_error());
+    auto plan = plan_planned.value();
 
     REQUIRE(plan != nullptr);
     // The normal chain never produces the pushed pair; the group operator tags itself
@@ -95,9 +99,9 @@ TEST_CASE("create_plan: aggregate WITHOUT pushdown lowers to the normal aggregat
 
 namespace {
 
-    components::operators::operator_ptr host_source_operator(const services::context_storage_t& context,
-                                                             const components::compute::function_registry_t&,
-                                                             const node_extension_t&) {
+    services::planner::plan_result_t host_source_operator(const services::context_storage_t& context,
+                                                          const components::compute::function_registry_t&,
+                                                          const node_extension_t&) {
         std::pmr::vector<components::types::complex_logical_type> types(context.resource);
         return {new op::operator_empty_t(context.resource, op::make_operator_data(context.resource, types, 0))};
     }
@@ -138,8 +142,10 @@ TEST_CASE("create_plan: pushdown stamp over an extension source child does not l
                                    &host_source_operator);
     REQUIRE_FALSE(ext.has_error());
     node->append_child(ext.value());
-    auto plan =
+    auto plan_planned =
         services::planner::create_plan(context, registry, node, components::logical_plan::limit_t::unlimit(), nullptr);
+    REQUIRE_FALSE(plan_planned.has_error());
+    auto plan = plan_planned.value();
 
     REQUIRE(plan != nullptr);
     REQUIRE_FALSE(contains_operator(plan.get(), op::operator_type::pushed_reduce_scan));

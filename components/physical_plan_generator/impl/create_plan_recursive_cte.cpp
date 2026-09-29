@@ -6,11 +6,10 @@
 
 namespace services::planner::impl {
 
-    components::operators::operator_ptr
-    create_plan_recursive_cte(const context_storage_t& context,
-                              const components::compute::function_registry_t& function_registry,
-                              const components::logical_plan::node_ptr& node,
-                              const components::logical_plan::storage_parameters* params) {
+    plan_result_t create_plan_recursive_cte(const context_storage_t& context,
+                                            const components::compute::function_registry_t& function_registry,
+                                            const components::logical_plan::node_ptr& node,
+                                            const components::logical_plan::storage_parameters* params) {
         const auto* cte_node = static_cast<const components::logical_plan::node_recursive_cte_t*>(node.get());
 
         // cte_node->all() carries UNION ALL (true) vs UNION/DISTINCT (false), set by the transformer
@@ -20,21 +19,23 @@ namespace services::planner::impl {
                                                                                            cte_node->all()));
 
         // Build anchor using the original context (no cte_working_sets entry needed).
-        auto anchor_op = create_plan(context,
-                                     function_registry,
-                                     cte_node->children()[0],
-                                     components::logical_plan::limit_t::unlimit(),
-                                     params);
+        VALUE_OR_RETURN(auto anchor_op,
+                        create_plan(context,
+                                    function_registry,
+                                    cte_node->children()[0],
+                                    components::logical_plan::limit_t::unlimit(),
+                                    params));
 
         // Build the recursive member with the working-set slot injected into context.
         context_storage_t recursive_context = context;
         recursive_context.cte_working_sets[cte_node->cte_name()] = op->working_set_slot();
 
-        auto recursive_op = create_plan(recursive_context,
-                                        function_registry,
-                                        cte_node->children()[1],
-                                        components::logical_plan::limit_t::unlimit(),
-                                        params);
+        VALUE_OR_RETURN(auto recursive_op,
+                        create_plan(recursive_context,
+                                    function_registry,
+                                    cte_node->children()[1],
+                                    components::logical_plan::limit_t::unlimit(),
+                                    params));
 
         // The anchor + recursive term are NOT left_/right_ children: operator_recursive_cte_t
         // owns driving them via ctx->runner->run_subplan, so it must look like a leaf to

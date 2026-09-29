@@ -275,17 +275,15 @@ namespace services::collection::executor {
         }
 
         context_storage.parameters = &plan.parameters->parameters();
-        components::operators::operator_ptr node = planner::create_plan(context_storage,
-                                                                        function_registry_,
-                                                                        plan.sub_queries.back(),
-                                                                        limit,
-                                                                        &plan.parameters->parameters());
-
-        if (!node) {
-            co_return execute_result_t{make_cursor(resource(),
-                                                   core::error_t(core::error_code_t::create_physical_plan_error,
-                                                                 std::pmr::string{"invalid query plan", resource()}))};
+        auto planned = planner::create_plan(context_storage,
+                                            function_registry_,
+                                            plan.sub_queries.back(),
+                                            limit,
+                                            &plan.parameters->parameters());
+        if (planned.has_error()) {
+            co_return execute_result_t{make_cursor(resource(), planned.error())};
         }
+        components::operators::operator_ptr node = std::move(planned.value());
 
         node->set_as_root();
 
@@ -1403,18 +1401,16 @@ namespace services::collection::executor {
                 auto node = components::logical_plan::make_node_allocate_oids(resource(), count);
                 components::compute::function_registry_t local_fn_registry{resource()};
                 services::context_storage_t cstor{resource(), log_.clone(), context_storage.execution_context};
-                auto op = services::planner::create_plan(cstor,
-                                                         local_fn_registry,
-                                                         node,
-                                                         components::logical_plan::limit_t::unlimit(),
-                                                         /*params=*/nullptr);
-                if (!op) {
+                auto planned = services::planner::create_plan(cstor,
+                                                              local_fn_registry,
+                                                              node,
+                                                              components::logical_plan::limit_t::unlimit(),
+                                                              /*params=*/nullptr);
+                if (planned.has_error()) {
                     co_return core::result_wrapper_t<std::vector<components::catalog::oid_t>>{
-                        core::error_t{core::error_code_t::create_physical_plan_error,
-                                      std::pmr::string{"OID allocation round: no physical plan for "
-                                                       "node_allocate_oids_t",
-                                                       resource()}}};
+                        core::error_on(resource(), planned.error())};
                 }
+                auto op = std::move(planned.value());
                 op->set_as_root();
                 components::logical_plan::storage_parameters local_params(resource());
                 components::pipeline::context_t pctx{session,

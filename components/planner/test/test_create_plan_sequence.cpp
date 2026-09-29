@@ -8,9 +8,11 @@
 #include <components/logical_plan/node_sequence.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
+
 #include <components/table/column_definition.hpp>
 #include <components/types/types.hpp>
 #include <services/collection/context_storage.hpp>
+#include <string>
 
 #include <boost/smart_ptr/intrusive_ptr.hpp>
 #include <memory_resource>
@@ -49,9 +51,10 @@ TEST_CASE("physical_plan_generator::sequence::an_unlowerable_first_child_refuses
 
     auto plan = services::planner::create_plan(context, registry, seq, lp::limit_t::unlimit(), nullptr);
 
-    INFO("the first child failed to lower: the whole sequence must refuse (null root), "
-         "not silently run without its first step");
-    REQUIRE(plan == nullptr);
+    INFO("the first child failed to lower: the whole sequence must refuse, not silently run without its first "
+         "step");
+    REQUIRE(plan.has_error());
+    CHECK(std::string{plan.error().what}.starts_with("no physical plan for a logical node of this kind: "));
 }
 
 TEST_CASE("physical_plan_generator::sequence::an_unlowerable_later_child_refuses_instead_of_dereferencing_null") {
@@ -66,7 +69,7 @@ TEST_CASE("physical_plan_generator::sequence::an_unlowerable_later_child_refuses
 
     auto plan = services::planner::create_plan(context, registry, seq, lp::limit_t::unlimit(), nullptr);
 
-    REQUIRE(plan == nullptr);
+    REQUIRE(plan.has_error());
 }
 
 TEST_CASE("physical_plan_generator::sequence::all_lowerable_children_still_chain") {
@@ -81,9 +84,10 @@ TEST_CASE("physical_plan_generator::sequence::all_lowerable_children_still_chain
 
     auto plan = services::planner::create_plan(context, registry, seq, lp::limit_t::unlimit(), nullptr);
 
-    REQUIRE(plan != nullptr);
-    REQUIRE(plan->left() != nullptr);
-    REQUIRE(plan->left()->left() == nullptr);
+    REQUIRE_FALSE(plan.has_error());
+    const auto& root = plan.value();
+    REQUIRE(root->left() != nullptr);
+    REQUIRE(root->left()->left() == nullptr);
 }
 
 TEST_CASE("physical_plan_generator::sequence::the_first_written_clause_executes_first_in_the_alter_chain") {
@@ -101,10 +105,11 @@ TEST_CASE("physical_plan_generator::sequence::the_first_written_clause_executes_
     seq->append_child(rename);
 
     auto plan = services::planner::create_plan(context, registry, seq, lp::limit_t::unlimit(), nullptr);
-    REQUIRE(plan != nullptr);
+    REQUIRE_FALSE(plan.has_error());
+    const auto& root = plan.value();
 
     // The executor runs bottom-up (deepest-left first); children[0] must sit deepest, or attnum order runs backwards.
-    REQUIRE(plan->type() == components::operators::operator_type::alter_column_rename);
-    REQUIRE(plan->left() != nullptr);
-    REQUIRE(plan->left()->type() == components::operators::operator_type::alter_column_add);
+    REQUIRE(root->type() == components::operators::operator_type::alter_column_rename);
+    REQUIRE(root->left() != nullptr);
+    REQUIRE(root->left()->type() == components::operators::operator_type::alter_column_add);
 }

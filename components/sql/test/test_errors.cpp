@@ -276,7 +276,11 @@ namespace {
         if (result.has_error()) {
             return {true, std::string{result.get_error().what.c_str()}, false};
         }
-        auto node = result.node_ptr();
+        auto plan = result.finalize();
+        if (plan.has_error()) {
+            return {true, std::string{plan.error().what.c_str()}, false};
+        }
+        auto node = plan.value().sub_queries.back();
         if (!node) {
             return {false, std::string{"<null node>"}, false};
         }

@@ -209,6 +209,11 @@ set( ${PROJECT_NAME}_SOURCES
         test_unqualified_name_ambiguity.cpp
         test_rollback_freezes_checkpoint.cpp
         test_wal_replay_rowid_drift.cpp
+        test_constant_aggregates.cpp
+        test_avg_sum_widening.cpp
+        test_join_key_width.cpp
+        test_explain_host_plan.cpp
+        test_undefined_side_key.cpp
 
         # TODO: casts for dynamic schema
         # stress tests with sanitizer are incredibly slow

@@ -1,3 +1,4 @@
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <components/compute/function.hpp>
 
@@ -202,9 +203,10 @@ TEST_CASE("components::compute::aggregate::accumulates_across_chunks") {
     std::vector<std::vector<uint32_t>> groups{{0, 0, 0}, {0, 0}};
 
     SECTION("sum folds every chunk") {
-        auto res = fx.run(*fx.get("sum"), chunks, groups, 1, logical_type::INTEGER);
+        // sum over INTEGER answers BIGINT
+        auto res = fx.run(*fx.get("sum"), chunks, groups, 1, logical_type::BIGINT);
         REQUIRE_FALSE(res.has_error());
-        REQUIRE(res.value().data<int32_t>()[0] == 15);
+        REQUIRE(res.value().data<int64_t>()[0] == 15);
     }
 
     SECTION("count folds every chunk") {
@@ -224,9 +226,10 @@ TEST_CASE("components::compute::aggregate::accumulates_across_chunks") {
     }
 
     SECTION("avg is computed once over the whole group") {
-        auto res = fx.run(*fx.get("avg"), chunks, groups, 1, logical_type::INTEGER);
+        // avg over INTEGER answers DOUBLE
+        auto res = fx.run(*fx.get("avg"), chunks, groups, 1, logical_type::DOUBLE);
         REQUIRE_FALSE(res.has_error());
-        REQUIRE(res.value().data<int32_t>()[0] == 3); // (1+2+3+4+5) / 5
+        REQUIRE(res.value().data<double>()[0] == Catch::Approx(3.0)); // (1+2+3+4+5) / 5
     }
 }
 
@@ -241,10 +244,10 @@ TEST_CASE("components::compute::aggregate::scatters_into_groups") {
     std::vector<std::vector<uint32_t>> groups{{0, 1, 0}, {1, 0}};
 
     SECTION("sum per group") {
-        auto res = fx.run(*fx.get("sum"), chunks, groups, 2, logical_type::INTEGER);
+        auto res = fx.run(*fx.get("sum"), chunks, groups, 2, logical_type::BIGINT);
         REQUIRE_FALSE(res.has_error());
-        REQUIRE(res.value().data<int32_t>()[0] == 6);
-        REQUIRE(res.value().data<int32_t>()[1] == 30);
+        REQUIRE(res.value().data<int64_t>()[0] == 6);
+        REQUIRE(res.value().data<int64_t>()[1] == 30);
     }
 
     SECTION("count per group") {
@@ -276,11 +279,11 @@ TEST_CASE("components::compute::aggregate::a_group_with_no_rows_among_fed_ones")
     chunks.emplace_back(fx.int_chunk({4, 6}));
     std::vector<std::vector<uint32_t>> groups{{0, 2}};
 
-    auto sum = fx.run(*fx.get("sum"), chunks, groups, 3, logical_type::INTEGER);
+    auto sum = fx.run(*fx.get("sum"), chunks, groups, 3, logical_type::BIGINT);
     REQUIRE_FALSE(sum.has_error());
-    REQUIRE(sum.value().data<int32_t>()[0] == 4);
+    REQUIRE(sum.value().data<int64_t>()[0] == 4);
     REQUIRE(sum.value().is_null(1));
-    REQUIRE(sum.value().data<int32_t>()[2] == 6);
+    REQUIRE(sum.value().data<int64_t>()[2] == 6);
 
     auto count = fx.run(*fx.get("count"), chunks, groups, 3, logical_type::UBIGINT);
     REQUIRE_FALSE(count.has_error());
@@ -296,9 +299,9 @@ TEST_CASE("components::compute::aggregate::nulls_are_skipped") {
     chunks.emplace_back(std::move(chunk));
     std::vector<std::vector<uint32_t>> groups{{0, 0, 0}};
 
-    auto sum = fx.run(*fx.get("sum"), chunks, groups, 1, logical_type::INTEGER);
+    auto sum = fx.run(*fx.get("sum"), chunks, groups, 1, logical_type::BIGINT);
     REQUIRE_FALSE(sum.has_error());
-    REQUIRE(sum.value().data<int32_t>()[0] == 6);
+    REQUIRE(sum.value().data<int64_t>()[0] == 6);
 
     // COUNT(x) counts non-null rows only.
     auto count = fx.run(*fx.get("count"), chunks, groups, 1, logical_type::UBIGINT);

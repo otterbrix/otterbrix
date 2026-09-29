@@ -136,7 +136,8 @@ TEST_CASE("dispatcher::resolve_function: a restricted variable admits its domain
     auto integer = resolve("sum", {logical_type::INTEGER});
     REQUIRE_FALSE(integer.has_error());
     REQUIRE_FALSE(integer.value().arguments[0].cast);
-    REQUIRE(integer.value().result.type() == logical_type::INTEGER);
+    // sum over an integer answers BIGINT
+    REQUIRE(integer.value().result.type() == logical_type::BIGINT);
 
     // DATE is not summable, and BOOLEAN was removed from the domain because
     // sum_operator_t accumulates into a bool, making SUM(bool) a logical OR.
@@ -184,8 +185,7 @@ TEST_CASE("dispatcher::resolve_function: mergeable rides along from the matched 
 }
 
 // A DECIMAL entry in the domain carries no width/scale, so it stands for the whole family:
-// the argument keeps its own parameters and nothing is converted. The runtime agrees --
-// operator_switch sums the raw integer and rebuilds a decimal from the input's type.
+// the argument keeps its own parameters and nothing is converted. sum answers DECIMAL(38, s).
 TEST_CASE("dispatcher::resolve_function: a family entry keeps the argument's parameters") {
     auto decimal = make_decimal(10, 2);
     std::pmr::vector<complex_logical_type> arguments(resource());
@@ -201,7 +201,7 @@ TEST_CASE("dispatcher::resolve_function: a family entry keeps the argument's par
     REQUIRE_FALSE(resolved.has_error());
     REQUIRE_FALSE(resolved.value().arguments[0].cast);
     REQUIRE(resolved.value().arguments[0].target == decimal);
-    REQUIRE(resolved.value().result == decimal);
+    REQUIRE(resolved.value().result == make_decimal(38, 2));
 }
 
 // Which kinds of function a clause accepts is decided by the clause. An aggregate cannot be

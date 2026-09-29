@@ -105,26 +105,6 @@ namespace components::catalog {
         constexpr std::uint64_t ev_type = 3;
         constexpr std::uint64_t ev_action = 4;
     } // namespace pg_rewrite_col
-    namespace pg_foreign_server_col {
-        constexpr std::uint64_t oid = 0;
-        constexpr std::uint64_t srvname = 1;
-        constexpr std::uint64_t srvtype = 2;
-    } // namespace pg_foreign_server_col
-    namespace pg_foreign_table_col {
-        constexpr std::uint64_t ftrelid = 0;
-        constexpr std::uint64_t ftserver = 1;
-    } // namespace pg_foreign_table_col
-    namespace pg_foreign_namespace_col {
-        constexpr std::uint64_t oid = 0;
-        constexpr std::uint64_t nspserver = 1;
-        constexpr std::uint64_t nspdb = 2;
-        constexpr std::uint64_t nspname = 3;
-    } // namespace pg_foreign_namespace_col
-    namespace pg_foreign_option_col {
-        constexpr std::uint64_t owner_oid = 0;
-        constexpr std::uint64_t key = 1;
-        constexpr std::uint64_t value = 2;
-    } // namespace pg_foreign_option_col
     namespace pg_depend_col {
         constexpr std::uint64_t classid = 0;
         constexpr std::uint64_t objid = 1;

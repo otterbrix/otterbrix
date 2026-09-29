@@ -2211,7 +2211,9 @@ typedef struct AlterFdwStmt {
 typedef struct CreateForeignServerStmt {
     NodeTag type;
     char* servername; /* server name */
-    char* servertype; /* server type: selects the connector */
+    char* servertype; /* optional server type */
+    char* version;    /* optional server version */
+    char* fdwname;    /* FDW name */
     List* options;    /* generic options to server */
 } CreateForeignServerStmt;
 

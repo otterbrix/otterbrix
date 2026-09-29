@@ -1251,8 +1251,7 @@ TEST_CASE("name_resolution::if_exists::drop_of_a_missing_target") {
                                             "SEQUENCE d.missing",
                                             "TYPE missing",
                                             "DATABASE missing",
-                                            "INDEX d.t.missing",
-                                            "SERVER missing"}) {
+                                            "INDEX d.t.missing"}) {
         const auto space = kind_and_name.find(' ');
         const auto kind = kind_and_name.substr(0, space);
         const auto name = kind_and_name.substr(space + 1);

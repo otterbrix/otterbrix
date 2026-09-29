@@ -9,8 +9,7 @@ namespace components::logical_plan {
                                                        bool if_not_exists)
         : node_t(resource, node_type::create_collection_t)
         , relname_(std::move(static_cast<std::string&>(relname)))
-        , if_not_exists_(if_not_exists)
-        , relkind_(components::catalog::relkind::computed) {}
+        , if_not_exists_(if_not_exists) {}
 
     node_create_collection_t::node_create_collection_t(std::pmr::memory_resource* resource,
                                                        core::relname_t relname,
@@ -21,9 +20,7 @@ namespace components::logical_plan {
         , relname_(std::move(static_cast<std::string&>(relname)))
         , column_definitions_(std::move(column_definitions))
         , constraints_(std::move(constraints))
-        , if_not_exists_(if_not_exists)
-        , relkind_(column_definitions_.empty() ? components::catalog::relkind::computed
-                                               : components::catalog::relkind::regular) {}
+        , if_not_exists_(if_not_exists) {}
 
     std::pmr::vector<types::complex_logical_type> node_create_collection_t::schema() const {
         std::pmr::vector<types::complex_logical_type> result(resource());
@@ -67,24 +64,6 @@ namespace components::logical_plan {
                                              std::move(column_definitions),
                                              std::move(constraints),
                                              if_not_exists}};
-    }
-
-    core::result_wrapper_t<node_ptr> make_node_record_remote_table(std::pmr::memory_resource* resource,
-                                                                   std::string server,
-                                                                   std::vector<std::string> path,
-                                                                   std::vector<table::column_definition_t> columns) {
-        if (path.size() != 2 && path.size() != 3) {
-            return core::error_t{core::error_code_t::invalid_parameter,
-                                 std::pmr::string{"a recorded remote table needs its canonical path inside the server: "
-                                                  "schema.table or db.schema.table",
-                                                  resource}};
-        }
-        auto node = make_node_create_collection(resource, core::relname_t{path.back()}, std::move(columns), {});
-        node->set_relkind(components::catalog::relkind::foreign);
-        const bool has_db = path.size() == 3;
-        node->set_dbname(has_db ? std::move(path[0]) : std::string{});
-        node->set_remote_slots(std::move(server), std::move(path[has_db ? 1 : 0]));
-        return node_ptr{std::move(node)};
     }
 
 } // namespace components::logical_plan

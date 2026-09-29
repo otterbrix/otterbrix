@@ -15,7 +15,6 @@
 #include <logical_plan/node_create_macro.hpp>
 #include <logical_plan/node_create_matview.hpp>
 #include <logical_plan/node_create_sequence.hpp>
-#include <logical_plan/node_create_server.hpp>
 #include <logical_plan/node_create_type.hpp>
 #include <logical_plan/node_create_view.hpp>
 #include <logical_plan/node_delete.hpp>
@@ -173,31 +172,9 @@ namespace components::planner {
         core::result_wrapper_t<node_ptr>
         rewrite_create_table(std::pmr::memory_resource* r, node_ptr node, catalog::oid_batch_t& oid_batch) {
             auto* cc = static_cast<logical_plan::node_create_collection_t*>(node.get());
-            catalog::oid_t ns_oid = cc->namespace_oid();
+            const catalog::oid_t ns_oid = cc->namespace_oid();
 
-            const char rk = cc->relkind();
-            // A recorded remote description lives in its server's namespace for the remote schema, made here on
-            // first use.
-            std::vector<catalog::catalog_write_t> namespace_writes;
-            if (rk == catalog::relkind::foreign) {
-                if (cc->server_oid() == catalog::INVALID_OID) {
-                    std::pmr::string msg{"remote table ", r};
-                    msg.append(cc->relname());
-                    msg.append(": server \"");
-                    msg.append(cc->uid_slot().empty() ? cc->dbname() : cc->uid_slot());
-                    msg.append("\" does not exist; nothing was recorded");
-                    return core::error_t{core::error_code_t::server_not_exists, std::move(msg)};
-                }
-                ns_oid = cc->remote_namespace_oid();
-                if (ns_oid == catalog::INVALID_OID) {
-                    ns_oid = oid_batch.allocate();
-                    namespace_writes = catalog::build_foreign_namespace_writes(r,
-                                                                               ns_oid,
-                                                                               cc->server_oid(),
-                                                                               cc->remote_db(),
-                                                                               cc->remote_schema());
-                }
-            }
+            const char rk = cc->column_definitions().empty() ? catalog::relkind::computed : catalog::relkind::regular;
             const catalog::oid_t table_oid = oid_batch.peek();
             auto writes = catalog::build_create_table_writes(r,
                                                              std::string{},
@@ -259,17 +236,9 @@ namespace components::planner {
                 }
             }
             cc->children().clear();
-            if (rk == catalog::relkind::foreign) {
-                for (auto& w : catalog::build_foreign_table_writes(r, table_oid, cc->server_oid())) {
-                    writes.push_back(std::move(w));
-                }
-            }
 
             auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));
             seq->append_child(node);
-            for (auto& w : namespace_writes) {
-                seq->append_child(make_catalog_write(r, w.table_oid, std::move(w.row)));
-            }
             for (auto& w : writes) {
                 seq->append_child(make_catalog_write(r, w.table_oid, std::move(w.row)));
             }
@@ -347,41 +316,6 @@ namespace components::planner {
                 seq->append_child(make_catalog_write(r, w.table_oid, std::move(w.row)));
             }
             return seq;
-        }
-
-        node_ptr rewrite_create_server(std::pmr::memory_resource* r, node_ptr node, catalog::oid_batch_t& oid_batch) {
-            auto* cs = static_cast<logical_plan::node_create_server_t*>(node.get());
-            const catalog::oid_t server_oid = oid_batch.allocate();
-            auto writes = catalog::build_create_server_writes(r,
-                                                              server_oid,
-                                                              cs->servername(),
-                                                              cs->servertype(),
-                                                              cs->options());
-
-            auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));
-            for (auto& w : writes) {
-                seq->append_child(make_catalog_write(r, w.table_oid, std::move(w.row)));
-            }
-            return seq;
-        }
-
-        // The cache (remote namespaces and their tables) depends on the server automatically ('a'): it goes with
-        // the server, RESTRICT or not. server_cache forgets it and keeps the server.
-        core::result_wrapper_t<node_ptr> rewrite_drop_server(std::pmr::memory_resource* r, node_ptr node) {
-            auto* d = static_cast<logical_plan::node_drop_t*>(node.get());
-            if (d->server_oid() == catalog::INVALID_OID) {
-                std::pmr::string msg{"DROP SERVER: server \"", r};
-                msg.append(d->server_name());
-                msg.append("\" does not exist");
-                return core::error_t{core::error_code_t::server_not_exists, std::move(msg)};
-            }
-            return node_ptr{boost::intrusive_ptr(new logical_plan::node_dynamic_cascade_delete_t(
-                r,
-                catalog::well_known_oid::pg_foreign_server_table,
-                d->server_oid(),
-                d->behavior(),
-                d->kind() == logical_plan::drop_target_kind::server_cache ? catalog::cascade_seed_t::keep
-                                                                          : catalog::cascade_seed_t::drop))};
         }
 
         node_ptr rewrite_create_macro(std::pmr::memory_resource* r, node_ptr node, catalog::oid_batch_t& oid_batch) {
@@ -600,21 +534,11 @@ namespace components::planner {
                     classid = catalog::well_known_oid::pg_class_table;
                     seed_objid = d->table_oid();
                     break;
-                case logical_plan::drop_target_kind::remote_table:
-                    classid = catalog::well_known_oid::pg_class_table;
-                    seed_objid = d->table_oid();
-                    break;
                 case logical_plan::drop_target_kind::index:
-                case logical_plan::drop_target_kind::server:
-                case logical_plan::drop_target_kind::server_cache:
                     break;
             }
             return boost::intrusive_ptr(
-                new logical_plan::node_dynamic_cascade_delete_t(r,
-                                                                classid,
-                                                                seed_objid,
-                                                                d->behavior(),
-                                                                catalog::cascade_seed_t::drop));
+                new logical_plan::node_dynamic_cascade_delete_t(r, classid, seed_objid, d->behavior()));
         }
 
         // No OIDs are pre-allocated — add/drop resolve their attoid at execution time.
@@ -672,8 +596,7 @@ namespace components::planner {
                         new logical_plan::node_dynamic_cascade_delete_t(r,
                                                                         catalog::well_known_oid::pg_constraint_table,
                                                                         sub.constraint_oid,
-                                                                        sub.behavior,
-                                                                        catalog::cascade_seed_t::drop)));
+                                                                        sub.behavior)));
                 }
             }
             return node_ptr{seq};
@@ -698,8 +621,6 @@ namespace components::planner {
                     return rewrite_create_sequence(r, node, oid_batch);
                 case node_type::create_view_t:
                     return rewrite_create_view(r, node, oid_batch);
-                case node_type::create_server_t:
-                    return rewrite_create_server(r, node, oid_batch);
                 case node_type::create_macro_t:
                     return rewrite_create_macro(r, node, oid_batch);
                 case node_type::create_matview_t:
@@ -715,23 +636,11 @@ namespace components::planner {
                 case node_type::create_index_t:
                     return rewrite_create_index(r, node, oid_batch);
                 case node_type::drop_t:
-                    switch (static_cast<logical_plan::node_drop_t*>(node.get())->kind()) {
-                        case logical_plan::drop_target_kind::index:
-                            return rewrite_drop_index(r, node);
-                        case logical_plan::drop_target_kind::server:
-                        case logical_plan::drop_target_kind::server_cache:
-                            return rewrite_drop_server(r, node);
-                        case logical_plan::drop_target_kind::database:
-                        case logical_plan::drop_target_kind::collection:
-                        case logical_plan::drop_target_kind::type:
-                        case logical_plan::drop_target_kind::sequence:
-                        case logical_plan::drop_target_kind::view:
-                        case logical_plan::drop_target_kind::materialized_view:
-                        case logical_plan::drop_target_kind::macro:
-                        case logical_plan::drop_target_kind::remote_table:
-                            return rewrite_drop(r, node);
+                    if (static_cast<logical_plan::node_drop_t*>(node.get())->kind() ==
+                        logical_plan::drop_target_kind::index) {
+                        return rewrite_drop_index(r, node);
                     }
-                    return node;
+                    return rewrite_drop(r, node);
                 case node_type::alter_table_t:
                     return rewrite_alter_table(r, node);
                 // See walk().
@@ -795,10 +704,6 @@ namespace components::planner {
                 // pg_class + one per column + one per child constraint (rewrite_create_table allocates one each).
                 const auto* cc = static_cast<const logical_plan::node_create_collection_t*>(node);
                 std::size_t need = std::size_t{1} + cc->column_definitions().size();
-                if (cc->relkind() == catalog::relkind::foreign &&
-                    cc->remote_namespace_oid() == catalog::INVALID_OID) {
-                    ++need;
-                }
                 for (const auto& child : cc->children()) {
                     if (child && child->type() == nt::create_constraint_t) {
                         ++need;
@@ -807,7 +712,6 @@ namespace components::planner {
                 return need;
             }
             case nt::create_database_t:
-            case nt::create_server_t:
                 return 1;
             case nt::create_type_t: {
                 const auto* ct = static_cast<const logical_plan::node_create_type_t*>(node);

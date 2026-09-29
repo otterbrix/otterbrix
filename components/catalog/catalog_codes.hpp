@@ -11,7 +11,7 @@ namespace components::catalog {
         inline constexpr char composite_type = 'c';
         inline constexpr char computed = 'g'; // otterbrix extension
         inline constexpr char macro = 'F';    // pg_rewrite-backed (function-like)
-        inline constexpr char foreign = 'f';  // catalog rows only; rows live on a foreign server
+        inline constexpr char foreign = 'f';  // a remote table in a plan: no pg_class row, no storage
     }                                         // namespace relkind
 
     // pg_index.indtype (otterbrix extension): a row whose value is outside this alphabet is catalog corruption and must
@@ -30,10 +30,9 @@ namespace components::catalog {
         inline constexpr char foreign_key = 'f';
     } // namespace contype
 
-    // pg_class.relstoragemode (otterbrix-specific).
+    // pg_class.relstoragemode (otterbrix-specific): every table is disk-backed, so this is always 'd'.
     namespace relstoragemode {
         inline constexpr char disk = 'd'; // table.otbx on disk
-        inline constexpr char none = 'n'; // relkind 'f': no .otbx, no WAL data, no indexes
     }                                     // namespace relstoragemode
 
     // pg_constraint.confmatchtype (FK match strategy)

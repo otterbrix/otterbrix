@@ -40,8 +40,7 @@ namespace components::logical_plan {
         std::vector<resolved_column_metadata_t> columns;
         // pg_rewrite.ev_action SQL for relkind 'v'/'m'; consumed by dispatcher Phase 1.5 rewrite_views.
         std::string view_sql;
-        // relkind 'f': pg_foreign_table.ftserver and that server's pg_foreign_server.srvtype (picks the connector).
-        components::catalog::oid_t server_oid{components::catalog::INVALID_OID};
+        // relkind 'f': the server's connector type (picks the connector).
         std::string server_type;
     };
 
@@ -61,8 +60,7 @@ namespace components::logical_plan {
         namespace_,
         database,
         type,
-        constraint,
-        server
+        constraint
     };
 
     // outgoing scans pg_constraint by conrelid (INSERT/UPDATE) into fks()/check_exprs();
@@ -97,12 +95,9 @@ namespace components::logical_plan {
         components::catalog::oid_t namespace_oid{components::catalog::INVALID_OID};
         components::catalog::oid_t database_oid{components::catalog::INVALID_OID};
         components::catalog::oid_t type_oid{components::catalog::INVALID_OID};
-        // Server entries: the name is in relname (servers have no database). Namespace and table entries: set
-        // when the first part of the name is a server rather than a database.
-        components::catalog::oid_t server_oid{components::catalog::INVALID_OID};
+        // Table entries: the first part of the name is a registered server (executor's registry copy).
+        bool remote{false};
         std::string server_type;
-        // Table entries of a remote name: the server's namespace for its schema, once one is recorded.
-        components::catalog::oid_t remote_namespace_oid{components::catalog::INVALID_OID};
         // Empty optional means the operator did not find the target (or has not run).
         std::optional<resolved_table_metadata_t> table_md;
         std::optional<resolved_type_metadata_t> type_md;
@@ -163,7 +158,6 @@ namespace components::logical_plan {
         node_catalog_resolve_ptr tables;
         node_catalog_resolve_ptr types;
         node_catalog_resolve_ptr constraints;
-        node_catalog_resolve_ptr servers;
         std::vector<external_target_t> external_targets;
         // Qualified function calls whose first part is neither pg_catalog nor public: refused when that part
         // turns out to be a server.
@@ -187,8 +181,6 @@ namespace components::logical_plan {
                                                          std::string_view relname) const noexcept;
         [[nodiscard]] const resolve_entry_t* type_entry(std::string_view dbname,
                                                         std::string_view type_name) const noexcept;
-
-        [[nodiscard]] const resolve_entry_t* server_entry(std::string_view server_name) const noexcept;
 
         [[nodiscard]] components::catalog::oid_t namespace_oid(std::string_view dbname) const noexcept;
         [[nodiscard]] const resolved_table_metadata_t* table_md(std::string_view dbname,

@@ -90,9 +90,6 @@ namespace components::logical_plan {
                            << (entry.direction == resolve_direction::outgoing ? "outgoing" : "referencing")
                            << " target=" << entry.target;
                     break;
-                case resolve_kind::server:
-                    stream << "$catalog_resolve_server: " << entry.relname << " (oid=" << entry.server_oid << ")";
-                    break;
             }
         }
         return stream.str();
@@ -120,9 +117,6 @@ namespace components::logical_plan {
             case resolve_kind::constraint:
                 slot = &constraints;
                 break;
-            case resolve_kind::server:
-                slot = &servers;
-                break;
         }
         if (!*slot) {
             *slot = make_node_catalog_resolve(resource, kind);
@@ -131,7 +125,7 @@ namespace components::logical_plan {
     }
 
     bool catalog_resolves_t::empty() const noexcept {
-        for (const auto* slot : {&database, &namespaces, &tables, &types, &constraints, &servers}) {
+        for (const auto* slot : {&database, &namespaces, &tables, &types, &constraints}) {
             if (*slot && !(*slot)->empty()) {
                 return false;
             }
@@ -174,14 +168,6 @@ namespace components::logical_plan {
         }
         const auto index = types->find(dbname, type_name);
         return index == resolve_entry_t::no_target ? nullptr : &types->entries()[index];
-    }
-
-    const resolve_entry_t* catalog_resolves_t::server_entry(std::string_view server_name) const noexcept {
-        if (!servers || server_name.empty()) {
-            return nullptr;
-        }
-        const auto index = servers->find(std::string_view{}, server_name);
-        return index == resolve_entry_t::no_target ? nullptr : &servers->entries()[index];
     }
 
     components::catalog::oid_t catalog_resolves_t::namespace_oid(std::string_view dbname) const noexcept {

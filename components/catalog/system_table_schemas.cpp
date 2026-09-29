@@ -182,51 +182,14 @@ namespace components::catalog {
             c.emplace_back("attrefcount", i64_col(), true);
             return c;
         }
-
-        // Servers are catalog-wide (no namespace), like PostgreSQL's pg_foreign_server. srvtype picks the
-        // connector.
-        std::vector<column_definition_t> pg_foreign_server_columns() {
-            std::vector<column_definition_t> c;
-            c.emplace_back("oid", oid_col(), true);
-            c.emplace_back("srvname", str_col(), true);
-            c.emplace_back("srvtype", str_col(), true);
-            return c;
-        }
-
-        std::vector<column_definition_t> pg_foreign_table_columns() {
-            std::vector<column_definition_t> c;
-            c.emplace_back("ftrelid", oid_col(), true); // pg_class.oid, relkind 'f'
-            c.emplace_back("ftserver", oid_col(), true);
-            return c;
-        }
-
-        // One row per OPTIONS entry of a server; (owner_oid, key) is unique.
-        std::vector<column_definition_t> pg_foreign_option_columns() {
-            std::vector<column_definition_t> c;
-            c.emplace_back("owner_oid", oid_col(), true); // pg_foreign_server.oid
-            c.emplace_back("key", str_col(), true);
-            c.emplace_back("value", str_col(), true);
-            return c;
-        }
-
-        // A remote schema of a server: the namespace its cached relkind 'f' tables live in. Name lookups by
-        // database never reach it. nspdb is empty for a server path of the form schema.table.
-        std::vector<column_definition_t> pg_foreign_namespace_columns() {
-            std::vector<column_definition_t> c;
-            c.emplace_back("oid", oid_col(), true);
-            c.emplace_back("nspserver", oid_col(), true);
-            c.emplace_back("nspdb", str_col(), true);
-            c.emplace_back("nspname", str_col(), true);
-            return c;
-        }
     } // namespace
 
     std::span<const system_table_def_t> all_system_tables() {
         // pg_database must come first — every catalog object is scoped to a database (seeded via
         // well_known_oid::main_database, manager_disk_t::bootstrap_system_tables_sync).
-        static const std::array<system_table_def_t, 18> tables = []() {
+        static const std::array<system_table_def_t, 14> tables = []() {
             const oid_t pg_catalog = well_known_oid::pg_catalog_namespace;
-            return std::array<system_table_def_t, 18>{{
+            return std::array<system_table_def_t, 14>{{
                 {"pg_database", well_known_oid::pg_database_table, pg_catalog, relkind::regular, pg_database_columns()},
                 {"pg_namespace",
                  well_known_oid::pg_namespace_table,
@@ -257,26 +220,6 @@ namespace components::catalog {
                 {"pg_rewrite", well_known_oid::pg_rewrite_table, pg_catalog, relkind::regular, pg_rewrite_columns()},
                 {"pg_settings", well_known_oid::pg_settings_table, pg_catalog, relkind::regular, pg_settings_columns()},
                 {"pg_cast", well_known_oid::pg_cast_table, pg_catalog, relkind::regular, pg_cast_columns()},
-                {"pg_foreign_server",
-                 well_known_oid::pg_foreign_server_table,
-                 pg_catalog,
-                 relkind::regular,
-                 pg_foreign_server_columns()},
-                {"pg_foreign_table",
-                 well_known_oid::pg_foreign_table_table,
-                 pg_catalog,
-                 relkind::regular,
-                 pg_foreign_table_columns()},
-                {"pg_foreign_option",
-                 well_known_oid::pg_foreign_option_table,
-                 pg_catalog,
-                 relkind::regular,
-                 pg_foreign_option_columns()},
-                {"pg_foreign_namespace",
-                 well_known_oid::pg_foreign_namespace_table,
-                 pg_catalog,
-                 relkind::regular,
-                 pg_foreign_namespace_columns()},
             }};
         }();
         return tables;

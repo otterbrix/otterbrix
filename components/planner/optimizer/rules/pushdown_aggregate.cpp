@@ -4,6 +4,7 @@
 #include <string>
 #include <string_view>
 
+#include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/compare_expression.hpp>
@@ -11,6 +12,7 @@
 #include <components/expressions/scalar_expression.hpp>
 #include <components/expressions/udf_references.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
+#include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/node_group.hpp>
 
 namespace components::planner::optimizer {
@@ -22,9 +24,11 @@ namespace components::planner::optimizer {
         // Children whose presence means the aggregate does NOT sit over a single
         // owned base table (join = multi-table; nested aggregate = a sub-aggregate
         // reduce; data = client-injected raw chunk with no owning agent; cte_scan /
-        // union / intersect / recursive_cte = multi-source). Any of these => skip (a).
+        // union / intersect / recursive_cte = multi-source; extension = host source replacing the scan).
+        // Any of these => skip (a).
         bool is_shape_breaking_child(const lp::node_ptr& child) noexcept {
             switch (child->type()) {
+                case lp::node_type::extension_t:
                 case lp::node_type::join_t:
                 case lp::node_type::aggregate_t:
                 case lp::node_type::data_t:
@@ -100,6 +104,11 @@ namespace components::planner::optimizer {
             // Must target ONE resolved owned table. enrich stamps table_oid()
             // before optimize() runs; INVALID_OID => not a single owned table.
             if (node->table_oid() == components::catalog::INVALID_OID) {
+                return;
+            }
+            // A foreign table has no owning disk agent to reduce on.
+            if (const auto* md = node->table_metadata();
+                md != nullptr && md->relkind == components::catalog::relkind::foreign) {
                 return;
             }
             // Skip (a): any shape-breaking child means it is not one owned table.

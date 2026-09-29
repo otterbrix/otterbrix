@@ -14,10 +14,14 @@
 #include <components/compute/function.hpp>
 #include <components/expressions/key.hpp>
 #include <components/expressions/scalar_expression.hpp>
+#include <components/catalog/catalog_codes.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
+#include <components/logical_plan/node_catalog_resolve.hpp>
+#include <components/logical_plan/node_extension.hpp>
 #include <components/logical_plan/node_group.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/physical_plan/operators/operator.hpp>
+#include <components/physical_plan/operators/operator_empty.hpp>
 #include <components/physical_plan/operators/scan/pushed_reduce_scan.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
 #include <core/date/date_types.hpp>
@@ -89,4 +93,64 @@ TEST_CASE("create_plan: aggregate WITHOUT pushdown lowers to the normal aggregat
     // operator_type::aggregate.
     REQUIRE(plan->type() != op::operator_type::group_merge);
     REQUIRE(plan->type() == op::operator_type::aggregate);
+}
+
+namespace {
+
+    components::operators::operator_ptr host_source_rule(const services::context_storage_t& context,
+                                                         const components::compute::function_registry_t&,
+                                                         const node_ptr& node) {
+        if (node->type() != node_type::extension_t) {
+            return {};
+        }
+        std::pmr::vector<components::types::complex_logical_type> types(context.resource);
+        return {new op::operator_empty_t(context.resource, op::make_operator_data(context.resource, types, 0))};
+    }
+
+    bool contains_operator(const op::operator_t* root, op::operator_type type) {
+        if (root == nullptr) {
+            return false;
+        }
+        return root->type() == type || contains_operator(root->left().get(), type) ||
+               contains_operator(root->right().get(), type);
+    }
+
+} // namespace
+
+// A stamp that reaches physgen over an explicit source child (a later optimizer pass swapped the
+// implicit table scan for a host extension leaf) must not read the owning table on disk instead.
+TEST_CASE("create_plan: pushdown stamp over an extension source child does not lower to pushed_reduce_scan") {
+    core::pmr::otterbrix_resource resource;
+    services::context_storage_t context(&resource, log_t{}, components::catalog::session_catalog_t{});
+    context.known_oids.insert(components::catalog::oid_t{123});
+    context.create_plan_rule = &host_source_rule;
+    components::compute::function_registry_t registry(&resource);
+
+    auto node = build_agg(&resource, /*pushdown=*/true);
+    node->append_child(make_node_extension(&resource, dbn(), reln()));
+    auto plan =
+        services::planner::create_plan(context, registry, node, components::logical_plan::limit_t::unlimit(), nullptr);
+
+    REQUIRE(plan != nullptr);
+    REQUIRE_FALSE(contains_operator(plan.get(), op::operator_type::pushed_reduce_scan));
+    REQUIRE(plan->type() == op::operator_type::aggregate);
+}
+
+// A pushdown stamp over a foreign table (relkind 'f') must not become a disk reduce of storage it does not have.
+TEST_CASE("create_plan: pushdown stamp over a foreign table builds no pushed_reduce_scan") {
+    core::pmr::otterbrix_resource resource;
+    services::context_storage_t context(&resource, log_t{}, components::catalog::session_catalog_t{});
+    context.known_oids.insert(components::catalog::oid_t{123});
+    components::logical_plan::resolved_table_metadata_t md;
+    md.table_oid = components::catalog::oid_t{123};
+    md.relkind = components::catalog::relkind::foreign;
+    context.table_metadata[md.table_oid] = &md;
+    components::compute::function_registry_t registry(&resource);
+
+    auto node = build_agg(&resource, /*pushdown=*/true);
+    auto plan =
+        services::planner::create_plan(context, registry, node, components::logical_plan::limit_t::unlimit(), nullptr);
+
+    REQUIRE_FALSE(contains_operator(plan.get(), op::operator_type::pushed_reduce_scan));
+    REQUIRE_FALSE(contains_operator(plan.get(), op::operator_type::transfer_scan));
 }

@@ -544,7 +544,7 @@ TEST_CASE("integration::cpp::multi_database_isolation::write_through_a_schema_se
     REQUIRE(created->size() == 0);
 }
 
-// The READ path keeps the federation slots
+// No part of a name is dropped: a schema segment on a local relation is refused for reads as for writes.
 TEST_CASE("integration::cpp::multi_database_isolation::read_through_a_schema_segment_resolves") {
     auto config = test_create_config(integration_fixture_path("test_multi_db_isolation/schema_segment_read"));
     test_clear_directory(config);
@@ -559,11 +559,15 @@ TEST_CASE("integration::cpp::multi_database_isolation::read_through_a_schema_seg
     REQUIRE(exec("CREATE TABLE d.t (id BIGINT);")->is_success());
     REQUIRE(exec("INSERT INTO d.t (id) VALUES (1), (2);")->is_success());
 
-    auto through_schema = exec("SELECT id FROM d.s.t;");
-    INFO("[SELECT id FROM d.s.t;] " << (through_schema->is_error() ? through_schema->get_error().what.c_str()
-                                                                   : "<no error>"));
-    REQUIRE(through_schema->is_success());
-    REQUIRE(through_schema->size() == 2);
+    for (const std::string sql : {"SELECT id FROM d.s.t;", "SELECT id FROM d.public.t;"}) {
+        auto through_schema = exec(sql);
+        INFO("[" << sql << "] "
+                 << (through_schema->is_error() ? through_schema->get_error().what.c_str() : "<no error>"));
+        REQUIRE(through_schema->is_error());
+        REQUIRE(through_schema->get_error().type == core::error_code_t::invalid_parameter);
+        REQUIRE(std::string(through_schema->get_error().what).find("schema \"") != std::string::npos);
+    }
+    REQUIRE(exec("SELECT id FROM d.t;")->size() == 2);
 }
 
 TEST_CASE("integration::cpp::multi_database_isolation::create_index_on_a_bare_table_name") {

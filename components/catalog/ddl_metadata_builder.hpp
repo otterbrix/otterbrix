@@ -3,6 +3,7 @@
 #include "catalog_codes.hpp"
 #include "catalog_oids.hpp"
 #include "catalog_write.hpp"
+#include "generic_options.hpp"
 #include "oid_batch.hpp"
 
 #include <components/base/collection_full_name.hpp>
@@ -20,6 +21,7 @@ namespace components::catalog {
 
     // oid_batch needs >= 1+N OIDs (table + one attoid per column); `columns` is mutated in place
     // to mint each new attoid, which physical storage and .otbx serialization rely on downstream.
+    // relkind 'f' (a cached remote table) lives in a pg_foreign_namespace and depends on it automatically ('a').
     std::vector<catalog_write_t> build_create_table_writes(std::pmr::memory_resource* resource,
                                                            const std::string& dbname,
                                                            const std::string& relname,
@@ -90,6 +92,25 @@ namespace components::catalog {
                                                               std::int64_t prouid,
                                                               const std::string& proargmatchers,
                                                               const std::string& prorettype);
+
+    // pg_foreign_server row plus one pg_foreign_option row per option. No pg_depend edge: a server is
+    // catalog-wide, dropped only by DROP SERVER.
+    std::vector<catalog_write_t> build_create_server_writes(std::pmr::memory_resource* resource,
+                                                            oid_t server_oid,
+                                                            const std::string& name,
+                                                            const std::string& type,
+                                                            const generic_options_t& options);
+
+    // A remote schema of a server; it depends on the server automatically ('a'): DROP SERVER takes the
+    // whole cache with it, even without CASCADE.
+    std::vector<catalog_write_t> build_foreign_namespace_writes(std::pmr::memory_resource* resource,
+                                                                oid_t namespace_oid,
+                                                                oid_t server_oid,
+                                                                const std::string& remote_db,
+                                                                const std::string& remote_schema);
+
+    std::vector<catalog_write_t>
+    build_foreign_table_writes(std::pmr::memory_resource* resource, oid_t table_oid, oid_t server_oid);
 
     // pg_depend 'n' edges anchor the cast to castsource/casttarget so a DROP TYPE cascades to it.
     std::vector<catalog_write_t> build_create_cast_writes(std::pmr::memory_resource* resource,

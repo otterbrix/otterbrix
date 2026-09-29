@@ -519,42 +519,35 @@ TEST_CASE("components::sql::create_function_shape_is_carried_or_refused") {
     }
 }
 
-// CREATE honours IF NOT EXISTS; this pins the other half of the pair.
+// CREATE honours IF NOT EXISTS; this pins the other half of the pair. IF EXISTS is the statement's, not the node's.
 TEST_CASE("components::sql::drop_carries_missing_ok") {
     auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
-    auto transform_drop = [&](const char* query) {
+    auto if_exists_of = [&](const char* query) {
         auto stmt = linitial(raw_parser(&arena_resource, query));
         auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
         REQUIRE(!result.has_error());
-        auto node = result.value().sub_queries.back();
-        REQUIRE(node->type() == node_type::drop_t);
-        return boost::intrusive_ptr{static_cast<node_drop_t*>(node.get())};
+        REQUIRE(result.value().sub_queries.back()->type() == node_type::drop_t);
+        return result.value().if_exists;
     };
 
-    SECTION("DROP TABLE IF EXISTS carries missing_ok") {
-        REQUIRE(transform_drop("DROP TABLE IF EXISTS db.t;")->missing_ok());
-    }
-    SECTION("plain DROP TABLE stays loud") { REQUIRE_FALSE(transform_drop("DROP TABLE db.t;")->missing_ok()); }
-    SECTION("DROP INDEX IF EXISTS carries missing_ok") {
-        REQUIRE(transform_drop("DROP INDEX IF EXISTS db.t.idx;")->missing_ok());
-    }
-    SECTION("plain DROP INDEX stays loud") { REQUIRE_FALSE(transform_drop("DROP INDEX db.t.idx;")->missing_ok()); }
-    SECTION("DROP VIEW IF EXISTS carries missing_ok") {
-        REQUIRE(transform_drop("DROP VIEW IF EXISTS db.v;")->missing_ok());
-    }
-    SECTION("DROP SEQUENCE IF EXISTS carries missing_ok") {
-        REQUIRE(transform_drop("DROP SEQUENCE IF EXISTS db.s;")->missing_ok());
-    }
-    SECTION("DROP TYPE IF EXISTS carries missing_ok") {
-        REQUIRE(transform_drop("DROP TYPE IF EXISTS mood;")->missing_ok());
-    }
+    SECTION("DROP TABLE IF EXISTS carries missing_ok") { REQUIRE(if_exists_of("DROP TABLE IF EXISTS db.t;")); }
+    SECTION("plain DROP TABLE stays loud") { REQUIRE_FALSE(if_exists_of("DROP TABLE db.t;")); }
+    SECTION("DROP INDEX IF EXISTS carries missing_ok") { REQUIRE(if_exists_of("DROP INDEX IF EXISTS db.t.idx;")); }
+    SECTION("plain DROP INDEX stays loud") { REQUIRE_FALSE(if_exists_of("DROP INDEX db.t.idx;")); }
+    SECTION("DROP VIEW IF EXISTS carries missing_ok") { REQUIRE(if_exists_of("DROP VIEW IF EXISTS db.v;")); }
+    SECTION("DROP SEQUENCE IF EXISTS carries missing_ok") { REQUIRE(if_exists_of("DROP SEQUENCE IF EXISTS db.s;")); }
+    SECTION("DROP TYPE IF EXISTS carries missing_ok") { REQUIRE(if_exists_of("DROP TYPE IF EXISTS mood;")); }
     SECTION("DROP DATABASE IF EXISTS carries missing_ok (its own DropdbStmt flag)") {
-        REQUIRE(transform_drop("DROP DATABASE IF EXISTS db;")->missing_ok());
+        REQUIRE(if_exists_of("DROP DATABASE IF EXISTS db;"));
     }
-    SECTION("plain DROP DATABASE stays loud") { REQUIRE_FALSE(transform_drop("DROP DATABASE db;")->missing_ok()); }
+    SECTION("plain DROP DATABASE stays loud") { REQUIRE_FALSE(if_exists_of("DROP DATABASE db;")); }
+    SECTION("the flag does not leak into the next statement") {
+        REQUIRE(if_exists_of("DROP TABLE IF EXISTS db.t;"));
+        REQUIRE_FALSE(if_exists_of("DROP TABLE db.t;"));
+    }
 }
 
 // gram.y's opt_drop_behavior has three alternatives but two values: the empty one and a
@@ -632,9 +625,14 @@ TEST_CASE("components::sql::alter_drop_column_carries_written_behavior") {
         REQUIRE(subs.size() == 2);
         REQUIRE(subs.front().behavior == drop_behavior_t::cascade_);
         REQUIRE(subs.back().behavior == drop_behavior_t::restrict_);
-        // IF EXISTS is per-clause too, and must not have been swapped with the behavior.
-        REQUIRE_FALSE(subs.front().missing_ok);
-        REQUIRE_FALSE(subs.back().missing_ok);
+        // IF EXISTS is per-clause too (recorded on the statement), and must not have been swapped with the behavior.
+        auto stmt = raw_parser(&arena_resource, "ALTER TABLE db.t DROP COLUMN a CASCADE, DROP COLUMN IF EXISTS b;")
+                        ->lst.front()
+                        .data;
+        auto plan = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
+        REQUIRE(!plan.has_error());
+        REQUIRE(plan.value().if_exists_subcommands.size() == 1);
+        REQUIRE(plan.value().if_exists_subcommands.front() == 1);
     }
 }
 

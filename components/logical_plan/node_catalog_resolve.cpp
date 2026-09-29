@@ -8,6 +8,7 @@ namespace components::logical_plan {
 
     bool resolve_entry_t::operator==(const resolve_entry_t& other) const noexcept {
         return dbname == other.dbname && relname == other.relname && type_name == other.type_name &&
+               uid == other.uid && schema == other.schema && namespace_of == other.namespace_of &&
                direction == other.direction && target == other.target && names_only == other.names_only;
     }
 
@@ -24,6 +25,19 @@ namespace components::logical_plan {
         }
         entries_.push_back(std::move(entry));
         return entries_.size() - 1;
+    }
+
+    std::size_t node_catalog_resolve_t::find(std::string_view uid,
+                                             std::string_view dbname,
+                                             std::string_view schema,
+                                             std::string_view name) const noexcept {
+        for (std::size_t index = 0; index < entries_.size(); index++) {
+            const auto& entry = entries_[index];
+            if (entry.uid == uid && entry.dbname == dbname && entry.schema == schema && entry.relname == name) {
+                return index;
+            }
+        }
+        return resolve_entry_t::no_target;
     }
 
     std::size_t node_catalog_resolve_t::find(std::string_view dbname, std::string_view name) const noexcept {
@@ -76,6 +90,9 @@ namespace components::logical_plan {
                            << (entry.direction == resolve_direction::outgoing ? "outgoing" : "referencing")
                            << " target=" << entry.target;
                     break;
+                case resolve_kind::server:
+                    stream << "$catalog_resolve_server: " << entry.relname << " (oid=" << entry.server_oid << ")";
+                    break;
             }
         }
         return stream.str();
@@ -103,6 +120,9 @@ namespace components::logical_plan {
             case resolve_kind::constraint:
                 slot = &constraints;
                 break;
+            case resolve_kind::server:
+                slot = &servers;
+                break;
         }
         if (!*slot) {
             *slot = make_node_catalog_resolve(resource, kind);
@@ -111,7 +131,7 @@ namespace components::logical_plan {
     }
 
     bool catalog_resolves_t::empty() const noexcept {
-        for (const auto* slot : {&database, &namespaces, &tables, &types, &constraints}) {
+        for (const auto* slot : {&database, &namespaces, &tables, &types, &constraints, &servers}) {
             if (*slot && !(*slot)->empty()) {
                 return false;
             }
@@ -133,10 +153,17 @@ namespace components::logical_plan {
 
     const resolve_entry_t* catalog_resolves_t::table_entry(std::string_view dbname,
                                                            std::string_view relname) const noexcept {
+        return table_entry(std::string_view{}, dbname, std::string_view{}, relname);
+    }
+
+    const resolve_entry_t* catalog_resolves_t::table_entry(std::string_view uid,
+                                                           std::string_view dbname,
+                                                           std::string_view schema,
+                                                           std::string_view relname) const noexcept {
         if (!tables || relname.empty()) {
             return nullptr;
         }
-        const auto index = tables->find(dbname, relname);
+        const auto index = tables->find(uid, dbname, schema, relname);
         return index == resolve_entry_t::no_target ? nullptr : &tables->entries()[index];
     }
 
@@ -147,6 +174,14 @@ namespace components::logical_plan {
         }
         const auto index = types->find(dbname, type_name);
         return index == resolve_entry_t::no_target ? nullptr : &types->entries()[index];
+    }
+
+    const resolve_entry_t* catalog_resolves_t::server_entry(std::string_view server_name) const noexcept {
+        if (!servers || server_name.empty()) {
+            return nullptr;
+        }
+        const auto index = servers->find(std::string_view{}, server_name);
+        return index == resolve_entry_t::no_target ? nullptr : &servers->entries()[index];
     }
 
     components::catalog::oid_t catalog_resolves_t::namespace_oid(std::string_view dbname) const noexcept {

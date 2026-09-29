@@ -27,14 +27,12 @@ namespace components::operators {
                                                                catalog::oid_t table_oid,
                                                                std::string column_name,
                                                                catalog::oid_t attoid,
-                                                               catalog::drop_behavior_t behavior,
-                                                               bool missing_ok)
+                                                               catalog::drop_behavior_t behavior)
         : read_write_operator_t(resource, std::move(log), operator_type::alter_column_drop)
         , table_oid_(table_oid)
         , column_name_(std::move(column_name))
         , attoid_(attoid)
-        , behavior_(behavior)
-        , missing_ok_(missing_ok) {}
+        , behavior_(behavior) {}
 
     actor_zeta::unique_future<void> operator_alter_column_drop_t::await_async_and_resume(pipeline::context_t* ctx) {
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
@@ -110,13 +108,9 @@ namespace components::operators {
         }
         if (attoid == catalog::INVALID_OID) {
             // Refuse (PostgreSQL parity), not a silent no-op — silence would report a migration success that
-            // changed nothing; missing_ok_ (IF EXISTS) is the only case suppressing this refusal. relkind='g'
-            // tables have no pg_attribute row and route to operator_computed_field_unregister_t instead
+            // changed nothing; IF EXISTS is decided by the executor before this runs. relkind='g' tables have
+            // no pg_attribute row and route to operator_computed_field_unregister_t instead
             // (planner.cpp::rewrite_alter_table).
-            if (missing_ok_) {
-                mark_executed();
-                co_return;
-            }
             std::pmr::vector<std::uint64_t> cl_keys(resource_);
             cl_keys.emplace_back(catalog::pg_class_col::oid);
             auto [_cl, clf] = actor_zeta::otterbrix::send(ctx->disk_address,

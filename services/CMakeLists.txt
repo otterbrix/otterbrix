@@ -8,6 +8,7 @@ set( ${PROJECT_NAME}_HEADERS
 set(${PROJECT_NAME}_SOURCES
     # collection
         collection/executor.cpp
+        collection/foreign_connectors.cpp
         collection/explain/explain_plan.cpp
         collection/explain/renderer_postgres.cpp
 

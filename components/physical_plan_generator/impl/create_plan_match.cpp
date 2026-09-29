@@ -140,6 +140,10 @@ namespace services::planner::impl {
                                                                const components::expressions::expression_ptr& expr,
                                                                components::logical_plan::limit_t limit,
                                                                const std::vector<size_t>& projected_cols) {
+            // No connector registry yet: a foreign table has no source to build.
+            if (context.is_foreign_table(table_oid)) {
+                return nullptr;
+            }
             if (context.has_table_oid(table_oid)) {
                 // TODO: function_expr in scans
                 if (is_pure_compare(expr)) {
@@ -211,6 +215,9 @@ namespace services::planner::impl {
                                                           components::logical_plan::limit_t limit,
                                                           const std::vector<size_t>& projected_cols) {
         if (node->expressions().empty()) {
+            if (context.is_foreign_table(node->table_oid())) {
+                return nullptr;
+            }
             // relkind::computed ('g') columns are read live by chunk_position, resolved at resolve-table
             // time; relkind::regular ('r') tables use the caller's projected_cols (column_pruning output).
             std::vector<size_t> effective_cols;

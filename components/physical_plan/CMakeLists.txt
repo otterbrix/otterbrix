@@ -65,6 +65,7 @@ set(${PROJECT_NAME}_SOURCES
         operators/operator_resolve_database.cpp
         operators/operator_resolve_table.cpp
         operators/operator_resolve_type.cpp
+        operators/operator_resolve_server.cpp
         operators/operator_resolve_constraint.cpp
         operators/operator_allocate_oids.cpp
 )

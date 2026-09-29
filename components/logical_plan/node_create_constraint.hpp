@@ -109,6 +109,7 @@ namespace components::logical_plan {
         std::vector<components::catalog::oid_t> ref_col_attoids_;
         bool inline_with_table_{false};
         bool self_reference_{false};
+
     };
 
     using node_create_constraint_ptr = boost::intrusive_ptr<node_create_constraint_t>;

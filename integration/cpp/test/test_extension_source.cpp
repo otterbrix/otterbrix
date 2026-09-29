@@ -308,9 +308,12 @@ namespace {
     };
     using externals_by_uid_t = std::unordered_map<std::string, external_source_t>;
 
+    // `named_wrapper`: the host names the rebuilt aggregate after the registered catalog table, so it
+    // resolves to that table's oid like any FROM target.
     void swap_to_extension(logical_plan::node_ptr& node,
                            std::pmr::memory_resource* res,
-                           const externals_by_uid_t& externals) {
+                           const externals_by_uid_t& externals,
+                           bool named_wrapper = false) {
         if (!node) {
             return;
         }
@@ -334,7 +337,12 @@ namespace {
                     } else {
                         // The extension replaces only the implicit scan: rebuild as an identity aggregate
                         // whose data child is the extension leaf, keeping the uid aggregate's own stages.
-                        auto wrapper = logical_plan::make_node_aggregate(res, core::dbname_t{}, core::relname_t{});
+                        auto wrapper = named_wrapper ? logical_plan::make_node_aggregate(res,
+                                                                                         core::dbname_t{kExtDb},
+                                                                                         core::relname_t{uid_s})
+                                                     : logical_plan::make_node_aggregate(res,
+                                                                                         core::dbname_t{},
+                                                                                         core::relname_t{});
                         wrapper->set_result_alias(node->result_alias());
                         wrapper->append_child(ext);
                         for (auto& child : node->children()) {
@@ -347,7 +355,7 @@ namespace {
             }
         }
         for (auto& child : node->children()) {
-            swap_to_extension(child, res, externals);
+            swap_to_extension(child, res, externals, named_wrapper);
         }
     }
 
@@ -407,7 +415,8 @@ namespace {
 
     run_result_t run_with_extension_sources(otterbrix::wrapper_dispatcher_t* dispatcher,
                                             const std::string& sql,
-                                            externals_by_uid_t externals) {
+                                            externals_by_uid_t externals,
+                                            bool named_wrapper = false) {
         auto* res = dispatcher->resource();
         std::pmr::monotonic_buffer_resource arena(res);
         sql::transform::transformer transformer(res);
@@ -424,7 +433,7 @@ namespace {
         REQUIRE(exec_plan.sub_queries.back());
 
         register_externals(dispatcher, externals);
-        swap_to_extension(exec_plan.sub_queries.back(), res, externals);
+        swap_to_extension(exec_plan.sub_queries.back(), res, externals, named_wrapper);
         auto plan = exec_plan.sub_queries.back();
 
         const auto started = std::chrono::steady_clock::now();
@@ -470,6 +479,33 @@ namespace {
         schema.emplace_back(types::logical_type::BIGINT, col_a);
         schema.emplace_back(types::logical_type::BIGINT, col_b);
         return schema;
+    }
+
+    // Runs after pushdown_aggregate: gives a FROM aggregate over a host-registered table an extension
+    // source child, the way a host rule replaces the implicit table scan late in optimization.
+    logical_plan::node_ptr attach_extension_source_pass(std::pmr::memory_resource* res, logical_plan::node_ptr node) {
+        if (!node) {
+            return node;
+        }
+        for (auto& child : node->children()) {
+            child = attach_extension_source_pass(res, child);
+        }
+        if (node->type() != logical_plan::node_type::aggregate_t) {
+            return node;
+        }
+        const auto* agg = static_cast<const logical_plan::node_aggregate_t*>(node.get());
+        const auto& db = static_cast<const std::string&>(agg->dbname());
+        const auto& rel = static_cast<const std::string&>(agg->relname());
+        if (mock_ext_store().find(ext_key(db, rel)) == mock_ext_store().end()) {
+            return node;
+        }
+        for (const auto& child : node->children()) {
+            if (child->type() == logical_plan::node_type::extension_t) {
+                return node;
+            }
+        }
+        node->append_child(logical_plan::make_node_extension(res, core::dbname_t{db}, core::relname_t{rel}));
+        return node;
     }
 
     const logical_plan::node_extension_t* find_extension(const logical_plan::node_ptr& node) {
@@ -905,4 +941,36 @@ TEST_CASE("integration::cpp::extension_source::chunk_over_vector_capacity") {
         seed_local();
         expect_refused("SELECT w.grp, t.amount FROM widedb.t AS t JOIN uid_w.remote.db1.t1 AS w ON t.key = w.key;");
     }
+}
+
+// count(*) without WHERE over a host source: the host aggregate resolves to the registered (empty) catalog
+// table, which must not turn the aggregate into a disk reduce of that table instead of counting the source.
+TEST_CASE("integration::cpp::extension_source::count_star_over_named_host_aggregate") {
+    EXT_TEST_BOILERPLATE(integration_fixture_path("test_ext_count_named/base"))
+    auto externals = one_source(res, "uid_c", "key", "val", {{1, 10}, {2, 20}, {3, 30}}, /*async=*/false);
+    auto r = run_with_extension_sources(dispatcher,
+                                        "SELECT count(*) AS c FROM uid_c.remote.db1.t1;",
+                                        externals,
+                                        /*named_wrapper=*/true);
+    REQUIRE(r.cursor->is_success());
+    REQUIRE(r.cursor->size() == 1);
+    REQUIRE(r.cursor->value(0, 0).value<int64_t>() == 3);
+}
+
+// Same bug through a host optimizer pass that runs after pushdown_aggregate stamped the aggregate.
+TEST_CASE("integration::cpp::extension_source::count_star_after_host_optimizer_pass") {
+    auto config = test_create_config(integration_fixture_path("test_ext_count_pass/base"));
+    test_clear_directory(config);
+    mock_ext_store().clear();
+    test_spaces space(config, &make_mock_extension, &attach_extension_source_pass);
+    auto dispatcher = space.dispatcher();
+    auto* res = dispatcher->resource();
+    auto externals = one_source(res, "uid_p", "key", "val", {{1, 10}, {2, 20}, {3, 30}}, /*async=*/false);
+    register_externals(dispatcher, externals);
+    mock_ext_store()[ext_key(kExtDb, "uid_p")] = mock_ext_data_t{externals.at("uid_p").spec, false, nullptr};
+
+    auto cur = dispatcher->execute_sql(otterbrix::session_id_t(), "SELECT count(*) AS c FROM extreg.uid_p;");
+    REQUIRE(cur->is_success());
+    REQUIRE(cur->size() == 1);
+    REQUIRE(cur->value(0, 0).value<int64_t>() == 3);
 }

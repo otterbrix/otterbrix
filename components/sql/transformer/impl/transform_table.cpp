@@ -32,9 +32,21 @@ namespace components::sql::transform {
     } // namespace
 
     core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_create_table(CreateStmt& node) {
+        if (node.inhRelations && !node.inhRelations->lst.empty()) {
+            return core::error_t(core::error_code_t::unimplemented_yet,
+                                 std::pmr::string{"CREATE TABLE ... INHERITS is not supported; no table was created",
+                                                  resource_});
+        }
+        if (node.ofTypename) {
+            return core::error_t(core::error_code_t::unimplemented_yet,
+                                 std::pmr::string{"CREATE TABLE ... OF type is not supported: list the columns; no "
+                                                  "table was created",
+                                                  resource_});
+        }
         auto coldefs = reinterpret_cast<List*>(node.tableElts);
 
         VALUE_OR_RETURN(auto col_defs, get_column_definitions(resource_, *coldefs));
+        register_referenced_tables(resource_, &catalog_resolves_, *coldefs);
 
         auto qn = rangevar_to_qualified_name(node.relation);
         const std::string dbname = database_for(qn, namespace_policy::default_public);
@@ -200,7 +212,7 @@ namespace components::sql::transform {
         auto wrap_one = [&](const qualified_name_t& written, logical_plan::node_ptr n) {
             auto* drop = static_cast<logical_plan::node_drop_t*>(n.get());
             set_target(*drop, written);
-            drop->set_missing_ok(node.missing_ok);
+            if_exists_ = node.missing_ok;
             // One drop_behavior_of choke-point for all six DROP arms (bare = restrict_, PostgreSQL parity).
             drop->set_behavior(drop_behavior_of(node.behavior));
             register_catalog_resolve_table(resource_, &catalog_resolves_, written.database, written.collection);
@@ -231,7 +243,7 @@ namespace components::sql::transform {
                     drop->set_index_name(index_name);
                     // Same wiring as wrap_one; rewrite_drop_index reads this when the index name
                     // doesn't resolve.
-                    drop->set_missing_ok(node.missing_ok);
+                    if_exists_ = node.missing_ok;
                     // Not read yet (rewrite_drop_index builds its own delete sequence, not the
                     // dynamic cascade), but this is the only place it could be set.
                     drop->set_behavior(drop_behavior_of(node.behavior));
@@ -284,7 +296,7 @@ namespace components::sql::transform {
                 // resolved type entry and stamps type_oid from there.
                 const std::string type_db = set_target(*n, written);
                 // The one arm that does not build through wrap_one.
-                n->set_missing_ok(node.missing_ok);
+                if_exists_ = node.missing_ok;
                 // Unlike DROP INDEX, this arm does reach the dynamic cascade
                 // (planner's rewrite_drop routes drop_target_kind::type there).
                 n->set_behavior(drop_behavior_of(node.behavior));
@@ -304,11 +316,30 @@ namespace components::sql::transform {
                 auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::view);
                 return wrap_one(written, std::move(n));
             }
+            case OBJECT_MATVIEW: {
+                VALUE_OR_RETURN(auto written,
+                                qualified_name_of(resource_, *reinterpret_cast<List*>(node.objects->lst.front().data)));
+                auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::materialized_view);
+                return wrap_one(written, std::move(n));
+            }
             case OBJECT_FUNCTION: {
                 VALUE_OR_RETURN(auto written,
                                 qualified_name_of(resource_, *reinterpret_cast<List*>(node.objects->lst.front().data)));
                 auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::macro);
                 return wrap_one(written, std::move(n));
+            }
+            case OBJECT_FOREIGN_SERVER: {
+                // A server is catalog-wide: one name, no database.
+                const auto& parts = pg_ptr_cast<List>(node.objects->lst.front().data)->lst;
+                if (parts.size() != 1) {
+                    return core::error_t(core::error_code_t::sql_parse_error,
+                                         std::pmr::string{"DROP SERVER: a server name has no qualifier", resource_});
+                }
+                auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::server);
+                n->set_server_name(strVal(parts.front().data));
+                if_exists_ = node.missing_ok;
+                n->set_behavior(drop_behavior_of(node.behavior));
+                return logical_plan::node_ptr{std::move(n)};
             }
             default:
                 return core::error_t(core::error_code_t::sql_parse_error,

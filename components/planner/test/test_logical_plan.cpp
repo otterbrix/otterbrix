@@ -362,11 +362,6 @@ TEST_CASE("components::planner::node_drop_hash_folds_names_and_flags") {
         b->set_dbname("other");
         REQUIRE(a->hash() != b->hash());
     }
-    SECTION("IF EXISTS hashes differently from the loud form") {
-        auto b = base();
-        b->set_missing_ok(true);
-        REQUIRE(a->hash() != b->hash());
-    }
     SECTION("RESTRICT hashes differently from CASCADE") {
         auto b = base();
         // The node default is restrict_, so the differing side is CASCADE.

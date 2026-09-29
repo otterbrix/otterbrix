@@ -13,8 +13,7 @@ namespace services::planner::impl {
                                                                                             n->table_oid(),
                                                                                             n->column_name(),
                                                                                             n->attoid(),
-                                                                                            n->behavior(),
-                                                                                            n->missing_ok()));
+                                                                                            n->behavior()));
     }
 
 } // namespace services::planner::impl

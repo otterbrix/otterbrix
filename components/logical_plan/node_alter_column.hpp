@@ -41,9 +41,6 @@ namespace components::logical_plan {
         void set_column_name(core::columnname_t name) { column_name_ = std::move(static_cast<std::string&>(name)); }
         components::catalog::drop_behavior_t behavior() const noexcept { return behavior_; }
         void set_behavior(components::catalog::drop_behavior_t b) noexcept { behavior_ = b; }
-        // DROP COLUMN IF EXISTS: carried for both drop routes so a missing column is a no-op, not an error.
-        bool missing_ok() const noexcept { return missing_ok_; }
-        void set_missing_ok(bool v) noexcept { missing_ok_ = v; }
 
         components::catalog::oid_t attoid() const noexcept { return attoid_; }
         void set_attoid(components::catalog::oid_t a) noexcept { attoid_ = a; }
@@ -68,7 +65,6 @@ namespace components::logical_plan {
         std::string column_name_;
         // unwritten form defaults to RESTRICT (PostgreSQL parity); see node_alter_table.hpp
         components::catalog::drop_behavior_t behavior_{components::catalog::drop_behavior_t::restrict_};
-        bool missing_ok_{false};
         components::catalog::oid_t attoid_{components::catalog::INVALID_OID};
         bool computed_{false};
         std::pmr::vector<components::table::column_definition_t> registered_cols_;

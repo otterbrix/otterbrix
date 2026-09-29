@@ -26,7 +26,8 @@ namespace components::operators {
                                           log_t log,
                                           components::catalog::oid_t seed_classid,
                                           components::catalog::oid_t seed_objid,
-                                          components::catalog::drop_behavior_t behavior);
+                                          components::catalog::drop_behavior_t behavior,
+                                          components::catalog::cascade_seed_t seed);
 
         // Sourceless SINK leaf (no data pipeline, no children): the executor
         // admits it as a streaming sink-root and drives await_async_and_resume via
@@ -40,6 +41,7 @@ namespace components::operators {
         components::catalog::oid_t seed_classid_;
         components::catalog::oid_t seed_objid_;
         components::catalog::drop_behavior_t behavior_;
+        components::catalog::cascade_seed_t seed_;
     };
 
 } // namespace components::operators

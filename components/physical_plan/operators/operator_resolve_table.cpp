@@ -1,6 +1,7 @@
 #include "operator_resolve_table.hpp"
 
 #include "catalog_write_helpers.hpp"
+#include "operator_resolve_server.hpp"
 
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
@@ -40,10 +41,11 @@ namespace components::operators {
         };
 
         // A too-narrow projection doesn't fail; the column silently reads back as an empty placeholder.
-        std::pmr::vector<std::uint64_t> pg_class_oid_and_namespace(std::pmr::memory_resource* resource) {
+        std::pmr::vector<std::uint64_t> pg_class_oid_namespace_and_kind(std::pmr::memory_resource* resource) {
             std::pmr::vector<std::uint64_t> cols(resource);
             cols.emplace_back(catalog::pg_class_col::oid);
             cols.emplace_back(catalog::pg_class_col::relnamespace);
+            cols.emplace_back(catalog::pg_class_col::relkind);
             return cols;
         }
 
@@ -83,6 +85,8 @@ namespace components::operators {
         constexpr catalog::oid_t kPgAttribute = catalog::well_known_oid::pg_attribute_table;
         constexpr catalog::oid_t kPgComputedColumn = catalog::well_known_oid::pg_computed_column_table;
         constexpr catalog::oid_t kPgRewrite = catalog::well_known_oid::pg_rewrite_table;
+        constexpr catalog::oid_t kPgForeignTable = catalog::well_known_oid::pg_foreign_table_table;
+        constexpr catalog::oid_t kPgForeignServer = catalog::well_known_oid::pg_foreign_server_table;
 
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
@@ -96,8 +100,30 @@ namespace components::operators {
                 continue;
             }
 
+            // A name whose first part is a server is remote: the other parts are the path inside the server.
+            // A 4-part name asks for its uid; a shorter one asks only once its first part is no database.
+            bool remote = false;
+            if (!entry.uid.empty()) {
+                auto server_r = co_await read_foreign_server(resource_, ctx->disk_address, exec_ctx, entry.uid);
+                if (server_r.has_error()) {
+                    set_error(server_r.error());
+                    co_return;
+                }
+                remote = server_r.value().oid != catalog::INVALID_OID;
+                entry.server_oid = server_r.value().oid;
+                entry.server_type = std::move(server_r.value().type);
+            }
+
             auto input_namespace_oid = catalog::INVALID_OID;
-            if (!entry.dbname.empty()) {
+            if (entry.namespace_of != components::logical_plan::resolve_entry_t::no_target) {
+                // The owner entry sits earlier in this node and is resolved by now.
+                const auto& owner = node_->entries()[entry.namespace_of];
+                if (!owner.table_md.has_value()) {
+                    continue;
+                }
+                input_namespace_oid = owner.table_md->namespace_oid;
+            }
+            if (!remote && !entry.dbname.empty()) {
                 auto cached = namespace_cache.find(entry.dbname);
                 if (cached != namespace_cache.end()) {
                     input_namespace_oid = cached->second;
@@ -125,10 +151,41 @@ namespace components::operators {
                     }
                     namespace_cache.emplace(entry.dbname, input_namespace_oid);
                 }
-                if (input_namespace_oid == catalog::INVALID_OID) {
+                if (input_namespace_oid == catalog::INVALID_OID && entry.uid.empty()) {
+                    auto server_r = co_await read_foreign_server(resource_, ctx->disk_address, exec_ctx, entry.dbname);
+                    if (server_r.has_error()) {
+                        set_error(server_r.error());
+                        co_return;
+                    }
+                    remote = server_r.value().oid != catalog::INVALID_OID;
+                    entry.server_oid = server_r.value().oid;
+                    entry.server_type = std::move(server_r.value().type);
+                }
+                if (input_namespace_oid == catalog::INVALID_OID && !remote) {
                     // Never fall through to a relname-only scan — validate reports database_not_exists.
                     continue;
                 }
+            }
+            if (remote) {
+                // server.table names no schema: only the server's connector can say which one it means.
+                if (entry.uid.empty() && entry.schema.empty()) {
+                    continue;
+                }
+                auto ns_r = co_await read_foreign_namespace(resource_,
+                                                            ctx->disk_address,
+                                                            exec_ctx,
+                                                            entry.server_oid,
+                                                            entry.uid.empty() ? std::string{} : entry.dbname,
+                                                            entry.schema);
+                if (ns_r.has_error()) {
+                    set_error(ns_r.error());
+                    co_return;
+                }
+                if (ns_r.value() == catalog::INVALID_OID) {
+                    continue;
+                }
+                entry.remote_namespace_oid = ns_r.value();
+                input_namespace_oid = ns_r.value();
             }
 
             std::pmr::vector<std::uint64_t> key_cols(resource_);
@@ -149,7 +206,7 @@ namespace components::operators {
                                                                    kPgClass,
                                                                    std::move(key_cols),
                                                                    std::move(keys_chunk),
-                                                                   pg_class_oid_and_namespace(resource_));
+                                                                   pg_class_oid_namespace_and_kind(resource_));
             auto lookup_batches_r = co_await std::move(lookup_f);
             if (lookup_batches_r.has_error()) {
                 set_error(lookup_batches_r.error());
@@ -170,6 +227,14 @@ namespace components::operators {
                 for (std::uint64_t i = 0; i < chunk.size(); ++i) {
                     if (chunk.is_null(0, i)) {
                         continue;
+                    }
+                    // A cached remote table is reached only through its server, never by a short name.
+                    if (unqualified && chunk.column_count() > catalog::pg_class_col::relkind &&
+                        !chunk.is_null(catalog::pg_class_col::relkind, i)) {
+                        const auto kind = chunk.get_value<std::string_view>(catalog::pg_class_col::relkind, i);
+                        if (!kind.empty() && kind.front() == catalog::relkind::foreign) {
+                            continue;
+                        }
                     }
                     const auto oid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
                     const auto ns = chunk.column_count() > catalog::pg_class_col::relnamespace &&
@@ -310,6 +375,67 @@ namespace components::operators {
                 if (!pr_batches.empty() && pr_batches[0].size() != 0 && pr_batches[0].column_count() >= 5 &&
                     !pr_batches[0].is_null(4, 0)) {
                     view_sql.assign(pr_batches[0].get_value<std::string_view>(4, 0));
+                }
+            }
+
+            auto server_oid = catalog::INVALID_OID;
+            std::string server_type;
+            if (relkind == catalog::relkind::foreign) {
+                std::pmr::vector<std::uint64_t> ft_keys(resource_);
+                ft_keys.emplace_back(catalog::pg_foreign_table_col::ftrelid);
+                auto [_ft, ftf] =
+                    actor_zeta::otterbrix::send(ctx->disk_address,
+                                                &services::disk::manager_disk_t::read_chunks_by_key,
+                                                exec_ctx,
+                                                kPgForeignTable,
+                                                std::move(ft_keys),
+                                                components::operators::make_key_chunk(resource_, table_oid),
+                                                std::pmr::vector<std::uint64_t>{resource_});
+                auto ft_batches_r = co_await std::move(ftf);
+                if (ft_batches_r.has_error()) {
+                    set_error(ft_batches_r.error());
+                    co_return;
+                }
+                for (const auto& chunk : ft_batches_r.value()) {
+                    if (chunk.size() != 0 && chunk.column_count() > catalog::pg_foreign_table_col::ftserver &&
+                        !chunk.is_null(catalog::pg_foreign_table_col::ftserver, 0)) {
+                        server_oid = static_cast<catalog::oid_t>(
+                            chunk.get_value<std::uint32_t>(catalog::pg_foreign_table_col::ftserver, 0));
+                        break;
+                    }
+                }
+                if (server_oid != catalog::INVALID_OID) {
+                    std::pmr::vector<std::uint64_t> srv_keys(resource_);
+                    srv_keys.emplace_back(catalog::pg_foreign_server_col::oid);
+                    auto [_srv, srvf] =
+                        actor_zeta::otterbrix::send(ctx->disk_address,
+                                                    &services::disk::manager_disk_t::read_chunks_by_key,
+                                                    exec_ctx,
+                                                    kPgForeignServer,
+                                                    std::move(srv_keys),
+                                                    components::operators::make_key_chunk(resource_, server_oid),
+                                                    std::pmr::vector<std::uint64_t>{resource_});
+                    auto srv_batches_r = co_await std::move(srvf);
+                    if (srv_batches_r.has_error()) {
+                        set_error(srv_batches_r.error());
+                        co_return;
+                    }
+                    for (const auto& chunk : srv_batches_r.value()) {
+                        if (chunk.size() != 0 && chunk.column_count() > catalog::pg_foreign_server_col::srvtype &&
+                            !chunk.is_null(catalog::pg_foreign_server_col::srvtype, 0)) {
+                            server_type.assign(
+                                chunk.get_value<std::string_view>(catalog::pg_foreign_server_col::srvtype, 0));
+                            break;
+                        }
+                    }
+                }
+                if (server_oid == catalog::INVALID_OID || server_type.empty()) {
+                    std::string msg = "table resolution: foreign table \"";
+                    msg += entry.relname;
+                    msg += "\" has no pg_foreign_table row naming a live pg_foreign_server row";
+                    set_error(core::error_t{core::error_code_t::data_corruption,
+                                            std::pmr::string{std::move(msg), resource_}});
+                    co_return;
                 }
             }
 
@@ -571,6 +697,8 @@ namespace components::operators {
             md.relkind = relkind;
             md.name = entry.relname;
             md.view_sql = std::move(view_sql);
+            md.server_oid = server_oid;
+            md.server_type = std::move(server_type);
             md.columns.reserve(rows.size());
             for (const auto& row : rows) {
                 components::logical_plan::resolved_column_metadata_t cm;

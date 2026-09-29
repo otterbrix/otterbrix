@@ -1,5 +1,5 @@
-// e2e for the host-extension SOURCE/SINK operators: uid-qualified external leaves are swapped for
-// node_extension_t leaves (pure (db, rel) identity, no host state), resolved by an injected create_plan rule.
+// e2e for the host-extension SOURCE/SINK operators: the host's name resolution swaps uid-qualified external
+// leaves for node_extension_t leaves with declared columns; each node lowers through its own operator function.
 
 #include "integration_fixture_path.hpp"
 #include "test_config.hpp"
@@ -52,7 +52,6 @@ namespace {
         return chunk;
     }
 
-    // Keyed by the extension node's (db, rel) identity; the node itself carries no host state.
     struct mock_ext_data_t {
         rows_spec_t spec;
         bool async_delivery{true};
@@ -60,12 +59,14 @@ namespace {
         bool fetch_on_open{false};
         std::chrono::milliseconds fetch_latency{0};
         bool fail_open{false};
+        bool no_operator{false};
     };
-    std::unordered_map<std::string, mock_ext_data_t>& mock_ext_store() {
-        static std::unordered_map<std::string, mock_ext_data_t> store;
-        return store;
-    }
-    std::string ext_key(const std::string& db, const std::string& rel) { return db + "." + rel; }
+
+    struct mock_payload_t final : logical_plan::extension_payload_t {
+        explicit mock_payload_t(mock_ext_data_t data)
+            : data(std::move(data)) {}
+        mock_ext_data_t data;
+    };
 
     class mock_source_op_t final : public operators::read_only_operator_t {
     public:
@@ -269,31 +270,27 @@ namespace {
     // Dispatch by shape: a leaf is a source (reads a backend), a node with a child is a sink (writes one).
     operators::operator_ptr make_mock_extension(const services::context_storage_t& context,
                                                 const compute::function_registry_t&,
-                                                const logical_plan::node_ptr& node) {
-        if (node->type() != logical_plan::node_type::extension_t) {
+                                                const logical_plan::node_extension_t& node) {
+        const auto& data = static_cast<const mock_payload_t*>(node.payload())->data;
+        if (data.no_operator) {
             return {};
         }
-        const auto* ext = static_cast<const logical_plan::node_extension_t*>(node.get());
-        auto it = mock_ext_store().find(ext_key(ext->dbname(), ext->relname()));
-        if (it == mock_ext_store().end()) {
-            return {};
-        }
-        if (node->children().empty() && it->second.fetch_on_open) {
+        if (node.children().empty() && data.fetch_on_open) {
             return {new fetch_on_open_source_op_t(context.resource,
                                                   context.log.clone(),
-                                                  it->second.spec,
-                                                  it->second.fetch_latency,
-                                                  it->second.fail_open,
-                                                  node->table_oid())};
+                                                  data.spec,
+                                                  data.fetch_latency,
+                                                  data.fail_open,
+                                                  node.table_oid())};
         }
-        if (node->children().empty()) {
+        if (node.children().empty()) {
             return {new mock_source_op_t(context.resource,
                                          context.log.clone(),
-                                         it->second.spec,
-                                         it->second.async_delivery,
-                                         node->table_oid())};
+                                         data.spec,
+                                         data.async_delivery,
+                                         node.table_oid())};
         }
-        return {new mock_sink_op_t(context.resource, context.log.clone(), it->second.sink_written)};
+        return {new mock_sink_op_t(context.resource, context.log.clone(), data.sink_written)};
     }
 
     static constexpr const char* kExtDb = "extreg";
@@ -305,15 +302,52 @@ namespace {
         bool fetch_on_open{false};
         std::chrono::milliseconds fetch_latency{0};
         bool fail_open{false};
+        bool no_operator{false};
     };
     using externals_by_uid_t = std::unordered_map<std::string, external_source_t>;
 
-    // `named_wrapper`: the host names the rebuilt aggregate after the registered catalog table, so it
-    // resolves to that table's oid like any FROM target.
+    // What the test host's name resolution swaps in for the next statement; its hooks are plain functions.
+    struct host_state_t {
+        externals_by_uid_t externals;
+        bool named_wrapper{false};
+        std::vector<logical_plan::node_extension_ptr> made;
+    };
+    host_state_t& host_state() {
+        static host_state_t state;
+        return state;
+    }
+
+    // Declared after the engine, so the host's nodes go before the resource they live on.
+    struct host_state_reset_t {
+        host_state_reset_t() { host_state() = host_state_t{}; }
+        ~host_state_reset_t() { host_state() = host_state_t{}; }
+    };
+
+    logical_plan::node_extension_ptr
+    make_extension(std::pmr::memory_resource* res, const std::string& name, const external_source_t& source) {
+        auto ext = logical_plan::make_node_extension(
+            res,
+            name,
+            std::pmr::vector<types::complex_logical_type>(source.schema, res),
+            &make_mock_extension,
+            logical_plan::extension_payload_ptr{new mock_payload_t{mock_ext_data_t{source.spec,
+                                                                                   source.async_delivery,
+                                                                                   nullptr,
+                                                                                   source.fetch_on_open,
+                                                                                   source.fetch_latency,
+                                                                                   source.fail_open,
+                                                                                   source.no_operator}}});
+        REQUIRE_FALSE(ext.has_error());
+        host_state().made.push_back(ext.value());
+        return ext.value();
+    }
+
+    // `named_wrapper`: the host names the rebuilt aggregate after a local table (extreg.<uid>), so it resolves to
+    // that table's oid like any FROM target.
     void swap_to_extension(logical_plan::node_ptr& node,
                            std::pmr::memory_resource* res,
                            const externals_by_uid_t& externals,
-                           bool named_wrapper = false) {
+                           bool named_wrapper) {
         if (!node) {
             return;
         }
@@ -323,13 +357,7 @@ namespace {
             if (!uid_s.empty()) {
                 auto it = externals.find(uid_s);
                 if (it != externals.end()) {
-                    mock_ext_store()[ext_key(kExtDb, uid_s)] = mock_ext_data_t{it->second.spec,
-                                                                               it->second.async_delivery,
-                                                                               nullptr,
-                                                                               it->second.fetch_on_open,
-                                                                               it->second.fetch_latency,
-                                                                               it->second.fail_open};
-                    auto ext = logical_plan::make_node_extension(res, core::dbname_t{kExtDb}, core::relname_t{uid_s});
+                    auto ext = make_extension(res, uid_s, it->second);
                     ext->set_result_alias(agg->result_alias().empty() ? static_cast<const std::string&>(agg->relname())
                                                                       : agg->result_alias());
                     if (node->children().empty()) {
@@ -359,21 +387,32 @@ namespace {
         }
     }
 
+    core::result_wrapper_t<logical_plan::node_ptr>
+    swap_decide(std::pmr::memory_resource* res,
+                logical_plan::node_ptr tree,
+                std::span<const planner::unresolved_table_t>,
+                std::span<const std::pmr::vector<vector::data_chunk_t>>) {
+        swap_to_extension(tree, res, host_state().externals, host_state().named_wrapper);
+        return tree;
+    }
+
+    services::engine::primitives_t swapping_host(std::span<const planner::optimizer_rule_t> rules = {}) {
+        return services::engine::primitives_t{rules, {&planner::no_name_reads, &swap_decide}};
+    }
+
     struct run_result_t {
         cursor::cursor_t_ptr cursor;
-        logical_plan::node_ptr plan;
         std::chrono::steady_clock::duration elapsed;
     };
 
     // A hung executor must fail the run, not wedge it: the dispatcher wait has no deadline of its own.
-    cursor::cursor_t_ptr execute_within_deadline(otterbrix::wrapper_dispatcher_t* dispatcher,
-                                                 logical_plan::execution_plan_t exec_plan) {
+    cursor::cursor_t_ptr execute_within_deadline(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& sql) {
         constexpr auto deadline = std::chrono::seconds(30);
         std::atomic<bool> done{false};
         cursor::cursor_t_ptr cursor;
         std::thread worker([&] {
             auto session = otterbrix::session_id_t();
-            cursor = dispatcher->execute_plan(session, std::move(exec_plan));
+            cursor = dispatcher->execute_sql(session, sql);
             done.store(true, std::memory_order_release);
         });
         const auto until = std::chrono::steady_clock::now() + deadline;
@@ -390,26 +429,17 @@ namespace {
         return cursor;
     }
 
-    void register_externals(otterbrix::wrapper_dispatcher_t* dispatcher, const externals_by_uid_t& externals) {
-        auto* res = dispatcher->resource();
-        {
-            auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE extreg;"); // idempotent per test dir
-        }
+    // named_wrapper needs the local table the wrapper is named after.
+    void create_named_wrapper_tables(otterbrix::wrapper_dispatcher_t* dispatcher, const externals_by_uid_t& externals) {
+        dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE DATABASE extreg;"); // idempotent per test dir
         for (const auto& [uid, source] : externals) {
-            std::vector<components::table::column_definition_t> columns;
-            columns.reserve(source.schema.size());
+            std::string columns;
             for (const auto& t : source.schema) {
-                columns.emplace_back(t.alias(), t);
+                columns += (columns.empty() ? "" : ", ") + t.alias() + " BIGINT";
             }
-            auto create_node =
-                logical_plan::make_node_create_collection(res, core::relname_t{uid}, std::move(columns), {});
-            auto wrapped = sql::transform::name_catalog_target(kExtDb, {}, create_node);
-            auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_plan(
-                session,
-                logical_plan::execution_plan_t{res, std::move(wrapped), logical_plan::make_parameter_node(res)});
-            REQUIRE(cur->is_success());
+            REQUIRE(
+                dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE TABLE extreg." + uid + " (" + columns + ");")
+                    ->is_success());
         }
     }
 
@@ -417,51 +447,23 @@ namespace {
                                             const std::string& sql,
                                             externals_by_uid_t externals,
                                             bool named_wrapper = false) {
-        auto* res = dispatcher->resource();
-        std::pmr::monotonic_buffer_resource arena(res);
-        sql::transform::transformer transformer(res);
-
-        auto* raw = raw_parser(&arena, sql.c_str());
-        REQUIRE(raw != nullptr);
-        auto& ast_ref = sql::transform::pg_cell_to_node_cast(linitial(raw));
-        auto binder = transformer.transform(ast_ref);
-        REQUIRE_FALSE(binder.has_error());
-
-        auto finalized = binder.finalize();
-        REQUIRE_FALSE(finalized.has_error());
-        auto exec_plan = std::move(finalized.value());
-        REQUIRE(exec_plan.sub_queries.back());
-
-        register_externals(dispatcher, externals);
-        swap_to_extension(exec_plan.sub_queries.back(), res, externals, named_wrapper);
-        auto plan = exec_plan.sub_queries.back();
-
+        if (named_wrapper) {
+            create_named_wrapper_tables(dispatcher, externals);
+        }
+        host_state().externals = std::move(externals);
+        host_state().named_wrapper = named_wrapper;
+        host_state().made.clear();
         const auto started = std::chrono::steady_clock::now();
-        auto cursor = execute_within_deadline(dispatcher, std::move(exec_plan));
-        return {std::move(cursor), std::move(plan), std::chrono::steady_clock::now() - started};
+        auto cursor = execute_within_deadline(dispatcher, sql);
+        return {std::move(cursor), std::chrono::steady_clock::now() - started};
     }
 
     std::string explain_extension_plan(otterbrix::wrapper_dispatcher_t* dispatcher,
                                        const std::string& sql,
                                        externals_by_uid_t externals) {
-        auto* res = dispatcher->resource();
-        std::pmr::monotonic_buffer_resource arena(res);
-        sql::transform::transformer transformer(res);
-        auto* raw = raw_parser(&arena, sql.c_str());
-        REQUIRE(raw != nullptr);
-        auto& ast_ref = sql::transform::pg_cell_to_node_cast(linitial(raw));
-        auto binder = transformer.transform(ast_ref);
-        REQUIRE_FALSE(binder.has_error());
-        auto finalized = binder.finalize();
-        REQUIRE_FALSE(finalized.has_error());
-        auto exec_plan = std::move(finalized.value());
-        REQUIRE(exec_plan.sub_queries.back());
-        register_externals(dispatcher, externals);
-        swap_to_extension(exec_plan.sub_queries.back(), res, externals);
-
-        exec_plan.explain = logical_plan::explain_type::plan;
-        auto session = otterbrix::session_id_t();
-        auto cursor = dispatcher->execute_plan(session, std::move(exec_plan));
+        host_state().externals = std::move(externals);
+        host_state().named_wrapper = false;
+        auto cursor = dispatcher->execute_sql(otterbrix::session_id_t(), "EXPLAIN " + sql);
         REQUIRE(cursor->is_success());
         std::string out;
         for (const auto& chunk : cursor->chunks()) {
@@ -481,14 +483,16 @@ namespace {
         return schema;
     }
 
-    // Runs after pushdown_aggregate: gives a FROM aggregate over a host-registered table an extension
-    // source child, the way a host rule replaces the implicit table scan late in optimization.
-    logical_plan::node_ptr attach_extension_source_pass(std::pmr::memory_resource* res, logical_plan::node_ptr node) {
+    // A `last`-stage rule: gives a FROM aggregate over a local table the host serves an extension source child,
+    // the way a host rule replaces the implicit table scan late in optimization.
+    logical_plan::node_ptr attach_extension_source_rule(std::pmr::memory_resource* res,
+                                                        logical_plan::node_ptr node,
+                                                        const planner::optimizer_rule_context_t& context) {
         if (!node) {
             return node;
         }
         for (auto& child : node->children()) {
-            child = attach_extension_source_pass(res, child);
+            child = attach_extension_source_rule(res, child, context);
         }
         if (node->type() != logical_plan::node_type::aggregate_t) {
             return node;
@@ -496,7 +500,8 @@ namespace {
         const auto* agg = static_cast<const logical_plan::node_aggregate_t*>(node.get());
         const auto& db = static_cast<const std::string&>(agg->dbname());
         const auto& rel = static_cast<const std::string&>(agg->relname());
-        if (mock_ext_store().find(ext_key(db, rel)) == mock_ext_store().end()) {
+        auto it = host_state().externals.find(rel);
+        if (db != kExtDb || it == host_state().externals.end()) {
             return node;
         }
         for (const auto& child : node->children()) {
@@ -504,23 +509,8 @@ namespace {
                 return node;
             }
         }
-        node->append_child(logical_plan::make_node_extension(res, core::dbname_t{db}, core::relname_t{rel}));
+        node->append_child(make_extension(res, rel, it->second));
         return node;
-    }
-
-    const logical_plan::node_extension_t* find_extension(const logical_plan::node_ptr& node) {
-        if (!node) {
-            return nullptr;
-        }
-        if (node->type() == logical_plan::node_type::extension_t) {
-            return static_cast<const logical_plan::node_extension_t*>(node.get());
-        }
-        for (const auto& child : node->children()) {
-            if (const auto* found = find_extension(child)) {
-                return found;
-            }
-        }
-        return nullptr;
     }
 
 } // namespace
@@ -541,8 +531,8 @@ static externals_by_uid_t one_source(std::pmr::memory_resource* res,
 #define EXT_TEST_BOILERPLATE(DIR)                                                                                      \
     auto config = test_create_config(DIR);                                                                             \
     test_clear_directory(config);                                                                                      \
-    mock_ext_store().clear();                        /* fresh host store per test (keyed by db.rel) */                 \
-    test_spaces space(config, &make_mock_extension); /* host injects its create_plan rule at engine start */           \
+    test_spaces space(config, swapping_host()); /* the host's name resolution, given at engine start */                \
+    host_state_reset_t host_state_reset;                                                                               \
     auto dispatcher = space.dispatcher();                                                                              \
     auto* res = dispatcher->resource();
 
@@ -620,9 +610,10 @@ TEST_CASE("integration::cpp::extension_source::barrier_where_above_join") {
     REQUIRE(r.cursor->size() == 2);
 
     // Extension leaves must survive optimize() untouched: identity intact, no predicate/limit injected.
-    const auto* ext = find_extension(r.plan);
-    REQUIRE(ext != nullptr);
-    REQUIRE(ext->relname() == "uid_l");
+    REQUIRE(host_state().made.size() == 2);
+    const auto* ext =
+        host_state().made.front()->name() == "uid_l" ? host_state().made.front().get() : host_state().made.back().get();
+    REQUIRE(ext->name() == "uid_l");
     REQUIRE(ext->expressions().empty());
     REQUIRE(ext->children().empty());
 }
@@ -652,15 +643,9 @@ TEST_CASE("integration::cpp::extension_source::join_with_local_table") {
     REQUIRE(r.cursor->size() == 2);
 }
 
-// A host-extension node with no injected create_plan rule must surface a clean error, not a crash.
-TEST_CASE("integration::cpp::extension_source::missing_rule_errors_not_crash") {
-    auto config = test_create_config(integration_fixture_path("test_ext_norule/base"));
-    test_clear_directory(config);
-    mock_ext_store().clear();
-    test_spaces space(config); // NO create_plan rule injected → extension lowers to null
-    auto dispatcher = space.dispatcher();
-    auto* res = dispatcher->resource();
-    {
+// A host operator function that builds no operator must surface a clean error, not a crash.
+TEST_CASE("integration::cpp::extension_source::missing_operator_errors_not_crash") {
+    EXT_TEST_BOILERPLATE(integration_fixture_path("test_ext_norule/base")) {
         auto s = otterbrix::session_id_t();
         dispatcher->execute_sql(s, "CREATE DATABASE extdb;");
     }
@@ -670,6 +655,7 @@ TEST_CASE("integration::cpp::extension_source::missing_rule_errors_not_crash") {
     }
     {
         auto externals = one_source(res, "uid_l", "key", "name", {{1, 11}}, /*async=*/false);
+        externals.at("uid_l").no_operator = true;
         auto r = run_with_extension_sources(dispatcher,
                                             "SELECT e.name, t.amount FROM uid_l.remote.db1.t1 AS e "
                                             "JOIN extdb.local_t AS t ON e.key = t.key;",
@@ -678,6 +664,7 @@ TEST_CASE("integration::cpp::extension_source::missing_rule_errors_not_crash") {
     }
     {
         auto externals = one_source(res, "uid_g", "key", "val", {{1, 10}}, /*async=*/false);
+        externals.at("uid_g").no_operator = true;
         auto r = run_with_extension_sources(dispatcher,
                                             "SELECT key, count(val) FROM uid_g.remote.db1.t1 GROUP BY key;",
                                             externals);
@@ -701,8 +688,9 @@ TEST_CASE("integration::cpp::extension_source::explain_shows_backend") {
                                        "JOIN uid_r.remote.db1.t2 AS r ON l.key = r.key;",
                                        externals);
     INFO(text);
-    REQUIRE(text.find("Extension Scan on uid_l") != std::string::npos);
-    REQUIRE(text.find("Extension Scan on uid_r") != std::string::npos);
+    const auto first = text.find("Extension Scan");
+    REQUIRE(first != std::string::npos);
+    REQUIRE(text.find("Extension Scan", first + 1) != std::string::npos);
 }
 
 // Built by hand: there is no SQL syntax for INSERT INTO <backend>, so this wires a node_extension_t directly.
@@ -741,12 +729,18 @@ TEST_CASE("integration::cpp::extension_source::sink_writes_backend") {
     REQUIRE(child);
 
     std::vector<std::pair<int64_t, int64_t>> written;
-    mock_ext_store()[ext_key("sdb", "sink_target")] = mock_ext_data_t{rows_spec_t{}, false, &written};
-    auto sink = logical_plan::make_node_extension(res, core::dbname_t{"sdb"}, core::relname_t{"sink_target"});
-    sink->append_child(child);
+    mock_ext_data_t sink_data;
+    sink_data.sink_written = &written;
+    auto sink = logical_plan::make_node_extension(res,
+                                                  "sink_target",
+                                                  std::pmr::vector<types::complex_logical_type>{res},
+                                                  &make_mock_extension,
+                                                  logical_plan::extension_payload_ptr{new mock_payload_t{sink_data}});
+    REQUIRE_FALSE(sink.has_error());
+    sink.value()->append_child(child);
 
     auto session = otterbrix::session_id_t();
-    exec_plan.sub_queries.back() = sink;
+    exec_plan.sub_queries.back() = sink.value();
     auto cur = dispatcher->execute_plan(session, std::move(exec_plan));
     REQUIRE(cur->is_success());
 
@@ -957,17 +951,18 @@ TEST_CASE("integration::cpp::extension_source::count_star_over_named_host_aggreg
     REQUIRE(r.cursor->value(0, 0).value<int64_t>() == 3);
 }
 
-// Same bug through a host optimizer pass that runs after pushdown_aggregate stamped the aggregate.
-TEST_CASE("integration::cpp::extension_source::count_star_after_host_optimizer_pass") {
+// Same bug through a host rule at the last optimizer stage, after pushdown_aggregate stamped the aggregate.
+TEST_CASE("integration::cpp::extension_source::count_star_after_host_optimizer_rule") {
     auto config = test_create_config(integration_fixture_path("test_ext_count_pass/base"));
     test_clear_directory(config);
-    mock_ext_store().clear();
-    test_spaces space(config, &make_mock_extension, &attach_extension_source_pass);
+    const planner::optimizer_rule_t rules[] = {{planner::optimizer_stage::last, &attach_extension_source_rule}};
+    test_spaces space(config, swapping_host(rules));
+    host_state_reset_t host_state_reset;
     auto dispatcher = space.dispatcher();
     auto* res = dispatcher->resource();
     auto externals = one_source(res, "uid_p", "key", "val", {{1, 10}, {2, 20}, {3, 30}}, /*async=*/false);
-    register_externals(dispatcher, externals);
-    mock_ext_store()[ext_key(kExtDb, "uid_p")] = mock_ext_data_t{externals.at("uid_p").spec, false, nullptr};
+    create_named_wrapper_tables(dispatcher, externals);
+    host_state().externals = std::move(externals);
 
     auto cur = dispatcher->execute_sql(otterbrix::session_id_t(), "SELECT count(*) AS c FROM extreg.uid_p;");
     REQUIRE(cur->is_success());

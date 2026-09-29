@@ -95,12 +95,9 @@ TEST_CASE("create_plan: aggregate WITHOUT pushdown lowers to the normal aggregat
 
 namespace {
 
-    components::operators::operator_ptr host_source_rule(const services::context_storage_t& context,
-                                                         const components::compute::function_registry_t&,
-                                                         const node_ptr& node) {
-        if (node->type() != node_type::extension_t) {
-            return {};
-        }
+    components::operators::operator_ptr host_source_operator(const services::context_storage_t& context,
+                                                             const components::compute::function_registry_t&,
+                                                             const node_extension_t&) {
         std::pmr::vector<components::types::complex_logical_type> types(context.resource);
         return {new op::operator_empty_t(context.resource, op::make_operator_data(context.resource, types, 0))};
     }
@@ -115,17 +112,32 @@ namespace {
 
 } // namespace
 
+// A host node without an operator function is refused when it is made, so physgen never meets one.
+TEST_CASE("create_plan: a host node without an operator function is refused") {
+    core::pmr::otterbrix_resource resource;
+    auto ext = make_node_extension(&resource,
+                                   "host_source",
+                                   std::pmr::vector<components::types::complex_logical_type>{&resource},
+                                   nullptr);
+    REQUIRE(ext.has_error());
+    REQUIRE(ext.error().type == core::error_code_t::create_physical_plan_error);
+}
+
 // A stamp that reaches physgen over an explicit source child (a later optimizer pass swapped the
 // implicit table scan for a host extension leaf) must not read the owning table on disk instead.
 TEST_CASE("create_plan: pushdown stamp over an extension source child does not lower to pushed_reduce_scan") {
     core::pmr::otterbrix_resource resource;
     services::context_storage_t context(&resource, log_t{}, components::catalog::session_catalog_t{});
     context.known_oids.insert(components::catalog::oid_t{123});
-    context.create_plan_rule = &host_source_rule;
     components::compute::function_registry_t registry(&resource);
 
     auto node = build_agg(&resource, /*pushdown=*/true);
-    node->append_child(make_node_extension(&resource, dbn(), reln()));
+    auto ext = make_node_extension(&resource,
+                                   "host_source",
+                                   std::pmr::vector<components::types::complex_logical_type>{&resource},
+                                   &host_source_operator);
+    REQUIRE_FALSE(ext.has_error());
+    node->append_child(ext.value());
     auto plan =
         services::planner::create_plan(context, registry, node, components::logical_plan::limit_t::unlimit(), nullptr);
 

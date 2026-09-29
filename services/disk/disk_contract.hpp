@@ -135,9 +135,10 @@ namespace services::disk {
                        components::operators::pushed_aggregate_spec_t spec);
 
         // See manager_disk_t::compact_relkind_g_storage for the mechanism.
-        actor_zeta::unique_future<std::uint64_t> compact_relkind_g_storage(execution_context_t ctx,
-                                                                           components::catalog::oid_t table_oid,
-                                                                           std::set<std::string> live_attnames);
+        actor_zeta::unique_future<core::result_wrapper_t<std::uint64_t>>
+        compact_relkind_g_storage(execution_context_t ctx,
+                                  components::catalog::oid_t table_oid,
+                                  std::set<std::string> live_attnames);
 
         actor_zeta::unique_future<core::error_t> add_storage_column(execution_context_t ctx,
                                                                     components::catalog::oid_t table_oid,

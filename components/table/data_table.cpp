@@ -109,7 +109,20 @@ namespace components::table {
             col.set_storage_oid(storage_idx++);
         }
 
-        this->row_groups_ = parent.row_groups_->remove_column(removed_column);
+        auto reduced = parent.row_groups_->remove_column(removed_column);
+        if (reduced.has_error()) {
+            // Same latch as the add_column constructor: the parent stays root, this table shares its
+            // collection read-only and still lists every column.
+            construction_error_ = reduced.error();
+            column_definitions_.clear();
+            for (auto& column_def : parent.column_definitions_) {
+                column_definitions_.emplace_back(column_def);
+            }
+            this->row_groups_ = parent.row_groups_;
+            is_root_ = false;
+            return;
+        }
+        this->row_groups_ = std::move(reduced.value());
 
         parent.is_root_ = false;
     }

@@ -461,7 +461,9 @@ TEST_CASE("big_strings: an unresolvable overflow block reports an error and does
                                                0,
                                                0,
                                                complex_logical_type{logical_type::STRING_LITERAL});
+    components::table::storage::partial_block_manager_t append_pbm(block_manager);
     column_append_state append_state;
+    append_state.pbm = &append_pbm;
     REQUIRE_FALSE(column->initialize_append(append_state).has_error());
 
     auto types = string_column_types(&env.resource);
@@ -538,7 +540,9 @@ TEST_CASE("big_strings: a reloaded segment reports its overflow blocks for compa
     {
         // Append state must be gone before the checkpoint: it re-points the still-managed
         // validity segment to disk, dropping the block_handle the append state's pin refers to.
+        components::table::storage::partial_block_manager_t append_pbm(bm);
         column_append_state append_state;
+        append_state.pbm = &append_pbm;
         REQUIRE_FALSE(column->initialize_append(append_state).has_error());
 
         auto types = string_column_types(&env.resource);
@@ -711,7 +715,9 @@ TEST_CASE("big_strings: a duplicated persisted overflow block is data_corruption
     auto column =
         column_data_t::create_column(&env.resource, bm, 0, 0, complex_logical_type{logical_type::STRING_LITERAL});
     {
+        components::table::storage::partial_block_manager_t append_pbm(bm);
         column_append_state append_state;
+        append_state.pbm = &append_pbm;
         REQUIRE_FALSE(column->initialize_append(append_state).has_error());
         auto types = string_column_types(&env.resource);
         data_chunk_t input(&env.resource, types, values.size());

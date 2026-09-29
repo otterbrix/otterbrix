@@ -177,7 +177,10 @@ namespace components::table {
             const types::logical_value_t fill_value =
                 default_value.has_value() ? *default_value
                                           : types::logical_value_t{collection_->resource(), new_column.type()};
+            // The materialized column belongs to the successor, so its filled segments pack into the
+            // successor's tails (sealed by the successor's first checkpoint like any other append).
             column_append_state state;
+            state.pbm = &new_collection->append_packer();
             auto init = added_column->initialize_append(state);
             if (init.has_error()) {
                 return init.convert_error<std::unique_ptr<row_group_t>>();
@@ -627,6 +630,7 @@ namespace components::table {
         append_state.states = std::make_unique<column_append_state[]>(get_column_count());
         for (uint64_t i = 0; i < get_column_count(); i++) {
             auto& col_data = get_column(i);
+            append_state.states[i].pbm = append_state.pbm;
             auto init = col_data.initialize_append(append_state.states[i]);
             if (init.has_error()) {
                 return init; // out_of_memory
@@ -882,10 +886,7 @@ namespace components::table {
         return pointer;
     }
 
-    core::result_wrapper_t<bool> row_group_t::transition_to_disk() {
-        // One partial_block_manager per closed row group: all its columns' segments pack into shared
-        // blocks instead of one block per segment (avoids a ~127x over-allocation for narrow columns).
-        storage::partial_block_manager_t pbm(block_manager());
+    core::result_wrapper_t<bool> row_group_t::transition_to_disk(storage::partial_block_manager_t& pbm) {
         for (uint64_t i = 0; i < columns_.size(); i++) {
             if (!columns_[i]) {
                 continue;
@@ -894,10 +895,6 @@ namespace components::table {
             if (transitioned.has_error()) {
                 return transitioned; // io_error / out_of_memory
             }
-        }
-        // Flush before returning (synchronous, like checkpoint): the flush-before-evict point compact also reuses.
-        if (auto flushed = pbm.flush_partial_blocks(); flushed.has_error()) {
-            return flushed; // io_error: the re-pointed segments' blocks are not on disk
         }
         return true;
     }

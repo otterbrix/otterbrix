@@ -292,8 +292,15 @@ namespace components::operators {
                                                     table_oid,
                                                     std::move(live_attnames));
                     // Answer is the count of physical columns actually dropped (skipped silently for DISK-backed
-                    // or already-compact storages) — logged so the subtractive leg leaves a record.
-                    const std::uint64_t dropped_columns = co_await std::move(dcf);
+                    // or already-compact storages) — logged so the subtractive leg leaves a record. A refused
+                    // drop (the storage could not seal its append packer) is the statement's error.
+                    auto dropped_r = co_await std::move(dcf);
+                    if (dropped_r.has_error()) {
+                        set_error(dropped_r.error());
+                        mark_failed();
+                        co_return;
+                    }
+                    const std::uint64_t dropped_columns = dropped_r.value();
                     if (dropped_columns > 0) {
                         trace(log_,
                               "operator_vacuum: relkind='g' storage oid {} — column compaction dropped {} "

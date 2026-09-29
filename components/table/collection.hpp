@@ -7,6 +7,7 @@
 
 #include "column_data.hpp"
 #include "row_version_manager.hpp"
+#include "storage/partial_block_manager.hpp"
 #include "table_state.hpp"
 
 #include "column_definition.hpp"
@@ -114,9 +115,11 @@ namespace components::table {
 
         // An ALTER successor's row groups share this collection's column objects and row-version
         // managers (row_group_t::add_column/remove_column), so the parent stays readable while it installs.
+        // Both seal this collection's append packer first (the successor's first checkpoint may name
+        // its open tails) and return that seal's io_error rather than a successor over a torn tail.
         [[nodiscard]] core::result_wrapper_t<boost::intrusive_ptr<collection_t>>
         add_column(column_definition_t& new_column);
-        boost::intrusive_ptr<collection_t> remove_column(uint64_t col_idx);
+        [[nodiscard]] core::result_wrapper_t<boost::intrusive_ptr<collection_t>> remove_column(uint64_t col_idx);
         // TODO: type casting
         // std::shared_ptr<collection_t> alter_type(uint64_t changed_idx, const types::complex_logical_type &target_type,
         // std::vector<storage_index_t> bound_columns);
@@ -126,6 +129,9 @@ namespace components::table {
         checkpoint(storage::partial_block_manager_t& partial_block_manager);
 
         storage::block_manager_t& block_manager() { return block_manager_; }
+
+        // The packer every append into this collection's row groups goes through (see append_pbm_).
+        storage::partial_block_manager_t& append_packer() { return append_pbm_; }
 
         uint64_t allocation_size() const { return allocation_size_; }
 
@@ -145,6 +151,11 @@ namespace components::table {
 
         std::pmr::memory_resource* resource_;
         storage::block_manager_t& block_manager_;
+        // Packs the segments appends fill, across statements and row groups, into shared blocks;
+        // a packer per append call gave each 16 KiB string segment its own 256 KiB block (28x
+        // file-to-payload on 64-byte strings). Its open tails are grown in place until checkpoint()
+        // or an ALTER successor seals them -- only then can a durable root name them.
+        storage::partial_block_manager_t append_pbm_;
         uint64_t row_group_size_;
         std::atomic<uint64_t> total_rows_;
         std::pmr::vector<types::complex_logical_type> types_;

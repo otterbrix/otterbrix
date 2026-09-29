@@ -308,7 +308,8 @@ namespace services::disk {
                                                   components::pg_attribute_commit_id_backfill_t::kind_t kind,
                                                   std::uint64_t commit_id);
 
-        unique_future<std::uint64_t> compact_relkind_g_storage_inner(components::catalog::oid_t table_oid,
+        unique_future<core::result_wrapper_t<std::uint64_t>>
+        compact_relkind_g_storage_inner(components::catalog::oid_t table_oid,
                                                                      std::set<std::string> live_attnames);
 
         // NAMES the column instead of taking the live set: no set to re-derive, so no gap that

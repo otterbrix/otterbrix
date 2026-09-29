@@ -351,7 +351,9 @@ TEST_CASE("services::disk::table_storage::drop_column_keeps_surviving_data") {
     }
     REQUIRE(ts.table().calculate_size() == NUM_ROWS);
 
-    REQUIRE(ts.drop_column("b"));
+    auto dropped = ts.drop_column("b");
+    REQUIRE_FALSE(dropped.has_error());
+    REQUIRE(dropped.value());
     REQUIRE(ts.table().column_count() == 2);
     REQUIRE(ts.table().columns()[0].name() == "a");
     REQUIRE(ts.table().columns()[1].name() == "c");
@@ -371,7 +373,9 @@ TEST_CASE("services::disk::table_storage::drop_column_keeps_surviving_data") {
         }
     }
 
-    REQUIRE(!ts.drop_column("missing"));
+    auto missing = ts.drop_column("missing");
+    REQUIRE_FALSE(missing.has_error());
+    REQUIRE_FALSE(missing.value());
     REQUIRE(ts.table().column_count() == 2);
 
     cleanup_test_dir();
@@ -418,7 +422,9 @@ TEST_CASE("services::disk::table_storage::drop_column_disk_frees_blocks") {
         REQUIRE(before.ok);
         CHECK(before.reachable_free_overlap.empty());
 
-        REQUIRE(ts.drop_column("b"));
+        auto dropped = ts.drop_column("b");
+        REQUIRE_FALSE(dropped.has_error());
+        REQUIRE(dropped.value());
         REQUIRE(ts.table().column_count() == 1);
         REQUIRE(ts.table().columns()[0].name() == "a");
 

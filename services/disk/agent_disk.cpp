@@ -2850,12 +2850,12 @@ namespace services::disk {
 
     // SUBTRACTIVE: drops every column not in live_attnames — a gap in the caller's derivation
     // drops a surviving column.
-    agent_disk_t::unique_future<std::uint64_t>
+    agent_disk_t::unique_future<core::result_wrapper_t<std::uint64_t>>
     agent_disk_t::compact_relkind_g_storage_inner(components::catalog::oid_t table_oid,
                                                   std::set<std::string> live_attnames) {
         auto it = storages_.find(table_oid);
         if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
-            co_return 0;
+            co_return core::result_wrapper_t<std::uint64_t>(std::uint64_t{0});
         }
         auto& entry = it->second;
 
@@ -2872,7 +2872,13 @@ namespace services::disk {
 
         std::uint64_t dropped = 0;
         for (const auto& attname : to_drop) {
-            if (entry->drop_column(attname, resource())) {
+            auto dropped_r = entry->drop_column(attname, resource());
+            if (dropped_r.has_error()) {
+                // The storage is untouched by a refused drop, but the columns already dropped stay dropped;
+                // the statement must hear about the refusal rather than count them.
+                co_return core::result_wrapper_t<std::uint64_t>(dropped_r.error());
+            }
+            if (dropped_r.value()) {
                 ++dropped;
             } else {
                 trace(log_,
@@ -2882,7 +2888,7 @@ namespace services::disk {
                       attname);
             }
         }
-        co_return dropped;
+        co_return core::result_wrapper_t<std::uint64_t>(dropped);
     }
 
     // Runs only after the WAL commit marker + ProcArray barrier — the rebuild is irreversible.
@@ -2894,14 +2900,17 @@ namespace services::disk {
             msg += std::pmr::string{std::to_string(static_cast<unsigned>(table_oid)), resource()};
             co_return core::result_wrapper_t<bool>(core::error_t{core::error_code_t::missing_table, std::move(msg)});
         }
-        const bool dropped = it->second->drop_column(attname, resource());
+        auto dropped = it->second->drop_column(attname, resource());
+        if (dropped.has_error()) {
+            co_return dropped;
+        }
         trace(log_,
               "agent_disk[{}]::drop_storage_column_inner: oid={} column='{}' {}",
               pool_idx_,
               static_cast<unsigned>(table_oid),
               attname,
-              dropped ? "dropped" : "absent from the storage schema — nothing physical to release");
-        co_return core::result_wrapper_t<bool>(dropped);
+              dropped.value() ? "dropped" : "absent from the storage schema — nothing physical to release");
+        co_return dropped;
     }
 
     // Bootstrap reconciliation reads a storage-only name as a DROP: a RENAME that stopped at

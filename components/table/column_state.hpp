@@ -35,6 +35,7 @@ namespace components::table {
         class buffer_handle_t;
         class block_handle_t;
         struct block_pointer_t;
+        class partial_block_manager_t;
     } // namespace storage
 
     class column_segment_t;
@@ -105,6 +106,9 @@ namespace components::table {
         std::vector<column_append_state> child_appends;
         std::unique_ptr<std::unique_lock<std::mutex>> lock;
         std::unique_ptr<storage::buffer_handle_t> handle;
+        // The collection's shared packer for the segments this append fills; column_data_t::initialize_append
+        // refuses a null one rather than packing through a private packer (one 256 KiB block per segment).
+        storage::partial_block_manager_t* pbm = nullptr;
     };
 
     struct row_group_append_state {
@@ -115,6 +119,7 @@ namespace components::table {
         row_group_t* row_group = nullptr;
         std::unique_ptr<column_append_state[]> states;
         uint64_t offset_in_row_group = 0;
+        storage::partial_block_manager_t* pbm = nullptr;
     };
     struct column_scan_state {
         column_segment_t* current = nullptr;

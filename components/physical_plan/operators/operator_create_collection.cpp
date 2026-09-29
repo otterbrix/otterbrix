@@ -1,5 +1,6 @@
 #include "operator_create_collection.hpp"
 
+#include <components/catalog/catalog_codes.hpp>
 #include <components/context/context.hpp>
 #include <services/disk/manager_disk.hpp>
 #include <services/index/manager_index.hpp>
@@ -12,46 +13,44 @@ namespace components::operators {
                                                                log_t log,
                                                                components::catalog::oid_t table_oid,
                                                                components::catalog::oid_t database_oid,
+                                                               char relkind,
                                                                std::vector<table::column_definition_t> columns,
                                                                std::vector<catalog_write_t> catalog_writes)
         : read_write_operator_t(resource, std::move(log), operator_type::create_collection)
         , table_oid_(table_oid)
         , database_oid_(database_oid)
+        , relkind_(relkind)
         , columns_(std::move(columns))
         , catalog_writes_(std::move(catalog_writes)) {}
 
     actor_zeta::unique_future<void> operator_create_collection_t::await_async_and_resume(pipeline::context_t* ctx) {
-        // `columns_.empty()` (computed, relkind='g') mirrors the planner's own relkind definition
-        // (planner.cpp rewrite_create_table) on the same list plan-gen copied here, so this flag and the
-        // pg_class row written below cannot disagree. relkind cannot be scanned instead: the pg_class row
-        // does not exist yet at this point.
-        {
-            const bool is_computed = columns_.empty();
+        const bool has_storage = relkind_ != components::catalog::relkind::foreign;
+        if (has_storage) {
             auto [_, f] = actor_zeta::otterbrix::send(ctx->disk_address,
                                                       &services::disk::manager_disk_t::create_storage_disk,
                                                       ctx->session,
                                                       table_oid_,
                                                       database_oid_,
                                                       std::move(columns_),
-                                                      is_computed);
+                                                      relkind_ == components::catalog::relkind::computed);
             co_await std::move(f);
-        }
 
-        // CREATE back-channel: record the storage oid this statement brought into
-        // being so the COMMIT can publish it and a same-txn ABORT can drop it (a
-        // CREATE inside a txn must be revertible until COMMIT). Mirror of the
-        // operator_dynamic_cascade_delete drop back-channel; gated on a non-zero
-        // txn id (autocommit/bootstrap txn 0 publishes inline, never accumulates).
-        if (ctx->txn.transaction_id != 0) {
-            ctx->created_storage_oids.push_back(table_oid_);
-        }
+            // CREATE back-channel: record the storage oid this statement brought into
+            // being so the COMMIT can publish it and a same-txn ABORT can drop it (a
+            // CREATE inside a txn must be revertible until COMMIT). Mirror of the
+            // operator_dynamic_cascade_delete drop back-channel; gated on a non-zero
+            // txn id (autocommit/bootstrap txn 0 publishes inline, never accumulates).
+            if (ctx->txn.transaction_id != 0) {
+                ctx->created_storage_oids.push_back(table_oid_);
+            }
 
-        if (ctx->index_address != actor_zeta::address_t::empty_address()) {
-            auto [_, f] = actor_zeta::otterbrix::send(ctx->index_address,
-                                                      &services::index::manager_index_t::register_collection,
-                                                      ctx->session,
-                                                      table_oid_);
-            co_await std::move(f);
+            if (ctx->index_address != actor_zeta::address_t::empty_address()) {
+                auto [_r, rf] = actor_zeta::otterbrix::send(ctx->index_address,
+                                                            &services::index::manager_index_t::register_collection,
+                                                            ctx->session,
+                                                            table_oid_);
+                co_await std::move(rf);
+            }
         }
 
         // Write pg_catalog rows (pg_class, pg_attribute, pg_depend).
@@ -83,6 +82,11 @@ namespace components::operators {
             }
             if (rng_r.value().count > 0)
                 ctx->pg_catalog_appends.push_back(std::move(rng_r.value()));
+        }
+        if (append_error.contains_error() && !has_storage) {
+            set_error(std::move(append_error));
+            mark_failed();
+            co_return;
         }
         if (append_error.contains_error()) {
             // A refused catalog append (the name-uniqueness gate, a WAL refusal, ...) leaves the

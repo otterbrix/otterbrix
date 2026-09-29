@@ -6,7 +6,9 @@
 #include <components/catalog/results/ddl_result.hpp>
 #include <components/expressions/forward.hpp>
 #include <components/expressions/key.hpp>
+#include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
+#include <components/logical_plan/node_alter_table.hpp>
 #include <components/logical_plan/node_drop.hpp>
 #include <components/logical_plan/node_join.hpp>
 #include <components/sql/parser/nodes/parsenodes.h>
@@ -62,6 +64,16 @@ namespace components::sql::transform {
                                 construct(table->relname)};
     }
 
+    // A REFERENCES target as written; whether it is refused waits for resolve (a server first part or a segment).
+    void register_referenced_table(std::pmr::memory_resource* resource,
+                                   logical_plan::catalog_resolves_t* resolves,
+                                   qualified_name_t written);
+    qualified_name_t referenced_table_as_written(RangeVar* target);
+    // Every REFERENCES target of a CREATE TABLE element list.
+    void register_referenced_tables(std::pmr::memory_resource* resource,
+                                    logical_plan::catalog_resolves_t* resolves,
+                                    PGList& table_elts);
+
     enum table_name
     {
         table = 1,
@@ -104,6 +116,12 @@ namespace components::sql::transform {
         switch (node.type()) {
             case node_type::create_type_t:
                 return namespace_policy::public_only;
+            // ALTER TYPE arrives as an ALTER TABLE on a composite type and follows CREATE/DROP TYPE.
+            case node_type::alter_table_t:
+                return static_cast<const logical_plan::node_alter_table_t&>(node).relkind() ==
+                               components::catalog::relkind::composite_type
+                           ? namespace_policy::public_only
+                           : namespace_policy::as_written;
             case node_type::drop_t:
                 return static_cast<const logical_plan::node_drop_t&>(node).kind() ==
                                logical_plan::drop_target_kind::type
@@ -404,6 +422,25 @@ namespace components::sql::transform {
     name_catalog_target(const std::string& dbname, const std::string& relname, logical_plan::node_ptr node);
 
     // with_constraints gathers INSERT/UPDATE's outgoing or DELETE's referencing constraints.
+    // A FROM table with every slot as written: the uid/schema slots decide nothing for a local name but are the
+    // path inside the server for a remote one.
+    void register_catalog_resolve_written_table(std::pmr::memory_resource* resource,
+                                                logical_plan::catalog_resolves_t* resolves,
+                                                const logical_plan::node_aggregate_t& from);
+
+    // An unqualified REFERENCES target of the table (owner_db, owner_rel): looked up in the database the owner is
+    // found in, after the owner.
+    void register_catalog_resolve_table_in_owner_database(std::pmr::memory_resource* resource,
+                                                          logical_plan::catalog_resolves_t* resolves,
+                                                          const std::string& owner_db,
+                                                          const std::string& owner_rel,
+                                                          const std::string& relname,
+                                                          constraint_resolve_kind with_constraints);
+
+    void register_catalog_resolve_server(std::pmr::memory_resource* resource,
+                                         logical_plan::catalog_resolves_t* resolves,
+                                         const std::string& server_name);
+
     void register_catalog_resolve_table(std::pmr::memory_resource* resource,
                                         logical_plan::catalog_resolves_t* resolves,
                                         const std::string& dbname,

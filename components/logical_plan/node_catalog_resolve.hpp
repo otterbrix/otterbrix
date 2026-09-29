@@ -40,6 +40,9 @@ namespace components::logical_plan {
         std::vector<resolved_column_metadata_t> columns;
         // pg_rewrite.ev_action SQL for relkind 'v'/'m'; consumed by dispatcher Phase 1.5 rewrite_views.
         std::string view_sql;
+        // relkind 'f': pg_foreign_table.ftserver and that server's pg_foreign_server.srvtype (picks the connector).
+        components::catalog::oid_t server_oid{components::catalog::INVALID_OID};
+        std::string server_type;
     };
 
     // Stamped by operator_resolve_type_t.
@@ -58,7 +61,8 @@ namespace components::logical_plan {
         namespace_,
         database,
         type,
-        constraint
+        constraint,
+        server
     };
 
     // outgoing scans pg_constraint by conrelid (INSERT/UPDATE) into fks()/check_exprs();
@@ -76,9 +80,16 @@ namespace components::logical_plan {
         std::string dbname;
         std::string relname;
         std::string type_name;
+        // Table entries: the uid/schema slots as written. A local name ignores them; a remote one (first part a
+        // server: uid when present, else dbname) is the path inside the server.
+        std::string uid;
+        std::string schema;
         resolve_direction direction{resolve_direction::outgoing};
         // Constraint entries only: indexes the TABLE node's entries_ for the table it constrains.
         std::size_t target{no_target};
+        // Table entries of an unqualified REFERENCES target: indexes the TABLE node's entries_ for the table that
+        // owns the key — the target is looked up in the database that table was found in.
+        std::size_t namespace_of{no_target};
         // Constraint entries only: gathers (conname, oid) without enforcement decode, so DROP
         // CONSTRAINT can repair an invalid catalog state (e.g. doubled PRIMARY KEY) instead of refusing it.
         bool names_only{false};
@@ -86,6 +97,12 @@ namespace components::logical_plan {
         components::catalog::oid_t namespace_oid{components::catalog::INVALID_OID};
         components::catalog::oid_t database_oid{components::catalog::INVALID_OID};
         components::catalog::oid_t type_oid{components::catalog::INVALID_OID};
+        // Server entries: the name is in relname (servers have no database). Namespace and table entries: set
+        // when the first part of the name is a server rather than a database.
+        components::catalog::oid_t server_oid{components::catalog::INVALID_OID};
+        std::string server_type;
+        // Table entries of a remote name: the server's namespace for its schema, once one is recorded.
+        components::catalog::oid_t remote_namespace_oid{components::catalog::INVALID_OID};
         // Empty optional means the operator did not find the target (or has not run).
         std::optional<resolved_table_metadata_t> table_md;
         std::optional<resolved_type_metadata_t> type_md;
@@ -117,6 +134,10 @@ namespace components::logical_plan {
         // Appends `entry` unless an equivalent request is already present
         std::size_t add(resolve_entry_t entry);
         std::size_t find(std::string_view dbname, std::string_view name) const noexcept;
+        std::size_t find(std::string_view uid,
+                         std::string_view dbname,
+                         std::string_view schema,
+                         std::string_view name) const noexcept;
 
     private:
         hash_t hash_impl() const override;
@@ -142,7 +163,14 @@ namespace components::logical_plan {
         node_catalog_resolve_ptr tables;
         node_catalog_resolve_ptr types;
         node_catalog_resolve_ptr constraints;
+        node_catalog_resolve_ptr servers;
         std::vector<external_target_t> external_targets;
+        // Qualified function calls whose first part is neither pg_catalog nor public: refused when that part
+        // turns out to be a server.
+        std::vector<qualified_name_t> qualified_functions;
+        // Every REFERENCES target as written: one whose first part is a server is refused (not a table); a uid or
+        // schema segment on a local one is refused too, once resolve has told the two apart.
+        std::vector<qualified_name_t> referenced_tables;
 
         // Creates the slot for `kind` empty on first use; non-const so the transformer can register entries.
         node_catalog_resolve_t& ensure(std::pmr::memory_resource* resource, resolve_kind kind);
@@ -153,8 +181,14 @@ namespace components::logical_plan {
         [[nodiscard]] const resolve_entry_t* namespace_entry(std::string_view dbname) const noexcept;
         [[nodiscard]] const resolve_entry_t* table_entry(std::string_view dbname,
                                                          std::string_view relname) const noexcept;
+        [[nodiscard]] const resolve_entry_t* table_entry(std::string_view uid,
+                                                         std::string_view dbname,
+                                                         std::string_view schema,
+                                                         std::string_view relname) const noexcept;
         [[nodiscard]] const resolve_entry_t* type_entry(std::string_view dbname,
                                                         std::string_view type_name) const noexcept;
+
+        [[nodiscard]] const resolve_entry_t* server_entry(std::string_view server_name) const noexcept;
 
         [[nodiscard]] components::catalog::oid_t namespace_oid(std::string_view dbname) const noexcept;
         [[nodiscard]] const resolved_table_metadata_t* table_md(std::string_view dbname,

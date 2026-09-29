@@ -7,10 +7,11 @@
 
 using namespace components::catalog;
 
-// 1. The catalog has exactly 14 system tables (10 original + pg_sequence + pg_rewrite + pg_settings + pg_cast).
+// 1. The catalog has exactly 18 system tables (10 original + pg_sequence + pg_rewrite + pg_settings + pg_cast +
+// pg_foreign_server + pg_foreign_table + pg_foreign_option + pg_foreign_namespace).
 TEST_CASE("catalog::system_schemas::tables_count_10") {
     auto tables = all_system_tables();
-    REQUIRE(tables.size() == 14);
+    REQUIRE(tables.size() == 18);
 }
 
 // 2. Every system table has a unique relation_oid drawn from the well-known range.
@@ -18,7 +19,7 @@ TEST_CASE("catalog::system_schemas::distinct_well_known_oids") {
     std::unordered_set<oid_t> seen;
     for (const auto& def : all_system_tables()) {
         REQUIRE(def.relation_oid >= well_known_oid::pg_namespace_table);
-        REQUIRE(def.relation_oid <= well_known_oid::pg_cast_table);
+        REQUIRE(def.relation_oid <= well_known_oid::pg_foreign_namespace_table);
         REQUIRE(seen.insert(def.relation_oid).second);
         REQUIRE(def.namespace_oid == well_known_oid::pg_catalog_namespace);
         REQUIRE(def.relkind == 'r');
@@ -135,6 +136,10 @@ TEST_CASE("catalog::system_schemas::column_order_is_pinned") {
     require_layout(well_known_oid::pg_index_table, {"indexrelid", "indrelid", "indkey", "indisvalid", "indtype"});
     require_layout(well_known_oid::pg_computed_column_table,
                    {"relid", "attoid", "attname", "atttypid", "atttypspec", "attversion", "attrefcount"});
+    require_layout(well_known_oid::pg_foreign_server_table, {"oid", "srvname", "srvtype"});
+    require_layout(well_known_oid::pg_foreign_table_table, {"ftrelid", "ftserver"});
+    require_layout(well_known_oid::pg_foreign_option_table, {"owner_oid", "key", "value"});
+    require_layout(well_known_oid::pg_foreign_namespace_table, {"oid", "nspserver", "nspdb", "nspname"});
 }
 
 // 9. Every column-index constant names the column it points at.
@@ -237,4 +242,20 @@ TEST_CASE("catalog::system_schemas::column_constants_match_the_schema") {
     require_col(well_known_oid::pg_sequence_table, pg_sequence_col::seqmax, "seqmax");
     require_col(well_known_oid::pg_sequence_table, pg_sequence_col::seqcycle, "seqcycle");
     require_col(well_known_oid::pg_sequence_table, pg_sequence_col::seqlast, "seqlast");
+    // pg_foreign_server
+    require_col(well_known_oid::pg_foreign_server_table, pg_foreign_server_col::oid, "oid");
+    require_col(well_known_oid::pg_foreign_server_table, pg_foreign_server_col::srvname, "srvname");
+    require_col(well_known_oid::pg_foreign_server_table, pg_foreign_server_col::srvtype, "srvtype");
+    // pg_foreign_table
+    require_col(well_known_oid::pg_foreign_table_table, pg_foreign_table_col::ftrelid, "ftrelid");
+    require_col(well_known_oid::pg_foreign_table_table, pg_foreign_table_col::ftserver, "ftserver");
+    // pg_foreign_option
+    require_col(well_known_oid::pg_foreign_option_table, pg_foreign_option_col::owner_oid, "owner_oid");
+    require_col(well_known_oid::pg_foreign_option_table, pg_foreign_option_col::key, "key");
+    require_col(well_known_oid::pg_foreign_option_table, pg_foreign_option_col::value, "value");
+    // pg_foreign_namespace
+    require_col(well_known_oid::pg_foreign_namespace_table, pg_foreign_namespace_col::oid, "oid");
+    require_col(well_known_oid::pg_foreign_namespace_table, pg_foreign_namespace_col::nspserver, "nspserver");
+    require_col(well_known_oid::pg_foreign_namespace_table, pg_foreign_namespace_col::nspdb, "nspdb");
+    require_col(well_known_oid::pg_foreign_namespace_table, pg_foreign_namespace_col::nspname, "nspname");
 }

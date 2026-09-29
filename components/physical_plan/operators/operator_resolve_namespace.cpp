@@ -1,6 +1,7 @@
 #include "operator_resolve_namespace.hpp"
 
 #include "catalog_write_helpers.hpp"
+#include "operator_resolve_server.hpp"
 
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/helpers.hpp>
@@ -70,7 +71,16 @@ namespace components::operators {
                 if (!ns_batches.empty() && ns_batches[0].size() != 0 && ns_batches[0].column_count() >= 1 &&
                     !ns_batches[0].is_null(0, 0)) {
                     entry.namespace_oid = static_cast<catalog::oid_t>(ns_batches[0].get_value<std::uint32_t>(0, 0));
+                    continue;
                 }
+                // Not a database: the first part of a name may be a server instead.
+                auto server_r = co_await read_foreign_server(resource_, ctx->disk_address, exec_ctx, entry.dbname);
+                if (server_r.has_error()) {
+                    set_error(server_r.error());
+                    co_return;
+                }
+                entry.server_oid = server_r.value().oid;
+                entry.server_type = std::move(server_r.value().type);
             }
         }
 

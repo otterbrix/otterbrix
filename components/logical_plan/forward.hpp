@@ -86,6 +86,8 @@ namespace components::logical_plan {
         // the restructuring rules pass through unchanged (asserted by the extension
         // barrier test); there is no dedicated barrier rule. See node_extension.hpp.
         extension_t,
+        // CREATE SERVER: a pg_foreign_server row (see node_create_server.hpp).
+        create_server_t,
         unused
     };
 

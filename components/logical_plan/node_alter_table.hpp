@@ -22,12 +22,9 @@ namespace components::logical_plan {
         alter_table_kind kind{alter_table_kind::drop_column};
         std::string column_name;
         std::string new_column_name; // rename_column only
-        // drop_constraint only: enrich resolves constraint_name to constraint_oid;
-        // stays INVALID_OID for a missing name under IF EXISTS (planner skips the clause)
+        // drop_constraint only: enrich resolves constraint_name to constraint_oid
         std::string constraint_name;
         components::catalog::oid_t constraint_oid{components::catalog::INVALID_OID};
-        // drop_column only: IF EXISTS is the one form where a missing column is not an error
-        bool missing_ok{false};
         // drop_column only: RESTRICT (default or written) or CASCADE; see
         // operator_alter_column_drop_t, which refuses a dependent-blocked drop under restrict_
         components::catalog::drop_behavior_t behavior{components::catalog::drop_behavior_t::restrict_};

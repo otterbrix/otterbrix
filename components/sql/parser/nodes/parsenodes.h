@@ -2211,9 +2211,7 @@ typedef struct AlterFdwStmt {
 typedef struct CreateForeignServerStmt {
     NodeTag type;
     char* servername; /* server name */
-    char* servertype; /* optional server type */
-    char* version;    /* optional server version */
-    char* fdwname;    /* FDW name */
+    char* servertype; /* server type: selects the connector */
     List* options;    /* generic options to server */
 } CreateForeignServerStmt;
 
@@ -2230,11 +2228,6 @@ typedef struct AlterForeignServerStmt {
 * ----------------------
 */
 
-typedef struct CreateForeignTableStmt {
-    CreateStmt base;
-    char* servername;
-    List* options;
-} CreateForeignTableStmt;
 
 /* ----------------------
 *		Create/Drop USER MAPPING Statements

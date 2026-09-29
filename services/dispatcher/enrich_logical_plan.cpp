@@ -319,6 +319,10 @@ namespace services::catalog_resolve {
             std::string_view namespace_dbname{};
             std::string_view type_name{};
             std::string_view secondary_dbname{};
+            std::string_view server_name{};
+            // The uid/schema slots of (dbname, relname) as written; they matter only when the name is remote.
+            std::string_view uid{};
+            std::string_view schema{};
         };
 
         target_names_t target_names_of(const components::logical_plan::node_t* node) {
@@ -326,7 +330,10 @@ namespace services::catalog_resolve {
             switch (node->type()) {
                 case node_type::aggregate_t: {
                     const auto* d = static_cast<const node_aggregate_t*>(node);
-                    return {d->dbname().t, d->relname().t, {}};
+                    return {.dbname = d->dbname().t,
+                            .relname = d->relname().t,
+                            .uid = d->uid().t,
+                            .schema = d->schema()};
                 }
                 case node_type::match_t: {
                     const auto* d = static_cast<const node_match_t*>(node);
@@ -373,6 +380,12 @@ namespace services::catalog_resolve {
                     if (d->kind() == drop_target_kind::type) {
                         return {d->dbname(), {}, {}, {}, d->relname()};
                     }
+                    if (d->kind() == drop_target_kind::server || d->kind() == drop_target_kind::server_cache) {
+                        return {.server_name = d->server_name()};
+                    }
+                    if (d->kind() == drop_target_kind::remote_table) {
+                        return {.dbname = d->dbname(), .relname = d->relname(), .uid = d->uid(), .schema = d->schema()};
+                    }
                     return {d->dbname(), d->relname(), d->index_name()};
                 }
                 case node_type::create_database_t: {
@@ -381,7 +394,10 @@ namespace services::catalog_resolve {
                 }
                 case node_type::create_collection_t: {
                     const auto* d = static_cast<const node_create_collection_t*>(node);
-                    return {d->dbname(), d->relname(), {}};
+                    return {.dbname = d->dbname(),
+                            .relname = d->relname(),
+                            .uid = d->uid_slot(),
+                            .schema = d->schema_slot()};
                 }
                 case node_type::create_sequence_t: {
                     const auto* d = static_cast<const node_create_sequence_t*>(node);
@@ -424,6 +440,37 @@ namespace services::catalog_resolve {
             }
         }
 
+        // A clause node (match, group, sort, ...) of a FROM aggregate is built with the aggregate's (dbname, relname)
+        // only; it names the aggregate's table, so it takes the aggregate's uid/schema slots.
+        struct names_scope_t {
+            std::string_view uid{};
+            std::string_view dbname{};
+            std::string_view schema{};
+            std::string_view relname{};
+        };
+
+        target_names_t scoped_names(const components::logical_plan::node_t* node, const names_scope_t& scope) {
+            auto names = target_names_of(node);
+            // A remote server.schema.name aggregate, re-slotted, has lost the database slot its clause nodes copied:
+            // they carry the server there.
+            const bool copies_scope_database =
+                names.dbname == scope.dbname || (scope.dbname.empty() && names.dbname == scope.uid);
+            if (node->type() != components::logical_plan::node_type::aggregate_t && names.uid.empty() &&
+                names.schema.empty() && copies_scope_database && names.relname == scope.relname) {
+                names.uid = scope.uid;
+                names.schema = scope.schema;
+            }
+            return names;
+        }
+
+        names_scope_t scope_below(const components::logical_plan::node_t* node,
+                                  const target_names_t& names,
+                                  const names_scope_t& scope) {
+            if (node->type() == components::logical_plan::node_type::aggregate_t && !names.relname.empty()) {
+                return names_scope_t{names.uid, names.dbname, names.schema, names.relname};
+            }
+            return scope;
+        }
     } // namespace
 
     static std::vector<components::table::column_definition_t>
@@ -520,20 +567,21 @@ namespace services::catalog_resolve {
         using namespace components::logical_plan;
         if (!root)
             return;
-        std::queue<node_t*> q;
-        q.push(root);
+        std::queue<std::pair<node_t*, names_scope_t>> q;
+        q.push({root, names_scope_t{}});
         while (!q.empty()) {
-            auto* n = q.front();
+            auto [n, scope] = q.front();
             q.pop();
+            const auto names = scoped_names(n, scope);
             {
-                const auto names = target_names_of(n);
                 const entry_view_t rn{
                     resolves.namespace_entry(names.namespace_dbname.empty() ? names.dbname : names.namespace_dbname)};
-                const entry_view_t rt{resolves.table_entry(names.dbname, names.relname)};
+                const entry_view_t rt{resolves.table_entry(names.uid, names.dbname, names.schema, names.relname)};
                 const entry_view_t rt_index{
                     resolves.table_entry(names.secondary_dbname.empty() ? names.dbname : names.secondary_dbname,
                                          names.secondary_relname)};
                 const entry_view_t ry{resolves.type_entry(names.dbname, names.type_name)};
+                const auto* rs = resolves.server_entry(names.server_name);
                 // Pasted whole, except relkind='v': a view's oid would make create_plan_match_ scan the empty heap.
                 const bool targets_a_view =
                     rt && rt.resolved_metadata().has_value() &&
@@ -569,6 +617,7 @@ namespace services::catalog_resolve {
                                     break;
                                 }
                                 case drop_target_kind::view:
+                                case drop_target_kind::materialized_view:
                                 case drop_target_kind::sequence:
                                 case drop_target_kind::macro: {
                                     if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
@@ -597,6 +646,15 @@ namespace services::catalog_resolve {
                                     }
                                     break;
                                 }
+                                case drop_target_kind::server:
+                                case drop_target_kind::server_cache: {
+                                    if (rs != nullptr) {
+                                        d->set_server_oid(rs->server_oid);
+                                    }
+                                    break;
+                                }
+                                case drop_target_kind::remote_table:
+                                    break;
                             }
                             break;
                         }
@@ -604,6 +662,10 @@ namespace services::catalog_resolve {
                             auto* d = static_cast<node_create_collection_t*>(n);
                             if (rn && rn->namespace_oid() != components::catalog::INVALID_OID) {
                                 d->set_namespace_oid(rn->namespace_oid());
+                            }
+                            if (rt) {
+                                d->set_server_oid(rt.entry->server_oid);
+                                d->set_remote_namespace_oid(rt.entry->remote_namespace_oid);
                             }
                             break;
                         }
@@ -704,9 +766,10 @@ namespace services::catalog_resolve {
                     }
                 }
             }
+            const auto child_scope = scope_below(n, names, scope);
             for (const auto& c : n->children()) {
                 if (c)
-                    q.push(c.get());
+                    q.push({c.get(), child_scope});
             }
         }
     }
@@ -718,12 +781,12 @@ namespace services::catalog_resolve {
         if (!root || !resolves) {
             return;
         }
-        std::queue<const node_t*> q;
-        q.push(root);
+        std::queue<std::pair<const node_t*, names_scope_t>> q;
+        q.push({root, names_scope_t{}});
         while (!q.empty()) {
-            const auto* n = q.front();
+            auto [n, scope] = q.front();
             q.pop();
-            const auto names = target_names_of(n);
+            const auto names = scoped_names(n, scope);
             const auto namespace_dbname = names.namespace_dbname.empty() ? names.dbname : names.namespace_dbname;
             if (!namespace_dbname.empty()) {
                 resolve_entry_t entry;
@@ -731,14 +794,23 @@ namespace services::catalog_resolve {
                 resolves->ensure(resource, resolve_kind::namespace_).add(std::move(entry));
             }
             const auto secondary_dbname = names.secondary_dbname.empty() ? names.dbname : names.secondary_dbname;
-            for (const auto& [db, relname] :
-                 {std::pair{names.dbname, names.relname}, std::pair{secondary_dbname, names.secondary_relname}}) {
-                if (relname.empty()) {
-                    continue;
-                }
+            std::size_t primary_index = resolve_entry_t::no_target;
+            if (!names.relname.empty()) {
                 resolve_entry_t entry;
-                entry.dbname = db;
-                entry.relname = relname;
+                entry.uid = names.uid;
+                entry.dbname = names.dbname;
+                entry.schema = names.schema;
+                entry.relname = names.relname;
+                primary_index = resolves->ensure(resource, resolve_kind::table).add(std::move(entry));
+            }
+            if (!names.secondary_relname.empty()) {
+                resolve_entry_t entry;
+                entry.dbname = secondary_dbname;
+                entry.relname = names.secondary_relname;
+                // An unqualified REFERENCES target lives where the table owning the key is found.
+                if (n->type() == node_type::create_constraint_t && secondary_dbname.empty()) {
+                    entry.namespace_of = primary_index;
+                }
                 resolves->ensure(resource, resolve_kind::table).add(std::move(entry));
             }
             if (!names.type_name.empty()) {
@@ -747,9 +819,15 @@ namespace services::catalog_resolve {
                 entry.type_name = names.type_name;
                 resolves->ensure(resource, resolve_kind::type).add(std::move(entry));
             }
+            if (!names.server_name.empty()) {
+                resolve_entry_t entry;
+                entry.relname = names.server_name;
+                resolves->ensure(resource, resolve_kind::server).add(std::move(entry));
+            }
+            const auto child_scope = scope_below(n, names, scope);
             for (const auto& c : n->children()) {
                 if (c) {
-                    q.push(c.get());
+                    q.push({c.get(), child_scope});
                 }
             }
         }
@@ -763,7 +841,8 @@ namespace services::catalog_resolve {
                                          std::pair{resolve_kind::namespace_, &src.namespaces},
                                          std::pair{resolve_kind::table, &src.tables},
                                          std::pair{resolve_kind::type, &src.types},
-                                         std::pair{resolve_kind::constraint, &src.constraints}}) {
+                                         std::pair{resolve_kind::constraint, &src.constraints},
+                                         std::pair{resolve_kind::server, &src.servers}}) {
             if (!*slot || (*slot)->empty()) {
                 continue;
             }
@@ -772,6 +851,105 @@ namespace services::catalog_resolve {
                 target.add(entry);
             }
         }
+    }
+
+    void reslot_classified_names(components::logical_plan::node_t* root, catalog_resolves_t& resolves) {
+        using namespace components::logical_plan;
+        if (!resolves.tables) {
+            return;
+        }
+        struct move_t {
+            std::string uid, dbname, schema, relname;
+            std::string new_uid, new_dbname, new_schema;
+        };
+        std::vector<move_t> moves;
+        for (auto& entry : resolves.tables->entries()) {
+            const bool remote = entry.server_oid != components::catalog::INVALID_OID;
+            if (remote && entry.uid.empty()) {
+                moves.push_back({entry.uid, entry.dbname, entry.schema, entry.relname, entry.dbname, "", entry.schema});
+            } else if (!remote && !entry.uid.empty()) {
+                moves.push_back({entry.uid, entry.dbname, entry.schema, entry.relname, "", entry.dbname, ""});
+            } else {
+                continue;
+            }
+            entry.uid = moves.back().new_uid;
+            entry.dbname = moves.back().new_dbname;
+            entry.schema = moves.back().new_schema;
+        }
+        if (moves.empty() || root == nullptr) {
+            return;
+        }
+        std::queue<node_t*> q;
+        q.push(root);
+        while (!q.empty()) {
+            auto* n = q.front();
+            q.pop();
+            if (n->type() == node_type::aggregate_t) {
+                auto* agg = static_cast<node_aggregate_t*>(n);
+                for (const auto& move : moves) {
+                    if (agg->uid().t == move.uid && agg->dbname().t == move.dbname && agg->schema() == move.schema &&
+                        agg->relname().t == move.relname) {
+                        agg->reslot(move.new_uid, move.new_dbname, move.new_schema);
+                        break;
+                    }
+                }
+            }
+            for (const auto& c : n->children()) {
+                if (c) {
+                    q.push(c.get());
+                }
+            }
+        }
+    }
+
+    core::error_t refuse_referenced_segments(std::pmr::memory_resource* resource, const catalog_resolves_t& resolves) {
+        for (const auto& written : resolves.referenced_tables) {
+            if (written.unique_identifier.empty() && written.schema.empty()) {
+                continue;
+            }
+            std::pmr::string msg{"REFERENCES target \"", resource};
+            msg += written.to_string();
+            msg += "\" names a uid or schema segment, which this catalog has no place for: a relation lives in a "
+                   "database — write it as [database.]name; nothing was changed";
+            return core::error_t{core::error_code_t::invalid_parameter, std::move(msg)};
+        }
+        return core::error_t::no_error();
+    }
+
+    core::error_t refuse_local_schema_segments(std::pmr::memory_resource* resource,
+                                               const catalog_resolves_t& resolves) {
+        if (!resolves.tables) {
+            return core::error_t::no_error();
+        }
+        for (const auto& entry : resolves.tables->entries()) {
+            // A missing database is the first thing wrong with such a name: validate reports it.
+            if (entry.schema.empty() || !entry.uid.empty() ||
+                resolves.namespace_oid(entry.dbname) == components::catalog::INVALID_OID) {
+                continue;
+            }
+            std::pmr::string msg{"schema \"", resource};
+            msg += entry.schema;
+            msg += "\" does not exist: a relation lives in a database — write ";
+            msg += entry.dbname;
+            msg += '.';
+            msg += entry.schema;
+            msg += '.';
+            msg += entry.relname;
+            msg += " as [database.]name";
+            return core::error_t{core::error_code_t::invalid_parameter, std::move(msg)};
+        }
+        return core::error_t::no_error();
+    }
+
+    std::string_view statement_target_first_part(const components::logical_plan::node_t* root,
+                                                 const catalog_resolves_t& resolves) {
+        if (!resolves.external_targets.empty()) {
+            const auto& written = resolves.external_targets.front().written;
+            return written.unique_identifier.empty() ? std::string_view{written.database}
+                                                     : std::string_view{written.unique_identifier};
+        }
+        const auto names = target_names_of(root);
+        return names.namespace_dbname.empty() ? names.dbname : names.namespace_dbname;
     }
 
     bool has_unresolved_entries(const catalog_resolves_t& resolves) {
@@ -1276,7 +1454,7 @@ namespace services::dispatcher { namespace {
                                 }
                             }
                         }
-                        if (found == components::catalog::INVALID_OID && !sub.missing_ok) {
+                        if (found == components::catalog::INVALID_OID) {
                             std::pmr::string msg{resource};
                             msg.append("constraint \"");
                             msg.append(sub.constraint_name.data(), sub.constraint_name.size());

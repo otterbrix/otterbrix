@@ -543,7 +543,28 @@ namespace components::sql::transform {
             return core::error_t(core::error_code_t::sql_parse_error,
                                  std::pmr::string{"cannot determine a type: the TypeName is absent", resource});
         }
-        if (auto linint_name = strVal(linitial(type->names)); !std::strcmp(linint_name, "pg_catalog")) {
+        // The type name is the last part; the only qualifiers are pg_catalog (built-ins) and public (the one
+        // namespace user types live in).
+        const auto parts = list_length(type->names);
+        const char* linint_name = strVal(linitial(type->names));
+        if (parts > 2 || (parts == 2 && std::strcmp(linint_name, "pg_catalog") != 0 &&
+                          std::strcmp(linint_name, "public") != 0)) {
+            std::string written;
+            for (const auto& part : type->names->lst) {
+                if (!written.empty()) {
+                    written += '.';
+                }
+                written += strVal(part.data);
+            }
+            return core::error_t(core::error_code_t::invalid_parameter,
+                                 std::pmr::string{"type '" + written +
+                                                      "' names a namespace other than pg_catalog or public; a type "
+                                                      "always lives in \"public\" — write it as [public.]name",
+                                                  resource});
+        }
+        if (parts == 2 && !std::strcmp(linint_name, "public")) {
+            column = types::complex_logical_type::create_unknown(strVal(lsecond(type->names)));
+        } else if (parts == 2) {
             const char* builtin_name = strVal(lsecond(type->names));
             auto col = get_logical_type(builtin_name);
             if (col == types::logical_type::UNKNOWN) {
@@ -1392,6 +1413,11 @@ namespace components::sql::transform {
         std::vector<table::column_definition_t> out;
         out.reserve(table_elts.lst.size());
         for (auto data : table_elts.lst) {
+            if (nodeTag(data.data) == T_TableLikeClause) {
+                return core::error_t(core::error_code_t::unimplemented_yet,
+                                     std::pmr::string{"CREATE TABLE ... (LIKE ...) is not supported: list the columns",
+                                                      resource});
+            }
             if (nodeTag(data.data) != T_ColumnDef) {
                 continue;
             }
@@ -1474,6 +1500,56 @@ namespace components::sql::transform {
             }
         }
     } // namespace
+
+    qualified_name_t referenced_table_as_written(RangeVar* target) {
+        auto written = rangevar_to_qualified_name(target);
+        if (written.database.empty() && !written.schema.empty()) {
+            // Two parts: the grammar's schema slot is this catalog's database slot.
+            written.database = std::move(written.schema);
+            written.schema.clear();
+        }
+        return written;
+    }
+
+    void register_referenced_tables(std::pmr::memory_resource* resource,
+                                    logical_plan::catalog_resolves_t* resolves,
+                                    PGList& table_elts) {
+        const auto take = [&](Node* data) {
+            if (data == nullptr || nodeTag(data) != T_Constraint) {
+                return;
+            }
+            const auto* constraint = pg_ptr_cast<Constraint>(data);
+            if (constraint->contype == CONSTR_FOREIGN && constraint->pktable) {
+                register_referenced_table(resource, resolves, referenced_table_as_written(constraint->pktable));
+            }
+        };
+        for (auto data : table_elts.lst) {
+            if (nodeTag(data.data) == T_ColumnDef) {
+                const auto* coldef = pg_ptr_cast<ColumnDef>(data.data);
+                if (coldef->constraints) {
+                    for (auto cdata : coldef->constraints->lst) {
+                        take(pg_ptr_cast<Node>(cdata.data));
+                    }
+                }
+            } else {
+                take(pg_ptr_cast<Node>(data.data));
+            }
+        }
+    }
+
+    void register_referenced_table(std::pmr::memory_resource* resource,
+                                   logical_plan::catalog_resolves_t* resolves,
+                                   qualified_name_t written) {
+        // A 2-part target's first part is a database slot, probed for a server when no database has the name;
+        // a longer one asks for its first part explicitly.
+        if (!written.unique_identifier.empty() || !written.schema.empty()) {
+            register_catalog_resolve_server(
+                resource,
+                resolves,
+                written.unique_identifier.empty() ? written.database : written.unique_identifier);
+        }
+        resolves->referenced_tables.push_back(std::move(written));
+    }
 
     namespace {
 
@@ -1903,6 +1979,61 @@ namespace components::sql::transform {
                                          : logical_plan::resolve_direction::outgoing;
         constraint_entry.names_only = (with_constraints == constraint_resolve_kind::names_only);
         resolves->ensure(resource, logical_plan::resolve_kind::constraint).add(std::move(constraint_entry));
+    }
+
+    void register_catalog_resolve_written_table(std::pmr::memory_resource* resource,
+                                                logical_plan::catalog_resolves_t* resolves,
+                                                const logical_plan::node_aggregate_t& from) {
+        const auto& dbname = static_cast<const std::string&>(from.dbname());
+        const auto& relname = static_cast<const std::string&>(from.relname());
+        register_catalog_resolve_namespace(resource, resolves, dbname);
+        if (relname.empty()) {
+            return;
+        }
+        logical_plan::resolve_entry_t entry;
+        entry.uid = static_cast<const std::string&>(from.uid());
+        entry.dbname = dbname;
+        entry.schema = from.schema();
+        entry.relname = relname;
+        resolves->ensure(resource, logical_plan::resolve_kind::table).add(std::move(entry));
+    }
+
+    void register_catalog_resolve_table_in_owner_database(std::pmr::memory_resource* resource,
+                                                          logical_plan::catalog_resolves_t* resolves,
+                                                          const std::string& owner_db,
+                                                          const std::string& owner_rel,
+                                                          const std::string& relname,
+                                                          constraint_resolve_kind with_constraints) {
+        register_catalog_resolve_namespace(resource, resolves, owner_db);
+        auto& tables = resolves->ensure(resource, logical_plan::resolve_kind::table);
+        logical_plan::resolve_entry_t owner;
+        owner.dbname = owner_db;
+        owner.relname = owner_rel;
+        logical_plan::resolve_entry_t target;
+        target.relname = relname;
+        target.namespace_of = tables.add(std::move(owner));
+        const auto target_index = tables.add(std::move(target));
+        if (with_constraints == constraint_resolve_kind::none) {
+            return;
+        }
+        logical_plan::resolve_entry_t constraint_entry;
+        constraint_entry.target = target_index;
+        constraint_entry.direction = (with_constraints == constraint_resolve_kind::referencing)
+                                         ? logical_plan::resolve_direction::referencing
+                                         : logical_plan::resolve_direction::outgoing;
+        constraint_entry.names_only = (with_constraints == constraint_resolve_kind::names_only);
+        resolves->ensure(resource, logical_plan::resolve_kind::constraint).add(std::move(constraint_entry));
+    }
+
+    void register_catalog_resolve_server(std::pmr::memory_resource* resource,
+                                         logical_plan::catalog_resolves_t* resolves,
+                                         const std::string& server_name) {
+        if (server_name.empty()) {
+            return;
+        }
+        logical_plan::resolve_entry_t entry;
+        entry.relname = server_name;
+        resolves->ensure(resource, logical_plan::resolve_kind::server).add(std::move(entry));
     }
 
     void register_catalog_resolve_tables(std::pmr::memory_resource* resource,

@@ -2345,9 +2345,17 @@ namespace services::disk {
                                                             "typnamespace",
                                                             core::error_code_t::type_already_exists,
                                                             "type"};
+            static constexpr catalog_name_key_t pg_foreign_server_key{cat::pg_foreign_server_col::srvname,
+                                                                      int64_t{-1},
+                                                                      "srvname",
+                                                                      nullptr,
+                                                                      core::error_code_t::server_already_exists,
+                                                                      "server"};
             switch (table_oid) {
                 case cat::well_known_oid::pg_class_table:
                     return &pg_class_key;
+                case cat::well_known_oid::pg_foreign_server_table:
+                    return &pg_foreign_server_key;
                 case cat::well_known_oid::pg_namespace_table:
                     return &pg_namespace_key;
                 case cat::well_known_oid::pg_type_table:

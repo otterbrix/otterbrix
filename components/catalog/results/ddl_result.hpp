@@ -20,6 +20,14 @@ namespace components::catalog {
 
     inline constexpr bool refuses_on_dependency(drop_behavior_t b) noexcept { return b == drop_behavior_t::restrict_; }
 
+    // Whether a cascade walk deletes its seed object or only what depends on it (forgetting a server's cache
+    // keeps the server).
+    enum class cascade_seed_t : std::uint8_t
+    {
+        drop,
+        keep,
+    };
+
     enum class ddl_status : std::uint8_t
     {
         ok = 0,

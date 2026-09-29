@@ -178,6 +178,25 @@ namespace services::planner::impl {
             return projected_cols;
         }
 
+        // pushed_reduce_scan replaces the implicit table scan; an explicit source child (host extension,
+        // join, sub-aggregate, ...) means there is none to replace, whatever an optimizer pass stamped.
+        bool reads_implicit_table_scan(const lp::node_ptr& node) noexcept {
+            for (const auto& child : node->children()) {
+                switch (child->type()) {
+                    case node_type::limit_t:
+                    case node_type::match_t:
+                    case node_type::group_t:
+                    case node_type::sort_t:
+                    case node_type::select_t:
+                    case node_type::having_t:
+                        break;
+                    default:
+                        return false;
+                }
+            }
+            return true;
+        }
+
         // Returns nullptr unless the WHERE lowers to a plain full_scan via create_plan_match.
         // SINGLE-OWNER INVARIANT: correct only while ONE agent owns the whole table (pool_idx_for_oid
         // routing) — do not extend this lowering past that assumption.
@@ -292,7 +311,8 @@ namespace services::planner::impl {
                 break;
             }
         }
-        if (pushdown_group != nullptr) {
+        if (pushdown_group != nullptr && reads_implicit_table_scan(node) &&
+            !context.is_foreign_table(node->table_oid())) {
             if (auto pushdown_scan = build_pushdown_scan(context, node, pushdown_group, agg_node->projected_cols())) {
                 components::operators::operator_ptr executor = std::move(pushdown_scan);
                 components::operators::operator_ptr push_sort_op;
@@ -395,6 +415,9 @@ namespace services::planner::impl {
         } else {
             // The base scan comes from the declaration, not the oid: INVALID_OID means both no-FROM and unresolved.
             if (!match_op) {
+                if (context.is_foreign_table(node->table_oid())) {
+                    return nullptr;
+                }
                 switch (agg_node->source()) {
                     case components::logical_plan::match_source::none:
                         break;

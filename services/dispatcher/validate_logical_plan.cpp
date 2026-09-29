@@ -1025,9 +1025,22 @@ namespace services::dispatcher {
                                     !scalar_expr->key().storage().empty() &&
                                     scalar_expr->key().storage().front() != "*") {
                                     const auto& alias = scalar_expr->key().storage().front();
+                                    // d1.t JOIN d2.t: both carry the alias t; the side the qualification picked
+                                    // tells them apart.
+                                    const auto star_side = scalar_expr->key().side();
+                                    bool on_star_side = false;
+                                    bool on_other_side = false;
+                                    for (const auto& col : incoming_schema) {
+                                        if (core::pmr::operator==(col.result_alias, alias)) {
+                                            (col.side == star_side ? on_star_side : on_other_side) = true;
+                                        }
+                                    }
+                                    const bool names_both_sides =
+                                        star_side != side_t::undefined && on_star_side && on_other_side;
                                     std::pmr::vector<size_t> matched(resource);
                                     for (size_t i = 0; i < incoming_schema.size(); i++) {
-                                        if (core::pmr::operator==(incoming_schema[i].result_alias, alias)) {
+                                        if (core::pmr::operator==(incoming_schema[i].result_alias, alias) &&
+                                            (!names_both_sides || incoming_schema[i].side == star_side)) {
                                             matched.push_back(i);
                                         }
                                     }

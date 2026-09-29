@@ -187,7 +187,7 @@ namespace services::collection::executor {
                            log_t&& log,
                            uint64_t dml_flush_row_threshold,
                            planner::create_plan_rule_t create_plan_rule,
-                           components::planner::optimizer_pass_t optimizer_pass)
+                           std::span<const components::planner::optimizer_rule_t> optimizer_rules)
         : actor_zeta::basic_actor<executor_t>{resource}
         , parent_address_(std::move(parent_address))
         , wal_address_(std::move(wal_address))
@@ -197,7 +197,7 @@ namespace services::collection::executor {
         , function_registry_(resource)
         , cast_registry_(resource)
         , create_plan_rule_(create_plan_rule)
-        , optimizer_pass_(optimizer_pass)
+        , optimizer_rules_(optimizer_rules.begin(), optimizer_rules.end(), resource)
         , dml_flush_row_threshold_(dml_flush_row_threshold)
         , explain_renderers_(resource) {
         register_default_functions(function_registry_);
@@ -1649,7 +1649,7 @@ namespace services::collection::executor {
                                                                 plan.parameters.get(),
                                                                 &plan.catalog_resolves,
                                                                 can_push_to_agent,
-                                                                optimizer_pass_,
+                                                                optimizer_rules_,
                                                                 &deferred_parameters);
 
         if (can_push_to_agent) {

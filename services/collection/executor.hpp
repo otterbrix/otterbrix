@@ -27,6 +27,7 @@
 #include <core/date/date_types.hpp>
 #include <services/collection/context_storage.hpp>
 #include <services/collection/explain/explain_renderer.hpp>
+#include <span>
 #include <stack>
 #include <string>
 
@@ -144,7 +145,7 @@ namespace services::collection::executor {
                    log_t&& log,
                    uint64_t dml_flush_row_threshold = 0,
                    planner::create_plan_rule_t create_plan_rule = &planner::no_custom_lowering,
-                   components::planner::optimizer_pass_t optimizer_pass = &components::planner::no_op_pass);
+                   std::span<const components::planner::optimizer_rule_t> optimizer_rules = {});
         ~executor_t() = default;
 
         // INTERNAL: called only from execute_plan_full via co_await, never through the mailbox. captured_subplans
@@ -261,7 +262,7 @@ namespace services::collection::executor {
         components::casts::cast_registry_t cast_registry_;
         // Host-injected (dispatcher -> executor); never null — Null Object defaults.
         planner::create_plan_rule_t create_plan_rule_{&planner::no_custom_lowering};
-        components::planner::optimizer_pass_t optimizer_pass_{&components::planner::no_op_pass};
+        std::pmr::vector<components::planner::optimizer_rule_t> optimizer_rules_;
         // Bound on buffered rows before the pump forces an incremental flush; 0 disables the gate.
         uint64_t dml_flush_row_threshold_{0};
         static constexpr uint32_t kExplainRendererSlotLimit = 1024;

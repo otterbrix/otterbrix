@@ -66,7 +66,7 @@ namespace services::dispatcher {
                              actor_zeta::address_t index_address,
                              uint64_t dml_flush_row_threshold = 0,
                              planner::create_plan_rule_t create_plan_rule = &planner::no_custom_lowering,
-                             components::planner::optimizer_pass_t optimizer_pass = &components::planner::no_op_pass,
+                             std::span<const components::planner::optimizer_rule_t> optimizer_rules = {},
                              std::size_t executor_pool_size = configuration::config_execution::default_executor_pool_size,
                              configuration::pump_intervals_t pump = {});
         ~manager_dispatcher_t();
@@ -229,7 +229,7 @@ namespace services::dispatcher {
         log_t log_;
 
         planner::create_plan_rule_t create_plan_rule_{&planner::no_custom_lowering};
-        components::planner::optimizer_pass_t optimizer_pass_{&components::planner::no_op_pass};
+        std::pmr::vector<components::planner::optimizer_rule_t> optimizer_rules_;
 
         std::pmr::vector<services::collection::executor::executor_ptr> executors_;
         std::pmr::vector<actor_zeta::address_t> executor_addresses_;

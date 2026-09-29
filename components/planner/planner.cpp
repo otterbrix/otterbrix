@@ -517,28 +517,46 @@ namespace components::planner {
             auto* d = static_cast<logical_plan::node_drop_t*>(node.get());
             catalog::oid_t classid = catalog::INVALID_OID;
             catalog::oid_t seed_objid = catalog::INVALID_OID;
+            const auto relation = [d, &classid, &seed_objid](const char* kind) {
+                classid = catalog::well_known_oid::pg_class_table;
+                seed_objid = d->table_oid();
+                return std::string{kind} + (d->dbname().empty() ? d->relname() : d->dbname() + "." + d->relname());
+            };
+            std::string target;
             switch (d->kind()) {
                 case logical_plan::drop_target_kind::database:
                     classid = catalog::well_known_oid::pg_namespace_table;
                     seed_objid = d->namespace_oid();
+                    target = "database " + d->dbname();
                     break;
                 case logical_plan::drop_target_kind::type:
                     classid = catalog::well_known_oid::pg_type_table;
                     seed_objid = d->type_oid();
+                    target = "type " + d->relname();
                     break;
                 case logical_plan::drop_target_kind::collection:
+                    target = relation("table ");
+                    break;
                 case logical_plan::drop_target_kind::sequence:
+                    target = relation("sequence ");
+                    break;
                 case logical_plan::drop_target_kind::view:
+                    target = relation("view ");
+                    break;
                 case logical_plan::drop_target_kind::materialized_view:
+                    target = relation("materialized view ");
+                    break;
                 case logical_plan::drop_target_kind::macro:
-                    classid = catalog::well_known_oid::pg_class_table;
-                    seed_objid = d->table_oid();
+                    target = relation("function ");
                     break;
                 case logical_plan::drop_target_kind::index:
                     break;
             }
-            return boost::intrusive_ptr(
-                new logical_plan::node_dynamic_cascade_delete_t(r, classid, seed_objid, d->behavior()));
+            return boost::intrusive_ptr(new logical_plan::node_dynamic_cascade_delete_t(r,
+                                                                                        classid,
+                                                                                        seed_objid,
+                                                                                        d->behavior(),
+                                                                                        std::move(target)));
         }
 
         // No OIDs are pre-allocated — add/drop resolve their attoid at execution time.
@@ -596,7 +614,8 @@ namespace components::planner {
                         new logical_plan::node_dynamic_cascade_delete_t(r,
                                                                         catalog::well_known_oid::pg_constraint_table,
                                                                         sub.constraint_oid,
-                                                                        sub.behavior)));
+                                                                        sub.behavior,
+                                                                        "constraint " + sub.constraint_name)));
                 }
             }
             return node_ptr{seq};

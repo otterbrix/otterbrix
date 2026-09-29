@@ -76,11 +76,13 @@ namespace components::operators {
                                                                          log_t log,
                                                                          catalog::oid_t seed_classid,
                                                                          catalog::oid_t seed_objid,
-                                                                         catalog::drop_behavior_t behavior)
+                                                                         catalog::drop_behavior_t behavior,
+                                                                         std::string target)
         : read_write_operator_t(resource, std::move(log), operator_type::dynamic_cascade_delete)
         , seed_classid_(seed_classid)
         , seed_objid_(seed_objid)
-        , behavior_(behavior) {}
+        , behavior_(behavior)
+        , target_(std::move(target)) {}
 
     actor_zeta::unique_future<void>
     operator_dynamic_cascade_delete_t::await_async_and_resume(pipeline::context_t* ctx) {
@@ -143,7 +145,8 @@ namespace components::operators {
             dep_graph.insert_or_assign(k, std::move(deps));
         }
 
-        // RESTRICT is a gate, not a smaller drop: refuses on the first 'n' dependency, else plans CASCADE.
+        // RESTRICT is a gate, not a smaller drop: refuses on a normal dependent anywhere in the closure, else plans
+        // CASCADE.
         const auto plan = catalog::plan_drop(
             resource_,
             seed_classid_,
@@ -161,9 +164,7 @@ namespace components::operators {
         dep_graph.clear();
 
         if (plan.status == catalog::ddl_status::restrict_blocked) {
-            std::string msg = "DROP RESTRICT: object has dependents (blocking oid ";
-            msg += std::to_string(plan.blocking_oid) + ")";
-            set_error(core::error_t{core::error_code_t::other_error, std::pmr::string{std::move(msg), resource_}});
+            set_error(catalog::dependent_objects_error(resource_, target_, plan.blocking_oid));
             mark_executed();
             co_return;
         }

@@ -324,9 +324,46 @@ TEST_CASE("integration::cpp::drop_restrict::table_referenced_by_a_foreign_key_is
     auto refused = drop_table_restrict(d, "dr", "parent");
     INFO("error: " << error_text(refused));
     CHECK_FALSE(refused->is_success());
-    CHECK(error_text(refused).find("DROP RESTRICT: object has dependents") != std::string::npos);
+    CHECK(error_text(refused).find("cannot drop table dr.parent because other objects depend on it") !=
+          std::string::npos);
+    CHECK(error_text(refused).find("HINT: Use DROP ... CASCADE to drop the dependent objects too.") !=
+          std::string::npos);
 
     CHECK(run_ok(d, "SELECT id FROM dr.parent;")->size() == 1);
+}
+
+// The index goes with its table ('a'); an object depending on the index normally is outside the drop and must be
+// dropped on its own first (PostgreSQL 18 findDependentObjects).
+TEST_CASE("integration::cpp::drop_restrict::a_normal_dependent_behind_an_owned_index_refuses_the_table_drop") {
+    auto config = make_test_config(fixture_path("behind_auto_chain"));
+    config.log.level = log_t::level::off;
+    restrict_spaces_t space(config);
+    auto* d = space.dispatcher();
+
+    run_ok(d, "CREATE DATABASE dr;");
+    run_ok(d, "CREATE TABLE dr.t (a bigint);");
+    run_ok(d, "CREATE INDEX ix_a ON dr.t (a);");
+    run_ok(d, "CREATE TABLE dr.other (b bigint);");
+    run_ok(d, "INSERT INTO dr.other (b) VALUES (7);");
+
+    const auto index_oid = table_oid_named(space, "ix_a");
+    const auto other_oid = table_oid_named(space, "other");
+    REQUIRE(index_oid != components::catalog::INVALID_OID);
+    REQUIRE(other_oid != components::catalog::INVALID_OID);
+    forge_depend_edge(space,
+                      components::catalog::well_known_oid::pg_class_table,
+                      other_oid,
+                      components::catalog::well_known_oid::pg_class_table,
+                      index_oid,
+                      'n');
+
+    auto refused = exec(d, "DROP TABLE dr.t;");
+    INFO("error: " << error_text(refused));
+    REQUIRE_FALSE(refused->is_success());
+    CHECK(error_text(refused).find("cannot drop table dr.t because other objects depend on it") != std::string::npos);
+    CHECK(error_text(refused).find(std::to_string(other_oid)) != std::string::npos);
+
+    CHECK(run_ok(d, "SELECT b FROM dr.other;")->size() == 1);
 }
 
 // cascade_planner.cpp's RESTRICT allow-path used to return with plan.steps

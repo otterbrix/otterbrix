@@ -65,6 +65,10 @@ namespace components::operators {
 
     actor_zeta::unique_future<void> operator_t::await_async_and_resume(pipeline::context_t* /*ctx*/) { co_return; }
 
+    actor_zeta::unique_future<core::error_t> operator_t::open_impl(pipeline::context_t* /*ctx*/) {
+        co_return core::error_t::no_error();
+    }
+
     actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
     operator_t::source_next(pipeline::context_t* /*ctx*/) {
         co_return core::error_t(core::error_code_t::physical_plan_error,

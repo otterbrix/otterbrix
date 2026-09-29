@@ -167,10 +167,12 @@ namespace services::collection::executor {
         }
     } // namespace
 
-    plan_t::plan_t(std::stack<components::operators::operator_ptr>&& sub_plans,
+    plan_t::plan_t(components::operators::operator_ptr root,
+                   std::stack<components::operators::operator_ptr>&& sub_plans,
                    const components::logical_plan::storage_parameters* parameters,
                    services::context_storage_t&& context_storage)
-        : sub_plans(std::move(sub_plans))
+        : root(std::move(root))
+        , sub_plans(std::move(sub_plans))
         , parameters(parameters)
         // Moved, not copied — a pmr copy ctor doesn't propagate the allocator, silently rebinding off the arena.
         , context_storage_(std::move(context_storage)) {}
@@ -1889,7 +1891,7 @@ namespace services::collection::executor {
 
         trace(log_, "executor::subplans count {}", sub_plans.size());
 
-        return plan_t{std::move(sub_plans), &parameters, std::move(context_storage)};
+        return plan_t{std::move(plan), std::move(sub_plans), &parameters, std::move(context_storage)};
     }
 
     executor_t::unique_future<core::result_wrapper_t<components::operators::chunks_vector_t>>
@@ -2128,7 +2130,7 @@ namespace services::collection::executor {
             auto right = op->right();
             if (right && !right->is_executed()) {
                 right->prepare();
-                auto err = co_await drive_subplan_(right, ctx);
+                auto err = co_await drive_opened_subplan_(right, ctx);
                 if (err.contains_error()) {
                     co_return err;
                 }
@@ -2139,6 +2141,78 @@ namespace services::collection::executor {
 
     executor_t::unique_future<core::error_t> executor_t::drive_subplan_(components::operators::operator_ptr root,
                                                                         components::pipeline::context_t* ctx) {
+        opened_sources_t opened{resource()};
+        open_sources_(root.get(), ctx, opened);
+        auto open_err = co_await await_all_opened_(opened);
+        if (open_err.contains_error()) {
+            co_return open_err;
+        }
+        co_return co_await drive_opened_subplan_(root, ctx);
+    }
+
+    namespace {
+        void collect_unexecuted(components::operators::operator_t* root,
+                                std::pmr::vector<components::operators::operator_t*>& out) {
+            std::pmr::vector<components::operators::operator_t*> pending{out.get_allocator().resource()};
+            pending.push_back(root);
+            while (!pending.empty()) {
+                auto* op = pending.back();
+                pending.pop_back();
+                if (op == nullptr || op->is_executed()) {
+                    continue;
+                }
+                out.push_back(op);
+                pending.push_back(op->left().get());
+                pending.push_back(op->right().get());
+            }
+        }
+    } // namespace
+
+    void executor_t::open_sources_(components::operators::operator_t* root,
+                                   components::pipeline::context_t* ctx,
+                                   opened_sources_t& opened) {
+        std::pmr::vector<components::operators::operator_t*> ops{resource()};
+        collect_unexecuted(root, ops);
+        for (auto* op : ops) {
+            if (op->role() == components::operators::pipeline_role::source) {
+                opened.push_back(opened_source_t{op, op->open(ctx)});
+            }
+        }
+    }
+
+    executor_t::unique_future<core::error_t> executor_t::await_opened_in_(opened_sources_t& opened,
+                                                                          components::operators::operator_t* piece) {
+        std::pmr::vector<components::operators::operator_t*> in_piece{resource()};
+        collect_unexecuted(piece, in_piece);
+        auto first_err = core::error_t::no_error();
+        for (auto& source : opened) {
+            if (!source.ready.valid() || std::find(in_piece.begin(), in_piece.end(), source.op) == in_piece.end()) {
+                continue;
+            }
+            auto err = co_await std::move(source.ready);
+            if (err.contains_error() && !first_err.contains_error()) {
+                first_err = std::move(err);
+            }
+        }
+        co_return first_err;
+    }
+
+    executor_t::unique_future<core::error_t> executor_t::await_all_opened_(opened_sources_t& opened) {
+        auto first_err = core::error_t::no_error();
+        for (auto& source : opened) {
+            if (!source.ready.valid()) {
+                continue;
+            }
+            auto err = co_await std::move(source.ready);
+            if (err.contains_error() && !first_err.contains_error()) {
+                first_err = std::move(err);
+            }
+        }
+        co_return first_err;
+    }
+
+    executor_t::unique_future<core::error_t>
+    executor_t::drive_opened_subplan_(components::operators::operator_ptr root, components::pipeline::context_t* ctx) {
         auto build_err = co_await materialize_build_sides_(root, ctx);
         if (build_err.contains_error()) {
             co_return build_err;
@@ -2190,6 +2264,23 @@ namespace services::collection::executor {
         cursor_t_ptr cursor;
         sub_plan_result_t result_tracking;
 
+        opened_sources_t opened{resource()};
+        {
+            components::pipeline::context_t open_context{session,
+                                                         address(),
+                                                         parent_address_,
+                                                         &function_registry_,
+                                                         *plan_data.parameters,
+                                                         disk_address_,
+                                                         index_address_,
+                                                         wal_address_};
+            open_context.txn = txn;
+            open_context.execution_context = plan_data.context_storage_.execution_context;
+            open_context.lowest_active_start_time = lowest_active_start_time;
+            open_context.runner = this;
+            open_sources_(plan_data.root.get(), &open_context, opened);
+        }
+
         while (!plan_data.sub_plans.empty()) {
             auto plan = plan_data.sub_plans.top();
             trace(log_, "executor::execute_sub_plan, session: {}", session.data());
@@ -2216,6 +2307,11 @@ namespace services::collection::executor {
             pipeline_context.analyze = plan_data.analyze;
 
             plan->prepare();
+
+            if (auto open_err = co_await await_opened_in_(opened, plan.get()); open_err.contains_error()) {
+                cursor = make_cursor(resource(), std::move(open_err));
+                break;
+            }
 
             // Factored out so the CONSTRAINT-ERROR path can lift these ranges too, else the appended row leaks.
             auto lift_dml_ranges = [&pipeline_context, &result_tracking]() {
@@ -2248,7 +2344,7 @@ namespace services::collection::executor {
                     }
                 }
 #endif
-                auto drive_err = co_await drive_subplan_(plan, &pipeline_context);
+                auto drive_err = co_await drive_opened_subplan_(plan, &pipeline_context);
                 if (drive_err.contains_error()) {
                     lift_dml_ranges();
                     cursor = make_cursor(resource(), std::move(drive_err));
@@ -2430,6 +2526,10 @@ namespace services::collection::executor {
             // (dml_* fields + cascade vectors were already drained and zeroed by lift_dml_ranges() above.)
 
             plan_data.sub_plans.pop();
+        }
+
+        if (auto open_err = co_await await_all_opened_(opened); open_err.contains_error() && cursor->is_success()) {
+            cursor = make_cursor(resource(), std::move(open_err));
         }
 
         trace(log_, "executor::execute_sub_plan finished, success: {}", cursor->is_success());

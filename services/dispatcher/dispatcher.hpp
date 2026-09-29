@@ -58,16 +58,18 @@ namespace services::dispatcher {
         };
 
         // Host customization: the dispatcher keeps a copy and hands every executor its own.
-        manager_dispatcher_t(std::pmr::memory_resource*,
-                             actor_zeta::scheduler_raw,
-                             log_t& log,
-                             actor_zeta::address_t wal_address,
-                             actor_zeta::address_t disk_address,
-                             actor_zeta::address_t index_address,
-                             uint64_t dml_flush_row_threshold = 0,
-                             std::span<const components::planner::optimizer_rule_t> optimizer_rules = {},
-                             std::size_t executor_pool_size = configuration::config_execution::default_executor_pool_size,
-                             configuration::pump_intervals_t pump = {});
+        manager_dispatcher_t(
+            std::pmr::memory_resource*,
+            actor_zeta::scheduler_raw,
+            log_t& log,
+            actor_zeta::address_t wal_address,
+            actor_zeta::address_t disk_address,
+            actor_zeta::address_t index_address,
+            uint64_t dml_flush_row_threshold = 0,
+            std::span<const components::planner::optimizer_rule_t> optimizer_rules = {},
+            components::planner::name_resolution_hook_t name_resolution = {},
+            std::size_t executor_pool_size = configuration::config_execution::default_executor_pool_size,
+            configuration::pump_intervals_t pump = {});
         ~manager_dispatcher_t();
         // Joins the loop thread and keeps its suspended coroutines: a neighbour's loop must not
         // resume against them while they are torn down. Idempotent; the destructor calls it too.
@@ -228,6 +230,7 @@ namespace services::dispatcher {
         log_t log_;
 
         std::pmr::vector<components::planner::optimizer_rule_t> optimizer_rules_;
+        components::planner::name_resolution_hook_t name_resolution_;
 
         std::pmr::vector<services::collection::executor::executor_ptr> executors_;
         std::pmr::vector<actor_zeta::address_t> executor_addresses_;

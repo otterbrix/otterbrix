@@ -88,6 +88,9 @@ namespace components::logical_plan {
         // Constraint entries only: gathers (conname, oid) without enforcement decode, so DROP
         // CONSTRAINT can repair an invalid catalog state (e.g. doubled PRIMARY KEY) instead of refusing it.
         bool names_only{false};
+        // Unresolved, and the host's name resolution rewrote away every node naming it: neither resolved again
+        // nor refused. Not part of the request identity.
+        bool superseded{false};
 
         components::catalog::oid_t namespace_oid{components::catalog::INVALID_OID};
         components::catalog::oid_t database_oid{components::catalog::INVALID_OID};

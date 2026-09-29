@@ -144,7 +144,8 @@ namespace services::collection::executor {
                    actor_zeta::address_t index_address,
                    log_t&& log,
                    uint64_t dml_flush_row_threshold = 0,
-                   std::span<const components::planner::optimizer_rule_t> optimizer_rules = {});
+                   std::span<const components::planner::optimizer_rule_t> optimizer_rules = {},
+                   components::planner::name_resolution_hook_t name_resolution = {});
         ~executor_t() = default;
 
         // INTERNAL: called only from execute_plan_full via co_await, never through the mailbox. captured_subplans
@@ -201,6 +202,18 @@ namespace services::collection::executor {
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
 
     private:
+        // A read the host's name resolution asked for does not consult the host again.
+        enum class host_names_t : bool
+        {
+            resolve,
+            local_only
+        };
+
+        unique_future<execute_result_t> execute_statement_(components::session::session_id_t session,
+                                                           components::logical_plan::execution_plan_t plan,
+                                                           services::dispatcher::txn_session_context_t session_ctx,
+                                                           host_names_t host_names);
+
         plan_t traverse_plan_(components::operators::operator_ptr&& plan,
                               const components::logical_plan::storage_parameters& parameters,
                               services::context_storage_t&& context_storage);
@@ -261,6 +274,7 @@ namespace services::collection::executor {
         components::casts::cast_registry_t cast_registry_;
         // Host customization, copied from the dispatcher's at spawn.
         std::pmr::vector<components::planner::optimizer_rule_t> optimizer_rules_;
+        components::planner::name_resolution_hook_t name_resolution_;
         // Bound on buffered rows before the pump forces an incremental flush; 0 disables the gate.
         uint64_t dml_flush_row_threshold_{0};
         static constexpr uint32_t kExplainRendererSlotLimit = 1024;

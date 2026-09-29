@@ -28,6 +28,7 @@ namespace services::engine {
     // Read once by spawn_engine: the dispatcher copies the rules, so the host's array need not outlive the call.
     struct primitives_t final {
         std::span<const components::planner::optimizer_rule_t> optimizer_rules{};
+        components::planner::name_resolution_hook_t name_resolution{};
     };
 
     // flock(LOCK_EX | LOCK_NB) on <directory>/.lock, held for the lifetime of the object. Bound to

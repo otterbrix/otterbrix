@@ -99,6 +99,7 @@ namespace services::dispatcher {
                                                actor_zeta::address_t index_address,
                                                uint64_t dml_flush_row_threshold,
                                                std::span<const components::planner::optimizer_rule_t> optimizer_rules,
+                                               components::planner::name_resolution_hook_t name_resolution,
                                                std::size_t executor_pool_size,
                                                configuration::pump_intervals_t pump)
         : actor_zeta::actor::actor_mixin<manager_dispatcher_t>()
@@ -106,6 +107,7 @@ namespace services::dispatcher {
         , scheduler_(scheduler)
         , log_(log.clone())
         , optimizer_rules_(optimizer_rules.begin(), optimizer_rules.end(), resource_ptr)
+        , name_resolution_(name_resolution)
         , executors_(resource_ptr)
         , executor_addresses_(resource_ptr)
         , wal_address_(std::move(wal_address))
@@ -132,7 +134,8 @@ namespace services::dispatcher {
                                                                             index_address_,
                                                                             log_.clone(),
                                                                             dml_flush_row_threshold,
-                                                                            optimizer_rules_);
+                                                                            optimizer_rules_,
+                                                                            name_resolution_);
             executor_addresses_.push_back(exec->address());
             executors_.push_back(std::move(exec));
         }

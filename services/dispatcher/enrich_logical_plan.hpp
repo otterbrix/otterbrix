@@ -11,6 +11,7 @@
 #include <components/logical_plan/node.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/param_storage.hpp>
+#include <components/planner/host_hooks.hpp>
 #include <core/result_wrapper.hpp>
 #include <memory_resource>
 #include <services/collection/context_storage.hpp>
@@ -52,6 +53,18 @@ namespace services::catalog_resolve {
                                 const components::logical_plan::catalog_resolves_t& src);
 
     bool has_unresolved_entries(const components::logical_plan::catalog_resolves_t& resolves);
+
+    // Table names the catalog did not resolve; the views point into `resolves`.
+    std::pmr::vector<components::planner::unresolved_table_t>
+    unresolved_tables(std::pmr::memory_resource* resource,
+                      const components::logical_plan::catalog_resolves_t& resolves);
+
+    std::size_t entry_count(const components::logical_plan::catalog_resolves_t& resolves);
+
+    // Marks unresolved table / namespace entries that no node of `root` names any more.
+    void supersede_unnamed_entries(std::pmr::memory_resource* resource,
+                                   components::logical_plan::catalog_resolves_t& resolves,
+                                   const components::logical_plan::node_t* root);
 
     // A REFERENCES target with a uid or schema segment is refused, not dropped.
     core::error_t refuse_referenced_segments(std::pmr::memory_resource* resource,

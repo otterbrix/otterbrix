@@ -285,6 +285,7 @@ namespace services::engine {
                                                                           parts->index->address(),
                                                                           config.execution.dml_flush_row_threshold,
                                                                           primitives.optimizer_rules,
+                                                                          primitives.name_resolution,
                                                                           config.execution.executor_pool_size,
                                                                           config.execution.pump);
 

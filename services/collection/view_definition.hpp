@@ -43,16 +43,11 @@ namespace services::collection {
     std::string host_node_spec(std::pmr::memory_resource* resource,
                                const std::pmr::vector<components::types::complex_logical_type>& columns);
 
-    // A read of a view is what CREATE VIEW recorded (Trino 483 checkViewStaleness): the validated body answers the
-    // stored columns with their types, and every host node the view was created over declares the same columns.
-    core::error_t
-    check_expanded_view(std::pmr::memory_resource* resource,
-                        const components::logical_plan::resolved_table_metadata_t& view,
-                        const components::logical_plan::node_t& body,
-                        const std::pmr::vector<std::pair<std::string, std::string>>& host_nodes);
-
-    // Every host node of the tree by name, with its spec.
-    std::pmr::vector<std::pair<std::string, std::string>> host_node_specs(std::pmr::memory_resource* resource,
-                                                                          const components::logical_plan::node_t* root);
+    // A read of a view is what CREATE VIEW recorded (Trino 483 checkViewStaleness): the validated body answers as
+    // many columns as were stored, each named the same without regard to case and of exactly the stored type. A host
+    // node's own columns are not compared: one the view does not read cannot make it stale.
+    core::error_t check_expanded_view(std::pmr::memory_resource* resource,
+                                      const components::logical_plan::resolved_table_metadata_t& view,
+                                      const components::logical_plan::node_t& body);
 
 } // namespace services::collection

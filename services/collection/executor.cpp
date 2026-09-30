@@ -557,8 +557,9 @@ namespace services::collection::executor {
         const std::size_t own_tables = own_entries(plan.catalog_resolves.tables);
         const std::size_t own_types = own_entries(plan.catalog_resolves.types);
         // Every view this statement reads, as its catalog row described it before the expansion.
+        // The body is read back as the first child of the view's reference: the host may replace the body's own root.
         struct expanded_view_t {
-            components::logical_plan::node_ptr body;
+            components::logical_plan::node_ptr reference;
             components::logical_plan::resolved_table_metadata_t view;
         };
         std::pmr::vector<expanded_view_t> expanded_views{resource()};
@@ -685,7 +686,7 @@ namespace services::collection::executor {
                         err.contains_error()) {
                         co_return execute_result_t{make_cursor(resource(), std::move(err))};
                     }
-                    expanded_views.push_back({std::move(projected), std::move(views[i])});
+                    expanded_views.push_back({components::logical_plan::node_ptr{ref.node}, std::move(views[i])});
                 }
                 if (services::catalog_resolve::has_unresolved_entries(plan.catalog_resolves)) {
                     std::pmr::vector<components::logical_plan::node_ptr> resolve_nodes{resource()};
@@ -1512,9 +1513,8 @@ namespace services::collection::executor {
         }
 
         if (!error && !expanded_views.empty()) {
-            const auto host_nodes = host_node_specs(resource(), plan.sub_queries.back().get());
             for (const auto& expanded : expanded_views) {
-                if (auto stale = check_expanded_view(resource(), expanded.view, *expanded.body, host_nodes);
+                if (auto stale = check_expanded_view(resource(), expanded.view, *expanded.reference->children().front());
                     stale.contains_error()) {
                     error = make_cursor(resource(), std::move(stale));
                     break;

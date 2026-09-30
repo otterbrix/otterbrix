@@ -96,6 +96,10 @@ namespace {
                         chunk.set_value(col,
                                         row,
                                         types::logical_value_t(resource(), "s" + std::to_string(rows_[row][col])));
+                    } else if (columns_[col].type() == types::logical_type::INTEGER) {
+                        chunk.set_value(col,
+                                        row,
+                                        types::logical_value_t(resource(), static_cast<int32_t>(rows_[row][col])));
                     } else {
                         chunk.set_value(col, row, types::logical_value_t(resource(), rows_[row][col]));
                     }
@@ -225,9 +229,9 @@ namespace {
                     const std::string col{col_cell.value<std::string_view>()};
                     const std::string type{type_cell.value<std::string_view>()};
                     ordered.emplace_back(ord_cell.value<int64_t>(),
-                                         types::complex_logical_type{type == "TEXT"
-                                                                         ? types::logical_type::STRING_LITERAL
-                                                                         : types::logical_type::BIGINT,
+                                         types::complex_logical_type{type == "TEXT"  ? types::logical_type::STRING_LITERAL
+                                                                     : type == "INT" ? types::logical_type::INTEGER
+                                                                                     : types::logical_type::BIGINT,
                                                                      col});
                 }
             }
@@ -486,9 +490,9 @@ TEST_CASE("integration::cpp::host_names::a_view_over_a_host_name") {
           components::catalog::well_known_oid::pg_namespace_table);
 }
 
-// Trino 483 checkViewStaleness: the host node the view was created over declares other columns now.
-TEST_CASE("integration::cpp::host_names::a_view_whose_host_node_changed_is_stale") {
-    HOST_TEST_BOILERPLATE("test_host_names/view_node_changed")
+// Trino 483 checkViewStaleness compares the view's output columns only: a column the host node gained is not read.
+TEST_CASE("integration::cpp::host_names::a_host_column_the_view_does_not_read_keeps_it_fresh") {
+    HOST_TEST_BOILERPLATE("test_host_names/view_node_grew")
     REQUIRE(run(dispatcher, declare_orders)->is_success());
     REQUIRE(run(dispatcher, "CREATE DATABASE loc;")->is_success());
     REQUIRE(run(dispatcher, "CREATE VIEW loc.ov AS SELECT id, amount FROM m2.shop.orders;")->is_success());
@@ -496,10 +500,30 @@ TEST_CASE("integration::cpp::host_names::a_view_whose_host_node_changed_is_stale
                 "INSERT INTO otterstax.remote_columns (tbl, col, type, ord) VALUES "
                 "('m2.shop.orders', 'label', 'TEXT', 3);")
                 ->is_success());
+    backend()["m2.shop.orders"] = {{1, 100, 7}, {2, 200, 8}, {3, 300, 9}};
+
+    auto read = run(dispatcher, "SELECT id, amount FROM loc.ov;");
+    INFO("error: " << (read->is_error() ? std::string{read->get_error().what} : std::string{}));
+    REQUIRE(read->is_success());
+    CHECK(sorted_int_rows(read) == std::vector<std::vector<int64_t>>{{1, 100}, {2, 200}, {3, 300}});
+}
+
+// The type of an output column is compared exactly: no coercion is inserted for a wider host type.
+TEST_CASE("integration::cpp::host_names::a_view_whose_output_column_changed_type_is_stale") {
+    HOST_TEST_BOILERPLATE("test_host_names/view_column_type")
+    REQUIRE(run(dispatcher,
+                "INSERT INTO otterstax.remote_columns (tbl, col, type, ord) VALUES "
+                "('m2.shop.orders', 'id', 'BIGINT', 1), ('m2.shop.orders', 'amount', 'INT', 2);")
+                ->is_success());
+    REQUIRE(run(dispatcher, "CREATE DATABASE loc;")->is_success());
+    REQUIRE(run(dispatcher, "CREATE VIEW loc.ov AS SELECT id, amount FROM m2.shop.orders;")->is_success());
+    REQUIRE(run(dispatcher, "SELECT id FROM loc.ov;")->is_success());
+    REQUIRE(run(dispatcher, "UPDATE otterstax.remote_columns SET type = 'BIGINT' WHERE col = 'amount';")->is_success());
 
     auto stale = run(dispatcher, "SELECT id FROM loc.ov;");
     REQUIRE(stale->is_error());
-    CHECK(std::string{stale->get_error().what}.find("view \"ov\" is stale") != std::string::npos);
+    CHECK(std::string{stale->get_error().what} ==
+          "view \"ov\" is stale: its column \"amount\" is now int8, it was created as int4; recreate the view");
 }
 
 TEST_CASE("integration::cpp::host_names::a_view_whose_host_name_is_gone_is_stale") {

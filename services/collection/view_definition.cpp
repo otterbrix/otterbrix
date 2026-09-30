@@ -9,6 +9,7 @@
 #include <services/dispatcher/validate_logical_plan.hpp>
 
 #include <algorithm>
+#include <cctype>
 
 namespace services::collection {
 
@@ -126,50 +127,34 @@ namespace services::collection {
         return catalog::encode_type_spec(components::types::complex_logical_type::create_struct("host", fields));
     }
 
-    std::pmr::vector<std::pair<std::string, std::string>> host_node_specs(std::pmr::memory_resource* resource,
-                                                                          const node_t* root) {
-        std::pmr::vector<std::pair<std::string, std::string>> out{resource};
-        collect_host_nodes(resource, root, out);
-        return out;
-    }
-
     core::error_t check_expanded_view(std::pmr::memory_resource* resource,
                                       const components::logical_plan::resolved_table_metadata_t& view,
-                                      const node_t& body,
-                                      const std::pmr::vector<std::pair<std::string, std::string>>& host_nodes) {
-        for (const auto& binding : view.view_bindings) {
-            if (binding.refkind != components::logical_plan::view_refkind::host_node) {
-                continue;
-            }
-            const auto node = std::find_if(host_nodes.begin(), host_nodes.end(), [&](const auto& seen) {
-                return seen.first == binding.relname;
-            });
-            if (node == host_nodes.end()) {
-                return components::planner::view_stale_error(resource,
-                                                             view.name,
-                                                             "the host no longer answers its body with the node \"" +
-                                                                 binding.relname + "\"");
-            }
-            if (node->second != binding.refspec) {
-                return components::planner::view_stale_error(resource,
-                                                             view.name,
-                                                             "the host node \"" + binding.relname +
-                                                                 "\" declares other columns than at CREATE VIEW");
-            }
-        }
+                                      const node_t& body) {
         if (!body.has_output_types()) {
             return core::error_t::no_error();
         }
+        const auto stale = [&](const std::string& why) {
+            return components::planner::view_stale_error(resource, view.name, why);
+        };
         const auto& types = body.output_types();
-        bool same = types.size() == view.columns.size();
-        for (std::size_t i = 0; same && i < types.size(); ++i) {
-            same = types[i].has_alias() && types[i].alias() == view.columns[i].attname &&
-                   types[i] == view.columns[i].type;
+        if (types.size() != view.columns.size()) {
+            return stale("its body answers " + std::to_string(types.size()) + " columns, it was created with " +
+                         std::to_string(view.columns.size()));
         }
-        if (!same) {
-            return components::planner::view_stale_error(resource,
-                                                         view.name,
-                                                         "its body no longer answers the columns it was created with");
+        for (std::size_t i = 0; i < types.size(); ++i) {
+            const auto& stored = view.columns[i];
+            const std::string name = types[i].has_alias() ? types[i].alias() : std::string{};
+            if (!std::equal(name.begin(), name.end(), stored.attname.begin(), stored.attname.end(), [](char l, char r) {
+                    return std::tolower(static_cast<unsigned char>(l)) == std::tolower(static_cast<unsigned char>(r));
+                })) {
+                return stale("its column " + std::to_string(i + 1) + " is now \"" + name + "\", it was created as \"" +
+                             stored.attname + "\"");
+            }
+            if (!(types[i] == stored.type)) {
+                return stale("its column \"" + stored.attname + "\" is now " +
+                             dispatcher::validation::describe_type(types[i]) + ", it was created as " +
+                             dispatcher::validation::describe_type(stored.type));
+            }
         }
         return core::error_t::no_error();
     }
@@ -297,7 +282,9 @@ namespace services::collection {
             }
         }
 
-        for (auto& [name, spec] : host_node_specs(resource, view.body().get())) {
+        std::pmr::vector<std::pair<std::string, std::string>> host_nodes{resource};
+        collect_host_nodes(resource, view.body().get(), host_nodes);
+        for (auto& [name, spec] : host_nodes) {
             catalog::view_binding_t binding;
             binding.refkind = host_node;
             binding.relname = std::move(name);

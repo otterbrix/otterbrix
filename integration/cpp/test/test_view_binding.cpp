@@ -310,6 +310,28 @@ TEST_CASE("integration::cpp::view_binding::drop_column_the_view_does_not_read_is
     CHECK(bigints(run_ok(d, "SELECT a FROM vb.v;")) == std::set<std::int64_t>{1, 2});
 }
 
+// A dependent pg_class row of a column used to be taken for an index; a view's pg_rewrite, pg_rewrite_ref and
+// pg_attribute rows were left behind.
+TEST_CASE("integration::cpp::view_binding::drop_column_cascade_drops_the_view_whole") {
+    test_spaces space(config_for("drop_column_cascade"));
+    auto* d = space.dispatcher();
+    seed(d);
+    run_ok(d, "CREATE VIEW vb.v AS SELECT a FROM vb.t;");
+    run_ok(d, "CREATE VIEW vb.w AS SELECT a FROM vb.v;");
+    const auto v_oid = std::to_string(oid_of(d, "v"));
+    const auto w_oid = std::to_string(oid_of(d, "w"));
+
+    run_ok(d, "ALTER TABLE vb.t DROP COLUMN a CASCADE;");
+
+    CHECK(strings(run_ok(d, "SELECT b FROM vb.t;")) == std::set<std::string>{"x", "y"});
+    for (const auto& oid : {v_oid, w_oid}) {
+        CHECK(run_ok(d, "SELECT relname FROM pg_catalog.pg_class WHERE oid = " + oid + ";")->size() == 0);
+        CHECK(run_ok(d, "SELECT oid FROM pg_catalog.pg_rewrite WHERE ev_class = " + oid + ";")->size() == 0);
+        CHECK(run_ok(d, "SELECT relname FROM pg_catalog.pg_rewrite_ref WHERE ev_class = " + oid + ";")->size() == 0);
+        CHECK(run_ok(d, "SELECT attname FROM pg_catalog.pg_attribute WHERE attrelid = " + oid + ";")->size() == 0);
+    }
+}
+
 TEST_CASE("integration::cpp::view_binding::drop_type_the_view_uses_is_refused") {
     test_spaces space(config_for("drop_type"));
     auto* d = space.dispatcher();

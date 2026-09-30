@@ -222,8 +222,8 @@ TEST_CASE("integration::cpp::drop_restrict::computing_table_is_blocked_by_its_ow
 }
 
 // operator_alter_column_drop.cpp used to refuse on `dependents` (every
-// pg_depend row on the column); now refuses on `restrict_blockers`, the
-// deptype-filtered subset, so an owned index no longer blocks RESTRICT.
+// pg_depend row on the column); now the shared drop walk refuses only a normal
+// dependent, so an owned index no longer blocks RESTRICT.
 TEST_CASE("integration::cpp::drop_restrict::column_is_blocked_by_its_own_index") {
     auto config = make_test_config(fixture_path("own_index"));
     config.log.level = log_t::level::off;
@@ -266,9 +266,8 @@ TEST_CASE("integration::cpp::drop_restrict::column_referenced_by_a_foreign_key_i
     CHECK(after->size() == 0);
 }
 
-// The FK gate matches every 'n' edge today's writers produce (they're all
-// pg_constraint-classed), so `restrict_blockers` itself was reachable by no
-// test: it forges a 'n' edge from a pg_class-classed object instead.
+// The FK gate matches the pg_constraint-classed 'n' edges; this forges a 'n'
+// edge from a pg_class-classed object to reach the shared drop walk's RESTRICT.
 TEST_CASE("integration::cpp::drop_restrict::a_non_constraint_blocking_edge_refuses_the_column_drop") {
     auto config = make_test_config(fixture_path("foreign_blocker"));
     config.log.level = log_t::level::off;
@@ -299,7 +298,7 @@ TEST_CASE("integration::cpp::drop_restrict::a_non_constraint_blocking_edge_refus
     CHECK_FALSE(refused->is_success());
     // The RESTRICT gate's own message, naming the blocking oid — not the FK
     // gate's, which this shape does not reach.
-    CHECK(error_text(refused).find("DROP COLUMN RESTRICT: column has dependent objects") != std::string::npos);
+    CHECK(error_text(refused).find("cannot drop column a because other objects depend on it") != std::string::npos);
     CHECK(error_text(refused).find(std::to_string(kForeignBlocker)) != std::string::npos);
 
     CHECK(run_ok(d, "SELECT a FROM dr.t;")->size() == 1);

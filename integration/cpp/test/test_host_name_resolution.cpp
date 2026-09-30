@@ -130,7 +130,19 @@ namespace {
 
         void reset_pipeline_state() noexcept override { next_ = 0; }
 
+        void set_name(std::string name) { name_ = std::move(name); }
+
     private:
+        std::pmr::string explain_label_impl() const override {
+            return std::pmr::string{"Foreign Scan on " + name_, resource()};
+        }
+        std::pmr::vector<std::pmr::string> explain_details_impl() const override {
+            std::pmr::vector<std::pmr::string> details{resource()};
+            details.emplace_back("Remote SQL: SELECT * FROM " + name_.substr(name_.find('.') + 1));
+            return details;
+        }
+
+        std::string name_;
         std::pmr::vector<types::complex_logical_type> columns_;
         std::vector<batch_t> batches_;
         std::size_t next_{0};
@@ -153,7 +165,10 @@ namespace {
         std::pmr::vector<types::complex_logical_type> columns(node.columns(), context.resource);
         auto scripted = batches().find(payload->name);
         auto answer = scripted != batches().end() ? scripted->second : std::vector<batch_t>{backend()[payload->name]};
-        return {new remote_source_t(context.resource, context.log.clone(), std::move(columns), std::move(answer))};
+        auto source = boost::intrusive_ptr(
+            new remote_source_t(context.resource, context.log.clone(), std::move(columns), std::move(answer)));
+        source->set_name(payload->name);
+        return {source};
     }
 
     std::string type_names(const vector::data_chunk_t& chunk) {
@@ -205,6 +220,15 @@ namespace {
 
     private:
         std::optional<uint64_t> affected_rows_impl() const noexcept override { return written_; }
+        std::pmr::string explain_label_impl() const override {
+            return std::pmr::string{"Foreign Insert on " + name_, resource()};
+        }
+        std::pmr::vector<std::pmr::string> explain_details_impl() const override {
+            std::pmr::vector<std::pmr::string> details{resource()};
+            details.emplace_back("Remote SQL: INSERT INTO " + name_.substr(name_.find('.') + 1) + " VALUES ($1, $2)");
+            details.emplace_back("Batch Size: 1");
+            return details;
+        }
 
         std::string name_;
         std::vector<std::vector<int64_t>> rows_;
@@ -931,4 +955,55 @@ TEST_CASE("integration::cpp::host_names::a_host_write_error_reaches_the_cursor")
               "server m2: new row violates check constraint \"amount_positive\"");
     }
     CHECK(backend()["m2.shop.orders"].size() == 3);
+}
+
+namespace {
+    std::vector<std::string> explain_lines(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& sql) {
+        auto cursor = run(dispatcher, sql);
+        INFO(sql << " -> " << (cursor->is_error() ? std::string{cursor->get_error().what} : std::string{"ok"}));
+        REQUIRE(cursor->is_success());
+        std::vector<std::string> lines;
+        for (std::size_t row = 0; row < cursor->size(); ++row) {
+            const auto cell = cursor->value(0, row);
+            lines.emplace_back(cell.value<std::string_view>());
+        }
+        return lines;
+    }
+} // namespace
+
+// PostgreSQL 18 postgres_fdw: "Foreign Scan on ..." with "Remote SQL: ..." under it. The host operator says both.
+TEST_CASE("integration::cpp::host_names::explain_prints_the_host_operator_label_and_details") {
+    HOST_TEST_BOILERPLATE("test_host_names/explain")
+    REQUIRE(run(dispatcher, declare_orders)->is_success());
+
+    SECTION("EXPLAIN") {
+        CHECK(explain_lines(dispatcher, "EXPLAIN SELECT * FROM m2.shop.orders;") ==
+              std::vector<std::string>{"Foreign Scan on m2.shop.orders", "  Remote SQL: SELECT * FROM shop.orders"});
+    }
+    SECTION("EXPLAIN ANALYZE") {
+        auto lines = explain_lines(dispatcher, "EXPLAIN ANALYZE SELECT * FROM m2.shop.orders;");
+        REQUIRE(lines.size() == 2);
+        CHECK(lines[0].rfind("Foreign Scan on m2.shop.orders  (actual time=", 0) == 0);
+        CHECK(lines[0].find("rows=3 loops=1)") != std::string::npos);
+        CHECK(lines[1] == "  Remote SQL: SELECT * FROM shop.orders");
+    }
+    SECTION("the details of a node below the root are indented under its label") {
+        REQUIRE(run(dispatcher, "CREATE DATABASE loc;")->is_success());
+        REQUIRE(run(dispatcher, "CREATE TABLE loc.c (id BIGINT);")->is_success());
+        auto lines = explain_lines(dispatcher,
+                                   "EXPLAIN SELECT o.id FROM m2.shop.orders AS o JOIN loc.c AS c ON o.id = c.id;");
+        CHECK(lines == std::vector<std::string>{"Project",
+                                                "  ->  Hash Join",
+                                                "    ->  Foreign Scan on m2.shop.orders",
+                                                "          Remote SQL: SELECT * FROM shop.orders",
+                                                "    ->  Seq Scan on c"});
+    }
+    SECTION("a write into the host relation: the host sink's line, not a scan's") {
+        CHECK(explain_lines(dispatcher, "EXPLAIN INSERT INTO m2.shop.orders (id, amount) VALUES (4, 400);") ==
+              std::vector<std::string>{"Foreign Insert on m2.shop.orders",
+                                       "  Remote SQL: INSERT INTO shop.orders VALUES ($1, $2)",
+                                       "  Batch Size: 1",
+                                       "  ->  Values Scan"});
+        CHECK(backend()["m2.shop.orders"].size() == 3);
+    }
 }

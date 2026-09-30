@@ -13,6 +13,8 @@
 #include <chrono>
 #include <memory_resource>
 #include <optional>
+#include <span>
+#include <string_view>
 #include <string>
 #include <vector>
 
@@ -114,14 +116,23 @@ namespace components::operators {
         sink
     };
 
+    // One operator as EXPLAIN sees it; the views live until the sink returns.
+    struct explain_entry_t {
+        operator_type type;
+        catalog::oid_t oid;
+        uint64_t rows;
+        std::chrono::nanoseconds time;
+        uint64_t loops;
+        std::string_view label;
+        std::span<const std::pmr::string> details;
+    };
+
     // Raw fn-pointers + void* ctx, not std::function: no IR type crosses into components.
     struct explain_sink {
-        void (*on_node)(void*, operator_type, catalog::oid_t, uint64_t, std::chrono::nanoseconds, uint64_t);
+        void (*on_node)(void*, const explain_entry_t&);
         void (*on_end)(void*);
         void* ctx;
-        void begin(operator_type t, catalog::oid_t o, uint64_t r, std::chrono::nanoseconds ti, uint64_t l) const {
-            on_node(ctx, t, o, r, ti, l);
-        }
+        void begin(const explain_entry_t& entry) const { on_node(ctx, entry); }
         void end() const { on_end(ctx); }
     };
 
@@ -227,9 +238,15 @@ namespace components::operators {
         // Scans override to add their table oid; lateral/recursive override to recurse into private sub-plans.
         void explain(const explain_sink& s) const { explain_impl(s); }
 
+        // What EXPLAIN prints for this operator: its line, and the lines printed under it.
+        [[nodiscard]] std::pmr::string explain_label() const { return explain_label_impl(); }
+        [[nodiscard]] std::pmr::vector<std::pmr::string> explain_details() const { return explain_details_impl(); }
+
     protected:
         void explain_begin(const explain_sink& s, catalog::oid_t oid) const {
-            s.begin(type(), oid, analyze_rows_, analyze_time_, analyze_loops_);
+            const auto label = explain_label();
+            const auto details = explain_details();
+            s.begin(explain_entry_t{type(), oid, analyze_rows_, analyze_time_, analyze_loops_, label, details});
         }
 
         // Prevents constant creation of empty chunks just to pass its schema
@@ -249,6 +266,12 @@ namespace components::operators {
         virtual actor_zeta::unique_future<core::error_t> open_impl(pipeline::context_t* ctx);
 
         virtual std::optional<uint64_t> affected_rows_impl() const noexcept { return std::nullopt; }
+
+        // The engine's name for type(), e.g. "Seq Scan", "Hash Join", "Extension Scan".
+        virtual std::pmr::string explain_label_impl() const;
+        virtual std::pmr::vector<std::pmr::string> explain_details_impl() const {
+            return std::pmr::vector<std::pmr::string>{resource_};
+        }
 
         // Non-pure: operator_t has concrete leaf subclasses that don't override it.
         virtual void explain_impl(const explain_sink& s) const {

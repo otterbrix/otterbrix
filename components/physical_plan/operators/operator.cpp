@@ -1,6 +1,136 @@
 #include "operator.hpp"
 
+#include <string_view>
+
 namespace components::operators {
+
+    namespace {
+        // PostgreSQL-style names. EXHAUSTIVE over operator_type with NO `default`: -Wswitch then forces any new
+        // operator to be named. The ops that never sit on an EXPLAINed SELECT/DML spine (DDL/txn/utility statements
+        // are refused by transform_explain; resolve_* run in separate resolve sub-plans; sequence is flattened;
+        // assign_cast shows its input; empty/batch/unused are never rendered) share one "?".
+        std::string_view default_explain_label(operator_type type) {
+            std::string_view label;
+            switch (type) {
+                case operator_type::full_scan:
+                case operator_type::transfer_scan:
+                    label = "Seq Scan";
+                    break;
+                case operator_type::index_scan:
+                    label = "Index Scan";
+                    break;
+                case operator_type::pushed_reduce_scan:
+                    label = "Pushed Aggregate Scan";
+                    break;
+                case operator_type::hash_join:
+                    label = "Hash Join";
+                    break;
+                case operator_type::join:
+                    label = "Nested Loop";
+                    break;
+                case operator_type::aggregate:
+                    label = "Aggregate";
+                    break;
+                case operator_type::group_merge:
+                    label = "Finalize Aggregate";
+                    break;
+                case operator_type::sort:
+                    label = "Sort";
+                    break;
+                case operator_type::match:
+                    label = "Filter";
+                    break;
+                case operator_type::having:
+                    label = "Having";
+                    break;
+                case operator_type::select:
+                    label = "Project";
+                    break;
+                case operator_type::distinct:
+                    label = "Unique";
+                    break;
+                case operator_type::limit:
+                    label = "Limit";
+                    break;
+                case operator_type::insert:
+                    label = "Insert";
+                    break;
+                case operator_type::remove:
+                    label = "Delete";
+                    break;
+                case operator_type::update:
+                    label = "Update";
+                    break;
+                case operator_type::union_op:
+                    label = "Append";
+                    break;
+                case operator_type::recursive_cte:
+                    label = "Recursive Union";
+                    break;
+                case operator_type::cte_scan:
+                    label = "CTE Scan";
+                    break;
+                case operator_type::raw_data:
+                    label = "Values Scan";
+                    break;
+                case operator_type::function:
+                    label = "Function Scan";
+                    break;
+                case operator_type::check_constraint:
+                    label = "Check Constraint";
+                    break;
+                case operator_type::unique_constraint:
+                    label = "Unique Check";
+                    break;
+                case operator_type::fk_check:
+                    label = "FK Check";
+                    break;
+                case operator_type::fk_cascade:
+                    label = "FK Cascade";
+                    break;
+                case operator_type::computed_field_register:
+                    label = "Computed Fields";
+                    break;
+                case operator_type::extension:
+                    label = "Extension Scan";
+                    break;
+                case operator_type::unused:
+                case operator_type::empty:
+                case operator_type::sequence:
+                case operator_type::create_collection:
+                case operator_type::alter_column_add:
+                case operator_type::alter_column_rename:
+                case operator_type::alter_column_drop:
+                case operator_type::dynamic_cascade_delete:
+                case operator_type::checkpoint:
+                case operator_type::set_setting:
+                case operator_type::vacuum:
+                case operator_type::register_udf:
+                case operator_type::unregister_udf:
+                case operator_type::register_cast:
+                case operator_type::unregister_cast:
+                case operator_type::commit_transaction:
+                case operator_type::abort_transaction:
+                case operator_type::begin_transaction:
+                case operator_type::computed_field_unregister:
+                case operator_type::resolve_table:
+                case operator_type::resolve_namespace:
+                case operator_type::resolve_database:
+                case operator_type::resolve_type:
+                case operator_type::resolve_constraint:
+                case operator_type::allocate_oids:
+                case operator_type::assign_cast:
+                case operator_type::batch:
+                    label = "?";
+                    break;
+            }
+            return label;
+        }
+    } // namespace
+
+    std::pmr::string operator_t::explain_label_impl() const {
+        return std::pmr::string{default_explain_label(type()), resource_};
+    }
 
     operator_t::operator_t(std::pmr::memory_resource* resource, log_t log, operator_type type)
         : resource_(resource)

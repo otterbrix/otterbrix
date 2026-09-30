@@ -16,132 +16,9 @@ namespace services::collection {
     namespace {
         namespace ops = components::operators;
 
-        // Map operator_type to a PostgreSQL-style label. EXHAUSTIVE over operator_type with NO
-        // `default`: -Wswitch (Linux CI -Werror) then forces any newly-added op to be given a label,
-        // so nothing silently blanks out and there is no fallback branch. The
-        // proven-unreachable ops (they never sit on an EXPLAINed SELECT/DML spine) share
-        // one grouped "?" arm whose label is never actually emitted.
+        // The operator names itself (operator_t::explain_label); a scan adds the relation it reads.
         std::pmr::string pg_label(std::pmr::memory_resource* mr, const explain_plan_node& n) {
-            std::pmr::string label(mr);
-            switch (n.type) {
-                case ops::operator_type::full_scan:
-                case ops::operator_type::transfer_scan:
-                    label = "Seq Scan";
-                    break;
-                case ops::operator_type::index_scan:
-                    label = "Index Scan";
-                    break;
-                case ops::operator_type::pushed_reduce_scan:
-                    label = "Pushed Aggregate Scan";
-                    break;
-                case ops::operator_type::hash_join:
-                    label = "Hash Join";
-                    break;
-                case ops::operator_type::join:
-                    label = "Nested Loop";
-                    break;
-                case ops::operator_type::aggregate:
-                    label = "Aggregate";
-                    break;
-                case ops::operator_type::group_merge:
-                    label = "Finalize Aggregate";
-                    break;
-                case ops::operator_type::sort:
-                    label = "Sort";
-                    break;
-                case ops::operator_type::match:
-                    label = "Filter";
-                    break;
-                case ops::operator_type::having:
-                    label = "Having";
-                    break;
-                case ops::operator_type::select:
-                    label = "Project";
-                    break;
-                case ops::operator_type::distinct:
-                    label = "Unique";
-                    break;
-                case ops::operator_type::limit:
-                    label = "Limit";
-                    break;
-                case ops::operator_type::insert:
-                    label = "Insert";
-                    break;
-                case ops::operator_type::remove:
-                    label = "Delete";
-                    break;
-                case ops::operator_type::update:
-                    label = "Update";
-                    break;
-                case ops::operator_type::union_op:
-                    label = "Append";
-                    break;
-                case ops::operator_type::recursive_cte:
-                    label = "Recursive Union";
-                    break;
-                case ops::operator_type::cte_scan:
-                    label = "CTE Scan";
-                    break;
-                case ops::operator_type::raw_data:
-                    label = "Values Scan";
-                    break;
-                case ops::operator_type::function:
-                    label = "Function Scan";
-                    break;
-                case ops::operator_type::check_constraint:
-                    label = "Check Constraint";
-                    break;
-                case ops::operator_type::unique_constraint:
-                    label = "Unique Check";
-                    break;
-                case ops::operator_type::fk_check:
-                    label = "FK Check";
-                    break;
-                case ops::operator_type::fk_cascade:
-                    label = "FK Cascade";
-                    break;
-                case ops::operator_type::computed_field_register:
-                    label = "Computed Fields";
-                    break;
-                // Host-extension source (federated scan etc.) — reachable on an
-                // EXPLAINed SELECT spine when the plan carries extension leaves.
-                case ops::operator_type::extension:
-                    label = "Extension Scan";
-                    break;
-                // Proven unreachable on an EXPLAINed SELECT/INSERT/UPDATE/DELETE spine (DDL/txn/utility
-                // statements are rejected by transform_explain; resolve_* live in separate resolve
-                // subplans; sequence is flattened; empty/batch/unused are never rendered). Grouped so
-                // the switch stays exhaustive with no `default` — the "?" is never actually emitted.
-                case ops::operator_type::unused:
-                case ops::operator_type::empty:
-                case ops::operator_type::sequence:
-                case ops::operator_type::create_collection:
-                case ops::operator_type::alter_column_add:
-                case ops::operator_type::alter_column_rename:
-                case ops::operator_type::alter_column_drop:
-                case ops::operator_type::dynamic_cascade_delete:
-                case ops::operator_type::checkpoint:
-                case ops::operator_type::set_setting:
-                case ops::operator_type::vacuum:
-                case ops::operator_type::register_udf:
-                case ops::operator_type::unregister_udf:
-                case ops::operator_type::register_cast:
-                case ops::operator_type::unregister_cast:
-                case ops::operator_type::commit_transaction:
-                case ops::operator_type::abort_transaction:
-                case ops::operator_type::begin_transaction:
-                case ops::operator_type::computed_field_unregister:
-                case ops::operator_type::resolve_table:
-                case ops::operator_type::resolve_namespace:
-                case ops::operator_type::resolve_database:
-                case ops::operator_type::resolve_type:
-                case ops::operator_type::resolve_constraint:
-                case ops::operator_type::allocate_oids:
-                case ops::operator_type::assign_cast:
-                case ops::operator_type::batch:
-                    label = "?";
-                    break;
-            }
+            std::pmr::string label(n.label, mr);
             if (!n.relation.empty()) {
                 label += " on ";
                 label.append(n.relation.data(), n.relation.size());
@@ -184,6 +61,13 @@ namespace services::collection {
                 line += analyze_suffix(mr, n);
             }
             lines.push_back(std::move(line));
+            // PostgreSQL prints a node's details two columns right of where its label starts.
+            const std::size_t detail_indent = depth > 0 ? static_cast<std::size_t>(depth) * 2 + 6 : 2;
+            for (const auto& detail : n.details) {
+                std::pmr::string detail_line(detail_indent, ' ', mr);
+                detail_line += detail;
+                lines.push_back(std::move(detail_line));
+            }
             for (const auto& c : n.children) {
                 render_node(mr, c, depth + 1, analyze, lines, initplan_no);
             }

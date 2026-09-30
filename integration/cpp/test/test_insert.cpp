@@ -121,7 +121,7 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                 session,
                 components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == kNumInserts);
+            REQUIRE(cur->affected_rows() == kNumInserts);
         };
 
         full_insert(table_collection_name_simple);
@@ -148,7 +148,7 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                 session,
                 components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == kNumInserts);
+            REQUIRE(cur->affected_rows() == kNumInserts);
         };
 
         reordered_insert(table_collection_name_simple);
@@ -175,7 +175,7 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                 session,
                 components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == kNumInserts);
+            REQUIRE(cur->affected_rows() == kNumInserts);
         };
 
         insert_with_conversion(table_collection_name_simple);
@@ -219,7 +219,7 @@ TEST_CASE("integration::cpp::test_collection::insert") {
             {
                 auto cur = partial_insert(table_collection_name_simple);
                 REQUIRE(cur->is_success());
-                REQUIRE(cur->size() == kNumInserts);
+                REQUIRE(cur->affected_rows() == kNumInserts);
                 // column[1] will be filled with 100 nulls
             }
             {
@@ -255,7 +255,7 @@ TEST_CASE("integration::cpp::test_collection::insert") {
             {
                 auto cur = partial_insert(table_collection_name_null_defaults);
                 REQUIRE(cur->is_success());
-                REQUIRE(cur->size() == kNumInserts);
+                REQUIRE(cur->affected_rows() == kNumInserts);
                 // column[1] will be filled with 100 nulls
             }
             {
@@ -275,7 +275,7 @@ TEST_CASE("integration::cpp::test_collection::insert") {
             {
                 auto cur = partial_insert(table_collection_name_value_defaults);
                 REQUIRE(cur->is_success());
-                REQUIRE(cur->size() == kNumInserts);
+                REQUIRE(cur->affected_rows() == kNumInserts);
                 // column[1] will be filled with 100 default values (PostgreSQL
                 // semantic: DEFAULT applies for omitted columns regardless of
                 // nullability — see test_persistence::disk_partial_insert).
@@ -298,7 +298,7 @@ TEST_CASE("integration::cpp::test_collection::insert") {
             {
                 auto cur = partial_insert(table_collection_name_value_defaults_not_null);
                 REQUIRE(cur->is_success());
-                REQUIRE(cur->size() == kNumInserts);
+                REQUIRE(cur->affected_rows() == kNumInserts);
                 // column[1] will be filled with 100 nulls
             }
             {
@@ -351,7 +351,7 @@ TEST_CASE("integration::cpp::test_collection::insert") {
             {
                 auto cur = reversed_partial_insert(table_collection_name_simple);
                 REQUIRE(cur->is_success());
-                REQUIRE(cur->size() == kNumInserts);
+                REQUIRE(cur->affected_rows() == kNumInserts);
                 // column[1] will be filled with 100 nulls
             }
             {
@@ -387,7 +387,7 @@ TEST_CASE("integration::cpp::test_collection::insert") {
             {
                 auto cur = reversed_partial_insert(table_collection_name_null_defaults);
                 REQUIRE(cur->is_success());
-                REQUIRE(cur->size() == kNumInserts);
+                REQUIRE(cur->affected_rows() == kNumInserts);
                 // column[1] will be filled with 100 nulls
             }
             {
@@ -407,7 +407,7 @@ TEST_CASE("integration::cpp::test_collection::insert") {
             {
                 auto cur = reversed_partial_insert(table_collection_name_value_defaults);
                 REQUIRE(cur->is_success());
-                REQUIRE(cur->size() == kNumInserts);
+                REQUIRE(cur->affected_rows() == kNumInserts);
                 // column[1] gets default value for omitted (PostgreSQL semantic).
             }
             {
@@ -428,7 +428,7 @@ TEST_CASE("integration::cpp::test_collection::insert") {
             {
                 auto cur = reversed_partial_insert(table_collection_name_value_defaults_not_null);
                 REQUIRE(cur->is_success());
-                REQUIRE(cur->size() == kNumInserts);
+                REQUIRE(cur->affected_rows() == kNumInserts);
                 // column[1] will be filled with 100 nulls
             }
             {

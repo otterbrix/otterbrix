@@ -134,7 +134,9 @@ impl ProxyDatabaseTrait for OtterbrixProxy {
 
     async fn execute(&self, statement: Statement) -> Result<ProxyExecResult, DbErr> {
         run_blocking_with_cursor(&self.db, statement, |cursor| {
-            let affected = cursor.size().max(0) as u64;
+            let affected = cursor
+                .affected_rows()
+                .unwrap_or(cursor.size().max(0) as u64);
             ProxyExecResult {
                 last_insert_id: 0,
                 rows_affected: affected,

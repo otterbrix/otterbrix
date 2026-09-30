@@ -9,15 +9,13 @@ namespace components::operators {
         output_ = std::move(data);
     }
 
-    actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
+    actor_zeta::unique_future<core::result_wrapper_t<std::optional<vector::data_chunk_t>>>
     operator_empty_t::source_next(pipeline::context_t* /*ctx*/) {
-        // Stream the held chunks one at a time; once exhausted, the 0-column drain
-        // sentinel stops execute_pipeline's pump.
         if (output_ && emit_index_ < output_->chunks().size()) {
             auto& chunk = output_->chunks()[emit_index_++];
             co_return chunk.partial_copy(resource_, 0, chunk.size());
         }
-        co_return vector::data_chunk_t{resource_, std::pmr::vector<types::complex_logical_type>{resource_}, 0};
+        co_return std::nullopt;
     }
 
 } // namespace components::operators

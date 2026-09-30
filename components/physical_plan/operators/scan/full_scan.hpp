@@ -35,7 +35,7 @@ namespace components::operators {
 
         // Safe to await here sequentially only because this coroutine is nested, not a behavior() handler.
         [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::source; }
-        [[nodiscard]] actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
+        [[nodiscard]] actor_zeta::unique_future<core::result_wrapper_t<std::optional<vector::data_chunk_t>>>
         source_next(pipeline::context_t* ctx) override;
 
         // Re-OPENs the scan from the head per recursive-CTE re-run; reset_for_reuse() covers state_/output_.
@@ -58,10 +58,10 @@ namespace components::operators {
         }
 
         // Empty but schema'd, so a downstream OUTER join can NULL-pad and a scalar aggregate can still emit COUNT=0.
-        vector::data_chunk_t make_drain_chunk(const std::pmr::vector<types::complex_logical_type>& types);
+        vector::data_chunk_t make_guard_chunk();
 
         // OFFSET is applied by operator_limit above the scan, so this never needs to skip rows itself.
-        actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
+        actor_zeta::unique_future<core::result_wrapper_t<std::optional<vector::data_chunk_t>>>
         emit_or_skip(pipeline::context_t* ctx, std::unique_ptr<vector::data_chunk_t> batch);
 
         components::catalog::oid_t table_oid_;

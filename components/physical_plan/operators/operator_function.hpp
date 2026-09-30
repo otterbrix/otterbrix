@@ -26,7 +26,7 @@ namespace components::operators {
                             std::string result_alias);
 
         [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::source; }
-        [[nodiscard]] actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
+        [[nodiscard]] actor_zeta::unique_future<core::result_wrapper_t<std::optional<vector::data_chunk_t>>>
         source_next(pipeline::context_t* ctx) override;
 
         // Re-runnable for a future LATERAL rescan: drop the materialized relation and
@@ -37,7 +37,6 @@ namespace components::operators {
         // Resolve args, run the expand kernel, and materialize the produced chunks
         // into output_. Sets error state on failure.
         core::error_t materialize_(pipeline::context_t* ctx);
-        vector::data_chunk_t make_drain_chunk();
 
         compute::function_uid uid_;
         std::pmr::vector<expressions::param_storage> args_;

@@ -45,8 +45,7 @@ TEST_CASE("integration::cpp::test_otterbrix_multithread") {
             }
             auto session = otterbrix::session_id_t();
             auto c = dispatcher->execute_sql(session, query.str());
-            //REQUIRE(c->size() == work_per_thread);
-            results[id] = c->size() == work_per_thread;
+            results[id] = c->affected_rows() == work_per_thread;
         };
 
         std::vector<std::thread> threads;
@@ -120,8 +119,7 @@ TEST_CASE("integration::cpp::test_connectors") {
                 query << "('Name " << num << "'," << num << ")" << (num == end - 1 ? ";" : ", ");
             }
             auto c = connectors[id]->execute(query.str());
-            //REQUIRE(c->size() == work_per_thread);
-            results[id] = c->size() == work_per_thread;
+            results[id] = c->affected_rows() == work_per_thread;
         };
 
         std::vector<std::thread> threads;

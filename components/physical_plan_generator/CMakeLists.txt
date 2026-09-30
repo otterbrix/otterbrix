@@ -10,6 +10,7 @@ set(${PROJECT_NAME}_SOURCES
         impl/create_plan_delete.cpp
         impl/create_plan_group.cpp
         impl/create_plan_insert.cpp
+        impl/create_plan_host_write.cpp
         impl/create_plan_match.cpp
         impl/create_plan_select.cpp
         impl/create_plan_sort.cpp

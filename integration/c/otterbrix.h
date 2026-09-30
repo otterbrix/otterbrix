@@ -82,6 +82,9 @@ cursor_ptr drop_collection(otterbrix_ptr ptr, string_view_t database_name, strin
 
 void release_cursor(cursor_ptr ptr);
 int32_t cursor_size(cursor_ptr ptr);
+// The rows an INSERT / UPDATE / DELETE wrote go to *rows; false (and *rows untouched) for a statement that writes no
+// rows. cursor_size() counts result rows only: 0 for a write without RETURNING.
+bool cursor_affected_rows(cursor_ptr ptr, uint64_t* rows);
 int32_t cursor_column_count(cursor_ptr ptr);
 int32_t cursor_column_logical_type(cursor_ptr ptr, int32_t column_index);
 bool cursor_has_next(cursor_ptr ptr);

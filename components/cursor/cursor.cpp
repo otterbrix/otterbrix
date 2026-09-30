@@ -127,6 +127,10 @@ namespace components::cursor {
 
     const core::error_t& cursor_t::get_error() const noexcept { return error_; }
 
+    std::optional<std::uint64_t> cursor_t::affected_rows() const noexcept { return affected_rows_; }
+
+    void cursor_t::set_affected_rows(std::uint64_t rows) noexcept { affected_rows_ = rows; }
+
     cursor_t_ptr make_cursor(std::pmr::memory_resource* resource) { return cursor_t_ptr{new cursor_t(resource)}; }
 
     cursor_t_ptr make_cursor(std::pmr::memory_resource* resource, const core::error_t& error) {

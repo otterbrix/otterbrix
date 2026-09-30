@@ -1230,6 +1230,22 @@ TEST_CASE("name_resolution::fk_target::schema_or_uid_segment_is_refused") {
     run_ok(db, "CREATE TABLE d.c3 (id BIGINT REFERENCES d.p (id));");
 }
 
+// A write target keeps its schema segment, as a read does: in a local database it is refused with the read's words;
+// a database the catalog does not know leaves the whole name to the host.
+TEST_CASE("name_resolution::write_target::schema_segment_in_a_local_database_is_refused") {
+    database_t db(integration_fixture_path("test_name_resolution/write_schema_segment"));
+    db.seed({"CREATE DATABASE d;", "CREATE TABLE d.t (id BIGINT);", "INSERT INTO d.t (id) VALUES (1);"});
+    for (const std::string sql :
+         {"INSERT INTO d.s.t (id) VALUES (2);", "UPDATE d.s.t SET id = 2;", "DELETE FROM d.s.t WHERE id = 1;"}) {
+        auto refused = run_refused(db, sql);
+        INFO(sql);
+        CHECK(to_std(refused.what) ==
+              "schema \"s\" does not exist: a relation lives in a database — write d.s.t as [database.]name");
+    }
+    auto rows = run_ok(db, "SELECT id FROM d.t;");
+    CHECK(rows->size() == 1);
+}
+
 // IF EXISTS is a statement-level switch: it turns only "the statement's target does not exist" into success.
 TEST_CASE("name_resolution::if_exists::drop_of_a_missing_target") {
     database_t db(integration_fixture_path("test_name_resolution/if_exists_drop"));

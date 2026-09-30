@@ -44,7 +44,7 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 100);
+            REQUIRE(cur->affected_rows() == 100);
         }
     }
 
@@ -365,7 +365,7 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                                                "DELETE FROM TestDatabase.TestCollection "
                                                "WHERE count > 90;");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 9);
+            REQUIRE(cur->affected_rows() == 9);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -394,7 +394,7 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                                                "SET count = 1000 "
                                                "WHERE count < 20;");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 20);
+            REQUIRE(cur->affected_rows() == 20);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -578,7 +578,7 @@ TEST_CASE("integration::cpp::test_collection::sql::index") {
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 100);
+            REQUIRE(cur->affected_rows() == 100);
         }
     }
 
@@ -738,7 +738,7 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 100);
+            REQUIRE(cur->affected_rows() == 100);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -858,7 +858,7 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
                 session,
                 "UPDATE TestDatabase.TestCollection SET custom_type.f3.f1 = (custom_type).f3.f1 * 3.0;");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 100);
+            REQUIRE(cur->affected_rows() == 100);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -893,7 +893,7 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
                 dispatcher->execute_sql(session,
                                         "DELETE FROM TestDatabase.TestCollection WHERE ((custom_type).f3).f2 < 90;");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 45);
+            REQUIRE(cur->affected_rows() == 45);
         }
         {
             auto session = otterbrix::session_id_t();

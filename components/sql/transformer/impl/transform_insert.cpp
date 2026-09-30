@@ -577,11 +577,7 @@ namespace components::sql::transform {
             ins_node->set_literal_digits(std::move(literal_digits));
             ins_node->returning() = returning;
             set_target(*ins_node, qn);
-            register_catalog_resolve_table(resource_,
-                                           &catalog_resolves_,
-                                           qn.database,
-                                           qn.collection,
-                                           constraint_resolve_kind::outgoing);
+            register_catalog_resolve_write_target(resource_, &catalog_resolves_, qn, constraint_resolve_kind::outgoing);
             return ins;
         } else {
             auto qn = rangevar_to_qualified_name(node.relation);
@@ -591,11 +587,7 @@ namespace components::sql::transform {
             res->key_translation() = key_translation;
             res->returning() = returning;
             set_target(*res, qn);
-            register_catalog_resolve_table(resource_,
-                                           &catalog_resolves_,
-                                           qn.database,
-                                           qn.collection,
-                                           constraint_resolve_kind::outgoing);
+            register_catalog_resolve_write_target(resource_, &catalog_resolves_, qn, constraint_resolve_kind::outgoing);
             return res;
         }
     }

@@ -210,7 +210,7 @@ TEST_CASE("integration::cpp::test_batch_where") {
         auto cur =
             dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == N);
+        REQUIRE(cur->affected_rows() == N);
     }
 
     INFO("register UDFs");
@@ -335,7 +335,7 @@ TEST_CASE("integration::cpp::test_batch_aggregate") {
             auto cur =
                 dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == N);
+            REQUIRE(cur->affected_rows() == N);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -535,7 +535,7 @@ TEST_CASE("integration::cpp::test_batch_join") {
             query << ";";
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == JOIN_LEFT_SIZE);
+            REQUIRE(cur->affected_rows() == JOIN_LEFT_SIZE);
         }
 
         // right: cat 0..4
@@ -551,7 +551,7 @@ TEST_CASE("integration::cpp::test_batch_join") {
             query << ";";
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == JOIN_RIGHT_SIZE);
+            REQUIRE(cur->affected_rows() == JOIN_RIGHT_SIZE);
         }
     }
 
@@ -685,7 +685,7 @@ TEST_CASE("integration::cpp::test_batch_edge_cases") {
         auto cur =
             dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->affected_rows() == 1);
     }
 
     INFO("aggregate on single row");
@@ -780,7 +780,7 @@ TEST_CASE("integration::cpp::test_batch_boundaries") {
         }
         auto cur = dispatcher->execute_sql(session, query.str());
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == row_count);
+        REQUIRE(cur->affected_rows() == row_count);
     }
 
     INFO("SELECT * returns every row across chunk boundaries");

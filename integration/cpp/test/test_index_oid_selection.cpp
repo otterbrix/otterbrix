@@ -57,7 +57,7 @@ namespace {
         }
         auto ca = exec(dispatcher, qa.str());
         REQUIRE(ca->is_success());
-        REQUIRE(ca->size() == kRows);
+        REQUIRE(ca->affected_rows() == kRows);
 
         std::stringstream qb;
         qb << "INSERT INTO oiddb.tb (id, ka, kb) VALUES ";
@@ -66,7 +66,7 @@ namespace {
         }
         auto cb = exec(dispatcher, qb.str());
         REQUIRE(cb->is_success());
-        REQUIRE(cb->size() == kRows);
+        REQUIRE(cb->affected_rows() == kRows);
     }
 
 } // namespace

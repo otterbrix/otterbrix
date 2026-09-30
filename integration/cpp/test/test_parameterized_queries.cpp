@@ -227,7 +227,7 @@ TEST_CASE("integration::cpp::params::where_update_delete") {
                                            "INSERT INTO ParamDb.Rows (name, count, flag) VALUES "
                                            "('a', 10, true), ('b', 20, false), ('c', 30, true);");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 3);
+        REQUIRE(cur->affected_rows() == 3);
     }
 
     INFO("SELECT ... WHERE count > $1");
@@ -404,7 +404,7 @@ TEST_CASE("integration::cpp::params::injection_or_1_eq_1_matches_no_rows") {
             dispatcher->execute_sql(session,
                                     "INSERT INTO ParamDb.T (name, score) VALUES ('alice', 1), ('bob', 2), ('eve', 3);");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 3);
+        REQUIRE(cur->affected_rows() == 3);
     }
     {
         // The whole payload is a single string literal compared against `name`; no row equals it.
@@ -437,7 +437,7 @@ TEST_CASE("integration::cpp::params::injection_semicolon_does_not_chain") {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "INSERT INTO ParamDb.Victim (x) VALUES (1), (2), (3);");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 3);
+        REQUIRE(cur->affected_rows() == 3);
     }
 
     const std::string payload = "x'; DELETE FROM ParamDb.Victim; --";
@@ -484,7 +484,7 @@ TEST_CASE("integration::cpp::params::injection_int_param_type_safety") {
         auto cur =
             dispatcher->execute_sql(session, "INSERT INTO ParamDb.T (id, name) VALUES (1, 'a'), (2, 'b'), (3, 'c');");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 3);
+        REQUIRE(cur->affected_rows() == 3);
     }
     {
         // An Int64 param compares as an integer; it can only match the integer id.
@@ -517,7 +517,7 @@ TEST_CASE("integration::cpp::params::injection_comment_marker_stored_literally")
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "INSERT INTO ParamDb.T (name) VALUES ('a'), ('b');");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 2);
+        REQUIRE(cur->affected_rows() == 2);
     }
     {
         // "a'--" is a single literal string; the comment marker must not terminate the predicate,

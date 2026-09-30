@@ -111,7 +111,7 @@ namespace {
         {
             auto cur = test_helpers::exec(dispatcher, committed_insert_sql());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == static_cast<std::size_t>(kCommitted));
+            REQUIRE(cur->affected_rows() == static_cast<std::size_t>(kCommitted));
         }
 
         if (!first_txn_end.empty()) {

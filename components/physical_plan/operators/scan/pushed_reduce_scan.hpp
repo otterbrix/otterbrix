@@ -27,10 +27,10 @@ namespace components::operators {
 
         // role()==source drives the streaming push/finalize pipeline. The FIRST
         // source_next call sends ONE storage_reduce carrying the WHERE description and
-        // stashes the reply; each subsequent call emits one stashed chunk, then the
-        // 0-column drain sentinel.
+        // stashes the reply; each subsequent call emits one stashed chunk, then ends
+        // the stream.
         [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::source; }
-        [[nodiscard]] actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
+        [[nodiscard]] actor_zeta::unique_future<core::result_wrapper_t<std::optional<vector::data_chunk_t>>>
         source_next(pipeline::context_t* ctx) override;
 
         // Rewind for a re-driven sub-plan (a correlated LATERAL scalar-aggregate

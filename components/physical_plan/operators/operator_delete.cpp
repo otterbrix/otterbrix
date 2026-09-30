@@ -478,7 +478,7 @@ namespace components::operators {
             co_return;
         }
 
-        // A 0-affected DELETE without RETURNING leaves output_ null, emitting no result rows.
+        // Without RETURNING output_ stays null: the count is affected_rows().
         if (!returning_.empty()) {
             if (returning_staged_.empty()) {
                 // Nothing matched, but we still have to return correct columns
@@ -509,20 +509,6 @@ namespace components::operators {
                 returning_staged_.emplace_back(std::move(proj.value()));
             }
             set_output(make_operator_data(resource_, std::move(returning_staged_)));
-        } else if (affected_rows_ > 0) {
-            auto [_t, tf] = actor_zeta::otterbrix::send(ctx->disk_address,
-                                                        &services::disk::manager_disk_t::storage_types,
-                                                        ctx->session,
-                                                        table_oid_);
-            auto types_r = co_await std::move(tf);
-            if (types_r.has_error()) {
-                set_error(types_r.error());
-                mark_failed();
-                co_return;
-            }
-            auto types = std::move(types_r.value());
-            set_output(make_operator_data(resource_,
-                                          dml_detail::make_affected_count_chunks(resource_, affected_rows_, types)));
         }
         mark_executed();
     }

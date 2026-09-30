@@ -752,6 +752,12 @@ namespace services::collection::executor {
             stale.contains_error()) {
             co_return execute_result_t{make_cursor(resource(), std::move(stale))};
         }
+        if (auto write = services::catalog_resolve::refuse_host_write_shapes(resource(),
+                                                                             plan.sub_queries.back().get(),
+                                                                             plan.commits_when_done);
+            write.contains_error()) {
+            co_return execute_result_t{make_cursor(resource(), std::move(write))};
+        }
         if (auto segment = services::catalog_resolve::refuse_referenced_segments(resource(), plan.catalog_resolves);
             segment.contains_error()) {
             co_return execute_result_t{make_cursor(resource(), std::move(segment))};
@@ -2390,11 +2396,10 @@ namespace services::collection::executor {
                     co_await release_source_cursor(resource());
                     co_return next.convert_error<ops::chunks_vector_t>();
                 }
-                auto batch = std::move(next.value());
-                if (batch.data.empty()) {
-                    break; // 0-column drain sentinel (a schema'd 0-row batch is real input, e.g.
-                           // the empty-guard a scalar aggregate needs to emit COUNT=0)
+                if (!next.value().has_value()) {
+                    break;
                 }
+                auto batch = std::move(*next.value());
                 if (batch.size() > components::vector::DEFAULT_VECTOR_CAPACITY) {
                     co_await release_source_cursor(resource());
                     std::pmr::string what{"source batch of ", resource()};
@@ -2860,6 +2865,9 @@ namespace services::collection::executor {
             if (cursor->is_error()) {
                 lift_dml_ranges();
                 break;
+            }
+            if (const auto written = plan->affected_rows()) {
+                cursor->set_affected_rows(*written);
             }
 
             if (pipeline_context.has_pending_disk_futures()) {

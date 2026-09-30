@@ -653,9 +653,7 @@ namespace components::operators {
                     }
                 }
 
-                if (returning_.empty()) {
-                    affected_rows_ += appended.count;
-                }
+                affected_rows_ += appended.count;
 
                 co_return dml_detail::flush_outcome_t{core::error_t::no_error(),
                                                       true,
@@ -694,14 +692,8 @@ namespace components::operators {
             co_return;
         }
 
-        // output_ was cleared per flush, so it can't double as the affected-count carrier; emit an explicit result.
         if (returning_.empty()) {
-            if (affected_rows_ > 0) {
-                set_output(make_operator_data(resource_,
-                                              dml_detail::make_affected_count_chunks(resource_, affected_rows_, {})));
-            } else {
-                set_output(nullptr);
-            }
+            set_output(nullptr);
         } else {
             if (returning_accum_.empty()) {
                 // Nothing matched, but we still have to return correct columns

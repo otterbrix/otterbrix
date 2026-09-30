@@ -196,7 +196,7 @@ namespace components::operators {
         // builder holds its output chunk across probe batches, so this is also where
         // the last partial chunk is emitted, for EVERY join type.
         //
-        // If push() never ran (the probe source emitted its drain sentinel before
+        // If push() never ran (the probe source ended its stream before
         // any schema'd batch), the layout is unbuilt and res_types_ is empty: with no
         // probe schema there is no left column layout to NULL-pad against, so the
         // only safe action is to skip emission. The common 0-row-probe case still

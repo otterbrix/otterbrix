@@ -614,6 +614,10 @@ namespace components::planner {
                         drop->set_computed(true);
                     } else {
                         drop->set_behavior(sub.behavior);
+                        drop->set_relation_label(
+                            (alter->relkind() == catalog::relkind::materialized_view ? "materialized view "
+                                                                                     : "table ") +
+                            (alter->dbname().empty() ? alter->relname() : alter->dbname() + "." + alter->relname()));
                     }
                     seq->append_child(drop);
                 } else if (sub.kind == logical_plan::alter_table_kind::drop_constraint) {

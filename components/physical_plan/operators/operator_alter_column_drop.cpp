@@ -27,11 +27,13 @@ namespace components::operators {
                                                                log_t log,
                                                                catalog::oid_t table_oid,
                                                                std::string column_name,
+                                                               std::string relation_label,
                                                                catalog::oid_t attoid,
                                                                catalog::drop_behavior_t behavior)
         : read_write_operator_t(resource, std::move(log), operator_type::alter_column_drop)
         , table_oid_(table_oid)
         , column_name_(std::move(column_name))
+        , relation_label_(std::move(relation_label))
         , attoid_(attoid)
         , behavior_(behavior) {}
 
@@ -279,7 +281,7 @@ namespace components::operators {
                                                          pg_attr_oid,
                                                          attoid,
                                                          behavior_,
-                                                         "column " + column_name_);
+                                                         "column " + column_name_ + " of " + relation_label_);
             dropped.contains_error()) {
             set_error(dropped);
             co_return;

@@ -295,8 +295,11 @@ TEST_CASE("integration::cpp::view_binding::drop_column_the_view_reads_is_refused
     run_ok(d, "CREATE VIEW vb.v AS SELECT a FROM vb.t;");
 
     auto refused = exec(d, "ALTER TABLE vb.t DROP COLUMN a;");
-    INFO("error: " << error_text(refused));
-    CHECK_FALSE(refused->is_success());
+    CHECK(error_text(refused) == "cannot drop column a of table vb.t because other objects depend on it\n"
+                                 "DETAIL: object with oid " +
+                                     std::to_string(oid_of(d, "v")) +
+                                     " depends on column a of table vb.t\n"
+                                     "HINT: Use DROP ... CASCADE to drop the dependent objects too.");
     CHECK(run_ok(d, "SELECT a FROM vb.v;")->size() == 2);
 }
 

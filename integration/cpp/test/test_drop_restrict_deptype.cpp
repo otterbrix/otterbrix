@@ -298,7 +298,7 @@ TEST_CASE("integration::cpp::drop_restrict::a_non_constraint_blocking_edge_refus
     CHECK_FALSE(refused->is_success());
     // The RESTRICT gate's own message, naming the blocking oid — not the FK
     // gate's, which this shape does not reach.
-    CHECK(error_text(refused).find("cannot drop column a because other objects depend on it") != std::string::npos);
+    CHECK(error_text(refused).find("cannot drop column a of table dr.t because other objects depend on it") != std::string::npos);
     CHECK(error_text(refused).find(std::to_string(kForeignBlocker)) != std::string::npos);
 
     CHECK(run_ok(d, "SELECT a FROM dr.t;")->size() == 1);

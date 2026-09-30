@@ -16,6 +16,7 @@ namespace components::operators {
                                      log_t log,
                                      components::catalog::oid_t table_oid,
                                      std::string column_name,
+                                     std::string relation_label,
                                      components::catalog::oid_t attoid,
                                      components::catalog::drop_behavior_t behavior);
 
@@ -29,6 +30,7 @@ namespace components::operators {
         // No namespace_oid_: the column resolves by (attrelid=table_oid_, attname), and table_oid is already
         // unique across namespaces, so a stored namespace oid would be dead state nobody reads.
         std::string column_name_;
+        std::string relation_label_;
         components::catalog::oid_t attoid_;
         components::catalog::drop_behavior_t behavior_;
     };

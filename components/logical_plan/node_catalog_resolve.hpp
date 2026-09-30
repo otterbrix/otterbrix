@@ -99,6 +99,8 @@ namespace components::logical_plan {
         bool superseded{false};
         // A view body name: read by this pg_class oid, never looked up by name. Not part of the request identity.
         components::catalog::oid_t pinned_oid{components::catalog::INVALID_OID};
+        // A view body name the host resolved at CREATE VIEW: the catalog never answers it.
+        bool host_bound{false};
         // The view whose body carries the pin, for the stale refusal.
         std::string bound_by;
 

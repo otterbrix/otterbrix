@@ -401,3 +401,55 @@ TEST_CASE("integration::cpp::host_names::local_statements_never_reach_the_host")
     CHECK(counters().reads.load() == 1);
     CHECK(counters().decide.load() == 1);
 }
+
+// A view body is a query too: at CREATE VIEW the host resolves the names the catalog does not, and the view
+// depends on nothing it resolved (a host node has no catalog oid).
+TEST_CASE("integration::cpp::host_names::a_view_over_a_host_name") {
+    HOST_TEST_BOILERPLATE("test_host_names/view_created")
+    REQUIRE(run(dispatcher, declare_orders)->is_success());
+    REQUIRE(run(dispatcher, "CREATE DATABASE loc;")->is_success());
+
+    auto created = run(dispatcher, "CREATE VIEW loc.ov AS SELECT id, amount FROM m2.shop.orders;");
+    INFO("error: " << (created->is_error() ? std::string{created->get_error().what} : std::string{}));
+    REQUIRE(created->is_success());
+
+    auto read = run(dispatcher, "SELECT id, amount FROM loc.ov;");
+    REQUIRE(read->is_success());
+    CHECK(sorted_int_rows(read) == std::vector<std::vector<int64_t>>{{1, 100}, {2, 200}, {3, 300}});
+
+    auto oid = run(dispatcher, "SELECT oid FROM pg_catalog.pg_class WHERE relname = 'ov';");
+    REQUIRE(oid->size() == 1);
+    const auto view_oid = std::to_string(oid->chunks().front().get_value<std::uint32_t>(0, 0));
+    auto depends = run(dispatcher, "SELECT refclassid FROM pg_catalog.pg_depend WHERE objid = " + view_oid + ";");
+    REQUIRE(depends->size() == 1);
+    CHECK(depends->chunks().front().get_value<std::uint32_t>(0, 0) ==
+          components::catalog::well_known_oid::pg_namespace_table);
+}
+
+// Trino 483 checkViewStaleness: the host node the view was created over declares other columns now.
+TEST_CASE("integration::cpp::host_names::a_view_whose_host_node_changed_is_stale") {
+    HOST_TEST_BOILERPLATE("test_host_names/view_node_changed")
+    REQUIRE(run(dispatcher, declare_orders)->is_success());
+    REQUIRE(run(dispatcher, "CREATE DATABASE loc;")->is_success());
+    REQUIRE(run(dispatcher, "CREATE VIEW loc.ov AS SELECT id, amount FROM m2.shop.orders;")->is_success());
+    REQUIRE(run(dispatcher,
+                "INSERT INTO otterstax.remote_columns (tbl, col, type, ord) VALUES "
+                "('m2.shop.orders', 'label', 'TEXT', 3);")
+                ->is_success());
+
+    auto stale = run(dispatcher, "SELECT id FROM loc.ov;");
+    REQUIRE(stale->is_error());
+    CHECK(std::string{stale->get_error().what}.find("view \"ov\" is stale") != std::string::npos);
+}
+
+TEST_CASE("integration::cpp::host_names::a_view_whose_host_name_is_gone_is_stale") {
+    HOST_TEST_BOILERPLATE("test_host_names/view_name_gone")
+    REQUIRE(run(dispatcher, declare_orders)->is_success());
+    REQUIRE(run(dispatcher, "CREATE DATABASE loc;")->is_success());
+    REQUIRE(run(dispatcher, "CREATE VIEW loc.ov AS SELECT id, amount FROM m2.shop.orders;")->is_success());
+    REQUIRE(run(dispatcher, "DELETE FROM otterstax.remote_columns WHERE tbl = 'm2.shop.orders';")->is_success());
+
+    auto stale = run(dispatcher, "SELECT id FROM loc.ov;");
+    REQUIRE(stale->is_error());
+    CHECK(std::string{stale->get_error().what}.find("view \"ov\" is stale") != std::string::npos);
+}

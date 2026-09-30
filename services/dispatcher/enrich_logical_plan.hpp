@@ -60,6 +60,10 @@ namespace services::catalog_resolve {
     core::error_t refuse_stale_pins(std::pmr::memory_resource* resource,
                                     const components::logical_plan::catalog_resolves_t& resolves);
 
+    // A view body name the host resolved at CREATE VIEW and did not resolve now: the view is stale.
+    core::error_t refuse_stale_host_names(std::pmr::memory_resource* resource,
+                                          const components::logical_plan::catalog_resolves_t& resolves);
+
     // Marks unresolved table / namespace entries that no node of `root` names any more.
     void supersede_unnamed_entries(std::pmr::memory_resource* resource,
                                    components::logical_plan::catalog_resolves_t& resolves,

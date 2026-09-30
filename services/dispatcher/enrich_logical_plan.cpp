@@ -898,6 +898,21 @@ namespace services::catalog_resolve {
         return core::error_t::no_error();
     }
 
+    core::error_t refuse_stale_host_names(std::pmr::memory_resource* resource, const catalog_resolves_t& resolves) {
+        if (!resolves.tables) {
+            return core::error_t::no_error();
+        }
+        for (const auto& entry : resolves.tables->entries()) {
+            if (entry.host_bound && !entry.superseded) {
+                return components::planner::view_stale_error(resource,
+                                                             entry.bound_by,
+                                                             "the host no longer resolves \"" + entry.relname +
+                                                                 "\" named by its body");
+            }
+        }
+        return core::error_t::no_error();
+    }
+
     void supersede_unnamed_entries(std::pmr::memory_resource* resource,
                                    catalog_resolves_t& resolves,
                                    const components::logical_plan::node_t* root) {

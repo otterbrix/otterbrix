@@ -4,6 +4,7 @@
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/expressions/udf_references.hpp>
+#include <components/logical_plan/node_extension.hpp>
 #include <components/planner/view_expansion.hpp>
 #include <services/dispatcher/validate_logical_plan.hpp>
 
@@ -99,11 +100,63 @@ namespace services::collection {
                 collect_udfs(c.get(), out);
             }
         }
+
+        void collect_host_nodes(std::pmr::memory_resource* resource,
+                                const node_t* node,
+                                std::pmr::vector<std::pair<std::string, std::string>>& out) {
+            if (!node) {
+                return;
+            }
+            if (node->type() == components::logical_plan::node_type::extension_t) {
+                const auto* ext = static_cast<const components::logical_plan::node_extension_t*>(node);
+                std::string name{ext->name()};
+                if (std::none_of(out.begin(), out.end(), [&](const auto& seen) { return seen.first == name; })) {
+                    out.emplace_back(std::move(name), host_node_spec(resource, ext->columns()));
+                }
+            }
+            for (const auto& c : node->children()) {
+                collect_host_nodes(resource, c.get(), out);
+            }
+        }
     } // namespace
+
+    std::string host_node_spec(std::pmr::memory_resource* resource,
+                               const std::pmr::vector<components::types::complex_logical_type>& columns) {
+        std::pmr::vector<components::types::complex_logical_type> fields(columns.begin(), columns.end(), resource);
+        return catalog::encode_type_spec(components::types::complex_logical_type::create_struct("host", fields));
+    }
+
+    std::pmr::vector<std::pair<std::string, std::string>> host_node_specs(std::pmr::memory_resource* resource,
+                                                                          const node_t* root) {
+        std::pmr::vector<std::pair<std::string, std::string>> out{resource};
+        collect_host_nodes(resource, root, out);
+        return out;
+    }
 
     core::error_t check_expanded_view(std::pmr::memory_resource* resource,
                                       const components::logical_plan::resolved_table_metadata_t& view,
-                                      const node_t& body) {
+                                      const node_t& body,
+                                      const std::pmr::vector<std::pair<std::string, std::string>>& host_nodes) {
+        for (const auto& binding : view.view_bindings) {
+            if (binding.refkind != components::logical_plan::view_refkind::host_node) {
+                continue;
+            }
+            const auto node = std::find_if(host_nodes.begin(), host_nodes.end(), [&](const auto& seen) {
+                return seen.first == binding.relname;
+            });
+            if (node == host_nodes.end()) {
+                return components::planner::view_stale_error(resource,
+                                                             view.name,
+                                                             "the host no longer answers its body with the node \"" +
+                                                                 binding.relname + "\"");
+            }
+            if (node->second != binding.refspec) {
+                return components::planner::view_stale_error(resource,
+                                                             view.name,
+                                                             "the host node \"" + binding.relname +
+                                                                 "\" declares other columns than at CREATE VIEW");
+            }
+        }
         if (!body.has_output_types()) {
             return core::error_t::no_error();
         }
@@ -176,6 +229,8 @@ namespace services::collection {
                                      std::size_t own_tables,
                                      std::size_t own_types,
                                      const dispatcher::validation::column_uses_t& uses) {
+        using components::logical_plan::view_refkind::host_name;
+        using components::logical_plan::view_refkind::host_node;
         using components::logical_plan::view_refkind::relation;
 
         std::pmr::vector<components::table::column_definition_t> columns{resource};
@@ -207,19 +262,22 @@ namespace services::collection {
             const auto& entries = resolves.tables->entries();
             for (std::size_t i = 0; i < own_tables && i < entries.size(); ++i) {
                 const auto& entry = entries[i];
-                // The view OR REPLACE names is a lookup of the statement, not of the body.
-                if (!entry.table_md.has_value() || entry.table_md->table_oid == view.replaced_oid()) {
-                    continue;
-                }
                 catalog::view_binding_t binding;
-                binding.refkind = relation;
                 binding.dbname = entry.dbname;
                 binding.schema = entry.schema;
                 binding.relname = entry.relname;
-                binding.refobjid = entry.table_md->table_oid;
-                bound_tables.push_back(binding.refobjid);
-                if (user_object(binding.refobjid)) {
-                    add_dependency(dependencies, catalog::well_known_oid::pg_class_table, binding.refobjid);
+                if (entry.superseded) {
+                    binding.refkind = host_name;
+                } else if (entry.table_md.has_value() && entry.table_md->table_oid != view.replaced_oid()) {
+                    // The view OR REPLACE names is a lookup of the statement, not of the body.
+                    binding.refkind = relation;
+                    binding.refobjid = entry.table_md->table_oid;
+                    bound_tables.push_back(binding.refobjid);
+                    if (user_object(binding.refobjid)) {
+                        add_dependency(dependencies, catalog::well_known_oid::pg_class_table, binding.refobjid);
+                    }
+                } else {
+                    continue;
                 }
                 bindings.push_back(std::move(binding));
             }
@@ -237,6 +295,14 @@ namespace services::collection {
                     add_dependency(dependencies, catalog::well_known_oid::pg_type_table, entries[i].type_md->type_oid);
                 }
             }
+        }
+
+        for (auto& [name, spec] : host_node_specs(resource, view.body().get())) {
+            catalog::view_binding_t binding;
+            binding.refkind = host_node;
+            binding.relname = std::move(name);
+            binding.refspec = std::move(spec);
+            bindings.push_back(std::move(binding));
         }
 
         view.set_columns(std::move(columns));

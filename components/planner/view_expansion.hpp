@@ -58,7 +58,7 @@ namespace components::planner {
     core::error_t view_stale_error(std::pmr::memory_resource* resource, std::string_view view, std::string_view why);
 
     // Every table name of a view body gets what CREATE VIEW bound it to (pg_rewrite_ref): a relation is read by its
-    // oid. A body name without a binding is refused.
+    // oid, a host name goes to the host only. A body name without a binding is refused.
     core::error_t pin_view_body_names(std::pmr::memory_resource* resource,
                                       logical_plan::catalog_resolves_t& body_resolves,
                                       const logical_plan::resolved_table_metadata_t& view);

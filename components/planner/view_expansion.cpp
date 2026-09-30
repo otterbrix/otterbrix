@@ -300,7 +300,7 @@ namespace components::planner {
         for (auto& entry : body_resolves.tables->entries()) {
             const auto binding =
                 std::find_if(view.view_bindings.begin(), view.view_bindings.end(), [&entry](const auto& b) {
-                    return b.refkind == logical_plan::view_refkind::relation && b.dbname == entry.dbname &&
+                    return b.refkind != logical_plan::view_refkind::host_node && b.dbname == entry.dbname &&
                            b.schema == entry.schema && b.relname == entry.relname;
                 });
             if (binding == view.view_bindings.end()) {
@@ -309,7 +309,11 @@ namespace components::planner {
                                         "its body names \"" + written_name(entry) +
                                             "\", which was not bound when the view was created");
             }
-            entry.pinned_oid = binding->refobjid;
+            if (binding->refkind == logical_plan::view_refkind::relation) {
+                entry.pinned_oid = binding->refobjid;
+            } else {
+                entry.host_bound = true;
+            }
             entry.bound_by = view.name;
         }
         return core::error_t::no_error();
@@ -340,7 +344,7 @@ namespace components::planner {
                 const bool pinned_elsewhere =
                     existing.pinned_oid != catalog::INVALID_OID && existing.pinned_oid != entry.pinned_oid;
                 if (entry.pinned_oid != catalog::INVALID_OID) {
-                    if (resolved_elsewhere || pinned_elsewhere) {
+                    if (existing.host_bound || resolved_elsewhere || pinned_elsewhere) {
                         return view_stale_error(resource,
                                                 entry.bound_by,
                                                 "\"" + written_name(entry) +
@@ -349,6 +353,15 @@ namespace components::planner {
                                                     std::to_string(entry.pinned_oid) + ")");
                     }
                     existing.pinned_oid = entry.pinned_oid;
+                    existing.bound_by = entry.bound_by;
+                } else if (entry.host_bound) {
+                    if (existing.table_md.has_value() || existing.pinned_oid != catalog::INVALID_OID) {
+                        return view_stale_error(resource,
+                                                entry.bound_by,
+                                                "\"" + written_name(entry) +
+                                                    "\" was resolved by the host and now names a catalog relation");
+                    }
+                    existing.host_bound = true;
                     existing.bound_by = entry.bound_by;
                 }
             }

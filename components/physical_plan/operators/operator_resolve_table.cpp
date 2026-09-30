@@ -97,6 +97,9 @@ namespace components::operators {
                 continue;
             }
 
+            if (entry.host_bound) {
+                continue;
+            }
             // A pinned view body name is read by oid: no namespace, no name, no candidates.
             catalog::oid_t table_oid = entry.pinned_oid;
             if (table_oid == catalog::INVALID_OID) {

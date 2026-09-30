@@ -650,8 +650,10 @@ namespace services::collection::executor {
             co_return execute_result_t{make_cursor(resource(), std::move(stale))};
         }
         // The host resolves what the catalog did not: its reads run here, in this statement's snapshot, and it
-        // rewrites the tree before validation. A statement whose names all resolved never reaches the host.
-        if (host_names == host_names_t::resolve && !needs_ddl_txn && plan.sub_queries.back()) {
+        // rewrites the tree before validation. A statement whose names all resolved never reaches the host. A view
+        // body is a query too, at CREATE VIEW as on every read.
+        const bool host_resolves_names = !needs_ddl_txn || original_type == node_type::create_view_t;
+        if (host_names == host_names_t::resolve && host_resolves_names && plan.sub_queries.back()) {
             auto unresolved = services::catalog_resolve::unresolved_tables(resource(), plan.catalog_resolves);
             if (!unresolved.empty()) {
                 auto reads = name_resolution_.need(resource(), plan.sub_queries.back(), unresolved);
@@ -690,6 +692,10 @@ namespace services::collection::executor {
                     }
                 }
             }
+        }
+        if (auto stale = services::catalog_resolve::refuse_stale_host_names(resource(), plan.catalog_resolves);
+            stale.contains_error()) {
+            co_return execute_result_t{make_cursor(resource(), std::move(stale))};
         }
         if (auto segment = services::catalog_resolve::refuse_referenced_segments(resource(), plan.catalog_resolves);
             segment.contains_error()) {
@@ -1451,8 +1457,9 @@ namespace services::collection::executor {
         }
 
         if (!error && !expanded_views.empty()) {
+            const auto host_nodes = host_node_specs(resource(), plan.sub_queries.back().get());
             for (const auto& expanded : expanded_views) {
-                if (auto stale = check_expanded_view(resource(), expanded.view, *expanded.body);
+                if (auto stale = check_expanded_view(resource(), expanded.view, *expanded.body, host_nodes);
                     stale.contains_error()) {
                     error = make_cursor(resource(), std::move(stale));
                     break;

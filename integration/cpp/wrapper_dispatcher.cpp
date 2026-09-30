@@ -78,8 +78,8 @@ namespace otterbrix {
 
     auto wrapper_dispatcher_t::unregister_udf(const session_id_t& session,
                                               const std::string& function_name,
-                                              const std::pmr::vector<components::types::complex_logical_type>& inputs)
-        -> core::error_t {
+                                              const std::pmr::vector<components::types::complex_logical_type>& inputs,
+                                              components::catalog::drop_behavior_t behavior) -> core::error_t {
         trace(log_,
               "wrapper_dispatcher_t::unregister_udf session: {}, function name : {} ",
               session.data(),
@@ -88,7 +88,8 @@ namespace otterbrix {
                                                        &services::dispatcher::manager_dispatcher_t::unregister_udf,
                                                        session,
                                                        function_name,
-                                                       inputs);
+                                                       inputs,
+                                                       behavior);
         return wait_future(future);
     }
 

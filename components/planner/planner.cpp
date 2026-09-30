@@ -301,17 +301,31 @@ namespace components::planner {
         node_ptr rewrite_create_view(std::pmr::memory_resource* r, node_ptr node, catalog::oid_batch_t& oid_batch) {
             auto* cv = static_cast<logical_plan::node_create_view_t*>(node.get());
             const catalog::oid_t ns_oid = cv->namespace_oid();
-            const catalog::oid_t view_oid = oid_batch.allocate();
+            // OR REPLACE keeps the view's pg_class row and oid, so what depends on the view stays.
+            const bool replacing = cv->replaced_oid() != catalog::INVALID_OID;
+            const catalog::oid_t view_oid = replacing ? cv->replaced_oid() : oid_batch.allocate();
             const catalog::oid_t rule_oid = oid_batch.allocate();
 
+            auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));
+            if (replacing) {
+                using namespace catalog::well_known_oid;
+                seq->append_child(logical_plan::make_node_catalog_delete(r, pg_attribute_table, std::int64_t{1}, view_oid));
+                seq->append_child(logical_plan::make_node_catalog_delete(r, pg_depend_table, std::int64_t{1}, view_oid));
+                seq->append_child(logical_plan::make_node_catalog_delete(r, pg_rewrite_table, std::int64_t{2}, view_oid));
+                seq->append_child(
+                    logical_plan::make_node_catalog_delete(r, pg_rewrite_ref_table, std::int64_t{0}, view_oid));
+            }
             auto writes = catalog::build_create_view_writes(r,
                                                             std::string(cv->viewname()),
                                                             ns_oid,
                                                             view_oid,
                                                             rule_oid,
-                                                            cv->query_sql());
-
-            auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));
+                                                            cv->query_sql(),
+                                                            cv->columns(),
+                                                            oid_batch,
+                                                            cv->bindings(),
+                                                            cv->dependencies(),
+                                                            /*write_class_row=*/!replacing);
             for (auto& w : writes) {
                 seq->append_child(make_catalog_write(r, w.table_oid, std::move(w.row)));
             }
@@ -517,28 +531,46 @@ namespace components::planner {
             auto* d = static_cast<logical_plan::node_drop_t*>(node.get());
             catalog::oid_t classid = catalog::INVALID_OID;
             catalog::oid_t seed_objid = catalog::INVALID_OID;
+            const auto relation = [d, &classid, &seed_objid](const char* kind) {
+                classid = catalog::well_known_oid::pg_class_table;
+                seed_objid = d->table_oid();
+                return std::string{kind} + (d->dbname().empty() ? d->relname() : d->dbname() + "." + d->relname());
+            };
+            std::string target;
             switch (d->kind()) {
                 case logical_plan::drop_target_kind::database:
                     classid = catalog::well_known_oid::pg_namespace_table;
                     seed_objid = d->namespace_oid();
+                    target = "database " + d->dbname();
                     break;
                 case logical_plan::drop_target_kind::type:
                     classid = catalog::well_known_oid::pg_type_table;
                     seed_objid = d->type_oid();
+                    target = "type " + d->relname();
                     break;
                 case logical_plan::drop_target_kind::collection:
+                    target = relation("table ");
+                    break;
                 case logical_plan::drop_target_kind::sequence:
+                    target = relation("sequence ");
+                    break;
                 case logical_plan::drop_target_kind::view:
+                    target = relation("view ");
+                    break;
                 case logical_plan::drop_target_kind::materialized_view:
+                    target = relation("materialized view ");
+                    break;
                 case logical_plan::drop_target_kind::macro:
-                    classid = catalog::well_known_oid::pg_class_table;
-                    seed_objid = d->table_oid();
+                    target = relation("function ");
                     break;
                 case logical_plan::drop_target_kind::index:
                     break;
             }
-            return boost::intrusive_ptr(
-                new logical_plan::node_dynamic_cascade_delete_t(r, classid, seed_objid, d->behavior()));
+            return boost::intrusive_ptr(new logical_plan::node_dynamic_cascade_delete_t(r,
+                                                                                        classid,
+                                                                                        seed_objid,
+                                                                                        d->behavior(),
+                                                                                        std::move(target)));
         }
 
         // No OIDs are pre-allocated — add/drop resolve their attoid at execution time.
@@ -596,7 +628,8 @@ namespace components::planner {
                         new logical_plan::node_dynamic_cascade_delete_t(r,
                                                                         catalog::well_known_oid::pg_constraint_table,
                                                                         sub.constraint_oid,
-                                                                        sub.behavior)));
+                                                                        sub.behavior,
+                                                                        "constraint " + sub.constraint_name)));
                 }
             }
             return node_ptr{seq};
@@ -626,8 +659,7 @@ namespace components::planner {
                 case node_type::create_matview_t:
                     return rewrite_create_matview(r, node, oid_batch);
                 case node_type::refresh_matview_t:
-                    // REFRESH not lowered yet; returned unchanged. TODO: lower to
-                    // DELETE + INSERT(re-parsed body) via the dispatcher's resolve re-run.
+                    // The executor runs REFRESH as statements of its own; it never reaches here.
                     return node;
                 case node_type::create_constraint_t:
                     return rewrite_create_constraint(r, node, oid_batch);
@@ -720,7 +752,12 @@ namespace components::planner {
             }
             case nt::create_sequence_t:
                 return 1;
-            case nt::create_view_t:
+            case nt::create_view_t: {
+                // view (unless OR REPLACE keeps it) + rule + one attoid per output column.
+                const auto* cv = static_cast<const logical_plan::node_create_view_t*>(node);
+                const std::size_t view = cv->replaced_oid() == catalog::INVALID_OID ? 1 : 0;
+                return view + std::size_t{1} + cv->columns().size();
+            }
             case nt::create_macro_t:
                 return 2;
             case nt::create_matview_t: {

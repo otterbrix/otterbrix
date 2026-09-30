@@ -1,6 +1,6 @@
 #include "operator_unregister_udf.hpp"
 
-#include "catalog_util.hpp"
+#include "operator_dynamic_cascade_delete.hpp"
 
 #include <components/base/collection_full_name.hpp>
 #include <components/compute/function.hpp>
@@ -26,10 +26,12 @@ namespace components::operators {
     operator_unregister_udf_t::operator_unregister_udf_t(std::pmr::memory_resource* resource,
                                                          log_t log,
                                                          std::string function_name,
-                                                         std::pmr::vector<types::complex_logical_type> inputs)
+                                                         std::pmr::vector<types::complex_logical_type> inputs,
+                                                         components::catalog::drop_behavior_t behavior)
         : read_only_operator_t(resource, std::move(log), operator_type::unregister_udf)
         , function_name_(std::move(function_name))
-        , inputs_(std::move(inputs)) {}
+        , inputs_(std::move(inputs))
+        , behavior_(behavior) {}
 
     actor_zeta::unique_future<void> operator_unregister_udf_t::await_async_and_resume(pipeline::context_t* ctx) {
         success_ = false;
@@ -86,33 +88,16 @@ namespace components::operators {
                 mark_failed();
                 co_return;
             }
-            std::pmr::vector<components::catalog::oid_t> function_oids(resource_);
+            // No match is legitimate: a builtin or catalog-less mirror has nothing to scrub.
             for (const auto& m : matches_r.value()) {
-                function_oids.push_back(m.oid);
-            }
-            // pg_depend rows are optional (zero deleted is healthy); pg_proc rows are not. An EMPTY spec
-            // list is legitimate: a builtin or catalog-less mirror has nothing to scrub.
-            std::pmr::vector<std::size_t> pg_proc_specs(resource_);
-            auto specs = stage_function_deletes(resource_, ctx, function_oids, pg_proc_specs);
-            if (!specs.empty()) {
-                auto [_d, df] =
-                    actor_zeta::otterbrix::send(ctx->disk_address,
-                                                &services::disk::manager_disk_t::delete_pg_catalog_rows_many,
-                                                exec_ctx,
-                                                std::move(specs));
-                auto deleted_r = co_await std::move(df);
-                if (deleted_r.has_error()) {
-                    set_error(deleted_r.error());
-                    mark_failed();
-                    co_return;
-                }
-                if (auto ec = confirm_function_deletes(resource_,
-                                                       deleted_r.value(),
-                                                       pg_proc_specs,
-                                                       "unregister_udf",
-                                                       function_name_);
-                    ec.contains_error()) {
-                    set_error(std::move(ec));
+                auto dropped = co_await drop_with_dependents(resource_,
+                                                             ctx,
+                                                             components::catalog::well_known_oid::pg_proc_table,
+                                                             m.oid,
+                                                             behavior_,
+                                                             "function " + function_name_);
+                if (dropped.contains_error()) {
+                    set_error(dropped);
                     mark_failed();
                     co_return;
                 }

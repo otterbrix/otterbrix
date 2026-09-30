@@ -9,7 +9,10 @@ namespace components::logical_plan {
                                            core::query_sql_t query_sql)
         : node_t(resource, node_type::create_view_t)
         , viewname_(std::move(static_cast<std::string&>(viewname)))
-        , query_sql_(std::move(static_cast<std::string&>(query_sql))) {}
+        , query_sql_(std::move(static_cast<std::string&>(query_sql)))
+        , columns_(resource)
+        , bindings_(resource)
+        , dependencies_(resource) {}
 
     hash_t node_create_view_t::hash_impl() const { return 0; }
 

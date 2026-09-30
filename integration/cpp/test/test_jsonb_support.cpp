@@ -389,7 +389,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::persistence") {
     }
 }
 
-// A view is the one way to hand a navigated alias to an outer query; a CTE loses it.
+// A view and a CTE both hand a navigated alias to an outer query.
 TEST_CASE("integration::cpp::test_jsonb_support::view_over_navigation") {
     auto config = make_test_config(fixture_dir("view"));
     test_spaces space(config);
@@ -405,10 +405,14 @@ TEST_CASE("integration::cpp::test_jsonb_support::view_over_navigation") {
     CHECK(i64_set(cur, "ab") == std::set<int64_t>{10, 30, 50});
     CHECK(is_null(cur, "ab", 3));
 
-    // Defect specific to a navigated alias (analog over plain columns is green). correct: {ab}, 4 rows.
     auto narrowed = exec(d, "SELECT ab FROM jp.v;");
-    REQUIRE_FALSE(narrowed->is_success());
-    CHECK(std::string(narrowed->get_error().what).find("'ab' was not found") != std::string::npos);
+    REQUIRE(narrowed->is_success());
+    CHECK(narrowed->size() == 4);
+    CHECK(aliases(narrowed) == std::set<std::string>{"ab"});
+
+    auto through_cte = exec(d, "WITH c AS (SELECT id, t #>> 'a.b' AS ab FROM jp.t) SELECT ab FROM c;");
+    REQUIRE(through_cte->is_success());
+    CHECK(through_cte->size() == 4);
 }
 
 // Routes by position: the i-th projected column lands in the i-th written target; only an arity mismatch is refused.
@@ -491,7 +495,6 @@ TEST_CASE("integration::cpp::test_jsonb_support::clean_rejections") {
         "SELECT id FROM jp.t WHERE t #- 'a.b' = 1;",
         "DELETE FROM jp.t WHERE id = 3 RETURNING t - 'x';",
         "SELECT t -> 'a' FROM jp.t UNION SELECT t -> 'nokey' FROM jp.t;",
-        "WITH c AS (SELECT id, t #>> 'a.b' AS ab FROM jp.t) SELECT ab FROM c;",
         "SELECT t ->> $1 AS v FROM jp.t;",
         "SELECT t #>> ARRAY['a','b'] AS v FROM jp.t;",
         "SELECT t #>> 'a.b' AS v FROM jp.t GROUP BY id;",

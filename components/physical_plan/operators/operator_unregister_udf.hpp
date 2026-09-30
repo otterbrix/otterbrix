@@ -1,5 +1,6 @@
 #pragma once
 
+#include <components/catalog/results/ddl_result.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/types/types.hpp>
 
@@ -13,14 +14,16 @@ namespace components::operators {
 #endif
 
     // Operator implementation of manager_dispatcher_t::unregister_udf: checks the overload exists in
-    // the dispatcher's master registry (ctx->function_registry), then deletes its pg_proc and
-    // pg_depend rows. The dispatcher drops the overload from the master once this succeeds.
+    // the dispatcher's master registry (ctx->function_registry), then drops its pg_proc rows like DROP drops an
+    // object (a view calling it refuses RESTRICT, CASCADE drops the view). The dispatcher drops the overload
+    // from the master once this succeeds.
     class operator_unregister_udf_t final : public read_only_operator_t {
     public:
         operator_unregister_udf_t(std::pmr::memory_resource* resource,
                                   log_t log,
                                   std::string function_name,
-                                  std::pmr::vector<types::complex_logical_type> inputs);
+                                  std::pmr::vector<types::complex_logical_type> inputs,
+                                  components::catalog::drop_behavior_t behavior);
 
         bool success() const noexcept { return success_; }
 
@@ -35,6 +38,7 @@ namespace components::operators {
 
         std::string function_name_;
         std::pmr::vector<types::complex_logical_type> inputs_;
+        components::catalog::drop_behavior_t behavior_;
         bool success_{false};
     };
 

@@ -4411,7 +4411,7 @@ TEST_CASE("integration::cpp::test_sql_features::create_view_e2e") {
 
 // CREATE MATERIALIZED VIEW makes a real relkind='m' table via the canonical pipeline; after CREATE it's
 // empty (no view expansion). WITH NO DATA is required — unlike PostgreSQL's WITH DATA default — because
-// REFRESH isn't lowered (see test_view_expansion::matview_without_no_data_is_refused).
+// CREATE does not populate it (see test_view_expansion::matview_without_no_data_is_refused).
 TEST_CASE("integration::cpp::test_sql_features::create_matview_e2e") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/create_matview_e2e"));
     test_clear_directory(config);

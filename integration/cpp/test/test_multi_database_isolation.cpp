@@ -250,10 +250,7 @@ TEST_CASE("integration::cpp::multi_database_isolation::view_resolves_in_own_data
         REQUIRE(dispatcher->execute_sql(session, sql)->is_success());
     }
 
-    // The view body must resolve t1 against db2, not db1 — this covers the
-    // view-expansion fresh-resolve path, where the namespace sibling is
-    // filtered out of the re-resolve sub-plan and the table operator must
-    // resolve the dbname on its own.
+    // The view body reads the db2.t1 it was bound to at CREATE VIEW, by oid.
     {
         auto session = otterbrix::session_id_t();
         auto c = dispatcher->execute_sql(session, "SELECT * FROM db2.v;");

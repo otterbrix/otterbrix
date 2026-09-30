@@ -40,6 +40,7 @@
 #include <components/logical_plan/node_sort.hpp>
 #include <components/logical_plan/node_update.hpp>
 #include <components/sql/parser/parser.h>
+#include <components/planner/view_expansion.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <services/index/manager_index.hpp>
@@ -791,25 +792,6 @@ namespace services::catalog_resolve {
         }
     }
 
-    void merge_catalog_resolves(std::pmr::memory_resource* resource,
-                                catalog_resolves_t& dest,
-                                const catalog_resolves_t& src) {
-        using components::logical_plan::resolve_kind;
-        for (const auto& [kind, slot] : {std::pair{resolve_kind::database, &src.database},
-                                         std::pair{resolve_kind::namespace_, &src.namespaces},
-                                         std::pair{resolve_kind::table, &src.tables},
-                                         std::pair{resolve_kind::type, &src.types},
-                                         std::pair{resolve_kind::constraint, &src.constraints}}) {
-            if (!*slot || (*slot)->empty()) {
-                continue;
-            }
-            auto& target = dest.ensure(resource, kind);
-            for (const auto& entry : (*slot)->entries()) {
-                target.add(entry);
-            }
-        }
-    }
-
     core::error_t refuse_referenced_segments(std::pmr::memory_resource* resource, const catalog_resolves_t& resolves) {
         for (const auto& written : resolves.referenced_tables) {
             if (written.unique_identifier.empty() && written.schema.empty()) {
@@ -898,6 +880,37 @@ namespace services::catalog_resolve {
             }
         }
         return count;
+    }
+
+    core::error_t refuse_stale_pins(std::pmr::memory_resource* resource, const catalog_resolves_t& resolves) {
+        if (!resolves.tables) {
+            return core::error_t::no_error();
+        }
+        for (const auto& entry : resolves.tables->entries()) {
+            if (entry.pinned_oid != components::catalog::INVALID_OID && !entry.table_md.has_value()) {
+                return components::planner::view_stale_error(resource,
+                                                             entry.bound_by,
+                                                             "the relation its body was bound to (\"" + entry.relname +
+                                                                 "\", oid " + std::to_string(entry.pinned_oid) +
+                                                                 ") no longer exists");
+            }
+        }
+        return core::error_t::no_error();
+    }
+
+    core::error_t refuse_stale_host_names(std::pmr::memory_resource* resource, const catalog_resolves_t& resolves) {
+        if (!resolves.tables) {
+            return core::error_t::no_error();
+        }
+        for (const auto& entry : resolves.tables->entries()) {
+            if (entry.host_bound && !entry.superseded) {
+                return components::planner::view_stale_error(resource,
+                                                             entry.bound_by,
+                                                             "the host no longer resolves \"" + entry.relname +
+                                                                 "\" named by its body");
+            }
+        }
+        return core::error_t::no_error();
     }
 
     void supersede_unnamed_entries(std::pmr::memory_resource* resource,

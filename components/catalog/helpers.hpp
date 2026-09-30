@@ -105,6 +105,15 @@ namespace components::catalog {
         constexpr std::uint64_t ev_type = 3;
         constexpr std::uint64_t ev_action = 4;
     } // namespace pg_rewrite_col
+    namespace pg_rewrite_ref_col {
+        constexpr std::uint64_t ev_class = 0;
+        constexpr std::uint64_t refkind = 1;
+        constexpr std::uint64_t dbname = 2;
+        constexpr std::uint64_t schema = 3;
+        constexpr std::uint64_t relname = 4;
+        constexpr std::uint64_t refobjid = 5;
+        constexpr std::uint64_t refspec = 6;
+    } // namespace pg_rewrite_ref_col
     namespace pg_depend_col {
         constexpr std::uint64_t classid = 0;
         constexpr std::uint64_t objid = 1;

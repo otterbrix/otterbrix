@@ -4,6 +4,7 @@
 
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/fk_info.hpp>
+#include <components/catalog/view_binding.hpp>
 #include <components/logical_plan/identifier_types.hpp>
 #include <components/types/types.hpp>
 
@@ -32,6 +33,9 @@ namespace components::logical_plan {
         std::string atttypspec;
     };
 
+    namespace view_refkind = components::catalog::view_refkind;
+    using components::catalog::view_binding_t;
+
     struct resolved_table_metadata_t {
         components::catalog::oid_t table_oid{components::catalog::INVALID_OID};
         components::catalog::oid_t namespace_oid{components::catalog::INVALID_OID};
@@ -40,6 +44,8 @@ namespace components::logical_plan {
         std::vector<resolved_column_metadata_t> columns;
         // pg_rewrite.ev_action SQL for relkind 'v'/'m'; consumed by dispatcher Phase 1.5 rewrite_views.
         std::string view_sql;
+        // relkind 'v': pg_rewrite_ref rows.
+        std::vector<view_binding_t> view_bindings;
     };
 
     // Stamped by operator_resolve_type_t.
@@ -91,6 +97,12 @@ namespace components::logical_plan {
         // Unresolved, and the host's name resolution rewrote away every node naming it: neither resolved again
         // nor refused. Not part of the request identity.
         bool superseded{false};
+        // A view body name: read by this pg_class oid, never looked up by name. Not part of the request identity.
+        components::catalog::oid_t pinned_oid{components::catalog::INVALID_OID};
+        // A view body name the host resolved at CREATE VIEW: the catalog never answers it.
+        bool host_bound{false};
+        // The view whose body carries the pin, for the stale refusal.
+        std::string bound_by;
 
         components::catalog::oid_t namespace_oid{components::catalog::INVALID_OID};
         components::catalog::oid_t database_oid{components::catalog::INVALID_OID};

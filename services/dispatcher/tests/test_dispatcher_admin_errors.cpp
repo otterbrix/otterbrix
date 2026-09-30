@@ -330,8 +330,11 @@ TEST_CASE("services::dispatcher::admin_errors::unregister_udf_executor_refusal_k
     test.seed_pg_proc_row(fname);
     REQUIRE(test.pg_proc_rows(fname) == 1);
 
-    auto err =
-        test.dispatcher_invoke(&manager_dispatcher_t::unregister_udf, session_id_t{}, fname, bigint_inputs(mr.get()));
+    auto err = test.dispatcher_invoke(&manager_dispatcher_t::unregister_udf,
+                                      session_id_t{},
+                                      fname,
+                                      bigint_inputs(mr.get()),
+                                      components::catalog::drop_behavior_t::restrict_);
     // Catalog asserted first — it's the actual damage if an ack is awaited but never checked;
     // the typed refusal is only how the caller learns about it.
     REQUIRE(test.pg_proc_rows(fname) == 1);

@@ -205,7 +205,7 @@ namespace components::sql::transform {
                 log_node = transform_create_sequence(pg_cast<CreateSeqStmt>(node));
                 break;
             case T_ViewStmt:
-                log_node = transform_create_view(pg_cast<ViewStmt>(node));
+                log_node = transform_create_view(pg_cast<ViewStmt>(node), plan);
                 break;
             case T_TruncateStmt:
                 log_node = core::error_t(core::error_code_t::unimplemented_yet,

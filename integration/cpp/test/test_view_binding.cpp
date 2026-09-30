@@ -369,3 +369,114 @@ TEST_CASE("integration::cpp::view_binding::a_view_whose_relation_is_gone_is_stal
     INFO("error: " << error_text(stale));
     CHECK(error_text(stale).find("view \"v\" is stale") != std::string::npos);
 }
+
+TEST_CASE("integration::cpp::view_binding::a_column_alias_names_the_view_column") {
+    test_spaces space(config_for("column_alias"));
+    auto* d = space.dispatcher();
+    seed(d);
+    run_ok(d, "CREATE VIEW vb.v AS SELECT a AS z FROM vb.t;");
+
+    const auto view_oid = std::to_string(oid_of(d, "v"));
+    CHECK(strings(run_ok(d, "SELECT attname FROM pg_catalog.pg_attribute WHERE attrelid = " + view_oid + ";")) ==
+          std::set<std::string>{"z"});
+    CHECK(bigints(run_ok(d, "SELECT z FROM vb.v;")) == std::set<std::int64_t>{1, 2});
+}
+
+// CREATE OR REPLACE VIEW, PostgreSQL 18 view.c: the oid stays, so views over it keep working; columns may only be
+// appended (checkViewColumns).
+TEST_CASE("integration::cpp::view_binding::or_replace_keeps_the_oid_and_the_views_over_it") {
+    test_spaces space(config_for("replace_keeps_oid"));
+    auto* d = space.dispatcher();
+    seed(d);
+    run_ok(d, "CREATE VIEW vb.v AS SELECT a FROM vb.t WHERE a = 1;");
+    run_ok(d, "CREATE VIEW vb.w AS SELECT a FROM vb.v;");
+    const auto before = oid_of(d, "v");
+
+    run_ok(d, "CREATE OR REPLACE VIEW vb.v AS SELECT a, b FROM vb.t;");
+
+    CHECK(oid_of(d, "v") == before);
+    CHECK(bigints(run_ok(d, "SELECT a FROM vb.w;")) == std::set<std::int64_t>{1, 2});
+    CHECK(strings(run_ok(d, "SELECT b FROM vb.v;")) == std::set<std::string>{"x", "y"});
+}
+
+TEST_CASE("integration::cpp::view_binding::or_replace_creates_a_missing_view") {
+    test_spaces space(config_for("replace_creates"));
+    auto* d = space.dispatcher();
+    seed(d);
+
+    run_ok(d, "CREATE OR REPLACE VIEW vb.v AS SELECT a FROM vb.t;");
+    CHECK(bigints(run_ok(d, "SELECT a FROM vb.v;")) == std::set<std::int64_t>{1, 2});
+}
+
+TEST_CASE("integration::cpp::view_binding::or_replace_refuses_to_drop_a_column") {
+    test_spaces space(config_for("replace_drop_column"));
+    auto* d = space.dispatcher();
+    seed(d);
+    run_ok(d, "CREATE VIEW vb.v AS SELECT a, b FROM vb.t;");
+
+    auto refused = exec(d, "CREATE OR REPLACE VIEW vb.v AS SELECT a FROM vb.t;");
+    INFO("error: " << error_text(refused));
+    CHECK(error_text(refused).find("cannot drop columns from view") != std::string::npos);
+    CHECK(column_names(run_ok(d, "SELECT * FROM vb.v;")) == std::set<std::string>{"a", "b"});
+}
+
+TEST_CASE("integration::cpp::view_binding::or_replace_refuses_to_rename_a_column") {
+    test_spaces space(config_for("replace_rename_column"));
+    auto* d = space.dispatcher();
+    seed(d);
+    run_ok(d, "CREATE VIEW vb.v AS SELECT a FROM vb.t;");
+
+    auto refused = exec(d, "CREATE OR REPLACE VIEW vb.v AS SELECT a AS z FROM vb.t;");
+    INFO("error: " << error_text(refused));
+    CHECK(error_text(refused).find("cannot change name of view column \"a\" to \"z\"") != std::string::npos);
+}
+
+TEST_CASE("integration::cpp::view_binding::or_replace_refuses_to_change_a_column_type") {
+    test_spaces space(config_for("replace_retype_column"));
+    auto* d = space.dispatcher();
+    seed(d);
+    run_ok(d, "CREATE VIEW vb.v AS SELECT a FROM vb.t;");
+
+    auto refused = exec(d, "CREATE OR REPLACE VIEW vb.v AS SELECT b AS a FROM vb.t;");
+    INFO("error: " << error_text(refused));
+    CHECK(error_text(refused).find("cannot change data type of view column \"a\"") != std::string::npos);
+}
+
+TEST_CASE("integration::cpp::view_binding::or_replace_of_a_table_is_refused") {
+    test_spaces space(config_for("replace_table"));
+    auto* d = space.dispatcher();
+    seed(d);
+
+    auto refused = exec(d, "CREATE OR REPLACE VIEW vb.t AS SELECT 1 AS one;");
+    INFO("error: " << error_text(refused));
+    CHECK(error_text(refused).find("\"t\" is not a view") != std::string::npos);
+    CHECK(run_ok(d, "SELECT a FROM vb.t;")->size() == 2);
+}
+
+TEST_CASE("integration::cpp::view_binding::or_replace_moves_the_dependencies_to_the_new_body") {
+    test_spaces space(config_for("replace_dependencies"));
+    auto* d = space.dispatcher();
+    seed(d);
+    run_ok(d, "CREATE TABLE vb.u (a BIGINT);");
+    run_ok(d, "CREATE VIEW vb.v AS SELECT a FROM vb.t;");
+
+    run_ok(d, "CREATE OR REPLACE VIEW vb.v AS SELECT a FROM vb.u;");
+
+    run_ok(d, "DROP TABLE vb.t;");
+    auto refused = exec(d, "DROP TABLE vb.u;");
+    INFO("error: " << error_text(refused));
+    CHECK(error_text(refused).find("cannot drop table vb.u because other objects depend on it") != std::string::npos);
+}
+
+TEST_CASE("integration::cpp::view_binding::or_replace_that_would_read_itself_is_refused") {
+    test_spaces space(config_for("replace_self"));
+    auto* d = space.dispatcher();
+    seed(d);
+    run_ok(d, "CREATE VIEW vb.v AS SELECT a FROM vb.t;");
+    run_ok(d, "CREATE VIEW vb.w AS SELECT a FROM vb.v;");
+
+    auto refused = exec(d, "CREATE OR REPLACE VIEW vb.v AS SELECT a FROM vb.w;");
+    INFO("error: " << error_text(refused));
+    CHECK(error_text(refused).find("view \"v\" would read itself") != std::string::npos);
+    CHECK(bigints(run_ok(d, "SELECT a FROM vb.w;")) == std::set<std::int64_t>{1, 2});
+}

@@ -1,5 +1,6 @@
 #include "view_definition.hpp"
 
+#include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/expressions/udf_references.hpp>
@@ -120,6 +121,38 @@ namespace services::collection {
         return core::error_t::no_error();
     }
 
+    core::error_t check_view_replacement(std::pmr::memory_resource* resource,
+                                         const components::logical_plan::node_create_view_t& view,
+                                         const components::logical_plan::resolved_table_metadata_t& existing,
+                                         std::span<const catalog::oid_t> read_views) {
+        const auto refuse = [resource](std::string msg) {
+            return core::error_t{core::error_code_t::schema_error, std::pmr::string{std::move(msg), resource}};
+        };
+        if (existing.relkind != catalog::relkind::view) {
+            return refuse("\"" + view.viewname() + "\" is not a view");
+        }
+        if (std::find(read_views.begin(), read_views.end(), existing.table_oid) != read_views.end()) {
+            return refuse("view \"" + view.viewname() + "\" would read itself");
+        }
+        const auto& columns = view.columns();
+        if (columns.size() < existing.columns.size()) {
+            return refuse("cannot drop columns from view");
+        }
+        for (std::size_t i = 0; i < existing.columns.size(); ++i) {
+            const auto& before = existing.columns[i];
+            if (columns[i].name() != before.attname) {
+                return refuse("cannot change name of view column \"" + before.attname + "\" to \"" +
+                              columns[i].name() + "\"");
+            }
+            if (!(columns[i].type() == before.type)) {
+                return refuse("cannot change data type of view column \"" + before.attname + "\" from " +
+                              dispatcher::validation::describe_type(before.type) + " to " +
+                              dispatcher::validation::describe_type(columns[i].type()));
+            }
+        }
+        return core::error_t::no_error();
+    }
+
     std::pmr::vector<std::string> view_body_user_functions(std::pmr::memory_resource* resource,
                                                            const node_t* body,
                                                            const components::compute::function_registry_t& registry) {
@@ -174,7 +207,8 @@ namespace services::collection {
             const auto& entries = resolves.tables->entries();
             for (std::size_t i = 0; i < own_tables && i < entries.size(); ++i) {
                 const auto& entry = entries[i];
-                if (!entry.table_md.has_value()) {
+                // The view OR REPLACE names is a lookup of the statement, not of the body.
+                if (!entry.table_md.has_value() || entry.table_md->table_oid == view.replaced_oid()) {
                     continue;
                 }
                 catalog::view_binding_t binding;

@@ -1173,6 +1173,11 @@ namespace services::collection::executor {
                     error = make_cursor(resource(), output.error());
                     break;
                 }
+                const auto* existing =
+                    view->replace() ? plan.catalog_resolves.table_md(view->dbname(), view->viewname()) : nullptr;
+                if (existing != nullptr) {
+                    view->set_replaced_oid(existing->table_oid);
+                }
                 if (auto described = describe_view_body(resource(),
                                                         *view,
                                                         output.value(),
@@ -1183,6 +1188,17 @@ namespace services::collection::executor {
                     described.contains_error()) {
                     error = make_cursor(resource(), std::move(described));
                     break;
+                }
+                if (existing != nullptr) {
+                    std::pmr::vector<components::catalog::oid_t> read_views{resource()};
+                    for (const auto& expanded : expanded_views) {
+                        read_views.push_back(expanded.view.table_oid);
+                    }
+                    if (auto replaced = check_view_replacement(resource(), *view, *existing, read_views);
+                        replaced.contains_error()) {
+                        error = make_cursor(resource(), std::move(replaced));
+                        break;
+                    }
                 }
                 auto dependencies = view->dependencies();
                 const components::execution_context_t proc_ctx{session, resolve_txn, {}};

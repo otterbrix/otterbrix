@@ -301,9 +301,20 @@ namespace components::planner {
         node_ptr rewrite_create_view(std::pmr::memory_resource* r, node_ptr node, catalog::oid_batch_t& oid_batch) {
             auto* cv = static_cast<logical_plan::node_create_view_t*>(node.get());
             const catalog::oid_t ns_oid = cv->namespace_oid();
-            const catalog::oid_t view_oid = oid_batch.allocate();
+            // OR REPLACE keeps the view's pg_class row and oid, so what depends on the view stays.
+            const bool replacing = cv->replaced_oid() != catalog::INVALID_OID;
+            const catalog::oid_t view_oid = replacing ? cv->replaced_oid() : oid_batch.allocate();
             const catalog::oid_t rule_oid = oid_batch.allocate();
 
+            auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));
+            if (replacing) {
+                using namespace catalog::well_known_oid;
+                seq->append_child(logical_plan::make_node_catalog_delete(r, pg_attribute_table, std::int64_t{1}, view_oid));
+                seq->append_child(logical_plan::make_node_catalog_delete(r, pg_depend_table, std::int64_t{1}, view_oid));
+                seq->append_child(logical_plan::make_node_catalog_delete(r, pg_rewrite_table, std::int64_t{2}, view_oid));
+                seq->append_child(
+                    logical_plan::make_node_catalog_delete(r, pg_rewrite_ref_table, std::int64_t{0}, view_oid));
+            }
             auto writes = catalog::build_create_view_writes(r,
                                                             std::string(cv->viewname()),
                                                             ns_oid,
@@ -314,9 +325,7 @@ namespace components::planner {
                                                             oid_batch,
                                                             cv->bindings(),
                                                             cv->dependencies(),
-                                                            /*write_class_row=*/true);
-
-            auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));
+                                                            /*write_class_row=*/!replacing);
             for (auto& w : writes) {
                 seq->append_child(make_catalog_write(r, w.table_oid, std::move(w.row)));
             }
@@ -744,9 +753,12 @@ namespace components::planner {
             }
             case nt::create_sequence_t:
                 return 1;
-            case nt::create_view_t:
-                // view + rule + one attoid per output column.
-                return std::size_t{2} + static_cast<const logical_plan::node_create_view_t*>(node)->columns().size();
+            case nt::create_view_t: {
+                // view (unless OR REPLACE keeps it) + rule + one attoid per output column.
+                const auto* cv = static_cast<const logical_plan::node_create_view_t*>(node);
+                const std::size_t view = cv->replaced_oid() == catalog::INVALID_OID ? 1 : 0;
+                return view + std::size_t{1} + cv->columns().size();
+            }
             case nt::create_macro_t:
                 return 2;
             case nt::create_matview_t: {

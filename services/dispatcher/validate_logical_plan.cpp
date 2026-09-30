@@ -1239,7 +1239,12 @@ namespace services::dispatcher {
                                         res_type = &res_type->child_type();
                                     }
                                 }
-                                result.emplace_back(type_from_t{node->result_alias(), *res_type});
+                                auto field_type = *res_type;
+                                // `a AS z` answers z, the name the executed projection gives the column.
+                                if (!scalar_expr->params().empty() && !scalar_expr->key().is_null()) {
+                                    field_type.set_alias(scalar_expr->key().as_string());
+                                }
+                                result.emplace_back(type_from_t{node->result_alias(), std::move(field_type)});
                             } else if (scalar_expr->type() == scalar_type::star_expand) {
                                 for (const auto& col : incoming_schema) {
                                     result.emplace_back(col);
@@ -1312,7 +1317,12 @@ namespace services::dispatcher {
                                         ? scalar_expr->key()
                                         : std::get<components::expressions::key_t>(scalar_expr->params().front());
                                 if (!key.path().empty() && key.path().front() < incoming_schema.size()) {
-                                    result_schema.push_back(incoming_schema[key.path().front()]);
+                                    auto column = incoming_schema[key.path().front()];
+                                    // `a AS z` answers z, the name the executed projection gives the column.
+                                    if (!scalar_expr->params().empty() && !scalar_expr->key().is_null()) {
+                                        column.type.set_alias(scalar_expr->key().as_string());
+                                    }
+                                    result_schema.push_back(std::move(column));
                                 }
                             } else if (scalar_expr->type() == scalar_type::star_expand) {
                                 for (const auto& col : incoming_schema) {

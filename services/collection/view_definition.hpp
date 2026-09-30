@@ -7,6 +7,7 @@
 #include <services/dispatcher/validation/schema.hpp>
 
 #include <memory_resource>
+#include <span>
 #include <string>
 
 namespace services::collection {
@@ -24,6 +25,14 @@ namespace services::collection {
                                      std::size_t own_tables,
                                      std::size_t own_types,
                                      const dispatcher::validation::column_uses_t& uses);
+
+    // CREATE OR REPLACE VIEW over `existing` (PostgreSQL 18 view.c): only a view is replaced, never by a body that
+    // reads it (`read_views` are the views the new body expands to), and its columns may only be appended to
+    // (checkViewColumns). Runs on the described view, whose columns are the new ones.
+    core::error_t check_view_replacement(std::pmr::memory_resource* resource,
+                                         const components::logical_plan::node_create_view_t& view,
+                                         const components::logical_plan::resolved_table_metadata_t& existing,
+                                         std::span<const components::catalog::oid_t> read_views);
 
     // Names of the user functions the body calls (PostgreSQL 18 records them like any other object).
     std::pmr::vector<std::string> view_body_user_functions(std::pmr::memory_resource* resource,

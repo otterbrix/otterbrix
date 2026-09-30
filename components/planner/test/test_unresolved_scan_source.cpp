@@ -47,10 +47,10 @@ namespace {
             return SIZE_MAX;
         }
         auto result = std::move(fut).take_ready();
-        if (result.has_error()) {
+        if (result.has_error() || !result.value().has_value()) {
             return SIZE_MAX;
         }
-        return result.value().size();
+        return result.value()->size();
     }
 
     std::string refusal(const services::planner::plan_result_t& plan) {

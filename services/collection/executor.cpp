@@ -2390,11 +2390,10 @@ namespace services::collection::executor {
                     co_await release_source_cursor(resource());
                     co_return next.convert_error<ops::chunks_vector_t>();
                 }
-                auto batch = std::move(next.value());
-                if (batch.data.empty()) {
-                    break; // 0-column drain sentinel (a schema'd 0-row batch is real input, e.g.
-                           // the empty-guard a scalar aggregate needs to emit COUNT=0)
+                if (!next.value().has_value()) {
+                    break;
                 }
+                auto batch = std::move(*next.value());
                 if (batch.size() > components::vector::DEFAULT_VECTOR_CAPACITY) {
                     co_await release_source_cursor(resource());
                     std::pmr::string what{"source batch of ", resource()};

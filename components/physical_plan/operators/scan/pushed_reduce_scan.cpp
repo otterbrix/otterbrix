@@ -47,7 +47,7 @@ namespace components::operators {
         return ship;
     }
 
-    actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
+    actor_zeta::unique_future<core::result_wrapper_t<std::optional<vector::data_chunk_t>>>
     pushed_reduce_scan::source_next(pipeline::context_t* ctx) {
         if (!opened_) {
             opened_ = true;
@@ -61,7 +61,7 @@ namespace components::operators {
             if (filter_result.has_error()) {
                 set_error(filter_result.error());
                 mark_failed();
-                co_return core::result_wrapper_t<vector::data_chunk_t>(filter_result.error());
+                co_return filter_result.error();
             }
             auto filter = std::move(filter_result.value());
 
@@ -79,7 +79,7 @@ namespace components::operators {
             if (reduce_result.has_error()) {
                 set_error(reduce_result.error());
                 mark_failed();
-                co_return reduce_result.convert_error<vector::data_chunk_t>();
+                co_return reduce_result.convert_error<std::optional<vector::data_chunk_t>>();
             }
             reduced_ = std::move(reduce_result.value());
         }
@@ -87,12 +87,11 @@ namespace components::operators {
         if (emit_idx_ < reduced_.size()) {
             auto chunk = std::move(reduced_[emit_idx_]);
             ++emit_idx_;
-            co_return core::result_wrapper_t<vector::data_chunk_t>(std::move(chunk));
+            co_return std::move(chunk);
         }
 
-        // Drained: the 0-column sentinel stops execute_pipeline. NO empty-guard here —
-        // the operator_group_merge_t above owns the empty-input scalar row.
-        co_return vector::data_chunk_t{resource_, std::pmr::vector<types::complex_logical_type>{resource_}, 0};
+        // NO empty-guard here — the operator_group_merge_t above owns the empty-input scalar row.
+        co_return std::nullopt;
     }
 
 } // namespace components::operators

@@ -64,53 +64,60 @@ namespace {
         std::string name;
     };
 
+    using batch_t = std::vector<std::vector<int64_t>>;
+
+    // A backend that answers in several batches (an empty one included); the default is one batch of backend().
+    std::map<std::string, std::vector<batch_t>>& batches() {
+        static std::map<std::string, std::vector<batch_t>> script;
+        return script;
+    }
+
     class remote_source_t final : public operators::read_only_operator_t {
     public:
         remote_source_t(std::pmr::memory_resource* resource,
                         log_t log,
                         std::pmr::vector<types::complex_logical_type> columns,
-                        std::vector<std::vector<int64_t>> rows)
+                        std::vector<batch_t> batches)
             : operators::read_only_operator_t(resource, std::move(log), operators::operator_type::extension)
             , columns_(std::move(columns))
-            , rows_(std::move(rows)) {}
+            , batches_(std::move(batches)) {}
 
         [[nodiscard]] operators::pipeline_role role() const noexcept override {
             return operators::pipeline_role::source;
         }
 
-        [[nodiscard]] actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
+        [[nodiscard]] actor_zeta::unique_future<core::result_wrapper_t<std::optional<vector::data_chunk_t>>>
         source_next(pipeline::context_t*) override {
-            actor_zeta::promise<core::result_wrapper_t<vector::data_chunk_t>> promise(resource());
+            actor_zeta::promise<core::result_wrapper_t<std::optional<vector::data_chunk_t>>> promise(resource());
             auto future = promise.get_future();
-            if (drained_) {
-                vector::data_chunk_t sentinel(resource(), std::pmr::vector<types::complex_logical_type>{resource()}, 0);
-                promise.set_value(core::result_wrapper_t<vector::data_chunk_t>{std::move(sentinel)});
+            if (next_ == batches_.size()) {
+                promise.set_value(core::result_wrapper_t<std::optional<vector::data_chunk_t>>{std::nullopt});
                 return future;
             }
-            drained_ = true;
-            vector::data_chunk_t chunk(resource(), columns_, std::max<std::size_t>(rows_.size(), 1));
-            chunk.set_cardinality(rows_.size());
-            for (std::size_t row = 0; row < rows_.size(); ++row) {
+            const auto& rows = batches_[next_++];
+            vector::data_chunk_t chunk(resource(), columns_, std::max<std::size_t>(rows.size(), 1));
+            chunk.set_cardinality(rows.size());
+            for (std::size_t row = 0; row < rows.size(); ++row) {
                 for (std::size_t col = 0; col < columns_.size(); ++col) {
                     if (columns_[col].type() == types::logical_type::STRING_LITERAL) {
                         chunk.set_value(col,
                                         row,
-                                        types::logical_value_t(resource(), "s" + std::to_string(rows_[row][col])));
+                                        types::logical_value_t(resource(), "s" + std::to_string(rows[row][col])));
                     } else {
-                        chunk.set_value(col, row, types::logical_value_t(resource(), rows_[row][col]));
+                        chunk.set_value(col, row, types::logical_value_t(resource(), rows[row][col]));
                     }
                 }
             }
-            promise.set_value(core::result_wrapper_t<vector::data_chunk_t>{std::move(chunk)});
+            promise.set_value(core::result_wrapper_t<std::optional<vector::data_chunk_t>>{std::move(chunk)});
             return future;
         }
 
-        void reset_pipeline_state() noexcept override { drained_ = false; }
+        void reset_pipeline_state() noexcept override { next_ = 0; }
 
     private:
         std::pmr::vector<types::complex_logical_type> columns_;
-        std::vector<std::vector<int64_t>> rows_;
-        bool drained_{false};
+        std::vector<batch_t> batches_;
+        std::size_t next_{0};
     };
 
     // Names whose backend cannot be reached: the host's operator function refuses them with its own reason.
@@ -128,8 +135,9 @@ namespace {
                                  std::pmr::string{it->second.c_str(), context.resource}};
         }
         std::pmr::vector<types::complex_logical_type> columns(node.columns(), context.resource);
-        return {
-            new remote_source_t(context.resource, context.log.clone(), std::move(columns), backend()[payload->name])};
+        auto scripted = batches().find(payload->name);
+        auto answer = scripted != batches().end() ? scripted->second : std::vector<batch_t>{backend()[payload->name]};
+        return {new remote_source_t(context.resource, context.log.clone(), std::move(columns), std::move(answer))};
     }
 
     // Phase "need": one read of otterstax.remote_columns per unresolved name.
@@ -216,6 +224,7 @@ namespace {
         std::vector<declared_t> declared;
         for (std::size_t i = 0; i < unresolved.size(); ++i) {
             std::vector<std::pair<int64_t, types::complex_logical_type>> ordered;
+            bool named = false;
             for (const auto& chunk : read_results[i]) {
                 // otterstax.remote_columns (tbl TEXT, col TEXT, type TEXT, ord BIGINT)
                 for (std::uint64_t row = 0; row < chunk.size(); ++row) {
@@ -224,6 +233,11 @@ namespace {
                     const auto ord_cell = chunk.value(3, row);
                     const std::string col{col_cell.value<std::string_view>()};
                     const std::string type{type_cell.value<std::string_view>()};
+                    named = true;
+                    // A row of type NONE names the relation without giving it a column.
+                    if (type == "NONE") {
+                        continue;
+                    }
                     ordered.emplace_back(ord_cell.value<int64_t>(),
                                          types::complex_logical_type{type == "TEXT"
                                                                          ? types::logical_type::STRING_LITERAL
@@ -231,7 +245,7 @@ namespace {
                                                                      col});
                 }
             }
-            if (ordered.empty()) {
+            if (!named) {
                 continue;
             }
             std::sort(ordered.begin(), ordered.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
@@ -290,6 +304,7 @@ namespace {
     auto config = test_create_config(integration_fixture_path(DIR));                                                   \
     test_clear_directory(config);                                                                                      \
     backend().clear();                                                                                                 \
+    batches().clear();                                                                                                 \
     backend()["m2.shop.orders"] = {{1, 100}, {2, 200}, {3, 300}};                                                      \
     unreachable().clear();                                                                                             \
     counters().reset();                                                                                                \
@@ -512,4 +527,43 @@ TEST_CASE("integration::cpp::host_names::a_view_whose_host_name_is_gone_is_stale
     auto stale = run(dispatcher, "SELECT id FROM loc.ov;");
     REQUIRE(stale->is_error());
     CHECK(std::string{stale->get_error().what}.find("view \"ov\" is stale") != std::string::npos);
+}
+
+// A relation without columns still has rows: count(*) counts them, one batch or several.
+TEST_CASE("integration::cpp::host_names::rows_without_columns_are_counted") {
+    HOST_TEST_BOILERPLATE("test_host_names/no_columns")
+    REQUIRE(run(dispatcher,
+                "INSERT INTO otterstax.remote_columns (tbl, col, type, ord) VALUES "
+                "('m2.shop.marks', '', 'NONE', 1);")
+                ->is_success());
+
+    SECTION("one batch") {
+        backend()["m2.shop.marks"] = {{}, {}, {}};
+        auto counted = run(dispatcher, "SELECT count(*) AS c FROM m2.shop.marks;");
+        REQUIRE(counted->is_success());
+        REQUIRE(counted->size() == 1);
+        CHECK(counted->value(0, 0).value<int64_t>() == 3);
+    }
+    SECTION("an empty batch between two others") {
+        batches()["m2.shop.marks"] = {{{}, {}}, {}, {{}}};
+        auto counted = run(dispatcher, "SELECT count(*) AS c FROM m2.shop.marks;");
+        REQUIRE(counted->is_success());
+        REQUIRE(counted->size() == 1);
+        CHECK(counted->value(0, 0).value<int64_t>() == 3);
+    }
+}
+
+// An empty batch is data like any other; only the source's explicit end stops the read.
+TEST_CASE("integration::cpp::host_names::an_empty_batch_is_not_the_end") {
+    HOST_TEST_BOILERPLATE("test_host_names/empty_batch")
+    REQUIRE(run(dispatcher, declare_orders)->is_success());
+    batches()["m2.shop.orders"] = {{}, {{1, 100}}, {}, {{2, 200}, {3, 300}}, {}};
+
+    auto rows = run(dispatcher, "SELECT id, amount FROM m2.shop.orders;");
+    REQUIRE(rows->is_success());
+    CHECK(sorted_int_rows(rows) == std::vector<std::vector<int64_t>>{{1, 100}, {2, 200}, {3, 300}});
+
+    auto counted = run(dispatcher, "SELECT count(*) AS c FROM m2.shop.orders;");
+    REQUIRE(counted->is_success());
+    CHECK(counted->value(0, 0).value<int64_t>() == 3);
 }

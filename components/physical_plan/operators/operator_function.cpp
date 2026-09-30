@@ -100,16 +100,11 @@ namespace components::operators {
         return core::error_t::no_error();
     }
 
-    vector::data_chunk_t operator_function_t::make_drain_chunk() {
-        std::pmr::vector<types::complex_logical_type> empty_types(resource_);
-        return vector::data_chunk_t{resource_, empty_types, 0};
-    }
-
-    actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
+    actor_zeta::unique_future<core::result_wrapper_t<std::optional<vector::data_chunk_t>>>
     operator_function_t::source_next(pipeline::context_t* ctx) {
         if (!materialized_) {
             if (auto err = materialize_(ctx); err.contains_error()) {
-                co_return core::result_wrapper_t<vector::data_chunk_t>(err);
+                co_return err;
             }
         }
 
@@ -117,9 +112,9 @@ namespace components::operators {
         if (cursor_ < chunks.size()) {
             const auto& chunk = chunks[cursor_];
             ++cursor_;
-            co_return core::result_wrapper_t<vector::data_chunk_t>(chunk.partial_copy(resource_, 0, chunk.size()));
+            co_return chunk.partial_copy(resource_, 0, chunk.size());
         }
-        co_return core::result_wrapper_t<vector::data_chunk_t>(make_drain_chunk());
+        co_return std::nullopt;
     }
 
 } // namespace components::operators

@@ -12,6 +12,7 @@
 
 #include <chrono>
 #include <memory_resource>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -148,8 +149,8 @@ namespace components::operators {
 
         [[nodiscard]] virtual bool produces_query_rows() const noexcept { return false; }
 
-        // A drained source returns an EMPTY chunk (cardinality 0), never a throw.
-        [[nodiscard]] virtual actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
+        // std::nullopt ends the stream. Every chunk is data, an empty one or one without columns included.
+        [[nodiscard]] virtual actor_zeta::unique_future<core::result_wrapper_t<std::optional<vector::data_chunk_t>>>
         source_next(pipeline::context_t* ctx);
 
         [[nodiscard]] virtual bool holds_open_cursor() const noexcept { return false; }

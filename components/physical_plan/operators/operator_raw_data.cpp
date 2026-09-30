@@ -38,23 +38,16 @@ namespace components::operators {
 
     std::pmr::memory_resource* operator_raw_data_t::resource() const noexcept { return output_->resource(); }
 
-    vector::data_chunk_t operator_raw_data_t::make_drain_chunk() {
-        std::pmr::vector<types::complex_logical_type> empty_types(resource());
-        return vector::data_chunk_t{resource(), empty_types, 0};
-    }
-
-    actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
+    actor_zeta::unique_future<core::result_wrapper_t<std::optional<vector::data_chunk_t>>>
     operator_raw_data_t::source_next(pipeline::context_t* /*ctx*/) {
-        // Emits a COPY of each chunk, never a move: right children re-read output_. A schema'd 0-row chunk is real
-        // input, not the 0-column drain sentinel.
+        // Emits a COPY of each chunk, never a move: right children re-read output_.
         const auto& chunks = output_->chunks();
         if (cursor_ < chunks.size()) {
             const auto& c = chunks[cursor_];
             ++cursor_;
-            co_return core::result_wrapper_t<vector::data_chunk_t>(c.partial_copy(resource(), 0, c.size()));
+            co_return c.partial_copy(resource(), 0, c.size());
         }
-
-        co_return core::result_wrapper_t<vector::data_chunk_t>(make_drain_chunk());
+        co_return std::nullopt;
     }
 
 } // namespace components::operators

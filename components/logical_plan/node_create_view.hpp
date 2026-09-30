@@ -35,6 +35,10 @@ namespace components::logical_plan {
 
         node_ptr body() const noexcept { return children_.empty() ? nullptr : children_.front(); }
 
+        // CREATE MATERIALIZED VIEW: the same bound body, with a heap of its own (relkind 'm') that REFRESH fills.
+        bool materialized() const noexcept { return materialized_; }
+        void set_materialized(bool materialized) noexcept { materialized_ = materialized; }
+
         // CREATE OR REPLACE VIEW; replaced_oid() is the view it replaces, INVALID_OID when there is none yet.
         bool replace() const noexcept { return replace_; }
         void set_replace(bool replace) noexcept { replace_ = replace; }
@@ -62,6 +66,7 @@ namespace components::logical_plan {
         std::string viewname_;
         std::string query_sql_;
         components::catalog::oid_t namespace_oid_{components::catalog::INVALID_OID};
+        bool materialized_{false};
         bool replace_{false};
         components::catalog::oid_t replaced_oid_{components::catalog::INVALID_OID};
         std::pmr::vector<table::column_definition_t> columns_;

@@ -2406,7 +2406,6 @@ namespace services::dispatcher {
             }
             case node_type::drop_t:
                 break;
-            case node_type::create_matview_t:
             case node_type::refresh_matview_t:
                 break;
             case node_type::union_t: {

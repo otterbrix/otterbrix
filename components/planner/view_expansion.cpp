@@ -52,10 +52,14 @@ namespace components::planner {
             }
         }
 
-        // Does this resolved entry describe a plain view with a body we can re-parse?
+        // A view, or the matview a REFRESH runs the body of: a relation whose read is its stored body.
         bool is_expandable_view(const logical_plan::resolve_entry_t* entry) {
-            return entry != nullptr && entry->table_md.has_value() &&
-                   entry->table_md->relkind == components::catalog::relkind::view && !entry->table_md->view_sql.empty();
+            if (entry == nullptr || !entry->table_md.has_value() || entry->table_md->view_sql.empty()) {
+                return false;
+            }
+            const char relkind = entry->table_md->relkind;
+            return relkind == components::catalog::relkind::view ||
+                   (relkind == components::catalog::relkind::materialized_view && entry->expands_matview);
         }
 
         // Any correlated (LATERAL) join anywhere in the body. Its correlation ids are

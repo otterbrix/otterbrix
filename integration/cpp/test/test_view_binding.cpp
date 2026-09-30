@@ -593,3 +593,80 @@ TEST_CASE("integration::cpp::view_binding::refresh_of_a_table_is_refused") {
     CHECK(error_text(refused).find("\"t\" is not a materialized view") != std::string::npos);
     CHECK(run_ok(d, "SELECT a FROM vb.t;")->size() == 2);
 }
+
+// A matview binds its body as a view does (PostgreSQL 18 createas.c StoreViewQuery): REFRESH runs what CREATE bound,
+// so a relation that took the source's name is not read.
+TEST_CASE("integration::cpp::view_binding::refresh_does_not_read_a_relation_that_took_the_source_name") {
+    view_space_t space(config_for("matview_pinned"));
+    auto* d = space.dispatcher();
+    seed(d);
+    run_ok(d, "CREATE MATERIALIZED VIEW vb.mv AS SELECT a FROM vb.t WITH NO DATA;");
+    run_ok(d, "REFRESH MATERIALIZED VIEW vb.mv;");
+    forget_dependencies(space, oid_of(d, "mv"));
+    run_ok(d, "DROP TABLE vb.t;");
+    run_ok(d, "CREATE TABLE vb.t (a BIGINT, b STRING);");
+    run_ok(d, "INSERT INTO vb.t (a, b) VALUES (7, 'z');");
+
+    auto stale = exec(d, "REFRESH MATERIALIZED VIEW vb.mv;");
+    INFO("error: " << error_text(stale));
+    CHECK(error_text(stale).find("view \"mv\" is stale") != std::string::npos);
+    CHECK(bigints(run_ok(d, "SELECT a FROM vb.mv;")) == std::set<std::int64_t>{1, 2});
+}
+
+TEST_CASE("integration::cpp::view_binding::drop_column_a_matview_reads_is_refused") {
+    test_spaces space(config_for("matview_drop_column"));
+    auto* d = space.dispatcher();
+    seed(d);
+    run_ok(d, "CREATE MATERIALIZED VIEW vb.mv AS SELECT a FROM vb.t WITH NO DATA;");
+
+    auto refused = exec(d, "ALTER TABLE vb.t DROP COLUMN a;");
+    CHECK(error_text(refused) == "cannot drop column a of table vb.t because other objects depend on it\n"
+                                 "DETAIL: object with oid " +
+                                     std::to_string(oid_of(d, "mv")) +
+                                     " depends on column a of table vb.t\n"
+                                     "HINT: Use DROP ... CASCADE to drop the dependent objects too.");
+    run_ok(d, "ALTER TABLE vb.t DROP COLUMN b;");
+    run_ok(d, "REFRESH MATERIALIZED VIEW vb.mv;");
+    CHECK(bigints(run_ok(d, "SELECT a FROM vb.mv;")) == std::set<std::int64_t>{1, 2});
+}
+
+TEST_CASE("integration::cpp::view_binding::a_matview_over_two_relations") {
+    test_spaces space(config_for("matview_join"));
+    auto* d = space.dispatcher();
+    seed(d);
+    run_ok(d, "CREATE TABLE vb.u (a BIGINT, c BIGINT);");
+    run_ok(d, "INSERT INTO vb.u (a, c) VALUES (1, 10), (2, 20);");
+    run_ok(d,
+           "CREATE MATERIALIZED VIEW vb.mv AS SELECT t.a AS a, u.c * 2 AS c2 FROM vb.t AS t JOIN vb.u AS u ON t.a = "
+           "u.a WITH NO DATA;");
+    const auto mv = std::to_string(oid_of(d, "mv"));
+    CHECK(strings(run_ok(d, "SELECT relname FROM pg_catalog.pg_rewrite_ref WHERE ev_class = " + mv + ";")) ==
+          std::set<std::string>{"t", "u"});
+    CHECK(strings(run_ok(d, "SELECT attname FROM pg_catalog.pg_attribute WHERE attrelid = " + mv + ";")) ==
+          std::set<std::string>{"a", "c2"});
+
+    run_ok(d, "REFRESH MATERIALIZED VIEW vb.mv;");
+    CHECK(bigints(run_ok(d, "SELECT c2 FROM vb.mv;")) == std::set<std::int64_t>{20, 40});
+}
+
+TEST_CASE("integration::cpp::view_binding::create_matview_refuses_a_missing_column") {
+    test_spaces space(config_for("matview_missing_column"));
+    auto* d = space.dispatcher();
+    seed(d);
+
+    auto refused = exec(d, "CREATE MATERIALIZED VIEW vb.mv AS SELECT nosuch FROM vb.t WITH NO DATA;");
+    INFO("error: " << error_text(refused));
+    CHECK_FALSE(refused->is_success());
+    CHECK(run_ok(d, "SELECT relname FROM pg_catalog.pg_class WHERE relname = 'mv';")->size() == 0);
+}
+
+// The column name list used to be dropped: the matview came out with the body's names.
+TEST_CASE("integration::cpp::view_binding::create_matview_with_a_column_name_list_is_refused") {
+    test_spaces space(config_for("matview_column_names"));
+    auto* d = space.dispatcher();
+    seed(d);
+
+    auto refused = exec(d, "CREATE MATERIALIZED VIEW vb.mv (x) AS SELECT a FROM vb.t WITH NO DATA;");
+    CHECK(error_text(refused) == "CREATE MATERIALIZED VIEW with a column name list is not supported yet");
+    CHECK(run_ok(d, "SELECT relname FROM pg_catalog.pg_class WHERE relname = 'mv';")->size() == 0);
+}

@@ -254,7 +254,8 @@ namespace disk_test_helpers {
                                                         no_columns,
                                                         {},
                                                         {},
-                                                        /*write_class_row=*/true);
+                                                        /*write_class_row=*/true,
+                                                        catalog::relkind::view);
         std::vector<components::pg_catalog_append_range_t> appends_local;
         append_writes(fx, auto_ctx(), writes, appends_local);
         fx.invoke(&manager_disk_t::storage_publish_commits,

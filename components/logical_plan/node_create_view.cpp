@@ -18,7 +18,7 @@ namespace components::logical_plan {
 
     std::string node_create_view_t::to_string_impl() const {
         std::stringstream stream;
-        stream << "$create_view: " << viewname_;
+        stream << (materialized_ ? "$create_matview: " : "$create_view: ") << viewname_;
         return stream.str();
     }
 

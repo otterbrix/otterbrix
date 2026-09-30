@@ -124,7 +124,6 @@ namespace components::sql::transform {
                            : namespace_policy::as_written;
             case node_type::create_collection_t:
             case node_type::create_view_t:
-            case node_type::create_matview_t:
             case node_type::create_sequence_t:
             case node_type::create_macro_t:
                 return namespace_policy::default_public;

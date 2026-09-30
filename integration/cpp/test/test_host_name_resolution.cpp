@@ -537,3 +537,22 @@ TEST_CASE("integration::cpp::host_names::a_view_whose_host_name_is_gone_is_stale
     REQUIRE(stale->is_error());
     CHECK(std::string{stale->get_error().what}.find("view \"ov\" is stale") != std::string::npos);
 }
+
+// A matview body is a query too: CREATE resolves through the view it names down to the host, REFRESH fills it.
+TEST_CASE("integration::cpp::host_names::a_matview_over_a_view_over_a_host_name") {
+    HOST_TEST_BOILERPLATE("test_host_names/matview_over_view")
+    REQUIRE(run(dispatcher, declare_orders)->is_success());
+    REQUIRE(run(dispatcher, "CREATE DATABASE loc;")->is_success());
+    REQUIRE(run(dispatcher, "CREATE VIEW loc.ov AS SELECT id, amount FROM m2.shop.orders;")->is_success());
+
+    auto created = run(dispatcher, "CREATE MATERIALIZED VIEW loc.mv AS SELECT id, amount FROM loc.ov WITH NO DATA;");
+    INFO("error: " << (created->is_error() ? std::string{created->get_error().what} : std::string{}));
+    REQUIRE(created->is_success());
+    auto refreshed = run(dispatcher, "REFRESH MATERIALIZED VIEW loc.mv;");
+    INFO("error: " << (refreshed->is_error() ? std::string{refreshed->get_error().what} : std::string{}));
+    REQUIRE(refreshed->is_success());
+
+    auto read = run(dispatcher, "SELECT id, amount FROM loc.mv;");
+    REQUIRE(read->is_success());
+    CHECK(sorted_int_rows(read) == std::vector<std::vector<int64_t>>{{1, 100}, {2, 200}, {3, 300}});
+}

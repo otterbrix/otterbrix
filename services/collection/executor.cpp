@@ -512,8 +512,7 @@ namespace services::collection::executor {
             original_type == node_type::create_sequence_t || original_type == node_type::create_view_t ||
             original_type == node_type::create_macro_t || original_type == node_type::create_type_t ||
             original_type == node_type::create_index_t || original_type == node_type::drop_t ||
-            original_type == node_type::create_database_t || original_type == node_type::alter_table_t ||
-            original_type == node_type::create_matview_t;
+            original_type == node_type::create_database_t || original_type == node_type::alter_table_t;
         const bool is_plan_only_explain = plan.explain == components::logical_plan::explain_type::plan;
         const bool needs_dml_txn =
             !is_plan_only_explain && (original_type == node_type::insert_t || original_type == node_type::update_t ||
@@ -604,10 +603,13 @@ namespace services::collection::executor {
                 return out + "\"";
             };
             const std::string target = quoted(refresh->dbname()) + "." + quoted(refresh->matviewname());
+            // The rows come from a read of the matview itself that runs its stored body, pinned to what CREATE bound
+            // and checked against its columns as a view's read is; re-parsing the text as `INSERT INTO mv <body>`
+            // would look every body name up again.
             std::pmr::vector<std::string> statements{resource()};
             statements.push_back("DELETE FROM " + target + ";");
             if (refresh->with_data()) {
-                statements.push_back("INSERT INTO " + target + " " + matview->view_sql);
+                statements.push_back("INSERT INTO " + target + " SELECT * FROM " + target + ";");
             }
             for (const auto& sql : statements) {
                 auto parsed = components::planner::parse_statement(resource(), sql, "materialized view refresh");
@@ -616,6 +618,12 @@ namespace services::collection::executor {
                 }
                 auto step = std::move(parsed.value());
                 step.commits_when_done = false;
+                if (step.catalog_resolves.tables) {
+                    for (auto& entry : step.catalog_resolves.tables->entries()) {
+                        entry.expands_matview =
+                            entry.dbname == refresh->dbname() && entry.relname == refresh->matviewname();
+                    }
+                }
                 auto done = co_await execute_statement_(session, std::move(step), session_ctx, host_names);
                 if (done.cursor->is_error()) {
                     co_return done;
@@ -1724,7 +1732,6 @@ namespace services::collection::executor {
                     case node_type::create_sequence_t:
                     case node_type::create_view_t:
                     case node_type::create_macro_t:
-                    case node_type::create_matview_t:
                     case node_type::create_index_t:
                     case node_type::drop_t:
                     case node_type::alter_table_t:

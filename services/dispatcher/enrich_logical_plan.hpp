@@ -47,11 +47,6 @@ namespace services::catalog_resolve {
                                const components::logical_plan::node_t* root,
                                components::logical_plan::catalog_resolves_t* resolves);
 
-    // Entries dedupe, so a table both plans reference stays one lookup.
-    void merge_catalog_resolves(std::pmr::memory_resource* resource,
-                                components::logical_plan::catalog_resolves_t& dest,
-                                const components::logical_plan::catalog_resolves_t& src);
-
     bool has_unresolved_entries(const components::logical_plan::catalog_resolves_t& resolves);
 
     // Table names the catalog did not resolve; the views point into `resolves`.
@@ -60,6 +55,10 @@ namespace services::catalog_resolve {
                       const components::logical_plan::catalog_resolves_t& resolves);
 
     std::size_t entry_count(const components::logical_plan::catalog_resolves_t& resolves);
+
+    // A view body name pinned to a relation the catalog no longer holds: the view is stale.
+    core::error_t refuse_stale_pins(std::pmr::memory_resource* resource,
+                                    const components::logical_plan::catalog_resolves_t& resolves);
 
     // Marks unresolved table / namespace entries that no node of `root` names any more.
     void supersede_unnamed_entries(std::pmr::memory_resource* resource,
@@ -88,6 +87,5 @@ namespace services::catalog_resolve {
 
 namespace services::dispatcher {
     using catalog_resolve::bind_catalog_data;
-    using catalog_resolve::merge_catalog_resolves;
     using catalog_resolve::register_plan_targets;
 } // namespace services::dispatcher

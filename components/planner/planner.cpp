@@ -309,7 +309,12 @@ namespace components::planner {
                                                             ns_oid,
                                                             view_oid,
                                                             rule_oid,
-                                                            cv->query_sql());
+                                                            cv->query_sql(),
+                                                            cv->columns(),
+                                                            oid_batch,
+                                                            cv->bindings(),
+                                                            cv->dependencies(),
+                                                            /*write_class_row=*/true);
 
             auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));
             for (auto& w : writes) {
@@ -740,6 +745,8 @@ namespace components::planner {
             case nt::create_sequence_t:
                 return 1;
             case nt::create_view_t:
+                // view + rule + one attoid per output column.
+                return std::size_t{2} + static_cast<const logical_plan::node_create_view_t*>(node)->columns().size();
             case nt::create_macro_t:
                 return 2;
             case nt::create_matview_t: {

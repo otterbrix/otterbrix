@@ -8,6 +8,16 @@
 
 namespace components::operators {
 
+    // Drops (seed_classid, seed_objid) with everything that depends on it: RESTRICT refuses a normal dependent
+    // anywhere in the closure (the refusal names `target`), CASCADE deletes the catalog rows children-first and
+    // tombstones the storage of the relations among them. Shared by DROP and by the host API's unregister_udf.
+    actor_zeta::unique_future<core::error_t> drop_with_dependents(std::pmr::memory_resource* resource,
+                                                                  pipeline::context_t* ctx,
+                                                                  components::catalog::oid_t seed_classid,
+                                                                  components::catalog::oid_t seed_objid,
+                                                                  components::catalog::drop_behavior_t behavior,
+                                                                  std::string target);
+
     // Universal cascade-delete operator. Walks pg_depend at runtime starting
     // from a (seed_classid, seed_objid) seed and deletes the transitive
     // closure inline using catalog::plan_drop.

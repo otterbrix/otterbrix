@@ -692,7 +692,8 @@ namespace services::dispatcher {
     manager_dispatcher_t::unique_future<core::error_t>
     manager_dispatcher_t::unregister_udf(components::session::session_id_t session,
                                          std::string function_name,
-                                         std::pmr::vector<components::types::complex_logical_type> inputs) {
+                                         std::pmr::vector<components::types::complex_logical_type> inputs,
+                                         components::catalog::drop_behavior_t behavior) {
         trace(log_, "dispatcher_t::unregister_udf: session {}, {}", session.data(), function_name);
 
         // Catalog first: every executor holds a copy of the master, so the master answers for them, and
@@ -742,7 +743,8 @@ namespace services::dispatcher {
         auto plan = boost::intrusive_ptr(
             new components::logical_plan::node_unregister_udf_t(resource(),
                                                                 core::function_name_t{std::move(function_name)},
-                                                                std::move(inputs)));
+                                                                std::move(inputs),
+                                                                behavior));
 
         services::context_storage_t cstor{resource(), log_.clone(), session_settings(session)};
         auto op = services::planner::create_plan(cstor,

@@ -89,6 +89,7 @@ namespace components::catalog {
         constexpr oid_t pg_namespace_oid = well_known_oid::pg_namespace_table;
         constexpr oid_t pg_sequence_oid = well_known_oid::pg_sequence_table;
         constexpr oid_t pg_rewrite_oid = well_known_oid::pg_rewrite_table;
+        constexpr oid_t pg_rewrite_ref_oid = well_known_oid::pg_rewrite_ref_table;
         constexpr oid_t pg_type_oid = well_known_oid::pg_type_table;
         constexpr oid_t pg_proc_oid = well_known_oid::pg_proc_table;
         constexpr oid_t pg_index_oid = well_known_oid::pg_index_table;
@@ -325,10 +326,15 @@ namespace components::catalog {
                                                           oid_t namespace_oid,
                                                           oid_t view_oid,
                                                           oid_t rule_oid,
-                                                          const std::string& body_sql) {
+                                                          const std::string& body_sql,
+                                                          std::span<table::column_definition_t> columns,
+                                                          oid_batch_t& oid_batch,
+                                                          std::span<const view_binding_t> bindings,
+                                                          std::span<const view_dependency_t> dependencies,
+                                                          bool write_class_row) {
         std::vector<catalog_write_t> result;
 
-        {
+        if (write_class_row) {
             const auto& def = system_table(pg_class_oid);
             const std::string relkind_str(1, relkind::view);
             const std::string storagemode_str(1, relstoragemode::disk);
@@ -343,16 +349,64 @@ namespace components::catalog {
             result.push_back(make_write(pg_class_oid, std::move(chunk)));
         }
 
+        if (!columns.empty()) {
+            struct attr_t {
+                oid_t attoid;
+                oid_t atttypid;
+                std::string typspec;
+            };
+            std::vector<attr_t> attrs;
+            attrs.reserve(columns.size());
+            for (auto& col : columns) {
+                attr_t a;
+                a.attoid = oid_batch.allocate();
+                col.set_attoid(static_cast<std::uint32_t>(a.attoid));
+                a.atttypid = (col.atttypid() != INVALID_OID) ? col.atttypid() : builtin_type_to_oid(col.type().type());
+                a.typspec = encode_type_spec(col.type());
+                attrs.push_back(std::move(a));
+            }
+            const auto& def = system_table(pg_attribute_oid);
+            auto chunk = make_pg_rows(resource,
+                                      def.columns,
+                                      attrs.size(),
+                                      [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
+                                          for (std::size_t i = 0; i < attrs.size(); ++i) {
+                                              set_oid(c, 0, i, attrs[i].attoid);
+                                              set_oid(c, 1, i, view_oid);
+                                              set_str(c, 2, i, columns[i].name(), r);
+                                              set_oid(c, 3, i, attrs[i].atttypid);
+                                              set_i32(c, 4, i, static_cast<std::int32_t>(i + 1));
+                                              set_bool(c, 5, i, false);
+                                              set_bool(c, 6, i, false);
+                                              set_bool(c, 7, i, false);
+                                              set_str(c, 8, i, attrs[i].typspec, r);
+                                              set_str(c, 9, i, std::string{}, r);
+                                              set_i64(c, 10, i, 0);
+                                              set_i64(c, 11, i, 0);
+                                          }
+                                      });
+            result.push_back(make_write(pg_attribute_oid, std::move(chunk)));
+        }
+
         {
             const auto& def = system_table(pg_depend_oid);
-            auto chunk =
-                make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
-                    set_oid(c, 0, 0, well_known_oid::pg_class_table);
-                    set_oid(c, 1, 0, view_oid);
-                    set_oid(c, 2, 0, well_known_oid::pg_namespace_table);
-                    set_oid(c, 3, 0, namespace_oid);
-                    set_str(c, 4, 0, "n", r);
-                });
+            auto chunk = make_pg_rows(resource,
+                                      def.columns,
+                                      1 + dependencies.size(),
+                                      [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
+                                          set_oid(c, 0, 0, well_known_oid::pg_class_table);
+                                          set_oid(c, 1, 0, view_oid);
+                                          set_oid(c, 2, 0, well_known_oid::pg_namespace_table);
+                                          set_oid(c, 3, 0, namespace_oid);
+                                          set_str(c, 4, 0, "n", r);
+                                          for (std::size_t i = 0; i < dependencies.size(); ++i) {
+                                              set_oid(c, 0, i + 1, well_known_oid::pg_class_table);
+                                              set_oid(c, 1, i + 1, view_oid);
+                                              set_oid(c, 2, i + 1, dependencies[i].refclassid);
+                                              set_oid(c, 3, i + 1, dependencies[i].refobjid);
+                                              set_str(c, 4, i + 1, "n", r);
+                                          }
+                                      });
             result.push_back(make_write(pg_depend_oid, std::move(chunk)));
         }
 
@@ -368,6 +422,26 @@ namespace components::catalog {
                     set_str(c, 4, 0, body_sql, r);
                 });
             result.push_back(make_write(pg_rewrite_oid, std::move(chunk)));
+        }
+
+        if (!bindings.empty()) {
+            const auto& def = system_table(pg_rewrite_ref_oid);
+            auto chunk = make_pg_rows(resource,
+                                      def.columns,
+                                      bindings.size(),
+                                      [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
+                                          for (std::size_t i = 0; i < bindings.size(); ++i) {
+                                              const auto& b = bindings[i];
+                                              set_oid(c, 0, i, view_oid);
+                                              set_str(c, 1, i, std::string(1, b.refkind), r);
+                                              set_str(c, 2, i, b.dbname, r);
+                                              set_str(c, 3, i, b.schema, r);
+                                              set_str(c, 4, i, b.relname, r);
+                                              set_oid(c, 5, i, b.refobjid);
+                                              set_str(c, 6, i, b.refspec, r);
+                                          }
+                                      });
+            result.push_back(make_write(pg_rewrite_ref_oid, std::move(chunk)));
         }
 
         return result;

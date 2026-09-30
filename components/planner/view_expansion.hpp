@@ -54,6 +54,26 @@ namespace components::planner {
                                   const logical_plan::parameter_node_ptr& body_params,
                                   const logical_plan::parameter_node_ptr& out_params);
 
+    // "view \"v\" is stale: <why>": what the view was bound to at CREATE VIEW is not what the read finds.
+    core::error_t view_stale_error(std::pmr::memory_resource* resource, std::string_view view, std::string_view why);
+
+    // Every table name of a view body gets what CREATE VIEW bound it to (pg_rewrite_ref): a relation is read by its
+    // oid. A body name without a binding is refused.
+    core::error_t pin_view_body_names(std::pmr::memory_resource* resource,
+                                      logical_plan::catalog_resolves_t& body_resolves,
+                                      const logical_plan::resolved_table_metadata_t& view);
+
+    // Merges a pinned body's lookups into the statement's; the same name bound two different ways is refused.
+    core::error_t merge_view_body_resolves(std::pmr::memory_resource* resource,
+                                           logical_plan::catalog_resolves_t& dest,
+                                           const logical_plan::catalog_resolves_t& body_resolves);
+
+    // A body with a star reads the columns its tables have now; the view keeps the columns it was created with
+    // (PostgreSQL 18 expands the star at CREATE VIEW).
+    logical_plan::node_ptr project_view_body(std::pmr::memory_resource* resource,
+                                             logical_plan::node_ptr body,
+                                             const logical_plan::resolved_table_metadata_t& view);
+
     // A true cycle should be impossible, but this is the loud stop instead of an endless resolve loop.
     inline constexpr std::size_t max_view_expansion_depth = 16;
 

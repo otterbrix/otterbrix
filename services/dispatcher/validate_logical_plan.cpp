@@ -72,6 +72,19 @@ namespace services::dispatcher {
     }
 
     namespace {
+        // A catalog table's own column; carries its origin when the validation collects the columns it reads.
+        type_from_t catalog_column(const validation::validation_context_t& context,
+                                   std::string alias,
+                                   const resolved_table_metadata_t& table,
+                                   const resolved_column_metadata_t& column) {
+            type_from_t out{std::move(alias), column.type};
+            if (context.column_uses != nullptr) {
+                out.uses = context.column_uses;
+                out.origin = column_use_t{table.table_oid, column.attoid};
+            }
+            return out;
+        }
+
         template<typename Node>
         [[nodiscard]] core::error_t bind_predicates(const validation::validation_context_t& context,
                                                     Node* node,
@@ -346,16 +359,18 @@ namespace services::dispatcher {
                     named_schema result(resource);
                     const auto& table_alias = node->result_alias().empty() ? node->relname() : node->result_alias();
                     for (const auto& column : tbl->columns) {
-                        result.emplace_back(type_from_t{table_alias, column.type});
+                        result.emplace_back(catalog_column(context, table_alias, *tbl, column));
                     }
                     return result;
                 }
                 if (tbl && tbl->relkind == 'g') {
                     named_schema result(resource);
                     for (const auto& column : tbl->columns) {
-                        result.emplace_back(
-                            type_from_t{node->result_alias().empty() ? node->relname() : node->result_alias(),
-                                        column.type});
+                        result.emplace_back(catalog_column(
+                            context,
+                            node->result_alias().empty() ? node->relname() : node->result_alias(),
+                            *tbl,
+                            column));
                     }
                     return result;
                 } else {
@@ -881,7 +896,7 @@ namespace services::dispatcher {
                     if (tbl) {
                         relkind_computed = (tbl->relkind == 'g');
                         for (const auto& column : tbl->columns) {
-                            table_schema.emplace_back(type_from_t{visible_alias, column.type});
+                            table_schema.emplace_back(catalog_column(context, visible_alias, *tbl, column));
                         }
                     } else {
                         if (!agg_dbname_s.empty() &&
@@ -1331,6 +1346,12 @@ namespace services::dispatcher {
                             }
                         }
                         return result_schema;
+                    }
+                    // No projection: every incoming column is read (a bare `SELECT *`).
+                    for (const auto& column : incoming_schema) {
+                        if (column.uses != nullptr) {
+                            column.uses->push_back(column.origin);
+                        }
                     }
                     return incoming_schema;
                 } else {

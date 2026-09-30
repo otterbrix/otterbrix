@@ -70,8 +70,28 @@ namespace services::dispatcher::validation {
         return merged;
     }
 
+    static core::result_wrapper_t<type_paths>
+    find_types_in(std::pmr::memory_resource* resource, components::expressions::key_t& key, const named_schema& schema);
+
     core::result_wrapper_t<type_paths>
     find_types(std::pmr::memory_resource* resource, components::expressions::key_t& key, const named_schema& schema) {
+        auto found = find_types_in(resource, key, schema);
+        if (!found.has_error()) {
+            for (const auto& type_path : found.value()) {
+                if (type_path.path.empty() || type_path.path.front() >= schema.size()) {
+                    continue;
+                }
+                const auto& column = schema[type_path.path.front()];
+                if (column.uses != nullptr) {
+                    column.uses->push_back(column.origin);
+                }
+            }
+        }
+        return found;
+    }
+
+    static core::result_wrapper_t<type_paths>
+    find_types_in(std::pmr::memory_resource* resource, components::expressions::key_t& key, const named_schema& schema) {
         assert(!key.storage().empty());
         type_paths result{resource};
         if (key.storage().at(0) == "*") {

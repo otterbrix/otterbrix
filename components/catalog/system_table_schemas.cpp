@@ -153,6 +153,20 @@ namespace components::catalog {
             return c;
         }
 
+        // A view's body names, as written, and what each was bound to at CREATE VIEW: 'r' a relation by oid,
+        // 'h' a name the host resolved, 'x' a host node's declared columns (refspec) under its name.
+        std::vector<column_definition_t> pg_rewrite_ref_columns() {
+            std::vector<column_definition_t> c;
+            c.emplace_back("ev_class", oid_col(), /*not_null*/ true);
+            c.emplace_back("refkind", str_col(), true);
+            c.emplace_back("dbname", str_col(), false);
+            c.emplace_back("schema", str_col(), false);
+            c.emplace_back("relname", str_col(), true);
+            c.emplace_back("refobjid", oid_col(), false);
+            c.emplace_back("refspec", str_col(), false);
+            return c;
+        }
+
         std::vector<column_definition_t> pg_settings_columns() {
             std::vector<column_definition_t> c;
             c.emplace_back("name", str_col(), /*not_null*/ true);
@@ -187,9 +201,9 @@ namespace components::catalog {
     std::span<const system_table_def_t> all_system_tables() {
         // pg_database must come first — every catalog object is scoped to a database (seeded via
         // well_known_oid::main_database, manager_disk_t::bootstrap_system_tables_sync).
-        static const std::array<system_table_def_t, 14> tables = []() {
+        static const std::array<system_table_def_t, 15> tables = []() {
             const oid_t pg_catalog = well_known_oid::pg_catalog_namespace;
-            return std::array<system_table_def_t, 14>{{
+            return std::array<system_table_def_t, 15>{{
                 {"pg_database", well_known_oid::pg_database_table, pg_catalog, relkind::regular, pg_database_columns()},
                 {"pg_namespace",
                  well_known_oid::pg_namespace_table,
@@ -220,6 +234,11 @@ namespace components::catalog {
                 {"pg_rewrite", well_known_oid::pg_rewrite_table, pg_catalog, relkind::regular, pg_rewrite_columns()},
                 {"pg_settings", well_known_oid::pg_settings_table, pg_catalog, relkind::regular, pg_settings_columns()},
                 {"pg_cast", well_known_oid::pg_cast_table, pg_catalog, relkind::regular, pg_cast_columns()},
+                {"pg_rewrite_ref",
+                 well_known_oid::pg_rewrite_ref_table,
+                 pg_catalog,
+                 relkind::regular,
+                 pg_rewrite_ref_columns()},
             }};
         }();
         return tables;

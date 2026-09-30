@@ -25,6 +25,7 @@
 
 #include <components/casts/cast_registry.hpp>
 #include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/results/ddl_result.hpp>
 #include <components/catalog/session_catalog.hpp>
 #include <components/compute/function.hpp>
 #include <components/configuration/configuration.hpp>
@@ -101,7 +102,8 @@ namespace services::dispatcher {
                                                   components::compute::function_ptr function);
         unique_future<core::error_t> unregister_udf(components::session::session_id_t session,
                                                     std::string function_name,
-                                                    std::pmr::vector<components::types::complex_logical_type> inputs);
+                                                    std::pmr::vector<components::types::complex_logical_type> inputs,
+                                                    components::catalog::drop_behavior_t behavior);
         // pg_cast is written/deleted only after every executor confirms, so none applies a stale cast.
         unique_future<core::error_t> register_cast(components::session::session_id_t session,
                                                    components::types::complex_logical_type source,

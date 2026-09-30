@@ -1,5 +1,6 @@
 #pragma once
 
+#include <components/catalog/catalog_oids.hpp>
 #include <components/expressions/forward.hpp>
 #include <components/expressions/key.hpp>
 #include <components/types/types.hpp>
@@ -13,6 +14,13 @@ namespace services::dispatcher::validation {
     // each further entry descends one nesting level (struct field / array or list element).
     using column_path = std::pmr::vector<size_t>;
 
+    // A catalog column some key of the plan resolved to.
+    struct column_use_t {
+        components::catalog::oid_t table_oid{components::catalog::INVALID_OID};
+        components::catalog::oid_t attoid{components::catalog::INVALID_OID};
+    };
+    using column_uses_t = std::pmr::vector<column_use_t>;
+
     // One column of a node's output schema.
     struct type_from_t {
         std::string result_alias;
@@ -21,6 +29,10 @@ namespace services::dispatcher::validation {
         // Set when this column is a bare NULL literal (a scalar constant whose value is NULL, whose type was
         // defaulted to text). Lets a UNION reconcile the column to the other branch's type (PostgreSQL).
         bool from_null_literal = false;
+        // A catalog table's own column, when the validation collects the columns the plan reads (CREATE VIEW):
+        // find_types records it into `uses` whenever a key resolves to it.
+        column_uses_t* uses = nullptr;
+        column_use_t origin{};
     };
 
     struct type_path_t {

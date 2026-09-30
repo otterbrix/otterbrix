@@ -47,6 +47,7 @@
 #include <components/physical_plan_generator/create_plan.hpp>
 #include <components/planner/optimizer.hpp>
 #include <components/planner/view_expansion.hpp>
+#include <services/collection/view_definition.hpp>
 #include <core/executor.hpp>
 #include <services/dispatcher/dispatcher.hpp>
 #include <services/dispatcher/enrich_logical_plan.hpp>
@@ -550,6 +551,19 @@ namespace services::collection::executor {
             }
         };
 
+        // The statement's own names come first; the entries a view expansion or the host adds come after them.
+        const auto own_entries = [](const components::logical_plan::node_catalog_resolve_ptr& slot) {
+            return slot ? slot->entries().size() : std::size_t{0};
+        };
+        const std::size_t own_tables = own_entries(plan.catalog_resolves.tables);
+        const std::size_t own_types = own_entries(plan.catalog_resolves.types);
+        // Every view this statement reads, as its catalog row described it before the expansion.
+        struct expanded_view_t {
+            components::logical_plan::node_ptr body;
+            components::logical_plan::resolved_table_metadata_t view;
+        };
+        std::pmr::vector<expanded_view_t> expanded_views{resource()};
+
         {
             std::pmr::vector<components::logical_plan::node_ptr> resolve_nodes{resource()};
             collect_resolve_nodes(plan.catalog_resolves, resolve_nodes);
@@ -580,30 +594,43 @@ namespace services::collection::executor {
                         core::error_t(core::error_code_t::sql_parse_error,
                                       std::pmr::string{"view expansion nesting limit exceeded", resource()}))};
                 }
-                // Snapshot body SQL first — merge_catalog_resolves reallocates entries; `refs` points into it.
-                std::pmr::vector<std::string> body_sqls{resource()};
-                body_sqls.reserve(refs.size());
+                // Snapshot the views first — merging reallocates entries; `refs` points into them.
+                std::pmr::vector<components::logical_plan::resolved_table_metadata_t> views{resource()};
+                views.reserve(refs.size());
                 for (const auto& ref : refs) {
-                    body_sqls.push_back(ref.entry->table_md->view_sql);
+                    views.push_back(*ref.entry->table_md);
                 }
                 for (std::size_t i = 0; i < refs.size(); ++i) {
                     auto& ref = refs[i];
-                    auto body = components::planner::expand_view_body(resource(), body_sqls[i]);
+                    auto body = components::planner::expand_view_body(resource(), views[i].view_sql);
                     if (body.error.contains_error()) {
                         trace(log_, "executor::execute_plan_full: view expansion failed: {}", body.error.what);
                         co_return execute_result_t{make_cursor(resource(), std::move(body.error))};
+                    }
+                    if (!body.resolves) {
+                        body.resolves.emplace();
+                    }
+                    services::dispatcher::register_plan_targets(resource(), body.plan.get(), &*body.resolves);
+                    if (auto err = components::planner::pin_view_body_names(resource(), *body.resolves, views[i]);
+                        err.contains_error()) {
+                        co_return execute_result_t{make_cursor(resource(), std::move(err))};
                     }
                     components::planner::renumber_body_parameters(resource(),
                                                                   body.plan.get(),
                                                                   body.params,
                                                                   plan.parameters);
-                    if (auto err = components::planner::splice_view_body(ref.node, std::move(body.plan));
+                    auto projected = components::planner::project_view_body(resource(), std::move(body.plan), views[i]);
+                    if (auto err = components::planner::splice_view_body(ref.node, projected);
                         err.contains_error()) {
                         co_return execute_result_t{make_cursor(resource(), std::move(err))};
                     }
-                    if (body.resolves) {
-                        services::dispatcher::merge_catalog_resolves(resource(), plan.catalog_resolves, *body.resolves);
+                    if (auto err = components::planner::merge_view_body_resolves(resource(),
+                                                                                 plan.catalog_resolves,
+                                                                                 *body.resolves);
+                        err.contains_error()) {
+                        co_return execute_result_t{make_cursor(resource(), std::move(err))};
                     }
+                    expanded_views.push_back({std::move(projected), std::move(views[i])});
                 }
                 if (services::catalog_resolve::has_unresolved_entries(plan.catalog_resolves)) {
                     std::pmr::vector<components::logical_plan::node_ptr> resolve_nodes{resource()};
@@ -617,6 +644,10 @@ namespace services::collection::executor {
                     }
                 }
             }
+        }
+        if (auto stale = services::catalog_resolve::refuse_stale_pins(resource(), plan.catalog_resolves);
+            stale.contains_error()) {
+            co_return execute_result_t{make_cursor(resource(), std::move(stale))};
         }
         // The host resolves what the catalog did not: its reads run here, in this statement's snapshot, and it
         // rewrites the tree before validation. A statement whose names all resolved never reaches the host.
@@ -1112,9 +1143,73 @@ namespace services::collection::executor {
             // Leaf control nodes like checkpoint/vacuum — omitting this hits validate_schema's default assert(false).
             case node_type::transaction_t:
             case node_type::create_sequence_t:
-            case node_type::create_view_t:
             case node_type::create_macro_t:
                 break;
+            case node_type::create_view_t: {
+                auto* view =
+                    static_cast<components::logical_plan::node_create_view_t*>(plan.sub_queries.back().get());
+                const auto body = view->body();
+                services::dispatcher::resolve_expression_types(body, &plan.catalog_resolves);
+                if (auto vt_err = services::dispatcher::validate_types(resource(),
+                                                                       &plan.catalog_resolves,
+                                                                       body.get(),
+                                                                       context_storage.execution_context);
+                    vt_err.contains_error()) {
+                    error = make_cursor(resource(), vt_err);
+                    break;
+                }
+                services::dispatcher::validation::column_uses_t uses{resource()};
+                const services::dispatcher::validation::validation_context_t validation_context{
+                    resource(),
+                    &plan.catalog_resolves,
+                    cast_registry_,
+                    function_registry_,
+                    context_storage.execution_context,
+                    &uses};
+                auto output = services::dispatcher::validate_schema(validation_context,
+                                                                    body.get(),
+                                                                    plan.parameters->parameters());
+                if (output.has_error()) {
+                    error = make_cursor(resource(), output.error());
+                    break;
+                }
+                if (auto described = describe_view_body(resource(),
+                                                        *view,
+                                                        output.value(),
+                                                        plan.catalog_resolves,
+                                                        own_tables,
+                                                        own_types,
+                                                        uses);
+                    described.contains_error()) {
+                    error = make_cursor(resource(), std::move(described));
+                    break;
+                }
+                auto dependencies = view->dependencies();
+                const components::execution_context_t proc_ctx{session, resolve_txn, {}};
+                const bool has_catalog = disk_address_ != actor_zeta::address_t::empty_address();
+                for (const auto& name : view_body_user_functions(resource(), body.get(), function_registry_)) {
+                    if (!has_catalog) {
+                        break;
+                    }
+                    auto [_rf, rff] =
+                        actor_zeta::otterbrix::send(disk_address_,
+                                                    &services::disk::manager_disk_t::resolve_function_by_name,
+                                                    proc_ctx,
+                                                    name);
+                    auto procs = co_await std::move(rff);
+                    if (procs.has_error()) {
+                        error = make_cursor(resource(), procs.error());
+                        break;
+                    }
+                    for (const auto& proc : procs.value()) {
+                        if (proc.oid >= components::catalog::FIRST_USER_OID) {
+                            dependencies.push_back({components::catalog::well_known_oid::pg_proc_table, proc.oid});
+                        }
+                    }
+                }
+                view->set_dependencies(std::move(dependencies));
+                break;
+            }
             case node_type::alter_table_t: {
                 const auto* alter_node =
                     static_cast<const components::logical_plan::node_alter_table_t*>(plan.sub_queries.back().get());
@@ -1339,6 +1434,15 @@ namespace services::collection::executor {
             }
         }
 
+        if (!error && !expanded_views.empty()) {
+            for (const auto& expanded : expanded_views) {
+                if (auto stale = check_expanded_view(resource(), expanded.view, *expanded.body);
+                    stale.contains_error()) {
+                    error = make_cursor(resource(), std::move(stale));
+                    break;
+                }
+            }
+        }
         if (error) {
             trace(log_, "executor::execute_plan_full: validation error: {}", error->get_error().what);
             co_return execute_result_t{std::move(error)};

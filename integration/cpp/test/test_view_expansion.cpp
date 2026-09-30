@@ -237,7 +237,7 @@ TEST_CASE("integration::cpp::test_view_expansion::matview_without_no_data_is_ref
 }
 
 // Each reference needs its own parse+transform, since spliced nodes carry per-reference state. The driver also
-// snapshots each body's SQL first because merge_catalog_resolves reallocates the vector references point into.
+// snapshots each view first because merge_view_body_resolves reallocates the vector references point into.
 TEST_CASE("integration::cpp::test_view_expansion::same_view_referenced_twice") {
     auto config = make_test_config(integration_fixture_path("test_view_expansion/twice"));
     test_spaces space(config);

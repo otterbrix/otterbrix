@@ -2,15 +2,19 @@
 
 #include <components/catalog/catalog_codes.hpp>
 #include <components/expressions/remap_parameter_ids.hpp>
+#include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node_delete.hpp>
 #include <components/logical_plan/node_insert.hpp>
 #include <components/logical_plan/node_join.hpp>
+#include <components/logical_plan/node_select.hpp>
 #include <components/logical_plan/node_update.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 
+#include <algorithm>
 #include <queue>
+#include <string>
 
 namespace components::planner {
 
@@ -222,6 +226,152 @@ namespace components::planner {
             }
         }
         return core::error_t::no_error();
+    }
+
+    core::error_t view_stale_error(std::pmr::memory_resource* resource, std::string_view view, std::string_view why) {
+        std::pmr::string msg{"view \"", resource};
+        msg.append(view);
+        msg.append("\" is stale: ");
+        msg.append(why);
+        msg.append("; recreate the view");
+        return core::error_t(core::error_code_t::schema_error, std::move(msg));
+    }
+
+    namespace {
+        std::string written_name(const logical_plan::resolve_entry_t& entry) {
+            std::string out;
+            for (const auto* part : {&entry.dbname, &entry.schema}) {
+                if (!part->empty()) {
+                    out += *part;
+                    out += '.';
+                }
+            }
+            out += entry.relname;
+            return out;
+        }
+
+        bool contains_star(const node_t* n) {
+            if (!n) {
+                return false;
+            }
+            if (n->type() == node_type::select_t) {
+                for (const auto& e : n->expressions()) {
+                    if (e && e->group() == expressions::expression_group::scalar &&
+                        static_cast<const expressions::scalar_expression_t*>(e.get())->type() ==
+                            expressions::scalar_type::star_expand) {
+                        return true;
+                    }
+                }
+            }
+            for (const auto& c : n->children()) {
+                if (contains_star(c.get())) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // The transformer drops a bare `SELECT *` projection: the aggregate then answers every source column.
+        bool passes_every_column(const node_t* n) {
+            if (!n) {
+                return false;
+            }
+            if (n->type() == node_type::union_t) {
+                return std::any_of(n->children().begin(), n->children().end(), [](const auto& c) {
+                    return passes_every_column(c.get());
+                });
+            }
+            if (n->type() != node_type::aggregate_t) {
+                return false;
+            }
+            return std::none_of(n->children().begin(), n->children().end(), [](const auto& c) {
+                return c && ((c->type() == node_type::select_t && !c->expressions().empty()) ||
+                             c->type() == node_type::group_t);
+            });
+        }
+    } // namespace
+
+    core::error_t pin_view_body_names(std::pmr::memory_resource* resource,
+                                      logical_plan::catalog_resolves_t& body_resolves,
+                                      const logical_plan::resolved_table_metadata_t& view) {
+        if (!body_resolves.tables) {
+            return core::error_t::no_error();
+        }
+        for (auto& entry : body_resolves.tables->entries()) {
+            const auto binding =
+                std::find_if(view.view_bindings.begin(), view.view_bindings.end(), [&entry](const auto& b) {
+                    return b.refkind == logical_plan::view_refkind::relation && b.dbname == entry.dbname &&
+                           b.schema == entry.schema && b.relname == entry.relname;
+                });
+            if (binding == view.view_bindings.end()) {
+                return view_stale_error(resource,
+                                        view.name,
+                                        "its body names \"" + written_name(entry) +
+                                            "\", which was not bound when the view was created");
+            }
+            entry.pinned_oid = binding->refobjid;
+            entry.bound_by = view.name;
+        }
+        return core::error_t::no_error();
+    }
+
+    core::error_t merge_view_body_resolves(std::pmr::memory_resource* resource,
+                                           logical_plan::catalog_resolves_t& dest,
+                                           const logical_plan::catalog_resolves_t& body_resolves) {
+        using logical_plan::resolve_kind;
+        for (const auto& [kind, slot] : {std::pair{resolve_kind::database, &body_resolves.database},
+                                         std::pair{resolve_kind::namespace_, &body_resolves.namespaces},
+                                         std::pair{resolve_kind::table, &body_resolves.tables},
+                                         std::pair{resolve_kind::type, &body_resolves.types},
+                                         std::pair{resolve_kind::constraint, &body_resolves.constraints}}) {
+            if (!*slot || (*slot)->empty()) {
+                continue;
+            }
+            auto& target = dest.ensure(resource, kind);
+            for (const auto& entry : (*slot)->entries()) {
+                const auto before = target.entries().size();
+                const auto index = target.add(entry);
+                if (index == before || kind != resolve_kind::table) {
+                    continue;
+                }
+                auto& existing = target.entries()[index];
+                const bool resolved_elsewhere =
+                    existing.table_md.has_value() && existing.table_md->table_oid != entry.pinned_oid;
+                const bool pinned_elsewhere =
+                    existing.pinned_oid != catalog::INVALID_OID && existing.pinned_oid != entry.pinned_oid;
+                if (entry.pinned_oid != catalog::INVALID_OID) {
+                    if (resolved_elsewhere || pinned_elsewhere) {
+                        return view_stale_error(resource,
+                                                entry.bound_by,
+                                                "\"" + written_name(entry) +
+                                                    "\" in this statement no longer names the relation it was bound "
+                                                    "to (oid " +
+                                                    std::to_string(entry.pinned_oid) + ")");
+                    }
+                    existing.pinned_oid = entry.pinned_oid;
+                    existing.bound_by = entry.bound_by;
+                }
+            }
+        }
+        return core::error_t::no_error();
+    }
+
+    logical_plan::node_ptr project_view_body(std::pmr::memory_resource* resource,
+                                             logical_plan::node_ptr body,
+                                             const logical_plan::resolved_table_metadata_t& view) {
+        if (!contains_star(body.get()) && !passes_every_column(body.get())) {
+            return body;
+        }
+        auto wrapper = logical_plan::make_node_aggregate(resource, core::dbname_t{}, core::relname_t{});
+        wrapper->append_child(std::move(body));
+        auto select = logical_plan::make_node_select(resource, core::dbname_t{}, core::relname_t{});
+        for (const auto& column : view.columns) {
+            select->append_expression(expressions::make_scalar_expression(resource,
+                                                                          expressions::scalar_type::get_field,
+                                                                          expressions::key_t{resource, column.attname}));
+        }
+        wrapper->append_child(std::move(select));
+        return wrapper;
     }
 
     void renumber_body_parameters(std::pmr::memory_resource* resource,

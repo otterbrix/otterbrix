@@ -176,3 +176,50 @@ TEST_CASE("planner::view_expansion::body parameters are renumbered into the oute
     CHECK(outer_params->parameter(new_id).value<int64_t>() == 10);
     CHECK(outer_params->parameter(outer_id).value<int64_t>() == 18);
 }
+
+namespace {
+    logical_plan::resolved_table_metadata_t view_bound_to_t() {
+        logical_plan::resolved_table_metadata_t view;
+        view.name = "v";
+        view.view_bindings.push_back({logical_plan::view_refkind::relation, "db", "", "t", 16500, ""});
+        return view;
+    }
+
+    logical_plan::catalog_resolves_t body_naming(const std::string& relname) {
+        logical_plan::catalog_resolves_t body;
+        logical_plan::resolve_entry_t entry;
+        entry.dbname = "db";
+        entry.relname = relname;
+        body.ensure(res(), logical_plan::resolve_kind::table).add(std::move(entry));
+        return body;
+    }
+} // namespace
+
+TEST_CASE("planner::view_expansion::a body name is pinned to the oid it was bound to") {
+    auto body = body_naming("t");
+
+    REQUIRE_FALSE(pin_view_body_names(res(), body, view_bound_to_t()).contains_error());
+    CHECK(body.tables->entries().front().pinned_oid == 16500);
+}
+
+TEST_CASE("planner::view_expansion::a body name without a binding is refused as stale") {
+    auto body = body_naming("other");
+
+    auto err = pin_view_body_names(res(), body, view_bound_to_t());
+    REQUIRE(err.contains_error());
+    CHECK(std::string(err.what).find("view \"v\" is stale") != std::string::npos);
+}
+
+// The statement resolved the same spelling to another relation: the view's own relation is never swapped for it.
+TEST_CASE("planner::view_expansion::a pin the statement disagrees with is refused as stale") {
+    auto statement = body_naming("t");
+    logical_plan::resolved_table_metadata_t other;
+    other.table_oid = 16600;
+    statement.tables->entries().front().table_md = std::move(other);
+    auto body = body_naming("t");
+    REQUIRE_FALSE(pin_view_body_names(res(), body, view_bound_to_t()).contains_error());
+
+    auto err = merge_view_body_resolves(res(), statement, body);
+    REQUIRE(err.contains_error());
+    CHECK(std::string(err.what).find("view \"v\" is stale") != std::string::npos);
+}

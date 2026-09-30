@@ -115,7 +115,8 @@ namespace components::sql::transform {
         core::result_wrapper_t<logical_plan::node_ptr> transform_create_type(CompositeTypeStmt& node);
         core::result_wrapper_t<logical_plan::node_ptr> transform_create_enum_type(CreateEnumStmt& node);
         core::result_wrapper_t<logical_plan::node_ptr> transform_create_sequence(CreateSeqStmt& node);
-        core::result_wrapper_t<logical_plan::node_ptr> transform_create_view(ViewStmt& node);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_create_view(ViewStmt& node,
+                                                                             logical_plan::execution_plan_t* plan);
         // CREATE MATERIALIZED VIEW … AS SELECT … (PostgreSQL-canonical, relkind='m').
         // Body is transformed via transform_select; source's catalog_resolve_table
         // is hoisted to the outer sequence_t front so Pass 1 stamps source's

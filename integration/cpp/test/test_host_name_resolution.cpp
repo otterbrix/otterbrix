@@ -854,6 +854,7 @@ TEST_CASE("integration::cpp::host_names::an_insert_into_a_host_relation_lists_ev
     REQUIRE(run(dispatcher, "CREATE DATABASE loc;")->is_success());
     REQUIRE(run(dispatcher, "CREATE TABLE loc.t (id BIGINT, amount BIGINT);")->is_success());
     for (const char* sql : {"INSERT INTO m2.shop.orders (id) VALUES (4);",
+                            "INSERT INTO m2.shop.orders VALUES (4);",
                             "INSERT INTO m2.shop.orders (id) SELECT id FROM loc.t;",
                             "INSERT INTO m2.shop.orders SELECT id FROM loc.t;"}) {
         INFO(sql);
@@ -864,6 +865,12 @@ TEST_CASE("integration::cpp::host_names::an_insert_into_a_host_relation_lists_ev
     }
     CHECK(write_log().empty());
     CHECK(backend()["m2.shop.orders"].size() == 3);
+
+    auto positional = run(dispatcher, "INSERT INTO m2.shop.orders VALUES (7, 700), (8, 800);");
+    INFO((positional->is_error() ? std::string{positional->get_error().what} : std::string{"ok"}));
+    REQUIRE(positional->is_success());
+    CHECK(positional->affected_rows() == std::optional<std::uint64_t>{2});
+    CHECK(backend()["m2.shop.orders"].back() == std::vector<int64_t>{8, 800});
 }
 
 TEST_CASE("integration::cpp::host_names::update_and_delete_a_host_relation") {

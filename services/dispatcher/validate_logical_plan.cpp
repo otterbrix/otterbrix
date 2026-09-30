@@ -2052,6 +2052,17 @@ namespace services::dispatcher {
                         }
                         return core::error_t::no_error();
                     };
+                    // VALUES without a column list names its columns by position only; a dynamic-schema table
+                    // takes its column names from the INSERT.
+                    if (is_computed && insert_node->key_translation().empty() &&
+                        node->children().front()->type() == node_type::data_t) {
+                        return core::error_t(core::error_code_t::schema_error,
+                                             std::pmr::string{"INSERT into dynamic-schema table \"" +
+                                                                  target_relname_ins +
+                                                                  "\" needs a column list: its columns are named "
+                                                                  "by the INSERT",
+                                                              resource});
+                    }
                     if (table_schema.empty()) {
                         // Must stay relkind='r' (test_persistence::zero_column_regular_table_stays_regular).
                         if (!is_computed) {
@@ -2068,16 +2079,22 @@ namespace services::dispatcher {
                         if (auto rename_err = bind_computed_rename(); rename_err.contains_error()) {
                             return rename_err;
                         }
-                    } else if (incoming_schema.value().size() > table_schema.size()) {
-                        return core::error_t(core::error_code_t::schema_error,
-                                             std::pmr::string{"insert_node: too many columns in INSERT", resource});
                     } else {
-                        if (insert_node->key_translation().size() != incoming_schema.value().size() &&
-                            table_schema.size() != incoming_schema.value().size()) {
+                        // PostgreSQL 18 transformInsertRow: the target columns are the list, or every column of the
+                        // table; more values than targets is refused, fewer only with a list.
+                        const auto& listed = insert_node->key_translation();
+                        const std::size_t targets = listed.empty() ? table_schema.size() : listed.size();
+                        if (incoming_schema.value().size() > targets) {
                             return core::error_t(
-                                core::error_code_t::schema_error,
-                                std::pmr::string{"insert_node: number of columns do not match", resource});
-                        } else {
+                                core::error_code_t::sql_parse_error,
+                                std::pmr::string{"INSERT has more expressions than target columns", resource});
+                        }
+                        if (!listed.empty() && incoming_schema.value().size() < targets) {
+                            return core::error_t(
+                                core::error_code_t::sql_parse_error,
+                                std::pmr::string{"INSERT has more target columns than expressions", resource});
+                        }
+                        {
                             for (auto& key : insert_node->key_translation()) {
                                 auto key_res = validation::validate_key(resource, key, &table_schema);
                                 if (key_res.has_error()) {

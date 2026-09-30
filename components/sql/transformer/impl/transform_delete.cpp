@@ -38,11 +38,10 @@ namespace components::sql::transform {
             }
             // Tag the target table for catalog resolution with the referencing
             // constraint gather, so enrich reads the descendant FKs.
-            register_catalog_resolve_table(resource_,
-                                           &catalog_resolves_,
-                                           qn.database,
-                                           qn.collection,
-                                           constraint_resolve_kind::referencing);
+            register_catalog_resolve_write_target(resource_,
+                                                  &catalog_resolves_,
+                                                  qn,
+                                                  constraint_resolve_kind::referencing);
             return del;
         }
         name_collection_t names;
@@ -94,11 +93,10 @@ namespace components::sql::transform {
         }
         // Resolve the primary (LEFT) table and gather its referencing
         // constraints for FK cascade enrich.
-        register_catalog_resolve_table(resource_,
-                                       &catalog_resolves_,
-                                       names.left_name.database,
-                                       names.left_name.collection,
-                                       constraint_resolve_kind::referencing);
+        register_catalog_resolve_write_target(resource_,
+                                              &catalog_resolves_,
+                                              names.left_name,
+                                              constraint_resolve_kind::referencing);
         return del;
     }
 } // namespace components::sql::transform

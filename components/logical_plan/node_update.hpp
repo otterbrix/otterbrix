@@ -1,5 +1,6 @@
 #pragma once
 
+#include "host_write_target.hpp"
 #include "node.hpp"
 #include "node_limit.hpp"
 #include "node_match.hpp"
@@ -28,6 +29,12 @@ namespace components::logical_plan {
         void set_dbname(std::string dbname) { dbname_ = std::move(dbname); }
         const std::string& relname() const noexcept { return relname_; }
         void set_relname(std::string relname) { relname_ = std::move(relname); }
+        // The schema slot of database.schema.name; only a host relation can live there.
+        const std::string& schema() const noexcept { return schema_; }
+        void set_schema(std::string schema) { schema_ = std::move(schema); }
+
+        const host_write_target_ptr& host_target() const noexcept { return host_target_; }
+        void set_host_target(host_write_target_ptr target) { host_target_ = std::move(target); }
 
         const std::pmr::vector<expressions::expression_ptr>& updates() const;
         std::pmr::vector<expressions::expression_ptr>& updates();
@@ -76,6 +83,8 @@ namespace components::logical_plan {
     private:
         std::string dbname_;
         std::string relname_;
+        std::string schema_;
+        host_write_target_ptr host_target_;
         std::pmr::vector<expressions::expression_ptr> update_expressions_;
         std::pmr::vector<expressions::expression_ptr> returning_;
         bool upsert_;

@@ -1938,31 +1938,55 @@ namespace components::sql::transform {
         resolves->ensure(resource, logical_plan::resolve_kind::namespace_).add(std::move(entry));
     }
 
+    namespace {
+        void register_table_entry(std::pmr::memory_resource* resource,
+                                  logical_plan::catalog_resolves_t* resolves,
+                                  const std::string& dbname,
+                                  const std::string& schema,
+                                  const std::string& relname,
+                                  constraint_resolve_kind with_constraints) {
+            register_catalog_resolve_namespace(resource, resolves, dbname);
+            if (relname.empty()) {
+                return;
+            }
+            logical_plan::resolve_entry_t table_entry;
+            table_entry.dbname = dbname;
+            table_entry.schema = schema;
+            table_entry.relname = relname;
+            const auto table_index =
+                resolves->ensure(resource, logical_plan::resolve_kind::table).add(std::move(table_entry));
+
+            if (with_constraints == constraint_resolve_kind::none) {
+                return;
+            }
+            logical_plan::resolve_entry_t constraint_entry;
+            constraint_entry.target = table_index;
+            constraint_entry.direction = (with_constraints == constraint_resolve_kind::referencing)
+                                             ? logical_plan::resolve_direction::referencing
+                                             : logical_plan::resolve_direction::outgoing;
+            constraint_entry.names_only = (with_constraints == constraint_resolve_kind::names_only);
+            resolves->ensure(resource, logical_plan::resolve_kind::constraint).add(std::move(constraint_entry));
+        }
+    } // namespace
+
     void register_catalog_resolve_table(std::pmr::memory_resource* resource,
                                         logical_plan::catalog_resolves_t* resolves,
                                         const std::string& dbname,
                                         const std::string& relname,
                                         constraint_resolve_kind with_constraints) {
-        register_catalog_resolve_namespace(resource, resolves, dbname);
-        if (relname.empty()) {
-            return;
-        }
-        logical_plan::resolve_entry_t table_entry;
-        table_entry.dbname = dbname;
-        table_entry.relname = relname;
-        const auto table_index =
-            resolves->ensure(resource, logical_plan::resolve_kind::table).add(std::move(table_entry));
+        register_table_entry(resource, resolves, dbname, std::string{}, relname, with_constraints);
+    }
 
-        if (with_constraints == constraint_resolve_kind::none) {
-            return;
-        }
-        logical_plan::resolve_entry_t constraint_entry;
-        constraint_entry.target = table_index;
-        constraint_entry.direction = (with_constraints == constraint_resolve_kind::referencing)
-                                         ? logical_plan::resolve_direction::referencing
-                                         : logical_plan::resolve_direction::outgoing;
-        constraint_entry.names_only = (with_constraints == constraint_resolve_kind::names_only);
-        resolves->ensure(resource, logical_plan::resolve_kind::constraint).add(std::move(constraint_entry));
+    void register_catalog_resolve_write_target(std::pmr::memory_resource* resource,
+                                               logical_plan::catalog_resolves_t* resolves,
+                                               const qualified_name_t& written,
+                                               constraint_resolve_kind with_constraints) {
+        register_table_entry(resource,
+                             resolves,
+                             written.database,
+                             written.unique_identifier.empty() ? written.schema : std::string{},
+                             written.collection,
+                             with_constraints);
     }
 
     void register_catalog_resolve_written_table(std::pmr::memory_resource* resource,

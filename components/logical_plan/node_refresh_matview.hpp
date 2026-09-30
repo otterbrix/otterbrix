@@ -8,12 +8,9 @@
 namespace components::logical_plan {
 
     // REFRESH MATERIALIZED VIEW mv [WITH NO DATA] (PostgreSQL semantics).
-    // The wrapping sequence_t includes catalog_resolve_table(mv) which Pass 1
-    // stamps with resolved_metadata.view_sql (from pg_rewrite.ev_action, the
-    // body SQL written at CREATE MATERIALIZED VIEW time). The planner reads
-    // view_sql, re-parses + re-transforms, and lowers to
-    //   sequence_t(delete_t(mv, all_true), insert_t(target=mv, source=re_body_plan))
-    // First iteration: concurrent is parsed but ignored (followups #3).
+    // The resolve of mv stamps resolved_metadata.view_sql (pg_rewrite.ev_action, the body SQL
+    // written at CREATE MATERIALIZED VIEW time); the executor runs DELETE FROM mv and, WITH DATA,
+    // INSERT INTO mv <body> in the statement's transaction. concurrent is parsed but ignored.
     class node_refresh_matview_t final : public node_t {
     public:
         node_refresh_matview_t(std::pmr::memory_resource* resource,

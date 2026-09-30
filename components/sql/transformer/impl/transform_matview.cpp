@@ -21,16 +21,15 @@ namespace components::sql::transform {
         }
 
         // WITH DATA (PostgreSQL's default) is refused: nothing here populates a matview at
-        // CREATE time and REFRESH is a no-op (planner.cpp: refresh_matview_t) — accepting it
-        // would silently report success with an empty matview forever. WITH NO DATA (skipData,
-        // gram.y CreateMatViewStmt: `$5->skipData = !($8)`) still works.
+        // CREATE time — accepting it would silently report success with an empty matview. WITH NO
+        // DATA (skipData, gram.y CreateMatViewStmt: `$5->skipData = !($8)`) works, and REFRESH
+        // MATERIALIZED VIEW fills it.
         if (!cs.into->skipData) {
             return core::error_t(
                 core::error_code_t::sql_parse_error,
                 std::pmr::string{"CREATE MATERIALIZED VIEW ... WITH DATA is not supported yet: the matview "
-                                 "cannot be populated at CREATE time and REFRESH MATERIALIZED VIEW is not "
-                                 "implemented, so the result would be a silently empty matview. Write "
-                                 "WITH NO DATA to create it empty on purpose.",
+                                 "cannot be populated at CREATE time, so the result would be a silently empty "
+                                 "matview. Write WITH NO DATA and fill it with REFRESH MATERIALIZED VIEW.",
                                  resource_});
         }
 

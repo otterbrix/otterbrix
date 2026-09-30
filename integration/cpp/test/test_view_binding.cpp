@@ -504,3 +504,67 @@ TEST_CASE("integration::cpp::view_binding::or_replace_that_would_read_itself_is_
     CHECK(error_text(refused).find("view \"v\" would read itself") != std::string::npos);
     CHECK(bigints(run_ok(d, "SELECT a FROM vb.w;")) == std::set<std::int64_t>{1, 2});
 }
+
+// REFRESH MATERIALIZED VIEW runs the stored body again and replaces the rows (PostgreSQL 18 matview.c).
+TEST_CASE("integration::cpp::view_binding::refresh_fills_the_matview_from_its_body") {
+    test_spaces space(config_for("refresh_fills"));
+    auto* d = space.dispatcher();
+    seed(d);
+    run_ok(d, "CREATE MATERIALIZED VIEW vb.mv AS SELECT a FROM vb.t WITH NO DATA;");
+
+    run_ok(d, "REFRESH MATERIALIZED VIEW vb.mv;");
+    CHECK(bigints(run_ok(d, "SELECT a FROM vb.mv;")) == std::set<std::int64_t>{1, 2});
+}
+
+TEST_CASE("integration::cpp::view_binding::refresh_replaces_the_rows") {
+    test_spaces space(config_for("refresh_replaces"));
+    auto* d = space.dispatcher();
+    seed(d);
+    run_ok(d, "CREATE MATERIALIZED VIEW vb.mv AS SELECT a FROM vb.t WITH NO DATA;");
+    run_ok(d, "REFRESH MATERIALIZED VIEW vb.mv;");
+    run_ok(d, "INSERT INTO vb.t (a, b) VALUES (3, 'z');");
+    run_ok(d, "DELETE FROM vb.t WHERE a = 1;");
+
+    run_ok(d, "REFRESH MATERIALIZED VIEW vb.mv;");
+    auto rows = run_ok(d, "SELECT a FROM vb.mv;");
+    CHECK(rows->size() == 2);
+    CHECK(bigints(rows) == std::set<std::int64_t>{2, 3});
+}
+
+TEST_CASE("integration::cpp::view_binding::a_rolled_back_refresh_leaves_the_rows") {
+    test_spaces space(config_for("refresh_rollback"));
+    auto* d = space.dispatcher();
+    seed(d);
+    run_ok(d, "CREATE MATERIALIZED VIEW vb.mv AS SELECT a FROM vb.t WITH NO DATA;");
+    run_ok(d, "REFRESH MATERIALIZED VIEW vb.mv;");
+    run_ok(d, "INSERT INTO vb.t (a, b) VALUES (3, 'z');");
+
+    const auto session = otterbrix::session_id_t();
+    REQUIRE(d->execute_sql(session, "BEGIN;")->is_success());
+    REQUIRE(d->execute_sql(session, "REFRESH MATERIALIZED VIEW vb.mv;")->is_success());
+    REQUIRE(d->execute_sql(session, "ROLLBACK;")->is_success());
+
+    CHECK(bigints(run_ok(d, "SELECT a FROM vb.mv;")) == std::set<std::int64_t>{1, 2});
+}
+
+TEST_CASE("integration::cpp::view_binding::refresh_with_no_data_empties_the_matview") {
+    test_spaces space(config_for("refresh_no_data"));
+    auto* d = space.dispatcher();
+    seed(d);
+    run_ok(d, "CREATE MATERIALIZED VIEW vb.mv AS SELECT a FROM vb.t WITH NO DATA;");
+    run_ok(d, "REFRESH MATERIALIZED VIEW vb.mv;");
+
+    run_ok(d, "REFRESH MATERIALIZED VIEW vb.mv WITH NO DATA;");
+    CHECK(run_ok(d, "SELECT a FROM vb.mv;")->size() == 0);
+}
+
+TEST_CASE("integration::cpp::view_binding::refresh_of_a_table_is_refused") {
+    test_spaces space(config_for("refresh_table"));
+    auto* d = space.dispatcher();
+    seed(d);
+
+    auto refused = exec(d, "REFRESH MATERIALIZED VIEW vb.t;");
+    INFO("error: " << error_text(refused));
+    CHECK(error_text(refused).find("\"t\" is not a materialized view") != std::string::npos);
+    CHECK(run_ok(d, "SELECT a FROM vb.t;")->size() == 2);
+}

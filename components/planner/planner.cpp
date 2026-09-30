@@ -659,8 +659,7 @@ namespace components::planner {
                 case node_type::create_matview_t:
                     return rewrite_create_matview(r, node, oid_batch);
                 case node_type::refresh_matview_t:
-                    // REFRESH not lowered yet; returned unchanged. TODO: lower to
-                    // DELETE + INSERT(re-parsed body) via the dispatcher's resolve re-run.
+                    // The executor runs REFRESH as statements of its own; it never reaches here.
                     return node;
                 case node_type::create_constraint_t:
                     return rewrite_create_constraint(r, node, oid_batch);

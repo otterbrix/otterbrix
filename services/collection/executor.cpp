@@ -38,6 +38,7 @@
 #include <components/logical_plan/node_insert.hpp>
 #include <components/logical_plan/node_join.hpp>
 #include <components/logical_plan/node_match.hpp>
+#include <components/logical_plan/node_refresh_matview.hpp>
 #include <components/logical_plan/node_register_cast.hpp>
 #include <components/logical_plan/node_sequence.hpp>
 #include <components/logical_plan/node_set_setting.hpp>
@@ -576,6 +577,62 @@ namespace services::collection::executor {
                     co_return execute_result_t{std::move(pass1_result.cursor)};
                 }
             }
+        }
+        // REFRESH MATERIALIZED VIEW (PostgreSQL 18 matview.c): the stored body runs again and replaces the rows, as
+        // two statements of this one transaction.
+        if (original_type == node_type::refresh_matview_t) {
+            const auto* refresh =
+                static_cast<const components::logical_plan::node_refresh_matview_t*>(plan.sub_queries.back().get());
+            const auto* matview = plan.catalog_resolves.table_md(refresh->dbname(), refresh->matviewname());
+            if (matview == nullptr || matview->relkind != components::catalog::relkind::materialized_view) {
+                std::pmr::string msg{"\"", resource()};
+                msg.append(refresh->matviewname());
+                msg.append(matview == nullptr ? "\" does not exist" : "\" is not a materialized view");
+                co_return execute_result_t{make_cursor(
+                    resource(),
+                    core::error_t{matview == nullptr ? core::error_code_t::table_not_exists
+                                                     : core::error_code_t::schema_error,
+                                  std::move(msg)})};
+            }
+            const auto quoted = [](const std::string& name) {
+                std::string out{"\""};
+                for (const char c : name) {
+                    out += c;
+                    if (c == '"') {
+                        out += c;
+                    }
+                }
+                return out + "\"";
+            };
+            const std::string target = quoted(refresh->dbname()) + "." + quoted(refresh->matviewname());
+            std::pmr::vector<std::string> statements{resource()};
+            statements.push_back("DELETE FROM " + target + ";");
+            if (refresh->with_data()) {
+                statements.push_back("INSERT INTO " + target + " " + matview->view_sql);
+            }
+            for (const auto& sql : statements) {
+                auto parsed = components::planner::parse_statement(resource(), sql, "materialized view refresh");
+                if (parsed.has_error()) {
+                    co_return execute_result_t{make_cursor(resource(), parsed.error())};
+                }
+                auto step = std::move(parsed.value());
+                step.commits_when_done = false;
+                auto done = co_await execute_statement_(session, std::move(step), session_ctx, host_names);
+                if (done.cursor->is_error()) {
+                    co_return done;
+                }
+            }
+            if (plan.commits_when_done) {
+                auto committed = co_await run_commit_pipeline_(session,
+                                                               resolve_txn,
+                                                               context_storage.execution_context,
+                                                               session_ctx.lowest_active_start_time,
+                                                               /*ddl_mode=*/false);
+                if (committed.cursor->is_error()) {
+                    co_return committed;
+                }
+            }
+            co_return execute_result_t{make_cursor(resource())};
         }
         if (plan.sub_queries.back()) {
             auto* root = plan.sub_queries.back().get();

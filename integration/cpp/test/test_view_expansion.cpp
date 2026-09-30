@@ -2,7 +2,7 @@
 //      `AS(SELECT ...)` silently swaps in the wrong query.
 // [D2] Expansion splices the body under whatever is built above it, so every case here checks CONTENT, not
 //      cursor status.
-// [D3] CREATE MATERIALIZED VIEW never populates data and REFRESH is not lowered, so implicit WITH DATA is refused.
+// [D3] CREATE MATERIALIZED VIEW never populates data (REFRESH does), so implicit WITH DATA is refused.
 
 #include "integration_fixture_path.hpp"
 #include "test_config.hpp"

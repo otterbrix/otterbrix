@@ -127,55 +127,59 @@ namespace components::planner {
         return out;
     }
 
-    view_body_t expand_view_body(std::pmr::memory_resource* resource, const std::string& view_sql) {
-        view_body_t out;
+    core::result_wrapper_t<logical_plan::execution_plan_t>
+    parse_statement(std::pmr::memory_resource* resource, const std::string& sql, std::string_view what) {
         std::pmr::monotonic_buffer_resource parser_arena(resource);
         void* parse_cell = nullptr;
         // raw_parser really does throw; wrapper_dispatcher_t::execute_sql wraps it the same way. This is the
-        // exception -> error_t boundary — removing it would let an exception escape into an actor coroutine
-        //.
+        // exception -> error_t boundary — removing it would let an exception escape into an actor coroutine.
         try {
-            auto* parsed = raw_parser(&parser_arena, view_sql.c_str());
+            auto* parsed = raw_parser(&parser_arena, sql.c_str());
             // parser.h's list is never null (a `!parsed` test proves nothing) but may be EMPTY or hold several
             // statements; linitial() alone would read past the end of an empty list, or silently drop every
             // statement after the first — so both counts are checked before it's called.
             if (list_length(parsed) == 0) {
-                out.error = schema_error(resource, "the view body re-parsed into no statement");
-                return out;
+                return schema_error(resource, "the " + std::string{what} + " parsed into no statement");
             }
             if (list_length(parsed) > 1) {
-                out.error = schema_error(resource,
-                                         "the view body re-parsed into " + std::to_string(list_length(parsed)) +
-                                             " statements; a view body is exactly one SELECT");
-                return out;
+                return schema_error(resource,
+                                    "the " + std::string{what} + " parsed into " + std::to_string(list_length(parsed)) +
+                                        " statements; exactly one is expected");
             }
             parse_cell = linitial(parsed);
         } catch (const std::exception& ex) {
-            out.error = schema_error(resource, ex.what());
-            return out;
+            return schema_error(resource, ex.what());
         }
         if (!parse_cell) {
-            out.error = schema_error(resource, "empty view body parse");
-            return out;
+            return schema_error(resource, "the " + std::string{what} + " parsed into an empty statement");
         }
-        components::sql::transform::transformer local_transformer(resource, view_sql.c_str());
+        components::sql::transform::transformer local_transformer(resource, sql.c_str());
         auto tr = local_transformer.transform(components::sql::transform::pg_cell_to_node_cast(parse_cell)).finalize();
         if (tr.has_error()) {
             // error_on, not a bare copy: error_t's copy assignment rebuilds the message via std::pmr::string's
             // copy ctor, which doesn't propagate the allocator, landing it on the process default (see
-            // error_t's own assignment operators). Every other refusal here uses schema_error(resource, ...).
-            out.error = core::error_on(resource, tr.error());
+            // error_t's own assignment operators).
+            return core::error_on(resource, tr.error());
+        }
+        return std::move(tr.value());
+    }
+
+    view_body_t expand_view_body(std::pmr::memory_resource* resource, const std::string& view_sql) {
+        view_body_t out;
+        auto parsed = parse_statement(resource, view_sql, "view body");
+        if (parsed.has_error()) {
+            out.error = core::error_on(resource, parsed.error());
             return out;
         }
         // Taking only the last of several flattened plans (a sub-query in the view) would drop the
         // sub_query_results binding ids it carries in the OUTER plan's parameter space — refuse instead.
-        if (tr.value().sub_queries.size() > 1) {
+        if (parsed.value().sub_queries.size() > 1) {
             out.error = schema_error(resource, "a view body containing a sub-query is not supported yet");
             return out;
         }
-        out.plan = std::move(tr.value().sub_queries.back());
-        out.resolves = std::move(tr.value().catalog_resolves);
-        out.params = std::move(tr.value().parameters);
+        out.plan = std::move(parsed.value().sub_queries.back());
+        out.resolves = std::move(parsed.value().catalog_resolves);
+        out.params = std::move(parsed.value().parameters);
         return out;
     }
 

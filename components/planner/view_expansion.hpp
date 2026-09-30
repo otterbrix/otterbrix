@@ -3,6 +3,7 @@
 // SELECT-time view expansion splices the body in place (rather than swapping in the outer plan)
 // so everything built above the view (WHERE, projection, aggregate, join) survives.
 
+#include <components/logical_plan/execution_plan.hpp>
 #include <components/logical_plan/node.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
@@ -12,6 +13,7 @@
 #include <memory_resource>
 #include <optional>
 #include <string>
+#include <string_view>
 
 namespace components::planner {
 
@@ -34,6 +36,10 @@ namespace components::planner {
         // Set when re-parse / re-transform failed; `plan` is then null.
         core::error_t error{core::error_t::no_error()};
     };
+
+    // One SQL statement through the parser and the transformer, as a fresh plan; `what` names it in a refusal.
+    core::result_wrapper_t<logical_plan::execution_plan_t>
+    parse_statement(std::pmr::memory_resource* resource, const std::string& sql, std::string_view what);
 
     // Each reference gets its own body -- filter pushdown appends a match child into it, so two
     // references cannot share a subtree (same policy as CTE inlining in optimizer.cpp).

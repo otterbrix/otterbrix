@@ -370,6 +370,30 @@ TEST_CASE("integration::cpp::view_binding::a_view_whose_relation_is_gone_is_stal
     CHECK(error_text(stale).find("view \"v\" is stale") != std::string::npos);
 }
 
+// The body text names the column, so a rename would leave the view reading a name that is gone (until #668).
+TEST_CASE("integration::cpp::view_binding::rename_of_a_column_the_view_reads_is_refused") {
+    test_spaces space(config_for("rename_used"));
+    auto* d = space.dispatcher();
+    seed(d);
+    run_ok(d, "CREATE VIEW vb.v AS SELECT a FROM vb.t;");
+
+    auto refused = exec(d, "ALTER TABLE vb.t RENAME COLUMN a TO z;");
+    INFO("error: " << error_text(refused));
+    CHECK(error_text(refused).find("cannot rename column \"a\"") != std::string::npos);
+    CHECK(error_text(refused).find(std::to_string(oid_of(d, "v"))) != std::string::npos);
+    CHECK(bigints(run_ok(d, "SELECT a FROM vb.v;")) == std::set<std::int64_t>{1, 2});
+}
+
+TEST_CASE("integration::cpp::view_binding::rename_of_a_column_the_view_does_not_read_is_allowed") {
+    test_spaces space(config_for("rename_unused"));
+    auto* d = space.dispatcher();
+    seed(d);
+    run_ok(d, "CREATE VIEW vb.v AS SELECT a FROM vb.t;");
+
+    run_ok(d, "ALTER TABLE vb.t RENAME COLUMN b TO z;");
+    CHECK(bigints(run_ok(d, "SELECT a FROM vb.v;")) == std::set<std::int64_t>{1, 2});
+}
+
 TEST_CASE("integration::cpp::view_binding::a_column_alias_names_the_view_column") {
     test_spaces space(config_for("column_alias"));
     auto* d = space.dispatcher();

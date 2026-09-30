@@ -16,6 +16,7 @@
 #include <components/logical_plan/node_update.hpp>
 #include <components/logical_plan/node_group.hpp>
 #include <components/logical_plan/node_join.hpp>
+#include <components/logical_plan/node_limit.hpp>
 #include <components/logical_plan/node_match.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/types/types.hpp>
@@ -267,7 +268,11 @@ namespace {
                 if (child->type() == logical_plan::node_type::match_t) {
                     const auto& where = child->expressions().front();
                     const auto& compare = static_cast<const expressions::compare_expression_t&>(*where);
+                    if (compare.type() == expressions::compare_type::all_true) {
+                        continue;
+                    }
                     const auto& key = std::get<expressions::key_t>(compare.left());
+                    has_where_ = true;
                     where_column_ = key.path().front();
                     where_value_ = parameter_of(where);
                 }
@@ -290,10 +295,10 @@ namespace {
                                         std::pmr::string{it->second.c_str(), resource()}});
                 co_return;
             }
-            const auto key = ctx->parameters.parameters.at(where_value_).value<int64_t>();
+            const auto key = has_where_ ? ctx->parameters.parameters.at(where_value_).value<int64_t>() : 0;
             auto& remote = backend()[name_];
             for (auto row = remote.begin(); row != remote.end();) {
-                if ((*row)[where_column_] != key) {
+                if (has_where_ && (*row)[where_column_] != key) {
                     ++row;
                     continue;
                 }
@@ -314,6 +319,7 @@ namespace {
 
         std::string name_;
         bool is_update_;
+        bool has_where_{false};
         std::size_t where_column_{0};
         core::parameter_id_t where_value_{0};
         std::size_t set_column_{0};
@@ -321,10 +327,73 @@ namespace {
         uint64_t changed_{0};
     };
 
+    // What the host reads from the validated statement node: the documented host API
+    // (docs/embedding-host-api.md, "What a write function reads").
+    std::vector<std::string>& seen_writes() {
+        static std::vector<std::string> seen;
+        return seen;
+    }
+
+    std::string key_of(const expressions::key_t& key) {
+        return "column " + std::to_string(key.path().front()) +
+               (key.side() == expressions::side_t::left ? " left" : " other side");
+    }
+
+    template<class Write>
+    std::string target_of(const Write& write) {
+        return write.dbname() + "|" + write.schema() + "|" + write.relname();
+    }
+
+    std::string describe_write(const logical_plan::node_t& write) {
+        using logical_plan::node_type;
+        std::string out;
+        switch (write.type()) {
+            case node_type::insert_t: {
+                const auto& insert = static_cast<const logical_plan::node_insert_t&>(write);
+                out = "insert " + target_of(insert) + " from " +
+                      (insert.children().front()->type() == node_type::data_t ? "values" : "a query");
+                break;
+            }
+            case node_type::update_t:
+                out = "update " + target_of(static_cast<const logical_plan::node_update_t&>(write));
+                break;
+            case node_type::delete_t:
+                out = "delete " + target_of(static_cast<const logical_plan::node_delete_t&>(write));
+                break;
+            default:
+                FAIL("a write function got " << write.to_string());
+        }
+        for (const auto& child : write.children()) {
+            if (child->type() == node_type::match_t) {
+                const auto& compare =
+                    static_cast<const expressions::compare_expression_t&>(*child->expressions().front());
+                if (compare.type() == expressions::compare_type::all_true) {
+                    out += " where all rows";
+                } else {
+                    REQUIRE(compare.type() == expressions::compare_type::eq);
+                    out += " where " + key_of(std::get<expressions::key_t>(compare.left())) + " = " +
+                           (std::holds_alternative<core::parameter_id_t>(compare.right()) ? "parameter" : "other");
+                }
+            } else if (child->type() == node_type::limit_t) {
+                const auto& limit = static_cast<const logical_plan::node_limit_t&>(*child).limit();
+                if (limit.limit() != logical_plan::limit_t::unlimit().limit()) {
+                    out += " limit " + std::to_string(limit.limit());
+                }
+            }
+        }
+        if (write.type() == node_type::update_t) {
+            for (const auto& set : static_cast<const logical_plan::node_update_t&>(write).updates()) {
+                out += " set " + key_of(set->key());
+            }
+        }
+        return out;
+    }
+
     services::planner::plan_result_t make_remote_write(const services::context_storage_t& context,
                                                        const compute::function_registry_t&,
                                                        const logical_plan::node_extension_t& relation,
                                                        const logical_plan::node_t& write) {
+        seen_writes().push_back(describe_write(write));
         const auto* payload = static_cast<const remote_payload_t*>(relation.payload());
         if (write.type() == logical_plan::node_type::insert_t) {
             return {new remote_insert_t(context.resource, context.log.clone(), payload->name)};
@@ -532,6 +601,7 @@ namespace {
     test_clear_directory(config);                                                                                      \
     backend().clear();                                                                                                 \
     asked_names().clear();                                                                                             \
+    seen_writes().clear();                                                                                             \
     write_log().clear();                                                                                               \
     batches().clear();                                                                                                 \
     backend()["m2.shop.orders"] = {{1, 100}, {2, 200}, {3, 300}};                                                      \
@@ -1013,4 +1083,33 @@ TEST_CASE("integration::cpp::host_names::explain_prints_the_host_operator_label_
                                        "  ->  Values Scan"});
         CHECK(backend()["m2.shop.orders"].size() == 3);
     }
+}
+
+// Pins the fields of a validated INSERT / UPDATE / DELETE that a host's write function reads
+// (docs/embedding-host-api.md, "What a write function reads"): changing any of them breaks the host.
+TEST_CASE("integration::cpp::host_names::a_write_function_reads_the_validated_statement") {
+    HOST_TEST_BOILERPLATE("test_host_names/write_fields")
+    REQUIRE(run(dispatcher, declare_orders)->is_success());
+    REQUIRE(run(dispatcher, "CREATE DATABASE loc;")->is_success());
+    REQUIRE(run(dispatcher, "CREATE TABLE loc.t (id BIGINT, amount BIGINT);")->is_success());
+    for (const char* sql : {"INSERT INTO m2.shop.orders (id, amount) VALUES (4, 400);",
+                            "INSERT INTO m2.shop.orders (id, amount) SELECT id, amount FROM loc.t;",
+                            "UPDATE m2.shop.orders SET amount = 250 WHERE id = 2;",
+                            "UPDATE m2.shop.orders SET amount = 0;",
+                            "DELETE FROM m2.shop.orders WHERE id = 1;",
+                            "DELETE FROM m2.shop.orders WHERE id = 3 LIMIT 1;",
+                            "DELETE FROM m2.shop.orders;"}) {
+        auto cursor = run(dispatcher, sql);
+        INFO(sql << " -> " << (cursor->is_error() ? std::string{cursor->get_error().what} : std::string{"ok"}));
+        REQUIRE(cursor->is_success());
+    }
+    CHECK(seen_writes() ==
+          std::vector<std::string>{"insert m2|shop|orders from values",
+                                   "insert m2|shop|orders from a query",
+                                   "update m2|shop|orders where column 0 left = parameter set column 1 left",
+                                   "update m2|shop|orders where all rows set column 1 left",
+                                   "delete m2|shop|orders where column 0 left = parameter",
+                                   "delete m2|shop|orders where column 0 left = parameter limit 1",
+                                   "delete m2|shop|orders where all rows"});
+    CHECK(backend()["m2.shop.orders"].empty());
 }

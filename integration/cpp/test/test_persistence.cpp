@@ -53,7 +53,7 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_mixed_batch") {
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 50);
+            REQUIRE(cur->affected_rows() == 50);
         }
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 50);
@@ -67,7 +67,7 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_mixed_batch") {
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 50);
+            REQUIRE(cur->affected_rows() == 50);
         }
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 100);
@@ -119,7 +119,7 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_multi_type") {
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == kDocuments);
+            REQUIRE(cur->affected_rows() == kDocuments);
         }
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", kDocuments);
@@ -169,7 +169,7 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_not_null") {
                                                "INSERT INTO TestDatabase.TestCollection (name, tag) VALUES "
                                                "('alice', 'red'), ('bob', 'green'), ('charlie', 'blue');");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 3);
+            REQUIRE(cur->affected_rows() == 3);
         }
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 3);
@@ -201,7 +201,7 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_not_null") {
                 session,
                 "INSERT INTO TestDatabase.TestCollection (name, tag) VALUES ('dave', 'yellow');");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->affected_rows() == 1);
         }
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 4);
@@ -238,7 +238,7 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_dml_full_cycle") {
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 100);
+            REQUIRE(cur->affected_rows() == 100);
         }
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 100);
@@ -247,7 +247,7 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_dml_full_cycle") {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE count > 90;");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 9);
+            REQUIRE(cur->affected_rows() == 9);
         }
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 91);
@@ -257,7 +257,7 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_dml_full_cycle") {
             auto cur = dispatcher->execute_sql(session,
                                                "UPDATE TestDatabase.TestCollection SET count = 999 WHERE count = 50;");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->affected_rows() == 1);
         }
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 91);
@@ -309,7 +309,7 @@ TEST_CASE("integration::cpp::test_persistence::default_application_in_session") 
                                                "INSERT INTO TestDatabase.TestCollection (name) VALUES "
                                                "('alice'), ('bob'), ('charlie');");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 3);
+            REQUIRE(cur->affected_rows() == 3);
         }
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 3);
@@ -322,7 +322,7 @@ TEST_CASE("integration::cpp::test_persistence::default_application_in_session") 
                                                "INSERT INTO TestDatabase.TestCollection (name, count) VALUES "
                                                "('dave', 10), ('eve', 20);");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 2);
+            REQUIRE(cur->affected_rows() == 2);
         }
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 5);
@@ -336,7 +336,7 @@ TEST_CASE("integration::cpp::test_persistence::default_application_in_session") 
                                                "INSERT INTO TestDatabase.TestCollection (name, status, count) VALUES "
                                                "('frank', 'inactive', 99);");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->affected_rows() == 1);
         }
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 6);
@@ -374,7 +374,7 @@ TEST_CASE("integration::cpp::test_persistence::partial_insert_consistent_wal_rec
                                                "INSERT INTO TestDatabase.TestCollection (name) VALUES "
                                                "('alice'), ('bob'), ('charlie'), ('dave'), ('eve');");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 5);
+            REQUIRE(cur->affected_rows() == 5);
         }
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 5);
@@ -428,7 +428,7 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_not_null_with_defaul
                                                "INSERT INTO TestDatabase.TestCollection (name, status) VALUES "
                                                "('alice', 'pending'), ('bob', 'approved'), ('charlie', 'pending');");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 3);
+            REQUIRE(cur->affected_rows() == 3);
         }
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 3);
@@ -470,7 +470,7 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_not_null_with_defaul
                 session,
                 "INSERT INTO TestDatabase.TestCollection (name, status) VALUES ('dave', 'rejected');");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->affected_rows() == 1);
         }
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 4);
@@ -506,7 +506,7 @@ TEST_CASE("integration::cpp::test_persistence::partial_insert_two_columns_wal") 
                                                "INSERT INTO TestDatabase.TestCollection (name, score) VALUES "
                                                "('alice', 100), ('bob', 200), ('charlie', 300);");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 3);
+            REQUIRE(cur->affected_rows() == 3);
         }
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 3);
@@ -557,7 +557,7 @@ TEST_CASE("integration::cpp::test_persistence::computed_schema_growth_wal_recove
                                                "INSERT INTO TestDatabase.TestCollection (id, name) VALUES "
                                                "(1, 'alice'), (2, 'bob');");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 2);
+            REQUIRE(cur->affected_rows() == 2);
         }
 
         {
@@ -566,7 +566,7 @@ TEST_CASE("integration::cpp::test_persistence::computed_schema_growth_wal_recove
                                                "INSERT INTO TestDatabase.TestCollection (id, name, value) VALUES "
                                                "(3, 'charlie', 100);");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->affected_rows() == 1);
         }
 
         {
@@ -626,14 +626,14 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_re
             auto cur =
                 dispatcher->execute_sql(session, "INSERT INTO TestDatabase.TestCollection (id, a) VALUES (1, 10);");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->affected_rows() == 1);
         }
         {
             auto session = otterbrix::session_id_t();
             auto cur =
                 dispatcher->execute_sql(session, "INSERT INTO TestDatabase.TestCollection (id, a) VALUES (2, 'str');");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->affected_rows() == 1);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -675,7 +675,7 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_re
             auto cur =
                 dispatcher->execute_sql(session, "INSERT INTO TestDatabase.TestCollection (id, a) VALUES (3, true);");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->affected_rows() == 1);
         }
 
         auto session = otterbrix::session_id_t();
@@ -824,7 +824,7 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_cr
             auto cur =
                 dispatcher->execute_sql(session, "INSERT INTO TestDatabase.TestCollection (id, a) VALUES (3, true);");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->affected_rows() == 1);
         }
 
         auto session = otterbrix::session_id_t();
@@ -1052,7 +1052,7 @@ TEST_CASE("integration::cpp::test_persistence::double_restart") {
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 50);
+            REQUIRE(cur->affected_rows() == 50);
         }
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 50);
@@ -1076,7 +1076,7 @@ TEST_CASE("integration::cpp::test_persistence::double_restart") {
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 50);
+            REQUIRE(cur->affected_rows() == 50);
         }
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 100);
@@ -1126,7 +1126,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_checkpoint_basic") {
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 50);
+            REQUIRE(cur->affected_rows() == 50);
         }
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 50);
@@ -1181,14 +1181,14 @@ TEST_CASE("integration::cpp::test_persistence::disk_checkpoint_after_update") {
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 100);
+            REQUIRE(cur->affected_rows() == 100);
         }
 
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE count > 90;");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 9);
+            REQUIRE(cur->affected_rows() == 9);
         }
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 91);
@@ -1198,7 +1198,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_checkpoint_after_update") {
             auto cur = dispatcher->execute_sql(session,
                                                "UPDATE TestDatabase.TestCollection SET count = 999 WHERE count = 50;");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->affected_rows() == 1);
         }
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 91);
@@ -1255,7 +1255,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_checkpoint_plus_wal") {
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 50);
+            REQUIRE(cur->affected_rows() == 50);
         }
 
         {
@@ -1273,7 +1273,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_checkpoint_plus_wal") {
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 50);
+            REQUIRE(cur->affected_rows() == 50);
         }
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 100);
@@ -1320,7 +1320,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_partial_insert") {
                                                "INSERT INTO TestDatabase.TestCollection (name, score) VALUES "
                                                "('alice', 100), ('bob', 200), ('charlie', 300);");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 3);
+            REQUIRE(cur->affected_rows() == 3);
         }
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 3);
@@ -1333,7 +1333,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_partial_insert") {
                 dispatcher->execute_sql(session,
                                         "INSERT INTO TestDatabase.TestCollection (name) VALUES ('dave'), ('eve');");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 2);
+            REQUIRE(cur->affected_rows() == 2);
         }
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 5);
@@ -1364,7 +1364,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_partial_insert") {
                 dispatcher->execute_sql(session,
                                         "INSERT INTO TestDatabase.TestCollection (name, score) VALUES ('frank', 400);");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->affected_rows() == 1);
         }
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 6);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE tag = 'untagged';", 6);
@@ -1399,7 +1399,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_not_null_default") {
                                                "INSERT INTO TestDatabase.TestCollection (name, status) VALUES "
                                                "('alice', 'active'), ('bob', 'pending');");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 2);
+            REQUIRE(cur->affected_rows() == 2);
         }
 
         {
@@ -1415,7 +1415,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_not_null_default") {
             auto cur =
                 dispatcher->execute_sql(session, "INSERT INTO TestDatabase.TestCollection (name) VALUES ('charlie');");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->affected_rows() == 1);
         }
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 3);
@@ -1445,7 +1445,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_not_null_default") {
             auto cur =
                 dispatcher->execute_sql(session, "INSERT INTO TestDatabase.TestCollection (name) VALUES ('dave');");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->affected_rows() == 1);
         }
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 4);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE status = 'pending';", 3);
@@ -1487,7 +1487,7 @@ TEST_CASE("integration::cpp::test_persistence::default_check_constraint_agrees_a
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "INSERT INTO TestDatabase.TestCollection (id) VALUES (1);");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->affected_rows() == 1);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1512,7 +1512,7 @@ TEST_CASE("integration::cpp::test_persistence::default_check_constraint_agrees_a
             auto ins = dispatcher->execute_sql(session, "INSERT INTO TestDatabase.TestCollection (id) VALUES (2);");
             INFO("the CHECK passed this row believing the DEFAULT would be stored");
             REQUIRE(ins->is_success());
-            REQUIRE(ins->size() == 1);
+            REQUIRE(ins->affected_rows() == 1);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1560,7 +1560,7 @@ TEST_CASE("integration::cpp::test_persistence::default_unique_constraint_agrees_
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "INSERT INTO TestDatabase.TestCollection (id) VALUES (1);");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->affected_rows() == 1);
         }
         CHECK_FIND_SQL("SELECT id FROM TestDatabase.TestCollection WHERE code = 5;", 1);
         {
@@ -1616,7 +1616,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_wal_only_recovery") {
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 50);
+            REQUIRE(cur->affected_rows() == 50);
         }
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 50);
@@ -1665,7 +1665,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_double_restart") {
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 50);
+            REQUIRE(cur->affected_rows() == 50);
         }
 
         {
@@ -1691,7 +1691,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_double_restart") {
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 50);
+            REQUIRE(cur->affected_rows() == 50);
         }
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 100);
@@ -1747,14 +1747,14 @@ TEST_CASE("integration::cpp::test_persistence::disk_dml_full_cycle") {
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 100);
+            REQUIRE(cur->affected_rows() == 100);
         }
 
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE count > 90;");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 9);
+            REQUIRE(cur->affected_rows() == 9);
         }
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 91);
@@ -1764,7 +1764,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_dml_full_cycle") {
             auto cur = dispatcher->execute_sql(session,
                                                "UPDATE TestDatabase.TestCollection SET count = 999 WHERE count = 50;");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->affected_rows() == 1);
         }
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 91);
@@ -2007,7 +2007,7 @@ TEST_CASE("integration::cpp::test_persistence::drop_rollback") {
                                                "INSERT INTO TestDatabase.DropVictim (name, count) VALUES "
                                                "('alice', 10), ('bob', 20), ('charlie', 30);");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 3);
+            REQUIRE(cur->affected_rows() == 3);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -2209,13 +2209,13 @@ TEST_CASE("integration::cpp::test_persistence::reopen_keeps_committed_deletes_in
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 100);
+            REQUIRE(cur->affected_rows() == 100);
         }
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE count < 50;");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 50);
+            REQUIRE(cur->affected_rows() == 50);
         }
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 50);
         {
@@ -2275,7 +2275,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_index_mixed_ops_checkpoint_r
             }
             auto cur = dispatcher->execute_sql(session, q.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 200);
+            REQUIRE(cur->affected_rows() == 200);
         }
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 200);
 
@@ -2283,7 +2283,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_index_mixed_ops_checkpoint_r
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE count % 2 = 0;");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 100);
+            REQUIRE(cur->affected_rows() == 100);
         }
 
         {
@@ -2292,7 +2292,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_index_mixed_ops_checkpoint_r
                 session,
                 "UPDATE TestDatabase.TestCollection SET count = count + 1000 WHERE count > 150;");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 25);
+            REQUIRE(cur->affected_rows() == 25);
         }
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 100);
@@ -2354,7 +2354,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_index_long_keys_survive_chec
                                                "INSERT INTO TestDatabase.TestCollection (name, count) VALUES ('" +
                                                    long_a + "', 1), ('" + long_b + "', 2);");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 2);
+            REQUIRE(cur->affected_rows() == 2);
         }
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = '" + long_a + "';", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = '" + long_b + "';", 1);
@@ -2415,7 +2415,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_index_massive_checkpoint_cyc
             }
             auto cur = dispatcher->execute_sql(session, q.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 100);
+            REQUIRE(cur->affected_rows() == 100);
             inserted += 100;
 
             if ((batch + 1) % 2 == 0) {
@@ -2478,7 +2478,7 @@ TEST_CASE("integration::cpp::test_persistence::index_recovery_phase4_catalog_dri
             }
             auto cur = dispatcher->execute_sql(session, q.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 10);
+            REQUIRE(cur->affected_rows() == 10);
         }
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.users;", 10);
@@ -2557,7 +2557,7 @@ TEST_CASE("integration::cpp::test_persistence::set_timezone_survives_restart") {
                                                "INSERT INTO TestDatabase.TestCollection (name, count) VALUES "
                                                "('alice', 1), ('bob', 2), ('charlie', 3);");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 3);
+            REQUIRE(cur->affected_rows() == 3);
         }
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 3);
@@ -2624,14 +2624,14 @@ TEST_CASE("integration::cpp::test_persistence::indexed_table_compact_survives_re
             }
             auto cur = dispatcher->execute_sql(session, q.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 100);
+            REQUIRE(cur->affected_rows() == 100);
         }
 
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE count < 40;");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 40);
+            REQUIRE(cur->affected_rows() == 40);
         }
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 60);
@@ -2693,7 +2693,7 @@ TEST_CASE("integration::cpp::test_persistence::reopen_reinsert_visible") {
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 100);
+            REQUIRE(cur->affected_rows() == 100);
         }
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 100);
     }
@@ -2720,7 +2720,7 @@ TEST_CASE("integration::cpp::test_persistence::reopen_reinsert_visible") {
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
             // The bug: storage_append no-ops, so the cursor reports 0 affected rows.
-            REQUIRE(cur->size() == 100);
+            REQUIRE(cur->affected_rows() == 100);
         }
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 200);
@@ -2788,7 +2788,7 @@ TEST_CASE("integration::cpp::test_persistence::b1a_disk_is_default") {
                 session,
                 "INSERT INTO TestDatabase.B1aDefault (name, count) VALUES ('a', 1), ('b', 2), ('c', 3);");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 3);
+            REQUIRE(cur->affected_rows() == 3);
         }
     }
 

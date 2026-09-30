@@ -29,7 +29,7 @@ def test_connection():
         else:
             query += ", "
     c = connection.execute(query)
-    assert len(c) == 100
+    assert c.rowcount == 100
 
     # select
 
@@ -44,7 +44,7 @@ def test_connection():
     c.close()
 
     c.execute("DELETE FROM schema.table WHERE count > 90;")
-    assert len(c) == 9
+    assert c.rowcount == 9
     c.close()
 
     c.execute("SELECT * FROM schema.table WHERE count > 90;")
@@ -66,7 +66,7 @@ def test_connection():
     c.close()
 
     c.execute("UPDATE schema.table SET count = 1000 WHERE count < 20;")
-    assert len(c) == 20
+    assert c.rowcount == 20
     c.close()
 
     c.execute("SELECT * FROM schema.table WHERE count < 20;")

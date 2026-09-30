@@ -170,6 +170,10 @@ namespace components::operators {
         // Catalog-mode DML returns 0 too: its single-shot path must not be mid-flushed.
         [[nodiscard]] virtual uint64_t buffered_rows() const noexcept { return 0; }
 
+        // The rows a write changed, read by the executor from the plan root once the plan ran; std::nullopt for
+        // an operator that writes no rows of a user table.
+        [[nodiscard]] std::optional<uint64_t> affected_rows() const noexcept { return affected_rows_impl(); }
+
         // Covers per-run streaming state reset_for_reuse() doesn't reach (a source's cursor, a
         // sink's built accumulator); the recursive-CTE driver calls both on every node per pass.
         virtual void reset_pipeline_state() noexcept {}
@@ -241,6 +245,8 @@ namespace components::operators {
 
     private:
         virtual actor_zeta::unique_future<core::error_t> open_impl(pipeline::context_t* ctx);
+
+        virtual std::optional<uint64_t> affected_rows_impl() const noexcept { return std::nullopt; }
 
         // Non-pure: operator_t has concrete leaf subclasses that don't override it.
         virtual void explain_impl(const explain_sink& s) const {

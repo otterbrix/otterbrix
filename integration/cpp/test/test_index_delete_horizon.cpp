@@ -48,7 +48,7 @@ namespace {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, q.str());
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == kSeedRows);
+        REQUIRE(cur->affected_rows() == kSeedRows);
     }
 
     std::string indexed_query() {

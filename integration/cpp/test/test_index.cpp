@@ -428,7 +428,7 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
                 session,
                 components::logical_plan::execution_plan_t{dispatcher->resource(), del, params});
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 10);
+            REQUIRE(cur->affected_rows() == 10);
         }
     }
 
@@ -470,7 +470,7 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
                 session,
                 components::logical_plan::execution_plan_t{dispatcher->resource(), upd, params});
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->affected_rows() == 1);
         }
     }
 
@@ -514,14 +514,14 @@ TEST_CASE("integration::cpp::test_index::checkpoint_then_index_scan_same_session
         }
         auto cur = dispatcher->execute_sql(session, q.str());
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 50);
+        REQUIRE(cur->affected_rows() == 50);
     }
 
     {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE count < 25;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 25);
+        REQUIRE(cur->affected_rows() == 25);
     }
 
     {
@@ -614,7 +614,7 @@ TEST_CASE("integration::cpp::test_index::checkpoint_repopulate_persists_bitcask_
             }
             auto cur = dispatcher->execute_sql(session, q.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == static_cast<std::size_t>(kRows));
+            REQUIRE(cur->affected_rows() == static_cast<std::size_t>(kRows));
         }
 
         {
@@ -681,14 +681,14 @@ TEST_CASE("integration::cpp::test_index::vacuum_rebuild_visible") {
         }
         auto cur = dispatcher->execute_sql(session, q.str());
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 50);
+        REQUIRE(cur->affected_rows() == 50);
     }
 
     {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE count % 3 = 0;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 17);
+        REQUIRE(cur->affected_rows() == 17);
     }
 
     {
@@ -746,7 +746,7 @@ TEST_CASE("integration::cpp::test_index::vacuum_keeps_committed_deletes_full_row
             }
             auto cur = dispatcher->execute_sql(session, q.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == static_cast<std::size_t>(batch));
+            REQUIRE(cur->affected_rows() == static_cast<std::size_t>(batch));
             inserted += batch;
         }
     }
@@ -756,7 +756,7 @@ TEST_CASE("integration::cpp::test_index::vacuum_keeps_committed_deletes_full_row
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE count < 500;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == static_cast<std::size_t>(kDeleted));
+        REQUIRE(cur->affected_rows() == static_cast<std::size_t>(kDeleted));
     }
     CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", kRows - kDeleted);
 
@@ -824,7 +824,7 @@ TEST_CASE("integration::cpp::test_index::create_index_backfill_over_vector_capac
             }
             auto cur = dispatcher->execute_sql(session, q.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == static_cast<std::size_t>(batch));
+            REQUIRE(cur->affected_rows() == static_cast<std::size_t>(batch));
             inserted += batch;
         }
     }

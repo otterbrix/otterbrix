@@ -37,9 +37,7 @@ namespace components::operators {
         // GCs stale versions, and storage-side add_column is idempotent. TODO: a per-table_oid lock is the
         // strict-serialization fix, deferred until a benchmark shows the race matters.
 
-        // The bottom-up async-finalize drive runs left_ (insert).await first, so left_->output() (the
-        // affected-row count chunk) is populated by now; without this the executor's cursor-build path
-        // sees cur->size()==0 for a relkind='g' INSERT.
+        // The bottom-up async-finalize drive runs left_ (insert).await first, so its RETURNING rows are ready.
         if (left_ && left_->output()) {
             output_ = left_->output();
         }

@@ -24,7 +24,7 @@ namespace {
         });
         INFO("seed error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == kRowCount);
+        REQUIRE(cur->affected_rows() == kRowCount);
     }
 } // namespace
 

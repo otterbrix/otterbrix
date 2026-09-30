@@ -55,6 +55,13 @@ namespace components::operators {
         [[nodiscard]] uint64_t buffered_rows() const noexcept override { return modified_ ? modified_->size() : 0; }
 
     private:
+        std::optional<uint64_t> affected_rows_impl() const noexcept override {
+            if (components::catalog::is_catalog_table(table_oid_)) {
+                return std::nullopt;
+            }
+            return affected_rows_;
+        }
+
         // Matches expression_ over one scan chunk, staging matched rows/ids for RETURNING and the index mirror.
         core::error_t consume_batch_(pipeline::context_t* ctx, const vector::data_chunk_t& chunk);
         // Same staging as consume_batch_, but as a semi-join probe against the materialized RIGHT (USING) side.

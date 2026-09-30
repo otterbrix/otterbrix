@@ -201,7 +201,7 @@ TEST_CASE("integration::cpp::test_udfs") {
                 session,
                 components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == kNumInserts);
+            REQUIRE(cur->affected_rows() == kNumInserts);
         }
     }
 

@@ -178,9 +178,8 @@ namespace components::operators {
                     }
                 }
 
-                if (returning_.empty()) {
-                    affected_rows_ += count;
-                } else if (count > 0) {
+                affected_rows_ += count;
+                if (!returning_.empty() && count > 0) {
                     // A point read: the reply range IS the ids just written (generated columns need it).
                     vector::vector_t row_ids(resource_, types::logical_type::BIGINT, count);
                     auto* ids = row_ids.data<int64_t>();
@@ -247,12 +246,7 @@ namespace components::operators {
         }
 
         if (returning_.empty()) {
-            if (affected_rows_ != 0) {
-                set_output(make_operator_data(resource_,
-                                              dml_detail::make_affected_count_chunks(resource_, affected_rows_, {})));
-            } else {
-                set_output(nullptr);
-            }
+            set_output(nullptr);
         } else {
             if (returning_accum_.empty()) {
                 // Nothing inserted, but we still have to return correct columns

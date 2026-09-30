@@ -58,9 +58,21 @@ pub struct Cursor<'db> {
 }
 
 impl<'db> Cursor<'db> {
-    /// Number of rows in the result set.
+    /// Number of rows in the result set: what a SELECT or a `RETURNING` clause
+    /// produced; 0 for a write without `RETURNING`.
     pub fn size(&self) -> i32 {
         unsafe { otterbrix_sys::cursor_size(self.ptr) }
+    }
+
+    /// Rows an `INSERT` / `UPDATE` / `DELETE` wrote; `None` for a statement
+    /// that writes no rows.
+    pub fn affected_rows(&self) -> Option<u64> {
+        let mut rows: u64 = 0;
+        if unsafe { otterbrix_sys::cursor_affected_rows(self.ptr, &mut rows) } {
+            Some(rows)
+        } else {
+            None
+        }
     }
 
     /// Number of columns in the result set.

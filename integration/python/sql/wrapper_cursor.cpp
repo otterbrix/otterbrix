@@ -257,4 +257,9 @@ py::object wrapper_cursor::description() const {
     return desc;
 }
 
-int64_t wrapper_cursor::rowcount() const { return static_cast<int64_t>(ptr_->size()); }
+int64_t wrapper_cursor::rowcount() const {
+    if (const auto written = ptr_->affected_rows()) {
+        return static_cast<int64_t>(*written);
+    }
+    return static_cast<int64_t>(ptr_->size());
+}

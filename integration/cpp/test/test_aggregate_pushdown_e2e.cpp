@@ -25,7 +25,7 @@ namespace {
         auto cur =
             exec(dispatcher, "INSERT INTO " + table + " (g, v) VALUES (1, 10), (1, 20), (2, 30), (2, 50), (2, 40);");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 5);
+        REQUIRE(cur->affected_rows() == 5);
         return table;
     }
 

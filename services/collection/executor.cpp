@@ -2860,6 +2860,9 @@ namespace services::collection::executor {
                 lift_dml_ranges();
                 break;
             }
+            if (const auto written = plan->affected_rows()) {
+                cursor->set_affected_rows(*written);
+            }
 
             if (pipeline_context.has_pending_disk_futures()) {
                 auto disk_futures = pipeline_context.take_pending_disk_futures();

@@ -185,15 +185,19 @@ TEST_CASE("services::engine::pump::an_idle_engine_burns_no_cpu") {
 }
 
 // A request wakes each idle loop it reaches, so it never waits out the idle interval.
+// The bound is half the idle interval, not an absolute latency: under gcc ASAN with
+// fast_unwind_on_malloc=0 the SELECT alone takes ~160 ms, while a missed wake-up costs the
+// remaining ~1.5 s of an idle wait.
 TEST_CASE("services::engine::pump::a_query_to_an_idle_engine_does_not_wait_for_the_idle_interval") {
+    constexpr auto idle = std::chrono::milliseconds(2000);
     const auto root = test_root("idle_latency");
     host_t host(root);
-    host.config.execution.pump.idle = std::chrono::milliseconds(500);
+    host.config.execution.pump.idle = idle;
     REQUIRE_FALSE(host.open().contains_error());
     REQUIRE(host.execute("CREATE DATABASE lat;")->is_success());
     REQUIRE(host.execute("CREATE TABLE lat.t (id BIGINT);")->is_success());
     REQUIRE(host.execute("INSERT INTO lat.t (id) VALUES (1), (2);")->is_success());
-    std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+    std::this_thread::sleep_for(idle + idle / 4);
 
     const auto started = std::chrono::steady_clock::now();
     auto cur = host.execute("SELECT id FROM lat.t;");
@@ -201,8 +205,9 @@ TEST_CASE("services::engine::pump::a_query_to_an_idle_engine_does_not_wait_for_t
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 2);
-    INFO("a SELECT on an engine idle for 1.2 s took " << elapsed.count() << " ms");
-    CHECK(elapsed < std::chrono::milliseconds(100));
+    INFO("a SELECT on an engine idle for 2.5 s took " << elapsed.count() << " ms, idle interval "
+                                                       << idle.count() << " ms");
+    CHECK(elapsed < idle / 2);
 }
 
 TEST_CASE("services::engine::pump::intervals_out_of_order_are_refused_at_startup") {

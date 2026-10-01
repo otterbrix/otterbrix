@@ -29,7 +29,8 @@ namespace {
                 return "REAL";
             case logical_type::DECIMAL: {
                 const auto* ext = type.extension_as<components::types::decimal_logical_type_extension>();
-                return "DECIMAL(" + std::to_string(ext->width()) + "," + std::to_string(ext->scale()) + ")";
+                return "DECIMAL(" + std::to_string(static_cast<unsigned>(ext->width())) + "," +
+                       std::to_string(static_cast<unsigned>(ext->scale())) + ")";
             }
             default:
                 return "type#" + std::to_string(static_cast<int>(type.type()));

@@ -96,6 +96,28 @@ TEST_CASE("c-api: create_collection returns successful empty cursor", "[c-api][d
     release_cursor(cur);
 }
 
+TEST_CASE("c-api: create_collection in a database that does not exist is refused", "[c-api][ddl]") {
+    test_db_t t("create_collection_no_db");
+    REQUIRE(t.ptr != nullptr);
+
+    cursor_ptr cur = create_collection(t.ptr, sv(std::string("nodb")), sv(std::string("t")));
+    REQUIRE(cur != nullptr);
+    REQUIRE(cursor_is_error(cur));
+    error_message refusal = cursor_get_error(cur);
+    REQUIRE(refusal.message != nullptr);
+    CHECK(std::string(refusal.message) == "database \"nodb\" does not exist");
+    otterbrix_free_string(refusal.message);
+    release_cursor(cur);
+
+    cursor_ptr db_cur = create_database(t.ptr, sv(std::string("otherdb")));
+    REQUIRE(cursor_is_success(db_cur));
+    release_cursor(db_cur);
+    cursor_ptr other = create_collection(t.ptr, sv(std::string("otherdb")), sv(std::string("t")));
+    REQUIRE(other != nullptr);
+    CHECK(cursor_is_success(other));
+    release_cursor(other);
+}
+
 TEST_CASE("c-api: drop_collection then drop_database succeed with empty cursors", "[c-api][ddl]") {
     test_db_t t("drop");
     REQUIRE(t.ptr != nullptr);

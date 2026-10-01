@@ -11,24 +11,31 @@ namespace Duckstax.Otterbrix
         private static extern void ReleaseValue(IntPtr ptr);
 
         [DllImport(libotterbrix, EntryPoint="value_is_null", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
+        [return: MarshalAs(UnmanagedType.I1)]
         private static extern bool ValueIsNull(IntPtr ptr);
 
         [DllImport(libotterbrix, EntryPoint="value_is_bool", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
+        [return: MarshalAs(UnmanagedType.I1)]
         private static extern bool ValueIsBool(IntPtr ptr);
 
         [DllImport(libotterbrix, EntryPoint="value_is_int", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
+        [return: MarshalAs(UnmanagedType.I1)]
         private static extern bool ValueIsInt(IntPtr ptr);
 
         [DllImport(libotterbrix, EntryPoint="value_is_uint", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
+        [return: MarshalAs(UnmanagedType.I1)]
         private static extern bool ValueIsUint(IntPtr ptr);
 
         [DllImport(libotterbrix, EntryPoint="value_is_double", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
+        [return: MarshalAs(UnmanagedType.I1)]
         private static extern bool ValueIsDouble(IntPtr ptr);
 
         [DllImport(libotterbrix, EntryPoint="value_is_string", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
+        [return: MarshalAs(UnmanagedType.I1)]
         private static extern bool ValueIsString(IntPtr ptr);
 
         [DllImport(libotterbrix, EntryPoint="value_get_bool", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
+        [return: MarshalAs(UnmanagedType.I1)]
         private static extern bool ValueGetBool(IntPtr ptr);
 
         [DllImport(libotterbrix, EntryPoint="value_get_int", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]

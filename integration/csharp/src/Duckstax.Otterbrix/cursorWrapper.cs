@@ -27,12 +27,15 @@ namespace Duckstax.Otterbrix
         private static extern int CursorColumnCount(IntPtr ptr);
 
         [DllImport(libotterbrix, EntryPoint="cursor_has_next", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
+        [return: MarshalAs(UnmanagedType.I1)]
         private static extern bool CursorHasNext(IntPtr ptr);
 
         [DllImport(libotterbrix, EntryPoint="cursor_is_success", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
+        [return: MarshalAs(UnmanagedType.I1)]
         private static extern bool CursorIsSuccess(IntPtr ptr);
 
         [DllImport(libotterbrix, EntryPoint="cursor_is_error", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
+        [return: MarshalAs(UnmanagedType.I1)]
         private static extern bool CursorIsError(IntPtr ptr);
 
         [DllImport(libotterbrix, EntryPoint="cursor_get_error", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]

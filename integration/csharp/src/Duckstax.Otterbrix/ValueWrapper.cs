@@ -5,7 +5,7 @@ namespace Duckstax.Otterbrix
 
     public class ValueWrapper : IDisposable
     {
-        const string libotterbrix = "libotterbrix.so";
+        const string libotterbrix = "otterbrix";
 
         [DllImport(libotterbrix, EntryPoint="release_value", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
         private static extern void ReleaseValue(IntPtr ptr);

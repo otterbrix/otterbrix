@@ -5,11 +5,13 @@
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
         <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+        <!-- where the c_otterbrix target of a CMake preset build puts the C API library -->
+        <OtterbrixNativeDir Condition="'$(OtterbrixNativeDir)' == ''">$(MSBuildThisFileDirectory)../../../../build/release/integration/c/</OtterbrixNativeDir>
     </PropertyGroup>
 
-    <ItemGroup Condition="'$(RuntimeIdentifier)' == 'linux-x64' OR '$(RuntimeIdentifier)' == ''">
-        <Content Include="../../build/libotterbrix.so">
-            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-        </Content>
+    <ItemGroup>
+        <Content Include="$(OtterbrixNativeDir)libotterbrix.so" Condition="Exists('$(OtterbrixNativeDir)libotterbrix.so')" Link="libotterbrix.so" CopyToOutputDirectory="PreserveNewest" />
+        <Content Include="$(OtterbrixNativeDir)libotterbrix.dylib" Condition="Exists('$(OtterbrixNativeDir)libotterbrix.dylib')" Link="libotterbrix.dylib" CopyToOutputDirectory="PreserveNewest" />
+        <Content Include="$(OtterbrixNativeDir)otterbrix.dll" Condition="Exists('$(OtterbrixNativeDir)otterbrix.dll')" Link="otterbrix.dll" CopyToOutputDirectory="PreserveNewest" />
     </ItemGroup>
 </Project>

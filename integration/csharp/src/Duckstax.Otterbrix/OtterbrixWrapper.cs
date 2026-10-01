@@ -79,7 +79,7 @@ namespace Duckstax.Otterbrix
 
     // TODO: Add connection support
     public class OtterbrixWrapper {
-        const string libotterbrix = "libotterbrix.so";
+        const string libotterbrix = "otterbrix";
 
         [StructLayout(LayoutKind.Sequential)]
         private struct TransferConfig {

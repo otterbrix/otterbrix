@@ -5,7 +5,7 @@ namespace Duckstax.Otterbrix
 
     public class CursorWrapper : IDisposable
     {
-        const string libotterbrix = "libotterbrix.so";
+        const string libotterbrix = "otterbrix";
 
         [StructLayout(LayoutKind.Sequential)]
         private struct TransferErrorMessage {

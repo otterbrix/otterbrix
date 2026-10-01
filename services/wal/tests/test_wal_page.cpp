@@ -1,3 +1,4 @@
+#include "wal_test_attoids.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <components/tests/generaty.hpp>
 #include <core/pmr.hpp>
@@ -7,7 +8,6 @@
 #include <services/wal/wal_page.hpp>
 #include <services/wal/wal_page_reader.hpp>
 #include <services/wal/wal_page_writer.hpp>
-#include "wal_test_attoids.hpp"
 
 namespace {
 

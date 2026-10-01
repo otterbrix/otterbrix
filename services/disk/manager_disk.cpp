@@ -796,7 +796,8 @@ namespace services::disk {
         std::set<catalog::oid_t> delete_tables = std::move(drain.base_delete_tables);
         delete_tables.insert(drain.pg_catalog_delete_tables.begin(), drain.pg_catalog_delete_tables.end());
         if (!delete_tables.empty()) {
-            co_await storage_revert_deletes(ctx, std::vector<catalog::oid_t>{delete_tables.begin(), delete_tables.end()});
+            co_await storage_revert_deletes(ctx,
+                                            std::vector<catalog::oid_t>{delete_tables.begin(), delete_tables.end()});
         }
 
         if (!drain.column_stamped_tables.empty()) {

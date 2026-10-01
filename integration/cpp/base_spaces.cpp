@@ -423,9 +423,9 @@ namespace otterbrix {
                                     }
                                 }
                                 if (auto add_err = disk.direct_add_column_sync(table_oid,
-                                                                                  r->physical_attoids,
-                                                                                  r->physical_data.front(),
-                                                                                  r->physical_row_start);
+                                                                               r->physical_attoids,
+                                                                               r->physical_data.front(),
+                                                                               r->physical_row_start);
                                     add_err.contains_error()) {
                                     error(log, "spaces::replay: {}", add_err.what);
                                 }

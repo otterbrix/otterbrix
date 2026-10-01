@@ -274,8 +274,14 @@ namespace services::wal {
               first_position);
 
         encode_buf_.clear();
-        const auto record_crc =
-            encode_add_column(encode_buf_, last_crc_, wal_id, txn_id, table_oid, attoids, *schema_chunk, first_position);
+        const auto record_crc = encode_add_column(encode_buf_,
+                                                  last_crc_,
+                                                  wal_id,
+                                                  txn_id,
+                                                  table_oid,
+                                                  attoids,
+                                                  *schema_chunk,
+                                                  first_position);
 
         if (auto writer_error = ensure_writer(); writer_error.contains_error()) {
             co_return core::result_wrapper_t<wal::id_t>{std::move(writer_error)};

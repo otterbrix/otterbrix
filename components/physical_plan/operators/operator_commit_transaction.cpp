@@ -20,8 +20,8 @@ namespace components::operators {
         std::pmr::set<components::catalog::oid_t> tables_to_prepare(const components::table::txn_abort_drain_t& undo,
                                                                     std::pmr::memory_resource* resource) {
             std::pmr::set<components::catalog::oid_t> tables{undo.base_append_tables.begin(),
-                                                            undo.base_append_tables.end(),
-                                                            resource};
+                                                             undo.base_append_tables.end(),
+                                                             resource};
             tables.insert(undo.column_stamped_tables.begin(), undo.column_stamped_tables.end());
             return tables;
         }
@@ -66,7 +66,7 @@ namespace components::operators {
         ctx->committed_id = commit_id_;
 
         bool prepares = txn_data.transaction_id != 0 && commit_id_ > 0 &&
-                              ctx->disk_address != actor_zeta::address_t::empty_address();
+                        ctx->disk_address != actor_zeta::address_t::empty_address();
         auto prepared_tables = tables_to_prepare(undo, resource_);
         if (prepares && !prepared_tables.empty()) {
             auto [_pr, prf] = actor_zeta::otterbrix::send(
@@ -411,10 +411,9 @@ namespace components::operators {
     }
 
     // commit was aborted higher up, but storage still have to know about it
-    actor_zeta::unique_future<void>
-    operator_commit_transaction_t::refuse_(pipeline::context_t* ctx,
-                                           components::table::txn_abort_drain_t undo,
-                                           core::error_t refusal) {
+    actor_zeta::unique_future<void> operator_commit_transaction_t::refuse_(pipeline::context_t* ctx,
+                                                                           components::table::txn_abort_drain_t undo,
+                                                                           core::error_t refusal) {
         if (ctx->current_message_sender != actor_zeta::address_t::empty_address()) {
             auto [_dx, dxf] = actor_zeta::otterbrix::send(ctx->current_message_sender,
                                                           &services::dispatcher::manager_dispatcher_t::txn_discard_msg,

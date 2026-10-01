@@ -31,9 +31,8 @@ namespace components::operators {
     private:
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
         // Releases commit_id and undoes every write, as ROLLBACK would.
-        actor_zeta::unique_future<void> refuse_(pipeline::context_t* ctx,
-                                                components::table::txn_abort_drain_t undo,
-                                                core::error_t refusal);
+        actor_zeta::unique_future<void>
+        refuse_(pipeline::context_t* ctx, components::table::txn_abort_drain_t undo, core::error_t refusal);
 
         bool is_ddl_commit_{false};
         std::uint64_t txn_id_{0};

@@ -17,11 +17,11 @@
 #include <services/wal/record.hpp>
 #include <services/wal/wal_binary.hpp>
 
+#include "wal_test_attoids.hpp"
 #include <cstdint>
 #include <memory_resource>
 #include <optional>
 #include <vector>
-#include "wal_test_attoids.hpp"
 
 using namespace services::wal;
 

@@ -228,8 +228,7 @@ namespace components::table {
         if (stamp < TRANSACTION_ID_START) {
             return true;
         }
-        return stamp == txn.transaction_id ||
-               std::find(prepared_.begin(), prepared_.end(), stamp) != prepared_.end();
+        return stamp == txn.transaction_id || std::find(prepared_.begin(), prepared_.end(), stamp) != prepared_.end();
     }
 
     // TODO: NOT NULL should be handled as any other constraint
@@ -275,8 +274,8 @@ namespace components::table {
                             continue;
                         }
                         std::pmr::string what{"commit refused: column '", resource_};
-                        what += std::pmr::string{column_definitions_[columns[column].primary_index()].name(),
-                                                 resource_};
+                        what +=
+                            std::pmr::string{column_definitions_[columns[column].primary_index()].name(), resource_};
                         what += std::pmr::string{"' of table '", resource_};
                         what += std::pmr::string{name_, resource_};
                         what += std::pmr::string{"' is NOT NULL without a default, and a row that would be live "
@@ -290,8 +289,7 @@ namespace components::table {
         return core::error_t::no_error();
     }
 
-    core::error_t data_table_t::prepare(const transaction_data& txn,
-                                        const std::pmr::vector<row_range_t>& own_appends) {
+    core::error_t data_table_t::prepare(const transaction_data& txn, const std::pmr::vector<row_range_t>& own_appends) {
         assert(txn.transaction_id >= TRANSACTION_ID_START && "data_table_t::prepare: not a transaction");
         // Empty unless a rule applies, which most commits never meet
         std::pmr::vector<storage_index_t> added_columns(resource_);
@@ -405,8 +403,7 @@ namespace components::table {
         if (!hidden_ids.empty()) {
             column_fetch_state state;
             state.result_outlives_pins = true;
-            row_groups_
-                ->fetch(old_values, hidden_ids, row_ids, chunk.size(), state, {}, txn, fetch_visibility_t::RAW);
+            row_groups_->fetch(old_values, hidden_ids, row_ids, chunk.size(), state, {}, txn, fetch_visibility_t::RAW);
             if (state.fetch_error.contains_error()) {
                 return state.fetch_error;
             }
@@ -534,9 +531,8 @@ namespace components::table {
         mark_modified();
     }
 
-    std::pmr::vector<storage_index_t>
-    data_table_t::to_physical_columns(const std::vector<storage_index_t>& column_ids,
-                                      const std::vector<uint64_t>& visible) const {
+    std::pmr::vector<storage_index_t> data_table_t::to_physical_columns(const std::vector<storage_index_t>& column_ids,
+                                                                        const std::vector<uint64_t>& visible) const {
         std::pmr::vector<storage_index_t> physical_ids(resource_);
         physical_ids.reserve(column_ids.size());
         for (const auto& id : column_ids) {

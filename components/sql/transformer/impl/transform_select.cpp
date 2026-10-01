@@ -147,7 +147,8 @@ namespace components::sql::transform {
                 auto written = rangevar_to_qualified_name(table);
                 slot_alias = construct_alias(table->alias);
                 const std::string& visible = slot_alias.empty() ? written.collection : slot_alias;
-                const bool unqualified = written.database.empty() && written.schema.empty() && written.unique_identifier.empty();
+                const bool unqualified =
+                    written.database.empty() && written.schema.empty() && written.unique_identifier.empty();
                 if (unqualified) {
                     if (auto cte = cte_queries_.find(written.collection); cte != cte_queries_.end()) {
                         slot_name.collection = written.collection;

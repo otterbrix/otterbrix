@@ -277,7 +277,8 @@ TEST_CASE("integration::cpp::alter_drop_column") {
             // Everything after this lives only in the journal when the image is taken.
             run_sql(dispatcher, "CHECKPOINT;");
             run_sql(dispatcher, "ALTER TABLE TestDatabase.t DROP COLUMN b;");
-            run_sql(dispatcher, "ALTER TABLE TestDatabase.t ADD COLUMN b BIGINT DEFAULT " + std::to_string(DEFAULT_B) + ";");
+            run_sql(dispatcher,
+                    "ALTER TABLE TestDatabase.t ADD COLUMN b BIGINT DEFAULT " + std::to_string(DEFAULT_B) + ";");
             run_sql(dispatcher,
                     "INSERT INTO TestDatabase.t (a, c, b) VALUES (" + std::to_string(A_BASE + ROWS) + ", " +
                         std::to_string(C_BASE + ROWS) + ", " + std::to_string(INSERTED_B) + ");");

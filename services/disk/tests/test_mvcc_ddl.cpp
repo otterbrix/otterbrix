@@ -272,9 +272,8 @@ TEST_CASE("services::disk::mvcc::test_ddl_rollback_cleans_up") {
     REQUIRE_FALSE(before_other.found);
     // The handler grew an error channel (it used to return void), so the rollback is asserted here
     // rather than discarded -- that is the whole point of the channel.
-    REQUIRE_FALSE(
-        fx.invoke(&manager_disk_t::storage_revert_appends, fx.txn_ctx(txn), std::move(appends_for_test))
-            .contains_error());
+    REQUIRE_FALSE(fx.invoke(&manager_disk_t::storage_revert_appends, fx.txn_ctx(txn), std::move(appends_for_test))
+                      .contains_error());
     auto after = test_probe::probe_table(fx, fx.auto_ctx(), ns_oid, std::string("ephemeral"));
     REQUIRE_FALSE(after.found);
     auto after_same = test_probe::probe_table(fx, fx.txn_ctx(txn), ns_oid, std::string("ephemeral"));

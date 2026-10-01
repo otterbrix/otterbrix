@@ -507,7 +507,8 @@ TEST_CASE("wal_worker::crc_chain_startup") {
             &manager_wal_replicate_t::write_physical_insert,
             session_id_t::generate_uid(),
             kTestTableOid,
-            wal_test::attoids_for(to_batch(std::make_unique<data_chunk_t>(gen_data_chunk(3, std::pmr::get_default_resource())))),
+            wal_test::attoids_for(
+                to_batch(std::make_unique<data_chunk_t>(gen_data_chunk(3, std::pmr::get_default_resource())))),
             to_batch(std::make_unique<data_chunk_t>(gen_data_chunk(3, std::pmr::get_default_resource()))),
             uint64_t{0},
             uint64_t{3},

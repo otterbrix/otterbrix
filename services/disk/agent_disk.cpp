@@ -595,8 +595,7 @@ namespace services::disk {
         const auto& table_columns = s->columns();
         if (!table_columns.empty() && data->column_count() > 0) {
             auto& table = entry->table_storage.table();
-            if (auto widened =
-                    is_computed_table ? table.widen_by_name(txn, *data) : table.widen_insert(txn, *data);
+            if (auto widened = is_computed_table ? table.widen_by_name(txn, *data) : table.widen_insert(txn, *data);
                 widened.contains_error()) {
                 co_return widened;
             }
@@ -643,19 +642,19 @@ namespace services::disk {
                 }
                 auto schema_chunk = std::make_unique<components::vector::data_chunk_t>(resource(), col_types, 0);
                 schema_chunk->set_cardinality(0);
-                auto [_g, gf] = actor_zeta::otterbrix::send(manager_wal_addr_,
-                                                            &wal::manager_wal_replicate_t::write_physical_grow,
-                                                            ctx.session,
-                                                            table_oid,
-                                                            std::move(schema_chunk),
-                                                            static_cast<std::uint64_t>(s->columns().size() -
-                                                                                       wal_added_columns.size()),
-                                                            entry->table_storage.table().column_attoids(),
-                                                            std::move(wal_chunks),
-                                                            start_row,
-                                                            actual_count,
-                                                            txn.transaction_id,
-                                                            db_oid);
+                auto [_g, gf] = actor_zeta::otterbrix::send(
+                    manager_wal_addr_,
+                    &wal::manager_wal_replicate_t::write_physical_grow,
+                    ctx.session,
+                    table_oid,
+                    std::move(schema_chunk),
+                    static_cast<std::uint64_t>(s->columns().size() - wal_added_columns.size()),
+                    entry->table_storage.table().column_attoids(),
+                    std::move(wal_chunks),
+                    start_row,
+                    actual_count,
+                    txn.transaction_id,
+                    db_oid);
                 wal_future = std::move(gf);
             }
             auto wal_result = co_await std::move(wal_future);
@@ -696,8 +695,7 @@ namespace services::disk {
                   static_cast<unsigned>(table_oid),
                   start_row,
                   materialized_start);
-            const auto reverted =
-                s->revert_append(static_cast<int64_t>(materialized_start), actual_count);
+            const auto reverted = s->revert_append(static_cast<int64_t>(materialized_start), actual_count);
             std::pmr::string what{"agent_disk::storage_append_inner: journalled start_row ", resource()};
             what.append(std::to_string(start_row).c_str());
             what.append(" but the rows materialized at ");
@@ -829,9 +827,10 @@ namespace services::disk {
                                        std::unique_ptr<components::vector::data_chunk_t> data,
                                        components::table::transaction_data txn) {
         if (!data || data->size() == 0) {
-            co_return components::storage::updated_rows_t{{},
-                                                          std::pmr::vector<components::vector::data_chunk_t>{resource()},
-                                                          std::pmr::vector<std::uint32_t>{resource()}};
+            co_return components::storage::updated_rows_t{
+                {},
+                std::pmr::vector<components::vector::data_chunk_t>{resource()},
+                std::pmr::vector<std::uint32_t>{resource()}};
         }
         auto it = storages_.find(table_oid);
         if (it == storages_.end()) {
@@ -2497,16 +2496,17 @@ namespace services::disk {
             std::pmr::vector<components::vector::data_chunk_t> wal_chunks(resource());
             wal_chunks.emplace_back(std::move(wal_chunk));
             constexpr auto db_oid = components::catalog::well_known_oid::main_database;
-            auto [_w, wf] = actor_zeta::otterbrix::send(manager_wal_addr_,
-                                                        &wal::manager_wal_replicate_t::write_physical_insert,
-                                                        ctx.session,
-                                                        table_oid,
-                                                        components::catalog::system_column_attoids(resource(), table_oid),
-                                                        std::move(wal_chunks),
-                                                        std::uint64_t{0},
-                                                        static_cast<std::uint64_t>(row.size()),
-                                                        ctx.txn.transaction_id,
-                                                        db_oid);
+            auto [_w, wf] =
+                actor_zeta::otterbrix::send(manager_wal_addr_,
+                                            &wal::manager_wal_replicate_t::write_physical_insert,
+                                            ctx.session,
+                                            table_oid,
+                                            components::catalog::system_column_attoids(resource(), table_oid),
+                                            std::move(wal_chunks),
+                                            std::uint64_t{0},
+                                            static_cast<std::uint64_t>(row.size()),
+                                            ctx.txn.transaction_id,
+                                            db_oid);
             auto wal_result = co_await std::move(wf);
             if (wal_result.has_error()) {
                 error(log_,
@@ -2810,16 +2810,17 @@ namespace services::disk {
             std::pmr::vector<components::vector::data_chunk_t> wal_chunks(resource());
             wal_chunks.emplace_back(std::move(wal_chunk));
             std::pmr::vector<std::int64_t> wal_row_ids(row_ids.begin(), row_ids.end(), resource());
-            auto [_w, wf] = actor_zeta::otterbrix::send(manager_wal_addr_,
-                                                        &wal::manager_wal_replicate_t::write_physical_update,
-                                                        ctx.session,
-                                                        pg_attr_oid,
-                                                        std::move(wal_row_ids),
-                                                        components::catalog::system_column_attoids(resource(), pg_attr_oid),
-                                                        std::move(wal_chunks),
-                                                        static_cast<std::uint64_t>(row_ids.size()),
-                                                        ctx.txn.transaction_id,
-                                                        components::catalog::well_known_oid::main_database);
+            auto [_w, wf] =
+                actor_zeta::otterbrix::send(manager_wal_addr_,
+                                            &wal::manager_wal_replicate_t::write_physical_update,
+                                            ctx.session,
+                                            pg_attr_oid,
+                                            std::move(wal_row_ids),
+                                            components::catalog::system_column_attoids(resource(), pg_attr_oid),
+                                            std::move(wal_chunks),
+                                            static_cast<std::uint64_t>(row_ids.size()),
+                                            ctx.txn.transaction_id,
+                                            components::catalog::well_known_oid::main_database);
             auto wal_result = co_await std::move(wf);
             if (wal_result.has_error()) {
                 error(log_,
@@ -3114,8 +3115,7 @@ namespace services::disk {
                     own_appends.push_back(components::table::row_range_t{range.start_row, range.count});
                 }
             }
-            if (auto refused = it->second->table_storage.table().prepare(txn, own_appends);
-                refused.contains_error()) {
+            if (auto refused = it->second->table_storage.table().prepare(txn, own_appends); refused.contains_error()) {
                 co_return core::error_on(resource(), refused);
             }
         }

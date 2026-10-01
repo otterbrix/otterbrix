@@ -32,8 +32,8 @@ namespace services::disk {
         return db_path / "oid_reservation";
     }
 
-    core::result_wrapper_t<components::catalog::oid_t>
-    read_oid_reservation(std::pmr::memory_resource* resource, const std::filesystem::path& db_path) {
+    core::result_wrapper_t<components::catalog::oid_t> read_oid_reservation(std::pmr::memory_resource* resource,
+                                                                            const std::filesystem::path& db_path) {
         core::filesystem::local_file_system_t fs;
         const auto path = oid_reservation_path(db_path);
         if (!core::filesystem::file_exists(fs, path)) {

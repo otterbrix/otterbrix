@@ -987,10 +987,10 @@ namespace services::disk {
                         rc.added_at = static_cast<uint64_t>(chunk.get_value<std::int64_t>(att::added_at_commit_id, i));
                     }
                     if (!chunk.is_null(att::attisdropped, i) && chunk.get_value<bool>(att::attisdropped, i)) {
-                        rc.dropped_at = chunk.is_null(att::dropped_at_commit_id, i)
-                                            ? 0
-                                            : static_cast<uint64_t>(
-                                                  chunk.get_value<std::int64_t>(att::dropped_at_commit_id, i));
+                        rc.dropped_at =
+                            chunk.is_null(att::dropped_at_commit_id, i)
+                                ? 0
+                                : static_cast<uint64_t>(chunk.get_value<std::int64_t>(att::dropped_at_commit_id, i));
                     }
                     rc.attoid = chunk.is_null(att::attoid, i)
                                     ? catalog::INVALID_OID

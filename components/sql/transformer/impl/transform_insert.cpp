@@ -138,9 +138,11 @@ namespace {
                 case LT::BIGINT:
                     return components::types::logical_value_t(resource, int128_t{val.value<int64_t>()});
                 case LT::UTINYINT:
-                    return components::types::logical_value_t(resource, int128_t{static_cast<uint32_t>(val.value<uint8_t>())});
+                    return components::types::logical_value_t(resource,
+                                                              int128_t{static_cast<uint32_t>(val.value<uint8_t>())});
                 case LT::USMALLINT:
-                    return components::types::logical_value_t(resource, int128_t{static_cast<uint32_t>(val.value<uint16_t>())});
+                    return components::types::logical_value_t(resource,
+                                                              int128_t{static_cast<uint32_t>(val.value<uint16_t>())});
                 case LT::UINTEGER:
                     return components::types::logical_value_t(resource, int128_t{val.value<uint32_t>()});
                 case LT::UBIGINT:
@@ -414,7 +416,8 @@ namespace components::sql::transform {
                         auto ref = pg_ptr_cast<ParamRef>(it_value->data);
                         auto loc = std::make_pair(global_row, field_name);
 
-                        if (auto it = parameter_insert_map_.find(static_cast<size_t>(ref->number)); it != parameter_insert_map_.end()) {
+                        if (auto it = parameter_insert_map_.find(static_cast<size_t>(ref->number));
+                            it != parameter_insert_map_.end()) {
                             it->second.emplace_back(std::move(loc));
                         } else {
                             std::pmr::vector<insert_location_t> par(resource_);

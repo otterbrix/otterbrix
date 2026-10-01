@@ -115,7 +115,8 @@ namespace services::dispatcher { namespace {
 
     // FK columns resolve positionally against statement columns then DEFAULT fill-list columns, in that
     // order; an unresolved position silently qualifies 0 rows, so `pid bigint DEFAULT 42` inserts unchecked.
-    std::pmr::vector<std::string> insert_chunk_column_names(std::pmr::memory_resource* resource, const components::logical_plan::node_insert_t* node) {
+    std::pmr::vector<std::string> insert_chunk_column_names(std::pmr::memory_resource* resource,
+                                                            const components::logical_plan::node_insert_t* node) {
         std::pmr::vector<std::string> names(resource);
         const auto& bindings = node->column_bindings();
         const auto& fill = node->fill_list();
@@ -292,7 +293,7 @@ namespace services::dispatcher { namespace {
         node->set_array_size_reqs(collect_array_size_reqs(*md));
     }
 
-}} // namespace services::dispatcher
+}} // namespace services::dispatcher::
 
 namespace services::catalog_resolve {
 
@@ -1313,7 +1314,7 @@ namespace services::dispatcher { namespace {
         }
         co_return core::error_t::no_error();
     }
-}} // namespace services::dispatcher
+}} // namespace services::dispatcher::
 
 namespace services::dispatcher {
     namespace {
@@ -1353,7 +1354,7 @@ namespace services::dispatcher {
 
         // TODO: remove after federation & search path work
         core::error_t refuse_external_targets(std::pmr::memory_resource* resource,
-                                             const components::logical_plan::catalog_resolves_t& resolves) {
+                                              const components::logical_plan::catalog_resolves_t& resolves) {
             if (resolves.external_targets.empty()) {
                 return core::error_t::no_error();
             }

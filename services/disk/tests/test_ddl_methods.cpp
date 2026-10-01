@@ -1029,8 +1029,7 @@ TEST_CASE("services::disk::ddl::replay_mutations_refuse_when_the_owner_has_no_st
     upd.set_value(0, 0, std::int64_t{7});
     CHECK(fx.manager->update_sync(nowhere, ids, one_attoid, upd, components::table::transaction_data::committed())
               .error()
-              .type ==
-          core::error_code_t::io_error);
+              .type == core::error_code_t::io_error);
 
     auto added_type = components::types::complex_logical_type{components::types::logical_type::BIGINT};
     added_type.set_alias("grown");

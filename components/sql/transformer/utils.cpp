@@ -580,11 +580,12 @@ namespace components::sql::transform {
                 const auto raw_scale = intVal(&scale->val);
                 if (raw_width < 0 || raw_scale < 0 || raw_width > types::DECIMAL_MAX_WIDTH ||
                     raw_scale > types::DECIMAL_MAX_WIDTH) {
-                    return core::error_t(core::error_code_t::invalid_parameter,
-                                         std::pmr::string{"DECIMAL width must be between 1 and " +
-                                                              std::to_string(static_cast<unsigned>(types::DECIMAL_MAX_WIDTH)) +
-                                                              " and scale must not exceed width",
-                                                          resource});
+                    return core::error_t(
+                        core::error_code_t::invalid_parameter,
+                        std::pmr::string{"DECIMAL width must be between 1 and " +
+                                             std::to_string(static_cast<unsigned>(types::DECIMAL_MAX_WIDTH)) +
+                                             " and scale must not exceed width",
+                                         resource});
                 }
                 VALUE_OR_RETURN(column,
                                 types::complex_logical_type::create_decimal(resource,
@@ -1833,7 +1834,8 @@ namespace components::sql::transform {
         }
     }
 
-    core::result_wrapper_t<qualified_name_t> called_function(std::pmr::memory_resource* resource, const List* funcname) {
+    core::result_wrapper_t<qualified_name_t> called_function(std::pmr::memory_resource* resource,
+                                                             const List* funcname) {
         if (!funcname || funcname->lst.empty()) {
             return qualified_name_t{};
         }

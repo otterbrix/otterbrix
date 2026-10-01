@@ -499,7 +499,8 @@ namespace services::disk {
         /// Rewrites a DROP's dropped_at_commit_id from TXN-ID space into commit-id space once commit allocates one.
         unique_future<void> storage_dropped_committed(session_id_t session, uint64_t txn_id, uint64_t commit_id);
 
-        unique_future<core::error_t> abort_transaction(session_id_t session, components::table::txn_abort_drain_t drain);
+        unique_future<core::error_t> abort_transaction(session_id_t session,
+                                                       components::table::txn_abort_drain_t drain);
 
         /// Bootstrap helper: fans the dispatcher address to every agent (no manager-side mirror).
         void set_manager_dispatcher_sync(actor_zeta::address_t address);

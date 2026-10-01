@@ -123,6 +123,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_delete_affected_count.cpp
         test_dml_affected_rows.cpp
         test_insert_positional_values.cpp
+        test_create_in_missing_database.cpp
         test_tinyint_numeric_cast.cpp
         test_alter_add_column_reads.cpp
         test_computed_drop_complex_type.cpp

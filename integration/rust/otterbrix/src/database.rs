@@ -301,7 +301,9 @@ impl Database {
     /// # Errors
     ///
     /// Returns [`Error::Query`] if `database` does not exist, the collection
-    /// already exists, or the name is invalid.
+    /// already exists, or the name is invalid. The collection name must be
+    /// lower case: SQL folds an unquoted name, so a mixed-case table could not
+    /// be read back.
     pub fn create_collection(&self, database: &str, collection: &str) -> Result<Cursor<'_>> {
         let ptr = unsafe {
             otterbrix_sys::create_collection(self.ptr, make_sv(database), make_sv(collection))

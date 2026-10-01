@@ -973,6 +973,20 @@ namespace services::collection::executor {
             msg.append("\" does not exist");
             return core::error_t{core::error_code_t::table_not_exists, std::move(msg)};
         };
+        // A CREATE never writes into a database the catalog does not hold: its rows would have no namespace. IF NOT
+        // EXISTS does not cover it, since what is missing is the database, not the object.
+        const bool creates_in_a_database =
+            original_type == node_type::create_collection_t || original_type == node_type::create_sequence_t ||
+            original_type == node_type::create_view_t || original_type == node_type::create_macro_t ||
+            original_type == node_type::create_index_t;
+        if (creates_in_a_database && !id.database().empty() &&
+            services::dispatcher::check_namespace_exists(resource(), &plan.catalog_resolves, id).contains_error()) {
+            std::pmr::string msg{"database \"", resource()};
+            msg.append(id.database());
+            msg.append("\" does not exist");
+            co_return execute_result_t{
+                make_cursor(resource(), core::error_t{core::error_code_t::database_not_exists, std::move(msg)})};
+        }
         switch (original_type) {
             case node_type::create_database_t:
                 if (!services::dispatcher::check_namespace_exists(resource(), &plan.catalog_resolves, id)

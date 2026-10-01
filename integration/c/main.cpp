@@ -9,7 +9,9 @@
 #include <core/result_wrapper.hpp>
 #include <integration/cpp/base_spaces.hpp>
 
+#include <algorithm>
 #include <cassert>
+#include <cctype>
 #include <cstring>
 #include <exception>
 #include <stdexcept>
@@ -255,6 +257,17 @@ extern "C" cursor_ptr create_collection(otterbrix_ptr ptr, string_view_t databas
         std::string database = string_view_to_string(database_name);
         std::string collection = string_view_to_string(collection_name);
         auto* dispatcher = pod_space->space->dispatcher();
+        // SQL folds an unquoted name to lower case (PostgreSQL 18): a mixed-case table could never be read back.
+        if (std::any_of(collection.begin(), collection.end(), [](char c) {
+                return std::isupper(static_cast<unsigned char>(c)) != 0;
+            })) {
+            std::pmr::string msg{"create_collection: name \"", dispatcher->resource()};
+            msg.append(collection);
+            msg.append("\" must be lower case");
+            return store_cursor(components::cursor::make_cursor(
+                dispatcher->resource(),
+                core::error_t{core::error_code_t::invalid_parameter, std::move(msg)}));
+        }
         auto node = components::logical_plan::make_node_create_collection(dispatcher->resource(),
                                                                           core::relname_t{collection},
                                                                           {},

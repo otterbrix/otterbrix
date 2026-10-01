@@ -41,7 +41,7 @@ SQL -> transformer -> catalog resolve -> [name resolution: need -> host reads ->
   statement ends.
 - Errors travel only as `core::error_t` / `core::result_wrapper_t`. A host error reaches the statement's cursor
   unchanged: same code, same text (`host_operator_error_reaches_the_cursor`,
-  `test_host_name_resolution.cpp:760`).
+  `test_host_name_resolution.cpp:777`).
 
 ## Staged optimizer rules
 
@@ -97,20 +97,22 @@ namespace components::planner {
 
 - **When:** after the catalog resolved what it could, before validation, and only when a table name is left
   unresolved. This covers SELECT, `INSERT … SELECT`, `UPDATE … FROM`, `DELETE … USING`, the target of
-  INSERT / UPDATE / DELETE, a view body at `CREATE VIEW` and at every read of the view. It never covers other DDL.
+  INSERT / UPDATE / DELETE, a view body at `CREATE VIEW` and at every read of the view, a materialized view's body
+  at `CREATE MATERIALIZED VIEW` and at every `REFRESH` (`a_matview_over_a_view_over_a_host_name`, `:869`). It
+  never covers other DDL.
   A statement whose names all resolved never reaches the host (`local_statements_never_reach_the_host`,
-  `test_host_name_resolution.cpp:695`).
+  `test_host_name_resolution.cpp:712`).
 - **Names:** exactly as written, schema slot included. `m2.shop.orders` arrives as `{dbname="m2", schema="shop",
-  relname="orders"}`, for a read and for a write target alike (`a_write_target_keeps_its_schema`, `:871`).
+  relname="orders"}`, for a read and for a write target alike (`a_write_target_keeps_its_schema`, `:927`).
 - **need:** returns the reads the host needs, as logical plans over its own ordinary tables, typically
   `otterstax.remote_columns WHERE tbl = $1`. The executor runs each read through the canonical pipeline inside the
   statement's own transaction and snapshot, so the host sees its own uncommitted rows and nothing uncommitted from
-  other sessions (`reads_run_in_the_statement_snapshot`, `:632`). A read never consults the host again.
+  other sessions (`reads_run_in_the_statement_snapshot`, `:649`). A read never consults the host again.
 - **decide:** gets the rows of every read, in request order, and returns the tree to validate. A name it replaces
   with a host node, or binds as a write target, stops being unresolved. A name it leaves alone is refused later as
   "does not exist". Names the new tree adds are resolved in one more round.
 - **Errors:** a `result_wrapper_t` error from `need`, from any read, or from `decide` becomes the statement's error.
-- **Example:** `need_remote_columns` and `decide_remote_nodes`, `test_host_name_resolution.cpp:406` and `:515`.
+- **Example:** `need_remote_columns` and `decide_remote_nodes`, `test_host_name_resolution.cpp:410` and `:530`.
 
 ## Host node: `node_extension_t`
 
@@ -127,15 +129,24 @@ namespace components::logical_plan {
 ```
 
 - **Declared columns:** validation types the node by them, and no catalog entry exists. They drive column
-  references, `*`, JOIN keys and expression types (`declared_columns_drive_validation_and_types`, `:666`). A node
-  without columns is allowed, and `count(*)` over it counts its rows (`rows_without_columns_are_counted`, `:832`).
+  references, `*`, JOIN keys and expression types (`declared_columns_drive_validation_and_types`, `:683`). A node
+  without columns is allowed, and `count(*)` over it counts its rows (`rows_without_columns_are_counted`, `:888`).
+- **Column names are lower case:** otterbrix matches a column reference as written, and an unquoted one is lower
+  case (PostgreSQL 18 folds it). The host maps a remote name to lower case itself, as Trino 483 requires of a
+  connector (`ColumnMetadata` lower-cases every name). `make_node_extension` refuses any other name, for a read and
+  for a write target alike: `host column "Amount" must be lower case` (`a_host_column_name_must_be_lower_case`,
+  `:1175`).
 - **Operator function:** called by the physical plan generator for the node. A leaf node's operator is a source. A
   node with a child gets that child's plan as its left child and is a sink. A null function is refused by
-  `make_node_extension`. An error returned from the function is the statement's error (`:760`).
+  `make_node_extension`. An error returned from the function is the statement's error (`:777`).
 - **Payload:** the engine never reads it; the operator function casts it back.
-- **Views:** a view over a host node has no catalog dependency on it. When the host declares other columns, or
-  stops resolving the name, reading the view fails with "view … is stale" (`:781`, `:804`, `:819`).
-- **Example:** `make_remote_source`, `test_host_name_resolution.cpp:158`.
+- **Views:** a view over a host node has no catalog dependency on it (`a_view_over_a_host_name`, `:798`). A read
+  compares only the view's output columns, as Trino 483 `checkViewStaleness` does: their count, names and exact
+  types. A column the view does not read may come and go (`a_host_column_the_view_does_not_read_keeps_it_fresh`,
+  `:821`); an output column of another type, or a name the host stops resolving, fails the read with "view … is
+  stale" (`a_view_whose_output_column_changed_type_is_stale`, `:839`; `a_view_whose_host_name_is_gone_is_stale`,
+  `:856`).
+- **Example:** `make_remote_source`, `test_host_name_resolution.cpp:162`.
 
 ## Host operators
 
@@ -147,7 +158,7 @@ are private NVI points behind the public `open()`, `affected_rows()` and `explai
 |---|---|---|
 | `role()` | while the plan is built | `pipeline_role::source` for a scan; the default `sink` for a write |
 | `open_impl(ctx)` | once per drive, before any source is pumped; every source of the plan is opened first and the opens are awaited together | start the backend fetch here, so fetches of several host nodes overlap (`sources_open_in_parallel`, `test_extension_source.cpp:806`) |
-| `source_next(ctx)` | repeatedly, one awaited call at a time | returns `result_wrapper_t<std::optional<data_chunk_t>>`: a chunk of at most 1024 rows, or `std::nullopt` for the end of the stream. A chunk without rows or without columns is data. Over 1024 rows is refused (`chunk_over_vector_capacity`, `:900`) |
+| `source_next(ctx)` | repeatedly, one awaited call at a time | returns `result_wrapper_t<std::optional<data_chunk_t>>`: a chunk of at most 1024 rows, or `std::nullopt` for the end of the stream. A chunk without rows or without columns is data. Over 1024 rows is refused (`chunk_over_vector_capacity`, `:956`) |
 | `reset_pipeline_state()` | before a re-drive (LATERAL, recursive CTE) | rewind to the first chunk |
 | `push(ctx, chunk, out)` | a sink: once per incoming chunk, synchronously | buffer the rows; no cross-actor call here |
 | `needs_async_finalize()` / `await_async_and_resume(ctx)` | a sink: once, after the input ended | send the buffered rows; report a backend refusal with `set_error` |
@@ -155,7 +166,7 @@ are private NVI points behind the public `open()`, `affected_rows()` and `explai
 | `explain_label_impl()` / `explain_details_impl()` | EXPLAIN and EXPLAIN ANALYZE | see below |
 
 Example source: `remote_source_t`, `test_host_name_resolution.cpp:92` (`source_next` at `:107`). The end of the
-stream is `std::nullopt`, and empty batches in the middle are data (`an_empty_batch_is_not_the_end`, `:856`).
+stream is `std::nullopt`, and empty batches in the middle are data (`an_empty_batch_is_not_the_end`, `:912`).
 
 ## Write target: INSERT / UPDATE / DELETE into a host relation
 
@@ -178,9 +189,9 @@ namespace components::logical_plan {
 - **No defaults:** an INSERT writes every declared column, either through its column list or, for
   `INSERT … SELECT` without a list, by position. Otherwise it is refused: `INSERT into host relation
   "m2.shop.orders" must list every column; missing: amount` (`an_insert_into_a_host_relation_lists_every_column`,
-  `:921`).
+  `:977`).
 - **NOT NULL / CHECK:** otterbrix checks neither for a host relation. The backend's refusal comes back through the
-  host operator's error unchanged (`a_host_write_error_reaches_the_cursor`, `:1020`).
+  host operator's error unchanged (`a_host_write_error_reaches_the_cursor`, `:1076`).
 - **Physical plan:** `write_fn` builds the host's operator.
   - INSERT: a sink whose child streams the source rows already cast to the declared types, in declared order,
     under the declared names.
@@ -188,24 +199,24 @@ namespace components::logical_plan {
     values come from `ctx->parameters` at run time).
   - A null operator is refused.
 - **Not supported yet:** `UPDATE … FROM`, `DELETE … USING` and `RETURNING`, each with its own error
-  (`host_write_shapes_not_supported_yet`, `:971`). A write inside an explicit `BEGIN … COMMIT` is refused, as in
+  (`host_write_shapes_not_supported_yet`, `:1027`). A write inside an explicit `BEGIN … COMMIT` is refused, as in
   Trino 483's default: `writes to host relation "m2.shop.orders" are allowed only outside an explicit transaction
-  (#663)` (`a_host_write_inside_a_transaction_is_refused`, `:999`). A write in its own statement is allowed.
+  (#663)` (`a_host_write_inside_a_transaction_is_refused`, `:1055`). A write in its own statement is allowed.
 - **Examples:** `bind_write_target`, `make_remote_write`, `remote_insert_t`, `remote_modify_t` —
-  `test_host_name_resolution.cpp:440`, `:392`, `:186`, `:258`. Tests: `insert_into_a_host_relation` (`:878`) and
-  `update_and_delete_a_host_relation` (`:946`).
+  `test_host_name_resolution.cpp:445`, `:396`, `:190`, `:262`. Tests: `insert_into_a_host_relation` (`:934`) and
+  `update_and_delete_a_host_relation` (`:1002`).
 
 ### What a write function reads
 
 `write_fn` gets the statement node after name resolution and validation. The fields below are part of the host
 API; renaming them, changing what they hold, or filling them at another stage is a breaking change for the host.
-`a_write_function_reads_the_validated_statement` (`test_host_name_resolution.cpp:1090`, reader `describe_write`
-at `:347`) pins every one of them.
+`a_write_function_reads_the_validated_statement` (`test_host_name_resolution.cpp:1146`, reader `describe_write`
+at `:351`) pins every one of them.
 
 | Field | Node | Holds |
 |---|---|---|
 | `type()` | all | `node_type::insert_t`, `update_t` or `delete_t` |
-| `dbname()`, `schema()`, `relname()` | `node_insert_t`, `node_update_t`, `node_delete_t` | the target exactly as written: `m2.shop.orders` → `"m2"`, `"shop"`, `"orders"`. Filled by the transformer, so `decide` reads them too (`bind_write_target`, `:440`) |
+| `dbname()`, `schema()`, `relname()` | `node_insert_t`, `node_update_t`, `node_delete_t` | the target exactly as written: `m2.shop.orders` → `"m2"`, `"shop"`, `"orders"`. Filled by the transformer, so `decide` reads them too (`bind_write_target`, `:445`) |
 | `children().front()` | `node_insert_t` | the source: `node_type::data_t` for VALUES, any other node for a query. Its rows reach the host's sink already cast; the node is informational |
 | the `node_type::match_t` child, `expressions().front()` | `node_update_t`, `node_delete_t` | the WHERE as a `compare_expression_t`. Without a WHERE its `type()` is `compare_type::all_true` |
 | keys in WHERE and in SET | `node_update_t`, `node_delete_t` | `key_t` with `side() == side_t::left` and `path().front()` = the declared column's position; filled by validation |
@@ -228,7 +239,7 @@ The host must not keep pointers into the node past `write_fn`: the node belongs 
 - A write without RETURNING has no result rows (`size() == 0`) and `affected_rows() == N`. SELECT, DDL and
   transaction control have no count.
 - A host write operator overrides `affected_rows_impl()` with the count the backend reported (`remote_insert_t`,
-  `:223`).
+  `:227`).
 - Bindings expose the same count: C `cursor_affected_rows(cursor_ptr, uint64_t*)`, Python `rowcount`, Rust
   `Cursor::affected_rows()`.
 
@@ -245,8 +256,8 @@ The host must not keep pointers into the node past `write_fn`: the node belongs 
   m2.shop.orders`. Each detail is printed under it, two columns right of where the label starts, in EXPLAIN and in
   EXPLAIN ANALYZE, which appends the actual time, rows and loops to the label line.
 - Without an override a host operator reads `Extension Scan`.
-- **Example:** `test_host_name_resolution.cpp:137` (scan) and `:224` (insert sink); test
-  `explain_prints_the_host_operator_label_and_details` (`:1052`):
+- **Example:** `test_host_name_resolution.cpp:141` (scan) and `:228` (insert sink); test
+  `explain_prints_the_host_operator_label_and_details` (`:1108`):
 
 ```
 Project

@@ -331,12 +331,13 @@ namespace components::catalog {
                                                           oid_batch_t& oid_batch,
                                                           std::span<const view_binding_t> bindings,
                                                           std::span<const view_dependency_t> dependencies,
-                                                          bool write_class_row) {
+                                                          bool write_class_row,
+                                                          char relkind) {
         std::vector<catalog_write_t> result;
+        const std::string relkind_str(1, relkind);
 
         if (write_class_row) {
             const auto& def = system_table(pg_class_oid);
-            const std::string relkind_str(1, relkind::view);
             const std::string storagemode_str(1, relstoragemode::disk);
             auto chunk =
                 make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
@@ -412,13 +413,12 @@ namespace components::catalog {
 
         {
             const auto& def = system_table(pg_rewrite_oid);
-            const std::string ev_type_str(1, 'v');
             auto chunk =
                 make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
                     set_oid(c, 0, 0, rule_oid);
                     set_str(c, 1, 0, name, r);
                     set_oid(c, 2, 0, view_oid);
-                    set_str(c, 3, 0, ev_type_str, r);
+                    set_str(c, 3, 0, relkind_str, r);
                     set_str(c, 4, 0, body_sql, r);
                 });
             result.push_back(make_write(pg_rewrite_oid, std::move(chunk)));
@@ -495,48 +495,6 @@ namespace components::catalog {
                     set_str(c, 4, 0, body_sql, r);
                 });
             result.push_back(make_write(pg_rewrite_oid, std::move(chunk)));
-        }
-
-        return result;
-    }
-
-    std::vector<catalog_write_t> build_matview_rewrite_writes(std::pmr::memory_resource* resource,
-                                                              oid_t mv_oid,
-                                                              oid_t rule_oid,
-                                                              const std::string& mv_name,
-                                                              const std::string& body_sql,
-                                                              oid_t source_table_oid) {
-        std::vector<catalog_write_t> result;
-
-        // REFRESH MATERIALIZED VIEW reads this row to re-execute the body.
-        {
-            const auto& def = system_table(pg_rewrite_oid);
-            const std::string ev_type_str(1, relkind::materialized_view);
-            auto chunk =
-                make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
-                    set_oid(c, 0, 0, rule_oid);
-                    set_str(c, 1, 0, mv_name, r);
-                    set_oid(c, 2, 0, mv_oid);
-                    set_str(c, 3, 0, ev_type_str, r);
-                    set_str(c, 4, 0, body_sql, r);
-                });
-            result.push_back(make_write(pg_rewrite_oid, std::move(chunk)));
-        }
-
-        // Depends on the source table so a future DROP TABLE can detect a dangling matview.
-        if (source_table_oid != INVALID_OID) {
-            {
-                const auto& def = system_table(pg_depend_oid);
-                auto chunk =
-                    make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
-                        set_oid(c, 0, 0, well_known_oid::pg_class_table);
-                        set_oid(c, 1, 0, mv_oid);
-                        set_oid(c, 2, 0, well_known_oid::pg_class_table);
-                        set_oid(c, 3, 0, source_table_oid);
-                        set_str(c, 4, 0, "n", r);
-                    });
-                result.push_back(make_write(pg_depend_oid, std::move(chunk)));
-            }
         }
 
         return result;

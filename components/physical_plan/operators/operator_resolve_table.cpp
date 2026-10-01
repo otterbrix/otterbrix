@@ -333,7 +333,7 @@ namespace components::operators {
             }
 
             std::vector<components::logical_plan::view_binding_t> view_bindings;
-            if (relkind == catalog::relkind::view) {
+            if (relkind == catalog::relkind::view || relkind == catalog::relkind::materialized_view) {
                 std::pmr::vector<std::uint64_t> rr_keys(resource_);
                 rr_keys.emplace_back(catalog::pg_rewrite_ref_col::ev_class);
                 auto [_rr, rrf] =

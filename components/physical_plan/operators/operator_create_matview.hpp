@@ -9,7 +9,7 @@
 namespace components::operators {
 
     // Composite CREATE MATERIALIZED VIEW ... WITH NO DATA (relkind='m') operator: create storage, register
-    // with the index manager, and write pg_class/pg_attribute/pg_rewrite/pg_depend rows, atomically in one
+    // with the index manager, and write the catalog rows of a view with relkind 'm', atomically in one
     // coroutine. Does NOT populate the matview — a nested scan from inside this operator's own await hits
     // an actor_zeta nested-await failure, and sequence_t(create, insert) doesn't work either since the
     // insert's column bindings are stamped before the planner mints the matview's oid — so the implicit

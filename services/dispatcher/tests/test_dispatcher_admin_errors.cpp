@@ -326,7 +326,8 @@ TEST_CASE("services::dispatcher::admin_errors::unregister_udf_executor_refusal_k
     admin_fixture test(mr.get(), admin_dir("unreg_refusal"));
 
     const std::string fname = "admin_probe_orphan";
-    // The catalog carries the overload's pg_proc row — but no executor registry holds it.
+    // The catalog carries a pg_proc row of another signature (no arguments), and no executor registry holds one:
+    // nothing matches the BIGINT overload, so nothing is dropped.
     test.seed_pg_proc_row(fname);
     REQUIRE(test.pg_proc_rows(fname) == 1);
 
@@ -340,7 +341,7 @@ TEST_CASE("services::dispatcher::admin_errors::unregister_udf_executor_refusal_k
     REQUIRE(test.pg_proc_rows(fname) == 1);
     REQUIRE(err.contains_error());
     REQUIRE(err.type == core::error_code_t::unrecognized_function);
-    REQUIRE(mentions(err, "executor"));
+    REQUIRE(mentions(err, "registered or in the catalog"));
 }
 
 // A per-executor divergence isn't constructible through the public API (all fan-outs share the

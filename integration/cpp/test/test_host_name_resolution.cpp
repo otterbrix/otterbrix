@@ -120,6 +120,10 @@ namespace {
                         chunk.set_value(col,
                                         row,
                                         types::logical_value_t(resource(), "s" + std::to_string(rows[row][col])));
+                    } else if (columns_[col].type() == types::logical_type::INTEGER) {
+                        chunk.set_value(col,
+                                        row,
+                                        types::logical_value_t(resource(), static_cast<int32_t>(rows[row][col])));
                     } else {
                         chunk.set_value(col, row, types::logical_value_t(resource(), rows[row][col]));
                     }
@@ -436,15 +440,16 @@ namespace {
         std::pmr::vector<types::complex_logical_type> columns;
     };
 
+    // Runs on an executor thread: a refusal goes back as the hook's error, never as a Catch assertion.
     template<class Write>
-    void bind_write_target(logical_plan::node_t& node,
-                           std::pmr::memory_resource* resource,
-                           const std::vector<declared_t>& declared) {
+    core::error_t bind_write_target(logical_plan::node_t& node,
+                                    std::pmr::memory_resource* resource,
+                                    const std::vector<declared_t>& declared) {
         const auto& write = static_cast<const Write&>(node);
         const auto name = qualified(write.dbname(), write.schema(), write.relname());
         auto it = std::find_if(declared.begin(), declared.end(), [&](const declared_t& d) { return d.name == name; });
         if (it == declared.end()) {
-            return;
+            return core::error_t::no_error();
         }
         auto relation =
             logical_plan::make_node_extension(resource,
@@ -452,26 +457,31 @@ namespace {
                                               it->columns,
                                               &make_remote_source,
                                               logical_plan::extension_payload_ptr{new remote_payload_t{name}});
-        REQUIRE_FALSE(relation.has_error());
-        auto bound = logical_plan::bind_host_write_target(resource, node, relation.value(), &make_remote_write);
-        REQUIRE_FALSE(bound.contains_error());
+        if (relation.has_error()) {
+            return relation.error();
+        }
+        return logical_plan::bind_host_write_target(resource, node, relation.value(), &make_remote_write);
     }
 
-    void replace_names(logical_plan::node_ptr& node,
-                       std::pmr::memory_resource* resource,
-                       const std::vector<declared_t>& declared) {
+    core::error_t replace_names(logical_plan::node_ptr& node,
+                                std::pmr::memory_resource* resource,
+                                const std::vector<declared_t>& declared) {
+        core::error_t bound = core::error_t::no_error();
         switch (node->type()) {
             case logical_plan::node_type::insert_t:
-                bind_write_target<logical_plan::node_insert_t>(*node, resource, declared);
+                bound = bind_write_target<logical_plan::node_insert_t>(*node, resource, declared);
                 break;
             case logical_plan::node_type::update_t:
-                bind_write_target<logical_plan::node_update_t>(*node, resource, declared);
+                bound = bind_write_target<logical_plan::node_update_t>(*node, resource, declared);
                 break;
             case logical_plan::node_type::delete_t:
-                bind_write_target<logical_plan::node_delete_t>(*node, resource, declared);
+                bound = bind_write_target<logical_plan::node_delete_t>(*node, resource, declared);
                 break;
             default:
                 break;
+        }
+        if (bound.contains_error()) {
+            return bound;
         }
         if (node->type() == logical_plan::node_type::aggregate_t) {
             const auto* agg = static_cast<const logical_plan::node_aggregate_t*>(node.get());
@@ -487,13 +497,15 @@ namespace {
                                                       it->columns,
                                                       &make_remote_source,
                                                       logical_plan::extension_payload_ptr{new remote_payload_t{name}});
-                REQUIRE_FALSE(ext.has_error());
+                if (ext.has_error()) {
+                    return ext.error();
+                }
                 ext.value()->set_result_alias(agg->result_alias().empty()
                                                   ? static_cast<const std::string&>(agg->relname())
                                                   : agg->result_alias());
                 if (node->children().empty()) {
                     node = ext.value();
-                    return;
+                    return core::error_t::no_error();
                 }
                 auto wrapper = logical_plan::make_node_aggregate(resource, core::dbname_t{}, core::relname_t{});
                 wrapper->set_result_alias(node->result_alias());
@@ -502,12 +514,15 @@ namespace {
                     wrapper->append_child(child);
                 }
                 node = wrapper;
-                return;
+                return core::error_t::no_error();
             }
         }
         for (auto& child : node->children()) {
-            replace_names(child, resource, declared);
+            if (auto replaced = replace_names(child, resource, declared); replaced.contains_error()) {
+                return replaced;
+            }
         }
+        return core::error_t::no_error();
     }
 
     // Phase "decide": a name with declared columns becomes a host node; one without stays and is refused later.
@@ -535,9 +550,9 @@ namespace {
                         continue;
                     }
                     ordered.emplace_back(ord_cell.value<int64_t>(),
-                                         types::complex_logical_type{type == "TEXT"
-                                                                         ? types::logical_type::STRING_LITERAL
-                                                                         : types::logical_type::BIGINT,
+                                         types::complex_logical_type{type == "TEXT"  ? types::logical_type::STRING_LITERAL
+                                                                     : type == "INT" ? types::logical_type::INTEGER
+                                                                                     : types::logical_type::BIGINT,
                                                                      col});
                 }
             }
@@ -552,7 +567,9 @@ namespace {
             }
             declared.push_back(std::move(d));
         }
-        replace_names(tree, resource, declared);
+        if (auto replaced = replace_names(tree, resource, declared); replaced.contains_error()) {
+            return replaced;
+        }
         return tree;
     }
 
@@ -800,9 +817,9 @@ TEST_CASE("integration::cpp::host_names::a_view_over_a_host_name") {
           components::catalog::well_known_oid::pg_namespace_table);
 }
 
-// Trino 483 checkViewStaleness: the host node the view was created over declares other columns now.
-TEST_CASE("integration::cpp::host_names::a_view_whose_host_node_changed_is_stale") {
-    HOST_TEST_BOILERPLATE("test_host_names/view_node_changed")
+// Trino 483 checkViewStaleness compares the view's output columns only: a column the host node gained is not read.
+TEST_CASE("integration::cpp::host_names::a_host_column_the_view_does_not_read_keeps_it_fresh") {
+    HOST_TEST_BOILERPLATE("test_host_names/view_node_grew")
     REQUIRE(run(dispatcher, declare_orders)->is_success());
     REQUIRE(run(dispatcher, "CREATE DATABASE loc;")->is_success());
     REQUIRE(run(dispatcher, "CREATE VIEW loc.ov AS SELECT id, amount FROM m2.shop.orders;")->is_success());
@@ -810,10 +827,30 @@ TEST_CASE("integration::cpp::host_names::a_view_whose_host_node_changed_is_stale
                 "INSERT INTO otterstax.remote_columns (tbl, col, type, ord) VALUES "
                 "('m2.shop.orders', 'label', 'TEXT', 3);")
                 ->is_success());
+    backend()["m2.shop.orders"] = {{1, 100, 7}, {2, 200, 8}, {3, 300, 9}};
+
+    auto read = run(dispatcher, "SELECT id, amount FROM loc.ov;");
+    INFO("error: " << (read->is_error() ? std::string{read->get_error().what} : std::string{}));
+    REQUIRE(read->is_success());
+    CHECK(sorted_int_rows(read) == std::vector<std::vector<int64_t>>{{1, 100}, {2, 200}, {3, 300}});
+}
+
+// The type of an output column is compared exactly: no coercion is inserted for a wider host type.
+TEST_CASE("integration::cpp::host_names::a_view_whose_output_column_changed_type_is_stale") {
+    HOST_TEST_BOILERPLATE("test_host_names/view_column_type")
+    REQUIRE(run(dispatcher,
+                "INSERT INTO otterstax.remote_columns (tbl, col, type, ord) VALUES "
+                "('m2.shop.orders', 'id', 'BIGINT', 1), ('m2.shop.orders', 'amount', 'INT', 2);")
+                ->is_success());
+    REQUIRE(run(dispatcher, "CREATE DATABASE loc;")->is_success());
+    REQUIRE(run(dispatcher, "CREATE VIEW loc.ov AS SELECT id, amount FROM m2.shop.orders;")->is_success());
+    REQUIRE(run(dispatcher, "SELECT id FROM loc.ov;")->is_success());
+    REQUIRE(run(dispatcher, "UPDATE otterstax.remote_columns SET type = 'BIGINT' WHERE col = 'amount';")->is_success());
 
     auto stale = run(dispatcher, "SELECT id FROM loc.ov;");
     REQUIRE(stale->is_error());
-    CHECK(std::string{stale->get_error().what}.find("view \"ov\" is stale") != std::string::npos);
+    CHECK(std::string{stale->get_error().what} ==
+          "view \"ov\" is stale: its column \"amount\" is now int8, it was created as int4; recreate the view");
 }
 
 TEST_CASE("integration::cpp::host_names::a_view_whose_host_name_is_gone_is_stale") {
@@ -826,6 +863,25 @@ TEST_CASE("integration::cpp::host_names::a_view_whose_host_name_is_gone_is_stale
     auto stale = run(dispatcher, "SELECT id FROM loc.ov;");
     REQUIRE(stale->is_error());
     CHECK(std::string{stale->get_error().what}.find("view \"ov\" is stale") != std::string::npos);
+}
+
+// A matview body is a query too: CREATE resolves through the view it names down to the host, REFRESH fills it.
+TEST_CASE("integration::cpp::host_names::a_matview_over_a_view_over_a_host_name") {
+    HOST_TEST_BOILERPLATE("test_host_names/matview_over_view")
+    REQUIRE(run(dispatcher, declare_orders)->is_success());
+    REQUIRE(run(dispatcher, "CREATE DATABASE loc;")->is_success());
+    REQUIRE(run(dispatcher, "CREATE VIEW loc.ov AS SELECT id, amount FROM m2.shop.orders;")->is_success());
+
+    auto created = run(dispatcher, "CREATE MATERIALIZED VIEW loc.mv AS SELECT id, amount FROM loc.ov WITH NO DATA;");
+    INFO("error: " << (created->is_error() ? std::string{created->get_error().what} : std::string{}));
+    REQUIRE(created->is_success());
+    auto refreshed = run(dispatcher, "REFRESH MATERIALIZED VIEW loc.mv;");
+    INFO("error: " << (refreshed->is_error() ? std::string{refreshed->get_error().what} : std::string{}));
+    REQUIRE(refreshed->is_success());
+
+    auto read = run(dispatcher, "SELECT id, amount FROM loc.mv;");
+    REQUIRE(read->is_success());
+    CHECK(sorted_int_rows(read) == std::vector<std::vector<int64_t>>{{1, 100}, {2, 200}, {3, 300}});
 }
 
 // A relation without columns still has rows: count(*) counts them, one batch or several.
@@ -1112,4 +1168,21 @@ TEST_CASE("integration::cpp::host_names::a_write_function_reads_the_validated_st
                                    "delete m2|shop|orders where column 0 left = parameter limit 1",
                                    "delete m2|shop|orders where all rows"});
     CHECK(backend()["m2.shop.orders"].empty());
+}
+
+// Trino 483 lower-cases every connector column name (ColumnMetadata); a host maps its remote names to lower case
+// itself, so a declared name otterbrix would never find by an unquoted reference is refused where it is declared.
+TEST_CASE("integration::cpp::host_names::a_host_column_name_must_be_lower_case") {
+    HOST_TEST_BOILERPLATE("test_host_names/column_case")
+    REQUIRE(run(dispatcher,
+                "INSERT INTO otterstax.remote_columns (tbl, col, type, ord) VALUES "
+                "('m2.shop.orders', 'id', 'BIGINT', 1), ('m2.shop.orders', 'Amount', 'BIGINT', 2);")
+                ->is_success());
+
+    for (const char* sql : {"SELECT id FROM m2.shop.orders;", "INSERT INTO m2.shop.orders (id) VALUES (4);"}) {
+        INFO(sql);
+        auto refused = run(dispatcher, sql);
+        REQUIRE(refused->is_error());
+        CHECK(std::string{refused->get_error().what} == "host column \"Amount\" must be lower case");
+    }
 }

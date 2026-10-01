@@ -1,5 +1,6 @@
 #include "operator_unregister_udf.hpp"
 
+#include "catalog_util.hpp"
 #include "operator_dynamic_cascade_delete.hpp"
 
 #include <components/base/collection_full_name.hpp>
@@ -8,6 +9,7 @@
 #include <core/result_wrapper.hpp>
 #include <services/disk/manager_disk.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <string>
@@ -36,10 +38,10 @@ namespace components::operators {
     actor_zeta::unique_future<void> operator_unregister_udf_t::await_async_and_resume(pipeline::context_t* ctx) {
         success_ = false;
 
-        // 1. Existence check against the dispatcher's master registry; the dispatcher drops the
-        //    overload from the master only once this operator succeeds.
+        // 1. The overload the master registry holds, if any: its pg_proc rows are the rows of its signatures. A
+        //    function a previous process registered has its rows only; they are the rows these inputs match.
         const auto* reg = ctx->function_registry;
-        bool exists = false;
+        const components::compute::function* live = nullptr;
         for (auto& [n, uid] : reg->get_functions()) {
             if (n != function_name_)
                 continue;
@@ -48,23 +50,14 @@ namespace components::operators {
                 continue;
             for (auto& sig : fn->get_signatures()) {
                 if (sig.matches_inputs(inputs_)) {
-                    exists = true;
+                    live = fn;
                     break;
                 }
             }
-            if (exists)
+            if (live != nullptr)
                 break;
         }
-        if (!exists) {
-            set_error(core::error_t{core::error_code_t::unrecognized_function,
-                                    std::pmr::string{"unregister_udf: no overload of '" + function_name_ +
-                                                         "' matching this signature is registered",
-                                                     resource_}});
-            mark_failed();
-            co_return;
-        }
 
-        // 2. Purge pg_proc + pg_depend rows for every namespace match.
 #ifdef DEV_MODE
         if (g_unregister_udf_purge_refusal.load()) {
             set_error(core::error_t{core::error_code_t::io_error,
@@ -74,6 +67,8 @@ namespace components::operators {
             co_return;
         }
 #endif
+        // 2. Drop each of those rows the way any DROP takes its dependents.
+        bool found = live != nullptr;
         if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
             components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
             auto [_rfbn, rfbnf] = actor_zeta::otterbrix::send(ctx->disk_address,
@@ -88,12 +83,38 @@ namespace components::operators {
                 mark_failed();
                 co_return;
             }
-            // No match is legitimate: a builtin or catalog-less mirror has nothing to scrub.
+            const auto live_rows = live != nullptr ? proc_signatures(resource_, *live)
+                                                   : std::pmr::vector<proc_signature_t>{resource_};
+            std::pmr::vector<components::catalog::oid_t> rows{resource_};
             for (const auto& m : matches_r.value()) {
+                bool drop = false;
+                if (live != nullptr) {
+                    drop = std::any_of(live_rows.begin(), live_rows.end(), [&m](const auto& row) {
+                        return row.proargmatchers == m.proargmatchers;
+                    });
+                } else {
+                    auto parameters = components::catalog::decode_proargmatchers(resource_, m.proargmatchers);
+                    if (parameters.has_error()) {
+                        set_error(parameters.error());
+                        mark_failed();
+                        co_return;
+                    }
+                    const components::compute::kernel_signature_t stored(
+                        components::compute::function_type_t::vector,
+                        std::move(parameters.value()),
+                        std::pmr::vector<components::compute::output_type>{resource_});
+                    drop = stored.matches_inputs(inputs_);
+                }
+                if (drop) {
+                    rows.push_back(m.oid);
+                }
+            }
+            found = found || !rows.empty();
+            for (const auto oid : rows) {
                 auto dropped = co_await drop_with_dependents(resource_,
                                                              ctx,
                                                              components::catalog::well_known_oid::pg_proc_table,
-                                                             m.oid,
+                                                             oid,
                                                              behavior_,
                                                              "function " + function_name_);
                 if (dropped.contains_error()) {
@@ -102,6 +123,14 @@ namespace components::operators {
                     co_return;
                 }
             }
+        }
+        if (!found) {
+            set_error(core::error_t{core::error_code_t::unrecognized_function,
+                                    std::pmr::string{"unregister_udf: no overload of '" + function_name_ +
+                                                         "' matching this signature is registered or in the catalog",
+                                                     resource_}});
+            mark_failed();
+            co_return;
         }
 
         success_ = true;

@@ -13,10 +13,10 @@ namespace components::operators {
     void dev_set_unregister_udf_purge_refusal(bool refuse) noexcept;
 #endif
 
-    // Operator implementation of manager_dispatcher_t::unregister_udf: checks the overload exists in
-    // the dispatcher's master registry (ctx->function_registry), then drops its pg_proc rows like DROP drops an
-    // object (a view calling it refuses RESTRICT, CASCADE drops the view). The dispatcher drops the overload
-    // from the master once this succeeds.
+    // Operator implementation of manager_dispatcher_t::unregister_udf: drops the pg_proc rows of the overload like
+    // DROP drops an object (a view calling it refuses RESTRICT, CASCADE drops the view) — the rows of its
+    // signatures when the dispatcher's master registry (ctx->function_registry) holds it, else the rows the inputs
+    // match, which a previous process left. The dispatcher drops a held overload from the master once this succeeds.
     class operator_unregister_udf_t final : public read_only_operator_t {
     public:
         operator_unregister_udf_t(std::pmr::memory_resource* resource,

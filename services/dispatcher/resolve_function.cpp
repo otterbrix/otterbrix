@@ -281,7 +281,8 @@ namespace services::dispatcher {
                      const function_registry_t& function_registry,
                      const qualified_name_t& name,
                      const std::pmr::vector<complex_logical_type>& arguments,
-                     components::compute::function_types_mask allowed_function_types) {
+                     components::compute::function_types_mask allowed_function_types,
+                     std::span<const components::compute::function_pin_t> pins) {
         VALUE_OR_RETURN(const auto scope, scope_of(resource, name));
         const std::string written = name.to_string();
 
@@ -295,12 +296,23 @@ namespace services::dispatcher {
             if (!in_scope(scope, uid)) {
                 continue;
             }
-            name_exists = true;
+            const auto pinned = [&pins, uid](size_t index) {
+                return pins.empty() || std::any_of(pins.begin(), pins.end(), [uid, index](const auto& pin) {
+                           return pin.uid == uid && pin.signature == index;
+                       });
+            };
+            name_exists = name_exists || pins.empty() ||
+                          std::any_of(pins.begin(), pins.end(), [uid](const auto& pin) { return pin.uid == uid; });
             auto* function = function_registry.get_function(uid);
             if (!function) {
                 continue;
             }
-            for (const auto& signature : function->get_signatures()) {
+            const auto signatures = function->get_signatures();
+            for (size_t index = 0; index < signatures.size(); ++index) {
+                const auto& signature = signatures[index];
+                if (!pinned(index)) {
+                    continue;
+                }
                 if (!components::compute::check_mask(allowed_function_types, signature.function_type)) {
                     rejected_by_context = true;
                     continue;
@@ -318,6 +330,7 @@ namespace services::dispatcher {
                 }
                 resolved_function_t resolved{resource};
                 resolved.uid = uid;
+                resolved.signature = index;
                 resolved.arguments = std::move(candidate->arguments);
                 resolved.result = std::move(candidate->result);
                 resolved.function_type = signature.function_type;

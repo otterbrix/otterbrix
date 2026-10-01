@@ -318,7 +318,8 @@ TEST_CASE("integration::cpp::test_udf_refusal_registry_state::a_seeded_builtin_r
     CHECK(pg_proc_rows_named(restarted, "count") == 1);
 }
 
-TEST_CASE("integration::cpp::test_udf_refusal_registry_state::a_leftover_is_replaced_not_unregistered") {
+// The row a previous process left can be unregistered without registering the function again.
+TEST_CASE("integration::cpp::test_udf_refusal_registry_state::a_leftover_is_unregistered") {
     const std::filesystem::path dir = integration_fixture_path("test_udf_refusal_registry_state/leftover_unregister");
     std::filesystem::remove_all(dir);
     auto config = test_helpers::make_test_config(dir);
@@ -333,12 +334,11 @@ TEST_CASE("integration::cpp::test_udf_refusal_registry_state::a_leftover_is_repl
 
     udf_refusal_spaces_t restarted(config);
     auto* dispatcher = restarted.dispatcher();
-    auto refused = dispatcher->unregister_udf(otterbrix::session_id_t(), kFuncName, {types::logical_type::BIGINT});
-    INFO("unregister_udf of a leftover: " << refused.what.c_str());
-    REQUIRE(refused.contains_error());
-    CHECK(refused.type == core::error_code_t::unrecognized_function);
-    CHECK(std::string{refused.what.c_str()}.find("previous process") != std::string::npos);
-    CHECK(pg_proc_rows_named(restarted, kFuncName) == 1);
+    auto dropped = dispatcher->unregister_udf(otterbrix::session_id_t(), kFuncName, {types::logical_type::BIGINT});
+    INFO("unregister_udf of a leftover: " << dropped.what.c_str());
+    REQUIRE_FALSE(dropped.contains_error());
+    CHECK(pg_proc_rows_named(restarted, kFuncName) == 0);
+    CHECK_FALSE(engine_serves(dispatcher, kFuncName));
 }
 
 // The catalog goes first: an unregister whose pg_proc purge refuses must leave the function where

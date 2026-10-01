@@ -5,10 +5,12 @@
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/expressions/udf_references.hpp>
 #include <components/logical_plan/node_extension.hpp>
+#include <components/physical_plan/operators/catalog_util.hpp>
 #include <components/planner/view_expansion.hpp>
 #include <services/dispatcher/validate_logical_plan.hpp>
 
 #include <algorithm>
+#include <cctype>
 
 namespace services::collection {
 
@@ -29,76 +31,98 @@ namespace services::collection {
             }
         }
 
-        void collect_udfs(const expressions::expression_ptr& expr, std::pmr::vector<components::compute::function_uid>& out);
+        // Every function call of the tree; an aggregate's call is the function expression under it.
+        template<typename Visit>
+        void for_each_call(const expressions::expression_ptr& expr, Visit& visit);
 
-        void collect_udfs(const expressions::param_storage& param,
-                          std::pmr::vector<components::compute::function_uid>& out) {
+        template<typename Visit>
+        void for_each_call(const expressions::param_storage& param, Visit& visit) {
             if (expressions::is_expr(param)) {
-                collect_udfs(expressions::as_expr(param), out);
+                for_each_call(expressions::as_expr(param), visit);
             }
         }
 
-        void add_uid(components::compute::function_uid uid, std::pmr::vector<components::compute::function_uid>& out) {
-            if (expressions::is_udf_uid(uid) && std::find(out.begin(), out.end(), uid) == out.end()) {
-                out.push_back(uid);
-            }
-        }
-
-        void collect_udfs(const expressions::expression_ptr& expr,
-                          std::pmr::vector<components::compute::function_uid>& out) {
+        template<typename Visit>
+        void for_each_call(const expressions::expression_ptr& expr, Visit& visit) {
             if (!expr) {
                 return;
             }
             switch (expr->group()) {
                 case expressions::expression_group::function: {
-                    const auto* f = static_cast<const expressions::function_expression_t*>(expr.get());
-                    add_uid(f->function_uid(), out);
+                    auto* f = static_cast<expressions::function_expression_t*>(expr.get());
+                    visit(*f);
                     for (const auto& a : f->args()) {
-                        collect_udfs(a, out);
+                        for_each_call(a, visit);
                     }
                     break;
                 }
-                case expressions::expression_group::aggregate: {
-                    const auto* a = static_cast<const expressions::aggregate_expression_t*>(expr.get());
-                    add_uid(a->function_uid(), out);
-                    for (const auto& p : a->params()) {
-                        collect_udfs(p, out);
-                    }
+                case expressions::expression_group::aggregate:
+                    for_each_call(static_cast<const expressions::aggregate_expression_t*>(expr.get())->child(), visit);
                     break;
-                }
                 case expressions::expression_group::scalar: {
                     for (const auto& p : static_cast<const expressions::scalar_expression_t*>(expr.get())->params()) {
-                        collect_udfs(p, out);
+                        for_each_call(p, visit);
                     }
                     break;
                 }
                 case expressions::expression_group::compare: {
                     const auto* c = static_cast<const expressions::compare_expression_t*>(expr.get());
-                    collect_udfs(c->left(), out);
-                    collect_udfs(c->right(), out);
+                    for_each_call(c->left(), visit);
+                    for_each_call(c->right(), visit);
                     for (const auto& child : c->children()) {
-                        collect_udfs(child, out);
+                        for_each_call(child, visit);
                     }
                     break;
                 }
                 case expressions::expression_group::cast:
-                    collect_udfs(static_cast<const expressions::cast_expression_t*>(expr.get())->child(), out);
+                    for_each_call(static_cast<const expressions::cast_expression_t*>(expr.get())->child(), visit);
                     break;
                 default:
                     break;
             }
         }
 
-        void collect_udfs(const node_t* node, std::pmr::vector<components::compute::function_uid>& out) {
+        template<typename Visit>
+        void for_each_call(const node_t* node, Visit& visit) {
             if (!node) {
                 return;
             }
             for (const auto& e : node->expressions()) {
-                collect_udfs(e, out);
+                for_each_call(e, visit);
             }
             for (const auto& c : node->children()) {
-                collect_udfs(c.get(), out);
+                for_each_call(c.get(), visit);
             }
+        }
+
+        std::string describe_matchers(std::pmr::memory_resource* resource, std::string_view proargmatchers) {
+            auto parameters = catalog::decode_proargmatchers(resource, proargmatchers);
+            if (parameters.has_error()) {
+                return std::string{proargmatchers};
+            }
+            std::string out;
+            for (const auto& parameter : parameters.value()) {
+                if (!out.empty()) {
+                    out += ", ";
+                }
+                out += parameter.is_variable() ? "anyelement"
+                                               : std::string{catalog::logical_type_to_pg_name(parameter.type().type())};
+            }
+            return out;
+        }
+
+        // "twice(int8)": the function as a pg_rewrite_ref 'f' row or a pg_proc row records it.
+        std::string describe_function(std::pmr::memory_resource* resource,
+                                      std::string_view name,
+                                      std::string_view proargmatchers) {
+            return std::string{name} + "(" + describe_matchers(resource, proargmatchers) + ")";
+        }
+
+        // refspec of an 'f' row: the pg_proc proargmatchers and prorettype of the signature it was bound to.
+        constexpr char function_spec_separator = ';';
+
+        std::string function_spec(const std::string& proargmatchers, const std::string& prorettype) {
+            return proargmatchers + function_spec_separator + prorettype;
         }
 
         void collect_host_nodes(std::pmr::memory_resource* resource,
@@ -126,50 +150,34 @@ namespace services::collection {
         return catalog::encode_type_spec(components::types::complex_logical_type::create_struct("host", fields));
     }
 
-    std::pmr::vector<std::pair<std::string, std::string>> host_node_specs(std::pmr::memory_resource* resource,
-                                                                          const node_t* root) {
-        std::pmr::vector<std::pair<std::string, std::string>> out{resource};
-        collect_host_nodes(resource, root, out);
-        return out;
-    }
-
     core::error_t check_expanded_view(std::pmr::memory_resource* resource,
                                       const components::logical_plan::resolved_table_metadata_t& view,
-                                      const node_t& body,
-                                      const std::pmr::vector<std::pair<std::string, std::string>>& host_nodes) {
-        for (const auto& binding : view.view_bindings) {
-            if (binding.refkind != components::logical_plan::view_refkind::host_node) {
-                continue;
-            }
-            const auto node = std::find_if(host_nodes.begin(), host_nodes.end(), [&](const auto& seen) {
-                return seen.first == binding.relname;
-            });
-            if (node == host_nodes.end()) {
-                return components::planner::view_stale_error(resource,
-                                                             view.name,
-                                                             "the host no longer answers its body with the node \"" +
-                                                                 binding.relname + "\"");
-            }
-            if (node->second != binding.refspec) {
-                return components::planner::view_stale_error(resource,
-                                                             view.name,
-                                                             "the host node \"" + binding.relname +
-                                                                 "\" declares other columns than at CREATE VIEW");
-            }
-        }
+                                      const node_t& body) {
         if (!body.has_output_types()) {
             return core::error_t::no_error();
         }
+        const auto stale = [&](const std::string& why) {
+            return components::planner::view_stale_error(resource, view.name, why);
+        };
         const auto& types = body.output_types();
-        bool same = types.size() == view.columns.size();
-        for (std::size_t i = 0; same && i < types.size(); ++i) {
-            same = types[i].has_alias() && types[i].alias() == view.columns[i].attname &&
-                   types[i] == view.columns[i].type;
+        if (types.size() != view.columns.size()) {
+            return stale("its body answers " + std::to_string(types.size()) + " columns, it was created with " +
+                         std::to_string(view.columns.size()));
         }
-        if (!same) {
-            return components::planner::view_stale_error(resource,
-                                                         view.name,
-                                                         "its body no longer answers the columns it was created with");
+        for (std::size_t i = 0; i < types.size(); ++i) {
+            const auto& stored = view.columns[i];
+            const std::string name = types[i].has_alias() ? types[i].alias() : std::string{};
+            if (!std::equal(name.begin(), name.end(), stored.attname.begin(), stored.attname.end(), [](char l, char r) {
+                    return std::tolower(static_cast<unsigned char>(l)) == std::tolower(static_cast<unsigned char>(r));
+                })) {
+                return stale("its column " + std::to_string(i + 1) + " is now \"" + name + "\", it was created as \"" +
+                             stored.attname + "\"");
+            }
+            if (!(types[i] == stored.type)) {
+                return stale("its column \"" + stored.attname + "\" is now " +
+                             dispatcher::validation::describe_type(types[i]) + ", it was created as " +
+                             dispatcher::validation::describe_type(stored.type));
+            }
         }
         return core::error_t::no_error();
     }
@@ -206,20 +214,178 @@ namespace services::collection {
         return core::error_t::no_error();
     }
 
-    std::pmr::vector<std::string> view_body_user_functions(std::pmr::memory_resource* resource,
-                                                           const node_t* body,
-                                                           const components::compute::function_registry_t& registry) {
-        std::pmr::vector<components::compute::function_uid> uids{resource};
-        collect_udfs(body, uids);
-        std::pmr::vector<std::string> names{resource};
-        for (const auto uid : uids) {
-            if (const auto* fn = registry.get_function(uid); fn != nullptr) {
-                if (std::find(names.begin(), names.end(), fn->name()) == names.end()) {
-                    names.push_back(fn->name());
+    std::pmr::vector<components::compute::function_pin_t> view_body_user_functions(std::pmr::memory_resource* resource,
+                                                                                   const node_t* body) {
+        std::pmr::vector<components::compute::function_pin_t> out{resource};
+        auto visit = [&out](const expressions::function_expression_t& call) {
+            const components::compute::function_pin_t use{call.function_uid(), call.signature()};
+            if (expressions::is_udf_uid(use.uid) && std::none_of(out.begin(), out.end(), [&use](const auto& seen) {
+                    return seen.uid == use.uid && seen.signature == use.signature;
+                })) {
+                out.push_back(use);
+            }
+        };
+        for_each_call(body, visit);
+        return out;
+    }
+
+    core::error_t describe_view_functions(std::pmr::memory_resource* resource,
+                                          components::logical_plan::node_create_view_t& view,
+                                          const components::compute::function_registry_t& registry,
+                                          std::span<const components::compute::function_pin_t> uses,
+                                          std::span<const services::disk::resolve_function_result_t> rows) {
+        auto bindings = view.bindings();
+        auto dependencies = view.dependencies();
+        for (const auto& use : uses) {
+            const auto* function = registry.get_function(use.uid);
+            if (function == nullptr) {
+                continue;
+            }
+            const auto signatures = components::operators::proc_signatures(resource, *function);
+            if (use.signature >= signatures.size()) {
+                continue;
+            }
+            const auto& signature = signatures[use.signature];
+            const auto row = std::find_if(rows.begin(), rows.end(), [&](const auto& r) {
+                return r.name == function->name() && r.proargmatchers == signature.proargmatchers;
+            });
+            if (row == rows.end()) {
+                return core::error_t{core::error_code_t::unrecognized_function,
+                                     std::pmr::string{"function " +
+                                                          describe_function(resource,
+                                                                            function->name(),
+                                                                            signature.proargmatchers) +
+                                                          " called by the view body has no pg_proc row",
+                                                      resource}};
+            }
+            catalog::view_binding_t binding;
+            binding.refkind = catalog::view_refkind::function;
+            binding.relname = function->name();
+            binding.refobjid = row->oid;
+            binding.refspec = function_spec(signature.proargmatchers, signature.prorettype);
+            bindings.push_back(std::move(binding));
+            add_dependency(dependencies, catalog::well_known_oid::pg_proc_table, row->oid);
+        }
+        view.set_bindings(std::move(bindings));
+        view.set_dependencies(std::move(dependencies));
+        return core::error_t::no_error();
+    }
+
+    std::pmr::vector<catalog::oid_t>
+    view_function_oids(std::pmr::memory_resource* resource,
+                       const components::logical_plan::resolved_table_metadata_t& view) {
+        std::pmr::vector<catalog::oid_t> out{resource};
+        for (const auto& binding : view.view_bindings) {
+            if (binding.refkind == catalog::view_refkind::function) {
+                out.push_back(binding.refobjid);
+            }
+        }
+        return out;
+    }
+
+    core::error_t pin_view_functions(std::pmr::memory_resource* resource,
+                                     const components::logical_plan::resolved_table_metadata_t& view,
+                                     std::span<const services::disk::resolve_function_result_t> rows,
+                                     const components::compute::function_registry_t& registry,
+                                     node_t* body) {
+        struct named_pin_t {
+            std::string name;
+            components::compute::function_pin_t pin;
+        };
+        std::pmr::vector<named_pin_t> pins{resource};
+        for (const auto& binding : view.view_bindings) {
+            if (binding.refkind != catalog::view_refkind::function) {
+                continue;
+            }
+            const auto separator = binding.refspec.find(function_spec_separator);
+            const std::string proargmatchers = binding.refspec.substr(0, separator);
+            const std::string prorettype =
+                separator == std::string::npos ? std::string{} : binding.refspec.substr(separator + 1);
+            const std::string pinned = describe_function(resource, binding.relname, proargmatchers);
+            const auto row = std::find_if(rows.begin(), rows.end(), [&binding](const auto& r) {
+                return r.oid == binding.refobjid;
+            });
+            const std::string created_over =
+                "function " + pinned + " it was created over (oid " + std::to_string(binding.refobjid) + ")";
+            if (row == rows.end()) {
+                return components::planner::view_stale_error(resource, view.name, created_over + " no longer exists");
+            }
+            if (row->name != binding.relname || row->proargmatchers != proargmatchers) {
+                return components::planner::view_stale_error(
+                    resource,
+                    view.name,
+                    created_over + " is now " + describe_function(resource, row->name, row->proargmatchers));
+            }
+            if (row->prorettype != prorettype) {
+                return components::planner::view_stale_error(resource,
+                                                             view.name,
+                                                             created_over + " returns another type now");
+            }
+            bool found = false;
+            for (const auto uid : registry.find_functions(binding.relname)) {
+                const auto* function = registry.get_function(uid);
+                if (function == nullptr || static_cast<std::uint64_t>(uid) != row->prouid) {
+                    continue;
+                }
+                const auto signatures = components::operators::proc_signatures(resource, *function);
+                for (std::size_t index = 0; index < signatures.size() && !found; ++index) {
+                    if (signatures[index].proargmatchers == proargmatchers &&
+                        signatures[index].prorettype == prorettype) {
+                        pins.push_back({binding.relname, {uid, index}});
+                        found = true;
+                    }
+                }
+            }
+            if (!found) {
+                return core::error_t{core::error_code_t::unrecognized_function,
+                                     std::pmr::string{"function " + pinned + " used by view \"" + view.name +
+                                                          "\" is not registered",
+                                                      resource}};
+            }
+        }
+        if (pins.empty()) {
+            return core::error_t::no_error();
+        }
+        auto stamp = [&pins, resource](expressions::function_expression_t& call) {
+            std::pmr::vector<components::compute::function_pin_t> own{resource};
+            for (const auto& pin : pins) {
+                if (pin.name == call.name()) {
+                    own.push_back(pin.pin);
+                }
+            }
+            if (!own.empty()) {
+                call.set_pins(std::move(own));
+            }
+        };
+        for_each_call(body, stamp);
+        return core::error_t::no_error();
+    }
+
+    std::pmr::vector<services::disk::resolve_function_result_t>
+    proc_rows_of(std::pmr::memory_resource* resource,
+                 const std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>>& per_key) {
+        std::pmr::vector<services::disk::resolve_function_result_t> out{resource};
+        for (const auto& chunks : per_key) {
+            for (const auto& chunk : chunks) {
+                for (std::uint64_t i = 0; i < chunk.size(); ++i) {
+                    services::disk::resolve_function_result_t r;
+                    r.found = true;
+                    r.oid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
+                    r.name = std::string{chunk.get_value<std::string_view>(1, i)};
+                    if (!chunk.is_null(4, i)) {
+                        r.prouid = chunk.get_value<std::uint64_t>(4, i);
+                    }
+                    if (!chunk.is_null(5, i)) {
+                        r.proargmatchers = std::string{chunk.get_value<std::string_view>(5, i)};
+                    }
+                    if (!chunk.is_null(6, i)) {
+                        r.prorettype = std::string{chunk.get_value<std::string_view>(6, i)};
+                    }
+                    out.push_back(std::move(r));
                 }
             }
         }
-        return names;
+        return out;
     }
 
     core::error_t describe_view_body(std::pmr::memory_resource* resource,
@@ -297,7 +463,9 @@ namespace services::collection {
             }
         }
 
-        for (auto& [name, spec] : host_node_specs(resource, view.body().get())) {
+        std::pmr::vector<std::pair<std::string, std::string>> host_nodes{resource};
+        collect_host_nodes(resource, view.body().get(), host_nodes);
+        for (auto& [name, spec] : host_nodes) {
             catalog::view_binding_t binding;
             binding.refkind = host_node;
             binding.relname = std::move(name);

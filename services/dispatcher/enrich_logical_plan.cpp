@@ -23,7 +23,6 @@
 #include <components/logical_plan/node_create_database.hpp>
 #include <components/logical_plan/node_create_index.hpp>
 #include <components/logical_plan/node_create_macro.hpp>
-#include <components/logical_plan/node_create_matview.hpp>
 #include <components/logical_plan/node_create_sequence.hpp>
 #include <components/logical_plan/node_create_type.hpp>
 #include <components/logical_plan/node_create_view.hpp>
@@ -412,10 +411,6 @@ namespace services::catalog_resolve {
                     const auto* d = static_cast<const node_create_constraint_t*>(node);
                     return {d->dbname(), d->relname(), d->ref_relname(), {}, {}, d->ref_dbname()};
                 }
-                case node_type::create_matview_t: {
-                    const auto* d = static_cast<const node_create_matview_t*>(node);
-                    return {d->source_dbname(), d->source_relname(), {}, d->dbname()};
-                }
                 case node_type::refresh_matview_t: {
                     const auto* d = static_cast<const node_refresh_matview_t*>(node);
                     return {d->dbname(), d->matviewname(), {}};
@@ -477,73 +472,6 @@ namespace services::catalog_resolve {
                                  components::logical_plan::host_write_target(*node) != nullptr};
         }
     } // namespace
-
-    static std::vector<components::table::column_definition_t>
-    derive_matview_output_schema(const components::logical_plan::node_t* body_plan,
-                                 const components::logical_plan::resolved_table_metadata_t* source_md) {
-        using namespace components::logical_plan;
-        std::vector<components::table::column_definition_t> out;
-        if (!body_plan || !source_md) {
-            return out;
-        }
-        if (body_plan->type() != node_type::aggregate_t) {
-            return out;
-        }
-        const node_t* select_node = nullptr;
-        const node_t* group_node = nullptr;
-        for (const auto& c : body_plan->children()) {
-            if (!c) {
-                continue;
-            }
-            if (c->type() == node_type::select_t) {
-                select_node = c.get();
-            } else if (c->type() == node_type::group_t) {
-                group_node = c.get();
-            }
-        }
-        const node_t* target_list =
-            select_node != nullptr && !select_node->expressions().empty() ? select_node : group_node;
-        if (target_list == nullptr) {
-            return out;
-        }
-        const auto& exprs = target_list->expressions();
-        out.reserve(exprs.size());
-        for (const auto& expr : exprs) {
-            if (!expr) {
-                return {};
-            }
-            if (auto* key_expr = dynamic_cast<components::expressions::scalar_expression_t*>(expr.get());
-                key_expr != nullptr && key_expr->type() == components::expressions::scalar_type::group_field) {
-                continue;
-            }
-            auto* sc = dynamic_cast<components::expressions::scalar_expression_t*>(expr.get());
-            if (!sc) {
-                return {};
-            }
-            if (sc->type() != components::expressions::scalar_type::get_field) {
-                return {};
-            }
-            const auto& key_storage = sc->key().storage();
-            if (key_storage.empty()) {
-                return {};
-            }
-            const std::string col_name(key_storage.back().c_str(), key_storage.back().size());
-            bool found = false;
-            for (const auto& src_col : source_md->columns) {
-                if (src_col.attname == col_name) {
-                    components::table::column_definition_t def(col_name, src_col.type);
-                    def.set_atttypid(static_cast<std::uint32_t>(src_col.atttypid));
-                    out.emplace_back(std::move(def));
-                    found = true;
-                    break;
-                }
-            }
-            if (!found) {
-                return {};
-            }
-        }
-        return out;
-    }
 
     void stamp_table_has_indexes(components::logical_plan::node_t* root,
                                  components::catalog::oid_t table_oid,
@@ -678,23 +606,6 @@ namespace services::catalog_resolve {
                             auto* d = static_cast<node_create_macro_t*>(n);
                             if (rn && rn->namespace_oid() != components::catalog::INVALID_OID) {
                                 d->set_namespace_oid(rn->namespace_oid());
-                            }
-                            break;
-                        }
-                        case node_type::create_matview_t: {
-                            auto* d = static_cast<node_create_matview_t*>(n);
-                            if (rn && rn->namespace_oid() != components::catalog::INVALID_OID) {
-                                d->set_namespace_oid(rn->namespace_oid());
-                            }
-                            if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
-                                d->set_source_table_oid(rt->table_oid());
-                            }
-                            if (rt && rt->resolved_metadata() && d->body_plan()) {
-                                auto cols = derive_matview_output_schema(d->body_plan().get(),
-                                                                         &rt->resolved_metadata().value());
-                                if (!cols.empty()) {
-                                    d->set_inferred_columns(std::move(cols));
-                                }
                             }
                             break;
                         }
@@ -1548,8 +1459,6 @@ namespace services::dispatcher {
                     return "CREATE TABLE";
                 case node_type::create_view_t:
                     return "CREATE VIEW";
-                case node_type::create_matview_t:
-                    return "CREATE MATERIALIZED VIEW";
                 case node_type::create_sequence_t:
                     return "CREATE SEQUENCE";
                 case node_type::create_index_t:

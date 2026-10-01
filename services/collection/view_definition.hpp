@@ -1,5 +1,6 @@
 #pragma once
 
+#include <components/catalog/results/resolve_result.hpp>
 #include <components/compute/function.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/node_create_view.hpp>
@@ -34,25 +35,47 @@ namespace services::collection {
                                          const components::logical_plan::resolved_table_metadata_t& existing,
                                          std::span<const components::catalog::oid_t> read_views);
 
-    // Names of the user functions the body calls (PostgreSQL 18 records them like any other object).
-    std::pmr::vector<std::string> view_body_user_functions(std::pmr::memory_resource* resource,
-                                                           const components::logical_plan::node_t* body,
-                                                           const components::compute::function_registry_t& registry);
+    // The user functions the validated body calls, each with the kernel signature its call was resolved to.
+    std::pmr::vector<components::compute::function_pin_t>
+    view_body_user_functions(std::pmr::memory_resource* resource, const components::logical_plan::node_t* body);
+
+    // PostgreSQL 18 records the function a view calls by oid (FuncExpr.funcid): an 'f' pg_rewrite_ref row per
+    // function and signature the body calls (its name, the oid of the pg_proc row of that signature, the signature as
+    // that row stores it) and a pg_depend edge to that row. `rows` are the pg_proc rows of the functions' names.
+    core::error_t describe_view_functions(std::pmr::memory_resource* resource,
+                                          components::logical_plan::node_create_view_t& view,
+                                          const components::compute::function_registry_t& registry,
+                                          std::span<const components::compute::function_pin_t> uses,
+                                          std::span<const services::disk::resolve_function_result_t> rows);
+
+    // The pg_proc oids of the view's 'f' rows, for the read that pins them.
+    std::pmr::vector<components::catalog::oid_t>
+    view_function_oids(std::pmr::memory_resource* resource,
+                       const components::logical_plan::resolved_table_metadata_t& view);
+
+    // A read of a view calls the functions CREATE VIEW bound its body to: each 'f' row's oid still is that name and
+    // signature in pg_proc (`rows`, read by oid; else the view is stale), and this process holds it (else it is
+    // not registered). Every call of the body by that name then resolves among the pinned signatures alone.
+    core::error_t pin_view_functions(std::pmr::memory_resource* resource,
+                                     const components::logical_plan::resolved_table_metadata_t& view,
+                                     std::span<const services::disk::resolve_function_result_t> rows,
+                                     const components::compute::function_registry_t& registry,
+                                     components::logical_plan::node_t* body);
+
+    // pg_proc chunks of a read by oid as rows.
+    std::pmr::vector<services::disk::resolve_function_result_t>
+    proc_rows_of(std::pmr::memory_resource* resource,
+                 const std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>>& per_key);
 
     // A host node's declared columns as one comparable text.
     std::string host_node_spec(std::pmr::memory_resource* resource,
                                const std::pmr::vector<components::types::complex_logical_type>& columns);
 
-    // A read of a view is what CREATE VIEW recorded (Trino 483 checkViewStaleness): the validated body answers the
-    // stored columns with their types, and every host node the view was created over declares the same columns.
-    core::error_t
-    check_expanded_view(std::pmr::memory_resource* resource,
-                        const components::logical_plan::resolved_table_metadata_t& view,
-                        const components::logical_plan::node_t& body,
-                        const std::pmr::vector<std::pair<std::string, std::string>>& host_nodes);
-
-    // Every host node of the tree by name, with its spec.
-    std::pmr::vector<std::pair<std::string, std::string>> host_node_specs(std::pmr::memory_resource* resource,
-                                                                          const components::logical_plan::node_t* root);
+    // A read of a view is what CREATE VIEW recorded (Trino 483 checkViewStaleness): the validated body answers as
+    // many columns as were stored, each named the same without regard to case and of exactly the stored type. A host
+    // node's own columns are not compared: one the view does not read cannot make it stale.
+    core::error_t check_expanded_view(std::pmr::memory_resource* resource,
+                                      const components::logical_plan::resolved_table_metadata_t& view,
+                                      const components::logical_plan::node_t& body);
 
 } // namespace services::collection

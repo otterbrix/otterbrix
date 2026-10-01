@@ -325,7 +325,18 @@ namespace components::planner {
                                                             oid_batch,
                                                             cv->bindings(),
                                                             cv->dependencies(),
-                                                            /*write_class_row=*/!replacing);
+                                                            /*write_class_row=*/!replacing,
+                                                            cv->materialized() ? catalog::relkind::materialized_view
+                                                                               : catalog::relkind::view);
+            if (cv->materialized()) {
+                // The heap and the catalog rows go in one operator, which undoes the heap if a row is refused.
+                auto mv = logical_plan::make_node_create_matview(r, core::matviewname_t{cv->viewname()});
+                mv->set_namespace_oid(ns_oid);
+                mv->set_matview_oid(view_oid);
+                mv->set_columns({cv->columns().begin(), cv->columns().end()});
+                mv->set_catalog_writes(std::move(writes));
+                return mv;
+            }
             for (auto& w : writes) {
                 seq->append_child(make_catalog_write(r, w.table_oid, std::move(w.row)));
             }
@@ -350,42 +361,6 @@ namespace components::planner {
                 seq->append_child(make_catalog_write(r, w.table_oid, std::move(w.row)));
             }
             return seq;
-        }
-
-        // Stamp-only: unlike the other CREATE rewrites, this stamps mv_oid/catalog_writes onto the node.
-        node_ptr rewrite_create_matview(std::pmr::memory_resource* r, node_ptr node, catalog::oid_batch_t& oid_batch) {
-            auto* cm = static_cast<logical_plan::node_create_matview_t*>(node.get());
-            // Non-const: build_create_table_writes stamps attoids back onto these columns.
-            auto& cols = cm->inferred_columns();
-            if (cols.empty()) {
-                return node;
-            }
-            const catalog::oid_t ns_oid = cm->namespace_oid();
-            const catalog::oid_t source_oid = cm->source_table_oid();
-            const catalog::oid_t mv_oid = oid_batch.peek();
-
-            auto writes = catalog::build_create_table_writes(r,
-                                                             /*dbname=*/std::string{},
-                                                             cm->matviewname(),
-                                                             cols,
-                                                             ns_oid,
-                                                             oid_batch,
-                                                             catalog::relkind::materialized_view);
-            const catalog::oid_t rule_oid = oid_batch.allocate();
-            auto rewrite_writes = catalog::build_matview_rewrite_writes(r,
-                                                                        mv_oid,
-                                                                        rule_oid,
-                                                                        cm->matviewname(),
-                                                                        cm->body_sql(),
-                                                                        source_oid);
-
-            cm->set_matview_oid(mv_oid);
-            std::vector<catalog::catalog_write_t> all_writes;
-            all_writes.reserve(writes.size() + rewrite_writes.size());
-            for (auto& w : writes) all_writes.push_back(std::move(w));
-            for (auto& w : rewrite_writes) all_writes.push_back(std::move(w));
-            cm->set_catalog_writes(std::move(all_writes));
-            return node;
         }
 
         // STRUCT reuses build_create_table_writes to sidestep the flat-text type_spec roundtrip bug.
@@ -614,6 +589,10 @@ namespace components::planner {
                         drop->set_computed(true);
                     } else {
                         drop->set_behavior(sub.behavior);
+                        drop->set_relation_label(
+                            (alter->relkind() == catalog::relkind::materialized_view ? "materialized view "
+                                                                                     : "table ") +
+                            (alter->dbname().empty() ? alter->relname() : alter->dbname() + "." + alter->relname()));
                     }
                     seq->append_child(drop);
                 } else if (sub.kind == logical_plan::alter_table_kind::drop_constraint) {
@@ -656,8 +635,6 @@ namespace components::planner {
                     return rewrite_create_view(r, node, oid_batch);
                 case node_type::create_macro_t:
                     return rewrite_create_macro(r, node, oid_batch);
-                case node_type::create_matview_t:
-                    return rewrite_create_matview(r, node, oid_batch);
                 case node_type::refresh_matview_t:
                     // The executor runs REFRESH as statements of its own; it never reaches here.
                     return node;
@@ -760,11 +737,6 @@ namespace components::planner {
             }
             case nt::create_macro_t:
                 return 2;
-            case nt::create_matview_t: {
-                const auto* cm = static_cast<const logical_plan::node_create_matview_t*>(node);
-                // Empty inferred columns → rewrite_create_matview returns the node unchanged, consuming nothing.
-                return cm->inferred_columns().empty() ? std::size_t{0} : std::size_t{2} + cm->inferred_columns().size();
-            }
             case nt::create_index_t:
                 return 1;
             case nt::create_constraint_t:

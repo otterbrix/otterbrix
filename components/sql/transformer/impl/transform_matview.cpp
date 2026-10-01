@@ -1,10 +1,8 @@
 #include "view_body_text.hpp"
 
-#include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
-#include <components/logical_plan/node_create_matview.hpp>
+#include <components/logical_plan/node_create_view.hpp>
 #include <components/logical_plan/node_refresh_matview.hpp>
-#include <components/logical_plan/node_sequence.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 
@@ -33,49 +31,40 @@ namespace components::sql::transform {
                                  resource_});
         }
 
-        // 1. Body SQL — stored in pg_rewrite.ev_action verbatim; must match what the user
-        //    wrote (view_body_text.hpp).
+        // The column names come from the body; a list naming them otherwise would be dropped silently.
+        if (cs.into->colNames != nullptr && list_length(cs.into->colNames) > 0) {
+            return core::error_t(core::error_code_t::sql_parse_error,
+                                 std::pmr::string{"CREATE MATERIALIZED VIEW with a column name list is not supported "
+                                                  "yet",
+                                                  resource_});
+        }
+
+        // The body is bound as a view's is (transform_create_view): stored verbatim, run through the canonical path.
         VALUE_OR_RETURN(
             auto body_sql,
             view_body_text(resource_, raw_sql_, cs.query_location, cs.query_end_location, "CREATE MATERIALIZED VIEW"));
-
-        // 2. Body plan — transform_select returns the consumer aggregate (NOT
-        // wrapped with catalog_resolve_*). We hoist the source resolves below
-        // so Pass 1 stamps source metadata visible to the planner.
-        VALUE_OR_RETURN(auto body_aggregate, transform_select(pg_cast<SelectStmt>(*cs.query), plan));
-        if (!body_aggregate) {
+        const auto sub_queries_before = plan->sub_queries.size();
+        VALUE_OR_RETURN(auto body, transform_select(pg_cast<SelectStmt>(*cs.query), plan));
+        if (!body) {
             return core::error_t(core::error_code_t::sql_parse_error,
                                  std::pmr::string{"materialized view body lowered to an empty plan", resource_});
         }
-
-        // 3. Source identity from the body's aggregate (single-table FROM).
-        std::string source_db;
-        std::string source_rel;
-        if (body_aggregate->type() == logical_plan::node_type::aggregate_t) {
-            auto* agg = static_cast<const logical_plan::node_aggregate_t*>(body_aggregate.get());
-            source_db = static_cast<const std::string&>(agg->dbname());
-            source_rel = static_cast<const std::string&>(agg->relname());
+        if (plan->sub_queries.size() != sub_queries_before) {
+            return core::error_t(
+                core::error_code_t::sql_parse_error,
+                std::pmr::string{"a materialized view body containing a sub-query is not supported yet", resource_});
         }
 
-        // 4. Matview target identity.
         auto target_qn = rangevar_to_qualified_name(cs.into->rel);
-        const std::string mv_name = target_qn.collection;
-
-        // 5. Build matview node carrying body plan as child[0].
-        auto matview_node = logical_plan::make_node_create_matview(resource_,
-                                                                   core::matviewname_t{mv_name},
-                                                                   core::body_sql_t{std::move(body_sql)});
-        matview_node->set_body_plan(body_aggregate);
-
-        // 6. Both identities stay ON the node — enrich binds each to a resolved
-        // entry by name and stamps namespace_oid + source_table_oid + the source's
-        // columns (which the planner's derive_output_schema needs) from there.
-        const std::string mv_db = set_target(*matview_node, target_qn);
-        matview_node->set_source_dbname(source_db);
-        matview_node->set_source_relname(source_rel);
-        register_catalog_resolve_namespace(resource_, &catalog_resolves_, mv_db);
-        register_catalog_resolve_table(resource_, &catalog_resolves_, source_db, source_rel);
-        return matview_node;
+        auto matview = logical_plan::make_node_create_view(resource_,
+                                                           core::viewname_t{target_qn.collection},
+                                                           core::query_sql_t{std::move(body_sql)});
+        matview->set_materialized(true);
+        matview->append_child(std::move(body));
+        const std::string db_for_resolve = set_target(*matview, target_qn);
+        register_catalog_resolve_namespace(resource_, &catalog_resolves_, db_for_resolve);
+        register_catalog_resolve_types(resource_, &catalog_resolves_, cast_type_names_);
+        return matview;
     }
 
     core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_refresh_matview(RefreshMatViewStmt& rs) {

@@ -18,14 +18,6 @@
 
 namespace components::operators {
     namespace catalog = components::catalog;
-    namespace {
-        bool function_exists(const components::compute::function_registry_t& registry, const std::string& name) {
-            const auto functions = registry.get_functions();
-            return std::any_of(functions.begin(), functions.end(), [&name](const auto& function) {
-                return function.first == name;
-            });
-        }
-    } // namespace
 
     operator_register_udf_t::operator_register_udf_t(std::pmr::memory_resource* resource,
                                                      log_t log,
@@ -46,15 +38,16 @@ namespace components::operators {
         }
 
         const std::string func_name = function_->name();
-        const auto func_signatures = function_->get_signatures();
+        const auto signatures = proc_signatures(resource_, *function_);
 
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
-        // 1. Cross-namespace conflict detection: a pg_proc row with this function name, in any namespace, is
-        //    a conflict — unless it is a leftover: outside pg_catalog, whose rows the engine seeds, while no
-        //    function of that name is live. A UDF's code lives in its client, so the row a previous
-        //    process wrote outlives the function - it is replaced below rather than refusing the name for good.
-        std::pmr::vector<catalog::oid_t> overwritten_funcs(resource_);
+        // 1. PostgreSQL 18 ProcedureCreate, one pg_proc row per kernel signature: a row with this name and these
+        //    inputs is kept (oid, and the edges of what depends on it) and rewritten, because prouid belongs to this
+        //    process; other inputs are another function, a row of its own next to the old ones. A name the engine
+        //    seeded (pg_catalog) is not taken. A signature the executors already hold was refused before this runs.
+        std::pmr::vector<catalog::oid_t> row_oids(signatures.size(), catalog::INVALID_OID, resource_);
+        std::pmr::vector<catalog::oid_t> rewritten(resource_);
         if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
             auto [_rfbn, rfbnf] = actor_zeta::otterbrix::send(ctx->disk_address,
                                                               &services::disk::manager_disk_t::resolve_function_by_name,
@@ -69,13 +62,9 @@ namespace components::operators {
                 co_return;
             }
             const auto& matches = matches_r.value();
-            const bool engine_row = std::any_of(matches.begin(), matches.end(), [](const auto& m) {
-                return m.namespace_oid == catalog::well_known_oid::pg_catalog_namespace;
-            });
-            if (!matches.empty() && (engine_row || function_exists(*ctx->function_registry, func_name))) {
-                // A pg_proc row with this name already exists in SOME namespace. Name it:
-                // "collision" and "the catalog write failed" are different accidents and the
-                // caller has to be able to tell them apart.
+            if (std::any_of(matches.begin(), matches.end(), [](const auto& m) {
+                    return m.namespace_oid == catalog::well_known_oid::pg_catalog_namespace;
+                })) {
                 set_error(core::error_t{
                     core::error_code_t::already_exists,
                     std::pmr::string{"register_udf: a function named '" + func_name + "' already exists in the catalog",
@@ -83,8 +72,24 @@ namespace components::operators {
                 mark_failed();
                 co_return;
             }
-            for (const auto& m : matches) {
-                overwritten_funcs.push_back(m.oid);
+            for (std::size_t i = 0; i < signatures.size(); ++i) {
+                const auto existing = std::find_if(matches.begin(), matches.end(), [&](const auto& m) {
+                    return m.proargmatchers == signatures[i].proargmatchers;
+                });
+                if (existing == matches.end()) {
+                    continue;
+                }
+                if (existing->prorettype != signatures[i].prorettype) {
+                    set_error(core::error_t{core::error_code_t::already_exists,
+                                            std::pmr::string{"register_udf: cannot change return type of existing "
+                                                             "function \"" +
+                                                                 func_name + "\"\nHINT: Use unregister_udf first.",
+                                                             resource_}});
+                    mark_failed();
+                    co_return;
+                }
+                row_oids[i] = existing->oid;
+                rewritten.push_back(existing->oid);
             }
         }
 
@@ -112,13 +117,15 @@ namespace components::operators {
         //    here, before the dispatcher adds the function to its master registry, so a refusal leaves the
         //    master without a function the catalog has no row for.
         if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
-            catalog::oid_t fn_oid = catalog::INVALID_OID;
-            {
+            for (auto& oid : row_oids) {
+                if (oid != catalog::INVALID_OID) {
+                    continue;
+                }
                 auto [_oa, oaf] = actor_zeta::otterbrix::send(ctx->disk_address,
                                                               &services::disk::manager_disk_t::allocate_oids_batch,
                                                               std::size_t{1});
                 auto allocated = co_await std::move(oaf);
-                if (auto ec_oid = single_oid_from_round(resource_, std::move(allocated), "register_udf", fn_oid);
+                if (auto ec_oid = single_oid_from_round(resource_, std::move(allocated), "register_udf", oid);
                     ec_oid.contains_error()) {
                     set_error(std::move(ec_oid));
                     mark_failed();
@@ -162,31 +169,11 @@ namespace components::operators {
                 }
             }
 
-            std::int32_t pronargs =
-                func_signatures.empty() ? 0 : static_cast<std::int32_t>(func_signatures.front().input_types.size());
-            std::int64_t prouid = uids.empty() ? std::int64_t{0} : static_cast<std::int64_t>(uids.front());
-            // Encode the first signature's per-arg matchers + output types so
-            // the function registry can reconstruct real signatures across restart.
-            std::string proargmatchers;
-            std::string prorettype;
-            if (!func_signatures.empty()) {
-                std::vector<components::compute::parameter_type> parameters;
-                parameters.reserve(func_signatures.front().input_types.size());
-                for (auto& it : func_signatures.front().input_types) {
-                    parameters.push_back(it);
-                }
-                proargmatchers = catalog::encode_proargmatchers(parameters);
-                std::vector<components::compute::output_type> outs;
-                outs.reserve(func_signatures.front().output_types.size());
-                for (auto& ot : func_signatures.front().output_types) {
-                    outs.push_back(ot);
-                }
-                prorettype = catalog::encode_prorettype(outs);
-            }
+            const std::int64_t prouid = uids.empty() ? std::int64_t{0} : static_cast<std::int64_t>(uids.front());
 
-            if (!overwritten_funcs.empty()) {
+            if (!rewritten.empty()) {
                 std::pmr::vector<std::size_t> pg_proc_specs(resource_);
-                auto specs = stage_function_deletes(resource_, ctx, overwritten_funcs, pg_proc_specs);
+                auto specs = stage_function_row_deletes(resource_, ctx, rewritten, pg_proc_specs);
                 auto [_d, df] =
                     actor_zeta::otterbrix::send(ctx->disk_address,
                                                 &services::disk::manager_disk_t::delete_pg_catalog_rows_many,
@@ -210,14 +197,19 @@ namespace components::operators {
                 }
             }
 
-            auto fn_writes = catalog::build_create_function_writes(resource_,
-                                                                   func_name,
-                                                                   target_ns,
-                                                                   fn_oid,
-                                                                   pronargs,
-                                                                   prouid,
-                                                                   std::move(proargmatchers),
-                                                                   std::move(prorettype));
+            std::vector<catalog::catalog_write_t> fn_writes;
+            for (std::size_t i = 0; i < signatures.size(); ++i) {
+                for (auto& w : catalog::build_create_function_writes(resource_,
+                                                                     func_name,
+                                                                     target_ns,
+                                                                     row_oids[i],
+                                                                     signatures[i].pronargs,
+                                                                     prouid,
+                                                                     signatures[i].proargmatchers,
+                                                                     signatures[i].prorettype)) {
+                    fn_writes.push_back(std::move(w));
+                }
+            }
             // Two-phase: the pg_proc/pg_depend writes are independent (no
             // iteration consumes the previous result), so send all rows first
             // then await in order.

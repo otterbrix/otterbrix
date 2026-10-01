@@ -45,6 +45,7 @@
 #include <components/logical_plan/node_transaction.hpp>
 #include <components/logical_plan/node_update.hpp>
 #include <components/logical_plan/param_storage.hpp>
+#include <components/physical_plan/operators/operator_data.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
 #include <components/planner/optimizer.hpp>
 #include <components/planner/view_expansion.hpp>
@@ -512,8 +513,7 @@ namespace services::collection::executor {
             original_type == node_type::create_sequence_t || original_type == node_type::create_view_t ||
             original_type == node_type::create_macro_t || original_type == node_type::create_type_t ||
             original_type == node_type::create_index_t || original_type == node_type::drop_t ||
-            original_type == node_type::create_database_t || original_type == node_type::alter_table_t ||
-            original_type == node_type::create_matview_t;
+            original_type == node_type::create_database_t || original_type == node_type::alter_table_t;
         const bool is_plan_only_explain = plan.explain == components::logical_plan::explain_type::plan;
         const bool needs_dml_txn =
             !is_plan_only_explain && (original_type == node_type::insert_t || original_type == node_type::update_t ||
@@ -557,8 +557,9 @@ namespace services::collection::executor {
         const std::size_t own_tables = own_entries(plan.catalog_resolves.tables);
         const std::size_t own_types = own_entries(plan.catalog_resolves.types);
         // Every view this statement reads, as its catalog row described it before the expansion.
+        // The body is read back as the first child of the view's reference: the host may replace the body's own root.
         struct expanded_view_t {
-            components::logical_plan::node_ptr body;
+            components::logical_plan::node_ptr reference;
             components::logical_plan::resolved_table_metadata_t view;
         };
         std::pmr::vector<expanded_view_t> expanded_views{resource()};
@@ -603,10 +604,13 @@ namespace services::collection::executor {
                 return out + "\"";
             };
             const std::string target = quoted(refresh->dbname()) + "." + quoted(refresh->matviewname());
+            // The rows come from a read of the matview itself that runs its stored body, pinned to what CREATE bound
+            // and checked against its columns as a view's read is; re-parsing the text as `INSERT INTO mv <body>`
+            // would look every body name up again.
             std::pmr::vector<std::string> statements{resource()};
             statements.push_back("DELETE FROM " + target + ";");
             if (refresh->with_data()) {
-                statements.push_back("INSERT INTO " + target + " " + matview->view_sql);
+                statements.push_back("INSERT INTO " + target + " SELECT * FROM " + target + ";");
             }
             for (const auto& sql : statements) {
                 auto parsed = components::planner::parse_statement(resource(), sql, "materialized view refresh");
@@ -615,6 +619,12 @@ namespace services::collection::executor {
                 }
                 auto step = std::move(parsed.value());
                 step.commits_when_done = false;
+                if (step.catalog_resolves.tables) {
+                    for (auto& entry : step.catalog_resolves.tables->entries()) {
+                        entry.expands_matview =
+                            entry.dbname == refresh->dbname() && entry.relname == refresh->matviewname();
+                    }
+                }
                 auto done = co_await execute_statement_(session, std::move(step), session_ctx, host_names);
                 if (done.cursor->is_error()) {
                     co_return done;
@@ -670,6 +680,30 @@ namespace services::collection::executor {
                         err.contains_error()) {
                         co_return execute_result_t{make_cursor(resource(), std::move(err))};
                     }
+                    if (auto function_oids = view_function_oids(resource(), views[i]); !function_oids.empty()) {
+                        std::pmr::vector<std::uint64_t> key_columns{resource()};
+                        key_columns.push_back(0);
+                        auto [_rp, rpf] = actor_zeta::otterbrix::send(
+                            disk_address_,
+                            &services::disk::manager_disk_t::read_chunks_by_keys,
+                            components::execution_context_t{session, resolve_txn, {}},
+                            components::catalog::well_known_oid::pg_proc_table,
+                            std::move(key_columns),
+                            components::operators::make_keys_chunk(resource(), function_oids),
+                            std::pmr::vector<std::uint64_t>{resource()});
+                        auto proc_chunks = co_await std::move(rpf);
+                        if (proc_chunks.has_error()) {
+                            co_return execute_result_t{make_cursor(resource(), proc_chunks.error())};
+                        }
+                        if (auto err = pin_view_functions(resource(),
+                                                          views[i],
+                                                          proc_rows_of(resource(), proc_chunks.value()),
+                                                          function_registry_,
+                                                          body.plan.get());
+                            err.contains_error()) {
+                            co_return execute_result_t{make_cursor(resource(), std::move(err))};
+                        }
+                    }
                     components::planner::renumber_body_parameters(resource(),
                                                                   body.plan.get(),
                                                                   body.params,
@@ -685,7 +719,7 @@ namespace services::collection::executor {
                         err.contains_error()) {
                         co_return execute_result_t{make_cursor(resource(), std::move(err))};
                     }
-                    expanded_views.push_back({std::move(projected), std::move(views[i])});
+                    expanded_views.push_back({components::logical_plan::node_ptr{ref.node}, std::move(views[i])});
                 }
                 if (services::catalog_resolve::has_unresolved_entries(plan.catalog_resolves)) {
                     std::pmr::vector<components::logical_plan::node_ptr> resolve_nodes{resource()};
@@ -1267,30 +1301,39 @@ namespace services::collection::executor {
                         break;
                     }
                 }
-                auto dependencies = view->dependencies();
+                const auto functions = view_body_user_functions(resource(), body.get());
+                if (functions.empty() || disk_address_ == actor_zeta::address_t::empty_address()) {
+                    break;
+                }
                 const components::execution_context_t proc_ctx{session, resolve_txn, {}};
-                const bool has_catalog = disk_address_ != actor_zeta::address_t::empty_address();
-                for (const auto& name : view_body_user_functions(resource(), body.get(), function_registry_)) {
-                    if (!has_catalog) {
-                        break;
+                std::pmr::vector<std::string> names{resource()};
+                std::pmr::vector<services::disk::resolve_function_result_t> rows{resource()};
+                for (const auto& use : functions) {
+                    const auto* function = function_registry_.get_function(use.uid);
+                    if (function == nullptr ||
+                        std::find(names.begin(), names.end(), function->name()) != names.end()) {
+                        continue;
                     }
+                    names.push_back(function->name());
                     auto [_rf, rff] =
                         actor_zeta::otterbrix::send(disk_address_,
                                                     &services::disk::manager_disk_t::resolve_function_by_name,
                                                     proc_ctx,
-                                                    name);
+                                                    function->name());
                     auto procs = co_await std::move(rff);
                     if (procs.has_error()) {
                         error = make_cursor(resource(), procs.error());
                         break;
                     }
-                    for (const auto& proc : procs.value()) {
-                        if (proc.oid >= components::catalog::FIRST_USER_OID) {
-                            dependencies.push_back({components::catalog::well_known_oid::pg_proc_table, proc.oid});
-                        }
-                    }
+                    rows.insert(rows.end(), procs.value().begin(), procs.value().end());
                 }
-                view->set_dependencies(std::move(dependencies));
+                if (error) {
+                    break;
+                }
+                if (auto described = describe_view_functions(resource(), *view, function_registry_, functions, rows);
+                    described.contains_error()) {
+                    error = make_cursor(resource(), std::move(described));
+                }
                 break;
             }
             case node_type::alter_table_t: {
@@ -1518,9 +1561,8 @@ namespace services::collection::executor {
         }
 
         if (!error && !expanded_views.empty()) {
-            const auto host_nodes = host_node_specs(resource(), plan.sub_queries.back().get());
             for (const auto& expanded : expanded_views) {
-                if (auto stale = check_expanded_view(resource(), expanded.view, *expanded.body, host_nodes);
+                if (auto stale = check_expanded_view(resource(), expanded.view, *expanded.reference->children().front());
                     stale.contains_error()) {
                     error = make_cursor(resource(), std::move(stale));
                     break;
@@ -1730,7 +1772,6 @@ namespace services::collection::executor {
                     case node_type::create_sequence_t:
                     case node_type::create_view_t:
                     case node_type::create_macro_t:
-                    case node_type::create_matview_t:
                     case node_type::create_index_t:
                     case node_type::drop_t:
                     case node_type::alter_table_t:

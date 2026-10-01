@@ -238,19 +238,35 @@ public class Tests
 
     [Test]
     public void InvalidQueries() {
-        OtterbrixWrapper otterbrix = new OtterbrixWrapper(Config.CreateConfig(System.Environment.CurrentDirectory + "/InvalidQueries"));
+        OtterbrixWrapper otterbrix = Open("InvalidQueries");
         {
-            Assert.IsTrue(otterbrix.CreateDatabase("TestDatabase").IsSuccess());
-            Assert.IsTrue(otterbrix.CreateCollection("TestDatabase", "TestCollection").IsSuccess());
+            using CursorWrapper database = otterbrix.CreateDatabase("testdatabase");
+            Assert.IsTrue(database.IsSuccess());
+            using CursorWrapper collection = otterbrix.CreateCollection("testdatabase", "testcollection");
+            Assert.IsTrue(collection.IsSuccess());
         }
         {
-            string query = "SELECT * FROM OtherDatabase.OtherCollection;";
-            CursorWrapper cursor = otterbrix.Execute(query);
+            using CursorWrapper cursor = otterbrix.Execute("SELECT * FROM OtherDatabase.OtherCollection;");
             Assert.IsFalse(cursor.IsSuccess());
             Assert.IsTrue(cursor.IsError());
-            ErrorMessage message = cursor.GetError();
-            Assert.IsTrue(message.type == ErrorCode.DatabaseNotExists);
+            Assert.That(cursor.GetError().type, Is.EqualTo(ErrorCode.DatabaseNotExists));
         }
+        {
+            using CursorWrapper cursor = otterbrix.Execute("SELECT * FROM testdatabase.OtherCollection;");
+            Assert.IsTrue(cursor.IsError());
+            Assert.That(cursor.GetError().type, Is.EqualTo(ErrorCode.TableNotExists));
+        }
+        {
+            using CursorWrapper cursor = otterbrix.Execute("SELEC * FROM testdatabase.testcollection;");
+            Assert.IsTrue(cursor.IsError());
+            Assert.That(cursor.GetError().type, Is.EqualTo(ErrorCode.SqlParseError));
+        }
+        {
+            using CursorWrapper cursor = otterbrix.Execute("SELECT * FROM testdatabase.testcollection;");
+            Assert.IsTrue(cursor.IsSuccess(), cursor.GetError().what);
+            Assert.That(cursor.GetError().type, Is.EqualTo(ErrorCode.None));
+        }
+        GC.KeepAlive(otterbrix);
     }
 
     // [Test]

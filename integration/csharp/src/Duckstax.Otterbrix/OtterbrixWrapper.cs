@@ -13,16 +13,60 @@ namespace Duckstax.Otterbrix
         }
     }
 
+    // core::error_code_t, member for member and in the same order
     public enum ErrorCode : int {
+        OtherError = -1,
         None = 0,
-        DatabaseAlreadyExists = 1,
-        DatabaseNotExists = 2,
-        CollectionAlreadyExists = 3,
-        CollectionNotExists = 4,
-        CollectionDropped = 5,
-        SqlParseError = 6,
-        CreatePhisicalPlanError = 7,
-        OtherError = -1
+        AlreadyExists,
+        DoNotExists,
+        UnimplementedYet,
+
+        DuplicateField,
+        MissingField,
+        MissingPrimaryKeyId,
+        MissingNamespace,
+        TransactionInactive,
+        TransactionFinalized,
+        MissingSavepoint,
+        CommitFailed,
+        MissingTable,
+        DatabaseAlreadyExists,
+        DatabaseNotExists,
+        TableAlreadyExists,
+        TableNotExists,
+        TableDropped,
+        TypeAlreadyExists,
+        TypeNotExists,
+        AmbiguousName,
+        FieldNotExists,
+        InvalidParameter,
+
+        PhysicalPlanError,
+        CreatePhysicalPlanError,
+
+        ArithmeticsFailure,
+        ComparisonFailure,
+        ConversionFailure,
+
+        IndexCreateFail,
+        IndexNotExists,
+        SqlParseError,
+        SchemaError,
+        KernelError,
+        FunctionRegistryError,
+        UnrecognizedFunction,
+        IncorrectFunctionArgument,
+        IncorrectFunctionReturnType,
+        InvalidConstraint,
+
+        OutOfMemory,
+        DataCorruption,
+        IoError,
+        WriteConflict,
+        StaleIndex,
+
+        ActorAgentMissing,
+        ConnectionClosed,
     }
 
     public struct ErrorMessage {

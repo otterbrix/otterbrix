@@ -94,6 +94,22 @@ namespace {
         }
     }
 
+    // A name the C API takes as written must already be lower case: SQL folds an unquoted name (PostgreSQL 18), so
+    // a mixed-case one could never be reached from SQL.
+    core::error_t
+    refuse_upper_case(std::pmr::memory_resource* resource, std::string_view entry, const std::string& name) {
+        if (std::none_of(name.begin(), name.end(), [](char c) {
+                return std::isupper(static_cast<unsigned char>(c)) != 0;
+            })) {
+            return core::error_t::no_error();
+        }
+        std::pmr::string msg{entry, resource};
+        msg.append(": name \"");
+        msg.append(name);
+        msg.append("\" must be lower case");
+        return core::error_t{core::error_code_t::invalid_parameter, std::move(msg)};
+    }
+
     cursor_ptr unknown_exception_cursor(pod_space_t* pod) {
         if (pod == nullptr || pod->space == nullptr) {
             return nullptr;
@@ -240,7 +256,12 @@ extern "C" cursor_ptr create_database(otterbrix_ptr ptr, string_view_t database_
         pod_space = convert_otterbrix(ptr);
         auto session = otterbrix::session_id_t();
         std::string database = string_view_to_string(database_name);
-        auto cursor = pod_space->space->dispatcher()->execute_sql(session, "CREATE DATABASE " + database + ";");
+        auto* dispatcher = pod_space->space->dispatcher();
+        if (auto refused = refuse_upper_case(dispatcher->resource(), "create_database", database);
+            refused.contains_error()) {
+            return store_cursor(components::cursor::make_cursor(dispatcher->resource(), std::move(refused)));
+        }
+        auto cursor = dispatcher->execute_sql(session, "CREATE DATABASE " + database + ";");
         return store_cursor(std::move(cursor));
     } catch (const std::exception& ex) {
         return exception_cursor(pod_space, ex);
@@ -257,16 +278,9 @@ extern "C" cursor_ptr create_collection(otterbrix_ptr ptr, string_view_t databas
         std::string database = string_view_to_string(database_name);
         std::string collection = string_view_to_string(collection_name);
         auto* dispatcher = pod_space->space->dispatcher();
-        // SQL folds an unquoted name to lower case (PostgreSQL 18): a mixed-case table could never be read back.
-        if (std::any_of(collection.begin(), collection.end(), [](char c) {
-                return std::isupper(static_cast<unsigned char>(c)) != 0;
-            })) {
-            std::pmr::string msg{"create_collection: name \"", dispatcher->resource()};
-            msg.append(collection);
-            msg.append("\" must be lower case");
-            return store_cursor(components::cursor::make_cursor(
-                dispatcher->resource(),
-                core::error_t{core::error_code_t::invalid_parameter, std::move(msg)}));
+        if (auto refused = refuse_upper_case(dispatcher->resource(), "create_collection", collection);
+            refused.contains_error()) {
+            return store_cursor(components::cursor::make_cursor(dispatcher->resource(), std::move(refused)));
         }
         auto node = components::logical_plan::make_node_create_collection(dispatcher->resource(),
                                                                           core::relname_t{collection},

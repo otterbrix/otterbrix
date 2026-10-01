@@ -5,14 +5,16 @@ namespace components::expressions {
     function_expression_t::function_expression_t(std::pmr::memory_resource* resource, qualified_name_t&& name)
         : expression_i(expression_group::function, key_t{resource})
         , name_(std::move(name))
-        , args_(resource) {}
+        , args_(resource)
+        , pins_(resource) {}
 
     function_expression_t::function_expression_t(std::pmr::memory_resource* resource,
                                                  qualified_name_t&& name,
                                                  std::pmr::vector<param_storage>&& args)
         : expression_i(expression_group::function, key_t{resource})
         , name_(std::move(name))
-        , args_(std::move(args)) {}
+        , args_(std::move(args))
+        , pins_(resource) {}
 
     const std::string& function_expression_t::name() const noexcept { return name_.collection; }
 
@@ -35,6 +37,14 @@ namespace components::expressions {
     void function_expression_t::add_function_uid(compute::function_uid uid) { function_uid_ = uid; }
 
     compute::function_uid function_expression_t::function_uid() const { return function_uid_; }
+
+    void function_expression_t::set_signature(size_t signature) noexcept { signature_ = signature; }
+
+    size_t function_expression_t::signature() const noexcept { return signature_; }
+
+    void function_expression_t::set_pins(std::pmr::vector<compute::function_pin_t> pins) { pins_ = std::move(pins); }
+
+    const std::pmr::vector<compute::function_pin_t>& function_expression_t::pins() const noexcept { return pins_; }
 
     hash_t function_expression_t::hash_impl() const { return 0; }
 

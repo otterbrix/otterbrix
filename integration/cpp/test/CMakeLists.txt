@@ -4,6 +4,13 @@ add_definitions(-DDEV_MODE)
 
 set( ${PROJECT_NAME}_SOURCES
         test_instances.cpp
+        test_engine_startup_refusal.cpp
+        test_engine_logs.cpp
+        test_engine_shutdown.cpp
+        test_function_registry_per_engine.cpp
+        test_builtin_unregister.cpp
+        test_pmr_abi.cpp
+        test_pmr_abi_sanitizer_host.cpp
         test_collection.cpp
         test_collection_logical_plan.cpp
         test_collection_sql.cpp
@@ -91,8 +98,12 @@ set( ${PROJECT_NAME}_SOURCES
         test_text_column_storage.cpp
         test_update.cpp
         test_wal_pool.cpp
+        test_write_through_before_first_checkpoint.cpp
+        test_crash_before_first_checkpoint_matrix.cpp
+        test_wal_span_crash_recovery.cpp
         test_persistence.cpp
         test_alter_drop_column_positions.cpp
+        test_vacuum_drop_column_seal_refusal.cpp
         test_ddl_in_transaction.cpp
         test_cursor_under_concurrent_ddl.cpp
         test_alter_rename_column.cpp
@@ -110,6 +121,10 @@ set( ${PROJECT_NAME}_SOURCES
         test_fk_cascade_set_default_specs.cpp
         test_pipeline_context_move.cpp
         test_delete_affected_count.cpp
+        test_dml_affected_rows.cpp
+        test_insert_positional_values.cpp
+        test_create_in_missing_database.cpp
+        test_long_string_literal.cpp
         test_tinyint_numeric_cast.cpp
         test_alter_add_column_reads.cpp
         test_computed_drop_complex_type.cpp
@@ -130,6 +145,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_unary_plus.cpp
         test_multi_database_isolation.cpp
         test_view_expansion.cpp
+        test_view_binding.cpp
         test_statement_shape_refusal.cpp
         test_list_tables.cpp
         test_index_null_correctness.cpp
@@ -148,6 +164,8 @@ set( ${PROJECT_NAME}_SOURCES
         test_join.cpp
         test_extension_source.cpp
         test_host_tables.cpp
+        test_host_name_resolution.cpp
+        test_host_optimizer_stages.cpp
         test_join_raw.cpp
         test_name_resolution.cpp
         test_connections.cpp
@@ -209,6 +227,11 @@ set( ${PROJECT_NAME}_SOURCES
         test_unqualified_name_ambiguity.cpp
         test_rollback_freezes_checkpoint.cpp
         test_wal_replay_rowid_drift.cpp
+        test_constant_aggregates.cpp
+        test_avg_sum_widening.cpp
+        test_join_key_width.cpp
+        test_explain_host_plan.cpp
+        test_undefined_side_key.cpp
 
         # TODO: casts for dynamic schema
         # stress tests with sanitizer are incredibly slow
@@ -216,6 +239,9 @@ set( ${PROJECT_NAME}_SOURCES
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})
+
+set_source_files_properties(test_pmr_abi_sanitizer_host.cpp
+                            PROPERTIES COMPILE_DEFINITIONS "_ADDRESS_SANITIZER=1;OTTERBRIX_TSAN_ENABLED")
 
 # The fixture-root guard scans this directory's sources at run time; it needs to know where
 # they are. PRIVATE and not a header constant: the path is a property of THIS build.

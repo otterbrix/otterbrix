@@ -52,7 +52,7 @@ namespace components::operators {
             co_await std::move(f);
         }
 
-        // Write pg_catalog rows (pg_class + pg_attribute + pg_rewrite + pg_depend).
+        // Write pg_catalog rows (pg_class + pg_attribute + pg_rewrite + pg_rewrite_ref + pg_depend).
         // Two-phase: every append is independent (no iteration consumes the
         // previous result), so send all rows first then await in order.
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};

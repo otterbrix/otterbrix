@@ -68,7 +68,8 @@ template<typename... Args>
 void pfree(Args&&...) { /* do nothing, since we use arena allocator */
 }
 void* palloc0fast(std::pmr::memory_resource* resource, size_t n);
-void* repalloc(std::pmr::memory_resource* resource, void* ptr, size_t n);
+// The arena keeps the old block (pfree does nothing); the new one holds its first min(old_size, new_size) bytes.
+void* repalloc(std::pmr::memory_resource* resource, void* ptr, size_t old_size, size_t new_size);
 
 std::string NameListToString(PGList* names); // mdxn: used only in ereport
 int exprLocation(const Node* expr);          // nodefuncs

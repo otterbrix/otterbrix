@@ -11,6 +11,7 @@
 #include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/node_cte_scan.hpp>
 #include <components/logical_plan/node_data.hpp>
+#include <components/logical_plan/node_extension.hpp>
 #include <components/logical_plan/node_group.hpp>
 #include <components/logical_plan/node_join.hpp>
 #include <components/logical_plan/node_match.hpp>
@@ -840,7 +841,10 @@ TEST_CASE("create_plan_match::eq_uses_index_scan_hashed_preferred") {
                                 make_compare_expression(&resource, compare_type::eq, key(&resource, "age"), pid));
     node->set_table_oid(table_oid);
 
-    auto op = services::planner::impl::create_plan_match(ctx, node, components::logical_plan::limit_t::unlimit());
+    auto op_planned =
+        services::planner::impl::create_plan_match(ctx, node, components::logical_plan::limit_t::unlimit());
+    REQUIRE_FALSE(op_planned.has_error());
+    auto op = op_planned.value();
     REQUIRE(op->type() == components::operators::operator_type::index_scan);
     auto* scan = static_cast<components::operators::index_scan*>(op.get());
     REQUIRE(scan->compare_type() == compare_type::eq);
@@ -862,7 +866,10 @@ TEST_CASE("create_plan_match::range_uses_index_scan_single_preferred") {
                                 make_compare_expression(&resource, compare_type::gte, key(&resource, "age"), pid));
     node->set_table_oid(table_oid);
 
-    auto op = services::planner::impl::create_plan_match(ctx, node, components::logical_plan::limit_t::unlimit());
+    auto op_planned =
+        services::planner::impl::create_plan_match(ctx, node, components::logical_plan::limit_t::unlimit());
+    REQUIRE_FALSE(op_planned.has_error());
+    auto op = op_planned.value();
     REQUIRE(op->type() == components::operators::operator_type::index_scan);
     auto* scan = static_cast<components::operators::index_scan*>(op.get());
     REQUIRE(scan->compare_type() == compare_type::gte);
@@ -884,7 +891,10 @@ TEST_CASE("create_plan_match::range_with_only_hashed_falls_back_to_full_scan") {
                                 make_compare_expression(&resource, compare_type::gt, key(&resource, "age"), pid));
     node->set_table_oid(table_oid);
 
-    auto op = services::planner::impl::create_plan_match(ctx, node, components::logical_plan::limit_t::unlimit());
+    auto op_planned =
+        services::planner::impl::create_plan_match(ctx, node, components::logical_plan::limit_t::unlimit());
+    REQUIRE_FALSE(op_planned.has_error());
+    auto op = op_planned.value();
     REQUIRE(op->type() == components::operators::operator_type::full_scan);
 }
 
@@ -903,7 +913,10 @@ TEST_CASE("create_plan_match::key_on_right_mirrors_compare_type_for_index_scan")
                                 make_compare_expression(&resource, compare_type::lt, pid, key(&resource, "age")));
     node->set_table_oid(table_oid);
 
-    auto op = services::planner::impl::create_plan_match(ctx, node, components::logical_plan::limit_t::unlimit());
+    auto op_planned =
+        services::planner::impl::create_plan_match(ctx, node, components::logical_plan::limit_t::unlimit());
+    REQUIRE_FALSE(op_planned.has_error());
+    auto op = op_planned.value();
     REQUIRE(op->type() == components::operators::operator_type::index_scan);
     auto* scan = static_cast<components::operators::index_scan*>(op.get());
     REQUIRE(scan->compare_type() == compare_type::gt);
@@ -924,7 +937,10 @@ TEST_CASE("create_plan_match::union_compare_uses_full_scan") {
     auto node = make_node_match(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, union_expr);
     node->set_table_oid(table_oid);
 
-    auto op = services::planner::impl::create_plan_match(ctx, node, components::logical_plan::limit_t::unlimit());
+    auto op_planned =
+        services::planner::impl::create_plan_match(ctx, node, components::logical_plan::limit_t::unlimit());
+    REQUIRE_FALSE(op_planned.has_error());
+    auto op = op_planned.value();
     REQUIRE(op->type() == components::operators::operator_type::full_scan);
 }
 
@@ -1017,6 +1033,27 @@ TEST_CASE("optimizer::pushdown_aggregate::cte_scan_child_is_skipped") {
     auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
     auto agg = make_agg(&resource, group);
     agg->append_child(make_node_cte_scan(&resource, std::pmr::string("cte")));
+    REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
+}
+
+namespace {
+    services::planner::plan_result_t no_host_operator(const services::context_storage_t& context,
+                                                      const components::compute::function_registry_t&,
+                                                      const node_extension_t&) {
+        return services::planner::plan_refusal(context.resource, "never lowered in these tests");
+    }
+} // namespace
+
+TEST_CASE("optimizer::pushdown_aggregate::extension_child_is_skipped") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
+    auto agg = make_agg(&resource, group);
+    auto ext = make_node_extension(&resource,
+                                   collection_name,
+                                   std::pmr::vector<components::types::complex_logical_type>{&resource},
+                                   &no_host_operator);
+    REQUIRE_FALSE(ext.has_error());
+    agg->append_child(ext.value());
     REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
 }
 
@@ -2060,4 +2097,73 @@ TEST_CASE("optimizer::constant_folding::non_numeric_constant_arithmetic_is_decli
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
     REQUIRE(s->params().size() == 2);
     REQUIRE(s->type() == scalar_type::add);
+}
+
+namespace {
+    std::vector<int>& rule_trace() {
+        static std::vector<int> trace;
+        return trace;
+    }
+
+    template<int Tag>
+    node_ptr
+    trace_rule(std::pmr::memory_resource*, node_ptr node, const components::planner::optimizer_rule_context_t&) {
+        rule_trace().push_back(Tag);
+        return node;
+    }
+
+    bool group_stamped(const node_ptr& node) {
+        for (const auto& child : node->children()) {
+            if (child->type() == node_type::group_t) {
+                return static_cast<const node_group_t*>(child.get())->pushdown();
+            }
+        }
+        return false;
+    }
+
+    // Records, per stage, whether pushdown_aggregate had stamped the group by then.
+    std::vector<std::pair<int, bool>>& stamp_trace() {
+        static std::vector<std::pair<int, bool>> trace;
+        return trace;
+    }
+
+    template<int Tag>
+    node_ptr
+    stamp_rule(std::pmr::memory_resource*, node_ptr node, const components::planner::optimizer_rule_context_t&) {
+        stamp_trace().emplace_back(Tag, group_stamped(node));
+        return node;
+    }
+} // namespace
+
+TEST_CASE("optimizer::host_rules::stage_order_then_registration_order") {
+    using components::planner::optimizer_stage;
+    auto resource = core::pmr::otterbrix_resource();
+    auto agg = make_agg(&resource, make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false));
+    const components::planner::optimizer_rule_t rules[] = {
+        {optimizer_stage::last, &trace_rule<5>},
+        {optimizer_stage::after_simplify, &trace_rule<1>},
+        {optimizer_stage::after_limit, &trace_rule<3>},
+        {optimizer_stage::after_filters_and_joins, &trace_rule<2>},
+        {optimizer_stage::after_simplify, &trace_rule<11>},
+        {optimizer_stage::after_aggregate_pushdown, &trace_rule<4>},
+    };
+    rule_trace().clear();
+    auto params = make_parameter_node(&resource);
+    components::planner::optimize(&resource, agg, params.get(), nullptr, /*can_push_to_agent=*/false, rules);
+    REQUIRE(rule_trace() == std::vector<int>{1, 11, 2, 3, 4, 5});
+}
+
+TEST_CASE("optimizer::host_rules::aggregate_pushdown_stage_sees_the_stamp") {
+    using components::planner::optimizer_stage;
+    auto resource = core::pmr::otterbrix_resource();
+    auto agg = make_agg(&resource, make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false));
+    const components::planner::optimizer_rule_t rules[] = {
+        {optimizer_stage::after_limit, &stamp_rule<3>},
+        {optimizer_stage::after_aggregate_pushdown, &stamp_rule<4>},
+        {optimizer_stage::last, &stamp_rule<5>},
+    };
+    stamp_trace().clear();
+    auto params = make_parameter_node(&resource);
+    components::planner::optimize(&resource, agg, params.get(), nullptr, /*can_push_to_agent=*/true, rules);
+    REQUIRE(stamp_trace() == std::vector<std::pair<int, bool>>{{3, false}, {4, true}, {5, true}});
 }

@@ -71,9 +71,8 @@ namespace {
 TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount", "[engine-lifecycle]") {
     auto config = test_create_config(integration_fixture_path("test_engine_lifecycle/refcount"));
     test_clear_directory(config);
-    components::compute::function_registry_t::reset_default();
 
-    auto inst = otterbrix::make_otterbrix(config);
+    auto inst = test_make_otterbrix(config);
     REQUIRE(inst->use_count() == 1u);
     otterbrix::otterbrix_ptr copy = inst;
     REQUIRE(inst->use_count() == 2u);
@@ -132,7 +131,7 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount", "[engin
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, query.str());
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 10);
+        REQUIRE(cur->affected_rows() == 10);
         REQUIRE(inst->use_count() == 2u);
     }
 
@@ -158,9 +157,8 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount_client_th
     // Catch2 REQUIRE is unsafe off the main thread, so results are snapshotted and checked after join.
     auto config = test_create_config(integration_fixture_path("test_engine_lifecycle/refcount_thread"));
     test_clear_directory(config);
-    components::compute::function_registry_t::reset_default();
 
-    auto inst = otterbrix::make_otterbrix(config);
+    auto inst = test_make_otterbrix(config);
     otterbrix::otterbrix_ptr copy = inst;
     REQUIRE(inst->use_count() == 2u);
 
@@ -218,7 +216,7 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount_client_th
             }
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, query.str());
-            ok[op] = cur->is_success() && cur->size() == 10;
+            ok[op] = cur->is_success() && cur->affected_rows() == 10u;
             counts[op] = inst->use_count();
             ++op;
         }
@@ -244,9 +242,8 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount_client_th
 TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount_wrapper_style", "[engine-lifecycle]") {
     auto config = test_create_config(integration_fixture_path("test_engine_lifecycle/refcount_wrapper"));
     test_clear_directory(config);
-    components::compute::function_registry_t::reset_default();
 
-    auto inst = otterbrix::make_otterbrix(config);
+    auto inst = test_make_otterbrix(config);
     otterbrix::otterbrix_ptr copy = inst;
     REQUIRE(inst->use_count() == 2u);
 
@@ -302,7 +299,7 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount_wrapper_s
                     query << "('name_" << num << "', " << num << ")" << (num == 9 ? ";" : ", ");
                 }
                 auto cur = wrapper.execute_sql(query.str());
-                ok[op] = cur->is_success() && cur->size() == 10;
+                ok[op] = cur->is_success() && cur->affected_rows() == 10u;
                 counts[op] = wrapper.engine_use_count();
                 ++op;
             }
@@ -401,9 +398,10 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::concurrent_insert_scan_evict
         }
         auto session = make_session();
         auto cur = dispatcher->execute_sql(session, query.str());
-        auto failure = describe_failure(cur, static_cast<size_t>(batch_size));
-        if (failure.empty() && cur->size() != static_cast<size_t>(batch_size)) {
-            failure = "insert size mismatch: got " + std::to_string(cur->size());
+        auto failure = describe_failure(cur, 0);
+        if (failure.empty() && cur->affected_rows() != static_cast<std::uint64_t>(batch_size)) {
+            failure = "insert count mismatch: got " +
+                      (cur->affected_rows() ? std::to_string(*cur->affected_rows()) : std::string{"none"});
         }
         return failure;
     };
@@ -496,10 +494,9 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::construct_destroy_clean_tear
           "[engine-lifecycle][leak-repro]") {
     auto config = test_create_config(integration_fixture_path("test_engine_lifecycle/teardown_leak"));
     test_clear_directory(config);
-    components::compute::function_registry_t::reset_default();
 
     {
-        auto inst = otterbrix::make_otterbrix(config);
+        auto inst = test_make_otterbrix(config);
         auto* dispatcher = inst->dispatcher();
 
         REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE DATABASE leakreprodb;")->is_success());
@@ -522,9 +519,8 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::repeated_construct_destroy_n
     for (int i = 0; i < kCycles; ++i) {
         auto config = test_create_config(integration_fixture_path("test_engine_lifecycle/stress_" + std::to_string(i)));
         test_clear_directory(config);
-        components::compute::function_registry_t::reset_default();
 
-        auto inst = otterbrix::make_otterbrix(config);
+        auto inst = test_make_otterbrix(config);
         auto* dispatcher = inst->dispatcher();
         REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE DATABASE stressdb;")->is_success());
         REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE TABLE stressdb.t (g bigint, v bigint);")

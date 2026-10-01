@@ -17,6 +17,7 @@
 #include <services/disk/tests/catalog_probe.hpp>
 #include <services/index/manager_index.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
+#include <components/log/test_log.hpp>
 
 // Same SQL fixture drives dispatcher::execute_plan; each case compares the cursor against pg_catalog state.
 
@@ -43,7 +44,7 @@ namespace {
             : actor_zeta::actor::actor_mixin<differential_fixture>()
             , resource_(resource)
             , disk_path_(scrubbed(disk_path))
-            , log_(initialization_logger("python", "/tmp/docker_logs/"))
+            , log_(make_test_log("python", "/tmp/docker_logs/"))
             , scheduler_(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config_(disk_path)
             , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource, scheduler_, scheduler_, disk_config_, log_))
@@ -73,7 +74,7 @@ namespace {
             manager_disk_->set_manager_wal_sync(manager_wal_->address());
             manager_index_->set_manager_dispatcher_sync(manager_dispatcher_->address());
 
-            manager_disk_->bootstrap_system_tables_sync();
+            REQUIRE_FALSE(manager_disk_->bootstrap_system_tables_sync().contains_error());
         }
 
         ~differential_fixture() {

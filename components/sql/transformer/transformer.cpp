@@ -15,18 +15,6 @@ namespace components::sql::transform {
         // dbname/relname off the root aggregate is sufficient for the primary
         // table. TODO: emit one resolve per joined table (depth walk over the
         // SELECT plan).
-        std::pair<std::string, std::string> select_primary_table_identity(const logical_plan::node_ptr& sel) {
-            if (!sel)
-                return {};
-            using namespace logical_plan;
-            if (sel->type() == node_type::aggregate_t) {
-                const auto* agg = static_cast<const node_aggregate_t*>(sel.get());
-                return {static_cast<const std::string&>(agg->dbname()),
-                        static_cast<const std::string&>(agg->relname())};
-            }
-            return {};
-        }
-
         // --- SORT ELIMINATION for a provably-unobservable sub-query ORDER BY ---------------
         //
         // A flattened sub-query root IS its consumer node (catalog lookups live on the
@@ -97,6 +85,9 @@ namespace components::sql::transform {
 
         auto root = transform(node, &plan);
         plan.catalog_resolves = std::move(catalog_resolves_);
+        plan.if_exists = std::exchange(if_exists_, false);
+        plan.if_exists_subcommands.assign(if_exists_subcommands_.begin(), if_exists_subcommands_.end());
+        if_exists_subcommands_.clear();
         if (root.has_error()) {
             return {resource_, core::error_t(root.error())};
         }
@@ -179,9 +170,9 @@ namespace components::sql::transform {
                 // The transformer's aggregate wrapper at the root carries the
                 // (dbname, relname); a future patch can walk joins to add
                 // additional resolves.
-                auto [db, rel] = select_primary_table_identity(selected);
-                if (!rel.empty()) {
-                    register_catalog_resolve_table(resource_, &catalog_resolves_, db, rel);
+                if (selected->type() == logical_plan::node_type::aggregate_t) {
+                    const auto* agg = static_cast<const logical_plan::node_aggregate_t*>(selected.get());
+                    register_catalog_resolve_written_table(resource_, &catalog_resolves_, *agg);
                 }
                 register_catalog_resolve_types(resource_, &catalog_resolves_, cast_type_names_);
                 log_node = std::move(selected);
@@ -214,7 +205,13 @@ namespace components::sql::transform {
                 log_node = transform_create_sequence(pg_cast<CreateSeqStmt>(node));
                 break;
             case T_ViewStmt:
-                log_node = transform_create_view(pg_cast<ViewStmt>(node));
+                log_node = transform_create_view(pg_cast<ViewStmt>(node), plan);
+                break;
+            case T_TruncateStmt:
+                log_node = core::error_t(core::error_code_t::unimplemented_yet,
+                                         std::pmr::string{"TRUNCATE is not supported: delete the rows with DELETE; "
+                                                          "nothing was truncated",
+                                                          resource_});
                 break;
             case T_CreateTableAsStmt: {
                 auto& cs = pg_cast<CreateTableAsStmt>(node);

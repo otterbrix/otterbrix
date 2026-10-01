@@ -1,5 +1,7 @@
 #pragma once
 
+#include <components/physical_plan_generator/create_plan.hpp>
+
 #include <components/compute/function.hpp>
 #include <components/logical_plan/node.hpp>
 #include <components/logical_plan/param_storage.hpp>
@@ -9,8 +11,7 @@
 
 namespace services::planner::impl {
 
-    components::operators::operator_ptr create_plan_select(const context_storage_t& context,
-                                                           const components::logical_plan::node_ptr& node);
+    plan_result_t create_plan_select(const context_storage_t& context, const components::logical_plan::node_ptr& node);
 
     // Build physical projection columns from a DML node's RETURNING expression list.
     // Returns an empty vector when `returning` is empty (no RETURNING clause).

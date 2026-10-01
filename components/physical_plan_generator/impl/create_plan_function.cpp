@@ -6,8 +6,8 @@
 
 namespace services::planner::impl {
 
-    components::operators::operator_ptr create_plan_function(const context_storage_t& context,
-                                                             const components::logical_plan::node_ptr& node) {
+    plan_result_t create_plan_function(const context_storage_t& context,
+                                       const components::logical_plan::node_ptr& node) {
         const auto* function_node = static_cast<const components::logical_plan::node_function_t*>(node.get());
 
         auto* resource = context.has_table_oid(node->table_oid()) ? context.resource : node->resource();

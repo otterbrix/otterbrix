@@ -20,6 +20,7 @@
 #include <filesystem>
 #include <thread>
 #include <unistd.h>
+#include <components/log/test_log.hpp>
 
 // pg_depend cascade tests: CASCADE recurses through pg_depend rows; RESTRICT refuses if dependents exist.
 
@@ -43,7 +44,7 @@ namespace {
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
 
         fixture()
-            : log(initialization_logger("python", "/tmp/docker_logs/"))
+            : log(make_test_log("python", "/tmp/docker_logs/"))
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
                 configuration::config_disk c;
@@ -53,7 +54,7 @@ namespace {
             , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {
             cleanup();
             std::filesystem::create_directories(dep_dir());
-            manager->bootstrap_system_tables_sync();
+            REQUIRE_FALSE(manager->bootstrap_system_tables_sync().contains_error());
         }
         ~fixture() {
             // Destroy the manager first — its dtor joins the internal loop thread, which may still enqueue

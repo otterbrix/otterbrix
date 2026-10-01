@@ -43,6 +43,8 @@ set(${PROJECT_NAME}_SOURCES
         test_string_write_through.cpp
         test_compression_byte_validation.cpp
         test_construction_error_move.cpp
+        test_append_packing.cpp
+        test_tail_reuse.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

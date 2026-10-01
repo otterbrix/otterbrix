@@ -22,9 +22,9 @@ namespace services::planner::impl {
         }
     } // namespace
 
-    components::operators::operator_ptr create_plan_sort(const context_storage_t& context,
-                                                         const components::logical_plan::node_ptr& node,
-                                                         components::logical_plan::limit_t limit) {
+    plan_result_t create_plan_sort(const context_storage_t& context,
+                                   const components::logical_plan::node_ptr& node,
+                                   components::logical_plan::limit_t limit) {
         auto table_oid = node->table_oid();
         bool known = context.has_table_oid(table_oid);
         auto plan_resource = known ? context.resource : node->resource();
@@ -42,9 +42,7 @@ namespace services::planner::impl {
             if (components::expressions::is_key(sort_expr->operand())) {
                 const auto& path = components::expressions::as_key(sort_expr->operand()).path();
                 if (path.empty()) {
-                    // Defensive guard (validation resolves the path so this never fires): return
-                    // nullptr -> executor surfaces the error; the operator-build path never throws.
-                    return nullptr;
+                    return plan_refusal(context.resource, "ORDER BY key was not resolved to a column");
                 }
                 sort->add(path, ord, nulls);
                 continue;

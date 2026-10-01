@@ -330,38 +330,6 @@ namespace components::compute {
         : resource_(resource)
         , functions_(resource_) {}
 
-    std::once_flag function_registry_t::init_flag_;
-    std::unique_ptr<function_registry_t> function_registry_t::default_registry_;
-
-    namespace {
-        // Backing resource for the process-wide default function registry. The default
-        // registry is a lazily-created singleton torn down during static destruction, so
-        // its resource must outlive that teardown; a never-destroyed heap resource
-        // (reachable from this static pointer, hence not a leak under LSan) guarantees it
-        // without relying on std::pmr::get_default_resource(), using
-        // core::pmr::otterbrix_resource.
-        std::pmr::memory_resource* default_registry_resource() {
-            static core::pmr::otterbrix_resource* resource = new core::pmr::otterbrix_resource();
-            return resource;
-        }
-    } // namespace
-
-    function_registry_t* function_registry_t::get_default() {
-        std::call_once(init_flag_, []() {
-            default_registry_ = std::make_unique<function_registry_t>(default_registry_resource());
-            default_registry_->register_builtin_functions();
-        });
-        return default_registry_.get();
-    }
-
-    void function_registry_t::reset_default() {
-        // Ensure init_flag_ has fired (so get_default() won't later overwrite our
-        // fresh instance), then replace with a clean builtins-only registry.
-        [[maybe_unused]] auto* fired = get_default();
-        default_registry_ = std::make_unique<function_registry_t>(default_registry_resource());
-        default_registry_->register_builtin_functions();
-    }
-
     core::result_wrapper_t<function_uid> function_registry_t::add_function(function_ptr function) {
         if (builtin_error_.contains_error()) {
             // Poisoned: a broken builtin table must stay empty (see add_builtin).
@@ -487,8 +455,6 @@ namespace components::compute {
         builtin_error_ = std::move(error);
         functions_.clear();
     }
-
-    void function_registry_t::register_builtin_functions() { register_default_functions(*this); }
 
     namespace detail {
         kernel_nth_visitor::kernel_nth_visitor(size_t n)

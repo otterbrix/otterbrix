@@ -15,10 +15,12 @@ namespace components::expressions {
         class builder_t {
         public:
             builder_t(execution_dag_t* graph,
+                      const compute::function_registry_t& registry,
                       const types::parameter_map_t& parameters,
                       const std::pmr::vector<complex_logical_type>& input_types,
                       size_t right_offset)
                 : graph_(graph)
+                , registry_(registry)
                 , parameters_(parameters)
                 , input_types_(input_types)
                 , right_offset_(right_offset) {}
@@ -42,6 +44,7 @@ namespace components::expressions {
             std::pmr::memory_resource* resource() const noexcept { return graph_->resource(); }
 
             execution_dag_t* graph_;
+            const compute::function_registry_t& registry_;
             const types::parameter_map_t& parameters_;
             const std::pmr::vector<complex_logical_type>& input_types_;
             size_t right_offset_;
@@ -250,7 +253,7 @@ namespace components::expressions {
         core::result_wrapper_t<slot_id_t>
         builder_t::match_slot(const compare_expression_t* expression, slot_id_t subject, slot_id_t pattern) {
             const auto* function =
-                compute::function_registry_t::get_default()->get_function(expression->function_uid());
+                registry_.get_function(expression->function_uid());
             if (function == nullptr) {
                 return core::error_t(
                     core::error_code_t::invalid_parameter,
@@ -445,7 +448,7 @@ namespace components::expressions {
                     std::pmr::string{"execution graph builder: aggregate was not stamped by validation", resource()});
             }
             const auto* function =
-                compute::function_registry_t::get_default()->get_function(expression->function_uid());
+                registry_.get_function(expression->function_uid());
             if (function == nullptr) {
                 return core::error_t(
                     core::error_code_t::invalid_parameter,
@@ -477,7 +480,7 @@ namespace components::expressions {
                     std::pmr::string{"execution graph builder: function was not stamped by validation", resource()});
             }
             const auto* function =
-                compute::function_registry_t::get_default()->get_function(expression->function_uid());
+                registry_.get_function(expression->function_uid());
             if (function == nullptr) {
                 return core::error_t(
                     core::error_code_t::invalid_parameter,
@@ -595,6 +598,7 @@ namespace components::expressions {
 
     core::result_wrapper_t<execution_dag::slot_id_t>
     build_expression(execution_dag::execution_dag_t* graph,
+                     const compute::function_registry_t& registry,
                      const types::parameter_map_t& parameters,
                      const expression_i* expression,
                      const std::pmr::vector<types::complex_logical_type>& input_types,
@@ -605,12 +609,13 @@ namespace components::expressions {
                 core::error_code_t::invalid_parameter,
                 std::pmr::string{"execution graph builder: nothing to build", input_types.get_allocator().resource()});
         }
-        builder_t builder(graph, parameters, input_types, right_offset);
+        builder_t builder(graph, registry, parameters, input_types, right_offset);
         return builder.slot_of_expression(expression);
     }
 
     core::result_wrapper_t<std::unique_ptr<execution_dag::execution_dag_t>>
     build_graph(std::pmr::memory_resource* resource,
+                const compute::function_registry_t& registry,
                 const types::parameter_map_t& parameters,
                 core::span<const expression_i* const> expressions,
                 const std::pmr::vector<types::complex_logical_type>& input_types,
@@ -619,7 +624,7 @@ namespace components::expressions {
         execution_dag::slot_list_t outputs(resource);
         outputs.reserve(expressions.size());
         for (const auto* expression : expressions) {
-            auto slot = build_expression(graph.get(), parameters, expression, input_types, right_offset);
+            auto slot = build_expression(graph.get(), registry, parameters, expression, input_types, right_offset);
             if (slot.has_error()) {
                 return slot.error();
             }
@@ -634,12 +639,13 @@ namespace components::expressions {
 
     core::result_wrapper_t<std::unique_ptr<execution_dag::execution_dag_t>>
     build_graph(std::pmr::memory_resource* resource,
+                const compute::function_registry_t& registry,
                 const types::parameter_map_t& parameters,
                 core::span<const param_storage> values,
                 const std::pmr::vector<types::complex_logical_type>& input_types,
                 size_t right_offset) {
         auto graph = std::make_unique<execution_dag::execution_dag_t>(resource);
-        builder_t builder(graph.get(), parameters, input_types, right_offset);
+        builder_t builder(graph.get(), registry, parameters, input_types, right_offset);
         execution_dag::slot_list_t outputs(resource);
         outputs.reserve(values.size());
         for (const auto& value : values) {
@@ -660,6 +666,7 @@ namespace components::expressions {
     // values back is the caller's job — the graph only reads.
     core::result_wrapper_t<std::unique_ptr<execution_dag::execution_dag_t>>
     build_update_graph(std::pmr::memory_resource* resource,
+                       const compute::function_registry_t& registry,
                        const types::parameter_map_t& parameters,
                        core::span<const expression_i* const> values,
                        const std::pmr::vector<types::complex_logical_type>& input_types,
@@ -671,7 +678,7 @@ namespace components::expressions {
         auto modified = execution_dag::invalid_slot;
 
         for (const auto* value : values) {
-            auto slot = build_expression(graph.get(), parameters, value, input_types, right_offset);
+            auto slot = build_expression(graph.get(), registry, parameters, value, input_types, right_offset);
             if (slot.has_error()) {
                 return slot.error();
             }
@@ -731,11 +738,12 @@ namespace components::expressions {
 
     core::result_wrapper_t<std::unique_ptr<execution_dag::execution_dag_t>>
     build_condition_graph(std::pmr::memory_resource* resource,
+                          const compute::function_registry_t& registry,
                           const types::parameter_map_t& parameters,
                           const expression_i* expression,
                           const std::pmr::vector<types::complex_logical_type>& input_types,
                           size_t right_offset) {
-        return build_graph(resource, parameters, {&expression, 1}, input_types, right_offset);
+        return build_graph(resource, registry, parameters, {&expression, 1}, input_types, right_offset);
     }
 
     core::result_wrapper_t<vector::data_chunk_t> run_graph(execution_dag::execution_dag_t* graph,

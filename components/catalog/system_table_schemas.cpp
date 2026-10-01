@@ -153,6 +153,20 @@ namespace components::catalog {
             return c;
         }
 
+        // A view's body names, as written, and what each was bound to at CREATE VIEW: 'r' a relation by oid,
+        // 'h' a name the host resolved, 'x' a host node's declared columns (refspec) under its name.
+        std::vector<column_definition_t> pg_rewrite_ref_columns() {
+            std::vector<column_definition_t> c;
+            c.emplace_back("ev_class", oid_col(), /*not_null*/ true);
+            c.emplace_back("refkind", str_col(), true);
+            c.emplace_back("dbname", str_col(), false);
+            c.emplace_back("schema", str_col(), false);
+            c.emplace_back("relname", str_col(), true);
+            c.emplace_back("refobjid", oid_col(), false);
+            c.emplace_back("refspec", str_col(), false);
+            return c;
+        }
+
         std::vector<column_definition_t> pg_settings_columns() {
             std::vector<column_definition_t> c;
             c.emplace_back("name", str_col(), /*not_null*/ true);
@@ -187,9 +201,9 @@ namespace components::catalog {
     std::span<const system_table_def_t> all_system_tables() {
         // pg_database must come first — every catalog object is scoped to a database (seeded via
         // well_known_oid::main_database, manager_disk_t::bootstrap_system_tables_sync).
-        static const std::array<system_table_def_t, 14> tables = []() {
+        static const std::array<system_table_def_t, 15> tables = []() {
             const oid_t pg_catalog = well_known_oid::pg_catalog_namespace;
-            return std::array<system_table_def_t, 14>{{
+            return std::array<system_table_def_t, 15>{{
                 {"pg_database", well_known_oid::pg_database_table, pg_catalog, relkind::regular, pg_database_columns()},
                 {"pg_namespace",
                  well_known_oid::pg_namespace_table,
@@ -220,6 +234,11 @@ namespace components::catalog {
                 {"pg_rewrite", well_known_oid::pg_rewrite_table, pg_catalog, relkind::regular, pg_rewrite_columns()},
                 {"pg_settings", well_known_oid::pg_settings_table, pg_catalog, relkind::regular, pg_settings_columns()},
                 {"pg_cast", well_known_oid::pg_cast_table, pg_catalog, relkind::regular, pg_cast_columns()},
+                {"pg_rewrite_ref",
+                 well_known_oid::pg_rewrite_ref_table,
+                 pg_catalog,
+                 relkind::regular,
+                 pg_rewrite_ref_columns()},
             }};
         }();
         return tables;
@@ -904,6 +923,71 @@ namespace components::catalog {
                 out += j > 0 ? ',' : ':';
                 out += std::to_string(static_cast<int>(admissible[j].type()));
             }
+        }
+        return out;
+    }
+
+    core::result_wrapper_t<std::pmr::vector<components::compute::parameter_type>>
+    decode_proargmatchers(std::pmr::memory_resource* resource, std::string_view text) {
+        using components::compute::parameter_type;
+        std::pmr::vector<parameter_type> out{resource};
+        const auto corrupt = [resource, text]() {
+            return core::error_t{core::error_code_t::data_corruption,
+                                 std::pmr::string{"pg_proc.proargmatchers \"" + std::string{text} +
+                                                      "\" is outside its grammar",
+                                                  resource}};
+        };
+        const auto number = [](std::string_view digits, int& value) {
+            const auto [end, ec] = std::from_chars(digits.data(), digits.data() + digits.size(), value);
+            return ec == std::errc{} && end == digits.data() + digits.size();
+        };
+        if (text.empty()) {
+            return out;
+        }
+        std::size_t start = 0;
+        while (start <= text.size()) {
+            const auto bar = text.find('|', start);
+            const auto item = text.substr(start, bar == std::string_view::npos ? std::string_view::npos : bar - start);
+            if (item.size() < 3 || item[1] != ':') {
+                return corrupt();
+            }
+            if (item[0] == 'e') {
+                int type = 0;
+                if (!number(item.substr(2), type)) {
+                    return corrupt();
+                }
+                out.push_back(parameter_type::exact(types::complex_logical_type{static_cast<types::logical_type>(type)}));
+            } else if (item[0] == 'v') {
+                const auto rest = item.substr(2);
+                const auto colon = rest.find(':');
+                int id = 0;
+                if (!number(rest.substr(0, colon), id)) {
+                    return corrupt();
+                }
+                std::pmr::vector<types::complex_logical_type> admissible{resource};
+                if (colon != std::string_view::npos) {
+                    auto list = rest.substr(colon + 1);
+                    while (true) {
+                        const auto comma = list.find(',');
+                        int type = 0;
+                        if (!number(list.substr(0, comma), type)) {
+                            return corrupt();
+                        }
+                        admissible.emplace_back(static_cast<types::logical_type>(type));
+                        if (comma == std::string_view::npos) {
+                            break;
+                        }
+                        list = list.substr(comma + 1);
+                    }
+                }
+                out.push_back(parameter_type::variable(static_cast<parameter_type::variable_id>(id), std::move(admissible)));
+            } else {
+                return corrupt();
+            }
+            if (bar == std::string_view::npos) {
+                break;
+            }
+            start = bar + 1;
         }
         return out;
     }

@@ -118,7 +118,8 @@ namespace services::disk {
 
         /// Rebuilds without col; block release waits for checkpoint(). Outside a checkpoint round the split
         /// free pool only spends space (measured +2.9 MB per VACUUM at agent_disk_t::maybe_cleanup_inner).
-        bool drop_column(const std::string& attname);
+        /// false: no such column; io_error: the append packer could not be sealed, table_ is untouched.
+        [[nodiscard]] core::result_wrapper_t<bool> drop_column(const std::string& attname);
 
         /// Storage half of ALTER TABLE RENAME COLUMN: in-memory only until the next checkpoint (a
         /// crash reloads the OLD name); closed by comparing attoid, not name, in reconcile_storage_with_catalog_sync.
@@ -188,9 +189,11 @@ namespace services::disk {
         }
 
         /// Recreates the storage adapter too, for the same reason.
-        bool drop_column(const std::string& attname, std::pmr::memory_resource* res) {
-            if (!table_storage.drop_column(attname)) {
-                return false;
+        [[nodiscard]] core::result_wrapper_t<bool> drop_column(const std::string& attname,
+                                                               std::pmr::memory_resource* res) {
+            auto dropped = table_storage.drop_column(attname);
+            if (dropped.has_error() || !dropped.value()) {
+                return dropped;
             }
             storage = std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(), res);
             return true;
@@ -270,8 +273,12 @@ namespace services::disk {
                        actor_zeta::scheduler_raw scheduler,
                        actor_zeta::scheduler_raw scheduler_disk,
                        configuration::config_disk config,
-                       log_t& log);
+                       log_t& log,
+                       configuration::pump_intervals_t pump = {});
         ~manager_disk_t();
+        // Joins the loop thread and keeps its suspended coroutines: a neighbour's loop must not
+        // resume against them while they are torn down. Idempotent; the destructor calls it too.
+        void stop_loop() noexcept;
 
         bool has_storage(components::catalog::oid_t table_oid) const noexcept {
             if (agents_.empty())
@@ -305,8 +312,8 @@ namespace services::disk {
                                  std::vector<components::table::column_definition_t> columns,
                                  const std::filesystem::path& otbx_path,
                                  bool is_computed);
-        void bootstrap_system_tables_sync();
-        void load_user_table_storages_sync();
+        [[nodiscard]] core::error_t bootstrap_system_tables_sync();
+        [[nodiscard]] core::error_t load_user_table_storages_sync();
         // Rebuilds the .otbx for tables load_user_table_storages_sync couldn't load; returns divergences not closed.
         [[nodiscard]] core::result_wrapper_t<std::size_t> rehydrate_missing_user_storages_sync();
         // Re-derives a column drop whose release a crash discarded; runs after both user-table walks and WAL replay.
@@ -321,7 +328,7 @@ namespace services::disk {
 
         std::pmr::vector<components::catalog::oid_t> scan_live_table_oids_sync() const;
 
-        std::pmr::vector<pg_index_row_t> scan_alive_pg_index_sync() const;
+        [[nodiscard]] core::result_wrapper_t<std::pmr::vector<pg_index_row_t>> scan_alive_pg_index_sync() const;
 
         std::pmr::vector<components::vector::data_chunk_t>
         scan_storage_for_rebuild_sync(components::catalog::oid_t table_oid, std::pmr::memory_resource* resource) const;
@@ -340,8 +347,8 @@ namespace services::disk {
 
         std::uint64_t max_persisted_commit_id_sync() const;
 
-        // Most recent value for `name` in pg_settings, empty only if no such row exists (else throws).
-        std::string read_setting_sync(std::string_view name);
+        // Most recent value for `name` in pg_settings, empty only if no such row exists (else an error).
+        [[nodiscard]] core::result_wrapper_t<std::string> read_setting_sync(std::string_view name);
 
         const components::catalog::session_catalog_t& stored_settings_sync() const noexcept { return stored_catalog_; }
 
@@ -402,9 +409,11 @@ namespace services::disk {
                             std::pmr::vector<std::uint64_t> projected_cols);
 
         // Drops every relkind='g' column not in `live_attnames` — subtractive, unlike drop_storage_column.
-        unique_future<std::uint64_t> compact_relkind_g_storage(execution_context_t ctx,
-                                                               components::catalog::oid_t table_oid,
-                                                               std::set<std::string> live_attnames);
+        // The count of columns dropped, or the io_error of a drop the storage refused.
+        unique_future<core::result_wrapper_t<std::uint64_t>>
+        compact_relkind_g_storage(execution_context_t ctx,
+                                  components::catalog::oid_t table_oid,
+                                  std::set<std::string> live_attnames);
 
         unique_future<core::error_t> add_storage_column(execution_context_t ctx,
                                                         components::catalog::oid_t table_oid,
@@ -514,7 +523,7 @@ namespace services::disk {
         storage_fetch_next_batch(session_id_t session,
                                  components::catalog::oid_t table_oid,
                                  uint64_t cursor_id,
-                                 std::unique_ptr<components::table::table_filter_t> filter,
+                                 std::unique_ptr<components::table::pushed_filter_t> filter,
                                  int64_t limit,
                                  std::vector<size_t> projected_cols,
                                  components::table::transaction_data txn);
@@ -528,7 +537,7 @@ namespace services::disk {
         unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
         storage_reduce(session_id_t session,
                        components::catalog::oid_t table_oid,
-                       std::unique_ptr<components::table::table_filter_t> filter,
+                       std::unique_ptr<components::table::pushed_filter_t> filter,
                        std::vector<size_t> projected_cols,
                        components::table::transaction_data txn,
                        components::operators::pushed_aggregate_spec_t spec);
@@ -635,15 +644,19 @@ namespace services::disk {
         std::pmr::memory_resource* resource_;
         actor_zeta::scheduler_raw scheduler_;
         actor_zeta::scheduler_raw scheduler_disk_;
-        // All message processing happens on loop_thread_; mutex_/pump_cv_ only gate its idle sleep.
+        // All message processing happens on loop_thread_; mutex_/pump_cv_ only gate its sleep.
+        std::pmr::list<in_flight_entry_t> in_flight_{resource_};
         std::thread loop_thread_;
         std::atomic<bool> loop_running_{true};
         // Needs to stay trivially-copyable for boost::lockfree; re-wrapped into an owning pointer by the loop.
         boost::lockfree::queue<actor_zeta::mailbox::message*> inbox_{128};
         std::mutex mutex_;
+        std::condition_variable pump_cv_;
+        void wake_loop_() noexcept;
 
         log_t log_;
         configuration::config_disk config_;
+        configuration::pump_intervals_t pump_;
         // No storages_ map here (pure router): agent 0 takes system oids, others split the user pool.
         std::pmr::vector<agent_disk_ptr> agents_{resource_};
         components::catalog::oid_generator oid_gen_;
@@ -655,7 +668,7 @@ namespace services::disk {
 
         unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
         scan_table(components::catalog::oid_t table_oid,
-                   std::unique_ptr<components::table::table_filter_t> filter,
+                   std::unique_ptr<components::table::pushed_filter_t> filter,
                    std::vector<std::size_t> projected_cols,
                    components::table::transaction_data txn = components::table::transaction_data::committed());
 

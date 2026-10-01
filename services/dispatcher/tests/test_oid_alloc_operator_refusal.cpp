@@ -28,6 +28,7 @@
 #include <services/disk/manager_disk.hpp>
 #include <services/disk/tests/catalog_probe.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
+#include <components/log/test_log.hpp>
 
 // operator_register_udf_t (pg_proc), operator_register_cast_t (pg_cast) and
 // operator_alter_column_add_t (pg_attribute) each run their own one-OID round at execute time.
@@ -139,7 +140,7 @@ struct oid_round_fixture : actor_zeta::actor::actor_mixin<oid_round_fixture> {
         : actor_zeta::actor::actor_mixin<oid_round_fixture>()
         , resource_(resource)
         , disk_path_(scrubbed(disk_path))
-        , log_(initialization_logger("python", "/tmp/docker_logs/"))
+        , log_(make_test_log("python", "/tmp/docker_logs/"))
         , scheduler_(new core::non_thread_scheduler::scheduler_test_t(1, 1))
         , disk_config_(disk_path)
         , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource, scheduler_, scheduler_, disk_config_, log_))
@@ -158,7 +159,7 @@ struct oid_round_fixture : actor_zeta::actor::actor_mixin<oid_round_fixture> {
                                                                       components::pipeline::no_mailbox())) {
         manager_wal_->set_manager_dispatcher_sync(manager_dispatcher_->address());
         manager_disk_->set_manager_wal_sync(manager_wal_->address());
-        manager_disk_->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(manager_disk_->bootstrap_system_tables_sync().contains_error());
     }
 
     ~oid_round_fixture() {
@@ -332,7 +333,6 @@ namespace {
 } // namespace
 
 TEST_CASE("services::dispatcher::oid_alloc_operator_refusal::register_udf_refuses_when_the_round_delivers_nothing") {
-    components::compute::function_registry_t::reset_default();
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     oid_round_fixture test(mr.get(), oid_alloc_dir("register_udf"));
 
@@ -381,12 +381,9 @@ TEST_CASE("services::dispatcher::oid_alloc_operator_refusal::register_udf_refuse
         REQUIRE(oids.size() == 1);
         REQUIRE(oids.front() != catalog::INVALID_OID);
     }
-
-    components::compute::function_registry_t::reset_default();
 }
 
 TEST_CASE("services::dispatcher::oid_alloc_operator_refusal::register_cast_refuses_when_the_round_delivers_nothing") {
-    components::compute::function_registry_t::reset_default();
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     oid_round_fixture test(mr.get(), oid_alloc_dir("register_cast"));
 
@@ -443,14 +440,11 @@ TEST_CASE("services::dispatcher::oid_alloc_operator_refusal::register_cast_refus
         REQUIRE(oids.size() == 1);
         REQUIRE(oids.front() != catalog::INVALID_OID);
     }
-
-    components::compute::function_registry_t::reset_default();
 }
 
 // ALTER TABLE ADD COLUMN is the one of the three reachable from plain SQL: success, with no identity.
 TEST_CASE(
     "services::dispatcher::oid_alloc_operator_refusal::alter_add_column_refuses_when_the_round_delivers_nothing") {
-    components::compute::function_registry_t::reset_default();
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     oid_round_fixture test(mr.get(), oid_alloc_dir("alter_add_column"));
 
@@ -497,6 +491,4 @@ TEST_CASE(
 
     REQUIRE(fault.rounds_seen == 2);
     REQUIRE(fault.rounds_failed == 1);
-
-    components::compute::function_registry_t::reset_default();
 }

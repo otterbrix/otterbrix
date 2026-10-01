@@ -2,10 +2,12 @@
 
 namespace {
 
-    auto base_make_otterbrix(configuration::config cfg = configuration::config::default_config())
-        -> otterbrix::otterbrix_ptr {
-        auto* ptr = new otterbrix::otterbrix_t(cfg);
-        return ptr;
+    auto base_make_otterbrix(const configuration::config& cfg) -> core::result_wrapper_t<otterbrix::otterbrix_ptr> {
+        auto host = otterbrix::base_otterbrix_t::open(cfg);
+        if (host.has_error()) {
+            return host.error();
+        }
+        return otterbrix::otterbrix_ptr{new otterbrix::otterbrix_t(std::move(host.value()))};
     }
 
     auto base_execute_sql(otterbrix::base_otterbrix_t* ptr, const std::string& query)
@@ -20,9 +22,13 @@ namespace {
 
 namespace otterbrix {
 
-    auto make_otterbrix() -> otterbrix_ptr { return base_make_otterbrix(configuration::config::default_config()); }
+    auto make_otterbrix() -> core::result_wrapper_t<otterbrix_ptr> {
+        return base_make_otterbrix(configuration::config::default_config());
+    }
 
-    auto make_otterbrix(configuration::config cfg) -> otterbrix_ptr { return base_make_otterbrix(std::move(cfg)); }
+    auto make_otterbrix(configuration::config cfg) -> core::result_wrapper_t<otterbrix_ptr> {
+        return base_make_otterbrix(cfg);
+    }
 
     auto execute_sql(const otterbrix_ptr& ptr, const std::string& query) -> components::cursor::cursor_t_ptr {
         return base_execute_sql(ptr.get(), query);

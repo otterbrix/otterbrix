@@ -58,6 +58,18 @@ namespace components::expressions {
 
     compute::function_uid aggregate_expression_t::function_uid() const { return call()->function_uid(); }
 
+    void aggregate_expression_t::set_signature(size_t signature) noexcept { call()->set_signature(signature); }
+
+    size_t aggregate_expression_t::signature() const noexcept { return call()->signature(); }
+
+    void aggregate_expression_t::set_pins(std::pmr::vector<compute::function_pin_t> pins) {
+        call()->set_pins(std::move(pins));
+    }
+
+    const std::pmr::vector<compute::function_pin_t>& aggregate_expression_t::pins() const noexcept {
+        return call()->pins();
+    }
+
     std::pmr::vector<param_storage>& aggregate_expression_t::params() { return call()->args(); }
 
     const std::pmr::vector<param_storage>& aggregate_expression_t::params() const { return call()->args(); }

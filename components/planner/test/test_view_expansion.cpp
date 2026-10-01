@@ -12,6 +12,7 @@
 #include <components/expressions/compare_expression.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
+#include <components/logical_plan/node_insert.hpp>
 #include <components/logical_plan/node_join.hpp>
 #include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/param_storage.hpp>
@@ -175,4 +176,89 @@ TEST_CASE("planner::view_expansion::body parameters are renumbered into the oute
     INFO("and that id holds the body's own constant, not the outer query's");
     CHECK(outer_params->parameter(new_id).value<int64_t>() == 10);
     CHECK(outer_params->parameter(outer_id).value<int64_t>() == 18);
+}
+
+namespace {
+    logical_plan::resolved_table_metadata_t view_bound_to_t() {
+        logical_plan::resolved_table_metadata_t view;
+        view.name = "v";
+        view.view_bindings.push_back({logical_plan::view_refkind::relation, "db", "", "t", 16500, ""});
+        return view;
+    }
+
+    logical_plan::catalog_resolves_t body_naming(const std::string& relname) {
+        logical_plan::catalog_resolves_t body;
+        logical_plan::resolve_entry_t entry;
+        entry.dbname = "db";
+        entry.relname = relname;
+        body.ensure(res(), logical_plan::resolve_kind::table).add(std::move(entry));
+        return body;
+    }
+} // namespace
+
+TEST_CASE("planner::view_expansion::a body name is pinned to the oid it was bound to") {
+    auto body = body_naming("t");
+
+    REQUIRE_FALSE(pin_view_body_names(res(), body, view_bound_to_t()).contains_error());
+    CHECK(body.tables->entries().front().pinned_oid == 16500);
+}
+
+TEST_CASE("planner::view_expansion::a body name without a binding is refused as stale") {
+    auto body = body_naming("other");
+
+    auto err = pin_view_body_names(res(), body, view_bound_to_t());
+    REQUIRE(err.contains_error());
+    CHECK(std::string(err.what).find("view \"v\" is stale") != std::string::npos);
+}
+
+// The statement resolved the same spelling to another relation: the view's own relation is never swapped for it.
+TEST_CASE("planner::view_expansion::a pin the statement disagrees with is refused as stale") {
+    auto statement = body_naming("t");
+    logical_plan::resolved_table_metadata_t other;
+    other.table_oid = 16600;
+    statement.tables->entries().front().table_md = std::move(other);
+    auto body = body_naming("t");
+    REQUIRE_FALSE(pin_view_body_names(res(), body, view_bound_to_t()).contains_error());
+
+    auto err = merge_view_body_resolves(res(), statement, body);
+    REQUIRE(err.contains_error());
+    CHECK(std::string(err.what).find("view \"v\" is stale") != std::string::npos);
+}
+
+// REFRESH MATERIALIZED VIEW is an INSERT into the matview over its stored body (PostgreSQL 18 matview.c runs the
+// stored query; Trino 483 analyzes an INSERT into the storage table with the parsed body as its source), not a read
+// of the matview that expands into the body.
+TEST_CASE("planner::view_expansion::refresh is an insert into the matview over its pinned body") {
+    logical_plan::resolved_table_metadata_t matview;
+    matview.name = "mv";
+    matview.table_oid = 4243;
+    matview.relkind = components::catalog::relkind::materialized_view;
+    matview.view_sql = "SELECT a FROM db.t";
+    matview.view_bindings.push_back({logical_plan::view_refkind::relation, "db", "", "t", 16500, ""});
+
+    auto refresh = refresh_matview_plan(res(), matview, "db");
+    REQUIRE_FALSE(refresh.has_error());
+    auto& plan = refresh.value();
+
+    const auto* root = plan.sub_queries.back().get();
+    REQUIRE(root->type() == logical_plan::node_type::insert_t);
+    const auto* insert = static_cast<const logical_plan::node_insert_t*>(root);
+    CHECK(insert->dbname() == "db");
+    CHECK(insert->relname() == "mv");
+    REQUIRE(insert->children().size() == 1);
+
+    INFO("the source is the reference the body is spliced into, listed for the read's staleness check");
+    REQUIRE(plan.stored_bodies.size() == 1);
+    CHECK(plan.stored_bodies.front().reference.get() == insert->children().front().get());
+    CHECK(plan.stored_bodies.front().relation.name == "mv");
+    const auto* body = insert->children().front()->children().front().get();
+    REQUIRE(body->type() == logical_plan::node_type::aggregate_t);
+    CHECK(static_cast<const logical_plan::node_aggregate_t*>(body)->relname().t == "t");
+
+    INFO("the body's name is pinned; mv is only the write target, never read");
+    const auto* t = plan.catalog_resolves.table_entry(std::string_view{"db"}, std::string_view{}, "t");
+    REQUIRE(t != nullptr);
+    CHECK(t->pinned_oid == 16500);
+    CHECK(plan.catalog_resolves.table_entry(std::string_view{"db"}, std::string_view{}, "mv") != nullptr);
+    CHECK(collect_view_references(res(), plan.catalog_resolves, plan.sub_queries.back().get()).empty());
 }

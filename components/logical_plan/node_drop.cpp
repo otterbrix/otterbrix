@@ -22,7 +22,6 @@ namespace components::logical_plan {
         boost::hash_combine(hash_value, relname_);
         boost::hash_combine(hash_value, index_name_);
         boost::hash_combine(hash_value, static_cast<uint8_t>(behavior_));
-        boost::hash_combine(hash_value, missing_ok_);
         switch (kind_) {
             case drop_target_kind::database:
                 boost::hash_combine(hash_value, static_cast<hash_t>(namespace_oid_));
@@ -36,6 +35,7 @@ namespace components::logical_plan {
                 break;
             case drop_target_kind::sequence:
             case drop_target_kind::view:
+            case drop_target_kind::materialized_view:
             case drop_target_kind::macro:
                 boost::hash_combine(hash_value, static_cast<hash_t>(table_oid()));
                 break;
@@ -65,6 +65,9 @@ namespace components::logical_plan {
                 break;
             case drop_target_kind::view:
                 stream << "$drop_view: <oid:" << static_cast<std::uint64_t>(table_oid()) << ">";
+                break;
+            case drop_target_kind::materialized_view:
+                stream << "$drop_materialized_view: <oid:" << static_cast<std::uint64_t>(table_oid()) << ">";
                 break;
             case drop_target_kind::macro:
                 stream << "$drop_macro: <oid:" << static_cast<std::uint64_t>(table_oid()) << ">";

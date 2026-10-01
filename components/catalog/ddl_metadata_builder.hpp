@@ -4,6 +4,7 @@
 #include "catalog_oids.hpp"
 #include "catalog_write.hpp"
 #include "oid_batch.hpp"
+#include "view_binding.hpp"
 
 #include <components/base/collection_full_name.hpp>
 #include <components/table/column_definition.hpp>
@@ -13,6 +14,7 @@
 
 #include <cstdint>
 #include <memory_resource>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -41,12 +43,22 @@ namespace components::catalog {
                                                               std::int64_t max_value,
                                                               bool cycle);
 
+    // The view's pg_class row (unless `write_class_row` is false: OR REPLACE keeps the old one), one pg_attribute
+    // row per output column (attoids minted from `oid_batch` and stamped back), pg_rewrite (the text), one
+    // pg_rewrite_ref row per binding, pg_depend: view -> namespace and one 'n' edge per dependency. `relkind` is
+    // relkind::view or relkind::materialized_view (pg_class.relkind and pg_rewrite.ev_type).
     std::vector<catalog_write_t> build_create_view_writes(std::pmr::memory_resource* resource,
                                                           const std::string& name,
                                                           oid_t namespace_oid,
                                                           oid_t view_oid,
                                                           oid_t rule_oid,
-                                                          const std::string& body_sql);
+                                                          const std::string& body_sql,
+                                                          std::span<table::column_definition_t> columns,
+                                                          oid_batch_t& oid_batch,
+                                                          std::span<const view_binding_t> bindings,
+                                                          std::span<const view_dependency_t> dependencies,
+                                                          bool write_class_row,
+                                                          char relkind);
 
     // pg_class relkind='F' (not 'm', which is reserved for materialized_view) + pg_depend(macro->ns 'n').
     std::vector<catalog_write_t> build_create_macro_writes(std::pmr::memory_resource* resource,
@@ -55,15 +67,6 @@ namespace components::catalog {
                                                            oid_t macro_oid,
                                                            oid_t rule_oid,
                                                            const std::string& body_sql);
-
-    // pg_class/pg_attribute for the matview come separately, via
-    // build_create_table_writes(relkind::materialized_view).
-    std::vector<catalog_write_t> build_matview_rewrite_writes(std::pmr::memory_resource* resource,
-                                                              oid_t mv_oid,
-                                                              oid_t rule_oid,
-                                                              const std::string& mv_name,
-                                                              const std::string& body_sql,
-                                                              oid_t source_table_oid);
 
     // indtype (catalog_codes.hpp) must never be 0; refuses rather than silently hiding a dropped
     // pg_depend edge behind an INVALID_OID in column_attoids.

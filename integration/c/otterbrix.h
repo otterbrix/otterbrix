@@ -45,7 +45,14 @@ typedef struct error_message {
     char* message;
 } error_message;
 
-otterbrix_ptr otterbrix_create(config_t cfg);
+// A refused start answers nullptr and fills *out_error; the caller frees out_error->message with
+// otterbrix_free_string. On success out_error->code is 0 and out_error->message is nullptr.
+// out_error must not be null.
+otterbrix_ptr otterbrix_create(config_t cfg, error_message* out_error);
+// Every cursor and value holds the engine it came from. otterbrix_destroy gives up the caller's handle: the engine
+// (its threads, its memory, the lock on main_path) goes when the last cursor or value is released too, on whichever
+// thread releases it, so they may be released in any order and from any thread. After otterbrix_destroy the handle
+// itself must not be passed to any call again.
 void otterbrix_destroy(otterbrix_ptr);
 
 cursor_ptr execute_sql(otterbrix_ptr ptr, string_view_t query);
@@ -72,13 +79,18 @@ typedef struct sql_param_t {
 
 cursor_ptr execute_sql_params(otterbrix_ptr ptr, string_view_t query, const sql_param_t* params, size_t param_count);
 
+// database_name must be lower case: SQL folds an unquoted name, so a mixed-case database could not be named back.
 cursor_ptr create_database(otterbrix_ptr ptr, string_view_t database_name);
+// collection_name must be lower case: SQL folds an unquoted name, so a mixed-case table could not be read back.
 cursor_ptr create_collection(otterbrix_ptr ptr, string_view_t database_name, string_view_t collection_name);
 cursor_ptr drop_database(otterbrix_ptr ptr, string_view_t database_name);
 cursor_ptr drop_collection(otterbrix_ptr ptr, string_view_t database_name, string_view_t collection_name);
 
 void release_cursor(cursor_ptr ptr);
 int32_t cursor_size(cursor_ptr ptr);
+// The rows an INSERT / UPDATE / DELETE wrote go to *rows; false (and *rows untouched) for a statement that writes no
+// rows. cursor_size() counts result rows only: 0 for a write without RETURNING.
+bool cursor_affected_rows(cursor_ptr ptr, uint64_t* rows);
 int32_t cursor_column_count(cursor_ptr ptr);
 int32_t cursor_column_logical_type(cursor_ptr ptr, int32_t column_index);
 bool cursor_has_next(cursor_ptr ptr);

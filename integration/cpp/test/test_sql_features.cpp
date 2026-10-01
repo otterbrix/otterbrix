@@ -2,6 +2,7 @@
 #include "test_config.hpp"
 #include "types/operations_helper.hpp"
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
 #include <components/expressions/compare_expression.hpp>
@@ -43,7 +44,7 @@ TEST_CASE("integration::cpp::test_sql_features::is_null") {
                                                "INSERT INTO TestDatabase.TestCollection (name, value) VALUES "
                                                "('Alice', 10), ('Bob', 20), ('Charlie', 30);");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 3);
+            REQUIRE(cur->affected_rows() == 3);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -51,7 +52,7 @@ TEST_CASE("integration::cpp::test_sql_features::is_null") {
                                                "INSERT INTO TestDatabase.TestCollection (name) VALUES "
                                                "('Dave'), ('Eve');");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 2);
+            REQUIRE(cur->affected_rows() == 2);
         }
     }
 
@@ -120,7 +121,7 @@ TEST_CASE("integration::cpp::test_sql_features::is_null") {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE value IS NULL;");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 2);
+            REQUIRE(cur->affected_rows() == 2);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -156,7 +157,7 @@ TEST_CASE("integration::cpp::test_sql_features::in_list") {
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 100);
+            REQUIRE(cur->affected_rows() == 100);
         }
     }
 
@@ -236,7 +237,7 @@ TEST_CASE("integration::cpp::test_sql_features::between") {
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 100);
+            REQUIRE(cur->affected_rows() == 100);
         }
     }
 
@@ -315,7 +316,7 @@ TEST_CASE("integration::cpp::test_sql_features::like") {
                                                "('Alex', 4), ('Alfred', 5), ('Brian', 6), "
                                                "('test_value', 7), ('test123', 8), ('abc', 9), ('xyz', 10);");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 10);
+            REQUIRE(cur->affected_rows() == 10);
         }
     }
 
@@ -443,7 +444,7 @@ TEST_CASE("integration::cpp::test_sql_features::like_disk_pushdown") {
                                                "('Alex', 4), ('Alfred', 5), ('Brian', 6), "
                                                "('test_value', 7), ('test123', 8), ('abc', 9), ('xyz', 10);");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 10);
+            REQUIRE(cur->affected_rows() == 10);
         }
     }
 
@@ -755,7 +756,7 @@ TEST_CASE("integration::cpp::test_sql_features::distinct") {
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 100);
+            REQUIRE(cur->affected_rows() == 100);
         }
     }
 
@@ -884,7 +885,7 @@ TEST_CASE("integration::cpp::test_sql_features::count_distinct") {
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 100);
+            REQUIRE(cur->affected_rows() == 100);
         }
     }
 
@@ -953,7 +954,7 @@ TEST_CASE("integration::cpp::test_sql_features::having") {
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 100);
+            REQUIRE(cur->affected_rows() == 100);
         }
     }
 
@@ -1026,7 +1027,7 @@ TEST_CASE("integration::cpp::test_sql_features::having_first_class_node") {
         }
         auto cur = dispatcher->execute_sql(session, query.str());
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 100);
+        REQUIRE(cur->affected_rows() == 100);
     }
 
     INFO("SELECT * GROUP BY HAVING aggregate: hidden __having aggregate is stripped");
@@ -1177,7 +1178,7 @@ TEST_CASE("integration::cpp::test_sql_features::edge_cases") {
                                                "INSERT INTO TestDatabase.TestCollection (name, count) VALUES "
                                                "('OnlyRow', 42);");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->affected_rows() == 1);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1191,7 +1192,7 @@ TEST_CASE("integration::cpp::test_sql_features::edge_cases") {
                                                "UPDATE TestDatabase.TestCollection SET count = 100 "
                                                "WHERE name = 'OnlyRow';");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->affected_rows() == 1);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1204,7 +1205,7 @@ TEST_CASE("integration::cpp::test_sql_features::edge_cases") {
             auto cur =
                 dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE name = 'OnlyRow';");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->affected_rows() == 1);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1225,7 +1226,7 @@ TEST_CASE("integration::cpp::test_sql_features::edge_cases") {
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 50);
+            REQUIRE(cur->affected_rows() == 50);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1255,7 +1256,7 @@ TEST_CASE("integration::cpp::test_sql_features::edge_cases") {
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 5000);
+            REQUIRE(cur->affected_rows() == 5000);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1297,7 +1298,7 @@ TEST_CASE("integration::cpp::test_sql_features::coalesce") {
                                                "INSERT INTO TestDatabase.TestCollection (name, nickname, value) VALUES "
                                                "('Alice', 'Ali', 10), ('Bob', 'Bobby', 20);");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 2);
+            REQUIRE(cur->affected_rows() == 2);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1305,7 +1306,7 @@ TEST_CASE("integration::cpp::test_sql_features::coalesce") {
                                                "INSERT INTO TestDatabase.TestCollection (name, value) VALUES "
                                                "('Charlie', 30);");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->affected_rows() == 1);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1313,7 +1314,7 @@ TEST_CASE("integration::cpp::test_sql_features::coalesce") {
                                                "INSERT INTO TestDatabase.TestCollection (name) VALUES "
                                                "('Dave');");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->affected_rows() == 1);
         }
     }
 
@@ -1404,7 +1405,7 @@ TEST_CASE("integration::cpp::test_sql_features::case_when") {
                                                "('Alice', 95), ('Bob', 72), ('Charlie', 45), "
                                                "('Dave', 88), ('Eve', 30);");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 5);
+            REQUIRE(cur->affected_rows() == 5);
         }
     }
 
@@ -1524,7 +1525,7 @@ TEST_CASE("integration::cpp::test_sql_features::case_when_in_aggregate") {
                                                "('Alice', 95), ('Bob', 72), ('Charlie', 45), "
                                                "('Dave', 88), ('Eve', 30);");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 5);
+            REQUIRE(cur->affected_rows() == 5);
         }
     }
 
@@ -1633,7 +1634,7 @@ TEST_CASE("integration::cpp::test_sql_features::case_when_in_aggregate") {
                                            "FROM TestDatabase.TestCollection;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 51);
+        REQUIRE(cur->value(0, 0).value<double>() == Catch::Approx(51.0));
     }
 
     INFO("MIN/MAX/AVG/SUM(CASE) in one query");
@@ -1650,7 +1651,7 @@ TEST_CASE("integration::cpp::test_sql_features::case_when_in_aggregate") {
         REQUIRE(cur->column_count() == 4);
         REQUIRE(cur->value(0, 0).value<int64_t>() == 72);
         REQUIRE(cur->value(1, 0).value<int64_t>() == 95);
-        REQUIRE(cur->value(2, 0).value<int64_t>() == 51);
+        REQUIRE(cur->value(2, 0).value<double>() == Catch::Approx(51.0));
         REQUIRE(cur->value(3, 0).value<int64_t>() == 255);
     }
 }
@@ -1695,7 +1696,7 @@ TEST_CASE("integration::cpp::test_sql_features::update_with_is_null") {
                                                "UPDATE TestDatabase.TestCollection SET value = 0 "
                                                "WHERE value IS NULL;");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 2);
+            REQUIRE(cur->affected_rows() == 2);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -3436,7 +3437,7 @@ TEST_CASE("integration::cpp::test_sql_features::ddl_inside_explicit_txn_transact
 
         auto ins_cur = dispatcher->execute_sql(session, "INSERT INTO TestDatabase.t2 (id) VALUES (1), (2), (3);");
         REQUIRE(ins_cur->is_success());
-        REQUIRE(ins_cur->size() == 3);
+        REQUIRE(ins_cur->affected_rows() == 3);
 
         auto sel_cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.t2;");
         REQUIRE(sel_cur->is_success());
@@ -4359,7 +4360,7 @@ TEST_CASE("integration::cpp::test_sql_features::comma_join") {
                                                "INSERT INTO TestDatabase.orders (id, customer_id) VALUES "
                                                "(1, 10), (2, 20), (3, 30), (4, 99);");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 4);
+            REQUIRE(cur->affected_rows() == 4);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -4367,7 +4368,7 @@ TEST_CASE("integration::cpp::test_sql_features::comma_join") {
                                                "INSERT INTO TestDatabase.customers (id, name) VALUES "
                                                "(10, 'Alice'), (20, 'Bob'), (30, 'Carol');");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 3);
+            REQUIRE(cur->affected_rows() == 3);
         }
     }
 
@@ -4410,7 +4411,7 @@ TEST_CASE("integration::cpp::test_sql_features::create_view_e2e") {
 
 // CREATE MATERIALIZED VIEW makes a real relkind='m' table via the canonical pipeline; after CREATE it's
 // empty (no view expansion). WITH NO DATA is required — unlike PostgreSQL's WITH DATA default — because
-// REFRESH isn't lowered (see test_view_expansion::matview_without_no_data_is_refused).
+// CREATE does not populate it (see test_view_expansion::matview_without_no_data_is_refused).
 TEST_CASE("integration::cpp::test_sql_features::create_matview_e2e") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/create_matview_e2e"));
     test_clear_directory(config);
@@ -4567,7 +4568,7 @@ TEST_CASE("integration::cpp::test_sql_features::rollback_indexed_insert_leaves_c
                                                "INSERT INTO TestDatabase.TestCollection (name, count) VALUES "
                                                "('alice', 10), ('bob', 20), ('charlie', 30);");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 3);
+            REQUIRE(cur->affected_rows() == 3);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -4613,7 +4614,7 @@ TEST_CASE("integration::cpp::test_sql_features::vacuum_after_alter_keeps_working
                                                "INSERT INTO TestDatabase.items (id, val) VALUES "
                                                "(1, 10), (2, 20), (3, 30);");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 3);
+            REQUIRE(cur->affected_rows() == 3);
         }
     }
 
@@ -4651,7 +4652,7 @@ TEST_CASE("integration::cpp::test_sql_features::vacuum_after_alter_keeps_working
             auto cur =
                 dispatcher->execute_sql(session, "INSERT INTO TestDatabase.items (id, val) VALUES (4, 40), (5, 50);");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 2);
+            REQUIRE(cur->affected_rows() == 2);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -4707,7 +4708,7 @@ TEST_CASE("integration::cpp::test_sql_features::bare_commit_is_noop") {
                                                "INSERT INTO TestDatabase.TestCollection (name, value) VALUES "
                                                "('Alice', 10), ('Bob', 20);");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 2);
+            REQUIRE(cur->affected_rows() == 2);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -4768,7 +4769,7 @@ TEST_CASE("integration::cpp::test_sql_features::rollback_after_delete_keeps_inde
                                                "INSERT INTO TestDatabase.TestCollection (name, count) VALUES "
                                                "('alice', 10), ('bob', 20), ('charlie', 30), ('dave', 40);");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 4);
+            REQUIRE(cur->affected_rows() == 4);
         }
     }
 
@@ -4788,7 +4789,7 @@ TEST_CASE("integration::cpp::test_sql_features::rollback_after_delete_keeps_inde
         auto del_cur =
             dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE count IN (20, 30);");
         REQUIRE(del_cur->is_success());
-        REQUIRE(del_cur->size() == 2);
+        REQUIRE(del_cur->affected_rows() == 2);
         auto rollback_cur = dispatcher->execute_sql(session, "ROLLBACK;");
         REQUIRE(rollback_cur->is_success());
     }
@@ -4839,7 +4840,7 @@ TEST_CASE("integration::cpp::test_sql_features::rollback_after_delete_keeps_inde
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE count = 20;");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->affected_rows() == 1);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -4857,7 +4858,7 @@ TEST_CASE("integration::cpp::test_sql_features::rollback_after_delete_keeps_inde
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE count = 30;");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->affected_rows() == 1);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -4894,7 +4895,7 @@ TEST_CASE("integration::cpp::test_sql_features::ddl_failure_pre_pipeline_charact
                                                "INSERT INTO TestDatabase.TestCollection (name, count) VALUES "
                                                "('alice', 10), ('bob', 20);");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 2);
+            REQUIRE(cur->affected_rows() == 2);
         }
     }
 
@@ -4934,7 +4935,7 @@ TEST_CASE("integration::cpp::test_sql_features::ddl_failure_pre_pipeline_charact
                                                "INSERT INTO TestDatabase.TestCollection (name, count) VALUES "
                                                "('charlie', 30);");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->affected_rows() == 1);
         }
         {
             auto fresh = otterbrix::session_id_t();
@@ -4982,7 +4983,7 @@ TEST_CASE("integration::cpp::test_sql_features::indexed_insert_commit_visible_af
         }
         auto cur = dispatcher->execute_sql(session, query.str());
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 20);
+        REQUIRE(cur->affected_rows() == 20);
     }
 
     INFO("index-path SELECT immediately returns the committed rows on a fresh session");

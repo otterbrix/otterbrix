@@ -135,11 +135,11 @@ namespace services::planner::impl {
             return -1;
         }
 
-        components::operators::operator_ptr create_plan_match_(const context_storage_t& context,
-                                                               components::catalog::oid_t table_oid,
-                                                               const components::expressions::expression_ptr& expr,
-                                                               components::logical_plan::limit_t limit,
-                                                               const std::vector<size_t>& projected_cols) {
+        plan_result_t create_plan_match_(const context_storage_t& context,
+                                         components::catalog::oid_t table_oid,
+                                         const components::expressions::expression_ptr& expr,
+                                         components::logical_plan::limit_t limit,
+                                         const std::vector<size_t>& projected_cols) {
             if (context.has_table_oid(table_oid)) {
                 // TODO: function_expr in scans
                 if (is_pure_compare(expr)) {
@@ -199,17 +199,17 @@ namespace services::planner::impl {
         }
     } // namespace
 
-    components::operators::operator_ptr create_plan_match(const context_storage_t& context,
-                                                          const components::logical_plan::node_ptr& node,
-                                                          components::logical_plan::limit_t limit) {
+    plan_result_t create_plan_match(const context_storage_t& context,
+                                    const components::logical_plan::node_ptr& node,
+                                    components::logical_plan::limit_t limit) {
         static const std::vector<size_t> empty_cols;
         return create_plan_match(context, node, limit, empty_cols);
     }
 
-    components::operators::operator_ptr create_plan_match(const context_storage_t& context,
-                                                          const components::logical_plan::node_ptr& node,
-                                                          components::logical_plan::limit_t limit,
-                                                          const std::vector<size_t>& projected_cols) {
+    plan_result_t create_plan_match(const context_storage_t& context,
+                                    const components::logical_plan::node_ptr& node,
+                                    components::logical_plan::limit_t limit,
+                                    const std::vector<size_t>& projected_cols) {
         if (node->expressions().empty()) {
             // relkind::computed ('g') columns are read live by chunk_position, resolved at resolve-table
             // time; relkind::regular ('r') tables use the caller's projected_cols (column_pruning output).
@@ -243,14 +243,17 @@ namespace services::planner::impl {
                                                                                          node->table_oid(),
                                                                                          limit,
                                                                                          std::move(effective_cols)));
-                case components::logical_plan::match_source::table:
+                case components::logical_plan::match_source::table: {
                     // Validation should refuse a named table with an unresolved oid before plan generation;
-                    // returning nullptr here (not the `none` sentinel) stops a regression from silently
-                    // answering a synthetic row for a nonexistent table. A null root surfaces as
-                    // create_physical_plan_error downstream.
-                    return nullptr;
+                    // refusing here (not the `none` sentinel) stops a regression from silently answering a
+                    // synthetic row for a nonexistent table.
+                    const auto* match_node = static_cast<const components::logical_plan::node_match_t*>(node.get());
+                    return unresolved_table_refusal(context.resource,
+                                                    static_cast<const std::string&>(match_node->dbname()),
+                                                    static_cast<const std::string&>(match_node->relname()));
+                }
             }
-            return nullptr; // unreachable: the switch above covers every match_source
+            return plan_refusal(context.resource, "unknown source of a WHERE scan");
         } else {
             const auto* match_node = static_cast<const components::logical_plan::node_match_t*>(node.get());
             return create_plan_match_(context,
@@ -264,10 +267,9 @@ namespace services::planner::impl {
     // HAVING has no window of its own (the outer operator_limit is the sole window), so
     // create_plan_having takes no limit parameter. context.resource is always non-null and
     // outlives the operator, so there's no null-resource sentinel here.
-    components::operators::operator_ptr create_plan_having(const context_storage_t& context,
-                                                           const components::logical_plan::node_ptr& node) {
+    plan_result_t create_plan_having(const context_storage_t& context, const components::logical_plan::node_ptr& node) {
         if (node->expressions().empty()) {
-            return nullptr;
+            return plan_refusal(context.resource, "HAVING carries no predicate");
         }
         return boost::intrusive_ptr(new components::operators::operator_having_t(context.resource,
                                                                                  context.log.clone(),

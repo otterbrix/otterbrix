@@ -3,6 +3,7 @@
 #include <components/types/operations_helper.hpp>
 #include <core/operations_helper.hpp>
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 static const database_name_t database_name = "testdatabase";
@@ -43,7 +44,7 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 100);
+            REQUIRE(cur->affected_rows() == 100);
         }
     }
 
@@ -228,7 +229,8 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                 dispatcher->execute_sql(session, "SELECT AVG(count) AS avg_val FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).value<int64_t>() == 49);
+            // AVG over an integer column answers DOUBLE: 4950 / 100
+            REQUIRE(cur->value(0, 0).value<double>() == Catch::Approx(49.5));
         }
     }
 
@@ -277,7 +279,7 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                                                "WHERE count < 10;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).value<int64_t>() == 4);
+            REQUIRE(cur->value(0, 0).value<double>() == Catch::Approx(4.5));
         }
     }
 
@@ -363,7 +365,7 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                                                "DELETE FROM TestDatabase.TestCollection "
                                                "WHERE count > 90;");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 9);
+            REQUIRE(cur->affected_rows() == 9);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -392,7 +394,7 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                                                "SET count = 1000 "
                                                "WHERE count < 20;");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 20);
+            REQUIRE(cur->affected_rows() == 20);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -456,8 +458,8 @@ TEST_CASE("integration::cpp::test_collection::sql::group_by") {
             REQUIRE(cur->value(1, number).value<uint64_t>() == 10);
             REQUIRE(cur->value(2, number).value<int64_t>() ==
                     5 * (static_cast<int64_t>(number) % 20) + 5 * ((static_cast<int64_t>(number) + 10) % 20));
-            REQUIRE(cur->value(3, number).value<int64_t>() ==
-                    static_cast<int64_t>((number % 20 + (number + 10) % 20)) / 2);
+            REQUIRE(cur->value(3, number).value<double>() ==
+                    Catch::Approx(static_cast<double>(number % 20 + (number + 10) % 20) / 2));
             REQUIRE(cur->value(4, number).value<int64_t>() == static_cast<int64_t>(number) % 20);
             REQUIRE(cur->value(5, number).value<int64_t>() == (static_cast<int64_t>(number) + 10) % 20);
         }
@@ -480,8 +482,8 @@ TEST_CASE("integration::cpp::test_collection::sql::group_by") {
             REQUIRE(cur->value(0, row).value<std::string_view>() == "Name " + std::to_string(number));
             REQUIRE(cur->value(1, row).value<uint64_t>() == 10);
             REQUIRE(cur->value(2, row).value<int64_t>() == 5 * (number % 20) + 5 * ((number + 10) % 20));
-            REQUIRE(cur->value(3, row).value<int64_t>() ==
-                    static_cast<int64_t>((number % 20 + (number + 10) % 20)) / 2);
+            REQUIRE(cur->value(3, row).value<double>() ==
+                    Catch::Approx(static_cast<double>(number % 20 + (number + 10) % 20) / 2));
             REQUIRE(cur->value(4, row).value<int64_t>() == number % 20);
             REQUIRE(cur->value(5, row).value<int64_t>() == (number + 10) % 20);
         }
@@ -576,7 +578,7 @@ TEST_CASE("integration::cpp::test_collection::sql::index") {
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 100);
+            REQUIRE(cur->affected_rows() == 100);
         }
     }
 
@@ -736,7 +738,7 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 100);
+            REQUIRE(cur->affected_rows() == 100);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -856,7 +858,7 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
                 session,
                 "UPDATE TestDatabase.TestCollection SET custom_type.f3.f1 = (custom_type).f3.f1 * 3.0;");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 100);
+            REQUIRE(cur->affected_rows() == 100);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -891,7 +893,7 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
                 dispatcher->execute_sql(session,
                                         "DELETE FROM TestDatabase.TestCollection WHERE ((custom_type).f3).f2 < 90;");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 45);
+            REQUIRE(cur->affected_rows() == 45);
         }
         {
             auto session = otterbrix::session_id_t();

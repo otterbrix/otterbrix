@@ -402,20 +402,22 @@ namespace services::disk {
             return sidecar_err;
         }
 
-        // A file of exactly BLOCK_START bytes is the never-checkpointed signature; a `.wal_id` sidecar recording a real
-        // checkpoint would contradict that, so refuse rather than discard it. A young file with no resolved schema just
-        // means this walk ran before the catalog knew the table; defer, since the post-replay walk revisits it.
+        // Never-checkpointed = the file's newest root is the CREATE-time header (its size is no tell: write-through
+        // fills blocks before any root). A `.wal_id` sidecar recording a real checkpoint contradicts that, so refuse
+        // rather than discard it. A young file with no resolved schema just means this walk ran before the catalog
+        // knew the table; defer, since the post-replay walk revisits it.
         {
-            std::error_code size_ec;
-            const auto file_bytes = std::filesystem::file_size(otbx_path, size_ec);
-            if (!size_ec && file_bytes == components::table::storage::BLOCK_START) {
+            // An unreadable root is not answered here: the probe below refuses it with the full per-slot diagnostics.
+            auto young = components::table::storage::single_file_block_manager_t::file_is_never_checkpointed(
+                otbx_path.string(),
+                resource());
+            if (!young.has_error() && young.value()) {
                 if (sidecar_id > wal::id_t{0}) {
                     return core::error_t(
                         core::error_code_t::data_corruption,
                         std::pmr::string{"load_storage_disk_sync: " + otbx_path.string() +
-                                             " carries no checkpointed content (never-checkpointed signature, " +
-                                             std::to_string(file_bytes) +
-                                             " bytes), but its .wal_id sidecar records a committed checkpoint at "
+                                             " carries no checkpointed content (its newest root is the CREATE-time "
+                                             "header), but its .wal_id sidecar records a committed checkpoint at "
                                              "wal id " +
                                              std::to_string(static_cast<uint64_t>(sidecar_id)) +
                                              ". The two cannot both be true; refusing to open the table as empty. "
@@ -424,8 +426,8 @@ namespace services::disk {
                 }
                 if (catalog_columns.empty() && !is_computed) {
                     trace(log_,
-                          "manager_disk_t::load_storage_disk_sync: {} is never-checkpointed (size == BLOCK_START) "
-                          "and the catalog does not know oid {} yet — deferring the load until after WAL replay",
+                          "manager_disk_t::load_storage_disk_sync: {} is never-checkpointed and the catalog does "
+                          "not know oid {} yet — deferring the load until after WAL replay",
                           otbx_path.string(),
                           static_cast<unsigned>(table_oid));
                     return core::error_t::no_error();

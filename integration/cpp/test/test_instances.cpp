@@ -20,19 +20,8 @@ TEST_CASE("integration::cpp::test_instances") {
         test_spaces space_2(config_works_2);
         test_spaces space_3(config_works_3);
 
-        try {
-            test_spaces space(config_failes_1);
-            REQUIRE(false);
-        } catch (...) {
-            REQUIRE(true);
-        }
-
-        try {
-            test_spaces space(config_failes_2);
-            REQUIRE(false);
-        } catch (...) {
-            REQUIRE(true);
-        }
+        REQUIRE(otterbrix::base_otterbrix_t::open(config_failes_1).has_error());
+        REQUIRE(otterbrix::base_otterbrix_t::open(config_failes_2).has_error());
     }
 
     INFO("directories references deleted properly");
@@ -42,18 +31,7 @@ TEST_CASE("integration::cpp::test_instances") {
         test_spaces space_2(config_works_2);
         test_spaces space_3(config_works_3);
 
-        try {
-            test_spaces space(config_failes_1);
-            REQUIRE(false);
-        } catch (...) {
-            REQUIRE(true);
-        }
-
-        try {
-            test_spaces space(config_failes_2);
-            REQUIRE(false);
-        } catch (...) {
-            REQUIRE(true);
-        }
+        REQUIRE(otterbrix::base_otterbrix_t::open(config_failes_1).has_error());
+        REQUIRE(otterbrix::base_otterbrix_t::open(config_failes_2).has_error());
     }
 }

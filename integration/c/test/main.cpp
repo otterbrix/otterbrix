@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <string>
+#include <thread>
 #include <type_traits>
 #include <unistd.h>
 
@@ -41,7 +42,9 @@ namespace {
             cfg.disk_path = sv(disk_path);
             cfg.main_path = sv(main_path);
 
-            ptr = otterbrix_create(cfg);
+            error_message refusal{};
+            ptr = otterbrix_create(cfg, &refusal);
+            REQUIRE(refusal.message == nullptr);
         }
 
         ~test_db_t() {
@@ -92,6 +95,109 @@ TEST_CASE("c-api: create_collection returns successful empty cursor", "[c-api][d
     REQUIRE(cursor_is_success(cur));
     REQUIRE(cursor_size(cur) == 0);
     release_cursor(cur);
+}
+
+TEST_CASE("c-api: create_collection in a database that does not exist is refused", "[c-api][ddl]") {
+    test_db_t t("create_collection_no_db");
+    REQUIRE(t.ptr != nullptr);
+
+    cursor_ptr cur = create_collection(t.ptr, sv(std::string("nodb")), sv(std::string("t")));
+    REQUIRE(cur != nullptr);
+    REQUIRE(cursor_is_error(cur));
+    error_message refusal = cursor_get_error(cur);
+    REQUIRE(refusal.message != nullptr);
+    CHECK(std::string(refusal.message) == "database \"nodb\" does not exist");
+    otterbrix_free_string(refusal.message);
+    release_cursor(cur);
+
+    cursor_ptr db_cur = create_database(t.ptr, sv(std::string("otherdb")));
+    REQUIRE(cursor_is_success(db_cur));
+    release_cursor(db_cur);
+    cursor_ptr other = create_collection(t.ptr, sv(std::string("otherdb")), sv(std::string("t")));
+    REQUIRE(other != nullptr);
+    CHECK(cursor_is_success(other));
+    release_cursor(other);
+}
+
+// Same rule as create_collection: a database name is taken as written, so it must already be lower case.
+TEST_CASE("c-api: create_database takes a lower-case name only", "[c-api][ddl]") {
+    test_db_t t("create_database_case");
+    REQUIRE(t.ptr != nullptr);
+
+    cursor_ptr mixed = create_database(t.ptr, sv(std::string("TestDatabase")));
+    REQUIRE(mixed != nullptr);
+    CHECK(cursor_is_error(mixed));
+    error_message refusal = cursor_get_error(mixed);
+    REQUIRE(refusal.message != nullptr);
+    CHECK(std::string(refusal.message) == "create_database: name \"TestDatabase\" must be lower case");
+    otterbrix_free_string(refusal.message);
+    release_cursor(mixed);
+
+    cursor_ptr catalog = execute_sql(t.ptr,
+                                     sv(std::string("SELECT nspname FROM pg_catalog.pg_namespace "
+                                                    "WHERE nspname = 'testdatabase';")));
+    REQUIRE(cursor_is_success(catalog));
+    CHECK(cursor_size(catalog) == 0);
+    release_cursor(catalog);
+
+    run_ok(t.ptr, "CREATE DATABASE SqlDatabase;");
+    cursor_ptr folded = execute_sql(t.ptr,
+                                    sv(std::string("SELECT nspname FROM pg_catalog.pg_namespace "
+                                                   "WHERE nspname = 'sqldatabase';")));
+    REQUIRE(cursor_is_success(folded));
+    CHECK(cursor_size(folded) == 1);
+    release_cursor(folded);
+}
+
+// Document mode through the C API: a lower-case database, a table without columns, fields registered by INSERT.
+TEST_CASE("c-api: document flow in a database created through the C API", "[c-api][ddl]") {
+    test_db_t t("document_flow");
+    REQUIRE(t.ptr != nullptr);
+
+    cursor_ptr db_cur = create_database(t.ptr, sv(std::string("docdb")));
+    REQUIRE(cursor_is_success(db_cur));
+    release_cursor(db_cur);
+    cursor_ptr coll_cur = create_collection(t.ptr, sv(std::string("docdb")), sv(std::string("docs")));
+    REQUIRE(cursor_is_success(coll_cur));
+    release_cursor(coll_cur);
+
+    run_ok(t.ptr, "INSERT INTO docdb.docs (id, name) VALUES (1, 'a'), (2, 'b');");
+    run_ok(t.ptr, "INSERT INTO docdb.docs (id, score) VALUES (3, 30);");
+    cursor_ptr read = execute_sql(t.ptr, sv(std::string("SELECT id FROM docdb.docs;")));
+    REQUIRE(cursor_is_success(read));
+    CHECK(cursor_size(read) == 3);
+    release_cursor(read);
+}
+
+// SQL folds an unquoted name to lower case, so a table created under a mixed-case name could never be read back.
+TEST_CASE("c-api: create_collection takes a lower-case name only", "[c-api][ddl]") {
+    test_db_t t("create_collection_case");
+    REQUIRE(t.ptr != nullptr);
+    run_ok(t.ptr, "CREATE DATABASE db;");
+
+    cursor_ptr mixed = create_collection(t.ptr, sv(std::string("db")), sv(std::string("TestCollection")));
+    REQUIRE(mixed != nullptr);
+    CHECK(cursor_is_error(mixed));
+    error_message refusal = cursor_get_error(mixed);
+    REQUIRE(refusal.message != nullptr);
+    CHECK(std::string(refusal.message) == "create_collection: name \"TestCollection\" must be lower case");
+    otterbrix_free_string(refusal.message);
+    release_cursor(mixed);
+    cursor_ptr catalog =
+        execute_sql(t.ptr,
+                    sv(std::string("SELECT relname FROM pg_catalog.pg_class WHERE relname = 'TestCollection';")));
+    REQUIRE(cursor_is_success(catalog));
+    CHECK(cursor_size(catalog) == 0);
+    release_cursor(catalog);
+
+    cursor_ptr lower = create_collection(t.ptr, sv(std::string("db")), sv(std::string("testcollection")));
+    REQUIRE(cursor_is_success(lower));
+    release_cursor(lower);
+    run_ok(t.ptr, "INSERT INTO db.TestCollection (id) VALUES (1);");
+    cursor_ptr read = execute_sql(t.ptr, sv(std::string("SELECT id FROM db.testcollection;")));
+    REQUIRE(cursor_is_success(read));
+    CHECK(cursor_size(read) == 1);
+    release_cursor(read);
 }
 
 TEST_CASE("c-api: drop_collection then drop_database succeed with empty cursors", "[c-api][ddl]") {
@@ -155,6 +261,39 @@ TEST_CASE("c-api: cursor_size matches inserted row count", "[c-api][cursor]") {
     REQUIRE(cursor_is_success(cur));
     REQUIRE(cursor_size(cur) == 2);
     release_cursor(cur);
+}
+
+TEST_CASE("c-api: cursor_affected_rows reports the rows a write changed", "[c-api][cursor]") {
+    test_db_t t("affected_rows");
+    REQUIRE(t.ptr != nullptr);
+
+    run_ok(t.ptr, "CREATE DATABASE test_db;");
+    run_ok(t.ptr, "CREATE TABLE test_db.users (name string, age bigint);");
+
+    auto affected = [&](const std::string& sql, uint64_t* rows) {
+        cursor_ptr cur = execute_sql(t.ptr, sv(sql));
+        REQUIRE(cur != nullptr);
+        REQUIRE(cursor_is_success(cur));
+        const bool wrote = cursor_affected_rows(cur, rows);
+        CHECK(cursor_size(cur) == 0);
+        release_cursor(cur);
+        return wrote;
+    };
+
+    uint64_t rows = 99;
+    REQUIRE(affected("INSERT INTO test_db.users (name, age) VALUES ('Alice', 30), ('Bob', 25);", &rows));
+    CHECK(rows == 2);
+    REQUIRE(affected("UPDATE test_db.users SET age = 31 WHERE name = 'Alice';", &rows));
+    CHECK(rows == 1);
+    REQUIRE(affected("DELETE FROM test_db.users WHERE age > 100;", &rows));
+    CHECK(rows == 0);
+
+    cursor_ptr select = execute_sql(t.ptr, sv(std::string("SELECT * FROM test_db.users;")));
+    REQUIRE(cursor_is_success(select));
+    rows = 99;
+    CHECK_FALSE(cursor_affected_rows(select, &rows));
+    CHECK(rows == 99);
+    release_cursor(select);
 }
 
 // Mirrors cursor.rs column_logical_type_returns_none_for_negative_index, ..._out_of_bounds_index,
@@ -351,4 +490,81 @@ TEST_CASE("c-api: config_t carries no boolean switches", "[c-api][abi]") {
     // Now that both bools are gone, main_path really is the last field, and sizeof says so --
     // it could not while a trailing bool hid inside the tail padding.
     CHECK(sizeof(config_t) == offsetof(config_t, main_path) + sizeof(string_view_t));
+}
+
+TEST_CASE("c-api: a second engine on the same main_path is refused", "[c-api][lifecycle]") {
+    test_db_t first("same_main_path");
+    REQUIRE(first.ptr != nullptr);
+
+    config_t cfg{};
+    cfg.level = 0;
+    cfg.log_path = sv(first.log_path);
+    cfg.wal_path = sv(first.wal_path);
+    cfg.disk_path = sv(first.disk_path);
+    cfg.main_path = sv(first.main_path);
+
+    error_message refusal{};
+    REQUIRE(otterbrix_create(cfg, &refusal) == nullptr);
+    REQUIRE(refusal.code != 0);
+    REQUIRE(refusal.message != nullptr);
+    const std::string reason{refusal.message};
+    otterbrix_free_string(refusal.message);
+    INFO("refusal: " << reason);
+    CHECK(reason.find("unique directory") != std::string::npos);
+
+    otterbrix_destroy(first.ptr);
+    error_message none{};
+    first.ptr = otterbrix_create(cfg, &none);
+    REQUIRE(first.ptr != nullptr);
+    CHECK(none.code == 0);
+    CHECK(none.message == nullptr);
+}
+
+TEST_CASE("c-api: a cursor and a value outlive otterbrix_destroy", "[c-api][lifecycle]") {
+    test_db_t t("outlive_destroy");
+    REQUIRE(t.ptr != nullptr);
+
+    run_ok(t.ptr, "CREATE DATABASE db;");
+    run_ok(t.ptr, "CREATE TABLE db.t (name string);");
+    run_ok(t.ptr, "INSERT INTO db.t (name) VALUES ('kept');");
+
+    cursor_ptr cur = execute_sql(t.ptr, sv(std::string("SELECT name FROM db.t;")));
+    REQUIRE(cur != nullptr);
+    REQUIRE(cursor_is_success(cur));
+    value_ptr val = cursor_get_value(cur, 0, 0);
+    REQUIRE(val != nullptr);
+
+    otterbrix_destroy(t.ptr);
+    t.ptr = nullptr;
+
+    config_t cfg{};
+    cfg.level = 0;
+    cfg.log_path = sv(t.log_path);
+    cfg.wal_path = sv(t.wal_path);
+    cfg.disk_path = sv(t.disk_path);
+    cfg.main_path = sv(t.main_path);
+
+    CHECK(cursor_size(cur) == 1);
+    char* name = cursor_column_name(cur, 0);
+    REQUIRE(name != nullptr);
+    CHECK(std::string(name) == "name");
+    otterbrix_free_string(name);
+    release_cursor(cur);
+
+    char* text = value_get_string(val);
+    REQUIRE(text != nullptr);
+    CHECK(std::string(text) == "kept");
+    otterbrix_free_string(text);
+
+    // the value still holds the engine, and with it main_path
+    error_message refusal{};
+    CHECK(otterbrix_create(cfg, &refusal) == nullptr);
+    otterbrix_free_string(refusal.message);
+
+    std::thread([val] { release_value(val); }).join();
+
+    error_message none{};
+    t.ptr = otterbrix_create(cfg, &none);
+    CHECK(t.ptr != nullptr);
+    CHECK(none.message == nullptr);
 }

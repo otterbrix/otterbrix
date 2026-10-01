@@ -209,6 +209,12 @@ namespace components::table {
     void column_data_t::skip(column_scan_state& state, uint64_t count) { state.next(count); }
 
     core::result_wrapper_t<bool> column_data_t::initialize_append(column_append_state& state) {
+        // Every filled segment is packed by the collection's packer; an append state without one is
+        // a caller that bypassed the collection, not a case to paper over with a private packer.
+        if (state.pbm == nullptr) {
+            return core::error_t(core::error_code_t::invalid_parameter,
+                                 std::pmr::string("column append: the append state names no block packer", resource_));
+        }
         auto l = data_.lock();
         if (data_.is_empty(l)) {
             auto created = apend_transient_segment(l, start_);
@@ -258,9 +264,10 @@ namespace components::table {
     column_data_t::append_data(column_append_state& state, vector::unified_vector_format& uvf, uint64_t append_count) {
         uint64_t offset = 0;
         this->count_ += append_count;
-        // A local partial_block_manager packs filled segments via the checkpoint's own allocator,
-        // flushed at the end so every re-pointed block is durable before the append returns.
-        storage::partial_block_manager_t pbm(block_manager_);
+        // The collection's packer: filled segments of every column and every statement share its
+        // open tail blocks (a packer per append call gave each 16 KiB segment its own 256 KiB block).
+        assert(state.pbm != nullptr && "initialize_append refuses a state without a packer");
+        storage::partial_block_manager_t& pbm = *state.pbm;
         bool any_transitioned = false;
         while (true) {
             auto appended = state.current->append(state, uvf, offset, append_count);

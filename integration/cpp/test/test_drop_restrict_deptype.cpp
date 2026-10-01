@@ -43,11 +43,9 @@ namespace {
     class restrict_spaces_t final : public otterbrix::base_otterbrix_t {
     public:
         explicit restrict_spaces_t(const configuration::config& config)
-            : otterbrix::base_otterbrix_t(config) {
-            components::compute::function_registry_t::reset_default();
-        }
+            : otterbrix::base_otterbrix_t(test_open_engine(config)) {}
 
-        services::disk::manager_disk_t* disk() noexcept { return manager_disk_.get(); }
+        actor_zeta::address_t disk_address() const noexcept { return engine().disk_address(); }
     };
 
     // Disk actor runs on its own scheduler; poll rather than block-wait.
@@ -62,13 +60,13 @@ namespace {
     template<typename Key>
     core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>
     catalog_chunks_with(restrict_spaces_t& space, catalog::oid_t table_oid, std::uint64_t key_col, Key key) {
-        auto* resource = space.disk()->resource();
+        auto* resource = space.dispatcher()->resource();
         components::table::transaction_data td{0, 0};
         td.snapshot_horizon = std::numeric_limits<uint64_t>::max();
         components::execution_context_t exec_ctx{otterbrix::session_id_t{}, td, {}};
         std::pmr::vector<std::uint64_t> key_cols(resource);
         key_cols.emplace_back(key_col);
-        auto [_, fut] = actor_zeta::otterbrix::send(space.disk()->address(),
+        auto [_, fut] = actor_zeta::otterbrix::send(space.disk_address(),
                                                     &services::disk::manager_disk_t::read_chunks_by_key,
                                                     exec_ctx,
                                                     table_oid,
@@ -127,12 +125,12 @@ namespace {
                            catalog::oid_t refclassid,
                            catalog::oid_t refobjid,
                            char deptype) {
-        auto* resource = space.disk()->resource();
+        auto* resource = space.dispatcher()->resource();
         components::table::transaction_data td{0, 0};
         td.snapshot_horizon = std::numeric_limits<uint64_t>::max();
         components::execution_context_t exec_ctx{otterbrix::session_id_t{}, td, {}};
         auto row = catalog::build_pg_depend_row(resource, classid, objid, refclassid, refobjid, deptype);
-        auto [_, fut] = actor_zeta::otterbrix::send(space.disk()->address(),
+        auto [_, fut] = actor_zeta::otterbrix::send(space.disk_address(),
                                                     &services::disk::manager_disk_t::append_pg_catalog_row,
                                                     exec_ctx,
                                                     catalog::well_known_oid::pg_depend_table,
@@ -224,8 +222,8 @@ TEST_CASE("integration::cpp::drop_restrict::computing_table_is_blocked_by_its_ow
 }
 
 // operator_alter_column_drop.cpp used to refuse on `dependents` (every
-// pg_depend row on the column); now refuses on `restrict_blockers`, the
-// deptype-filtered subset, so an owned index no longer blocks RESTRICT.
+// pg_depend row on the column); now the shared drop walk refuses only a normal
+// dependent, so an owned index no longer blocks RESTRICT.
 TEST_CASE("integration::cpp::drop_restrict::column_is_blocked_by_its_own_index") {
     auto config = make_test_config(fixture_path("own_index"));
     config.log.level = log_t::level::off;
@@ -268,9 +266,8 @@ TEST_CASE("integration::cpp::drop_restrict::column_referenced_by_a_foreign_key_i
     CHECK(after->size() == 0);
 }
 
-// The FK gate matches every 'n' edge today's writers produce (they're all
-// pg_constraint-classed), so `restrict_blockers` itself was reachable by no
-// test: it forges a 'n' edge from a pg_class-classed object instead.
+// The FK gate matches the pg_constraint-classed 'n' edges; this forges a 'n'
+// edge from a pg_class-classed object to reach the shared drop walk's RESTRICT.
 TEST_CASE("integration::cpp::drop_restrict::a_non_constraint_blocking_edge_refuses_the_column_drop") {
     auto config = make_test_config(fixture_path("foreign_blocker"));
     config.log.level = log_t::level::off;
@@ -301,7 +298,7 @@ TEST_CASE("integration::cpp::drop_restrict::a_non_constraint_blocking_edge_refus
     CHECK_FALSE(refused->is_success());
     // The RESTRICT gate's own message, naming the blocking oid — not the FK
     // gate's, which this shape does not reach.
-    CHECK(error_text(refused).find("DROP COLUMN RESTRICT: column has dependent objects") != std::string::npos);
+    CHECK(error_text(refused).find("cannot drop column a of table dr.t because other objects depend on it") != std::string::npos);
     CHECK(error_text(refused).find(std::to_string(kForeignBlocker)) != std::string::npos);
 
     CHECK(run_ok(d, "SELECT a FROM dr.t;")->size() == 1);
@@ -326,9 +323,46 @@ TEST_CASE("integration::cpp::drop_restrict::table_referenced_by_a_foreign_key_is
     auto refused = drop_table_restrict(d, "dr", "parent");
     INFO("error: " << error_text(refused));
     CHECK_FALSE(refused->is_success());
-    CHECK(error_text(refused).find("DROP RESTRICT: object has dependents") != std::string::npos);
+    CHECK(error_text(refused).find("cannot drop table dr.parent because other objects depend on it") !=
+          std::string::npos);
+    CHECK(error_text(refused).find("HINT: Use DROP ... CASCADE to drop the dependent objects too.") !=
+          std::string::npos);
 
     CHECK(run_ok(d, "SELECT id FROM dr.parent;")->size() == 1);
+}
+
+// The index goes with its table ('a'); an object depending on the index normally is outside the drop and must be
+// dropped on its own first (PostgreSQL 18 findDependentObjects).
+TEST_CASE("integration::cpp::drop_restrict::a_normal_dependent_behind_an_owned_index_refuses_the_table_drop") {
+    auto config = make_test_config(fixture_path("behind_auto_chain"));
+    config.log.level = log_t::level::off;
+    restrict_spaces_t space(config);
+    auto* d = space.dispatcher();
+
+    run_ok(d, "CREATE DATABASE dr;");
+    run_ok(d, "CREATE TABLE dr.t (a bigint);");
+    run_ok(d, "CREATE INDEX ix_a ON dr.t (a);");
+    run_ok(d, "CREATE TABLE dr.other (b bigint);");
+    run_ok(d, "INSERT INTO dr.other (b) VALUES (7);");
+
+    const auto index_oid = table_oid_named(space, "ix_a");
+    const auto other_oid = table_oid_named(space, "other");
+    REQUIRE(index_oid != components::catalog::INVALID_OID);
+    REQUIRE(other_oid != components::catalog::INVALID_OID);
+    forge_depend_edge(space,
+                      components::catalog::well_known_oid::pg_class_table,
+                      other_oid,
+                      components::catalog::well_known_oid::pg_class_table,
+                      index_oid,
+                      'n');
+
+    auto refused = exec(d, "DROP TABLE dr.t;");
+    INFO("error: " << error_text(refused));
+    REQUIRE_FALSE(refused->is_success());
+    CHECK(error_text(refused).find("cannot drop table dr.t because other objects depend on it") != std::string::npos);
+    CHECK(error_text(refused).find(std::to_string(other_oid)) != std::string::npos);
+
+    CHECK(run_ok(d, "SELECT b FROM dr.other;")->size() == 1);
 }
 
 // cascade_planner.cpp's RESTRICT allow-path used to return with plan.steps

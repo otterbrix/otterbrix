@@ -7,10 +7,11 @@
 
 using namespace components::catalog;
 
-// 1. The catalog has exactly 14 system tables (10 original + pg_sequence + pg_rewrite + pg_settings + pg_cast).
+// 1. The catalog has exactly 15 system tables (10 original + pg_sequence + pg_rewrite + pg_settings + pg_cast +
+// pg_rewrite_ref).
 TEST_CASE("catalog::system_schemas::tables_count_10") {
     auto tables = all_system_tables();
-    REQUIRE(tables.size() == 14);
+    REQUIRE(tables.size() == 15);
 }
 
 // 2. Every system table has a unique relation_oid drawn from the well-known range.
@@ -18,7 +19,7 @@ TEST_CASE("catalog::system_schemas::distinct_well_known_oids") {
     std::unordered_set<oid_t> seen;
     for (const auto& def : all_system_tables()) {
         REQUIRE(def.relation_oid >= well_known_oid::pg_namespace_table);
-        REQUIRE(def.relation_oid <= well_known_oid::pg_cast_table);
+        REQUIRE(def.relation_oid <= well_known_oid::pg_rewrite_ref_table);
         REQUIRE(seen.insert(def.relation_oid).second);
         REQUIRE(def.namespace_oid == well_known_oid::pg_catalog_namespace);
         REQUIRE(def.relkind == 'r');

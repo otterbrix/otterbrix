@@ -1,9 +1,17 @@
 #include "expand_chunk.hpp"
+#include "mailbox_payload.hpp"
 #include "manager_disk_impl.hpp"
 
 #include <cassert>
 
 namespace services::disk {
+
+    static_assert(mailbox::owns_its_arguments<&manager_disk_t::storage_fetch_next_batch>);
+    static_assert(mailbox::owns_its_arguments<&manager_disk_t::storage_reduce>);
+    static_assert(mailbox::owns_its_arguments<&agent_disk_t::storage_fetch_next_batch_inner>);
+    static_assert(mailbox::owns_its_arguments<&agent_disk_t::storage_scan_inner>);
+    static_assert(mailbox::owns_its_arguments<&agent_disk_t::storage_reduce_inner>);
+
 
     using namespace core::filesystem;
     namespace catalog = components::catalog;
@@ -345,7 +353,7 @@ namespace services::disk {
     manager_disk_t::storage_fetch_next_batch(session_id_t session,
                                              catalog::oid_t table_oid,
                                              uint64_t cursor_id,
-                                             std::unique_ptr<components::table::table_filter_t> filter,
+                                             std::unique_ptr<components::table::pushed_filter_t> filter,
                                              int64_t limit,
                                              std::vector<size_t> projected_cols,
                                              components::table::transaction_data txn) {
@@ -378,7 +386,7 @@ namespace services::disk {
     manager_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
     manager_disk_t::storage_reduce(session_id_t session,
                                    catalog::oid_t table_oid,
-                                   std::unique_ptr<components::table::table_filter_t> filter,
+                                   std::unique_ptr<components::table::pushed_filter_t> filter,
                                    std::vector<size_t> projected_cols,
                                    components::table::transaction_data txn,
                                    components::operators::pushed_aggregate_spec_t spec) {

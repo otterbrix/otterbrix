@@ -1504,7 +1504,9 @@ TEST_CASE("checkpoint_load: a LIST segment is compressed at its PHYSICAL element
     auto column = column_data_t::create_column(&env.resource, bm, 0, 0, list_type);
     {
         // Must not outlive the checkpoint: checkpointing drops the block_handle its pin refers to.
+        components::table::storage::partial_block_manager_t append_pbm(bm);
         column_append_state append_state;
+        append_state.pbm = &append_pbm;
         REQUIRE_FALSE(column->initialize_append(append_state).has_error());
 
         std::pmr::vector<complex_logical_type> types(&env.resource);

@@ -35,6 +35,8 @@ namespace services::wal {
         read_committed_records(id_t after_wal_id, std::set<std::uint64_t>* committed_out = nullptr);
 
     private:
+        core::error_t listing_refused(const std::filesystem::path& dir, const std::error_code& ec);
+
         /// committed_out, when non-null, receives this database's committed COMMIT IDS.
         core::result_wrapper_t<std::vector<record_t>> read_database_segments(const std::filesystem::path& db_dir,
                                                                              id_t after_wal_id,

@@ -83,6 +83,7 @@ namespace components::operators {
         constexpr catalog::oid_t kPgAttribute = catalog::well_known_oid::pg_attribute_table;
         constexpr catalog::oid_t kPgComputedColumn = catalog::well_known_oid::pg_computed_column_table;
         constexpr catalog::oid_t kPgRewrite = catalog::well_known_oid::pg_rewrite_table;
+        constexpr catalog::oid_t kPgRewriteRef = catalog::well_known_oid::pg_rewrite_ref_table;
 
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
@@ -96,157 +97,175 @@ namespace components::operators {
                 continue;
             }
 
-            auto input_namespace_oid = catalog::INVALID_OID;
-            if (!entry.dbname.empty()) {
-                auto cached = namespace_cache.find(entry.dbname);
-                if (cached != namespace_cache.end()) {
-                    input_namespace_oid = cached->second;
-                } else {
-                    std::pmr::vector<std::uint64_t> ns_keys(resource_);
-                    ns_keys.emplace_back(catalog::pg_namespace_col::nspname);
-                    auto [_ns, nsf] = actor_zeta::otterbrix::send(
-                        ctx->disk_address,
-                        &services::disk::manager_disk_t::read_chunks_by_key,
-                        exec_ctx,
-                        kPgNamespace,
-                        std::move(ns_keys),
-                        components::operators::make_key_chunk(resource_, std::string_view{entry.dbname}),
-                        std::pmr::vector<std::uint64_t>{resource_});
-                    auto ns_batches_r = co_await std::move(nsf);
-                    if (ns_batches_r.has_error()) {
-                        // A failed catalog read is not "row not found"; it must not be reported as a miss.
-                        set_error(ns_batches_r.error());
-                        co_return;
-                    }
-                    auto& ns_batches = ns_batches_r.value();
-                    if (!ns_batches.empty() && ns_batches[0].size() != 0 && ns_batches[0].column_count() >= 1 &&
-                        !ns_batches[0].is_null(0, 0)) {
-                        input_namespace_oid = static_cast<catalog::oid_t>(ns_batches[0].get_value<std::uint32_t>(0, 0));
-                    }
-                    namespace_cache.emplace(entry.dbname, input_namespace_oid);
-                }
-                if (input_namespace_oid == catalog::INVALID_OID) {
-                    // Never fall through to a relname-only scan — validate reports database_not_exists.
-                    continue;
-                }
-            }
-
-            std::pmr::vector<std::uint64_t> key_cols(resource_);
-            key_cols.emplace_back(catalog::pg_class_col::relname);
-            auto keys_chunk = [&] {
-                if (input_namespace_oid != catalog::INVALID_OID) {
-                    key_cols.emplace_back(catalog::pg_class_col::relnamespace);
-                    return components::operators::make_key_chunk(resource_,
-                                                                 std::string_view{entry.relname},
-                                                                 static_cast<std::uint32_t>(input_namespace_oid));
-                }
-                return components::operators::make_key_chunk(resource_, std::string_view{entry.relname});
-            }();
-            const bool unqualified = input_namespace_oid == catalog::INVALID_OID;
-            auto [_lookup, lookup_f] = actor_zeta::otterbrix::send(ctx->disk_address,
-                                                                   &services::disk::manager_disk_t::read_chunks_by_key,
-                                                                   exec_ctx,
-                                                                   kPgClass,
-                                                                   std::move(key_cols),
-                                                                   std::move(keys_chunk),
-                                                                   pg_class_oid_and_namespace(resource_));
-            auto lookup_batches_r = co_await std::move(lookup_f);
-            if (lookup_batches_r.has_error()) {
-                set_error(lookup_batches_r.error());
-                co_return;
-            }
-            auto& lookup_batches = lookup_batches_r.value();
-
-            // Every relation the scan answered, not just the first row (unqualified names may match several).
-            struct candidate_t {
-                catalog::oid_t oid;
-                catalog::oid_t ns;
-            };
-            std::vector<candidate_t> candidates;
-            for (const auto& chunk : lookup_batches) {
-                if (chunk.column_count() == 0) {
-                    continue;
-                }
-                for (std::uint64_t i = 0; i < chunk.size(); ++i) {
-                    if (chunk.is_null(0, i)) {
-                        continue;
-                    }
-                    const auto oid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
-                    const auto ns = chunk.column_count() > catalog::pg_class_col::relnamespace &&
-                                            !chunk.is_null(catalog::pg_class_col::relnamespace, i)
-                                        ? static_cast<catalog::oid_t>(
-                                              chunk.get_value<std::uint32_t>(catalog::pg_class_col::relnamespace, i))
-                                        : catalog::INVALID_OID;
-                    if (std::none_of(candidates.begin(), candidates.end(), [oid](const candidate_t& cand) {
-                            return cand.oid == oid;
-                        })) {
-                        candidates.push_back(candidate_t{oid, ns});
-                    }
-                }
-            }
-            if (candidates.empty()) {
+            if (entry.host_bound) {
                 continue;
             }
-            auto table_oid = candidates.front().oid;
-            if (unqualified && candidates.size() > 1) {
-                // PostgreSQL 18 searches pg_catalog before the search_path; lacking a search_path here,
-                // several user-namespace matches refuse loudly instead of guessing.
-                const auto in_pg_catalog =
-                    std::find_if(candidates.begin(), candidates.end(), [](const candidate_t& cand) {
-                        return cand.ns == catalog::well_known_oid::pg_catalog_namespace;
-                    });
-                if (in_pg_catalog != candidates.end()) {
-                    table_oid = in_pg_catalog->oid;
-                } else {
-                    std::vector<std::string> holder_dbnames;
-                    for (const auto& cand : candidates) {
-                        if (cand.ns == catalog::INVALID_OID) {
-                            continue;
-                        }
-                        std::pmr::vector<std::uint64_t> nm_keys(resource_);
-                        nm_keys.emplace_back(catalog::pg_namespace_col::oid);
-                        auto [_nm, nmf] =
-                            actor_zeta::otterbrix::send(ctx->disk_address,
-                                                        &services::disk::manager_disk_t::read_chunks_by_key,
-                                                        exec_ctx,
-                                                        kPgNamespace,
-                                                        std::move(nm_keys),
-                                                        components::operators::make_key_chunk(resource_, cand.ns),
-                                                        pg_namespace_name_only(resource_));
-                        auto nm_batches_r = co_await std::move(nmf);
-                        if (nm_batches_r.has_error()) {
-                            set_error(nm_batches_r.error());
+            // A pinned view body name is read by oid: no namespace, no name, no candidates.
+            catalog::oid_t table_oid = entry.pinned_oid;
+            if (table_oid == catalog::INVALID_OID) {
+                auto input_namespace_oid = catalog::INVALID_OID;
+                if (entry.namespace_of != components::logical_plan::resolve_entry_t::no_target) {
+                    // The owner entry sits earlier in this node and is resolved by now.
+                    const auto& owner = node_->entries()[entry.namespace_of];
+                    if (!owner.table_md.has_value()) {
+                        continue;
+                    }
+                    input_namespace_oid = owner.table_md->namespace_oid;
+                }
+                if (!entry.dbname.empty()) {
+                    auto cached = namespace_cache.find(entry.dbname);
+                    if (cached != namespace_cache.end()) {
+                        input_namespace_oid = cached->second;
+                    } else {
+                        std::pmr::vector<std::uint64_t> ns_keys(resource_);
+                        ns_keys.emplace_back(catalog::pg_namespace_col::nspname);
+                        auto [_ns, nsf] = actor_zeta::otterbrix::send(
+                            ctx->disk_address,
+                            &services::disk::manager_disk_t::read_chunks_by_key,
+                            exec_ctx,
+                            kPgNamespace,
+                            std::move(ns_keys),
+                            components::operators::make_key_chunk(resource_, std::string_view{entry.dbname}),
+                            std::pmr::vector<std::uint64_t>{resource_});
+                        auto ns_batches_r = co_await std::move(nsf);
+                        if (ns_batches_r.has_error()) {
+                            // A failed catalog read is not "row not found"; it must not be reported as a miss.
+                            set_error(ns_batches_r.error());
                             co_return;
                         }
-                        auto& nm_batches = nm_batches_r.value();
-                        if (!nm_batches.empty() && nm_batches[0].size() != 0 &&
-                            nm_batches[0].column_count() > catalog::pg_namespace_col::nspname &&
-                            !nm_batches[0].is_null(catalog::pg_namespace_col::nspname, 0)) {
-                            holder_dbnames.emplace_back(
-                                nm_batches[0].get_value<std::string_view>(catalog::pg_namespace_col::nspname, 0));
+                        auto& ns_batches = ns_batches_r.value();
+                        if (!ns_batches.empty() && ns_batches[0].size() != 0 && ns_batches[0].column_count() >= 1 &&
+                            !ns_batches[0].is_null(0, 0)) {
+                            input_namespace_oid =
+                                static_cast<catalog::oid_t>(ns_batches[0].get_value<std::uint32_t>(0, 0));
                         }
+                        namespace_cache.emplace(entry.dbname, input_namespace_oid);
                     }
-                    std::sort(holder_dbnames.begin(), holder_dbnames.end());
-                    std::string msg = "table name \"";
-                    msg += entry.relname;
-                    msg += "\" is ambiguous: ";
-                    msg += std::to_string(candidates.size());
-                    msg += " relations of that name exist";
-                    if (!holder_dbnames.empty()) {
-                        msg += " (in ";
-                        for (std::size_t i = 0; i < holder_dbnames.size(); ++i) {
-                            if (i != 0) {
-                                msg += ", ";
-                            }
-                            msg += holder_dbnames[i];
-                        }
-                        msg += ")";
+                    if (input_namespace_oid == catalog::INVALID_OID) {
+                        // Never fall through to a relname-only scan — validate reports database_not_exists.
+                        continue;
                     }
-                    msg += " — qualify it as <database>.";
-                    msg += entry.relname;
-                    set_error(
-                        core::error_t{core::error_code_t::ambiguous_name, std::pmr::string{std::move(msg), resource_}});
+                }
+
+                std::pmr::vector<std::uint64_t> key_cols(resource_);
+                key_cols.emplace_back(catalog::pg_class_col::relname);
+                auto keys_chunk = [&] {
+                    if (input_namespace_oid != catalog::INVALID_OID) {
+                        key_cols.emplace_back(catalog::pg_class_col::relnamespace);
+                        return components::operators::make_key_chunk(resource_,
+                                                                     std::string_view{entry.relname},
+                                                                     static_cast<std::uint32_t>(input_namespace_oid));
+                    }
+                    return components::operators::make_key_chunk(resource_, std::string_view{entry.relname});
+                }();
+                const bool unqualified = input_namespace_oid == catalog::INVALID_OID;
+                auto [_lookup, lookup_f] =
+                    actor_zeta::otterbrix::send(ctx->disk_address,
+                                                &services::disk::manager_disk_t::read_chunks_by_key,
+                                                exec_ctx,
+                                                kPgClass,
+                                                std::move(key_cols),
+                                                std::move(keys_chunk),
+                                                pg_class_oid_and_namespace(resource_));
+                auto lookup_batches_r = co_await std::move(lookup_f);
+                if (lookup_batches_r.has_error()) {
+                    set_error(lookup_batches_r.error());
                     co_return;
+                }
+                auto& lookup_batches = lookup_batches_r.value();
+
+                // Every relation the scan answered, not just the first row (unqualified names may match several).
+                struct candidate_t {
+                    catalog::oid_t oid;
+                    catalog::oid_t ns;
+                };
+                std::vector<candidate_t> candidates;
+                for (const auto& chunk : lookup_batches) {
+                    if (chunk.column_count() == 0) {
+                        continue;
+                    }
+                    for (std::uint64_t i = 0; i < chunk.size(); ++i) {
+                        if (chunk.is_null(0, i)) {
+                            continue;
+                        }
+                        const auto oid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
+                        const bool has_ns = chunk.column_count() > catalog::pg_class_col::relnamespace &&
+                                            !chunk.is_null(catalog::pg_class_col::relnamespace, i);
+                        const auto ns = has_ns ? static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(
+                                                     catalog::pg_class_col::relnamespace,
+                                                     i))
+                                               : catalog::INVALID_OID;
+                        if (std::none_of(candidates.begin(), candidates.end(), [oid](const candidate_t& cand) {
+                                return cand.oid == oid;
+                            })) {
+                            candidates.push_back(candidate_t{oid, ns});
+                        }
+                    }
+                }
+                if (candidates.empty()) {
+                    continue;
+                }
+                table_oid = candidates.front().oid;
+                if (unqualified && candidates.size() > 1) {
+                    // PostgreSQL 18 searches pg_catalog before the search_path; lacking a search_path here,
+                    // several user-namespace matches refuse loudly instead of guessing.
+                    const auto in_pg_catalog =
+                        std::find_if(candidates.begin(), candidates.end(), [](const candidate_t& cand) {
+                            return cand.ns == catalog::well_known_oid::pg_catalog_namespace;
+                        });
+                    if (in_pg_catalog != candidates.end()) {
+                        table_oid = in_pg_catalog->oid;
+                    } else {
+                        std::vector<std::string> holder_dbnames;
+                        for (const auto& cand : candidates) {
+                            if (cand.ns == catalog::INVALID_OID) {
+                                continue;
+                            }
+                            std::pmr::vector<std::uint64_t> nm_keys(resource_);
+                            nm_keys.emplace_back(catalog::pg_namespace_col::oid);
+                            auto [_nm, nmf] =
+                                actor_zeta::otterbrix::send(ctx->disk_address,
+                                                            &services::disk::manager_disk_t::read_chunks_by_key,
+                                                            exec_ctx,
+                                                            kPgNamespace,
+                                                            std::move(nm_keys),
+                                                            components::operators::make_key_chunk(resource_, cand.ns),
+                                                            pg_namespace_name_only(resource_));
+                            auto nm_batches_r = co_await std::move(nmf);
+                            if (nm_batches_r.has_error()) {
+                                set_error(nm_batches_r.error());
+                                co_return;
+                            }
+                            auto& nm_batches = nm_batches_r.value();
+                            if (!nm_batches.empty() && nm_batches[0].size() != 0 &&
+                                nm_batches[0].column_count() > catalog::pg_namespace_col::nspname &&
+                                !nm_batches[0].is_null(catalog::pg_namespace_col::nspname, 0)) {
+                                holder_dbnames.emplace_back(
+                                    nm_batches[0].get_value<std::string_view>(catalog::pg_namespace_col::nspname, 0));
+                            }
+                        }
+                        std::sort(holder_dbnames.begin(), holder_dbnames.end());
+                        std::string msg = "table name \"";
+                        msg += entry.relname;
+                        msg += "\" is ambiguous: ";
+                        msg += std::to_string(candidates.size());
+                        msg += " relations of that name exist";
+                        if (!holder_dbnames.empty()) {
+                            msg += " (in ";
+                            for (std::size_t i = 0; i < holder_dbnames.size(); ++i) {
+                                if (i != 0) {
+                                    msg += ", ";
+                                }
+                                msg += holder_dbnames[i];
+                            }
+                            msg += ")";
+                        }
+                        msg += " — qualify it as <database>.";
+                        msg += entry.relname;
+                        set_error(core::error_t{core::error_code_t::ambiguous_name,
+                                                std::pmr::string{std::move(msg), resource_}});
+                        co_return;
+                    }
                 }
             }
 
@@ -310,6 +329,49 @@ namespace components::operators {
                 if (!pr_batches.empty() && pr_batches[0].size() != 0 && pr_batches[0].column_count() >= 5 &&
                     !pr_batches[0].is_null(4, 0)) {
                     view_sql.assign(pr_batches[0].get_value<std::string_view>(4, 0));
+                }
+            }
+
+            std::vector<components::logical_plan::view_binding_t> view_bindings;
+            if (relkind == catalog::relkind::view || relkind == catalog::relkind::materialized_view) {
+                std::pmr::vector<std::uint64_t> rr_keys(resource_);
+                rr_keys.emplace_back(catalog::pg_rewrite_ref_col::ev_class);
+                auto [_rr, rrf] =
+                    actor_zeta::otterbrix::send(ctx->disk_address,
+                                                &services::disk::manager_disk_t::read_chunks_by_key,
+                                                exec_ctx,
+                                                kPgRewriteRef,
+                                                std::move(rr_keys),
+                                                components::operators::make_key_chunk(resource_, table_oid),
+                                                std::pmr::vector<std::uint64_t>{resource_});
+                auto rr_batches_r = co_await std::move(rrf);
+                if (rr_batches_r.has_error()) {
+                    set_error(rr_batches_r.error());
+                    co_return;
+                }
+                namespace col = catalog::pg_rewrite_ref_col;
+                const auto text = [](const vector::data_chunk_t& chunk, std::uint64_t column, std::uint64_t row) {
+                    return chunk.is_null(column, row) ? std::string{}
+                                                      : std::string{chunk.get_value<std::string_view>(column, row)};
+                };
+                for (const auto& chunk : rr_batches_r.value()) {
+                    if (chunk.column_count() <= col::refspec) {
+                        continue;
+                    }
+                    for (std::uint64_t i = 0; i < chunk.size(); ++i) {
+                        components::logical_plan::view_binding_t binding;
+                        const auto kind = text(chunk, col::refkind, i);
+                        binding.refkind = kind.empty() ? components::logical_plan::view_refkind::relation : kind[0];
+                        binding.dbname = text(chunk, col::dbname, i);
+                        binding.schema = text(chunk, col::schema, i);
+                        binding.relname = text(chunk, col::relname, i);
+                        binding.refobjid = chunk.is_null(col::refobjid, i)
+                                               ? catalog::INVALID_OID
+                                               : static_cast<catalog::oid_t>(
+                                                     chunk.get_value<std::uint32_t>(col::refobjid, i));
+                        binding.refspec = text(chunk, col::refspec, i);
+                        view_bindings.push_back(std::move(binding));
+                    }
                 }
             }
 
@@ -486,7 +548,7 @@ namespace components::operators {
                         co_return;
                     }
                 }
-            } else if (relkind != catalog::relkind::view) {
+            } else {
                 std::pmr::vector<std::uint64_t> pa_keys(resource_);
                 pa_keys.emplace_back(catalog::pg_attribute_col::attrelid);
                 auto [_pa, paf] =
@@ -571,6 +633,7 @@ namespace components::operators {
             md.relkind = relkind;
             md.name = entry.relname;
             md.view_sql = std::move(view_sql);
+            md.view_bindings = std::move(view_bindings);
             md.columns.reserve(rows.size());
             for (const auto& row : rows) {
                 components::logical_plan::resolved_column_metadata_t cm;

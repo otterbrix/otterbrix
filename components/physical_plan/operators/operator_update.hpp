@@ -79,6 +79,13 @@ namespace components::operators {
         uint64_t buffered_rows() const noexcept override { return output_ ? output_->size() : 0; }
 
     private:
+        std::optional<uint64_t> affected_rows_impl() const noexcept override {
+            if (components::catalog::is_catalog_table(table_oid_)) {
+                return std::nullopt;
+            }
+            return affected_rows_;
+        }
+
         // Shared SIMPLE-path core. Matches expr_ (all-true when null — the scan
         // already filtered) over ONE scan chunk; builds the updated out_chunk
         // (matched rows, SET applied), appends it to output_ and stages the matched
@@ -124,9 +131,8 @@ namespace components::operators {
         // flush clears output_/index_old_chunks_/returning_from_chunks_, but these
         // must span the whole statement). returning_accum_ gathers the projected
         // RETURNING chunks from every flush; affected_rows_ totals the storage_update
-        // counts when there is NO RETURNING (output_ is cleared per flush, so it
-        // cannot double as the affected-count carrier); delete_marker_recorded_
-        // guards the single MVCC delete tombstone (one per txn/table, not per flush).
+        // counts; delete_marker_recorded_ guards the single MVCC delete tombstone
+        // (one per txn/table, not per flush).
         chunks_vector_t returning_accum_{resource_};
         uint64_t affected_rows_{0};
         bool delete_marker_recorded_{false};

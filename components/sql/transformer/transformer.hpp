@@ -115,7 +115,8 @@ namespace components::sql::transform {
         core::result_wrapper_t<logical_plan::node_ptr> transform_create_type(CompositeTypeStmt& node);
         core::result_wrapper_t<logical_plan::node_ptr> transform_create_enum_type(CreateEnumStmt& node);
         core::result_wrapper_t<logical_plan::node_ptr> transform_create_sequence(CreateSeqStmt& node);
-        core::result_wrapper_t<logical_plan::node_ptr> transform_create_view(ViewStmt& node);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_create_view(ViewStmt& node,
+                                                                             logical_plan::execution_plan_t* plan);
         // CREATE MATERIALIZED VIEW … AS SELECT … (PostgreSQL-canonical, relkind='m').
         // Body is transformed via transform_select; source's catalog_resolve_table
         // is hoisted to the outer sequence_t front so Pass 1 stamps source's
@@ -390,6 +391,10 @@ namespace components::sql::transform {
         // Every catalog lookup the statement depends on, accumulated across all
         // sub-queries and moved onto the execution_plan_t at the end of transform()
         logical_plan::catalog_resolves_t catalog_resolves_;
+        // The statement's IF EXISTS, moved onto execution_plan_t::if_exists.
+        bool if_exists_{false};
+        // Moved onto execution_plan_t::if_exists_subcommands.
+        std::vector<std::size_t> if_exists_subcommands_;
 
         template<class Node>
         std::string set_target(Node& node, const qualified_name_t& written) {
@@ -399,7 +404,12 @@ namespace components::sql::transform {
             if constexpr (requires { node.set_relname(written.collection); }) {
                 node.set_relname(written.collection);
             }
-            const bool leads_elsewhere = !written.unique_identifier.empty() || !written.schema.empty() ||
+            constexpr bool keeps_schema = requires { node.set_schema(written.schema); };
+            if constexpr (keeps_schema) {
+                node.set_schema(written.schema);
+            }
+            const bool leads_elsewhere = !written.unique_identifier.empty() ||
+                                         (!keeps_schema && !written.schema.empty()) ||
                                          (!written.database.empty() && written.database != dbname);
             if (leads_elsewhere) {
                 catalog_resolves_.external_targets.push_back(logical_plan::external_target_t{written, base.type()});

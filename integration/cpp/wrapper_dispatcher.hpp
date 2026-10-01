@@ -41,7 +41,7 @@ namespace otterbrix {
 
         /// blocking method
         wrapper_dispatcher_t(std::pmr::memory_resource*,
-                             services::dispatcher::manager_dispatcher_t* manager_dispatcher,
+                             actor_zeta::address_t manager_dispatcher,
                              actor_zeta::scheduler_raw scheduler,
                              log_t& log);
         ~wrapper_dispatcher_t();
@@ -54,9 +54,12 @@ namespace otterbrix {
         enqueue_impl(actor_zeta::mailbox::message_ptr msg);
 
         auto register_udf(const session_id_t& session, components::compute::function_ptr function) -> core::error_t;
+        // RESTRICT (the default) refuses while a view calls the function; CASCADE drops those views too.
         auto unregister_udf(const session_id_t& session,
                             const std::string& function_name,
-                            const std::pmr::vector<components::types::complex_logical_type>& inputs) -> core::error_t;
+                            const std::pmr::vector<components::types::complex_logical_type>& inputs,
+                            components::catalog::drop_behavior_t behavior = components::catalog::drop_behavior_t::restrict_)
+            -> core::error_t;
         auto register_cast(const session_id_t& session,
                            const components::types::complex_logical_type& source,
                            const components::types::complex_logical_type& target,
@@ -86,7 +89,7 @@ namespace otterbrix {
 
     private:
         std::pmr::memory_resource* resource_;
-        services::dispatcher::manager_dispatcher_t* manager_dispatcher_;
+        actor_zeta::address_t manager_dispatcher_;
         actor_zeta::scheduler_raw scheduler_;
         log_t log_;
         components::sql::parser::parser_extension_registry_t parser_extensions_;
@@ -112,7 +115,7 @@ namespace otterbrix {
             if (!future.is_ready()) {
                 // 100µs poll: event-loop managers return from enqueue instantly
                 // and never notify event_loop_cv_, so the tick bounds per-query
-                // handoff latency. Matched to the manager loops' 100µs cadence.
+                // handoff latency.
                 event_loop_cv_.wait_for(lock, std::chrono::microseconds(100));
             }
         }

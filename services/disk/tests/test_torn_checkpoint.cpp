@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "../../../components/table/test/fault_injection_file.hpp"
+#include <components/log/test_log.hpp>
 
 // Every crash here goes through the real T3 fault seam driving table_storage_t's production
 // checkpoint, and recovery is judged by reading the data back against a named root, never just
@@ -111,7 +112,7 @@ namespace {
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
 
         explicit torn_manager_t(const std::filesystem::path& path)
-            : log(initialization_logger("python", "/tmp/docker_logs/"))
+            : log(make_test_log("python", "/tmp/docker_logs/"))
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
                 configuration::config_disk c;
@@ -332,7 +333,7 @@ TEST_CASE("services::disk::torn::stray_legacy_sidecar_is_refused_loudly_and_unto
 
     {
         torn_manager_t m(dir);
-        m.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(m.manager->bootstrap_system_tables_sync().contains_error());
         REQUIRE(m.manager->has_storage(catalog::oid_t{victim_oid}));
     }
     REQUIRE(std::filesystem::exists(victim_otbx));
@@ -360,7 +361,7 @@ TEST_CASE("services::disk::torn::stray_legacy_sidecar_is_refused_loudly_and_unto
         const auto stray_bytes_before = slurp_file(stray);
         {
             torn_manager_t m(dir);
-            REQUIRE_THROWS_AS(m.manager->bootstrap_system_tables_sync(), std::runtime_error);
+            REQUIRE(m.manager->bootstrap_system_tables_sync().contains_error());
             CHECK_FALSE(m.manager->has_storage(catalog::oid_t{victim_oid}));
             // A STOP, not a teardown: tables before the victim stay up, those after were never opened.
             CHECK(m.manager->has_storage(catalog::well_known_oid::pg_settings_table));
@@ -383,7 +384,7 @@ TEST_CASE("services::disk::torn::stray_legacy_sidecar_is_refused_loudly_and_unto
 
     {
         torn_manager_t m(dir);
-        m.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(m.manager->bootstrap_system_tables_sync().contains_error());
         CHECK(m.manager->has_storage(catalog::oid_t{victim_oid}));
     }
 

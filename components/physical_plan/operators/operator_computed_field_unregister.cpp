@@ -22,13 +22,11 @@ namespace components::operators {
                                                                                log_t log,
                                                                                catalog::oid_t table_oid,
                                                                                catalog::oid_t attoid,
-                                                                               std::string column_name,
-                                                                               bool missing_ok)
+                                                                               std::string column_name)
         : read_write_operator_t(resource, std::move(log), operator_type::computed_field_unregister)
         , table_oid_(table_oid)
         , attoid_(attoid)
-        , column_name_(std::move(column_name))
-        , missing_ok_(missing_ok) {}
+        , column_name_(std::move(column_name)) {}
 
     actor_zeta::unique_future<void>
     operator_computed_field_unregister_t::await_async_and_resume(pipeline::context_t* ctx) {
@@ -141,11 +139,7 @@ namespace components::operators {
             // Refused, not treated as an idempotent no-op — DROP COLUMN on a missing field is an error on a
             // document table exactly as on a regular one. Refused HERE, not in a shared operator, because
             // pg_computed_column is the only catalog that can answer whether the field exists.
-            // IF EXISTS is honoured on the same terms as the regular path.
-            if (missing_ok_) {
-                mark_executed();
-                co_return;
-            }
+            // IF EXISTS is decided by the executor before this runs, as on the regular path.
             std::pmr::vector<std::uint64_t> cl_keys(resource_);
             cl_keys.emplace_back(catalog::pg_class_col::oid);
             auto [_cl, clf] = actor_zeta::otterbrix::send(ctx->disk_address,

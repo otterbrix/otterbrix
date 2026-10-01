@@ -46,6 +46,7 @@ namespace components::operators {
         }
 
         auto built = expressions::build_graph(resource_,
+                                              *pipeline_context->function_registry,
                                               pipeline_context->parameters.parameters,
                                               key_expressions,
                                               probe.types());

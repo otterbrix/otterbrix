@@ -1,5 +1,7 @@
 #pragma once
 
+#include <components/physical_plan_generator/create_plan.hpp>
+
 #include <components/logical_plan/node.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/physical_plan/operators/operator_register_udf.hpp>
@@ -19,7 +21,7 @@ namespace services::planner::impl {
     //
     // The function payload is deep-copied out of the node (node owns the canonical
     // unique function_ptr) so the operator owns an independent instance.
-    components::operators::operator_ptr
+    plan_result_t
     create_plan_register_udf(const context_storage_t& context,
                              const components::logical_plan::node_ptr& node,
                              components::operators::operator_register_udf_t::executor_uids_t executor_uids);

@@ -4,6 +4,7 @@
 
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/fk_info.hpp>
+#include <components/catalog/view_binding.hpp>
 #include <components/logical_plan/identifier_types.hpp>
 #include <components/types/types.hpp>
 
@@ -32,6 +33,9 @@ namespace components::logical_plan {
         std::string atttypspec;
     };
 
+    namespace view_refkind = components::catalog::view_refkind;
+    using components::catalog::view_binding_t;
+
     struct resolved_table_metadata_t {
         components::catalog::oid_t table_oid{components::catalog::INVALID_OID};
         components::catalog::oid_t namespace_oid{components::catalog::INVALID_OID};
@@ -40,6 +44,8 @@ namespace components::logical_plan {
         std::vector<resolved_column_metadata_t> columns;
         // pg_rewrite.ev_action SQL for relkind 'v'/'m'; consumed by dispatcher Phase 1.5 rewrite_views.
         std::string view_sql;
+        // relkind 'v': pg_rewrite_ref rows.
+        std::vector<view_binding_t> view_bindings;
     };
 
     // Stamped by operator_resolve_type_t.
@@ -76,12 +82,27 @@ namespace components::logical_plan {
         std::string dbname;
         std::string relname;
         std::string type_name;
+        // Table entries: the schema slot of database.schema.name, which the catalog has no place for (refused once
+        // the database is known to exist). Empty for the uid form, which keeps its meaning database.name.
+        std::string schema;
         resolve_direction direction{resolve_direction::outgoing};
         // Constraint entries only: indexes the TABLE node's entries_ for the table it constrains.
         std::size_t target{no_target};
+        // Table entries of an unqualified REFERENCES target: indexes the TABLE node's entries_ for the table that
+        // owns the key — the target is looked up in the database that table was found in.
+        std::size_t namespace_of{no_target};
         // Constraint entries only: gathers (conname, oid) without enforcement decode, so DROP
         // CONSTRAINT can repair an invalid catalog state (e.g. doubled PRIMARY KEY) instead of refusing it.
         bool names_only{false};
+        // Unresolved, and the host's name resolution rewrote away every node naming it: neither resolved again
+        // nor refused. Not part of the request identity.
+        bool superseded{false};
+        // A view body name: read by this pg_class oid, never looked up by name. Not part of the request identity.
+        components::catalog::oid_t pinned_oid{components::catalog::INVALID_OID};
+        // A view body name the host resolved at CREATE VIEW: the catalog never answers it.
+        bool host_bound{false};
+        // The view whose body carries the pin, for the stale refusal.
+        std::string bound_by;
 
         components::catalog::oid_t namespace_oid{components::catalog::INVALID_OID};
         components::catalog::oid_t database_oid{components::catalog::INVALID_OID};
@@ -117,6 +138,7 @@ namespace components::logical_plan {
         // Appends `entry` unless an equivalent request is already present
         std::size_t add(resolve_entry_t entry);
         std::size_t find(std::string_view dbname, std::string_view name) const noexcept;
+        std::size_t find(std::string_view dbname, std::string_view schema, std::string_view name) const noexcept;
 
     private:
         hash_t hash_impl() const override;
@@ -143,6 +165,8 @@ namespace components::logical_plan {
         node_catalog_resolve_ptr types;
         node_catalog_resolve_ptr constraints;
         std::vector<external_target_t> external_targets;
+        // Every REFERENCES target as written: a uid or schema segment on one is refused.
+        std::vector<qualified_name_t> referenced_tables;
 
         // Creates the slot for `kind` empty on first use; non-const so the transformer can register entries.
         node_catalog_resolve_t& ensure(std::pmr::memory_resource* resource, resolve_kind kind);
@@ -152,6 +176,9 @@ namespace components::logical_plan {
         // Entry naming this target, or nullptr; an empty name never matches, so nothing is bound.
         [[nodiscard]] const resolve_entry_t* namespace_entry(std::string_view dbname) const noexcept;
         [[nodiscard]] const resolve_entry_t* table_entry(std::string_view dbname,
+                                                         std::string_view relname) const noexcept;
+        [[nodiscard]] const resolve_entry_t* table_entry(std::string_view dbname,
+                                                         std::string_view schema,
                                                          std::string_view relname) const noexcept;
         [[nodiscard]] const resolve_entry_t* type_entry(std::string_view dbname,
                                                         std::string_view type_name) const noexcept;

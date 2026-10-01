@@ -130,8 +130,9 @@ TEST_CASE("group operator contracts: aggregator error on empty-input global aggr
     // NULL row instead.
     auto resource = core::pmr::otterbrix_resource();
 
-    auto* registry = compute::function_registry_t::get_default();
-    REQUIRE(registry != nullptr);
+    compute::function_registry_t builtins(&resource);
+    compute::register_default_functions(builtins);
+    const auto* registry = &builtins;
     compute::function_uid avg_uid = compute::invalid_function_uid;
     for (const auto& [name, uid] : registry->get_functions()) {
         if (name == "avg") {
@@ -159,6 +160,7 @@ TEST_CASE("group operator contracts: aggregator error on empty-input global aggr
     logical_plan::storage_parameters params{&resource};
     logical_plan::add_parameter(params, core::parameter_id_t(1), std::string("not_a_number"));
     pipeline::context_t ctx(std::move(params), pipeline::no_mailbox(), pipeline::no_mailbox(), pipeline::no_mailbox());
+    ctx.function_registry = registry;
     drive_group(group.get(), &resource, &ctx);
 
     REQUIRE(group->has_error());

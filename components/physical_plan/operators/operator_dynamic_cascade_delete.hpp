@@ -4,15 +4,27 @@
 #include <components/catalog/results/ddl_result.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 
+#include <string>
+
 namespace components::operators {
+
+    // Drops (seed_classid, seed_objid) with everything that depends on it: RESTRICT refuses a normal dependent
+    // anywhere in the closure (the refusal names `target`), CASCADE deletes the catalog rows children-first and
+    // tombstones the storage of the relations among them. Shared by DROP and by the host API's unregister_udf.
+    actor_zeta::unique_future<core::error_t> drop_with_dependents(std::pmr::memory_resource* resource,
+                                                                  pipeline::context_t* ctx,
+                                                                  components::catalog::oid_t seed_classid,
+                                                                  components::catalog::oid_t seed_objid,
+                                                                  components::catalog::drop_behavior_t behavior,
+                                                                  std::string target);
 
     // Universal cascade-delete operator. Walks pg_depend at runtime starting
     // from a (seed_classid, seed_objid) seed and deletes the transitive
     // closure inline using catalog::plan_drop.
     //
     // Behavior:
-    //   - RESTRICT: walks pg_depend; on first 'n' (normal external) dependency,
-    //     surfaces the blocking oid via set_error and skips deletion.
+    //   - RESTRICT: walks pg_depend; on a normal dependent anywhere in the closure
+    //     (catalog::plan_drop) surfaces the refusal via set_error and skips deletion.
     //   - CASCADE:  walks pg_depend, computes topological drop order via
     //     catalog::plan_drop, then for each step deletes the matching catalog
     //     rows via disk.delete_pg_catalog_rows. For pg_class objects (relkind='r')
@@ -26,7 +38,8 @@ namespace components::operators {
                                           log_t log,
                                           components::catalog::oid_t seed_classid,
                                           components::catalog::oid_t seed_objid,
-                                          components::catalog::drop_behavior_t behavior);
+                                          components::catalog::drop_behavior_t behavior,
+                                          std::string target);
 
         // Sourceless SINK leaf (no data pipeline, no children): the executor
         // admits it as a streaming sink-root and drives await_async_and_resume via
@@ -40,6 +53,7 @@ namespace components::operators {
         components::catalog::oid_t seed_classid_;
         components::catalog::oid_t seed_objid_;
         components::catalog::drop_behavior_t behavior_;
+        std::string target_;
     };
 
 } // namespace components::operators

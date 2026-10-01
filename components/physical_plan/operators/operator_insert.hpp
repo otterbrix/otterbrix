@@ -50,10 +50,17 @@ namespace components::operators {
         }
 
     private:
+        std::optional<uint64_t> affected_rows_impl() const noexcept override {
+            if (components::catalog::is_catalog_table(table_oid_)) {
+                return std::nullopt;
+            }
+            return affected_rows_;
+        }
+
         catalog::oid_t table_oid_;
         std::pmr::vector<projected_column_t> returning_;
         std::unique_ptr<execution_dag::execution_dag_t> returning_graph_;
-        // Accumulates RETURNING rows (or tallies affected_rows_ without RETURNING) until the final drive.
+        // Accumulate the RETURNING rows and the appended-row count until the final drive.
         chunks_vector_t returning_accum_{resource_};
         uint64_t affected_rows_{0};
         logical_plan::insert_column_bindings_t column_bindings_{resource_};

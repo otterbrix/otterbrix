@@ -5,29 +5,80 @@ namespace Duckstax.Otterbrix
 
     [StructLayout(LayoutKind.Sequential)]
     public struct StringPasser {
-        [MarshalAs(UnmanagedType.LPStr)] public string data;
-        public uint size;
+        [MarshalAs(UnmanagedType.LPUTF8Str)] public string data;
+        public nuint size;
         public StringPasser(ref string str) {
             data = str;
-            size = (uint) str.Length;
+            size = (nuint) System.Text.Encoding.UTF8.GetByteCount(str);
         }
     }
 
+    // core::error_code_t, member for member and in the same order
     public enum ErrorCode : int {
+        OtherError = -1,
         None = 0,
-        DatabaseAlreadyExists = 1,
-        DatabaseNotExists = 2,
-        CollectionAlreadyExists = 3,
-        CollectionNotExists = 4,
-        CollectionDropped = 5,
-        SqlParseError = 6,
-        CreatePhisicalPlanError = 7,
-        OtherError = -1
+        AlreadyExists,
+        DoNotExists,
+        UnimplementedYet,
+
+        DuplicateField,
+        MissingField,
+        MissingPrimaryKeyId,
+        MissingNamespace,
+        TransactionInactive,
+        TransactionFinalized,
+        MissingSavepoint,
+        CommitFailed,
+        MissingTable,
+        DatabaseAlreadyExists,
+        DatabaseNotExists,
+        TableAlreadyExists,
+        TableNotExists,
+        TableDropped,
+        TypeAlreadyExists,
+        TypeNotExists,
+        AmbiguousName,
+        FieldNotExists,
+        InvalidParameter,
+
+        PhysicalPlanError,
+        CreatePhysicalPlanError,
+
+        ArithmeticsFailure,
+        ComparisonFailure,
+        ConversionFailure,
+
+        IndexCreateFail,
+        IndexNotExists,
+        SqlParseError,
+        SchemaError,
+        KernelError,
+        FunctionRegistryError,
+        UnrecognizedFunction,
+        IncorrectFunctionArgument,
+        IncorrectFunctionReturnType,
+        InvalidConstraint,
+
+        OutOfMemory,
+        DataCorruption,
+        IoError,
+        WriteConflict,
+        StaleIndex,
+
+        ActorAgentMissing,
+        ConnectionClosed,
     }
 
     public struct ErrorMessage {
         public ErrorCode type;
         public string what;
+    }
+
+    // Thrown by the OtterbrixWrapper constructor when the engine refuses to start.
+    public class OtterbrixStartupException : Exception {
+        public OtterbrixStartupException(ErrorMessage error)
+            : base(error.what) { Error = error; }
+        public ErrorMessage Error { get; }
     }
 
     public struct Config {
@@ -71,8 +122,8 @@ namespace Duckstax.Otterbrix
     }
 
     // TODO: Add connection support
-    public class OtterbrixWrapper {
-        const string libotterbrix = "libotterbrix.so";
+    public class OtterbrixWrapper : IDisposable {
+        const string libotterbrix = "otterbrix";
 
         [StructLayout(LayoutKind.Sequential)]
         private struct TransferConfig {
@@ -94,45 +145,77 @@ namespace Duckstax.Otterbrix
                    EntryPoint = "otterbrix_create",
                    ExactSpelling = false,
                    CallingConvention = CallingConvention.Cdecl)]
-        private static extern IntPtr
-        OtterbrixCreate(TransferConfig config);
+        private static extern EngineHandle
+        OtterbrixCreate(TransferConfig config, out TransferErrorMessage error);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct TransferErrorMessage {
+            public int type;
+            public IntPtr what;
+        }
 
         [DllImport(libotterbrix,
-                   EntryPoint = "otterbrix_destroy",
+                   EntryPoint = "otterbrix_free_string",
                    ExactSpelling = false,
                    CallingConvention = CallingConvention.Cdecl)]
-        private static extern void OtterbrixDestroy(IntPtr otterprixPtr);
-        
+        private static extern void OtterbrixFreeString(IntPtr str);
+
+        internal static string? TakeString(IntPtr str) {
+            string? result = Marshal.PtrToStringUTF8(str);
+            OtterbrixFreeString(str);
+            return result;
+        }
+
         [DllImport(libotterbrix,
                    EntryPoint = "execute_sql",
                    ExactSpelling = false,
                    CallingConvention = CallingConvention.Cdecl)]
-        private static extern IntPtr ExecuteSQL(IntPtr otterprixPtr, StringPasser sql);
+        private static extern CursorHandle ExecuteSQL(EngineHandle otterbrix, StringPasser sql);
         [DllImport(libotterbrix,
                    EntryPoint = "create_database",
                    ExactSpelling = false,
                    CallingConvention = CallingConvention.Cdecl)]
-        private static extern IntPtr CreateDatabase(IntPtr otterprixPtr, StringPasser databaseName);
+        private static extern CursorHandle CreateDatabase(EngineHandle otterbrix, StringPasser databaseName);
         [DllImport(libotterbrix,
                    EntryPoint = "create_collection",
                    ExactSpelling = false,
                    CallingConvention = CallingConvention.Cdecl)]
-        private static extern IntPtr CreateCollection(IntPtr otterprixPtr, StringPasser databaseName, StringPasser collectionName);
+        private static extern CursorHandle CreateCollection(EngineHandle otterbrix, StringPasser databaseName, StringPasser collectionName);
 
         public OtterbrixWrapper(Config config) {
-            otterbrixPtr = OtterbrixCreate(new TransferConfig(ref config));
-        }
-        ~OtterbrixWrapper() { OtterbrixDestroy(otterbrixPtr); }
-        public CursorWrapper Execute(string sql) {
-            return new CursorWrapper(ExecuteSQL(otterbrixPtr, new StringPasser(ref sql)));
-        }
-        public CursorWrapper CreateDatabase(string databaseName) {
-            return new CursorWrapper(CreateDatabase(otterbrixPtr, new StringPasser(ref databaseName)));
-        }
-        public CursorWrapper CreateCollection(string databaseName, string collectionName) {
-            return new CursorWrapper(CreateCollection(otterbrixPtr, new StringPasser(ref databaseName), new StringPasser(ref collectionName)));
+            otterbrix = OtterbrixCreate(new TransferConfig(ref config), out TransferErrorMessage refusal);
+            if (otterbrix.IsInvalid) {
+                ErrorMessage error = new ErrorMessage();
+                error.type = (ErrorCode)refusal.type;
+                error.what = TakeString(refusal.what) ?? "";
+                throw new OtterbrixStartupException(error);
+            }
         }
 
-        private readonly IntPtr otterbrixPtr;
+        public void Dispose() { otterbrix.Dispose(); }
+
+        public CursorWrapper Execute(string sql) {
+            return new CursorWrapper(ExecuteSQL(otterbrix, new StringPasser(ref sql)));
+        }
+        public CursorWrapper CreateDatabase(string databaseName) {
+            return new CursorWrapper(CreateDatabase(otterbrix, new StringPasser(ref databaseName)));
+        }
+        public CursorWrapper CreateCollection(string databaseName, string collectionName) {
+            return new CursorWrapper(CreateCollection(otterbrix, new StringPasser(ref databaseName), new StringPasser(ref collectionName)));
+        }
+
+        private readonly EngineHandle otterbrix;
+    }
+
+    internal sealed class EngineHandle : SafeHandle {
+        [DllImport("otterbrix", EntryPoint="otterbrix_destroy", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
+        private static extern void OtterbrixDestroy(IntPtr otterbrix);
+
+        public EngineHandle() : base(IntPtr.Zero, true) {}
+        public override bool IsInvalid => handle == IntPtr.Zero;
+        protected override bool ReleaseHandle() {
+            OtterbrixDestroy(handle);
+            return true;
+        }
     }
 }

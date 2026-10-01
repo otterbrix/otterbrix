@@ -22,9 +22,11 @@ namespace components::planner::optimizer {
         // Children whose presence means the aggregate does NOT sit over a single
         // owned base table (join = multi-table; nested aggregate = a sub-aggregate
         // reduce; data = client-injected raw chunk with no owning agent; cte_scan /
-        // union / intersect / recursive_cte = multi-source). Any of these => skip (a).
+        // union / intersect / recursive_cte = multi-source; extension = host source replacing the scan).
+        // Any of these => skip (a).
         bool is_shape_breaking_child(const lp::node_ptr& child) noexcept {
             switch (child->type()) {
+                case lp::node_type::extension_t:
                 case lp::node_type::join_t:
                 case lp::node_type::aggregate_t:
                 case lp::node_type::data_t:

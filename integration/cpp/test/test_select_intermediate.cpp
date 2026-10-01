@@ -782,10 +782,10 @@ TEST_CASE("integration::cpp::select_rework::group by a key") {
     const auto& chunk = cursor->chunks().front();
     CHECK(chunk.data[0].get_value<int32_t>(0) == 1);
     CHECK(chunk.data[0].get_value<int32_t>(1) == 2);
-    // sum() is registered with same_type_resolver(0): it returns the ARGUMENT's type, not PostgreSQL's widened BIGINT.
-    CHECK(chunk.data[1].type().type() == components::types::logical_type::INTEGER);
-    CHECK(chunk.data[1].get_value<int32_t>(0) == 30);
-    CHECK(chunk.data[1].get_value<int32_t>(1) == 5);
+    // sum over INTEGER answers BIGINT
+    CHECK(chunk.data[1].type().type() == components::types::logical_type::BIGINT);
+    CHECK(chunk.data[1].get_value<int64_t>(0) == 30);
+    CHECK(chunk.data[1].get_value<int64_t>(1) == 5);
 }
 
 TEST_CASE("integration::cpp::select_rework::having filters groups") {

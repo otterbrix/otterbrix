@@ -22,6 +22,7 @@
 #include <fstream>
 #include <thread>
 #include <unistd.h>
+#include <components/log/test_log.hpp>
 
 // After bootstrap only pg_catalog.* is loaded; user tables stay out of storages_ until accessed.
 
@@ -46,7 +47,7 @@ namespace {
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
 
         fixture()
-            : log(initialization_logger("python", "/tmp/docker_logs/"))
+            : log(make_test_log("python", "/tmp/docker_logs/"))
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
                 configuration::config_disk c;
@@ -56,7 +57,7 @@ namespace {
             , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {
             cleanup();
             std::filesystem::create_directories(d4_dir());
-            manager->bootstrap_system_tables_sync();
+            REQUIRE_FALSE(manager->bootstrap_system_tables_sync().contains_error());
         }
         ~fixture() {
             // manager must be destroyed before the scheduler: its dtor joins the loop thread,
@@ -270,5 +271,84 @@ TEST_CASE("services::disk::d4::young_otbx_with_checkpoint_sidecar_is_refused") {
     REQUIRE(fx.manager->load_storage_for_wal_replay_sync(rt_oid, well_known_oid::main_database).contains_error());
     REQUIRE_FALSE(fx.manager->has_storage(rt_oid));
     REQUIRE(std::filesystem::file_size(otbx) == components::table::storage::BLOCK_START);
+    REQUIRE(std::filesystem::file_size(tbl_dir / "table.otbx.wal_id") == sizeof(uint64_t));
+}
+
+namespace {
+    // Emulates write-through: data blocks under the CREATE-time header, referenced by nothing.
+    void grow_by_one_orphan_block(const std::filesystem::path& otbx) {
+        std::ofstream f(otbx, std::ios::binary | std::ios::app);
+        REQUIRE(f.is_open());
+        std::vector<char> block(components::table::storage::DEFAULT_BLOCK_ALLOC_SIZE, 'o');
+        f.write(block.data(), static_cast<std::streamsize>(block.size()));
+        REQUIRE(f.good());
+    }
+} // namespace
+
+// The never-checkpointed signature is the CREATE-time root, not the file size: a write-through file that a crash
+// left without a root loads as empty (its rows come back from the WAL), and the sidecar contradiction still holds.
+TEST_CASE("services::disk::d4::write_through_never_checkpointed_otbx_loads_as_empty") {
+    fixture fx;
+    auto ns_oid = test_create_namespace(fx, "ns_a76c");
+    std::vector<components::table::column_definition_t> cols;
+    cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
+    auto rt_oid = test_create_table(fx, ns_oid, "grown_t", std::move(cols));
+
+    const auto tbl_dir = std::filesystem::path(d4_dir()) /
+                         std::to_string(static_cast<unsigned>(well_known_oid::main_database)) /
+                         std::to_string(static_cast<unsigned>(rt_oid));
+    std::filesystem::create_directories(tbl_dir);
+    const auto otbx = tbl_dir / "table.otbx";
+    {
+        core::pmr::otterbrix_resource create_resource;
+        std::vector<components::table::column_definition_t> create_cols;
+        create_cols.emplace_back("id",
+                                 components::types::complex_logical_type{components::types::logical_type::BIGINT});
+        table_storage_t ts(&create_resource, std::move(create_cols), otbx);
+        REQUIRE_FALSE(ts.construction_failed());
+    }
+    grow_by_one_orphan_block(otbx);
+    const auto grown = std::filesystem::file_size(otbx);
+    REQUIRE(grown > components::table::storage::BLOCK_START);
+
+    REQUIRE_FALSE(fx.manager->has_storage(rt_oid));
+    REQUIRE_FALSE(fx.manager->load_storage_for_wal_replay_sync(rt_oid, well_known_oid::main_database).contains_error());
+    REQUIRE(fx.manager->has_storage(rt_oid));
+    REQUIRE(std::filesystem::file_size(otbx) == grown);
+}
+
+TEST_CASE("services::disk::d4::write_through_otbx_with_checkpoint_sidecar_is_refused") {
+    fixture fx;
+    auto ns_oid = test_create_namespace(fx, "ns_a76d");
+    std::vector<components::table::column_definition_t> cols;
+    cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
+    auto rt_oid = test_create_table(fx, ns_oid, "grown_contradicted_t", std::move(cols));
+
+    const auto tbl_dir = std::filesystem::path(d4_dir()) /
+                         std::to_string(static_cast<unsigned>(well_known_oid::main_database)) /
+                         std::to_string(static_cast<unsigned>(rt_oid));
+    std::filesystem::create_directories(tbl_dir);
+    const auto otbx = tbl_dir / "table.otbx";
+    {
+        core::pmr::otterbrix_resource create_resource;
+        std::vector<components::table::column_definition_t> create_cols;
+        create_cols.emplace_back("id",
+                                 components::types::complex_logical_type{components::types::logical_type::BIGINT});
+        table_storage_t ts(&create_resource, std::move(create_cols), otbx);
+        REQUIRE_FALSE(ts.construction_failed());
+    }
+    grow_by_one_orphan_block(otbx);
+    const auto grown = std::filesystem::file_size(otbx);
+    {
+        std::ofstream sidecar(tbl_dir / "table.otbx.wal_id", std::ios::binary | std::ios::trunc);
+        REQUIRE(sidecar.is_open());
+        const uint64_t claimed = 5;
+        sidecar.write(reinterpret_cast<const char*>(&claimed), sizeof(claimed));
+        REQUIRE(sidecar.good());
+    }
+
+    REQUIRE(fx.manager->load_storage_for_wal_replay_sync(rt_oid, well_known_oid::main_database).contains_error());
+    REQUIRE_FALSE(fx.manager->has_storage(rt_oid));
+    REQUIRE(std::filesystem::file_size(otbx) == grown);
     REQUIRE(std::filesystem::file_size(tbl_dir / "table.otbx.wal_id") == sizeof(uint64_t));
 }

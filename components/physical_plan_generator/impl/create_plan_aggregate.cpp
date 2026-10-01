@@ -1,3 +1,4 @@
+#include <components/expressions/clone_expression.hpp>
 #include "create_plan_aggregate.hpp"
 #include "create_plan_match.hpp"
 #include "create_plan_select.hpp"
@@ -113,7 +114,7 @@ namespace services::planner::impl {
                 const auto& expr = group->expressions()[i];
                 if (expr->group() == ce::expression_group::scalar) {
                     if (output_key_of[i] != SIZE_MAX) {
-                        out.outputs.push_back(expr); // the target list naming this key
+                        out.outputs.push_back(ce::detached_expression_t::detach(resource, expr)); // the target list naming this key
                     }
                     continue; // the key itself was added in pass 1
                 }
@@ -140,7 +141,7 @@ namespace services::planner::impl {
                     } else {
                         return false;
                     }
-                    out.outputs.push_back(expr);
+                    out.outputs.push_back(ce::detached_expression_t::detach(resource, expr));
                     out.aggregates.push_back(std::move(pa));
                 } else {
                     return false;
@@ -178,6 +179,25 @@ namespace services::planner::impl {
             return projected_cols;
         }
 
+        // pushed_reduce_scan replaces the implicit table scan; an explicit source child (host extension,
+        // join, sub-aggregate, ...) means there is none to replace, whatever an optimizer pass stamped.
+        bool reads_implicit_table_scan(const lp::node_ptr& node) noexcept {
+            for (const auto& child : node->children()) {
+                switch (child->type()) {
+                    case node_type::limit_t:
+                    case node_type::match_t:
+                    case node_type::group_t:
+                    case node_type::sort_t:
+                    case node_type::select_t:
+                    case node_type::having_t:
+                        break;
+                    default:
+                        return false;
+                }
+            }
+            return true;
+        }
+
         // Returns nullptr unless the WHERE lowers to a plain full_scan via create_plan_match.
         // SINGLE-OWNER INVARIANT: correct only while ONE agent owns the whole table (pool_idx_for_oid
         // routing) — do not extend this lowering past that assumption.
@@ -205,10 +225,11 @@ namespace services::planner::impl {
             std::vector<size_t> projected_cols;
             if (match_child != nullptr) {
                 auto m = create_plan_match(context, *match_child, lp::limit_t::unlimit(), base_projected_cols);
-                if (!m || m->type() != ops::operator_type::full_scan) {
+                // A refused WHERE is reported by the coordinator chain, which lowers it again.
+                if (m.has_error() || m.value()->type() != ops::operator_type::full_scan) {
                     return nullptr; // index_scan / operator_match / transfer_scan — not pushable
                 }
-                const auto* fs = static_cast<const ops::full_scan*>(m.get());
+                const auto* fs = static_cast<const ops::full_scan*>(m.value().get());
                 where_expr = fs->expression();
                 projected_cols = fs->projected_cols();
             } else {
@@ -243,12 +264,11 @@ namespace services::planner::impl {
         }
     } // namespace
 
-    components::operators::operator_ptr
-    create_plan_aggregate(const context_storage_t& context,
-                          const components::compute::function_registry_t& function_registry,
-                          const components::logical_plan::node_ptr& node,
-                          components::logical_plan::limit_t limit,
-                          const components::logical_plan::storage_parameters* params) {
+    plan_result_t create_plan_aggregate(const context_storage_t& context,
+                                        const components::compute::function_registry_t& function_registry,
+                                        const components::logical_plan::node_ptr& node,
+                                        components::logical_plan::limit_t limit,
+                                        const components::logical_plan::storage_parameters* params) {
         for (const components::logical_plan::node_ptr& child : node->children()) {
             if (child->type() == node_type::limit_t) {
                 const auto* limit_node = static_cast<const components::logical_plan::node_limit_t*>(child.get());
@@ -292,19 +312,21 @@ namespace services::planner::impl {
                 break;
             }
         }
-        if (pushdown_group != nullptr) {
+        if (pushdown_group != nullptr && reads_implicit_table_scan(node)) {
             if (auto pushdown_scan = build_pushdown_scan(context, node, pushdown_group, agg_node->projected_cols())) {
                 components::operators::operator_ptr executor = std::move(pushdown_scan);
                 components::operators::operator_ptr push_sort_op;
                 components::operators::operator_ptr push_select_op;
                 for (const components::logical_plan::node_ptr& child : node->children()) {
                     if (child->type() == node_type::sort_t) {
-                        push_sort_op = create_plan_sort(
-                            context,
-                            child,
-                            static_cast<const components::logical_plan::node_sort_t*>(child.get())->read_cap());
+                        VALUE_OR_RETURN(
+                            push_sort_op,
+                            create_plan_sort(
+                                context,
+                                child,
+                                static_cast<const components::logical_plan::node_sort_t*>(child.get())->read_cap()));
                     } else if (child->type() == node_type::select_t) {
-                        push_select_op = create_plan_select(context, child);
+                        VALUE_OR_RETURN(push_select_op, create_plan_select(context, child));
                     }
                 }
                 if (push_sort_op) {
@@ -340,48 +362,54 @@ namespace services::planner::impl {
             switch (child->type()) {
                 case node_type::limit_t:
                     break; // already handled above
-                case node_type::match_t:
-                    match_op = create_plan_match(
-                        context,
-                        child,
-                        static_cast<const components::logical_plan::node_match_t*>(child.get())->read_cap(),
-                        projected_cols);
-                    // Must refuse the aggregate: falling through would swap it for the no-table sentinel
-                    // transfer_scan below, which FABRICATES a synthetic row for a table that does not exist.
-                    if (!match_op) {
-                        return nullptr;
-                    }
+                case node_type::match_t: {
+                    // A refused WHERE refuses the aggregate: the no-table sentinel transfer_scan below would
+                    // FABRICATE a synthetic row for a table that does not exist.
+                    VALUE_OR_RETURN(
+                        match_op,
+                        create_plan_match(
+                            context,
+                            child,
+                            static_cast<const components::logical_plan::node_match_t*>(child.get())->read_cap(),
+                            projected_cols));
                     break;
-                case node_type::group_t:
-                    group_op = create_plan(context,
-                                           function_registry,
-                                           child,
-                                           components::logical_plan::limit_t::unlimit(),
-                                           params);
+                }
+                case node_type::group_t: {
+                    VALUE_OR_RETURN(group_op,
+                                    create_plan(context,
+                                                function_registry,
+                                                child,
+                                                components::logical_plan::limit_t::unlimit(),
+                                                params));
                     break;
-                case node_type::sort_t:
-                    sort_op = create_plan_sort(
-                        context,
-                        child,
-                        static_cast<const components::logical_plan::node_sort_t*>(child.get())->read_cap());
+                }
+                case node_type::sort_t: {
+                    VALUE_OR_RETURN(
+                        sort_op,
+                        create_plan_sort(
+                            context,
+                            child,
+                            static_cast<const components::logical_plan::node_sort_t*>(child.get())->read_cap()));
                     break;
-                case node_type::select_t:
-                    select_op = create_plan_select(context, child);
+                }
+                case node_type::select_t: {
+                    VALUE_OR_RETURN(select_op, create_plan_select(context, child));
                     break;
-                case node_type::having_t:
+                }
+                case node_type::having_t: {
                     // Spliced between the group and the sort; operator_limit alone provides the window.
-                    having_op = create_plan_having(context, child);
+                    VALUE_OR_RETURN(having_op, create_plan_having(context, child));
                     break;
-                default:
-                    child_op = create_plan(context,
-                                           function_registry,
-                                           child,
-                                           components::logical_plan::limit_t::unlimit(),
-                                           params);
-                    if (!child_op) {
-                        return nullptr;
-                    }
+                }
+                default: {
+                    VALUE_OR_RETURN(child_op,
+                                    create_plan(context,
+                                                function_registry,
+                                                child,
+                                                components::logical_plan::limit_t::unlimit(),
+                                                params));
                     break;
+                }
             }
         }
 
@@ -400,7 +428,9 @@ namespace services::planner::impl {
                         break;
                     case components::logical_plan::match_source::table:
                         if (!context.has_table_oid(node->table_oid())) {
-                            return nullptr;
+                            return unresolved_table_refusal(context.resource,
+                                                            static_cast<const std::string&>(agg_node->dbname()),
+                                                            static_cast<const std::string&>(agg_node->relname()));
                         }
                         break;
                 }

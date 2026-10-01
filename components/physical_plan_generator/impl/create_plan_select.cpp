@@ -67,8 +67,7 @@ namespace services::planner::impl {
         return columns;
     }
 
-    components::operators::operator_ptr create_plan_select(const context_storage_t& context,
-                                                           const components::logical_plan::node_ptr& node) {
+    plan_result_t create_plan_select(const context_storage_t& context, const components::logical_plan::node_ptr& node) {
         auto table_oid = node->table_oid();
         bool known = context.has_table_oid(table_oid);
         auto plan_resource = known ? context.resource : node->resource();

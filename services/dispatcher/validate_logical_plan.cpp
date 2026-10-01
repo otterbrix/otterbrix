@@ -36,6 +36,7 @@
 #include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/node_delete.hpp>
 #include <components/logical_plan/node_drop.hpp>
+#include <components/logical_plan/host_write_target.hpp>
 #include <components/logical_plan/node_extension.hpp>
 #include <components/logical_plan/node_fk_cascade.hpp>
 #include <components/logical_plan/node_fk_check.hpp>
@@ -72,6 +73,19 @@ namespace services::dispatcher {
     }
 
     namespace {
+        // A catalog table's own column; carries its origin when the validation collects the columns it reads.
+        type_from_t catalog_column(const validation::validation_context_t& context,
+                                   std::string alias,
+                                   const resolved_table_metadata_t& table,
+                                   const resolved_column_metadata_t& column) {
+            type_from_t out{std::move(alias), column.type};
+            if (context.column_uses != nullptr) {
+                out.uses = context.column_uses;
+                out.origin = column_use_t{table.table_oid, column.attoid};
+            }
+            return out;
+        }
+
         template<typename Node>
         [[nodiscard]] core::error_t bind_predicates(const validation::validation_context_t& context,
                                                     Node* node,
@@ -346,16 +360,18 @@ namespace services::dispatcher {
                     named_schema result(resource);
                     const auto& table_alias = node->result_alias().empty() ? node->relname() : node->result_alias();
                     for (const auto& column : tbl->columns) {
-                        result.emplace_back(type_from_t{table_alias, column.type});
+                        result.emplace_back(catalog_column(context, table_alias, *tbl, column));
                     }
                     return result;
                 }
                 if (tbl && tbl->relkind == 'g') {
                     named_schema result(resource);
                     for (const auto& column : tbl->columns) {
-                        result.emplace_back(
-                            type_from_t{node->result_alias().empty() ? node->relname() : node->result_alias(),
-                                        column.type});
+                        result.emplace_back(catalog_column(
+                            context,
+                            node->result_alias().empty() ? node->relname() : node->result_alias(),
+                            *tbl,
+                            column));
                     }
                     return result;
                 } else {
@@ -600,6 +616,35 @@ namespace services::dispatcher {
             }
             return core::error_t(core::error_code_t::sql_parse_error, std::move(msg));
         }
+
+        // A host relation has no defaults in otterbrix: an INSERT writes every declared column. Without a column
+        // list the values fill the columns in order.
+        core::error_t refuse_unlisted_host_columns(std::pmr::memory_resource* resource,
+                                                   const components::logical_plan::node_extension_t& relation,
+                                                   const std::pmr::vector<components::expressions::key_t>& listed,
+                                                   std::size_t written) {
+            std::pmr::string missing{resource};
+            for (std::size_t i = 0; i < relation.columns().size(); ++i) {
+                const auto name = relation.columns()[i].alias();
+                const bool is_listed = listed.empty() ? i < written
+                                                      : std::any_of(listed.begin(), listed.end(), [&](const auto& key) {
+                                                            return key.as_string() == name;
+                                                        });
+                if (is_listed) {
+                    continue;
+                }
+                missing += missing.empty() ? "" : ", ";
+                missing += name;
+            }
+            if (missing.empty()) {
+                return core::error_t::no_error();
+            }
+            std::pmr::string msg{"INSERT into host relation \"", resource};
+            msg += relation.name();
+            msg += "\" must list every column; missing: ";
+            msg += missing;
+            return core::error_t(core::error_code_t::schema_error, std::move(msg));
+        }
     } // namespace
 
     core::error_t check_type_exists(std::pmr::memory_resource* resource,
@@ -797,19 +842,13 @@ namespace services::dispatcher {
                     if (child.has_error()) {
                         return child;
                     }
-                    return result;
                 }
-                const auto* tbl = node->table_metadata();
-                if (!tbl) {
-                    return core::error_t(
-                        core::error_code_t::table_not_exists,
-                        std::pmr::string{"extension table is not registered in the catalog", resource});
-                }
-                const std::string& visible_alias = node->result_alias().empty() ? ext->relname() : node->result_alias();
-                for (const auto& column : tbl->columns) {
+                const std::string visible_alias =
+                    node->result_alias().empty() ? std::string{ext->name()} : node->result_alias();
+                for (const auto& column : ext->columns()) {
                     type_from_t entry;
                     entry.result_alias = visible_alias;
-                    entry.type = column.type;
+                    entry.type = column;
                     result.push_back(std::move(entry));
                 }
                 return result;
@@ -887,7 +926,7 @@ namespace services::dispatcher {
                     if (tbl) {
                         relkind_computed = (tbl->relkind == 'g');
                         for (const auto& column : tbl->columns) {
-                            table_schema.emplace_back(type_from_t{visible_alias, column.type});
+                            table_schema.emplace_back(catalog_column(context, visible_alias, *tbl, column));
                         }
                     } else {
                         if (!agg_dbname_s.empty() &&
@@ -1025,9 +1064,22 @@ namespace services::dispatcher {
                                     !scalar_expr->key().storage().empty() &&
                                     scalar_expr->key().storage().front() != "*") {
                                     const auto& alias = scalar_expr->key().storage().front();
+                                    // d1.t JOIN d2.t: both carry the alias t; the side the qualification picked
+                                    // tells them apart.
+                                    const auto star_side = scalar_expr->key().side();
+                                    bool on_star_side = false;
+                                    bool on_other_side = false;
+                                    for (const auto& col : incoming_schema) {
+                                        if (core::pmr::operator==(col.result_alias, alias)) {
+                                            (col.side == star_side ? on_star_side : on_other_side) = true;
+                                        }
+                                    }
+                                    const bool names_both_sides =
+                                        star_side != side_t::undefined && on_star_side && on_other_side;
                                     std::pmr::vector<size_t> matched(resource);
                                     for (size_t i = 0; i < incoming_schema.size(); i++) {
-                                        if (core::pmr::operator==(incoming_schema[i].result_alias, alias)) {
+                                        if (core::pmr::operator==(incoming_schema[i].result_alias, alias) &&
+                                            (!names_both_sides || incoming_schema[i].side == star_side)) {
                                             matched.push_back(i);
                                         }
                                     }
@@ -1217,7 +1269,12 @@ namespace services::dispatcher {
                                         res_type = &res_type->child_type();
                                     }
                                 }
-                                result.emplace_back(type_from_t{node->result_alias(), *res_type});
+                                auto field_type = *res_type;
+                                // `a AS z` answers z, the name the executed projection gives the column.
+                                if (!scalar_expr->params().empty() && !scalar_expr->key().is_null()) {
+                                    field_type.set_alias(scalar_expr->key().as_string());
+                                }
+                                result.emplace_back(type_from_t{node->result_alias(), std::move(field_type)});
                             } else if (scalar_expr->type() == scalar_type::star_expand) {
                                 for (const auto& col : incoming_schema) {
                                     result.emplace_back(col);
@@ -1290,7 +1347,12 @@ namespace services::dispatcher {
                                         ? scalar_expr->key()
                                         : std::get<components::expressions::key_t>(scalar_expr->params().front());
                                 if (!key.path().empty() && key.path().front() < incoming_schema.size()) {
-                                    result_schema.push_back(incoming_schema[key.path().front()]);
+                                    auto column = incoming_schema[key.path().front()];
+                                    // `a AS z` answers z, the name the executed projection gives the column.
+                                    if (!scalar_expr->params().empty() && !scalar_expr->key().is_null()) {
+                                        column.type.set_alias(scalar_expr->key().as_string());
+                                    }
+                                    result_schema.push_back(std::move(column));
                                 }
                             } else if (scalar_expr->type() == scalar_type::star_expand) {
                                 for (const auto& col : incoming_schema) {
@@ -1324,6 +1386,12 @@ namespace services::dispatcher {
                             }
                         }
                         return result_schema;
+                    }
+                    // No projection: every incoming column is read (a bare `SELECT *`).
+                    for (const auto& column : incoming_schema) {
+                        if (column.uses != nullptr) {
+                            column.uses->push_back(column.origin);
+                        }
                     }
                     return incoming_schema;
                 } else {
@@ -1777,7 +1845,8 @@ namespace services::dispatcher {
                                      function_node->full_name(),
                                      function_input,
                                      components::compute::create_mask(components::compute::function_type_t::vector,
-                                                                      components::compute::function_type_t::expand));
+                                                                      components::compute::function_type_t::expand),
+                                     {});
                 if (fn_resolved.has_error()) {
                     return fn_resolved.convert_error<named_schema>();
                 }
@@ -1868,7 +1937,17 @@ namespace services::dispatcher {
                     validate_schema(context, node->children().front().get(), parameters, cte_schemas);
                 if (incoming_schema.has_error()) {
                     return incoming_schema;
-                } else {
+                }
+                if (const auto* host = host_write_target(*insert_node)) {
+                    if (auto missing = refuse_unlisted_host_columns(resource,
+                                                                    host->relation(),
+                                                                    insert_node->key_translation(),
+                                                                    incoming_schema.value().size());
+                        missing.contains_error()) {
+                        return missing;
+                    }
+                }
+                {
                     named_schema table_schema(resource);
                     bool is_computed = false;
                     const std::string& target_relname_ins = tbl_ins ? tbl_ins->name : std::string{};
@@ -1974,6 +2053,17 @@ namespace services::dispatcher {
                         }
                         return core::error_t::no_error();
                     };
+                    // VALUES without a column list names its columns by position only; a dynamic-schema table
+                    // takes its column names from the INSERT.
+                    if (is_computed && insert_node->key_translation().empty() &&
+                        node->children().front()->type() == node_type::data_t) {
+                        return core::error_t(core::error_code_t::schema_error,
+                                             std::pmr::string{"INSERT into dynamic-schema table \"" +
+                                                                  target_relname_ins +
+                                                                  "\" needs a column list: its columns are named "
+                                                                  "by the INSERT",
+                                                              resource});
+                    }
                     if (table_schema.empty()) {
                         // Must stay relkind='r' (test_persistence::zero_column_regular_table_stays_regular).
                         if (!is_computed) {
@@ -1990,16 +2080,22 @@ namespace services::dispatcher {
                         if (auto rename_err = bind_computed_rename(); rename_err.contains_error()) {
                             return rename_err;
                         }
-                    } else if (incoming_schema.value().size() > table_schema.size()) {
-                        return core::error_t(core::error_code_t::schema_error,
-                                             std::pmr::string{"insert_node: too many columns in INSERT", resource});
                     } else {
-                        if (insert_node->key_translation().size() != incoming_schema.value().size() &&
-                            table_schema.size() != incoming_schema.value().size()) {
+                        // PostgreSQL 18 transformInsertRow: the target columns are the list, or every column of the
+                        // table; more values than targets is refused, fewer only with a list.
+                        const auto& listed = insert_node->key_translation();
+                        const std::size_t targets = listed.empty() ? table_schema.size() : listed.size();
+                        if (incoming_schema.value().size() > targets) {
                             return core::error_t(
-                                core::error_code_t::schema_error,
-                                std::pmr::string{"insert_node: number of columns do not match", resource});
-                        } else {
+                                core::error_code_t::sql_parse_error,
+                                std::pmr::string{"INSERT has more expressions than target columns", resource});
+                        }
+                        if (!listed.empty() && incoming_schema.value().size() < targets) {
+                            return core::error_t(
+                                core::error_code_t::sql_parse_error,
+                                std::pmr::string{"INSERT has more target columns than expressions", resource});
+                        }
+                        {
                             for (auto& key : insert_node->key_translation()) {
                                 auto key_res = validation::validate_key(resource, key, &table_schema);
                                 if (key_res.has_error()) {
@@ -2368,7 +2464,6 @@ namespace services::dispatcher {
             }
             case node_type::drop_t:
                 break;
-            case node_type::create_matview_t:
             case node_type::refresh_matview_t:
                 break;
             case node_type::union_t: {

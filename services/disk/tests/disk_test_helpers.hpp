@@ -242,7 +242,20 @@ namespace disk_test_helpers {
         auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{2});
         const catalog::oid_t view_oid = oids[0];
         const catalog::oid_t rule_oid = oids[1];
-        auto writes = catalog::build_create_view_writes(&fx.resource, name, ns_oid, view_oid, rule_oid, body_sql);
+        // Catalog rows only: no output columns, bindings or dependencies.
+        catalog::oid_batch_t no_columns;
+        auto writes = catalog::build_create_view_writes(&fx.resource,
+                                                        name,
+                                                        ns_oid,
+                                                        view_oid,
+                                                        rule_oid,
+                                                        body_sql,
+                                                        {},
+                                                        no_columns,
+                                                        {},
+                                                        {},
+                                                        /*write_class_row=*/true,
+                                                        catalog::relkind::view);
         std::vector<components::pg_catalog_append_range_t> appends_local;
         append_writes(fx, auto_ctx(), writes, appends_local);
         fx.invoke(&manager_disk_t::storage_publish_commits,

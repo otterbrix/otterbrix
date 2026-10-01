@@ -16,6 +16,7 @@ namespace components::logical_plan {
         type,
         sequence,
         view,
+        materialized_view,
         macro,
         index
     };
@@ -49,10 +50,6 @@ namespace components::logical_plan {
         components::catalog::drop_behavior_t behavior() const noexcept { return behavior_; }
         void set_behavior(components::catalog::drop_behavior_t b) noexcept { behavior_ = b; }
 
-        // Unresolved target refuses the statement unless set; defaults false so a programmatic plan gets the refusal.
-        bool missing_ok() const noexcept { return missing_ok_; }
-        void set_missing_ok(bool v) noexcept { missing_ok_ = v; }
-
     private:
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
@@ -65,7 +62,6 @@ namespace components::logical_plan {
         components::catalog::oid_t type_oid_{components::catalog::INVALID_OID};
         components::catalog::oid_t index_oid_{components::catalog::INVALID_OID};
         components::catalog::drop_behavior_t behavior_{components::catalog::drop_behavior_t::restrict_};
-        bool missing_ok_{false};
     };
 
     using node_drop_ptr = boost::intrusive_ptr<node_drop_t>;

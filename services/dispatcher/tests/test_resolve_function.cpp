@@ -43,7 +43,12 @@ namespace {
     }
 
     const components::compute::function_registry_t& functions() {
-        return *components::compute::function_registry_t::get_default();
+        static components::compute::function_registry_t registry(resource());
+        [[maybe_unused]] static const bool loaded = [] {
+            components::compute::register_default_functions(registry);
+            return true;
+        }();
+        return registry;
     }
 
     std::pmr::vector<complex_logical_type> args(std::initializer_list<logical_type> types) {
@@ -69,7 +74,7 @@ namespace {
                                 functions(),
                                 qualified_name_t{std::string{name}},
                                 arguments,
-                                any_kind());
+                                any_kind(), {});
     }
 
 } // namespace
@@ -136,7 +141,8 @@ TEST_CASE("dispatcher::resolve_function: a restricted variable admits its domain
     auto integer = resolve("sum", {logical_type::INTEGER});
     REQUIRE_FALSE(integer.has_error());
     REQUIRE_FALSE(integer.value().arguments[0].cast);
-    REQUIRE(integer.value().result.type() == logical_type::INTEGER);
+    // sum over an integer answers BIGINT
+    REQUIRE(integer.value().result.type() == logical_type::BIGINT);
 
     // DATE is not summable, and BOOLEAN was removed from the domain because
     // sum_operator_t accumulates into a bool, making SUM(bool) a logical OR.
@@ -162,7 +168,7 @@ TEST_CASE("dispatcher::resolve_function: the function decides its own return typ
                                  functions(),
                                  qualified_name_t{"count"},
                                  none,
-                                 any_kind());
+                                 any_kind(), {});
     REQUIRE_FALSE(star.has_error());
     REQUIRE(star.value().result.type() == logical_type::UBIGINT);
 }
@@ -184,8 +190,7 @@ TEST_CASE("dispatcher::resolve_function: mergeable rides along from the matched 
 }
 
 // A DECIMAL entry in the domain carries no width/scale, so it stands for the whole family:
-// the argument keeps its own parameters and nothing is converted. The runtime agrees --
-// operator_switch sums the raw integer and rebuilds a decimal from the input's type.
+// the argument keeps its own parameters and nothing is converted. sum answers DECIMAL(38, s).
 TEST_CASE("dispatcher::resolve_function: a family entry keeps the argument's parameters") {
     auto decimal = make_decimal(10, 2);
     std::pmr::vector<complex_logical_type> arguments(resource());
@@ -197,11 +202,11 @@ TEST_CASE("dispatcher::resolve_function: a family entry keeps the argument's par
                                      functions(),
                                      qualified_name_t{"sum"},
                                      arguments,
-                                     any_kind());
+                                     any_kind(), {});
     REQUIRE_FALSE(resolved.has_error());
     REQUIRE_FALSE(resolved.value().arguments[0].cast);
     REQUIRE(resolved.value().arguments[0].target == decimal);
-    REQUIRE(resolved.value().result == decimal);
+    REQUIRE(resolved.value().result == make_decimal(38, 2));
 }
 
 // Which kinds of function a clause accepts is decided by the clause. An aggregate cannot be
@@ -220,7 +225,7 @@ TEST_CASE("dispatcher::resolve_function: the clause decides which function kinds
                                          functions(),
                                          qualified_name_t{"sum"},
                                          integer,
-                                         scalar_only);
+                                         scalar_only, {});
     REQUIRE(sum_in_where.has_error());
     REQUIRE(sum_in_where.error().type == core::error_code_t::incorrect_function_argument);
 
@@ -230,7 +235,7 @@ TEST_CASE("dispatcher::resolve_function: the clause decides which function kinds
                                                 functions(),
                                                 qualified_name_t{"length"},
                                                 text,
-                                                aggregate_only);
+                                                aggregate_only, {});
     REQUIRE(length_in_aggregate.has_error());
 
     // Each is fine in the clause that accepts it.
@@ -240,7 +245,7 @@ TEST_CASE("dispatcher::resolve_function: the clause decides which function kinds
                                    functions(),
                                    qualified_name_t{"sum"},
                                    integer,
-                                   aggregate_only)
+                                   aggregate_only, {})
                       .has_error());
     REQUIRE_FALSE(resolve_function(resource(),
                                    casts(),
@@ -248,7 +253,7 @@ TEST_CASE("dispatcher::resolve_function: the clause decides which function kinds
                                    functions(),
                                    qualified_name_t{"length"},
                                    text,
-                                   scalar_only)
+                                   scalar_only, {})
                       .has_error());
 }
 
@@ -276,7 +281,7 @@ TEST_CASE("dispatcher::resolve_function: abs resolves per argument type") {
                                    functions(),
                                    qualified_name_t{"abs"},
                                    decimal_arg,
-                                   any_kind());
+                                   any_kind(), {});
     REQUIRE_FALSE(scaled.has_error());
     REQUIRE_FALSE(scaled.value().arguments[0].cast);
     REQUIRE(scaled.value().result == decimal);

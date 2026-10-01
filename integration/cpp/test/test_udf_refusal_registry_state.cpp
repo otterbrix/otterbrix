@@ -6,6 +6,7 @@
 #include <components/catalog/catalog_oids.hpp>
 #include <components/compute/function.hpp>
 #include <components/table/storage/single_file_block_manager.hpp>
+#include <components/physical_plan/operators/operator_unregister_udf.hpp>
 #include <components/table/test/fault_injection_file.hpp>
 #include <services/disk/manager_disk.hpp>
 
@@ -111,12 +112,9 @@ namespace {
     class udf_refusal_spaces_t final : public otterbrix::base_otterbrix_t {
     public:
         explicit udf_refusal_spaces_t(const configuration::config& config)
-            : otterbrix::base_otterbrix_t(config) {
-            // Fresh builtins-only registry, so a UDF from an earlier case can't leak into this one.
-            components::compute::function_registry_t::reset_default();
-        }
+            : otterbrix::base_otterbrix_t(test_open_engine(config)) {}
 
-        services::disk::manager_disk_t* disk() noexcept { return manager_disk_.get(); }
+        actor_zeta::address_t disk_address() const noexcept { return engine().disk_address(); }
     };
 
     core::error_t probe_exec_unary(compute::kernel_context&, const vector::data_chunk_t& in, vector::vector_t& out) {
@@ -147,7 +145,7 @@ namespace {
         table::transaction_data td{0, 0};
         td.snapshot_horizon = std::numeric_limits<uint64_t>::max();
         execution_context_t exec_ctx{otterbrix::session_id_t{}, td, {}};
-        auto [_, fut] = actor_zeta::otterbrix::send(space.disk()->address(),
+        auto [_, fut] = actor_zeta::otterbrix::send(space.disk_address(),
                                                     &services::disk::manager_disk_t::resolve_function_by_name,
                                                     exec_ctx,
                                                     name);
@@ -162,17 +160,9 @@ namespace {
         return matches.value().size();
     }
 
-    bool default_registry_has(const std::string& name) {
-        auto* reg = compute::function_registry_t::get_default();
-        if (reg == nullptr) {
-            return false;
-        }
-        for (const auto& [registered_name, uid] : reg->get_functions()) {
-            if (registered_name == name) {
-                return true;
-            }
-        }
-        return false;
+    // The engine answers a call to the function only if its registries hold it.
+    bool engine_serves(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& name) {
+        return test_helpers::exec(dispatcher, "SELECT " + name + "(CAST(1 AS BIGINT));")->is_success();
     }
 
 } // namespace
@@ -229,14 +219,14 @@ TEST_CASE("integration::cpp::test_udf_refusal_registry_state::register_udf_leave
         INFO("poisoned pg_namespace block offset " << data_block);
         REQUIRE(plan.reads_failed > 0);
 
-        REQUIRE_FALSE(default_registry_has(kFuncName));
+        REQUIRE_FALSE(engine_serves(dispatcher, kFuncName));
 
         auto refused = dispatcher->register_udf(otterbrix::session_id_t(), make_probe_unary(dispatcher->resource()));
         INFO("a registration whose namespace could not be READ must FAIL");
         REQUIRE(refused.contains_error());
 
-        INFO("the default registry must not answer for a function the catalog never got a row for");
-        CHECK_FALSE(default_registry_has(kFuncName)); // fails if the mirror runs before the read
+        INFO("the engine must not answer for a function the catalog never got a row for");
+        CHECK_FALSE(engine_serves(dispatcher, kFuncName));
 
         const auto rows = pg_proc_rows_named(space, kFuncName);
         INFO("pg_proc rows named '" << kFuncName << "': " << rows);
@@ -252,7 +242,7 @@ TEST_CASE("integration::cpp::test_udf_refusal_registry_state::register_udf_leave
         auto retry = dispatcher->register_udf(otterbrix::session_id_t(), make_probe_unary(dispatcher->resource()));
         INFO("retry after the fault was cleared: " << retry.what.c_str());
         CHECK_FALSE(retry.contains_error());
-        CHECK(default_registry_has(kFuncName));
+        CHECK(engine_serves(dispatcher, kFuncName));
         CHECK(pg_proc_rows_named(restarted, kFuncName) == 1);
     }
 }
@@ -270,7 +260,7 @@ TEST_CASE("integration::cpp::test_udf_refusal_registry_state::a_healthy_registra
 
     auto ok = dispatcher->register_udf(otterbrix::session_id_t(), make_probe_unary(dispatcher->resource()));
     REQUIRE_FALSE(ok.contains_error());
-    CHECK(default_registry_has(kFuncName));
+    CHECK(engine_serves(dispatcher, kFuncName));
     CHECK(pg_proc_rows_named(space, kFuncName) == 1);
 }
 
@@ -293,13 +283,13 @@ TEST_CASE("integration::cpp::test_udf_refusal_registry_state::a_registration_lef
 
     udf_refusal_spaces_t restarted(config);
     auto* dispatcher = restarted.dispatcher();
-    REQUIRE_FALSE(default_registry_has(kFuncName));
+    REQUIRE_FALSE(engine_serves(dispatcher, kFuncName));
     REQUIRE(pg_proc_rows_named(restarted, kFuncName) == 1);
 
     auto again = dispatcher->register_udf(otterbrix::session_id_t(), make_probe_unary(dispatcher->resource()));
     INFO("re-registration after a restart: " << again.what.c_str());
     REQUIRE_FALSE(again.contains_error());
-    CHECK(default_registry_has(kFuncName));
+    CHECK(engine_serves(dispatcher, kFuncName));
     CHECK(pg_proc_rows_named(restarted, kFuncName) == 1);
 
     auto called = test_helpers::exec(dispatcher, "SELECT " + kFuncName + "(id) FROM d.t ORDER BY id;");
@@ -328,7 +318,8 @@ TEST_CASE("integration::cpp::test_udf_refusal_registry_state::a_seeded_builtin_r
     CHECK(pg_proc_rows_named(restarted, "count") == 1);
 }
 
-TEST_CASE("integration::cpp::test_udf_refusal_registry_state::a_leftover_is_replaced_not_unregistered") {
+// The row a previous process left can be unregistered without registering the function again.
+TEST_CASE("integration::cpp::test_udf_refusal_registry_state::a_leftover_is_unregistered") {
     const std::filesystem::path dir = integration_fixture_path("test_udf_refusal_registry_state/leftover_unregister");
     std::filesystem::remove_all(dir);
     auto config = test_helpers::make_test_config(dir);
@@ -343,10 +334,43 @@ TEST_CASE("integration::cpp::test_udf_refusal_registry_state::a_leftover_is_repl
 
     udf_refusal_spaces_t restarted(config);
     auto* dispatcher = restarted.dispatcher();
+    auto dropped = dispatcher->unregister_udf(otterbrix::session_id_t(), kFuncName, {types::logical_type::BIGINT});
+    INFO("unregister_udf of a leftover: " << dropped.what.c_str());
+    REQUIRE_FALSE(dropped.contains_error());
+    CHECK(pg_proc_rows_named(restarted, kFuncName) == 0);
+    CHECK_FALSE(engine_serves(dispatcher, kFuncName));
+}
+
+// The catalog goes first: an unregister whose pg_proc purge refuses must leave the function where
+// it was, served by every executor and still in pg_proc.
+TEST_CASE("integration::cpp::test_udf_refusal_registry_state::a_refused_unregister_leaves_the_function_served") {
+    const std::filesystem::path dir = integration_fixture_path("test_udf_refusal_registry_state/unregister_refused");
+    std::filesystem::remove_all(dir);
+    auto config = test_helpers::make_test_config(dir);
+    config.log.level = log_t::level::off;
+
+    udf_refusal_spaces_t space(config);
+    auto* dispatcher = space.dispatcher();
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE d;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE d.t (id BIGINT);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO d.t (id) VALUES (1), (2), (3);")->is_success());
+    REQUIRE_FALSE(dispatcher->register_udf(otterbrix::session_id_t(), make_probe_unary(dispatcher->resource()))
+                      .contains_error());
+
+    components::operators::dev_set_unregister_udf_purge_refusal(true);
     auto refused = dispatcher->unregister_udf(otterbrix::session_id_t(), kFuncName, {types::logical_type::BIGINT});
-    INFO("unregister_udf of a leftover: " << refused.what.c_str());
+    components::operators::dev_set_unregister_udf_purge_refusal(false);
+    INFO("unregister_udf under a refused purge: " << refused.what.c_str());
     REQUIRE(refused.contains_error());
-    CHECK(refused.type == core::error_code_t::unrecognized_function);
-    CHECK(std::string{refused.what.c_str()}.find("previous process") != std::string::npos);
-    CHECK(pg_proc_rows_named(restarted, kFuncName) == 1);
+    CHECK(pg_proc_rows_named(space, kFuncName) == 1);
+
+    // Statements go round-robin over the executor pool, so twice its size reaches every executor.
+    const auto statements = 2 * config.execution.executor_pool_size;
+    for (std::size_t i = 0; i < statements; ++i) {
+        auto called = test_helpers::exec(dispatcher, "SELECT " + kFuncName + "(id) FROM d.t ORDER BY id;");
+        INFO("call " << i << " after the refused unregister: "
+                     << (called->is_error() ? called->get_error().what.c_str() : "<ok>"));
+        REQUIRE(called->is_success());
+        CHECK(called->size() == 3);
+    }
 }

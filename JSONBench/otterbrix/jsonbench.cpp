@@ -1,4 +1,5 @@
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -13,7 +14,17 @@
 class bench_spaces final : public otterbrix::base_otterbrix_t {
 public:
     explicit bench_spaces(const configuration::config& config)
-        : otterbrix::base_otterbrix_t(config) {}
+        : otterbrix::base_otterbrix_t(open_or_exit(config)) {}
+
+private:
+    static host_ptr open_or_exit(const configuration::config& config) {
+        auto host = open(config);
+        if (host.has_error()) {
+            std::cerr << "otterbrix refused to start: " << host.error().what << '\n';
+            std::exit(EXIT_FAILURE);
+        }
+        return std::move(host.value());
+    }
 };
 
 #ifndef JSONBENCH_DATA_FILE

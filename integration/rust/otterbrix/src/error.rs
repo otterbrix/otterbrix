@@ -4,7 +4,7 @@ use std::fmt;
 ///
 /// Error variants are categorised by **origin**:
 ///
-/// - [`Error::NullPointer`] and [`Error::Query`] originate in the C++ engine
+/// - [`Error::NullPointer`], [`Error::Query`] and [`Error::Open`] originate in the C++ engine
 ///   (the `otterbrix core ...` prefix in the [`Display`](fmt::Display) text);
 /// - [`Error::InvalidPath`] and [`Error::TypeMismatch`] originate in this
 ///   Rust wrapper (the plain `otterbrix ...` prefix).
@@ -29,6 +29,18 @@ pub enum Error {
         /// Engine-specific error code. Always non-zero.
         code: i32,
         /// Human-readable message produced by the engine.
+        message: String,
+    },
+
+    /// The C++ engine refused to start.
+    ///
+    /// `code` is the engine's internal error code (non-zero), `message` names the reason, e.g.
+    /// another engine already owning the same `main_path`. The message in
+    /// [`Display`](fmt::Display) is `otterbrix core refused to open (code <N>): <msg>`.
+    Open {
+        /// Engine-specific error code. Always non-zero.
+        code: i32,
+        /// Human-readable reason produced by the engine.
         message: String,
     },
 
@@ -60,6 +72,9 @@ impl fmt::Display for Error {
             Error::NullPointer => write!(f, "otterbrix core returned null pointer"),
             Error::Query { code, message } => {
                 write!(f, "otterbrix core query error (code {code}): {message}")
+            }
+            Error::Open { code, message } => {
+                write!(f, "otterbrix core refused to open (code {code}): {message}")
             }
             Error::InvalidPath(path) => write!(f, "otterbrix invalid path: {path}"),
             Error::TypeMismatch { expected, got } => {

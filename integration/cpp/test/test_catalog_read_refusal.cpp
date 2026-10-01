@@ -127,11 +127,9 @@ namespace {
     class read_refusal_spaces_t final : public otterbrix::base_otterbrix_t {
     public:
         explicit read_refusal_spaces_t(const configuration::config& config)
-            : otterbrix::base_otterbrix_t(config) {
-            components::compute::function_registry_t::reset_default();
-        }
+            : otterbrix::base_otterbrix_t(test_open_engine(config)) {}
 
-        services::disk::manager_disk_t* disk() noexcept { return manager_disk_.get(); }
+        actor_zeta::address_t disk_address() const noexcept { return engine().disk_address(); }
     };
 
     core::error_t probe_exec_unary(compute::kernel_context&, const vector::data_chunk_t& in, vector::vector_t& out) {
@@ -185,7 +183,7 @@ namespace {
     std::size_t pg_proc_rows_named(read_refusal_spaces_t& space, const std::string& name) {
         auto td = table::transaction_data::committed();
         execution_context_t exec_ctx{otterbrix::session_id_t{}, td, {}};
-        auto [_, fut] = actor_zeta::otterbrix::send(space.disk()->address(),
+        auto [_, fut] = actor_zeta::otterbrix::send(space.disk_address(),
                                                     &services::disk::manager_disk_t::resolve_function_by_name,
                                                     exec_ctx,
                                                     name);
@@ -269,9 +267,10 @@ TEST_CASE("integration::cpp::test_catalog_read_refusal::register_udf_fails_when_
     CHECK(rows == 1);
 }
 
-// Guard: with nothing injected, the same two registrations must be refused as `already_exists`.
-// Without it, the case above could pass vacuously if every second registration just started failing.
-TEST_CASE("integration::cpp::test_catalog_read_refusal::a_healthy_second_overload_is_already_exists") {
+// Guard: with nothing injected, the same two registrations succeed, the second as a pg_proc row of its own
+// (PostgreSQL 18 overloading). Without it, the case above could pass vacuously if every second registration just
+// started failing.
+TEST_CASE("integration::cpp::test_catalog_read_refusal::a_healthy_second_overload_is_a_row_of_its_own") {
     const std::filesystem::path dir = integration_fixture_path("test_catalog_read_refusal/duplicate");
     std::filesystem::remove_all(dir);
     auto config = test_helpers::make_test_config(dir);
@@ -284,8 +283,8 @@ TEST_CASE("integration::cpp::test_catalog_read_refusal::a_healthy_second_overloa
     REQUIRE_FALSE(first.contains_error());
 
     auto second = dispatcher->register_udf(otterbrix::session_id_t(), make_probe_binary(dispatcher->resource()));
-    REQUIRE(second.contains_error());
-    CHECK(second.type == core::error_code_t::already_exists);
+    INFO("second overload: " << second.what.c_str());
+    REQUIRE_FALSE(second.contains_error());
 
-    CHECK(pg_proc_rows_named(space, kFuncName) == 1);
+    CHECK(pg_proc_rows_named(space, kFuncName) == 2);
 }

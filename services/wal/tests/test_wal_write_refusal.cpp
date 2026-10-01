@@ -26,6 +26,7 @@
 #include <services/wal/manager_wal_replicate.hpp>
 #include <services/wal/wal_page.hpp>
 #include <services/wal/wal_reader.hpp>
+#include <components/log/test_log.hpp>
 
 // Injected via services::wal::dev_set_wal_file_interposer: nullptr models an unopenable segment
 // (the same value local_file_system.cpp's open_file returns for it), and
@@ -109,7 +110,7 @@ namespace {
     struct wal_env_t {
         explicit wal_env_t(const std::filesystem::path& path, size_t max_segment_size = 0)
             : path_(path)
-            , log_(initialization_logger("python", "/tmp/docker_logs/"))
+            , log_(make_test_log("python", "/tmp/docker_logs/"))
             , scheduler_(new actor_zeta::shared_work(2, 1000))
             , config_(make_config(path, max_segment_size))
             , manager_(actor_zeta::spawn<manager_wal_replicate_t>(&resource_,
@@ -261,7 +262,7 @@ TEST_CASE("wal::refusal::truncation_keeps_a_segment_it_cannot_read") {
 // only be the refusal, not an empty journal.
 TEST_CASE("wal::refusal::startup_replay_refuses_a_segment_that_will_not_open") {
     const auto path = base_path() / "replay_refusal";
-    auto log = initialization_logger("python", "/tmp/docker_logs/");
+    auto log = make_test_log("python", "/tmp/docker_logs/");
     core::pmr::otterbrix_resource resource;
     configuration::config_wal config(path);
 

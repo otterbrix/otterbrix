@@ -36,6 +36,9 @@ namespace components::logical_plan {
         match_source source() const noexcept { return relname_.t.empty() ? match_source::none : match_source::table; }
         // External identifier from a SQL `<uid>.<db>.<schema>.<rel>` form; empty when omitted (see swap_externals).
         const core::uid_t& uid() const noexcept { return uid_; }
+        // The schema slot as written (database.schema.name, or the uid form's third part).
+        const std::string& schema() const noexcept { return schema_; }
+        void set_schema(std::string schema) { schema_ = std::move(schema); }
 
         // Populated by the post-validate column_pruning pass; empty means no projection (scan all columns).
         const std::vector<size_t>& projected_cols() const { return projected_cols_; }
@@ -50,6 +53,7 @@ namespace components::logical_plan {
         // table_oid and collect_view_references re-expands it.
         void clear_source_identity() {
             uid_.t.clear();
+            schema_.clear();
             dbname_.t.clear();
             relname_.t.clear();
             set_table_oid(components::catalog::INVALID_OID);
@@ -58,6 +62,7 @@ namespace components::logical_plan {
 
     private:
         core::uid_t uid_;
+        std::string schema_;
         core::dbname_t dbname_;
         core::relname_t relname_;
         bool distinct_{false};

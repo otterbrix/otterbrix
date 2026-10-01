@@ -45,6 +45,20 @@ namespace {
     }
 
     template<typename D>
+    std::vector<std::optional<double>> cold(D* d, const std::string& sql) {
+        auto c = exec(d, sql);
+        REQUIRE(c);
+        INFO(sql);
+        REQUIRE(c->is_success());
+        std::vector<std::optional<double>> out;
+        for (uint64_t r = 0; r < c->size(); ++r) {
+            auto v = c->value(0, r);
+            out.push_back(v.is_null() ? std::optional<double>{} : std::optional<double>{v.template value<double>()});
+        }
+        return out;
+    }
+
+    template<typename D>
     opt scal(D* d, const std::string& sql) {
         auto v = coli(d, sql);
         INFO(sql);
@@ -104,8 +118,8 @@ namespace {
         CHECK(scal(d, "SELECT SUM(x) FROM " + t + ";") == opt{15});
         CHECK(scal(d, "SELECT MIN(x) FROM " + t + ";") == opt{0});
         CHECK(scal(d, "SELECT MAX(x) FROM " + t + ";") == opt{10});
-        // AVG on an integer column stays integer-typed, read here as int64.
-        CHECK(scal(d, "SELECT AVG(x) FROM " + t + ";") == opt{5});
+        // AVG on an integer column answers DOUBLE.
+        CHECK(scald(d, "SELECT AVG(x) FROM " + t + ";") == Catch::Approx(5.0));
     }
 
     template<typename D>
@@ -315,7 +329,7 @@ TEST_CASE("integration::cpp::null_matrix::aggregates_grouped") {
     CHECK(coli(d, "SELECT SUM(x) FROM m.t GROUP BY k ORDER BY k;") == std::vector<opt>{{}, 7, 8});
     CHECK(coli(d, "SELECT MIN(x) FROM m.t GROUP BY k ORDER BY k;") == std::vector<opt>{{}, 7, 3});
     CHECK(coli(d, "SELECT MAX(x) FROM m.t GROUP BY k ORDER BY k;") == std::vector<opt>{{}, 7, 5});
-    CHECK(coli(d, "SELECT AVG(x) FROM m.t GROUP BY k ORDER BY k;") == std::vector<opt>{{}, 7, 4});
+    CHECK(cold(d, "SELECT AVG(x) FROM m.t GROUP BY k ORDER BY k;") == std::vector<std::optional<double>>{{}, 7.0, 4.0});
 
     REQUIRE(okq(d, "CREATE TABLE m.allnull (id INT, x BIGINT);"));
     REQUIRE(okq(d, "INSERT INTO m.allnull (id, x) VALUES (1, NULL);"));

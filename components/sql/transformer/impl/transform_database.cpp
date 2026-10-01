@@ -14,7 +14,7 @@ namespace components::sql::transform {
         // dbname is captured by the resolve-namespace wrap in transformer::transform
         auto drop = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::database);
         // DropdbStmt has its own missing_ok, separate from DropStmt's.
-        drop->set_missing_ok(node.missing_ok);
+        if_exists_ = node.missing_ok;
         // Grammar has no CASCADE/RESTRICT for DROP DATABASE, implicitly CASCADE (gram.y:11047);
         // restrict_ default would make a populated database undroppable.
         drop->set_behavior(components::catalog::drop_behavior_t::cascade_);

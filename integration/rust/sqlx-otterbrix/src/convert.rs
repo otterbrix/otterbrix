@@ -26,7 +26,7 @@ use sqlx_core::HashMap;
 ///
 /// Engine query errors are wrapped in [`OtterbrixDbError`] and surface as
 /// `Error::Database`; structural failures (`NullPointer`, `TypeMismatch`)
-/// become `Error::Protocol`; invalid paths become `Error::Configuration`.
+/// become `Error::Protocol`; invalid paths and a refused start become `Error::Configuration`.
 /// The original `Display` text is preserved in every variant.
 pub(crate) fn map_otterbrix_error(err: otterbrix::Error) -> Error {
     let msg = err.to_string();
@@ -35,6 +35,7 @@ pub(crate) fn map_otterbrix_error(err: otterbrix::Error) -> Error {
             Error::Database(Box::new(OtterbrixDbError { code, message }))
         }
         otterbrix::Error::NullPointer => Error::Protocol(msg),
+        otterbrix::Error::Open { .. } => Error::Configuration(msg.into()),
         otterbrix::Error::InvalidPath(_) => Error::Configuration(msg.into()),
         otterbrix::Error::TypeMismatch { .. } => Error::Protocol(msg),
     }
@@ -136,7 +137,8 @@ fn logical_to_type_info(lt: Option<LogicalType>) -> OtterbrixTypeInfo {
 }
 
 /// Walks an Otterbrix [`Cursor`] and produces a vector of
-/// [`OtterbrixRow`]s plus the row-count (used as `rows_affected` for DML).
+/// [`OtterbrixRow`]s plus `rows_affected`: the rows a write changed, else
+/// the rows of the result.
 ///
 /// If the result set has duplicate column names, the function falls back to
 /// positional `"00000000"`-style keys for every column of that result;
@@ -195,7 +197,7 @@ pub(crate) fn materialize_cursor(cursor: &Cursor<'_>) -> Result<(Vec<OtterbrixRo
         });
     }
 
-    let rows_affected = cursor.size().max(0) as u64;
+    let rows_affected = cursor.affected_rows().unwrap_or(row_count as u64);
     Ok((rows, rows_affected))
 }
 

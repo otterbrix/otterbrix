@@ -168,6 +168,7 @@ namespace components::sql::transform {
                                                              core::uid_t{slot_name.unique_identifier},
                                                              core::dbname_t{slot_name.database},
                                                              core::relname_t{slot_name.collection});
+                agg->set_schema(slot_name.schema);
                 if (!slot_alias.empty()) {
                     agg->set_result_alias(slot_alias);
                 }
@@ -807,10 +808,11 @@ namespace components::sql::transform {
                                         core::error_code_t::sql_parse_error,
                                         std::pmr::string{"a column alias cannot be given to '*'", resource_});
                                 }
+                                // The qualification picked a side; the expansion must stay on it.
+                                expressions::key_t star_key{std::move(star_path)};
+                                star_key.set_side(col.field.side());
                                 select_node->append_expression(
-                                    make_scalar_expression(resource_,
-                                                           scalar_type::star_expand,
-                                                           expressions::key_t{std::move(star_path)}));
+                                    make_scalar_expression(resource_, scalar_type::star_expand, std::move(star_key)));
                                 break;
                             }
                             if (res->name) {
@@ -1158,13 +1160,7 @@ namespace components::sql::transform {
                     plan->sub_query_results.push_back({&vector::compact_to_bool_value, param_exists});
                     if (body && body->type() == logical_plan::node_type::aggregate_t) {
                         const auto* body_agg = static_cast<const logical_plan::node_aggregate_t*>(body.get());
-                        const auto& rel = static_cast<const std::string&>(body_agg->relname());
-                        if (!rel.empty()) {
-                            register_catalog_resolve_table(resource_,
-                                                           &catalog_resolves_,
-                                                           static_cast<const std::string&>(body_agg->dbname()),
-                                                           rel);
-                        }
+                        register_catalog_resolve_written_table(resource_, &catalog_resolves_, *body_agg);
                     }
                     plan->sub_queries.emplace_back(std::move(body));
                     auto exists_eq = make_compare_expression(resource_, compare_type::eq, param_true, param_exists);

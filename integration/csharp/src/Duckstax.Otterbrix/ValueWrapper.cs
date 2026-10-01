@@ -5,78 +5,79 @@ namespace Duckstax.Otterbrix
 
     public class ValueWrapper : IDisposable
     {
-        const string libotterbrix = "libotterbrix.so";
-
-        [DllImport(libotterbrix, EntryPoint="release_value", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
-        private static extern void ReleaseValue(IntPtr ptr);
+        const string libotterbrix = "otterbrix";
 
         [DllImport(libotterbrix, EntryPoint="value_is_null", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
-        private static extern bool ValueIsNull(IntPtr ptr);
+        [return: MarshalAs(UnmanagedType.I1)]
+        private static extern bool ValueIsNull(ValueHandle value);
 
         [DllImport(libotterbrix, EntryPoint="value_is_bool", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
-        private static extern bool ValueIsBool(IntPtr ptr);
+        [return: MarshalAs(UnmanagedType.I1)]
+        private static extern bool ValueIsBool(ValueHandle value);
 
         [DllImport(libotterbrix, EntryPoint="value_is_int", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
-        private static extern bool ValueIsInt(IntPtr ptr);
+        [return: MarshalAs(UnmanagedType.I1)]
+        private static extern bool ValueIsInt(ValueHandle value);
 
         [DllImport(libotterbrix, EntryPoint="value_is_uint", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
-        private static extern bool ValueIsUint(IntPtr ptr);
+        [return: MarshalAs(UnmanagedType.I1)]
+        private static extern bool ValueIsUint(ValueHandle value);
 
         [DllImport(libotterbrix, EntryPoint="value_is_double", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
-        private static extern bool ValueIsDouble(IntPtr ptr);
+        [return: MarshalAs(UnmanagedType.I1)]
+        private static extern bool ValueIsDouble(ValueHandle value);
 
         [DllImport(libotterbrix, EntryPoint="value_is_string", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
-        private static extern bool ValueIsString(IntPtr ptr);
+        [return: MarshalAs(UnmanagedType.I1)]
+        private static extern bool ValueIsString(ValueHandle value);
 
         [DllImport(libotterbrix, EntryPoint="value_get_bool", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
-        private static extern bool ValueGetBool(IntPtr ptr);
+        [return: MarshalAs(UnmanagedType.I1)]
+        private static extern bool ValueGetBool(ValueHandle value);
 
         [DllImport(libotterbrix, EntryPoint="value_get_int", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
-        private static extern long ValueGetInt(IntPtr ptr);
+        private static extern long ValueGetInt(ValueHandle value);
 
         [DllImport(libotterbrix, EntryPoint="value_get_uint", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
-        private static extern ulong ValueGetUint(IntPtr ptr);
+        private static extern ulong ValueGetUint(ValueHandle value);
 
         [DllImport(libotterbrix, EntryPoint="value_get_double", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
-        private static extern double ValueGetDouble(IntPtr ptr);
+        private static extern double ValueGetDouble(ValueHandle value);
 
         [DllImport(libotterbrix, EntryPoint="value_get_string", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
-        private static extern IntPtr ValueGetString(IntPtr ptr);
+        private static extern IntPtr ValueGetString(ValueHandle value);
 
-        public ValueWrapper(IntPtr valuePtr) { this.valuePtr = valuePtr; }
+        internal ValueWrapper(ValueHandle value) { this.value = value; }
 
-        ~ValueWrapper() { Dispose(false); }
+        public void Dispose() { value.Dispose(); }
 
-        public void Dispose() {
-            Dispose(true);
-            GC.SuppressFinalize(this);
-        }
+        public bool IsNull() { return ValueIsNull(value); }
+        public bool IsBool() { return ValueIsBool(value); }
+        public bool IsInt() { return ValueIsInt(value); }
+        public bool IsUint() { return ValueIsUint(value); }
+        public bool IsDouble() { return ValueIsDouble(value); }
+        public bool IsString() { return ValueIsString(value); }
 
-        private void Dispose(bool disposing) {
-            if (valuePtr != IntPtr.Zero) {
-                ReleaseValue(valuePtr);
-                valuePtr = IntPtr.Zero;
-            }
-        }
-
-        public bool IsNull() { return valuePtr == IntPtr.Zero || ValueIsNull(valuePtr); }
-        public bool IsBool() { return ValueIsBool(valuePtr); }
-        public bool IsInt() { return ValueIsInt(valuePtr); }
-        public bool IsUint() { return ValueIsUint(valuePtr); }
-        public bool IsDouble() { return ValueIsDouble(valuePtr); }
-        public bool IsString() { return ValueIsString(valuePtr); }
-
-        public bool GetBool() { return ValueGetBool(valuePtr); }
-        public long GetInt() { return ValueGetInt(valuePtr); }
-        public ulong GetUint() { return ValueGetUint(valuePtr); }
-        public double GetDouble() { return ValueGetDouble(valuePtr); }
+        public bool GetBool() { return ValueGetBool(value); }
+        public long GetInt() { return ValueGetInt(value); }
+        public ulong GetUint() { return ValueGetUint(value); }
+        public double GetDouble() { return ValueGetDouble(value); }
         public string GetString() {
-            IntPtr strPtr = ValueGetString(valuePtr);
-            string? result = Marshal.PtrToStringAnsi(strPtr);
-            Marshal.FreeHGlobal(strPtr);
-            return result ?? "";
+            return OtterbrixWrapper.TakeString(ValueGetString(value)) ?? "";
         }
 
-        private IntPtr valuePtr;
+        private readonly ValueHandle value;
+    }
+
+    internal sealed class ValueHandle : SafeHandle {
+        [DllImport("otterbrix", EntryPoint="release_value", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
+        private static extern void ReleaseValue(IntPtr value);
+
+        public ValueHandle() : base(IntPtr.Zero, true) {}
+        public override bool IsInvalid => handle == IntPtr.Zero;
+        protected override bool ReleaseHandle() {
+            ReleaseValue(handle);
+            return true;
+        }
     }
 }

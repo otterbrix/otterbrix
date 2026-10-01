@@ -6,6 +6,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_wal.cpp
         test_wal_binary.cpp
         test_wal_page.cpp
+        test_wal_page_spans.cpp
         test_wal_worker.cpp
         test_wal_manager.cpp
         test_wal_mailboxes_required.cpp

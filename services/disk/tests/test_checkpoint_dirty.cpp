@@ -25,6 +25,7 @@
 #include <thread>
 #include <unistd.h>
 #include <vector>
+#include <components/log/test_log.hpp>
 
 // Without the gate an empty round took 205.7 ms against 124.4 ms for one that wrote: doing
 // nothing cost more than doing everything. With it, 15.4 ms against 151.5 (100 tables x 100
@@ -46,7 +47,7 @@ namespace {
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
 
         explicit fresh_disk(const std::filesystem::path& path)
-            : log(initialization_logger("python", "/tmp/docker_logs/"))
+            : log(make_test_log("python", "/tmp/docker_logs/"))
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
                 configuration::config_disk c;
@@ -184,7 +185,7 @@ TEST_CASE("services::disk::checkpoint_dirty::round_rewrites_only_the_changed_tab
 
     {
         fresh_disk fd(dir);
-        fd.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
         auto ns_oid = test_create_namespace(fd, "dirty_ns");
 
         tables.reserve(kTables);
@@ -226,9 +227,9 @@ TEST_CASE("services::disk::checkpoint_dirty::round_rewrites_only_the_changed_tab
     // A fresh manager over the same dir catches a skip that never wrote the table, not just one left untouched.
     {
         fresh_disk fd2(dir);
-        fd2.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fd2.manager->bootstrap_system_tables_sync().contains_error());
         fd2.manager->restore_oid_generator_sync();
-        fd2.manager->load_user_table_storages_sync();
+        REQUIRE_FALSE(fd2.manager->load_user_table_storages_sync().contains_error());
 
         REQUIRE(disk_test_helpers::read_ok(
                     fd2.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, tables[0])) == 2 * kRows);
@@ -250,7 +251,7 @@ TEST_CASE("services::disk::checkpoint_dirty::clean_table_still_reports_its_wal_f
 
     {
         fresh_disk fd(dir);
-        fd.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
         auto ns_oid = test_create_namespace(fd, "floor_ns");
         auto table_oid = make_table(fd, ns_oid, "floored", 100);
 
@@ -274,7 +275,7 @@ TEST_CASE("services::disk::checkpoint_dirty::a_round_that_defers_everything_is_c
     std::filesystem::create_directories(root);
     {
         fresh_disk fd(root);
-        fd.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
         auto ns_oid = test_create_namespace(fd, "ns_defer");
         auto table_oid = make_table(fd, ns_oid, "t_defer", 8);
 

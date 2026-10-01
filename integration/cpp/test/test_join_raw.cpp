@@ -11,7 +11,6 @@
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
 
-#include <functional>
 #include <unordered_map>
 
 using namespace components;
@@ -33,8 +32,18 @@ namespace {
         return chunk;
     }
 
-    using chunk_builder = std::function<vector::data_chunk_t()>;
-    using chunks_by_uid_t = std::unordered_map<std::string, chunk_builder>;
+    struct pairs_spec_t {
+        std::string col_a;
+        std::string col_b;
+        std::vector<std::pair<int64_t, int64_t>> rows;
+    };
+    using chunks_by_uid_t = std::unordered_map<std::string, pairs_spec_t>;
+
+    // What the test host's name resolution swaps in for the next statement.
+    chunks_by_uid_t& current_chunks() {
+        static chunks_by_uid_t chunks;
+        return chunks;
+    }
 
     void
     swap_externals(logical_plan::node_ptr& node, std::pmr::memory_resource* res, const chunks_by_uid_t& chunks_by_uid) {
@@ -47,7 +56,9 @@ namespace {
             if (!uid_s.empty()) {
                 auto it = chunks_by_uid.find(uid_s);
                 if (it != chunks_by_uid.end()) {
-                    auto raw = logical_plan::make_node_raw_data(res, it->second());
+                    auto raw = logical_plan::make_node_raw_data(
+                        res,
+                        build_pairs(res, it->second.col_a, it->second.col_b, it->second.rows));
                     raw->set_result_alias(agg->result_alias().empty() ? static_cast<const std::string&>(agg->relname())
                                                                       : agg->result_alias());
                     node = raw;
@@ -60,44 +71,35 @@ namespace {
         }
     }
 
+    core::result_wrapper_t<logical_plan::node_ptr>
+    swap_decide(std::pmr::memory_resource* res,
+                logical_plan::node_ptr tree,
+                std::span<const planner::unresolved_table_t>,
+                std::span<const std::pmr::vector<vector::data_chunk_t>>) {
+        swap_externals(tree, res, current_chunks());
+        return tree;
+    }
+
     cursor::cursor_t_ptr run_with_externals(otterbrix::wrapper_dispatcher_t* dispatcher,
                                             const std::string& sql,
-                                            const chunks_by_uid_t& chunks_by_uid) {
-        auto* res = dispatcher->resource();
-        std::pmr::monotonic_buffer_resource arena(res);
-        sql::transform::transformer transformer(res);
-
-        auto* raw = raw_parser(&arena, sql.c_str());
-        REQUIRE(raw != nullptr);
-        auto& ast_ref = sql::transform::pg_cell_to_node_cast(linitial(raw));
-        auto binder = transformer.transform(ast_ref);
-        REQUIRE_FALSE(binder.has_error());
-
-        auto plan = binder.node_ptr();
-        REQUIRE(plan);
-
-        swap_externals(plan, res, chunks_by_uid);
-
-        auto session = otterbrix::session_id_t();
-        return dispatcher->execute_plan(
-            session,
-            logical_plan::execution_plan_t{dispatcher->resource(), plan, binder.params_ptr()});
+                                            chunks_by_uid_t chunks_by_uid) {
+        current_chunks() = std::move(chunks_by_uid);
+        return dispatcher->execute_sql(otterbrix::session_id_t(), sql);
     }
 } // namespace
 
 TEST_CASE("integration::cpp::test_raw_join") {
     auto config = test_create_config(integration_fixture_path("test_raw_join/base"));
     test_clear_directory(config);
-    test_spaces space(config);
+    test_spaces space(config, services::engine::primitives_t{{}, {&planner::no_name_reads, &swap_decide}});
     auto dispatcher = space.dispatcher();
-    auto* res = dispatcher->resource();
 
     INFO("triple JOIN, 4-part qualifiers");
     {
         chunks_by_uid_t chunks;
-        chunks.emplace("uid_l", [res] { return build_pairs(res, "key", "name", {{1, 11}, {2, 22}, {3, 33}}); });
-        chunks.emplace("uid_m", [res] { return build_pairs(res, "key", "linker", {{1, 100}, {2, 200}, {99, 999}}); });
-        chunks.emplace("uid_e", [res] { return build_pairs(res, "linker", "extra", {{100, 7}, {500, 8}}); });
+        chunks.emplace("uid_l", pairs_spec_t{"key", "name", {{1, 11}, {2, 22}, {3, 33}}});
+        chunks.emplace("uid_m", pairs_spec_t{"key", "linker", {{1, 100}, {2, 200}, {99, 999}}});
+        chunks.emplace("uid_e", pairs_spec_t{"linker", "extra", {{100, 7}, {500, 8}}});
 
         const std::string sql = "SELECT * FROM uid_l.db.sch.tbl_l l "
                                 "INNER JOIN uid_m.db.sch.tbl_m m ON l.key = m.key "
@@ -112,9 +114,9 @@ TEST_CASE("integration::cpp::test_raw_join") {
     INFO("triple JOIN, predicate reaches across — second JOIN refs first table alias");
     {
         chunks_by_uid_t chunks;
-        chunks.emplace("uid_a", [res] { return build_pairs(res, "key", "tag", {{10, 1}, {20, 2}, {30, 3}}); });
-        chunks.emplace("uid_b", [res] { return build_pairs(res, "key", "linker", {{10, 100}, {20, 200}, {30, 300}}); });
-        chunks.emplace("uid_c", [res] { return build_pairs(res, "key", "extra", {{10, 7}, {30, 9}}); });
+        chunks.emplace("uid_a", pairs_spec_t{"key", "tag", {{10, 1}, {20, 2}, {30, 3}}});
+        chunks.emplace("uid_b", pairs_spec_t{"key", "linker", {{10, 100}, {20, 200}, {30, 300}}});
+        chunks.emplace("uid_c", pairs_spec_t{"key", "extra", {{10, 7}, {30, 9}}});
 
         const std::string sql = "SELECT * FROM uid_a.db.sch.a a "
                                 "INNER JOIN uid_b.db.sch.b b ON a.key = b.key "
@@ -129,12 +131,10 @@ TEST_CASE("integration::cpp::test_raw_join") {
     INFO("quadruple JOIN");
     {
         chunks_by_uid_t chunks;
-        chunks.emplace("uid_a", [res] { return build_pairs(res, "key", "name", {{1, 11}, {2, 22}, {3, 33}}); });
-        chunks.emplace("uid_b", [res] { return build_pairs(res, "key", "linker", {{1, 100}, {2, 200}, {3, 300}}); });
-        chunks.emplace("uid_c", [res] {
-            return build_pairs(res, "linker", "tail", {{100, 555}, {200, 777}, {300, 999}});
-        });
-        chunks.emplace("uid_d", [res] { return build_pairs(res, "key", "extra", {{1, 7}, {3, 9}}); });
+        chunks.emplace("uid_a", pairs_spec_t{"key", "name", {{1, 11}, {2, 22}, {3, 33}}});
+        chunks.emplace("uid_b", pairs_spec_t{"key", "linker", {{1, 100}, {2, 200}, {3, 300}}});
+        chunks.emplace("uid_c", pairs_spec_t{"linker", "tail", {{100, 555}, {200, 777}, {300, 999}}});
+        chunks.emplace("uid_d", pairs_spec_t{"key", "extra", {{1, 7}, {3, 9}}});
 
         const std::string sql = "SELECT * FROM uid_a.db.sch.a a "
                                 "INNER JOIN uid_b.db.sch.b b ON a.key = b.key "

@@ -49,7 +49,7 @@ namespace otterbrix {
         if (!result) {
             throw std::runtime_error("result closed");
         }
-        // No result set (INSERT/UPDATE/DDL): row count lives in size(), not columns.
+        // No result set (INSERT/UPDATE/DDL): the written-row count is rowcount, not rows.
         if (columns.empty()) {
             return py::none();
         }
@@ -128,6 +128,16 @@ namespace otterbrix {
 
     std::size_t py_result_t::size() const { return result ? result->size() : 0u; }
 
+    int64_t py_result_t::rowcount() const {
+        if (!result) {
+            return -1;
+        }
+        if (const auto written = result->affected_rows()) {
+            return static_cast<int64_t>(*written);
+        }
+        return static_cast<int64_t>(result->size());
+    }
+
     void py_result_t::close() { result = nullptr; }
 
     bool py_result_t::is_closed() const { return result == nullptr; }
@@ -147,7 +157,10 @@ namespace otterbrix {
             .def("to_df", &py_result_t::fetch_df, "Fetch every remaining row as a pandas DataFrame")
             .def("close", &py_result_t::close, "Release the result batch")
             .def("is_closed", &py_result_t::is_closed, "Whether the result batch has been released")
-            .def("__len__", &py_result_t::size, "Rows the statement produced (SELECT) or wrote (INSERT/UPDATE/DELETE)");
+            .def("__len__", &py_result_t::size, "Rows of the result (SELECT, or a write's RETURNING)")
+            .def_property_readonly("rowcount",
+                                   &py_result_t::rowcount,
+                                   "Rows an INSERT/UPDATE/DELETE wrote, else rows of the result");
     }
 
 } // namespace otterbrix

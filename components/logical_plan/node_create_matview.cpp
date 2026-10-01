@@ -4,19 +4,9 @@
 
 namespace components::logical_plan {
 
-    node_create_matview_t::node_create_matview_t(std::pmr::memory_resource* resource,
-                                                 core::matviewname_t matviewname,
-                                                 core::body_sql_t body_sql)
+    node_create_matview_t::node_create_matview_t(std::pmr::memory_resource* resource, core::matviewname_t matviewname)
         : node_t(resource, node_type::create_matview_t)
-        , matviewname_(std::move(static_cast<std::string&>(matviewname)))
-        , body_sql_(std::move(static_cast<std::string&>(body_sql))) {}
-
-    void node_create_matview_t::set_body_plan(node_ptr plan) {
-        children_.clear();
-        if (plan) {
-            append_child(plan);
-        }
-    }
+        , matviewname_(std::move(static_cast<std::string&>(matviewname))) {}
 
     hash_t node_create_matview_t::hash_impl() const { return 0; }
 
@@ -27,9 +17,8 @@ namespace components::logical_plan {
     }
 
     node_create_matview_ptr make_node_create_matview(std::pmr::memory_resource* resource,
-                                                     core::matviewname_t matviewname,
-                                                     core::body_sql_t body_sql) {
-        return {new node_create_matview_t{resource, std::move(matviewname), std::move(body_sql)}};
+                                                     core::matviewname_t matviewname) {
+        return {new node_create_matview_t{resource, std::move(matviewname)}};
     }
 
 } // namespace components::logical_plan

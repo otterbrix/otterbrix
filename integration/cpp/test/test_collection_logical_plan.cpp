@@ -1,5 +1,6 @@
 #include "integration_fixture_path.hpp"
 #include "test_config.hpp"
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/compare_expression.hpp>
@@ -107,7 +108,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             auto cur =
                 dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == kNumInserts);
+            REQUIRE(cur->affected_rows() == kNumInserts);
         }
     }
 
@@ -233,8 +234,9 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
         REQUIRE(cur->value(1, 1).value<uint64_t>() == 50);
         REQUIRE(cur->value(2, 0).value<int64_t>() == 2550);
         REQUIRE(cur->value(2, 1).value<int64_t>() == 2500);
-        REQUIRE(cur->value(3, 0).value<int64_t>() == 51);
-        REQUIRE(cur->value(3, 1).value<int64_t>() == 50);
+        // avg of integers is DOUBLE.
+        REQUIRE(cur->value(3, 0).value<double>() == Catch::Approx(51.0));
+        REQUIRE(cur->value(3, 1).value<double>() == Catch::Approx(50.0));
     }
 
     INFO("insert from select");
@@ -249,7 +251,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             auto cur =
                 dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == kNumInserts);
+            REQUIRE(cur->affected_rows() == kNumInserts);
         }
     }
 
@@ -297,7 +299,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             auto cur =
                 dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), del, params});
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 10);
+            REQUIRE(cur->affected_rows() == 10);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -357,7 +359,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             auto cur =
                 dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), del, nullptr});
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 90);
+            REQUIRE(cur->affected_rows() == 90);
         }
     }
 
@@ -412,7 +414,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             auto cur =
                 dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), upd, params});
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 19);
+            REQUIRE(cur->affected_rows() == 19);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -491,7 +493,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             auto cur =
                 dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), upd, params});
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 19);
+            REQUIRE(cur->affected_rows() == 19);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -565,7 +567,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             auto cur = dispatcher->execute_plan(session,
                                                 logical_plan::execution_plan_t{dispatcher->resource(), update, params});
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 10);
+            REQUIRE(cur->affected_rows() == 10);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -607,7 +609,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             auto cur =
                 dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), del, params});
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->affected_rows() == 1);
         }
     }
 
@@ -637,7 +639,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             auto cur =
                 dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), del, params});
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 5);
+            REQUIRE(cur->affected_rows() == 5);
         }
     }
 
@@ -673,7 +675,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             auto cur =
                 dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), upd, params});
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->affected_rows() == 1);
         }
     }
 
@@ -711,7 +713,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             REQUIRE(cur->is_success());
             // There were 18 rows with count==1000 after delete limit 1 removed 1, delete limit 5 removed 5, and update limit 1 changed 1
             // So 12 remain with count==1000, limit 5 should update 5
-            REQUIRE(cur->size() == 5);
+            REQUIRE(cur->affected_rows() == 5);
         }
     }
 
@@ -982,7 +984,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             REQUIRE(cur->chunks().front().data[1].type().alias() == "count");
             REQUIRE(cur->chunks().front().data[2].type().type() == types::logical_type::BIGINT);
             REQUIRE(cur->chunks().front().data[2].type().alias() == "sum");
-            REQUIRE(cur->chunks().front().data[3].type().type() == types::logical_type::BIGINT);
+            REQUIRE(cur->chunks().front().data[3].type().type() == types::logical_type::DOUBLE);
             REQUIRE(cur->chunks().front().data[3].type().alias() == "avg");
             REQUIRE(cur->chunks().front().data[4].type().type() == types::logical_type::BIGINT);
             REQUIRE(cur->chunks().front().data[4].type().alias() == "min");
@@ -992,8 +994,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             for (int num = 0, reversed = 12; num < 13; ++num, --reversed) {
                 REQUIRE(cur->value(1, static_cast<size_t>(num)).value<uint64_t>() == 1);
                 REQUIRE(cur->value(2, static_cast<size_t>(num)).value<int64_t>() == (reversed + 25) * 2 * 10);
-                REQUIRE(cur->value(3, static_cast<size_t>(num)).value<int64_t>() ==
-                        static_cast<int64_t>((reversed + 25) * 2));
+                REQUIRE(cur->value(3, static_cast<size_t>(num)).value<double>() ==
+                        Catch::Approx(static_cast<double>((reversed + 25) * 2)));
                 REQUIRE(cur->value(4, static_cast<size_t>(num)).value<int64_t>() == (reversed + 25) * 2 * 10);
                 REQUIRE(cur->value(5, static_cast<size_t>(num)).value<int64_t>() == (reversed + 25) * 2 * 10);
             }

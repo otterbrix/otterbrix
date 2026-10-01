@@ -9,9 +9,15 @@
 #include <core/result_wrapper.hpp>
 #include <integration/cpp/base_spaces.hpp>
 
+#include <algorithm>
+#include <atomic>
+#include <cassert>
+#include <cctype>
+#include <cstring>
 #include <exception>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -22,17 +28,20 @@ namespace {
     struct spaces_t;
 
     struct pod_space_t {
-        state_t state;
+        std::atomic<state_t> state;
+        std::atomic<uint64_t> holders{1};
         std::unique_ptr<spaces_t> space;
     };
 
     struct cursor_storage_t {
         state_t state;
+        pod_space_t* engine;
         boost::intrusive_ptr<cursor_t> cursor;
     };
 
     struct value_storage_t {
         state_t state;
+        pod_space_t* engine;
         logical_value_t value{std::pmr::null_memory_resource(),
                               components::types::complex_logical_type{components::types::logical_type::NA}};
     };
@@ -43,15 +52,30 @@ namespace {
     public:
         spaces_t(spaces_t& other) = delete;
         void operator=(const spaces_t&) = delete;
-        spaces_t(const configuration::config& config)
-            : base_otterbrix_t(config) {}
+        explicit spaces_t(host_ptr host)
+            : base_otterbrix_t(std::move(host)) {}
     };
 
-    pod_space_t* convert_otterbrix(otterbrix_ptr ptr) {
+    pod_space_t* live_otterbrix(otterbrix_ptr ptr) {
         assert(ptr != nullptr);
         auto spaces = reinterpret_cast<pod_space_t*>(ptr);
-        assert(spaces->state == state_t::created);
+        assert(spaces->state.load() == state_t::created);
+        if (spaces->state.load() != state_t::created) {
+            return nullptr;
+        }
         return spaces;
+    }
+
+    pod_space_t* hold_engine(pod_space_t* pod) {
+        pod->holders.fetch_add(1, std::memory_order_relaxed);
+        return pod;
+    }
+
+    void release_engine(pod_space_t* pod) {
+        if (pod->holders.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+            pod->space.reset();
+            delete pod;
+        }
     }
 
     cursor_storage_t* convert_cursor(cursor_ptr ptr) {
@@ -68,10 +92,11 @@ namespace {
         return storage;
     }
 
-    cursor_ptr store_cursor(components::cursor::cursor_t_ptr c) {
+    cursor_ptr store_cursor(pod_space_t* pod, components::cursor::cursor_t_ptr c) {
         auto storage = std::make_unique<cursor_storage_t>();
         storage->cursor = std::move(c);
         storage->state = state_t::created;
+        storage->engine = hold_engine(pod);
         return reinterpret_cast<cursor_ptr>(storage.release());
     }
 
@@ -81,12 +106,28 @@ namespace {
         }
         auto* resource = pod->space->dispatcher()->resource();
         try {
-            return store_cursor(components::cursor::make_cursor(
+            return store_cursor(pod, components::cursor::make_cursor(
                 resource,
                 core::error_t(core::error_code_t::other_error, std::pmr::string{ex.what(), resource})));
         } catch (...) {
             return nullptr;
         }
+    }
+
+    // A name the C API takes as written must already be lower case: SQL folds an unquoted name (PostgreSQL 18), so
+    // a mixed-case one could never be reached from SQL.
+    core::error_t
+    refuse_upper_case(std::pmr::memory_resource* resource, std::string_view entry, const std::string& name) {
+        if (std::none_of(name.begin(), name.end(), [](char c) {
+                return std::isupper(static_cast<unsigned char>(c)) != 0;
+            })) {
+            return core::error_t::no_error();
+        }
+        std::pmr::string msg{entry, resource};
+        msg.append(": name \"");
+        msg.append(name);
+        msg.append("\" must be lower case");
+        return core::error_t{core::error_code_t::invalid_parameter, std::move(msg)};
     }
 
     cursor_ptr unknown_exception_cursor(pod_space_t* pod) {
@@ -95,12 +136,25 @@ namespace {
         }
         auto* resource = pod->space->dispatcher()->resource();
         try {
-            return store_cursor(components::cursor::make_cursor(
+            return store_cursor(pod, components::cursor::make_cursor(
                 resource,
                 core::error_t(core::error_code_t::other_error, std::pmr::string{"unknown C++ exception", resource})));
         } catch (...) {
             return nullptr;
         }
+    }
+
+    // Freed by the caller with otterbrix_free_string.
+    char* copy_to_c_string(std::string_view text) {
+        auto* copy = new char[text.size() + 1];
+        std::memcpy(copy, text.data(), text.size());
+        copy[text.size()] = '\0';
+        return copy;
+    }
+
+    error_message make_error_message(const core::error_t& error) {
+        return error_message{static_cast<int32_t>(error.type),
+                             copy_to_c_string(std::string_view{error.what.data(), error.what.size()})};
     }
 
     std::string string_view_to_string(string_view_t sv) {
@@ -114,7 +168,12 @@ namespace {
     }
 } // namespace
 
-extern "C" otterbrix_ptr otterbrix_create(config_t cfg) {
+extern "C" otterbrix_ptr otterbrix_create(config_t cfg, error_message* out_error) {
+    assert(out_error != nullptr && "otterbrix_create: out_error is required");
+    if (out_error == nullptr) {
+        return nullptr;
+    }
+    *out_error = error_message{static_cast<int32_t>(core::error_code_t::none), nullptr};
     try {
         auto config = create_config();
         config.log.level = static_cast<log_t::level>(cfg.level);
@@ -123,30 +182,43 @@ extern "C" otterbrix_ptr otterbrix_create(config_t cfg) {
         config.disk.path = std::pmr::string(cfg.disk_path.data, cfg.disk_path.size);
         config.main_path = std::pmr::string(cfg.main_path.data, cfg.main_path.size);
 
+        auto host = otterbrix::base_otterbrix_t::open(config);
+        if (host.has_error()) {
+            *out_error = make_error_message(host.error());
+            return nullptr;
+        }
         auto pod_space = std::make_unique<pod_space_t>();
-        pod_space->space = std::make_unique<spaces_t>(config);
+        pod_space->space = std::make_unique<spaces_t>(std::move(host.value()));
         pod_space->state = state_t::created;
         return reinterpret_cast<void*>(pod_space.release());
     } catch (...) {
+        *out_error = error_message{static_cast<int32_t>(core::error_code_t::other_error),
+                                   copy_to_c_string("otterbrix_create: unknown C++ exception")};
         return nullptr;
     }
 }
 
 extern "C" void otterbrix_destroy(otterbrix_ptr ptr) {
-    auto pod_space = convert_otterbrix(ptr);
-    pod_space->space.reset();
-    pod_space->state = state_t::destroyed;
-    delete pod_space;
+    assert(ptr != nullptr);
+    auto pod_space = reinterpret_cast<pod_space_t*>(ptr);
+    const state_t was = pod_space->state.exchange(state_t::destroyed);
+    assert(was == state_t::created);
+    if (was == state_t::created) {
+        release_engine(pod_space);
+    }
 }
 
 extern "C" cursor_ptr execute_sql(otterbrix_ptr ptr, string_view_t query_raw) {
     pod_space_t* pod_space = nullptr;
     try {
-        pod_space = convert_otterbrix(ptr);
+        pod_space = live_otterbrix(ptr);
+        if (pod_space == nullptr) {
+            return nullptr;
+        }
         auto session = otterbrix::session_id_t();
         std::string query = string_view_to_string(query_raw);
         auto cursor = pod_space->space->dispatcher()->execute_sql(session, query);
-        return store_cursor(std::move(cursor));
+        return store_cursor(pod_space, std::move(cursor));
     } catch (const std::exception& ex) {
         return exception_cursor(pod_space, ex);
     } catch (...) {
@@ -158,7 +230,10 @@ extern "C" cursor_ptr
 execute_sql_params(otterbrix_ptr ptr, string_view_t query_raw, const sql_param_t* params, size_t param_count) {
     pod_space_t* pod_space = nullptr;
     try {
-        pod_space = convert_otterbrix(ptr);
+        pod_space = live_otterbrix(ptr);
+        if (pod_space == nullptr) {
+            return nullptr;
+        }
         auto session = otterbrix::session_id_t();
         std::string query = string_view_to_string(query_raw);
         auto* resource = pod_space->space->dispatcher()->resource();
@@ -196,7 +271,7 @@ execute_sql_params(otterbrix_ptr ptr, string_view_t query_raw, const sql_param_t
             }
         }
         auto cursor = pod_space->space->dispatcher()->execute_sql_with_params(session, query, bound);
-        return store_cursor(std::move(cursor));
+        return store_cursor(pod_space, std::move(cursor));
     } catch (const std::exception& ex) {
         return exception_cursor(pod_space, ex);
     } catch (...) {
@@ -207,11 +282,19 @@ execute_sql_params(otterbrix_ptr ptr, string_view_t query_raw, const sql_param_t
 extern "C" cursor_ptr create_database(otterbrix_ptr ptr, string_view_t database_name) {
     pod_space_t* pod_space = nullptr;
     try {
-        pod_space = convert_otterbrix(ptr);
+        pod_space = live_otterbrix(ptr);
+        if (pod_space == nullptr) {
+            return nullptr;
+        }
         auto session = otterbrix::session_id_t();
         std::string database = string_view_to_string(database_name);
-        auto cursor = pod_space->space->dispatcher()->execute_sql(session, "CREATE DATABASE " + database + ";");
-        return store_cursor(std::move(cursor));
+        auto* dispatcher = pod_space->space->dispatcher();
+        if (auto refused = refuse_upper_case(dispatcher->resource(), "create_database", database);
+            refused.contains_error()) {
+            return store_cursor(pod_space, components::cursor::make_cursor(dispatcher->resource(), std::move(refused)));
+        }
+        auto cursor = dispatcher->execute_sql(session, "CREATE DATABASE " + database + ";");
+        return store_cursor(pod_space, std::move(cursor));
     } catch (const std::exception& ex) {
         return exception_cursor(pod_space, ex);
     } catch (...) {
@@ -222,11 +305,18 @@ extern "C" cursor_ptr create_database(otterbrix_ptr ptr, string_view_t database_
 extern "C" cursor_ptr create_collection(otterbrix_ptr ptr, string_view_t database_name, string_view_t collection_name) {
     pod_space_t* pod_space = nullptr;
     try {
-        pod_space = convert_otterbrix(ptr);
+        pod_space = live_otterbrix(ptr);
+        if (pod_space == nullptr) {
+            return nullptr;
+        }
         auto session = otterbrix::session_id_t();
         std::string database = string_view_to_string(database_name);
         std::string collection = string_view_to_string(collection_name);
         auto* dispatcher = pod_space->space->dispatcher();
+        if (auto refused = refuse_upper_case(dispatcher->resource(), "create_collection", collection);
+            refused.contains_error()) {
+            return store_cursor(pod_space, components::cursor::make_cursor(dispatcher->resource(), std::move(refused)));
+        }
         auto node = components::logical_plan::make_node_create_collection(dispatcher->resource(),
                                                                           core::relname_t{collection},
                                                                           {},
@@ -237,7 +327,7 @@ extern "C" cursor_ptr create_collection(otterbrix_ptr ptr, string_view_t databas
         auto cursor =
             dispatcher->execute_plan(session,
                                      components::logical_plan::execution_plan_t{dispatcher->resource(), node, nullptr});
-        return store_cursor(std::move(cursor));
+        return store_cursor(pod_space, std::move(cursor));
     } catch (const std::exception& ex) {
         return exception_cursor(pod_space, ex);
     } catch (...) {
@@ -248,7 +338,10 @@ extern "C" cursor_ptr create_collection(otterbrix_ptr ptr, string_view_t databas
 extern "C" cursor_ptr drop_database(otterbrix_ptr ptr, string_view_t database_name) {
     pod_space_t* pod_space = nullptr;
     try {
-        pod_space = convert_otterbrix(ptr);
+        pod_space = live_otterbrix(ptr);
+        if (pod_space == nullptr) {
+            return nullptr;
+        }
         auto session = otterbrix::session_id_t();
         std::string database = string_view_to_string(database_name);
         auto* dispatcher = pod_space->space->dispatcher();
@@ -258,7 +351,7 @@ extern "C" cursor_ptr drop_database(otterbrix_ptr ptr, string_view_t database_na
         auto cursor =
             dispatcher->execute_plan(session,
                                      components::logical_plan::execution_plan_t{dispatcher->resource(), node, nullptr});
-        return store_cursor(std::move(cursor));
+        return store_cursor(pod_space, std::move(cursor));
     } catch (const std::exception& ex) {
         return exception_cursor(pod_space, ex);
     } catch (...) {
@@ -269,7 +362,10 @@ extern "C" cursor_ptr drop_database(otterbrix_ptr ptr, string_view_t database_na
 extern "C" cursor_ptr drop_collection(otterbrix_ptr ptr, string_view_t database_name, string_view_t collection_name) {
     pod_space_t* pod_space = nullptr;
     try {
-        pod_space = convert_otterbrix(ptr);
+        pod_space = live_otterbrix(ptr);
+        if (pod_space == nullptr) {
+            return nullptr;
+        }
         auto session = otterbrix::session_id_t();
         std::string database = string_view_to_string(database_name);
         std::string collection = string_view_to_string(collection_name);
@@ -281,7 +377,7 @@ extern "C" cursor_ptr drop_collection(otterbrix_ptr ptr, string_view_t database_
         auto cursor =
             dispatcher->execute_plan(session,
                                      components::logical_plan::execution_plan_t{dispatcher->resource(), node, nullptr});
-        return store_cursor(std::move(cursor));
+        return store_cursor(pod_space, std::move(cursor));
     } catch (const std::exception& ex) {
         return exception_cursor(pod_space, ex);
     } catch (...) {
@@ -292,12 +388,24 @@ extern "C" cursor_ptr drop_collection(otterbrix_ptr ptr, string_view_t database_
 extern "C" void release_cursor(cursor_ptr ptr) {
     auto storage = convert_cursor(ptr);
     storage->state = state_t::destroyed;
+    auto* engine = storage->engine;
     delete storage;
+    release_engine(engine);
 }
 
 extern "C" int32_t cursor_size(cursor_ptr ptr) {
     auto storage = convert_cursor(ptr);
     return static_cast<int32_t>(storage->cursor->size());
+}
+
+extern "C" bool cursor_affected_rows(cursor_ptr ptr, uint64_t* rows) {
+    auto storage = convert_cursor(ptr);
+    const auto written = storage->cursor->affected_rows();
+    if (!written) {
+        return false;
+    }
+    *rows = *written;
+    return true;
 }
 
 extern "C" int32_t cursor_column_count(cursor_ptr ptr) {
@@ -336,13 +444,7 @@ extern "C" bool cursor_is_error(cursor_ptr ptr) {
 extern "C" error_message cursor_get_error(cursor_ptr ptr) {
     try {
         auto storage = convert_cursor(ptr);
-        auto error = storage->cursor->get_error();
-        error_message msg;
-        msg.code = static_cast<int32_t>(error.type);
-        std::string str = std::string{error.what};
-        msg.message = new char[str.size() + 1];
-        std::strcpy(msg.message, str.data());
-        return msg;
+        return make_error_message(storage->cursor->get_error());
     } catch (...) {
         return error_message{static_cast<int32_t>(core::error_code_t::other_error), nullptr};
     }
@@ -377,6 +479,7 @@ extern "C" value_ptr cursor_get_value(cursor_ptr ptr, int32_t row_index, int32_t
     value_storage->state = state_t::created;
     // value() spans the result batch — it locates the chunk owning the global row.
     value_storage->value = cursor.value(static_cast<uint64_t>(column_index), static_cast<uint64_t>(row_index));
+    value_storage->engine = hold_engine(storage->engine);
     return reinterpret_cast<void*>(value_storage.release());
 }
 
@@ -396,7 +499,9 @@ extern "C" value_ptr cursor_get_value_by_name(cursor_ptr ptr, int32_t row_index,
 extern "C" void release_value(value_ptr ptr) {
     auto storage = convert_value(ptr);
     storage->state = state_t::destroyed;
+    auto* engine = storage->engine;
     delete storage;
+    release_engine(engine);
 }
 
 extern "C" bool value_is_null(value_ptr ptr) {

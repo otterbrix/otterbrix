@@ -62,7 +62,8 @@ def test_select_rows_are_reachable_one_at_a_time(conn):
 def test_a_write_reports_how_many_rows_it_wrote(conn):
     conn.execute("CREATE TABLE ex.writes (id INTEGER);")
     written = conn.execute("INSERT INTO ex.writes (id) VALUES (7), (8);")
-    assert len(written) == 2
+    assert written.rowcount == 2
+    assert len(written) == 0
     assert conn.execute("SELECT id FROM ex.writes ORDER BY id;").fetchall() == [(7,), (8,)]
 
 

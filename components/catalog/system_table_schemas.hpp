@@ -49,6 +49,9 @@ namespace components::catalog {
     // Flat text for pg_proc.proargmatchers: "e:N" a concrete type, "v:I[:N1,N2,...]" a variable
     // (I=id, optional admissible-type list); args are pipe-separated.
     std::string encode_proargmatchers(const std::vector<components::compute::parameter_type>& parameters);
+    // Fail-loud: text outside that grammar is a data_corruption error.
+    [[nodiscard]] core::result_wrapper_t<std::pmr::vector<components::compute::parameter_type>>
+    decode_proargmatchers(std::pmr::memory_resource* resource, std::string_view text);
 
     // Flat text for pg_proc.prorettype: "f:N" fixed type, "s:N" same_type_at_index N, "c" a
     // custom resolver (see the K::custom case below for why "c" can't fold into "s:N").

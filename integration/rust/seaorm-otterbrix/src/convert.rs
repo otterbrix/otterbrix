@@ -24,14 +24,15 @@ const POSITIONAL_KEY_WIDTH: usize = 8;
 /// Maps an [`otterbrix::Error`] to the corresponding SeaORM [`DbErr`] variant.
 ///
 /// Engine-level errors (`Query`, `NullPointer`) become `DbErr::Exec` /
-/// `DbErr::Conn`, type-mismatch errors become `DbErr::Type`, invalid paths
-/// become `DbErr::Conn`. The `Display` text of the original error is
+/// `DbErr::Conn`, type-mismatch errors become `DbErr::Type`, invalid paths and
+/// a refused start become `DbErr::Conn`. The `Display` text of the original error is
 /// preserved verbatim inside the wrapping variant.
 pub(crate) fn map_otterbrix_error(err: ObError) -> DbErr {
     let msg = err.to_string();
     match err {
         ObError::Query { .. } => DbErr::Exec(RuntimeErr::Internal(msg)),
         ObError::NullPointer => DbErr::Conn(RuntimeErr::Internal(msg)),
+        ObError::Open { .. } => DbErr::Conn(RuntimeErr::Internal(msg)),
         ObError::InvalidPath(_) => DbErr::Conn(RuntimeErr::Internal(msg)),
         ObError::TypeMismatch { .. } => DbErr::Type(msg),
     }

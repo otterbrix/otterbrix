@@ -6,7 +6,9 @@
 #include <components/catalog/results/ddl_result.hpp>
 #include <components/expressions/forward.hpp>
 #include <components/expressions/key.hpp>
+#include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
+#include <components/logical_plan/node_alter_table.hpp>
 #include <components/logical_plan/node_drop.hpp>
 #include <components/logical_plan/node_join.hpp>
 #include <components/sql/parser/nodes/parsenodes.h>
@@ -62,6 +64,11 @@ namespace components::sql::transform {
                                 construct(table->relname)};
     }
 
+    // A REFERENCES target as written; one with a uid or schema segment is refused after resolve.
+    qualified_name_t referenced_table_as_written(RangeVar* target);
+    // Every REFERENCES target of a CREATE TABLE element list, into resolves->referenced_tables.
+    void register_referenced_tables(logical_plan::catalog_resolves_t* resolves, PGList& table_elts);
+
     enum table_name
     {
         table = 1,
@@ -104,6 +111,12 @@ namespace components::sql::transform {
         switch (node.type()) {
             case node_type::create_type_t:
                 return namespace_policy::public_only;
+            // ALTER TYPE arrives as an ALTER TABLE on a composite type and follows CREATE/DROP TYPE.
+            case node_type::alter_table_t:
+                return static_cast<const logical_plan::node_alter_table_t&>(node).relkind() ==
+                               components::catalog::relkind::composite_type
+                           ? namespace_policy::public_only
+                           : namespace_policy::as_written;
             case node_type::drop_t:
                 return static_cast<const logical_plan::node_drop_t&>(node).kind() ==
                                logical_plan::drop_target_kind::type
@@ -111,7 +124,6 @@ namespace components::sql::transform {
                            : namespace_policy::as_written;
             case node_type::create_collection_t:
             case node_type::create_view_t:
-            case node_type::create_matview_t:
             case node_type::create_sequence_t:
             case node_type::create_macro_t:
                 return namespace_policy::default_public;
@@ -404,11 +416,33 @@ namespace components::sql::transform {
     name_catalog_target(const std::string& dbname, const std::string& relname, logical_plan::node_ptr node);
 
     // with_constraints gathers INSERT/UPDATE's outgoing or DELETE's referencing constraints.
+    // A FROM table as written: database.schema.name keeps its schema slot (to be refused); the uid form keeps its
+    // meaning database.name.
+    void register_catalog_resolve_written_table(std::pmr::memory_resource* resource,
+                                                logical_plan::catalog_resolves_t* resolves,
+                                                const logical_plan::node_aggregate_t& from);
+
+    // An unqualified REFERENCES target of the table (owner_db, owner_rel): looked up in the database the owner is
+    // found in, after the owner.
+    void register_catalog_resolve_table_in_owner_database(std::pmr::memory_resource* resource,
+                                                          logical_plan::catalog_resolves_t* resolves,
+                                                          const std::string& owner_db,
+                                                          const std::string& owner_rel,
+                                                          const std::string& relname,
+                                                          constraint_resolve_kind with_constraints);
+
     void register_catalog_resolve_table(std::pmr::memory_resource* resource,
                                         logical_plan::catalog_resolves_t* resolves,
                                         const std::string& dbname,
                                         const std::string& relname,
                                         constraint_resolve_kind with_constraints = constraint_resolve_kind::none);
+
+    // The target of an INSERT / UPDATE / DELETE, schema slot included: a name the catalog does not know reaches
+    // the host whole.
+    void register_catalog_resolve_write_target(std::pmr::memory_resource* resource,
+                                               logical_plan::catalog_resolves_t* resolves,
+                                               const qualified_name_t& written,
+                                               constraint_resolve_kind with_constraints);
 
     void register_catalog_resolve_types(std::pmr::memory_resource* resource,
                                         logical_plan::catalog_resolves_t* resolves,

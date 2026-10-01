@@ -41,6 +41,7 @@ namespace components::operators {
     }
 
     core::error_t build_projection_graph(std::pmr::memory_resource* resource,
+                                         const compute::function_registry_t& registry,
                                          const std::pmr::vector<projected_column_t>& columns,
                                          const logical_plan::storage_parameters& parameters,
                                          const vector::data_chunk_t& input,
@@ -57,7 +58,8 @@ namespace components::operators {
             projected.push_back(column.value);
         }
 
-        auto built = expressions::build_graph(resource, parameters.parameters, projected, input.types(), right_offset);
+        auto built =
+            expressions::build_graph(resource, registry, parameters.parameters, projected, input.types(), right_offset);
         if (built.has_error()) {
             return built.error();
         }
@@ -79,7 +81,13 @@ namespace components::operators {
         // whose ordinals a key indexes directly whatever side it resolved to — so there is no
         // second chunk to pair and no offset to apply.
         auto result =
-            evaluate_projection(resource_, columns_, &input, ctx->parameters, ctx->execution_context, &graph_);
+            evaluate_projection(resource_,
+                                *ctx->function_registry,
+                                columns_,
+                                &input,
+                                ctx->parameters,
+                                ctx->execution_context,
+                                &graph_);
         if (result.has_error()) {
             return result.error();
         }
@@ -89,6 +97,7 @@ namespace components::operators {
 
     core::result_wrapper_t<vector::data_chunk_t>
     evaluate_projection(std::pmr::memory_resource* resource,
+                        const compute::function_registry_t& registry,
                         const std::pmr::vector<projected_column_t>& columns,
                         vector::data_chunk_t* input,
                         const logical_plan::storage_parameters& parameters,
@@ -111,6 +120,7 @@ namespace components::operators {
         if (computes) {
             if (*graph == nullptr) {
                 if (auto error = build_projection_graph(resource,
+                                                        registry,
                                                         columns,
                                                         parameters,
                                                         source,

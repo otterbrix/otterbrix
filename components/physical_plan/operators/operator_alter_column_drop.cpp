@@ -1,6 +1,7 @@
 #include "operator_alter_column_drop.hpp"
 
 #include "alter_validators.hpp"
+#include "operator_dynamic_cascade_delete.hpp"
 
 #include <components/catalog/alter_column_validators.hpp>
 #include <components/catalog/catalog_oids.hpp>
@@ -26,22 +27,21 @@ namespace components::operators {
                                                                log_t log,
                                                                catalog::oid_t table_oid,
                                                                std::string column_name,
+                                                               std::string relation_label,
                                                                catalog::oid_t attoid,
-                                                               catalog::drop_behavior_t behavior,
-                                                               bool missing_ok)
+                                                               catalog::drop_behavior_t behavior)
         : read_write_operator_t(resource, std::move(log), operator_type::alter_column_drop)
         , table_oid_(table_oid)
         , column_name_(std::move(column_name))
+        , relation_label_(std::move(relation_label))
         , attoid_(attoid)
-        , behavior_(behavior)
-        , missing_ok_(missing_ok) {}
+        , behavior_(behavior) {}
 
     actor_zeta::unique_future<void> operator_alter_column_drop_t::await_async_and_resume(pipeline::context_t* ctx) {
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
         constexpr catalog::oid_t pg_attr_oid = catalog::well_known_oid::pg_attribute_table;
         constexpr catalog::oid_t pg_dep_oid = catalog::well_known_oid::pg_depend_table;
-        constexpr catalog::oid_t pg_idx_oid = catalog::well_known_oid::pg_index_table;
         constexpr catalog::oid_t pg_class_oid = catalog::well_known_oid::pg_class_table;
         constexpr catalog::oid_t pg_con_oid = catalog::well_known_oid::pg_constraint_table;
 
@@ -110,13 +110,9 @@ namespace components::operators {
         }
         if (attoid == catalog::INVALID_OID) {
             // Refuse (PostgreSQL parity), not a silent no-op — silence would report a migration success that
-            // changed nothing; missing_ok_ (IF EXISTS) is the only case suppressing this refusal. relkind='g'
-            // tables have no pg_attribute row and route to operator_computed_field_unregister_t instead
+            // changed nothing; IF EXISTS is decided by the executor before this runs. relkind='g' tables have
+            // no pg_attribute row and route to operator_computed_field_unregister_t instead
             // (planner.cpp::rewrite_alter_table).
-            if (missing_ok_) {
-                mark_executed();
-                co_return;
-            }
             std::pmr::vector<std::uint64_t> cl_keys(resource_);
             cl_keys.emplace_back(catalog::pg_class_col::oid);
             auto [_cl, clf] = actor_zeta::otterbrix::send(ctx->disk_address,
@@ -165,14 +161,8 @@ namespace components::operators {
         }
         auto& dep_batches = dep_batches_r.value();
 
-        std::size_t dep_row_count = 0;
-        for (const auto& chunk : dep_batches) dep_row_count += chunk.size();
-
-        // `blocking` = FK confkey target via 'n' edges, refused under ANY behavior; `restrict_blockers` = every
-        // deptype::blocks_restrict dep, refused only under RESTRICT — kept broader than `blocking` on purpose,
-        // see test_drop_restrict_deptype.cpp::a_non_constraint_blocking_edge_refuses_the_column_drop.
-        std::pmr::vector<catalog::oid_t> restrict_blockers{resource_};
-        restrict_blockers.reserve(dep_row_count);
+        // `blocking` = FK confkey target via 'n' edges, refused under ANY behavior; every other dependent is
+        // left to drop_with_dependents below.
         std::pmr::vector<catalog::oid_t> blocking{resource_};
         for (auto& chunk : dep_batches) {
             if (chunk.column_count() <= catalog::pg_depend_col::deptype) {
@@ -193,10 +183,6 @@ namespace components::operators {
                 const auto deptype_cell = deptype_null
                                               ? std::string_view{}
                                               : chunk.get_value<std::string_view>(catalog::pg_depend_col::deptype, i);
-
-                if (deptype_cell.empty() || catalog::deptype::blocks_restrict(deptype_cell[0])) {
-                    restrict_blockers.push_back(dep_oid);
-                }
 
                 if (dep_cls != catalog::well_known_oid::pg_constraint_table)
                     continue;
@@ -287,60 +273,18 @@ namespace components::operators {
             co_return;
         }
 
-        if (catalog::refuses_on_dependency(behavior_) && !restrict_blockers.empty()) {
-            std::string msg = "DROP COLUMN RESTRICT: column has dependent objects (blocking oid ";
-            msg += std::to_string(static_cast<unsigned>(restrict_blockers.front()));
-            msg += ")";
-            set_error(core::error_t{core::error_code_t::other_error, std::pmr::string{std::move(msg), resource_}});
-            mark_executed();
+        // What depends on the column goes the way any DROP takes its dependents: RESTRICT refuses a normal one
+        // anywhere in the closure, CASCADE drops each whole (an index with its pg_index row, a view with its
+        // pg_rewrite rows). The column itself is tombstoned below.
+        if (auto dropped = co_await drop_with_dependents(resource_,
+                                                         ctx,
+                                                         pg_attr_oid,
+                                                         attoid,
+                                                         behavior_,
+                                                         "column " + column_name_ + " of " + relation_label_);
+            dropped.contains_error()) {
+            set_error(dropped);
             co_return;
-        }
-
-        std::pmr::vector<services::disk::pg_catalog_delete_spec_t> dep_specs(resource_);
-        dep_specs.reserve(dep_row_count * 4);
-        for (auto& chunk : dep_batches) {
-            if (chunk.column_count() < 2)
-                continue;
-            for (uint64_t i = 0; i < chunk.size(); ++i) {
-                if (chunk.is_null(0, i) || chunk.is_null(1, i))
-                    continue;
-                const auto dep_cls = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
-                const auto dep_oid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
-                if (dep_cls == catalog::well_known_oid::pg_class_table) {
-                    // Dependent index: scrub pg_index (by indexrelid=oid_col_idx 0),
-                    // pg_depend.objid (idx 1), pg_depend.refobjid (idx 3), pg_class.oid.
-                    dep_specs.push_back({pg_idx_oid, std::int64_t{0}, dep_oid});
-                    dep_specs.push_back({pg_dep_oid, std::int64_t{1}, dep_oid});
-                    dep_specs.push_back({pg_dep_oid, std::int64_t{3}, dep_oid});
-                    dep_specs.push_back({pg_class_oid, std::int64_t{0}, dep_oid});
-                    if (ctx->txn.transaction_id != 0) {
-                        ctx->pg_catalog_delete_tables.insert(pg_idx_oid);
-                        ctx->pg_catalog_delete_tables.insert(pg_dep_oid);
-                        ctx->pg_catalog_delete_tables.insert(pg_class_oid);
-                    }
-                } else if (dep_cls == catalog::well_known_oid::pg_constraint_table) {
-                    dep_specs.push_back({pg_con_oid, std::int64_t{0}, dep_oid});
-                    dep_specs.push_back({pg_dep_oid, std::int64_t{1}, dep_oid});
-                    dep_specs.push_back({pg_dep_oid, std::int64_t{3}, dep_oid});
-                    if (ctx->txn.transaction_id != 0) {
-                        ctx->pg_catalog_delete_tables.insert(pg_con_oid);
-                        ctx->pg_catalog_delete_tables.insert(pg_dep_oid);
-                    }
-                }
-            }
-        }
-        if (!dep_specs.empty()) {
-            auto [_dep, depf] =
-                actor_zeta::otterbrix::send(ctx->disk_address,
-                                            &services::disk::manager_disk_t::delete_pg_catalog_rows_many,
-                                            exec_ctx,
-                                            std::move(dep_specs));
-            auto dep_deleted = co_await std::move(depf);
-            if (dep_deleted.has_error()) {
-                set_error(dep_deleted.error());
-                mark_failed();
-                co_return;
-            }
         }
 
         std::pmr::vector<services::disk::pg_catalog_delete_spec_t> attr_specs(resource_);

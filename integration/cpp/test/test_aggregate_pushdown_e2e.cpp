@@ -1,6 +1,7 @@
 #include "integration_fixture_path.hpp"
 #include "test_config.hpp"
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <core/operations_helper.hpp>
 #include <services/disk/agent_disk.hpp>
@@ -24,7 +25,7 @@ namespace {
         auto cur =
             exec(dispatcher, "INSERT INTO " + table + " (g, v) VALUES (1, 10), (1, 20), (2, 30), (2, 50), (2, 40);");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 5);
+        REQUIRE(cur->affected_rows() == 5);
         return table;
     }
 
@@ -51,7 +52,7 @@ namespace {
             REQUIRE(cur->value(2, 0).value<uint64_t>() == 5);
             REQUIRE(cur->value(3, 0).value<int64_t>() == 10);
             REQUIRE(cur->value(4, 0).value<int64_t>() == 50);
-            REQUIRE(cur->value(5, 0).value<int64_t>() == 30);   // 150 / 5
+            REQUIRE(cur->value(5, 0).value<double>() == Catch::Approx(30.0)); // 150 / 5
             REQUIRE(services::disk::pushdown_reply_rows() > 0); // was-actually-pushed proof
         }
 
@@ -69,7 +70,7 @@ namespace {
             REQUIRE(cur->value(1, 0).value<uint64_t>() == 3);
             REQUIRE(cur->value(2, 0).value<int64_t>() == 30);
             REQUIRE(cur->value(3, 0).value<int64_t>() == 50);
-            REQUIRE(cur->value(4, 0).value<int64_t>() == 40); // 120 / 3
+            REQUIRE(cur->value(4, 0).value<double>() == Catch::Approx(40.0)); // 120 / 3, AVG over BIGINT answers DOUBLE
             REQUIRE(services::disk::pushdown_reply_rows() > 0);
         }
 
@@ -114,14 +115,14 @@ namespace {
             REQUIRE(cur->value(2, 0).value<uint64_t>() == 2);
             REQUIRE(cur->value(3, 0).value<int64_t>() == 10);
             REQUIRE(cur->value(4, 0).value<int64_t>() == 20);
-            REQUIRE(cur->value(5, 0).value<int64_t>() == 15); // 30 / 2
+            REQUIRE(cur->value(5, 0).value<double>() == Catch::Approx(15.0)); // 30 / 2, AVG over BIGINT answers DOUBLE
 
             REQUIRE(cur->value(0, 1).value<int64_t>() == 2);
             REQUIRE(cur->value(1, 1).value<int64_t>() == 120);
             REQUIRE(cur->value(2, 1).value<uint64_t>() == 3);
             REQUIRE(cur->value(3, 1).value<int64_t>() == 30);
             REQUIRE(cur->value(4, 1).value<int64_t>() == 50);
-            REQUIRE(cur->value(5, 1).value<int64_t>() == 40); // 120 / 3
+            REQUIRE(cur->value(5, 1).value<double>() == Catch::Approx(40.0)); // 120 / 3
             REQUIRE(services::disk::pushdown_reply_rows() > 0);
         }
 

@@ -8,6 +8,7 @@ set( ${PROJECT_NAME}_HEADERS
 set(${PROJECT_NAME}_SOURCES
     # collection
         collection/executor.cpp
+        collection/view_definition.cpp
         collection/explain/explain_plan.cpp
         collection/explain/renderer_postgres.cpp
 
@@ -29,6 +30,9 @@ set(${PROJECT_NAME}_SOURCES
        dispatcher/validate_logical_plan.cpp
        dispatcher/validation/schema.cpp
        dispatcher/validation/resolve_expression.cpp
+
+    # engine
+        engine/engine.cpp
 
     # index
         index/bitcask_index_disk.cpp
@@ -101,6 +105,7 @@ if (DEV_MODE)
     add_definitions(-DDEV_MODE)
     add_subdirectory(disk/tests)
     add_subdirectory(dispatcher/tests)
+    add_subdirectory(engine/tests)
     add_subdirectory(index/tests)
     add_subdirectory(wal/tests)
 endif()

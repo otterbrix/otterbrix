@@ -45,6 +45,13 @@ namespace components::logical_plan {
         analyze
     };
 
+    // A relation's stored body the plan runs in its own right (REFRESH MATERIALIZED VIEW), spliced into `reference`
+    // as a view's body is: the read checks it against `relation` as it checks an expanded view.
+    struct stored_body_t {
+        node_ptr reference;
+        resolved_table_metadata_t relation;
+    };
+
     struct execution_plan_t {
         // default is null_memory_resource to make it non-usable, but also be able to send over actor-zeta
         explicit execution_plan_t(std::pmr::memory_resource* resource);
@@ -63,8 +70,18 @@ namespace components::logical_plan {
         // Every catalog lookup this plan depends on
         catalog_resolves_t catalog_resolves;
 
+        std::pmr::vector<stored_body_t> stored_bodies;
+
         // hold various parameters for the whole execution_plan_t, including subquery mapping
         parameter_node_ptr parameters;
+
+        // The statement's IF EXISTS (DROP ..., ALTER TABLE ...): the refusal "its target does not exist" — and only
+        // that one — becomes an empty success. The operations themselves always refuse a missing target.
+        bool if_exists{false};
+        // ALTER TABLE subcommands written with IF EXISTS (indexes into the statement's subcommands): a missing
+        // column / constraint skips that subcommand alone and the others still apply (PostgreSQL). The operators
+        // themselves always refuse a missing target.
+        std::pmr::vector<std::size_t> if_exists_subcommands;
 
         // EXPLAIN / EXPLAIN ANALYZE mode (none for a normal query). Only the main (top-level)
         // plan carries it; flattened sub-queries are built fresh and stay `none`.

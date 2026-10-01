@@ -27,6 +27,7 @@
 #include <core/date/date_types.hpp>
 #include <services/collection/context_storage.hpp>
 #include <services/collection/explain/explain_renderer.hpp>
+#include <span>
 #include <stack>
 #include <string>
 
@@ -91,16 +92,24 @@ namespace services::collection::executor {
     using function_result_t = core::result_wrapper_t<components::compute::function_uid>;
 
     struct plan_t {
+        components::operators::operator_ptr root;
         std::stack<components::operators::operator_ptr> sub_plans;
         // Non-owning: points into the execute_plan frame's storage, which outlives execute_sub_plan_.
         const components::logical_plan::storage_parameters* parameters;
         services::context_storage_t context_storage_;
         bool analyze{false};
 
-        explicit plan_t(std::stack<components::operators::operator_ptr>&& sub_plans,
+        explicit plan_t(components::operators::operator_ptr root,
+                        std::stack<components::operators::operator_ptr>&& sub_plans,
                         const components::logical_plan::storage_parameters* parameters,
                         services::context_storage_t&& context_storage);
     };
+
+    struct opened_source_t {
+        components::operators::operator_t* op;
+        actor_zeta::unique_future<core::error_t> ready;
+    };
+    using opened_sources_t = std::pmr::vector<opened_source_t>;
 
     // Internal only — never crosses an actor boundary; drained from pipeline::context_t::dml_*.
     struct sub_plan_result_t {
@@ -135,8 +144,8 @@ namespace services::collection::executor {
                    actor_zeta::address_t index_address,
                    log_t&& log,
                    uint64_t dml_flush_row_threshold = 0,
-                   planner::create_plan_rule_t create_plan_rule = &planner::no_custom_lowering,
-                   components::planner::optimizer_pass_t optimizer_pass = &components::planner::no_op_pass);
+                   std::span<const components::planner::optimizer_rule_t> optimizer_rules = {},
+                   components::planner::name_resolution_hook_t name_resolution = {});
         ~executor_t() = default;
 
         // INTERNAL: called only from execute_plan_full via co_await, never through the mailbox. captured_subplans
@@ -193,6 +202,18 @@ namespace services::collection::executor {
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
 
     private:
+        // A read the host's name resolution asked for does not consult the host again.
+        enum class host_names_t : bool
+        {
+            resolve,
+            local_only
+        };
+
+        unique_future<execute_result_t> execute_statement_(components::session::session_id_t session,
+                                                           components::logical_plan::execution_plan_t plan,
+                                                           services::dispatcher::txn_session_context_t session_ctx,
+                                                           host_names_t host_names);
+
         plan_t traverse_plan_(components::operators::operator_ptr&& plan,
                               const components::logical_plan::storage_parameters& parameters,
                               services::context_storage_t&& context_storage);
@@ -210,8 +231,22 @@ namespace services::collection::executor {
         unique_future<core::error_t> drive_subplan_(components::operators::operator_ptr root,
                                                     components::pipeline::context_t* ctx);
 
+        // Starts open() on every not-yet-executed source under root without awaiting any, so backend fetches overlap.
+        void open_sources_(components::operators::operator_t* root,
+                           components::pipeline::context_t* ctx,
+                           opened_sources_t& opened);
+
+        // Both await every matching future even after an error and return the first error.
+        unique_future<core::error_t> await_opened_in_(opened_sources_t& opened,
+                                                      components::operators::operator_t* piece);
+        unique_future<core::error_t> await_all_opened_(opened_sources_t& opened);
+
+        // Precondition: every source under root was opened and its open awaited.
+        unique_future<core::error_t> drive_opened_subplan_(components::operators::operator_ptr root,
+                                                           components::pipeline::context_t* ctx);
+
         // Fills a gap run_subplan has: traverse_plan_ pre-splits build sides for the top-level flow, but a single
-        // root (e.g. the recursive-CTE's JOIN(scan, cte_scan)) has none, so drive it here via drive_subplan_.
+        // root (e.g. the recursive-CTE's JOIN(scan, cte_scan)) has none, so drive it here via drive_opened_subplan_.
         unique_future<core::error_t> materialize_build_sides_(components::operators::operator_ptr root,
                                                               components::pipeline::context_t* ctx);
 
@@ -237,9 +272,9 @@ namespace services::collection::executor {
         log_t log_;
         components::compute::function_registry_t function_registry_;
         components::casts::cast_registry_t cast_registry_;
-        // Host-injected (dispatcher -> executor); never null — Null Object defaults.
-        planner::create_plan_rule_t create_plan_rule_{&planner::no_custom_lowering};
-        components::planner::optimizer_pass_t optimizer_pass_{&components::planner::no_op_pass};
+        // Host customization, copied from the dispatcher's at spawn.
+        std::pmr::vector<components::planner::optimizer_rule_t> optimizer_rules_;
+        components::planner::name_resolution_hook_t name_resolution_;
         // Bound on buffered rows before the pump forces an incremental flush; 0 disables the gate.
         uint64_t dml_flush_row_threshold_{0};
         static constexpr uint32_t kExplainRendererSlotLimit = 1024;

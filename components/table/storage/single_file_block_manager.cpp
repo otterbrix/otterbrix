@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <iterator>
 #include <stdexcept>
 
@@ -53,6 +54,35 @@ namespace components::table::storage {
     }
 
     single_file_block_manager_t::~single_file_block_manager_t() = default;
+
+    core::result_wrapper_t<bool>
+    single_file_block_manager_t::file_is_never_checkpointed(const std::string& path,
+                                                            std::pmr::memory_resource* resource) {
+        std::ifstream f(path, std::ios::binary);
+        main_header_t main_header;
+        database_header_t slot1{};
+        database_header_t slot2{};
+        if (!f || !f.read(reinterpret_cast<char*>(&main_header), sizeof(main_header)) || !main_header.magic_ok()) {
+            return core::error_t(core::error_code_t::data_corruption,
+                                 std::pmr::string{"Cannot read the main header of " + path +
+                                                      " (missing, short, or bad magic); it is not a database file",
+                                                  resource});
+        }
+        const bool slot1_valid = f.seekg(static_cast<std::streamoff>(SECTOR_SIZE)) &&
+                                 f.read(reinterpret_cast<char*>(&slot1), sizeof(slot1)) && slot1.checksum_ok();
+        f.clear();
+        const bool slot2_valid = f.seekg(static_cast<std::streamoff>(2 * SECTOR_SIZE)) &&
+                                 f.read(reinterpret_cast<char*>(&slot2), sizeof(slot2)) && slot2.checksum_ok();
+        if (!slot1_valid && !slot2_valid) {
+            return core::error_t(core::error_code_t::data_corruption,
+                                 std::pmr::string{"No recoverable root in " + path +
+                                                      ": neither database header slot is usable",
+                                                  resource});
+        }
+        const database_header_t& active =
+            (slot1_valid && (!slot2_valid || slot1.iteration >= slot2.iteration)) ? slot1 : slot2;
+        return active.meta_block == INVALID_INDEX;
+    }
 
 #ifdef DEV_MODE
     namespace {
@@ -210,26 +240,19 @@ namespace components::table::storage {
         const database_header_t& active =
             (header1_valid && (!header2_valid || header1.iteration >= header2.iteration)) ? header1 : header2;
 
-        // "Never checkpointed" needs file_bytes==BLOCK_START too, not just meta_block==INVALID (legal at iteration 0)
-        if (active.meta_block == INVALID_INDEX && active.iteration == 0) {
-            const bool header_is_initial = active.free_list == INVALID_INDEX && active.block_count == 0;
-            if (!header_is_initial || file_bytes != BLOCK_START) {
-                return core::error_t(
-                    core::error_code_t::data_corruption,
-                    std::pmr::string{
-                        "Refusing to open " + path_ +
-                            ": the selected root has no metadata pointer (meta_block INVALID), which is legal "
-                            "only for a never-checkpointed database, but the file does not look young: size " +
-                            std::to_string(file_bytes) + " bytes (a never-checkpointed file is exactly " +
-                            std::to_string(BLOCK_START) + "), slot iteration " + std::to_string(active.iteration) +
-                            ", block_count " + std::to_string(active.block_count) + ", free_list " +
-                            std::to_string(active.free_list) +
-                            ". Either this table WAS checkpointed and its newest header slot was lost to "
-                            "corruption, or its first checkpoint crashed mid-flight; treating either as an "
-                            "empty table would silently discard data. The file is left byte-identical for "
-                            "offline inspection.",
-                        buffer_manager.resource()});
-            }
+        // The file size says nothing here: write-through fills data blocks before any root exists, so a
+        // never-checkpointed file is any size >= BLOCK_START. The CREATE-time header itself is the signature.
+        if (active.meta_block == INVALID_INDEX && active.iteration == 0 && !header_is_create_time(active)) {
+            return core::error_t(
+                core::error_code_t::data_corruption,
+                std::pmr::string{"Refusing to open " + path_ +
+                                     ": the selected root is at iteration 0 with no metadata pointer, which is "
+                                     "legal only for the CREATE-time header, but this header claims block_count " +
+                                     std::to_string(active.block_count) + " and free_list " +
+                                     std::to_string(active.free_list) + " (file size " +
+                                     std::to_string(file_bytes) +
+                                     " bytes). The file is left byte-identical for offline inspection.",
+                                 buffer_manager.resource()});
         }
 
         if (auto adopted = set_block_allocation_size(active.block_alloc_size); adopted.has_error()) {
@@ -283,6 +306,58 @@ namespace components::table::storage {
 
     core::result_wrapper_t<bool> single_file_block_manager_t::write(file_buffer_t& buffer, uint64_t block_id) {
         return checksum_and_write(buffer, block_id);
+    }
+
+    // Two positional writes: the checksum slot, then the appended range. A crash between them
+    // leaves a block that fails its checksum -- acceptable only because no durable root names a
+    // block still being grown (the append packer seals before every checkpoint), so recovery
+    // never reads it; a live write failure latches durability_error_ like any other.
+    core::result_wrapper_t<bool> single_file_block_manager_t::write_range(file_buffer_t& buffer,
+                                                                          uint64_t block_id,
+                                                                          uint64_t offset,
+                                                                          uint64_t length) {
+        auto* data = buffer.internal_buffer();
+        auto alloc_size = buffer.allocation_size();
+        auto* checksum_slot = reinterpret_cast<uint64_t*>(data);
+        auto* payload = data + sizeof(uint64_t);
+        auto payload_size = alloc_size - sizeof(uint64_t);
+        if (offset + length > payload_size) {
+            return core::error_t(core::error_code_t::invalid_parameter,
+                                 std::pmr::string{"write_range past the end of block " + std::to_string(block_id),
+                                                  buffer_manager.resource()});
+        }
+        *checksum_slot = static_cast<uint64_t>(
+            static_cast<uint32_t>(absl::ComputeCrc32c({reinterpret_cast<const char*>(payload), payload_size})));
+        const auto location = block_location(block_id);
+        // A block past the end of the file is extended first (sparse zeros, which the buffer holds
+        // too, so the checksum above still matches a later whole-block read).
+        const uint64_t block_end = location + alloc_size;
+        if (handle_->file_size() < block_end && !handle_->truncate(static_cast<int64_t>(block_end))) {
+            return latch_durability_error(
+                core::error_t(core::error_code_t::io_error,
+                              std::pmr::string{"Failed to extend " + path_ + " for block " + std::to_string(block_id),
+                                               buffer_manager.resource()}));
+        }
+        if (!handle_->write(data, sizeof(uint64_t), location) ||
+            !handle_->write(payload + offset, length, location + sizeof(uint64_t) + offset)) {
+            return latch_durability_error(
+                core::error_t(core::error_code_t::io_error,
+                              std::pmr::string{"Failed to rewrite block " + std::to_string(block_id) + " (offset " +
+                                                   std::to_string(location) + ") of " + path_,
+                                               buffer_manager.resource()}));
+        }
+        return true;
+    }
+
+    core::result_wrapper_t<bool>
+    single_file_block_manager_t::write_prefix(file_buffer_t& buffer, uint64_t block_id, uint64_t length) {
+        // A reused id still carries its previous bytes past the prefix; only a block past the end
+        // of the file is guaranteed to read back zeros there (the sparse extension in write_range).
+        const uint64_t block_end = block_location(block_id) + buffer.allocation_size();
+        if (handle_->file_size() >= block_end) {
+            return checksum_and_write(buffer, block_id);
+        }
+        return write_range(buffer, block_id, 0, length);
     }
 
     uint64_t single_file_block_manager_t::free_block_id() {
@@ -585,7 +660,14 @@ namespace components::table::storage {
 
         // Shadow paging: writes only this iteration's slot; the other keeps the PREVIOUS root, lost if both written.
         const uint64_t slot = header_slot_offset(next_iteration);
-        const bool write_ok = handle_->write(&write_header, sizeof(write_header), slot);
+        bool write_ok = handle_->write(&write_header, sizeof(write_header), slot);
+        if (write_ok && next_iteration == 1) {
+            // Root 1 also replaces the CREATE-time header in the other slot (it names no data, so nothing is lost):
+            // from here on rot in either slot leaves root 1 recoverable instead of a fallback to "empty". Ordered
+            // after its own slot's fsync so a torn copy is never the only trace of the root.
+            write_ok = handle_->sync() &&
+                       handle_->write(&write_header, sizeof(write_header), header_slot_offset(next_iteration + 1));
+        }
         // Issued unconditionally, even after a reported write failure, so the read-back below is evidence, not a guess.
         const bool sync_ok = handle_->sync();
         if (write_ok && sync_ok) {

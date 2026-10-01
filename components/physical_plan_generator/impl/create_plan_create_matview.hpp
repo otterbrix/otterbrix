@@ -1,5 +1,7 @@
 #pragma once
 
+#include <components/physical_plan_generator/create_plan.hpp>
+
 #include <components/compute/function.hpp>
 #include <components/logical_plan/node.hpp>
 #include <components/physical_plan/operators/operator.hpp>
@@ -14,10 +16,9 @@ namespace services::planner::impl {
     //     derive_matview_output_schema)
     //   - catalog_writes (built by planner's rewrite_create_matview)
     //   - body_plan (child[0]) — recursively compiled via create_plan
-    components::operators::operator_ptr
-    create_plan_create_matview(const context_storage_t& context,
-                               const components::compute::function_registry_t& function_registry,
-                               const components::logical_plan::node_ptr& node,
-                               const components::logical_plan::storage_parameters* params);
+    plan_result_t create_plan_create_matview(const context_storage_t& context,
+                                             const components::compute::function_registry_t& function_registry,
+                                             const components::logical_plan::node_ptr& node,
+                                             const components::logical_plan::storage_parameters* params);
 
 } // namespace services::planner::impl

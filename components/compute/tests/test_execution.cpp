@@ -333,7 +333,9 @@ TEST_CASE("components::compute::vector::plain::batch") {
 TEST_CASE("components::compute::expand::generate_series") {
     core::pmr::otterbrix_resource resource;
 
-    auto* reg = function_registry_t::get_default();
+    function_registry_t builtins(&resource);
+    register_default_functions(builtins);
+    auto* reg = &builtins;
     function_uid uid = invalid_function_uid;
     for (const auto& [n, u] : reg->get_functions()) {
         if (n == "generate_series") {

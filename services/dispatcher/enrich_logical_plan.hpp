@@ -11,6 +11,7 @@
 #include <components/logical_plan/node.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/param_storage.hpp>
+#include <components/planner/host_hooks.hpp>
 #include <core/result_wrapper.hpp>
 #include <memory_resource>
 #include <services/collection/context_storage.hpp>
@@ -46,12 +47,42 @@ namespace services::catalog_resolve {
                                const components::logical_plan::node_t* root,
                                components::logical_plan::catalog_resolves_t* resolves);
 
-    // Entries dedupe, so a table both plans reference stays one lookup.
-    void merge_catalog_resolves(std::pmr::memory_resource* resource,
-                                components::logical_plan::catalog_resolves_t& dest,
-                                const components::logical_plan::catalog_resolves_t& src);
-
     bool has_unresolved_entries(const components::logical_plan::catalog_resolves_t& resolves);
+
+    // Table names the catalog did not resolve; the views point into `resolves`.
+    std::pmr::vector<components::planner::unresolved_table_t>
+    unresolved_tables(std::pmr::memory_resource* resource,
+                      const components::logical_plan::catalog_resolves_t& resolves);
+
+    std::size_t entry_count(const components::logical_plan::catalog_resolves_t& resolves);
+
+    // A view body name pinned to a relation the catalog no longer holds: the view is stale.
+    core::error_t refuse_stale_pins(std::pmr::memory_resource* resource,
+                                    const components::logical_plan::catalog_resolves_t& resolves);
+
+    // A view body name the host resolved at CREATE VIEW and did not resolve now: the view is stale.
+    core::error_t refuse_stale_host_names(std::pmr::memory_resource* resource,
+                                          const components::logical_plan::catalog_resolves_t& resolves);
+
+    // Marks unresolved table / namespace entries that no node of `root` names any more.
+    void supersede_unnamed_entries(std::pmr::memory_resource* resource,
+                                   components::logical_plan::catalog_resolves_t& resolves,
+                                   const components::logical_plan::node_t* root);
+
+    // A write into a host relation, first step: no RETURNING, no UPDATE ... FROM / DELETE ... USING, and only as its
+    // own statement (the host's write is not undone by a ROLLBACK, #663).
+    core::error_t refuse_host_write_shapes(std::pmr::memory_resource* resource,
+                                           const components::logical_plan::node_t* root,
+                                           bool ends_its_transaction);
+
+    // A REFERENCES target with a uid or schema segment is refused, not dropped.
+    core::error_t refuse_referenced_segments(std::pmr::memory_resource* resource,
+                                             const components::logical_plan::catalog_resolves_t& resolves);
+
+    // A read never drops part of a name: a schema segment (database.schema.name) is refused. The uid form keeps its
+    // meaning for the host's swap hooks.
+    core::error_t refuse_local_schema_segments(std::pmr::memory_resource* resource,
+                                               const components::logical_plan::catalog_resolves_t& resolves);
 
     // search_dbnames is ordered by precedence over the type-name search path.
     const components::logical_plan::resolved_type_metadata_t*
@@ -66,6 +97,5 @@ namespace services::catalog_resolve {
 
 namespace services::dispatcher {
     using catalog_resolve::bind_catalog_data;
-    using catalog_resolve::merge_catalog_resolves;
     using catalog_resolve::register_plan_targets;
 } // namespace services::dispatcher

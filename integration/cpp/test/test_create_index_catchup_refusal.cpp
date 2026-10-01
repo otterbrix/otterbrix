@@ -72,7 +72,7 @@ TEST_CASE("integration::cpp::create_index_catchup_refusal::the_build_does_not_re
             return s.str();
         });
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == kRowCount);
+        REQUIRE(cur->affected_rows() == kRowCount);
     }
 
     {

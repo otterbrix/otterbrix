@@ -73,11 +73,32 @@ namespace Duckstax.Otterbrix
         }
 
         public ValueWrapper GetValue(int rowIndex, int columnIndex) {
-            return new ValueWrapper(CursorGetValue(cursor, rowIndex, columnIndex));
+            ValueHandle value = CursorGetValue(cursor, rowIndex, columnIndex);
+            if (value.IsInvalid) {
+                value.Dispose();
+                ThrowIfRowOutOfRange(rowIndex);
+                throw new ArgumentOutOfRangeException(nameof(columnIndex), columnIndex,
+                    "column " + columnIndex + " is out of range: the cursor has " + ColumnCount() + " columns");
+            }
+            return new ValueWrapper(value);
         }
 
         public ValueWrapper GetValue(int rowIndex, string columnName) {
-            return new ValueWrapper(CursorGetValueByName(cursor, rowIndex, new StringPasser(ref columnName)));
+            ValueHandle value = CursorGetValueByName(cursor, rowIndex, new StringPasser(ref columnName));
+            if (value.IsInvalid) {
+                value.Dispose();
+                ThrowIfRowOutOfRange(rowIndex);
+                throw new ArgumentException("column \"" + columnName + "\" does not exist", nameof(columnName));
+            }
+            return new ValueWrapper(value);
+        }
+
+        private void ThrowIfRowOutOfRange(int rowIndex) {
+            int size = Size();
+            if (rowIndex < 0 || rowIndex >= size) {
+                throw new ArgumentOutOfRangeException(nameof(rowIndex), rowIndex,
+                    "row " + rowIndex + " is out of range: the cursor has " + size + " rows");
+            }
         }
 
         private readonly CursorHandle cursor;

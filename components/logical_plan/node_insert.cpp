@@ -2,9 +2,24 @@
 
 #include "node_data.hpp"
 
+#include <cassert>
 #include <sstream>
 
 namespace components::logical_plan {
+
+    std::pmr::vector<size_t> insert_target_order(std::pmr::memory_resource* resource,
+                                                   const insert_column_bindings_t& bindings,
+                                                   const insert_fill_list_t& fill) {
+        size_t width = bindings.size() + fill.size();
+        std::pmr::vector<uint64_t> source_of(width, width, resource);
+        for (size_t column = 0; column < width; column++) {
+            size_t target = column < bindings.size() ? bindings[column].target_index
+                                                             : fill[column - bindings.size()].target_index;
+            assert(target < width && source_of[target] == width && "insert_target_order: a target named twice");
+            source_of[target] = column;
+        }
+        return source_of;
+    }
 
     node_insert_t::node_insert_t(std::pmr::memory_resource* resource)
         : node_t(resource, node_type::insert_t)

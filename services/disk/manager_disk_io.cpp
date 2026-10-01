@@ -186,8 +186,6 @@ namespace services::disk {
                                                   resource()});
         }
 
-        // WAL-replay synthesis leg of "every column carries its attoid": replayed columns are name-only, so this binds
-        // by name (safe once the catalog is final).
         {
             bool needs_identity = false;
             for (const auto& col : columns) {
@@ -202,16 +200,14 @@ namespace services::disk {
                 auto cols_by_relid = collect_catalog_columns_sync(wanted);
                 auto found = cols_by_relid.find(table_oid);
                 if (found != cols_by_relid.end()) {
-                    for (auto& col : columns) {
-                        if (col.attoid() != 0) {
-                            continue;
+                    for (size_t position = 0; position < columns.size() && position < found->second.size();
+                         ++position) {
+                        auto& col = columns[position];
+                        const auto& def = found->second[position];
+                        if (col.attoid() == 0 && def.attoid() != 0) {
+                            col.set_attoid(def.attoid());
                         }
-                        for (const auto& def : found->second) {
-                            if (def.name() == col.name() && def.attoid() != 0) {
-                                col.set_attoid(def.attoid());
-                                break;
-                            }
-                        }
+                        col.set_dropped_at(def.dropped_at());
                     }
                 }
             }

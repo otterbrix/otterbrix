@@ -1553,8 +1553,7 @@ namespace services::collection::executor {
                 auto [_pa, paf] = actor_zeta::otterbrix::send(disk_address_,
                                                               &services::disk::manager_disk_t::storage_revert_appends,
                                                               pgc_ctx,
-                                                              std::move(revert_ranges),
-                                                              /*tail_only=*/false);
+                                                              std::move(revert_ranges));
                 if (const auto reverted = co_await std::move(paf); reverted.contains_error()) {
                     ::error(log_, "executor: pg_catalog append rollback did not complete: {}", reverted.what);
                 }
@@ -1615,6 +1614,23 @@ namespace services::collection::executor {
                 co_await std::move(rdf);
             }
             exec_result.pg_catalog_delete_tables.clear();
+
+            std::pmr::set<components::catalog::oid_t> column_stamped_tables{resource()};
+            for (const auto& backfill : exec_result.pg_attribute_commit_id_backfills) {
+                if (const auto table_oid = backfill.column_stamped_table();
+                    table_oid != components::catalog::INVALID_OID) {
+                    column_stamped_tables.insert(table_oid);
+                }
+            }
+            if (resolve_txn.transaction_id != 0 && !column_stamped_tables.empty()) {
+                components::execution_context_t cs_ctx{session, resolve_txn, session_ctx.settings.timezone_offset};
+                auto [_cs, csf] = actor_zeta::otterbrix::send(disk_address_,
+                                                              &services::disk::manager_disk_t::revert_column_stamps,
+                                                              cs_ctx,
+                                                              std::move(column_stamped_tables));
+                co_await std::move(csf);
+            }
+            exec_result.pg_attribute_commit_id_backfills.clear();
 
             exec_result.dml_appends.clear();
             exec_result.dml_deletes.clear();
@@ -1744,8 +1760,7 @@ namespace services::collection::executor {
                         actor_zeta::otterbrix::send(disk_address_,
                                                     &services::disk::manager_disk_t::storage_revert_appends,
                                                     rv_ctx,
-                                                    std::move(revert_ranges),
-                                                    /*tail_only=*/false);
+                                                    std::move(revert_ranges));
                     if (const auto reverted = co_await std::move(rvf); reverted.contains_error()) {
                         ::error(log_, "executor: pg_index append rollback did not complete: {}", reverted.what);
                     }

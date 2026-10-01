@@ -28,6 +28,12 @@ namespace components::storage {
         uint64_t count{0};
     };
 
+    struct updated_rows_t {
+        appended_range_t range;
+        std::pmr::vector<vector::data_chunk_t> written;
+        std::pmr::vector<std::uint32_t> attoids;
+    };
+
     class storage_t {
     public:
         virtual ~storage_t() = default;
@@ -125,7 +131,7 @@ namespace components::storage {
         // names no row group is a refusal, and it travels here. txn_id 0 marks a write that commits
         // as it lands; there is no separate untransactional form.
         [[nodiscard]] virtual core::result_wrapper_t<uint64_t>
-        delete_rows(vector::vector_t& row_ids, uint64_t count, uint64_t txn_id) = 0;
+        delete_rows(vector::vector_t& row_ids, uint64_t count, const table::transaction_data& txn) = 0;
         virtual void commit_append(uint64_t /*commit_id*/, int64_t /*row_start*/, uint64_t /*count*/) {}
         // Rolling back an append can itself fail; the caller is on an abort path and can do no
         // more than record it, but it must be told rather than left to guess.

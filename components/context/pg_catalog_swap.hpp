@@ -47,6 +47,11 @@ namespace components {
         std::string release_attname;
         std::string rename_to_attname;
         added_column_type_t added_column_type;
+
+        [[nodiscard]] catalog::oid_t column_stamped_table() const noexcept {
+            bool stamps_a_column = kind == kind_t::added_at || kind == kind_t::dropped_at;
+            return stamps_a_column ? release_table_oid : catalog::INVALID_OID;
+        }
     };
 
     struct pg_attribute_backfill_result_t {

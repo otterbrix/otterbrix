@@ -23,6 +23,7 @@
 #include <components/table/column_definition.hpp>
 #include <components/table/column_state.hpp>
 #include <components/table/row_version_manager.hpp>
+#include <components/table/transaction.hpp>
 #include <components/types/logical_value.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <services/wal/base.hpp>
@@ -151,6 +152,17 @@ namespace services::disk {
                                                               uint64_t commit_id,
                                                               std::pmr::set<components::catalog::oid_t> tables);
 
+        actor_zeta::unique_future<void> revert_column_stamps(execution_context_t ctx,
+                                                             std::pmr::set<components::catalog::oid_t> tables);
+
+        actor_zeta::unique_future<core::error_t>
+        storage_prepare(execution_context_t ctx,
+                        std::pmr::set<components::catalog::oid_t> tables,
+                        std::vector<components::pg_catalog_append_range_t> appends);
+
+        actor_zeta::unique_future<void> storage_release_prepared(execution_context_t ctx,
+                                                                 std::pmr::set<components::catalog::oid_t> tables);
+
         // reconcile_storage_with_catalog_sync matches by ATTOID, so a missed rename reads as a stale name, not a drop.
         actor_zeta::unique_future<core::result_wrapper_t<bool>>
         rename_storage_column(session_id_t session,
@@ -207,13 +219,13 @@ namespace services::disk {
                        components::catalog::oid_t table_oid,
                        std::pmr::vector<components::vector::data_chunk_t> data);
 
-        // Reply wraps (updated, appended); an empty request answers (0,0) and stays a success.
-        actor_zeta::unique_future<core::result_wrapper_t<components::storage::appended_range_t>>
+        // Reply wraps the appended range and the new versions as written
+        actor_zeta::unique_future<core::result_wrapper_t<components::storage::updated_rows_t>>
         storage_update(execution_context_t ctx,
                        components::catalog::oid_t table_oid,
                        std::pmr::vector<components::vector::vector_t> row_ids,
                        std::pmr::vector<components::vector::data_chunk_t> data);
-        // A count smaller than requested is legitimate (a duplicate id already stamped); a bare 0 travels as an error.
+        // A count smaller than requested is legitimate (a row this transaction already deleted)
         actor_zeta::unique_future<core::result_wrapper_t<uint64_t>>
         storage_delete_rows(execution_context_t ctx,
                             components::catalog::oid_t table_oid,
@@ -229,16 +241,8 @@ namespace services::disk {
                                                                 uint64_t commit_id,
                                                                 std::set<components::catalog::oid_t> tables);
         actor_zeta::unique_future<core::error_t>
-        // tail_only: revert a range ONLY while it is still the table's last one. Version stamps are not
-        // persisted (components/table/row_group.cpp write_to_disk) and a row group without them reads
-        // back as all-committed, so an aborted row left in the table would come back alive after a
-        // checkpoint -- removing it is the only way its stamps stop deferring the round. But the removal
-        // is a TRUNCATION (components/table/collection.cpp revert_append), so a range with somebody
-        // else's rows behind it must be left alone rather than take them down with it. pg_catalog's own
-        // swap ranges pass false: they are reverted under the catalog's own serialization.
-        storage_revert_appends(execution_context_t ctx,
-                               std::vector<components::pg_catalog_append_range_t> ranges,
-                               bool tail_only);
+        // The ranges are the aborting transaction's own pending appends.
+        storage_revert_appends(execution_context_t ctx, std::vector<components::pg_catalog_append_range_t> ranges);
 
         // Abort path: un-stamps this txn's pending delete marks back to NOT_DELETED_ID.
         actor_zeta::unique_future<void> storage_revert_deletes(execution_context_t ctx,
@@ -256,8 +260,11 @@ namespace services::disk {
         actor_zeta::unique_future<void>
         storage_dropped_committed(session_id_t session, uint64_t txn_id, uint64_t commit_id);
 
-        // Abort mirror of storage_dropped_committed: ERASES (not remaps) so the table survives.
-        actor_zeta::unique_future<void> storage_drop_aborted(session_id_t session, uint64_t txn_id);
+        // The storage half of a transaction's undo: its appended rows, its delete marks, its column stamps, the DROP
+        // marks it left (ERASED, not remapped, so the tables survive) and the storage it created. A refused
+        // append rollback is the error; every other step runs regardless.
+        actor_zeta::unique_future<core::error_t> abort_transaction(session_id_t session,
+                                                                   components::table::txn_abort_drain_t drain);
 
         // Must be read STRICTLY BEFORE the scan that feeds the index, else a loud refusal, never a wrong row.
         actor_zeta::unique_future<core::result_wrapper_t<uint64_t>>
@@ -301,12 +308,15 @@ namespace services::disk {
                                                             &disk_contract::on_horizon_advanced,
                                                             &disk_contract::mark_storage_dropped_many,
                                                             &disk_contract::storage_dropped_committed,
-                                                            &disk_contract::storage_drop_aborted,
+                                                            &disk_contract::abort_transaction,
                                                             // Appended LAST: msg ids are positional
                                                             // (find_method_index), insertion above
                                                             // would renumber every later method.
                                                             &disk_contract::storage_open_scan_hold,
-                                                            &disk_contract::storage_compact_epoch>;
+                                                            &disk_contract::storage_compact_epoch,
+                                                            &disk_contract::revert_column_stamps,
+                                                            &disk_contract::storage_prepare,
+                                                            &disk_contract::storage_release_prepared>;
 
         disk_contract() = delete;
     };

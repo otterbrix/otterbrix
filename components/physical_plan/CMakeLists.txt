@@ -58,6 +58,7 @@ set(${PROJECT_NAME}_SOURCES
         operators/operator_register_cast.cpp
         operators/operator_commit_transaction.cpp
         operators/operator_abort_transaction.cpp
+        operators/transaction_teardown.cpp
         operators/operator_begin_transaction.cpp
         operators/operator_computed_field_register.cpp
         operators/operator_computed_field_unregister.cpp

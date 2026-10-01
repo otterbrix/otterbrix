@@ -26,12 +26,17 @@ namespace components::logical_plan {
     // before the append, so storage, the WAL record and the constraint operators all
     // see a full-width row from pg_attribute.attdefspec, not an absent column.
     struct insert_fill_column_t {
-        std::pmr::string name;            // catalog column name — the append routes by it
+        size_t target_index{0};           // the column's position among those the writer sees
+        std::pmr::string name;            // catalog column name
         types::complex_logical_type type; // the column's stored type
         types::logical_value_t value;     // the DEFAULT, or a typed NULL when there is none
     };
 
     using insert_fill_list_t = std::pmr::vector<insert_fill_column_t>;
+
+    [[nodiscard]] std::pmr::vector<size_t> insert_target_order(std::pmr::memory_resource* resource,
+                                                               const insert_column_bindings_t& bindings,
+                                                               const insert_fill_list_t& fill);
 
     // A bare fractional literal in VALUES carries no declared target type, and the catalog is
     // out of the transformer's reach, so the only value it can build is a double —

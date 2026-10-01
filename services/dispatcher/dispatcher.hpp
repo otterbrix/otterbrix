@@ -115,7 +115,7 @@ namespace services::dispatcher {
         // Drains every parked range, then commit() allocates the commit_id into in_flight_commits_.
         unique_future<txn_commit_drain_t> txn_commit_drain_msg(components::session::session_id_t session,
                                                                uint64_t transaction_id);
-        unique_future<txn_abort_drain_t> txn_abort_drain_msg(components::session::session_id_t session,
+        unique_future<components::table::txn_abort_drain_t> txn_abort_drain_msg(components::session::session_id_t session,
                                                              uint64_t transaction_id);
         // Answers core::error_t, not void, so a no-active-transaction refusal isn't silently dropped.
         unique_future<core::error_t> txn_accumulate_msg(components::session::session_id_t session,
@@ -170,7 +170,7 @@ namespace services::dispatcher {
         unique_future<void> run_rollback_plan_(components::session::session_id_t session,
                                                components::table::transaction_data txn);
 
-        txn_abort_drain_t drain_for_abort_(components::table::transaction_t& txn);
+        components::table::txn_abort_drain_t drain_for_abort_(components::table::transaction_t& txn);
 
         components::table::transaction_t* statement_transaction_(components::session::session_id_t session,
                                                                  uint64_t transaction_id);

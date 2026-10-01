@@ -290,8 +290,10 @@ namespace otterbrix {
                                         auto types = r->physical_data.front().types();
                                         std::vector<components::table::column_definition_t> cols;
                                         cols.reserve(types.size());
-                                        for (const auto& t : types) {
+                                        for (size_t column = 0; column < types.size(); ++column) {
+                                            const auto& t = types[column];
                                             cols.emplace_back(t.has_alias() ? t.alias() : std::string{}, t);
+                                            cols.back().set_attoid(r->physical_attoids[column]);
                                         }
                                         auto otbx = disk.path_db() / std::to_string(static_cast<unsigned>(ns_oid)) /
                                                     std::to_string(static_cast<unsigned>(table_oid)) / "table.otbx";
@@ -328,6 +330,7 @@ namespace otterbrix {
                                     const auto chunk_count = static_cast<uint64_t>(chunk.size());
                                     auto append_r =
                                         disk.append_sync(table_oid,
+                                                         r->physical_attoids,
                                                          chunk,
                                                          components::table::transaction_data{r->transaction_id, 0});
                                     if (append_r.has_error()) {
@@ -383,8 +386,10 @@ namespace otterbrix {
                                         auto types = r->physical_data.front().types();
                                         std::vector<components::table::column_definition_t> cols;
                                         cols.reserve(types.size());
-                                        for (const auto& t : types) {
+                                        for (size_t column = 0; column < types.size(); ++column) {
+                                            const auto& t = types[column];
                                             cols.emplace_back(t.has_alias() ? t.alias() : std::string{}, t);
+                                            cols.back().set_attoid(r->physical_attoids[column]);
                                         }
                                         auto otbx = disk.path_db() / std::to_string(static_cast<unsigned>(ns_oid)) /
                                                     std::to_string(static_cast<unsigned>(table_oid)) / "table.otbx";
@@ -417,7 +422,10 @@ namespace otterbrix {
                                         break;
                                     }
                                 }
-                                if (auto add_err = disk.direct_add_column_sync(table_oid, r->physical_data.front());
+                                if (auto add_err = disk.direct_add_column_sync(table_oid,
+                                                                                  r->physical_attoids,
+                                                                                  r->physical_data.front(),
+                                                                                  r->physical_row_start);
                                     add_err.contains_error()) {
                                     error(log, "spaces::replay: {}", add_err.what);
                                 }
@@ -487,6 +495,7 @@ namespace otterbrix {
                                     auto upd_r =
                                         disk.update_sync(table_oid,
                                                          ids,
+                                                         r->physical_attoids,
                                                          chunk,
                                                          components::table::transaction_data{r->transaction_id, 0});
                                     if (upd_r.has_error()) {

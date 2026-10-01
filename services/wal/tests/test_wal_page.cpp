@@ -7,6 +7,7 @@
 #include <services/wal/wal_page.hpp>
 #include <services/wal/wal_page_reader.hpp>
 #include <services/wal/wal_page_writer.hpp>
+#include "wal_test_attoids.hpp"
 
 namespace {
 
@@ -86,6 +87,7 @@ namespace {
                                      wal_id,
                                      txn_id,
                                      table_oid,
+                                     wal_test::attoids_for(chunk),
                                      to_chunk_batch(chunk),
                                      row_start,
                                      row_count);
@@ -128,6 +130,7 @@ namespace {
                                      txn_id,
                                      table_oid,
                                      row_ids.data(),
+                                     wal_test::attoids_for(chunk),
                                      to_chunk_batch(chunk),
                                      count);
         info.data = buffer_to_vec(buf);

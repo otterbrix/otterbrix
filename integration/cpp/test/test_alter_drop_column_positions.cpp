@@ -4,6 +4,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstdint>
+#include <filesystem>
 #include <sstream>
 #include <string>
 
@@ -110,11 +111,12 @@ namespace {
 } // namespace
 
 // A dropped column keeps its place in the storage and loses it in the transaction's schema, so the
-// columns that outlive it must not slide into the hole it leaves.
-TEST_CASE("integration::cpp::alter_drop_column_positions") {
-    auto config = test_create_config(integration_fixture_path("alter_drop_column_positions"));
+// columns that outlive it must not slide into the hole it leaves -- live, and through replay.
+TEST_CASE("integration::cpp::alter_drop_column") {
+    auto config = test_create_config(integration_fixture_path("alter_drop_column"));
     test_clear_directory(config);
     config.log.level = log_t::level::off;
+    const std::filesystem::path crash_dir = integration_fixture_path("alter_drop_column_crash");
 
     SECTION("a dropped middle column moves nothing") {
         {
@@ -216,5 +218,85 @@ TEST_CASE("integration::cpp::alter_drop_column_positions") {
             REQUIRE_FALSE(cur->value(1, row).is_null());
             REQUIRE(cur->value(1, row).value<std::int64_t>() == expected_c);
         }
+    }
+
+    SECTION("a drop before the first checkpoint replays") {
+        constexpr std::size_t FEW = 5;
+
+        {
+            test_spaces space(config);
+            auto* dispatcher = space.dispatcher();
+            run_sql(dispatcher, "CREATE DATABASE TestDatabase;");
+            run_sql(dispatcher, "CREATE TABLE TestDatabase.t (a BIGINT, b BIGINT, c BIGINT);");
+            insert_all_columns(dispatcher, 0, FEW);
+            run_sql(dispatcher, "ALTER TABLE TestDatabase.t DROP COLUMN b;");
+            insert_surviving_columns(dispatcher, FEW, FEW);
+            check_surviving_columns(dispatcher, 2 * FEW);
+
+            std::filesystem::remove_all(crash_dir);
+            std::filesystem::create_directories(crash_dir.parent_path());
+            std::filesystem::copy(config.main_path, crash_dir, std::filesystem::copy_options::recursive);
+        }
+
+        auto crash_config = test_create_config(crash_dir);
+        crash_config.log.level = log_t::level::off;
+        test_spaces space(crash_config);
+        check_surviving_columns(space.dispatcher(), 2 * FEW);
+    }
+
+    SECTION("a name added again is its own column through replay") {
+        constexpr std::int64_t DEFAULT_B = 5;
+        constexpr std::int64_t INSERTED_B = 9;
+        constexpr std::int64_t UPDATED_B = 6;
+        constexpr std::int64_t TOUCHED = 7;
+        const auto expected_b = [](std::size_t row) {
+            if (row == ROWS) {
+                return INSERTED_B;
+            }
+            return static_cast<std::int64_t>(row) == TOUCHED ? UPDATED_B : DEFAULT_B;
+        };
+        const auto check = [&](otterbrix::wrapper_dispatcher_t* dispatcher) {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT a, b, c FROM TestDatabase.t ORDER BY a;");
+            INFO("error: " << error_text(*cur));
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == ROWS + 1);
+            for (std::size_t row = 0; row <= ROWS; ++row) {
+                INFO("row " << row);
+                REQUIRE(cur->value(0, row).value<std::int64_t>() == A_BASE + static_cast<std::int64_t>(row));
+                REQUIRE_FALSE(cur->value(1, row).is_null());
+                REQUIRE(cur->value(1, row).value<std::int64_t>() == expected_b(row));
+                REQUIRE(cur->value(2, row).value<std::int64_t>() == C_BASE + static_cast<std::int64_t>(row));
+            }
+        };
+
+        {
+            test_spaces space(config);
+            auto* dispatcher = space.dispatcher();
+            seed_three_columns(dispatcher);
+            // Everything after this lives only in the journal when the image is taken.
+            run_sql(dispatcher, "CHECKPOINT;");
+            run_sql(dispatcher, "ALTER TABLE TestDatabase.t DROP COLUMN b;");
+            run_sql(dispatcher, "ALTER TABLE TestDatabase.t ADD COLUMN b BIGINT DEFAULT " + std::to_string(DEFAULT_B) + ";");
+            run_sql(dispatcher,
+                    "INSERT INTO TestDatabase.t (a, c, b) VALUES (" + std::to_string(A_BASE + ROWS) + ", " +
+                        std::to_string(C_BASE + ROWS) + ", " + std::to_string(INSERTED_B) + ");");
+            run_sql(dispatcher,
+                    "UPDATE TestDatabase.t SET b = " + std::to_string(UPDATED_B) +
+                        " WHERE a = " + std::to_string(A_BASE + TOUCHED) + ";");
+
+            INFO("live");
+            check(dispatcher);
+
+            std::filesystem::remove_all(crash_dir);
+            std::filesystem::create_directories(crash_dir.parent_path());
+            std::filesystem::copy(config.main_path, crash_dir, std::filesystem::copy_options::recursive);
+        }
+
+        INFO("after replaying the crash image's journal");
+        auto crash_config = test_create_config(crash_dir);
+        crash_config.log.level = log_t::level::off;
+        test_spaces space(crash_config);
+        check(space.dispatcher());
     }
 }

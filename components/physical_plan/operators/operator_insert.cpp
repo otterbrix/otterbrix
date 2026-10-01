@@ -1,6 +1,7 @@
 #include "operator_insert.hpp"
 
 #include <atomic>
+#include <cassert>
 
 #include "dml_util.hpp"
 
@@ -22,6 +23,21 @@ namespace components::operators {
     }
     void reset_insert_index_mirror_sends() noexcept { g_insert_index_mirror_sends.store(0, std::memory_order_relaxed); }
 #endif
+
+    namespace {
+        void put_in_target_order(vector::data_chunk_t& chunk,
+                                 const logical_plan::insert_column_bindings_t& bindings,
+                                 const logical_plan::insert_fill_list_t& fill) {
+            const auto source_of = logical_plan::insert_target_order(chunk.resource(), bindings, fill);
+            assert(source_of.size() == chunk.column_count() && "put_in_target_order: payload width is validated");
+            std::vector<vector::vector_t> ordered;
+            ordered.reserve(source_of.size());
+            for (const auto source : source_of) {
+                ordered.push_back(std::move(chunk.data[source]));
+            }
+            chunk.data = std::move(ordered);
+        }
+    } // namespace
 
     operator_insert::operator_insert(std::pmr::memory_resource* resource,
                                      log_t log,
@@ -75,6 +91,9 @@ namespace components::operators {
                     filled.set_type_alias(std::string{column.name.c_str()});
                     input.data.emplace_back(std::move(filled));
                 }
+            }
+            if (!column_bindings_.empty() && !components::catalog::is_catalog_table(table_oid_)) {
+                put_in_target_order(input, column_bindings_, fill_list_);
             }
             output_->append_chunk(std::move(input));
         }

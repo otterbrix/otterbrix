@@ -194,12 +194,110 @@ TEST_CASE("components::table::mvcc::append_revert_across_row_groups") {
     // Not vacuous: the reverted rows fill more than one row group of their own.
     REQUIRE(reverted_rows > table->row_group_size());
 
-    // Not the tail: truncating there would take the rows behind it down too.
-    REQUIRE(table->revert_append(0, kept_rows).has_error());
-
     REQUIRE_FALSE(table->revert_append(static_cast<int64_t>(kept_rows), reverted_rows).has_error());
     append_rows(*table, env, static_cast<int64_t>(kept_rows), 1);
     REQUIRE(scan_all() == kept_rows + 1);
+}
+
+TEST_CASE("components::table::mvcc::non_tail_revert") {
+    test_env env;
+    auto table = make_int_table(env);
+    const auto count_under = [&](const transaction_data& txn) {
+        std::vector<storage_index_t> column_ids;
+        column_ids.emplace_back(0);
+        table_scan_state scan_state(&env.resource);
+        table->initialize_scan(scan_state, column_ids, txn);
+        auto types = table->copy_types();
+        auto result = data_chunk_t(&env.resource, types, DEFAULT_VECTOR_CAPACITY);
+        uint64_t total = 0;
+        while (true) {
+            table->scan(result, scan_state);
+            REQUIRE_FALSE(scan_state.table_state.has_error());
+            if (result.size() == 0) {
+                return total;
+            }
+            total += result.size();
+            result.reset();
+        }
+    };
+
+    transaction_manager_t mgr(&env.resource);
+    auto aborting_session = components::session::session_id_t::generate_uid();
+    auto& aborting = mgr.begin_transaction(aborting_session, transaction_scope_t::statement);
+    auto other_session = components::session::session_id_t::generate_uid();
+    auto& other = mgr.begin_transaction(other_session, transaction_scope_t::statement);
+
+    constexpr uint64_t partial_rows = 37;
+    const uint64_t aborted_rows = DEFAULT_VECTOR_CAPACITY + partial_rows;
+    append_rows_txn(*table, env, 0, DEFAULT_VECTOR_CAPACITY, aborting.data());
+    append_rows_txn(*table, env, static_cast<int64_t>(DEFAULT_VECTOR_CAPACITY), partial_rows, aborting.data());
+    constexpr uint64_t neighbour_rows = 53;
+    append_rows(*table, env, static_cast<int64_t>(aborted_rows), neighbour_rows);
+    REQUIRE(count_under(aborting.data()) == aborted_rows + neighbour_rows);
+
+    const auto aborting_snapshot = aborting.data();
+    mgr.abort(aborting_session);
+    REQUIRE_FALSE(table->revert_append(0, aborted_rows).has_error());
+
+    // Gone for every snapshot, the aborted transaction's own included; the neighbour's rows untouched.
+    REQUIRE(count_under(transaction_data::committed()) == neighbour_rows);
+    REQUIRE(count_under(aborting_snapshot) == neighbour_rows);
+    REQUIRE(count_under(other.data()) == neighbour_rows);
+    mgr.abort(other_session);
+}
+
+TEST_CASE("components::table::mvcc::a_single_slot_claim_conflicts") {
+    using decision = write_decision_t;
+
+    // Snapshot: commit ids up to 100 are in, except 90, allocated but not yet published.
+    constexpr uint64_t claimer_id = TRANSACTION_ID_START + 11;
+    transaction_data claimer{claimer_id, 100};
+    claimer.snapshot_horizon = 100;
+    claimer.in_flight_snapshot = {90};
+    const auto claim = [&](uint64_t stamp) { return data_table_t::decide_claim(claimer, stamp); };
+
+    CHECK(claim(NOT_DELETED_ID) == decision::proceed);
+    CHECK(claim(claimer_id) == decision::skip);
+    INFO("first writer wins, and nobody waits");
+    CHECK(claim(TRANSACTION_ID_START + 12) == decision::conflict);
+    INFO("committed, but not in the snapshot: past the horizon, or in flight when it was taken");
+    CHECK(claim(101) == decision::conflict);
+    CHECK(claim(90) == decision::conflict);
+}
+
+namespace {
+    core::result_wrapper_t<uint64_t>
+    delete_ids(data_table_t& table, test_env& env, std::initializer_list<int64_t> ids, const transaction_data& txn) {
+        auto row_ids = vector_t(&env.resource, complex_logical_type(logical_type::BIGINT), ids.size());
+        uint64_t position = 0;
+        for (auto id : ids) {
+            row_ids.data<int64_t>()[position++] = id;
+        }
+        auto del_state = table.initialize_delete({});
+        return table.delete_rows(*del_state, row_ids, ids.size(), txn);
+    }
+} // namespace
+
+TEST_CASE("components::table::mvcc::a_delete_committed_after_snapshot") {
+    test_env env;
+    auto table = make_int_table(env);
+    append_rows(*table, env, 0, 10);
+
+    transaction_manager_t mgr(&env.resource);
+    auto late_session = components::session::session_id_t::generate_uid();
+    auto& late = mgr.begin_transaction(late_session, transaction_scope_t::statement);
+
+    auto early_session = components::session::session_id_t::generate_uid();
+    const auto early = mgr.begin_transaction(early_session, transaction_scope_t::statement).data();
+    REQUIRE(deleted_or_fail(delete_ids(*table, env, {4}, early)) == 1);
+    const auto commit_id = mgr.commit(early_session);
+    mgr.publish(commit_id);
+    table->commit_all_deletes(early.transaction_id, commit_id);
+
+    INFO("the row is still live in the late transaction's snapshot, but its delete slot is taken");
+    REQUIRE(scan_count_txn(*table, env, late.data()) == 10);
+    REQUIRE(delete_ids(*table, env, {4}, late.data()).has_error());
+    mgr.abort(late_session);
 }
 
 TEST_CASE("components::table::mvcc::append_without_txn_backward_compat") {
@@ -278,7 +376,7 @@ TEST_CASE("components::table::mvcc::delete_rows_txn_commit_all_deletes") {
     auto txn_id = txn.data().transaction_id;
 
     table_delete_state del_state(&env.resource);
-    REQUIRE_FALSE(table->delete_rows(del_state, row_ids_chunk.data[0], 5, txn_id).has_error());
+    REQUIRE_FALSE(table->delete_rows(del_state, row_ids_chunk.data[0], 5, txn.data()).has_error());
 
     // mgr.commit() erases txn from active_map, so `txn` is dangling from here on
     auto commit_id = mgr.commit(session);
@@ -307,10 +405,8 @@ TEST_CASE("components::table::mvcc::delete_rows_txn_without_commit_visible") {
     }
     row_ids_chunk.set_cardinality(5);
 
-    auto txn_id = txn.data().transaction_id;
-
     table_delete_state del_state(&env.resource);
-    REQUIRE_FALSE(table->delete_rows(del_state, row_ids_chunk.data[0], 5, txn_id).has_error());
+    REQUIRE_FALSE(table->delete_rows(del_state, row_ids_chunk.data[0], 5, txn.data()).has_error());
 
     mgr.abort(session); // also erases txn from active_map; leave it uncommitted
 
@@ -338,7 +434,7 @@ TEST_CASE("components::table::mvcc::cleanup_committed_deletes") {
 
     auto txn_id = txn.data().transaction_id;
     table_delete_state del_state(&env.resource);
-    REQUIRE_FALSE(table->delete_rows(del_state, row_ids_chunk.data[0], 10, txn_id).has_error());
+    REQUIRE_FALSE(table->delete_rows(del_state, row_ids_chunk.data[0], 10, txn.data()).has_error());
 
     auto commit_id = mgr.commit(session);
     mgr.publish(commit_id);
@@ -373,7 +469,7 @@ TEST_CASE("components::table::mvcc::cleanup_partial_deletes") {
 
     auto txn_id = txn.data().transaction_id;
     table_delete_state del_state(&env.resource);
-    REQUIRE_FALSE(table->delete_rows(del_state, row_ids_chunk.data[0], 5, txn_id).has_error());
+    REQUIRE_FALSE(table->delete_rows(del_state, row_ids_chunk.data[0], 5, txn.data()).has_error());
 
     auto commit_id = mgr.commit(session);
     mgr.publish(commit_id);
@@ -408,7 +504,7 @@ TEST_CASE("components::table::mvcc::compact_after_delete") {
 
     auto txn_id = txn.data().transaction_id;
     table_delete_state del_state(&env.resource);
-    REQUIRE_FALSE(table->delete_rows(del_state, row_ids_chunk.data[0], 50, txn_id).has_error());
+    REQUIRE_FALSE(table->delete_rows(del_state, row_ids_chunk.data[0], 50, txn.data()).has_error());
 
     auto commit_id = mgr.commit(session);
     mgr.publish(commit_id);
@@ -471,7 +567,7 @@ TEST_CASE("components::table::mvcc::delete_not_visible_until_commit") {
 
     auto txn_id = txn1.data().transaction_id;
     table_delete_state del_state(&env.resource);
-    REQUIRE_FALSE(table->delete_rows(del_state, row_ids_chunk.data[0], 5, txn_id).has_error());
+    REQUIRE_FALSE(table->delete_rows(del_state, row_ids_chunk.data[0], 5, txn1.data()).has_error());
 
     auto s2 = components::session::session_id_t::generate_uid();
     auto& txn2 = mgr.begin_transaction(s2, transaction_scope_t::statement);
@@ -534,7 +630,7 @@ namespace {
         return values;
     }
 
-    void delete_row0_txn(data_table_t& table, test_env& env, uint64_t txn_id) {
+    void delete_row0_txn(data_table_t& table, test_env& env, const transaction_data& txn) {
         std::pmr::vector<complex_logical_type> id_type(&env.resource);
         id_type.emplace_back(logical_type::BIGINT);
         auto row_ids_chunk = data_chunk_t(&env.resource, id_type, 1);
@@ -542,7 +638,7 @@ namespace {
         row_ids_chunk.set_cardinality(1);
 
         table_delete_state del_state(&env.resource);
-        REQUIRE_FALSE(table.delete_rows(del_state, row_ids_chunk.data[0], 1, txn_id).has_error());
+        REQUIRE_FALSE(table.delete_rows(del_state, row_ids_chunk.data[0], 1, txn).has_error());
     }
 
     std::set<int64_t> make_range(int64_t first, int64_t last) {
@@ -575,7 +671,7 @@ TEST_CASE("components::table::mvcc::compact_preserves_old_snapshot_view") {
     auto s3 = components::session::session_id_t::generate_uid();
     auto& txn3 = mgr.begin_transaction(s3, transaction_scope_t::statement);
     auto txn3_id = txn3.data().transaction_id;
-    delete_row0_txn(*table, env, txn3_id);
+    delete_row0_txn(*table, env, txn3.data());
     append_rows_txn(*table, env, 100, 1, txn3.data()); // physical row 10
     auto c3 = mgr.commit(s3);
     table->commit_all_deletes(txn3_id, c3);
@@ -620,7 +716,7 @@ TEST_CASE("components::table::mvcc::compact_in_flight_commit_window") {
     auto s3 = components::session::session_id_t::generate_uid();
     auto& txn3 = mgr.begin_transaction(s3, transaction_scope_t::statement);
     auto txn3_id = txn3.data().transaction_id;
-    delete_row0_txn(*table, env, txn3_id);
+    delete_row0_txn(*table, env, txn3.data());
     append_rows_txn(*table, env, 100, 1, txn3.data()); // physical row 10
 
     auto c3 = mgr.commit(s3); // c3 stays IN FLIGHT (no publish yet); stamp only the delete side
@@ -772,7 +868,7 @@ TEST_CASE("components::table::mvcc::aborted_update_revert_restores_row") {
         auto del_state = table->initialize_delete({});
         auto row_ids = vector_t(&env.resource, complex_logical_type(logical_type::BIGINT), 1);
         row_ids.set_value(0, logical_value_t(&env.resource, int64_t(0)));
-        REQUIRE(deleted_or_fail(table->delete_rows(*del_state, row_ids, 1, txn_id)) == 1);
+        REQUIRE(deleted_or_fail(table->delete_rows(*del_state, row_ids, 1, txn)) == 1);
     }
     int64_t appended_start = 0;
     {
@@ -817,7 +913,7 @@ TEST_CASE("components::table::mvcc::aborted_update_revert_restores_row") {
         auto del_state = table->initialize_delete({});
         auto row_ids = vector_t(&env.resource, complex_logical_type(logical_type::BIGINT), 1);
         row_ids.set_value(0, logical_value_t(&env.resource, int64_t(0)));
-        REQUIRE(deleted_or_fail(table->delete_rows(*del_state, row_ids, 1, txn2)) == 1);
+        REQUIRE(deleted_or_fail(table->delete_rows(*del_state, row_ids, 1, transaction_data{txn2, 102})) == 1);
     }
     int64_t start2 = 0;
     {
@@ -888,7 +984,7 @@ TEST_CASE("components::table::mvcc::committed_row_count_after_delete_past_1024")
     auto del_state = table->initialize_delete({});
     auto row_ids = vector_t(&env.resource, complex_logical_type(logical_type::BIGINT), 1);
     row_ids.set_value(0, logical_value_t(&env.resource, int64_t(1030))); // lives in row group 1
-    REQUIRE(deleted_or_fail(table->delete_rows(*del_state, row_ids, 1, txn_id)) == 1);
+    REQUIRE(deleted_or_fail(table->delete_rows(*del_state, row_ids, 1, txn.data())) == 1);
 
     auto commit_id = mgr.commit(session);
     mgr.publish(commit_id);
@@ -915,7 +1011,7 @@ TEST_CASE("components::table::mvcc::compact_refused_while_delete_past_1024_pendi
     auto del_state = table->initialize_delete({});
     auto row_ids = vector_t(&env.resource, complex_logical_type(logical_type::BIGINT), 1);
     row_ids.set_value(0, logical_value_t(&env.resource, int64_t(1030))); // pending, no commit
-    REQUIRE(deleted_or_fail(table->delete_rows(*del_state, row_ids, 1, txn_id)) == 1);
+    REQUIRE(deleted_or_fail(table->delete_rows(*del_state, row_ids, 1, txn.data())) == 1);
 
     REQUIRE_FALSE(table->compact(mgr.compact_watermark()));
 
@@ -1105,7 +1201,7 @@ namespace {
             row_ids.set_value(i, logical_value_t(&env.resource, first_row + static_cast<int64_t>(i)));
         }
         auto del_state = table.initialize_delete({});
-        REQUIRE(deleted_or_fail(table.delete_rows(*del_state, row_ids, count, txn_id)) == count);
+        REQUIRE(deleted_or_fail(table.delete_rows(*del_state, row_ids, count, txn.data())) == count);
 
         auto commit_id = mgr.commit(session);
         mgr.publish(commit_id);
@@ -1304,7 +1400,7 @@ TEST_CASE("components::table::mvcc::index_sweep_floor_in_publish_window") {
     auto s_del = components::session::session_id_t::generate_uid();
     auto& txn_del = mgr.begin_transaction(s_del, transaction_scope_t::statement);
     auto txn_del_id = txn_del.data().transaction_id;
-    delete_row0_txn(*table, env, txn_del_id);
+    delete_row0_txn(*table, env, txn_del.data());
     auto c_del = mgr.commit(s_del); // stamped, but publish() has NOT run yet
     table->commit_all_deletes(txn_del_id, c_del);
 
@@ -1354,7 +1450,7 @@ TEST_CASE("components::table::mvcc::orphaned_commit_blocks_compaction") {
     auto s_del = components::session::session_id_t::generate_uid();
     auto& txn_del = mgr.begin_transaction(s_del, transaction_scope_t::statement);
     auto txn_del_id = txn_del.data().transaction_id;
-    delete_row0_txn(*table, env, txn_del_id);
+    delete_row0_txn(*table, env, txn_del.data());
     const auto c_del = mgr.commit(s_del);
     REQUIRE(c_del > c_lost);
     table->commit_all_deletes(txn_del_id, c_del);

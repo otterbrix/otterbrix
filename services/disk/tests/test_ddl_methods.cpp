@@ -1014,8 +1014,10 @@ TEST_CASE("services::disk::ddl::replay_mutations_refuse_when_the_owner_has_no_st
     fixture fx;
 
     const catalog::oid_t nowhere = FIRST_USER_OID + 4243;
+    const catalog::oid_t grown_attoid = FIRST_USER_OID + 4244;
     std::pmr::vector<std::int64_t> ids(&fx.resource);
     ids.push_back(0);
+    const std::pmr::vector<catalog::oid_t> one_attoid({grown_attoid}, &fx.resource);
 
     CHECK(fx.manager->delete_sync(nowhere, ids, 1, components::table::transaction_data::committed()).type ==
           core::error_code_t::io_error);
@@ -1025,7 +1027,9 @@ TEST_CASE("services::disk::ddl::replay_mutations_refuse_when_the_owner_has_no_st
     components::vector::data_chunk_t upd(&fx.resource, upd_types, 1);
     upd.set_cardinality(1);
     upd.set_value(0, 0, std::int64_t{7});
-    CHECK(fx.manager->update_sync(nowhere, ids, upd, components::table::transaction_data::committed()).error().type ==
+    CHECK(fx.manager->update_sync(nowhere, ids, one_attoid, upd, components::table::transaction_data::committed())
+              .error()
+              .type ==
           core::error_code_t::io_error);
 
     auto added_type = components::types::complex_logical_type{components::types::logical_type::BIGINT};
@@ -1034,7 +1038,8 @@ TEST_CASE("services::disk::ddl::replay_mutations_refuse_when_the_owner_has_no_st
     schema_types.push_back(added_type);
     components::vector::data_chunk_t schema_chunk(&fx.resource, schema_types, 1);
     schema_chunk.set_cardinality(0);
-    CHECK(fx.manager->direct_add_column_sync(nowhere, schema_chunk).type == core::error_code_t::io_error);
+    CHECK(fx.manager->direct_add_column_sync(nowhere, one_attoid, schema_chunk, 1).type ==
+          core::error_code_t::io_error);
 
     std::pmr::vector<std::int64_t> no_ids(&fx.resource);
     CHECK(fx.manager->delete_sync(nowhere, no_ids, 0, components::table::transaction_data::committed()).type ==
@@ -1051,5 +1056,5 @@ TEST_CASE("services::disk::ddl::replay_mutations_refuse_when_the_owner_has_no_st
     REQUIRE_FALSE(
         fx.manager->create_storage_disk_sync(table_oid, ns_oid, cols, otbx, /*is_computed=*/false).contains_error());
     REQUIRE(fx.manager->has_storage(table_oid));
-    CHECK(fx.manager->direct_add_column_sync(table_oid, schema_chunk).type == core::error_code_t::none);
+    CHECK(fx.manager->direct_add_column_sync(table_oid, one_attoid, schema_chunk, 1).type == core::error_code_t::none);
 }

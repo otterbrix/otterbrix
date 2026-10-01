@@ -26,6 +26,7 @@
 #include <services/wal/manager_wal_replicate.hpp>
 #include <services/wal/wal_page.hpp>
 #include <services/wal/wal_reader.hpp>
+#include "wal_test_attoids.hpp"
 
 // Injected via services::wal::dev_set_wal_file_interposer: nullptr models an unopenable segment
 // (the same value local_file_system.cpp's open_file returns for it), and
@@ -133,6 +134,7 @@ namespace {
                                                          &manager_wal_replicate_t::write_physical_insert,
                                                          session_id_t::generate_uid(),
                                                          kTestTableOid,
+                                                         wal_test::attoids_for(make_insert_batch(rows)),
                                                          make_insert_batch(rows),
                                                          row_start,
                                                          static_cast<uint64_t>(rows),

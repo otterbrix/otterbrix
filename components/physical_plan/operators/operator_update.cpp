@@ -529,7 +529,6 @@ namespace components::operators {
 
                 chunks_vector_t update_data(resource_);
                 std::pmr::vector<vector_t> update_row_ids(resource_);
-                chunks_vector_t wal_chunks(resource_);
                 std::pmr::vector<int64_t> wal_row_ids(resource_);
                 chunks_vector_t idx_old(resource_);
                 chunks_vector_t idx_new(resource_);
@@ -561,7 +560,6 @@ namespace components::operators {
                     update_row_ids.emplace_back(std::move(row_ids));
                     update_data.emplace_back(copy_of(out_chunk));
 
-                    wal_chunks.emplace_back(copy_of(out_chunk));
                     for (uint64_t i = 0; i < n; i++) {
                         wal_row_ids.push_back(out_chunk.row_ids.data<int64_t>()[i]);
                     }
@@ -611,7 +609,7 @@ namespace components::operators {
                 if (update_result.has_error()) {
                     co_return dml_detail::flush_outcome_t{update_result.error()};
                 }
-                auto appended = update_result.value();
+                auto appended = update_result.value().range;
 
                 // UPDATE applies to storage first, then writes its own WAL record — unlike INSERT's
                 // WAL-first storage_append.
@@ -623,7 +621,8 @@ namespace components::operators {
                                                     ctx->session,
                                                     table_oid_,
                                                     std::move(wal_row_ids),
-                                                    std::move(wal_chunks),
+                                                    std::move(update_result.value().attoids),
+                                                    std::move(update_result.value().written),
                                                     wal_count,
                                                     ctx->txn.transaction_id,
                                                     db_oid);

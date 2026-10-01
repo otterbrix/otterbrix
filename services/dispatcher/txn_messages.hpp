@@ -66,62 +66,6 @@ namespace services::dispatcher {
         std::vector<components::table::created_index_t> created_indexes{};
     };
 
-    // Result of txn_abort_drain_msg: txn_data snapshot + the pg_catalog appends
-    // that need storage_revert_appends, plus the UNIQUE base-table oids the txn
-    // accumulated appends for so the abort operator can fan out
-    // manager_index_t::revert_insert per oid (parity with the failed-DML path in
-    // executor.cpp, which reverts PENDING in-memory index entries per touched
-    // base table). Mirrors operator_abort_transaction_t's drain (backfill markers
-    // are discarded on abort — their targets ride in swap_appends; the pg_catalog
-    // delete-tables are KEPT so the abort operator can un-stamp the catalog heap
-    // delete marks a DROP left behind). The handler calls txn_manager.abort()
-    // after draining.
-    //
-    // base_append_tables collapses the drained base-append ranges to a table-oid
-    // set (loss-free: every range carries the same explicit txn id). pg_catalog
-    // tables are deliberately absent — they have no index engines, so a
-    // revert_insert on a pg_catalog oid is a no-op by manager_index_t's engines_
-    // lookup; reverting only base oids is both correct and minimal.
-    //
-    // base_delete_tables mirrors base_append_tables for the DELETE side: the
-    // UNIQUE base-table oids the txn accumulated DELETE ranges for. The abort
-    // operator fans out manager_index_t::revert_delete per oid to clear the
-    // PENDING in-memory index DELETE markers an uncommitted DELETE staged
-    // (parity with executor.cpp's failed-DML revert, which an explicit SQL
-    // ROLLBACK must match). The delete RANGES themselves are still discarded on
-    // abort — uncommitted tombstones (delete_id == txn_id) are invisible to every
-    // reader and VACUUM reclaims them; only the index markers need an explicit
-    // revert because they are not gated by the MVCC visibility filter.
-    //
-    // pg_catalog_delete_tables surfaces the CATALOG tables a DROP inside this txn
-    // stamped delete marks on (pg_class, pg_attribute, pg_depend, ...). Unlike
-    // base-table tombstones, these on-heap marks must be UN-STAMPED on abort:
-    // the mark carries the aborted txn_id, so it is invisible to readers, BUT it
-    // persists and blocks a future re-DELETE of the same catalog row (delete_rows
-    // skips an already-marked slot). The abort operator routes these through the
-    // SAME storage_revert_deletes as base_delete_tables. Drained (not discarded)
-    // precisely so the heap mark can be reverted — mirrors the base side.
-    struct txn_abort_drain_t {
-        components::table::transaction_data txn{0, 0};
-        std::vector<components::pg_catalog_append_range_t> swap_appends{};
-        // The USER-table ranges this txn appended, kept whole (not collapsed to oids like
-        // base_append_tables): the abort operator hands them back so the rows physically go, which is
-        // what stops their never-committed stamps deferring every later checkpoint round.
-        std::vector<components::pg_catalog_append_range_t> base_appends{};
-        std::set<components::catalog::oid_t> base_append_tables{};
-        std::set<components::catalog::oid_t> base_delete_tables{};
-        std::set<components::catalog::oid_t> pg_catalog_delete_tables{};
-        // Storage oids retired by DROP in this (now aborting) txn. Informational
-        // today: the abort operator does not yet un-stamp them, so they ride out
-        // for symmetry with the commit drain.
-        std::vector<components::catalog::oid_t> dropped_storage_oids{};
-        // Storage oids / indexes a CREATE in this (now aborting) txn brought into
-        // being. Drained so the abort operator can drop the still-uncommitted
-        // storage / index — symmetric with the commit drain's created_* fields.
-        std::vector<components::catalog::oid_t> created_storage_oids{};
-        std::vector<components::table::created_index_t> created_indexes{};
-    };
-
     // Payload of txn_accumulate_msg: every range an executor statement parks on
     // the session's transaction_t. ONE message serves both producers:
     //   explicit-DML statements — all five fields populated as needed;

@@ -2,6 +2,7 @@
 
 #include <components/context/context.hpp>
 #include <components/context/execution_context.hpp>
+#include <components/physical_plan/operators/transaction_teardown.hpp>
 #include <services/disk/manager_disk.hpp>
 #include <services/dispatcher/dispatcher.hpp>
 #include <services/dispatcher/txn_messages.hpp>
@@ -14,6 +15,17 @@
 #include <vector>
 
 namespace components::operators {
+
+    namespace {
+        std::pmr::set<components::catalog::oid_t> tables_to_prepare(const components::table::txn_abort_drain_t& undo,
+                                                                    std::pmr::memory_resource* resource) {
+            std::pmr::set<components::catalog::oid_t> tables{undo.base_append_tables.begin(),
+                                                            undo.base_append_tables.end(),
+                                                            resource};
+            tables.insert(undo.column_stamped_tables.begin(), undo.column_stamped_tables.end());
+            return tables;
+        }
+    } // namespace
 
     // Handles COMMIT only; ROLLBACK and statement-failure abort go through operator_abort_transaction_t.
 
@@ -30,6 +42,8 @@ namespace components::operators {
         std::set<components::catalog::oid_t> base_delete_tables;
         std::vector<components::catalog::oid_t> dropped_storage_oids;
         std::vector<components::table::created_index_t> created_indexes;
+        // Until the WAL marker, the only record of this transaction's writes: the drain emptied it.
+        components::table::txn_abort_drain_t undo;
         if (ctx->current_message_sender != actor_zeta::address_t::empty_address()) {
             auto [_dr, drf] =
                 actor_zeta::otterbrix::send(ctx->current_message_sender,
@@ -37,6 +51,7 @@ namespace components::operators {
                                             ctx->session,
                                             ctx->txn.transaction_id);
             services::dispatcher::txn_commit_drain_t drain = co_await std::move(drf);
+            undo = undo_of_commit(drain);
             txn_data = drain.txn;
             swap_appends = std::move(drain.swap_appends);
             swap_deletes = std::move(drain.swap_deletes);
@@ -50,9 +65,25 @@ namespace components::operators {
 
         ctx->committed_id = commit_id_;
 
-        // ORDERING INVARIANT: only the index insert-commit and the WAL marker below can still discard
-        // commit_id; every later step only stamps/publishes an already-durable commit, so leaking commit_id_
-        // past the WAL marker floors visible_to_all_locked() and stalls compact()/GC forever.
+        bool prepares = txn_data.transaction_id != 0 && commit_id_ > 0 &&
+                              ctx->disk_address != actor_zeta::address_t::empty_address();
+        auto prepared_tables = tables_to_prepare(undo, resource_);
+        if (prepares && !prepared_tables.empty()) {
+            auto [_pr, prf] = actor_zeta::otterbrix::send(
+                ctx->disk_address,
+                &services::disk::manager_disk_t::storage_prepare,
+                components::execution_context_t{ctx->session, txn_data, ctx->execution_context.timezone_offset},
+                prepared_tables,
+                undo.base_appends);
+            if (auto refused = co_await std::move(prf); refused.contains_error()) {
+                co_await refuse_(ctx, std::move(undo), std::move(refused));
+                co_return;
+            }
+        }
+
+        // ORDERING INVARIANT: only prepare above, and the index insert-commit, the backfill and the WAL marker
+        // below, can still discard commit_id (refuse_); every later step only stamps/publishes an already-durable commit,
+        // so leaking commit_id_ past the WAL marker floors visible_to_all_locked() and stalls compact()/GC forever.
         std::pmr::set<components::catalog::oid_t> append_oid_set{resource_};
         for (const auto& r : base_appends) {
             append_oid_set.insert(r.table_oid);
@@ -83,14 +114,7 @@ namespace components::operators {
                 commit_id_);
             core::error_t result = co_await std::move(icf);
             if (result.contains_error()) {
-                if (ctx->current_message_sender != actor_zeta::address_t::empty_address()) {
-                    auto [_dx, dxf] =
-                        actor_zeta::otterbrix::send(ctx->current_message_sender,
-                                                    &services::dispatcher::manager_dispatcher_t::txn_discard_msg,
-                                                    commit_id_);
-                    co_await std::move(dxf);
-                }
-                set_error(std::move(result));
+                co_await refuse_(ctx, std::move(undo), std::move(result));
                 co_return;
             }
         }
@@ -98,10 +122,8 @@ namespace components::operators {
         // Tables whose COLUMN SET this transaction changed
         std::pmr::set<components::catalog::oid_t> column_stamped_tables{resource_};
         for (const auto& b : swap_backfills) {
-            const bool stamps_a_column = b.kind == components::pg_attribute_commit_id_backfill_t::kind_t::dropped_at ||
-                                         b.kind == components::pg_attribute_commit_id_backfill_t::kind_t::added_at;
-            if (stamps_a_column && b.release_table_oid != components::catalog::INVALID_OID) {
-                column_stamped_tables.insert(b.release_table_oid);
+            if (auto table_oid = b.column_stamped_table(); table_oid != components::catalog::INVALID_OID) {
+                column_stamped_tables.insert(table_oid);
             }
         }
         // RENAME markers are kept OUT of the batch below: renaming preserves added_at_commit_id.
@@ -136,15 +158,11 @@ namespace components::operators {
                                             commit_id_);
             auto backfill_result = co_await std::move(bf);
             backfill_appends = std::move(backfill_result.appended);
+            // The backfill is an UPDATE of pg_attribute under this transaction
+            undo.swap_appends.insert(undo.swap_appends.end(), backfill_appends.begin(), backfill_appends.end());
+            undo.pg_catalog_delete_tables.insert(components::catalog::well_known_oid::pg_attribute_table);
             if (backfill_result.refusal.contains_error()) {
-                if (ctx->current_message_sender != actor_zeta::address_t::empty_address()) {
-                    auto [_dx, dxf] =
-                        actor_zeta::otterbrix::send(ctx->current_message_sender,
-                                                    &services::dispatcher::manager_dispatcher_t::txn_discard_msg,
-                                                    commit_id_);
-                    co_await std::move(dxf);
-                }
-                set_error(std::move(backfill_result.refusal));
+                co_await refuse_(ctx, std::move(undo), std::move(backfill_result.refusal));
                 co_return;
             }
             trace(log_,
@@ -171,14 +189,7 @@ namespace components::operators {
                                                         commit_id_);
             // A refused fsync here is still a clean abort — commit_id is stamped nowhere yet.
             if (auto commit_result = co_await std::move(wf); commit_result.has_error()) {
-                if (ctx->current_message_sender != actor_zeta::address_t::empty_address()) {
-                    auto [_dx, dxf] =
-                        actor_zeta::otterbrix::send(ctx->current_message_sender,
-                                                    &services::dispatcher::manager_dispatcher_t::txn_discard_msg,
-                                                    commit_id_);
-                    co_await std::move(dxf);
-                }
-                set_error(commit_result.error());
+                co_await refuse_(ctx, std::move(undo), commit_result.error());
                 co_return;
             }
         }
@@ -317,6 +328,15 @@ namespace components::operators {
                   commit_id_);
         }
 
+        if (prepares && !prepared_tables.empty()) {
+            auto [_rl, rlf] = actor_zeta::otterbrix::send(
+                ctx->disk_address,
+                &services::disk::manager_disk_t::storage_release_prepared,
+                components::execution_context_t{ctx->session, txn_data, ctx->execution_context.timezone_offset},
+                std::move(prepared_tables));
+            co_await std::move(rlf);
+        }
+
         // Storage indexes columns BY NAME, so the copy must be renamed too or the next INSERT hits a stale name.
         if (commit_id_ > 0 && !column_renames.empty() && ctx->disk_address != actor_zeta::address_t::empty_address()) {
             for (const auto& rename : column_renames) {
@@ -387,6 +407,31 @@ namespace components::operators {
         // No row output: success surfaces via mark_executed(); commit_id already rode via ctx->committed_id.
         output_ = nullptr;
         mark_executed();
+        co_return;
+    }
+
+    // commit was aborted higher up, but storage still have to know about it
+    actor_zeta::unique_future<void>
+    operator_commit_transaction_t::refuse_(pipeline::context_t* ctx,
+                                           components::table::txn_abort_drain_t undo,
+                                           core::error_t refusal) {
+        if (ctx->current_message_sender != actor_zeta::address_t::empty_address()) {
+            auto [_dx, dxf] = actor_zeta::otterbrix::send(ctx->current_message_sender,
+                                                          &services::dispatcher::manager_dispatcher_t::txn_discard_msg,
+                                                          commit_id_);
+            co_await std::move(dxf);
+        }
+        // Released before the revert: the stamps it undoes must not still count as standing.
+        if (undo.txn.transaction_id != 0 && ctx->disk_address != actor_zeta::address_t::empty_address()) {
+            auto [_rl, rlf] = actor_zeta::otterbrix::send(
+                ctx->disk_address,
+                &services::disk::manager_disk_t::storage_release_prepared,
+                components::execution_context_t{ctx->session, undo.txn, ctx->execution_context.timezone_offset},
+                tables_to_prepare(undo, resource_));
+            co_await std::move(rlf);
+        }
+        co_await revert_transaction(resource_, ctx, log(), std::move(undo));
+        set_error(std::move(refusal));
         co_return;
     }
 

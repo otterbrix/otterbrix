@@ -4,6 +4,7 @@
 #include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
 #include <core/file/local_file_system.hpp>
+#include <array>
 #include <cstdio>
 #include <string>
 #include <unistd.h>
@@ -179,6 +180,278 @@ TEST_CASE("components::table::column_visibility") {
             REQUIRE(seen.size() == 2);
             REQUIRE(seen[0] == 0);
             REQUIRE(seen[1] == 2);
+        }
+    }
+
+    SECTION("an abort reverts the transaction's column stamps and no one else's") {
+        constexpr uint64_t aborting_id = TRANSACTION_ID_START + 7;
+        constexpr uint64_t other_id = TRANSACTION_ID_START + 8;
+        table->stamp_column_added(2, aborting_id);
+        table->stamp_column_dropped(0, aborting_id);
+        table->stamp_column_dropped(1, other_id);
+        auto aborting = running(aborting_id, 100);
+        REQUIRE(table->visible_columns(aborting) == std::vector<uint64_t>{1, 2});
+
+        REQUIRE(table->revert_column_stamps(aborting_id) == 2);
+
+        INFO("the ADD is ABORTED, the DROP is undone, the other transaction's DROP is untouched");
+        REQUIRE(table->columns()[2].added_at() == ABORTED_ID);
+        REQUIRE(table->columns()[0].dropped_at() == NOT_DELETED_ID);
+        REQUIRE(table->columns()[1].dropped_at() == other_id);
+
+        INFO("so even a snapshot carrying the aborted id has a and b, and not c");
+        REQUIRE(table->visible_columns(aborting) == std::vector<uint64_t>{0, 1});
+        REQUIRE(table->visible_columns(running(other_id, 100)) == std::vector<uint64_t>{0});
+    }
+}
+
+namespace {
+
+    using components::vector::data_chunk_t;
+    using components::vector::vector_t;
+
+    constexpr int64_t kDefault = 7;
+    constexpr uint64_t kRows = 3;
+
+    // a and b from the start; c carries DEFAULT 7 and is the column the sections hide.
+    std::unique_ptr<data_table_t> make_table_with_default(test_env& env) {
+        std::vector<column_definition_t> columns;
+        columns.emplace_back("a", complex_logical_type(logical_type::BIGINT));
+        columns.emplace_back("b", complex_logical_type(logical_type::BIGINT));
+        columns.emplace_back("c",
+                             complex_logical_type(logical_type::BIGINT),
+                             logical_value_t(&env.resource, int64_t{kDefault}));
+        return std::make_unique<data_table_t>(&env.resource, env.block_manager, std::move(columns), "test");
+    }
+
+    // Row r holds base + r in every column.
+    data_chunk_t bigint_chunk(test_env& env, uint64_t columns, int64_t base) {
+        std::pmr::vector<complex_logical_type> types(&env.resource);
+        for (uint64_t column = 0; column < columns; column++) {
+            types.emplace_back(logical_type::BIGINT);
+        }
+        data_chunk_t chunk(&env.resource, types, kRows);
+        for (uint64_t column = 0; column < columns; column++) {
+            for (uint64_t row = 0; row < kRows; row++) {
+                chunk.data[column].data<int64_t>()[row] = base + static_cast<int64_t>(row);
+            }
+        }
+        chunk.set_cardinality(kRows);
+        return chunk;
+    }
+
+    void append_committed(test_env& env, data_table_t& table, data_chunk_t& chunk) {
+        table_append_state state(&env.resource);
+        REQUIRE_FALSE(table.append_lock(state).has_error());
+        REQUIRE_FALSE(table.initialize_append(state).has_error());
+        REQUIRE_FALSE(table.append(chunk, state).has_error());
+        table.finalize_append(state, transaction_data::committed());
+    }
+
+} // namespace
+
+TEST_CASE("components::table::column_visibility::widen") {
+    test_env env;
+    auto writer = running(TRANSACTION_ID_START + 8, 100);
+
+    SECTION("a payload is widened to every physical column") {
+        auto table = make_table_with_default(env);
+        constexpr uint64_t adder_id = TRANSACTION_ID_START + 7;
+
+        SECTION("an insert fills a column it cannot see with that column's default") {
+            table->stamp_column_added(2, adder_id);
+            auto chunk = bigint_chunk(env, 2, 10);
+            REQUIRE_FALSE(table->widen_insert(writer, chunk).contains_error());
+            REQUIRE(chunk.column_count() == 3);
+            CHECK(chunk.data[0].data<int64_t>()[1] == 11);
+            CHECK(chunk.data[1].data<int64_t>()[1] == 11);
+            for (uint64_t row = 0; row < kRows; row++) {
+                CHECK(chunk.data[2].value(row).value<int64_t>() == kDefault);
+            }
+        }
+
+        SECTION("an update keeps the replaced version's value in a column it cannot see") {
+            auto committed = bigint_chunk(env, 3, 50);
+            append_committed(env, *table, committed);
+            table->stamp_column_added(2, adder_id);
+
+            auto chunk = bigint_chunk(env, 2, 90);
+            vector_t row_ids(&env.resource, complex_logical_type(logical_type::BIGINT), kRows);
+            for (uint64_t row = 0; row < kRows; row++) {
+                row_ids.data<int64_t>()[row] = static_cast<int64_t>(kRows - 1 - row);
+            }
+            REQUIRE_FALSE(table->widen_update(writer, row_ids, chunk).contains_error());
+            REQUIRE(chunk.column_count() == 3);
+            INFO("not the default and not NULL: the old row's own value, row by row in request order");
+            for (uint64_t row = 0; row < kRows; row++) {
+                CHECK(chunk.data[0].data<int64_t>()[row] == 90 + static_cast<int64_t>(row));
+                CHECK(chunk.data[2].value(row).value<int64_t>() == 50 + static_cast<int64_t>(kRows - 1 - row));
+            }
+        }
+
+        SECTION("a replayed payload is placed by attoid") {
+            constexpr std::uint32_t attoid_a = 20001;
+            constexpr std::uint32_t attoid_b = 20002;
+            constexpr std::uint32_t attoid_c = 20003;
+            constexpr std::uint32_t never_committed = 20009;
+            table->stamp_column_identity(0, attoid_a);
+            table->stamp_column_identity(1, attoid_b);
+            table->stamp_column_identity(2, attoid_c);
+
+            INFO("the middle payload column belongs to an ADD that never committed; c was added after the write");
+            auto chunk = bigint_chunk(env, 3, 10);
+            for (uint64_t row = 0; row < kRows; row++) {
+                chunk.data[1].data<int64_t>()[row] = 500;
+                chunk.data[2].data<int64_t>()[row] = 700 + static_cast<int64_t>(row);
+            }
+            const std::array<std::uint32_t, 3> attoids{attoid_a, never_committed, attoid_b};
+            REQUIRE_FALSE(table->widen_by_attoid(attoids, chunk).contains_error());
+            REQUIRE(chunk.column_count() == 3);
+            for (uint64_t row = 0; row < kRows; row++) {
+                CHECK(chunk.data[0].data<int64_t>()[row] == 10 + static_cast<int64_t>(row));
+                CHECK(chunk.data[1].data<int64_t>()[row] == 700 + static_cast<int64_t>(row));
+                CHECK(chunk.data[2].value(row).value<int64_t>() == kDefault);
+            }
+        }
+    }
+
+    SECTION("a name matches only a column the writer sees") {
+        std::vector<column_definition_t> columns;
+        columns.emplace_back("a", complex_logical_type(logical_type::BIGINT));
+        columns.emplace_back("v", complex_logical_type(logical_type::BIGINT));
+        columns.emplace_back("v", complex_logical_type(logical_type::BIGINT));
+        auto table = std::make_unique<data_table_t>(&env.resource, env.block_manager, std::move(columns), "test");
+        // The first v was dropped at commit 50; the second was added at commit 60.
+        table->stamp_column_dropped(1, 50);
+        table->stamp_column_added(2, 60);
+
+        auto chunk = bigint_chunk(env, 2, 10);
+        chunk.data[0].set_type_alias("v");
+        chunk.data[1].set_type_alias("a");
+        for (uint64_t row = 0; row < kRows; row++) {
+            chunk.data[0].data<int64_t>()[row] = 200;
+        }
+        REQUIRE_FALSE(table->widen_by_name(writer, chunk).contains_error());
+        REQUIRE(chunk.column_count() == 3);
+        CHECK(chunk.data[0].data<int64_t>()[0] == 10);
+        INFO("the dropped v gets nothing from the payload; the live v gets the payload's v");
+        CHECK(chunk.data[1].is_null(0));
+        CHECK(chunk.data[2].data<int64_t>()[0] == 200);
+    }
+}
+
+namespace {
+
+    // a from the start; c is NOT NULL without a default, the column the sections add.
+    std::unique_ptr<data_table_t> make_table_with_not_null(test_env& env) {
+        std::vector<column_definition_t> columns;
+        columns.emplace_back("a", complex_logical_type(logical_type::BIGINT));
+        columns.emplace_back("c", complex_logical_type(logical_type::BIGINT), /*not_null=*/true);
+        return std::make_unique<data_table_t>(&env.resource, env.block_manager, std::move(columns), "test");
+    }
+
+    // kRows rows, c NULL in every one: what a writer that cannot see c, or the ADD's backfill, leaves.
+    row_range_t append_without_c(test_env& env, data_table_t& table, const transaction_data& txn) {
+        auto chunk = bigint_chunk(env, 2, 10);
+        chunk.data[1].validity().set_all_invalid(kRows);
+        table_append_state state(&env.resource);
+        REQUIRE_FALSE(table.append_lock(state).has_error());
+        REQUIRE_FALSE(table.initialize_append(state).has_error());
+        const auto first_row = state.current_row;
+        REQUIRE_FALSE(table.append(chunk, state).has_error());
+        table.finalize_append(state, txn);
+        return {first_row, kRows};
+    }
+
+} // namespace
+
+TEST_CASE("components::table::column_visibility::not_null_add") {
+    test_env env;
+    constexpr uint64_t adder_id = TRANSACTION_ID_START + 7;
+    auto adder = running(adder_id, 100);
+    std::pmr::vector<row_range_t> no_appends(&env.resource);
+
+    SECTION("it is decided at commit") {
+        auto table = make_table_with_not_null(env);
+
+        SECTION("over committed rows, which the ADD left NULL, it is refused") {
+            append_without_c(env, *table, transaction_data::committed());
+            table->stamp_column_added(1, adder_id);
+            CHECK(table->prepare(adder, no_appends).contains_error());
+        }
+
+        SECTION("over an empty table it commits") {
+            table->stamp_column_added(1, adder_id);
+            CHECK_FALSE(table->prepare(adder, no_appends).contains_error());
+        }
+    }
+
+    SECTION("a writer and the ADD cannot both commit") {
+        auto table = make_table_with_not_null(env);
+        constexpr uint64_t writer_id = TRANSACTION_ID_START + 8;
+        auto writer = running(writer_id, 100);
+        table->stamp_column_added(1, adder_id);
+        std::pmr::vector<row_range_t> written(&env.resource);
+        written.push_back(append_without_c(env, *table, writer));
+
+        SECTION("the ADD prepares first: the writer's rows lack c") {
+            REQUIRE_FALSE(table->prepare(adder, no_appends).contains_error());
+            CHECK(table->prepare(writer, written).contains_error());
+        }
+
+        SECTION("the writer prepares first: its rows now stand, and the ADD would leave them NULL") {
+            REQUIRE_FALSE(table->prepare(writer, written).contains_error());
+            CHECK(table->prepare(adder, no_appends).contains_error());
+
+            INFO("released without a commit, the writer's rows no longer stand");
+            table->release_prepared(writer_id);
+            CHECK_FALSE(table->prepare(adder, no_appends).contains_error());
+        }
+    }
+
+    SECTION("it is checked across row groups") {
+        std::vector<column_definition_t> columns;
+        columns.emplace_back("a", complex_logical_type(logical_type::BIGINT));
+        columns.emplace_back("c1", complex_logical_type(logical_type::BIGINT), /*not_null=*/true);
+        columns.emplace_back("c2", complex_logical_type(logical_type::BIGINT), /*not_null=*/true);
+        auto table = std::make_unique<data_table_t>(&env.resource, env.block_manager, std::move(columns), "test");
+
+        uint64_t total_rows = table->row_group_size() + 1537;
+        uint64_t null_row = table->row_group_size() + 1234;
+        constexpr auto append_batch = static_cast<uint64_t>(components::vector::DEFAULT_VECTOR_CAPACITY * 0.8);
+        const auto seed = [&](bool leave_the_null) {
+            std::pmr::vector<complex_logical_type> types(&env.resource);
+            for (int column = 0; column < 3; column++) {
+                types.emplace_back(logical_type::BIGINT);
+            }
+            for (uint64_t done = 0; done < total_rows; done += append_batch) {
+                const uint64_t batch = std::min(append_batch, total_rows - done);
+                data_chunk_t chunk(&env.resource, types, batch);
+                for (uint64_t row = 0; row < batch; row++) {
+                    for (uint64_t column = 0; column < 3; column++) {
+                        chunk.data[column].data<int64_t>()[row] = static_cast<int64_t>(done + row);
+                    }
+                    if (leave_the_null && done + row == null_row) {
+                        chunk.data[2].validity().set_invalid(row);
+                    }
+                }
+                chunk.set_cardinality(batch);
+                append_committed(env, *table, chunk);
+            }
+        };
+
+        SECTION("the one NULL refuses the commit") {
+            seed(true);
+            table->stamp_column_added(1, adder_id);
+            table->stamp_column_added(2, adder_id);
+            CHECK(table->prepare(adder, no_appends).contains_error());
+        }
+
+        SECTION("with that cell filled it commits") {
+            seed(false);
+            table->stamp_column_added(1, adder_id);
+            table->stamp_column_added(2, adder_id);
+            CHECK_FALSE(table->prepare(adder, no_appends).contains_error());
         }
     }
 }

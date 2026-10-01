@@ -21,6 +21,7 @@
 #include <memory_resource>
 #include <optional>
 #include <vector>
+#include "wal_test_attoids.hpp"
 
 using namespace services::wal;
 
@@ -60,6 +61,7 @@ TEST_CASE("services::wal::decode_record::an INSERT payload lives on the arena th
                   /*wal_id=*/1,
                   /*txn_id=*/100,
                   kResidencyTableOid,
+                  wal_test::attoids_for(chunk),
                   one_chunk_batch(chunk),
                   /*row_start=*/0,
                   /*row_count=*/8);
@@ -140,6 +142,7 @@ TEST_CASE("services::wal::decode_record::an UPDATE carries both payloads on the 
                   /*txn_id=*/102,
                   kResidencyTableOid,
                   row_ids.data(),
+                  wal_test::attoids_for(new_data),
                   one_chunk_batch(new_data),
                   row_ids.size());
     REQUIRE(buffer.size() > 0);

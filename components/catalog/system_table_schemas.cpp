@@ -2,6 +2,7 @@
 #include "catalog_codes.hpp"
 
 #include <array>
+#include <cassert>
 #include <charconv>
 #include <components/index/logical_value_binary_codec.hpp>
 
@@ -189,7 +190,7 @@ namespace components::catalog {
         // well_known_oid::main_database, manager_disk_t::bootstrap_system_tables_sync).
         static const std::array<system_table_def_t, 14> tables = []() {
             const oid_t pg_catalog = well_known_oid::pg_catalog_namespace;
-            return std::array<system_table_def_t, 14>{{
+            std::array<system_table_def_t, 14> defs{{
                 {"pg_database", well_known_oid::pg_database_table, pg_catalog, relkind::regular, pg_database_columns()},
                 {"pg_namespace",
                  well_known_oid::pg_namespace_table,
@@ -221,6 +222,14 @@ namespace components::catalog {
                 {"pg_settings", well_known_oid::pg_settings_table, pg_catalog, relkind::regular, pg_settings_columns()},
                 {"pg_cast", well_known_oid::pg_cast_table, pg_catalog, relkind::regular, pg_cast_columns()},
             }};
+            oid_t next_attoid = FIRST_SYSTEM_ATTOID;
+            for (auto& def : defs) {
+                for (auto& column : def.columns) {
+                    column.set_attoid(next_attoid++);
+                }
+            }
+            assert(next_attoid <= FIRST_USER_OID && "system attoids reached the user oid range");
+            return defs;
         }();
         return tables;
     }
@@ -232,6 +241,17 @@ namespace components::catalog {
             }
         }
         return nullptr;
+    }
+
+    std::pmr::vector<oid_t> system_column_attoids(std::pmr::memory_resource* resource, oid_t relation_oid) {
+        const auto* table = find_system_table(relation_oid);
+        assert(table != nullptr && "system_column_attoids: not a system table");
+        std::pmr::vector<oid_t> attoids(resource);
+        attoids.reserve(table->columns.size());
+        for (const auto& column : table->columns) {
+            attoids.push_back(column.attoid());
+        }
+        return attoids;
     }
 
     // Flat-text type-spec grammar (recursive; scalar names match pg_type.typname):

@@ -31,6 +31,7 @@ namespace components::table {
 
     static constexpr uint64_t TRANSACTION_ID_START = uint64_t(4611686018427388000);
     static constexpr uint64_t NOT_DELETED_ID = std::numeric_limits<uint64_t>::max() - 1;
+    static constexpr uint64_t ABORTED_ID = std::numeric_limits<uint64_t>::max() - 2;
 
     // A sanctioned path, not a leftover: 0 is the identity of a write that commits the instant it
     // lands (WAL replay, bootstrap); commit_all_deletes/revert_all_deletes must SKIP it.
@@ -221,12 +222,14 @@ namespace components::table {
                                  uint64_t max_count);
         bool fetch(const transaction_data& transaction, uint64_t row);
         uint64_t delete_stamp(uint64_t row);
+        void fill_stamps(uint64_t row, uint64_t count, uint64_t* inserted, uint64_t* deleted);
 
         void append_version_info(transaction_data transaction,
                                  uint64_t count,
                                  uint64_t row_group_start,
                                  uint64_t row_group_end);
         void commit_append(uint64_t commit_id, uint64_t row_group_start, uint64_t count);
+        void abort_append(uint64_t row_group_start, uint64_t count);
         void revert_append(uint64_t start_row);
         void cleanup_append(uint64_t lowest_active_transaction, uint64_t row_group_start, uint64_t count);
 

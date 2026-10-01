@@ -176,18 +176,12 @@ namespace components::table {
     uint64_t chunk_vector_info::delete_rows(uint64_t transaction_id, int64_t rows[], uint64_t count) {
         any_deleted = true;
 
-        uint64_t deleted_tuples = 0;
+        // data_table_t::delete_rows deals with taken slots
         for (uint64_t i = 0; i < count; i++) {
-            if (deleted[rows[i]] != NOT_DELETED_ID) {
-                // Already deleted — by this txn, or a prior cascade-drop that ignored MVCC visibility.
-                // Skip rather than abort: cascade DDL must be idempotent.
-                continue;
-            }
+            assert(deleted[rows[i]] == NOT_DELETED_ID && "chunk_vector_info::delete_rows: the slot is taken");
             deleted[rows[i]] = transaction_id;
-            rows[deleted_tuples] = rows[i];
-            deleted_tuples++;
         }
-        return deleted_tuples;
+        return count;
     }
 
     void chunk_vector_info::commit_delete(uint64_t commit_id, const delete_info& info) {
@@ -443,6 +437,33 @@ namespace components::table {
         return info->cast<chunk_vector_info>().deleted[idx];
     }
 
+    void row_version_manager_t::fill_stamps(uint64_t row, uint64_t count, uint64_t* inserted, uint64_t* deleted) {
+        assert(row >= static_cast<uint64_t>(start_));
+        uint64_t local_row = row - static_cast<uint64_t>(start_);
+        uint64_t filled = 0;
+        while (filled < count) {
+            const uint64_t vector_index = local_row / vector::DEFAULT_VECTOR_CAPACITY;
+            const uint64_t idx = local_row - vector_index * vector::DEFAULT_VECTOR_CAPACITY;
+            const uint64_t take = std::min(count - filled, vector::DEFAULT_VECTOR_CAPACITY - idx);
+            auto* info = get_chunk_info(vector_index);
+            if (!info) {
+                // No version info: committed as it landed, never deleted.
+                std::fill_n(inserted + filled, take, uint64_t{0});
+                std::fill_n(deleted + filled, take, NOT_DELETED_ID);
+            } else if (info->type == chunk_info_type::CONSTANT_INFO) {
+                const auto& constant = info->cast<chunk_constant_info>();
+                std::fill_n(inserted + filled, take, constant.insert_id);
+                std::fill_n(deleted + filled, take, constant.delete_id);
+            } else {
+                const auto& vector_info = info->cast<chunk_vector_info>();
+                std::copy_n(vector_info.inserted + idx, take, inserted + filled);
+                std::copy_n(vector_info.deleted + idx, take, deleted + filled);
+            }
+            filled += take;
+            local_row += take;
+        }
+    }
+
     void row_version_manager_t::fill_vector_info(uint64_t vector_idx) {
         if (vector_idx < vector_info_.size()) {
             return;
@@ -512,6 +533,11 @@ namespace components::table {
             auto& info = *vector_info_[vector_idx];
             info.commit_append(commit_id, vstart, vend);
         }
+    }
+
+    void row_version_manager_t::abort_append(uint64_t row_group_start, uint64_t count) {
+        has_changes_ = true;
+        commit_append(ABORTED_ID, row_group_start, count);
     }
 
     void row_version_manager_t::cleanup_append(uint64_t lowest_active_transaction,

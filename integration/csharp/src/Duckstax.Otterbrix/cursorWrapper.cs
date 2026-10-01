@@ -69,18 +69,12 @@ namespace Duckstax.Otterbrix
             TransferErrorMessage transfer = CursorGetError(cursorStoragePtr);
             ErrorMessage message = new ErrorMessage();
             message.type = (ErrorCode)transfer.type;
-            string? str = Marshal.PtrToStringAnsi(transfer.what);
-            message.what = str ?? "";
-            Marshal.FreeHGlobal(transfer.what);
+            message.what = OtterbrixWrapper.TakeString(transfer.what) ?? "";
             return message;
         }
 
         public string ColumnName(int columnIndex) {
-            IntPtr strPtr = CursorColumnName(cursorStoragePtr, columnIndex);
-            if (strPtr == IntPtr.Zero) return "";
-            string? result = Marshal.PtrToStringAnsi(strPtr);
-            Marshal.FreeHGlobal(strPtr);
-            return result ?? "";
+            return OtterbrixWrapper.TakeString(CursorColumnName(cursorStoragePtr, columnIndex)) ?? "";
         }
 
         public ValueWrapper GetValue(int rowIndex, int columnIndex) {

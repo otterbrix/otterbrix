@@ -71,10 +71,7 @@ namespace Duckstax.Otterbrix
         public ulong GetUint() { return ValueGetUint(valuePtr); }
         public double GetDouble() { return ValueGetDouble(valuePtr); }
         public string GetString() {
-            IntPtr strPtr = ValueGetString(valuePtr);
-            string? result = Marshal.PtrToStringAnsi(strPtr);
-            Marshal.FreeHGlobal(strPtr);
-            return result ?? "";
+            return OtterbrixWrapper.TakeString(ValueGetString(valuePtr)) ?? "";
         }
 
         private IntPtr valuePtr;

@@ -116,6 +116,12 @@ namespace Duckstax.Otterbrix
                    CallingConvention = CallingConvention.Cdecl)]
         private static extern void OtterbrixFreeString(IntPtr str);
 
+        internal static string? TakeString(IntPtr str) {
+            string? result = Marshal.PtrToStringAnsi(str);
+            OtterbrixFreeString(str);
+            return result;
+        }
+
         [DllImport(libotterbrix,
                    EntryPoint = "otterbrix_destroy",
                    ExactSpelling = false,
@@ -143,8 +149,7 @@ namespace Duckstax.Otterbrix
             if (otterbrixPtr == IntPtr.Zero) {
                 ErrorMessage error = new ErrorMessage();
                 error.type = (ErrorCode)refusal.type;
-                error.what = Marshal.PtrToStringAnsi(refusal.what) ?? "";
-                OtterbrixFreeString(refusal.what);
+                error.what = TakeString(refusal.what) ?? "";
                 throw new OtterbrixStartupException(error);
             }
         }

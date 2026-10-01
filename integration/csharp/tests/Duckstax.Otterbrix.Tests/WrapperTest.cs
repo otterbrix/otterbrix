@@ -4,6 +4,44 @@ using Duckstax.Otterbrix;
 
 public class Tests
 {
+    private static OtterbrixWrapper Open(string name) {
+        string path = System.Environment.CurrentDirectory + "/" + name;
+        if (Directory.Exists(path)) {
+            Directory.Delete(path, true);
+        }
+        return new OtterbrixWrapper(Config.CreateConfig(path));
+    }
+
+    [Test]
+    public void StringsComeBackFromTheEngine() {
+        OtterbrixWrapper otterbrix = Open("StringsComeBackFromTheEngine");
+        {
+            using CursorWrapper cursor = otterbrix.Execute("CREATE DATABASE db;");
+            Assert.IsTrue(cursor.IsSuccess());
+        }
+        {
+            using CursorWrapper cursor = otterbrix.Execute("CREATE TABLE db.t (name string);");
+            Assert.IsTrue(cursor.IsSuccess());
+        }
+        {
+            using CursorWrapper cursor = otterbrix.Execute("INSERT INTO db.t (name) VALUES ('hello');");
+            Assert.IsTrue(cursor.IsSuccess());
+        }
+        {
+            using CursorWrapper cursor = otterbrix.Execute("SELECT name FROM db.t;");
+            Assert.IsTrue(cursor.IsSuccess());
+            Assert.That(cursor.ColumnName(0), Is.EqualTo("name"));
+            using ValueWrapper value = cursor.GetValue(0, 0);
+            Assert.That(value.GetString(), Is.EqualTo("hello"));
+        }
+        {
+            using CursorWrapper cursor = otterbrix.Execute("SELECT * FROM nodb.t;");
+            Assert.IsTrue(cursor.IsError());
+            Assert.That(cursor.GetError().what, Does.Contain("nodb"));
+        }
+        GC.KeepAlive(otterbrix);
+    }
+
     // [Test]
     public void Base() {
         OtterbrixWrapper otterbrix = new OtterbrixWrapper(Config.CreateConfig(System.Environment.CurrentDirectory + "/Base"));

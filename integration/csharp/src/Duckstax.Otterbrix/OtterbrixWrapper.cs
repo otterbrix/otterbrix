@@ -145,7 +145,7 @@ namespace Duckstax.Otterbrix
                    EntryPoint = "otterbrix_create",
                    ExactSpelling = false,
                    CallingConvention = CallingConvention.Cdecl)]
-        private static extern IntPtr
+        private static extern EngineHandle
         OtterbrixCreate(TransferConfig config, out TransferErrorMessage error);
 
         [StructLayout(LayoutKind.Sequential)]
@@ -167,71 +167,55 @@ namespace Duckstax.Otterbrix
         }
 
         [DllImport(libotterbrix,
-                   EntryPoint = "otterbrix_destroy",
-                   ExactSpelling = false,
-                   CallingConvention = CallingConvention.Cdecl)]
-        private static extern void OtterbrixDestroy(IntPtr otterprixPtr);
-        
-        [DllImport(libotterbrix,
                    EntryPoint = "execute_sql",
                    ExactSpelling = false,
                    CallingConvention = CallingConvention.Cdecl)]
-        private static extern IntPtr ExecuteSQL(IntPtr otterprixPtr, StringPasser sql);
+        private static extern CursorHandle ExecuteSQL(EngineHandle otterbrix, StringPasser sql);
         [DllImport(libotterbrix,
                    EntryPoint = "create_database",
                    ExactSpelling = false,
                    CallingConvention = CallingConvention.Cdecl)]
-        private static extern IntPtr CreateDatabase(IntPtr otterprixPtr, StringPasser databaseName);
+        private static extern CursorHandle CreateDatabase(EngineHandle otterbrix, StringPasser databaseName);
         [DllImport(libotterbrix,
                    EntryPoint = "create_collection",
                    ExactSpelling = false,
                    CallingConvention = CallingConvention.Cdecl)]
-        private static extern IntPtr CreateCollection(IntPtr otterprixPtr, StringPasser databaseName, StringPasser collectionName);
+        private static extern CursorHandle CreateCollection(EngineHandle otterbrix, StringPasser databaseName, StringPasser collectionName);
 
         public OtterbrixWrapper(Config config) {
-            otterbrixPtr = OtterbrixCreate(new TransferConfig(ref config), out TransferErrorMessage refusal);
-            if (otterbrixPtr == IntPtr.Zero) {
+            otterbrix = OtterbrixCreate(new TransferConfig(ref config), out TransferErrorMessage refusal);
+            if (otterbrix.IsInvalid) {
                 ErrorMessage error = new ErrorMessage();
                 error.type = (ErrorCode)refusal.type;
                 error.what = TakeString(refusal.what) ?? "";
                 throw new OtterbrixStartupException(error);
             }
         }
-        ~OtterbrixWrapper() { Dispose(false); }
 
-        public void Dispose() {
-            Dispose(true);
-            GC.SuppressFinalize(this);
-        }
-
-        private void Dispose(bool disposing) {
-            IntPtr ptr = Interlocked.Exchange(ref otterbrixPtr, IntPtr.Zero);
-            if (ptr != IntPtr.Zero) {
-                OtterbrixDestroy(ptr);
-            }
-        }
-
-        private IntPtr Live() {
-            ObjectDisposedException.ThrowIf(otterbrixPtr == IntPtr.Zero, this);
-            return otterbrixPtr;
-        }
+        public void Dispose() { otterbrix.Dispose(); }
 
         public CursorWrapper Execute(string sql) {
-            IntPtr cursor = ExecuteSQL(Live(), new StringPasser(ref sql));
-            GC.KeepAlive(this);
-            return new CursorWrapper(cursor);
+            return new CursorWrapper(ExecuteSQL(otterbrix, new StringPasser(ref sql)));
         }
         public CursorWrapper CreateDatabase(string databaseName) {
-            IntPtr cursor = CreateDatabase(Live(), new StringPasser(ref databaseName));
-            GC.KeepAlive(this);
-            return new CursorWrapper(cursor);
+            return new CursorWrapper(CreateDatabase(otterbrix, new StringPasser(ref databaseName)));
         }
         public CursorWrapper CreateCollection(string databaseName, string collectionName) {
-            IntPtr cursor = CreateCollection(Live(), new StringPasser(ref databaseName), new StringPasser(ref collectionName));
-            GC.KeepAlive(this);
-            return new CursorWrapper(cursor);
+            return new CursorWrapper(CreateCollection(otterbrix, new StringPasser(ref databaseName), new StringPasser(ref collectionName)));
         }
 
-        private IntPtr otterbrixPtr;
+        private readonly EngineHandle otterbrix;
+    }
+
+    internal sealed class EngineHandle : SafeHandle {
+        [DllImport("otterbrix", EntryPoint="otterbrix_destroy", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
+        private static extern void OtterbrixDestroy(IntPtr otterbrix);
+
+        public EngineHandle() : base(IntPtr.Zero, true) {}
+        public override bool IsInvalid => handle == IntPtr.Zero;
+        protected override bool ReleaseHandle() {
+            OtterbrixDestroy(handle);
+            return true;
+        }
     }
 }

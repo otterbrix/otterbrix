@@ -51,7 +51,7 @@ namespace Duckstax.Otterbrix
 
         public void Dispose() { value.Dispose(); }
 
-        public bool IsNull() { return value.IsInvalid || ValueIsNull(value); }
+        public bool IsNull() { return ValueIsNull(value); }
         public bool IsBool() { return ValueIsBool(value); }
         public bool IsInt() { return ValueIsInt(value); }
         public bool IsUint() { return ValueIsUint(value); }

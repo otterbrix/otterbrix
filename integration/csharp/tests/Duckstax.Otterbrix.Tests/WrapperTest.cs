@@ -14,7 +14,7 @@ public class Tests
 
     [Test]
     public void StringsComeBackFromTheEngine() {
-        OtterbrixWrapper otterbrix = Open("StringsComeBackFromTheEngine");
+        using OtterbrixWrapper otterbrix = Open("StringsComeBackFromTheEngine");
         {
             using CursorWrapper cursor = otterbrix.Execute("CREATE DATABASE db;");
             Assert.IsTrue(cursor.IsSuccess());
@@ -39,12 +39,11 @@ public class Tests
             Assert.IsTrue(cursor.IsError());
             Assert.That(cursor.GetError().what, Does.Contain("nodb"));
         }
-        GC.KeepAlive(otterbrix);
     }
 
     [Test]
     public void NonAsciiTextRoundTrips() {
-        OtterbrixWrapper otterbrix = Open("NonAsciiTextRoundTrips");
+        using OtterbrixWrapper otterbrix = Open("NonAsciiTextRoundTrips");
         {
             using CursorWrapper cursor = otterbrix.Execute("SELECT 'Привет' AS greeting, 7 AS \"число\";");
             Assert.IsTrue(cursor.IsSuccess(), cursor.GetError().what);
@@ -56,12 +55,11 @@ public class Tests
             Assert.IsFalse(number.IsNull());
             Assert.That(number.GetInt(), Is.EqualTo(7));
         }
-        GC.KeepAlive(otterbrix);
     }
 
     [Test]
     public void WritesReportAffectedRows() {
-        OtterbrixWrapper otterbrix = Open("WritesReportAffectedRows");
+        using OtterbrixWrapper otterbrix = Open("WritesReportAffectedRows");
         {
             using CursorWrapper cursor = otterbrix.Execute("CREATE DATABASE db;");
             Assert.IsTrue(cursor.IsSuccess());
@@ -94,12 +92,11 @@ public class Tests
             Assert.That(cursor.AffectedRows(), Is.Null);
             Assert.That(cursor.Size(), Is.EqualTo(2));
         }
-        GC.KeepAlive(otterbrix);
     }
 
     [Test]
     public void Base() {
-        OtterbrixWrapper otterbrix = Open("Base");
+        using OtterbrixWrapper otterbrix = Open("Base");
         {
             using (CursorWrapper created = otterbrix.CreateDatabase("testdatabase")) Assert.IsTrue(created.IsSuccess());
             using (CursorWrapper created = otterbrix.CreateCollection("testdatabase", "testcollection")) Assert.IsTrue(created.IsSuccess());
@@ -223,12 +220,11 @@ public class Tests
             Assert.IsFalse(cursor.IsError());
             Assert.IsTrue(cursor.Size() == 20);
         }
-        GC.KeepAlive(otterbrix);
     }
 
     [Test]
     public void GroupBy() {
-        OtterbrixWrapper otterbrix = Open("GroupBy");
+        using OtterbrixWrapper otterbrix = Open("GroupBy");
         {
             using (CursorWrapper created = otterbrix.CreateDatabase("testdatabase")) Assert.IsTrue(created.IsSuccess());
             using (CursorWrapper created = otterbrix.CreateCollection("testdatabase", "testcollection")) Assert.IsTrue(created.IsSuccess());
@@ -290,13 +286,12 @@ public class Tests
                 Assert.IsTrue(maxVal.GetInt() == (number + 10) % 20);
             }
         }
-        GC.KeepAlive(otterbrix);
     }
 
     // SQL folds an unquoted name, so the names CreateDatabase / CreateCollection take as written must be lower case.
     [Test]
     public void MixedCaseNamesAreRefused() {
-        OtterbrixWrapper otterbrix = Open("MixedCaseNamesAreRefused");
+        using OtterbrixWrapper otterbrix = Open("MixedCaseNamesAreRefused");
         {
             using CursorWrapper database = otterbrix.CreateDatabase("TestDatabase");
             Assert.IsTrue(database.IsError());
@@ -311,12 +306,11 @@ public class Tests
             Assert.That(collection.GetError().what,
                         Is.EqualTo("create_collection: name \"TestCollection\" must be lower case"));
         }
-        GC.KeepAlive(otterbrix);
     }
 
     [Test]
     public void InvalidQueries() {
-        OtterbrixWrapper otterbrix = Open("InvalidQueries");
+        using OtterbrixWrapper otterbrix = Open("InvalidQueries");
         {
             using CursorWrapper database = otterbrix.CreateDatabase("testdatabase");
             Assert.IsTrue(database.IsSuccess());
@@ -344,7 +338,6 @@ public class Tests
             Assert.IsTrue(cursor.IsSuccess(), cursor.GetError().what);
             Assert.That(cursor.GetError().type, Is.EqualTo(ErrorCode.None));
         }
-        GC.KeepAlive(otterbrix);
     }
 
     [Test]
@@ -353,7 +346,7 @@ public class Tests
         const string collectionName1 = "testcollection_1";
         const string collectionName2 = "testcollection_2";
 
-        OtterbrixWrapper otterbrix = Open("TestJoin");
+        using OtterbrixWrapper otterbrix = Open("TestJoin");
         {
             using (CursorWrapper created = otterbrix.CreateDatabase(databaseName)) Assert.IsTrue(created.IsSuccess());
             using (CursorWrapper created = otterbrix.CreateCollection(databaseName, collectionName1)) Assert.IsTrue(created.IsSuccess());
@@ -402,6 +395,5 @@ public class Tests
                 Assert.IsTrue(nameVal.GetString() == "Name " + ((num + 25) * 2).ToString());
             }
         }
-        GC.KeepAlive(otterbrix);
     }
 }

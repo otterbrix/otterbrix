@@ -1,9 +1,10 @@
 use otterbrix_sys::*;
+use std::ffi::c_char;
 use std::process;
 
 fn make_sv(s: &str) -> string_view_t {
     string_view_t {
-        data: s.as_ptr() as *const i8,
+        data: s.as_ptr() as *const c_char,
         size: s.len(),
     }
 }

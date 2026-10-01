@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers.hpp>
 
 #include <components/log/log.hpp>
 #include <core/assert/assert.hpp>
@@ -43,19 +44,28 @@ TEST_CASE("core::assert::a_failed_assertion_reports_through_the_given_log") {
     const auto own = root / "own";
     const auto other = root / "other";
 
-    const pid_t child = ::fork();
-    REQUIRE(child >= 0);
-    if (child == 0) {
-        // Catch2 installs a SIGABRT handler; reset it so the abort reaches waitpid as a signal death.
-        ::signal(SIGABRT, SIG_DFL);
+    if constexpr (core::detail::enable_assert) {
+        // A debug build aborts: the failure is a signal death of a child process.
+        const pid_t child = ::fork();
+        REQUIRE(child >= 0);
+        if (child == 0) {
+            // Catch2 installs a SIGABRT handler; reset it so the abort reaches waitpid as a signal death.
+            ::signal(SIGABRT, SIG_DFL);
+            auto other_log = make_test_log("other", other);
+            auto own_log = make_test_log("own", own);
+            assertion_log_msg(&own_log, 1 + 1 == 3, "the given log carries this");
+            ::_exit(0);
+        }
+        int status = 0;
+        REQUIRE(::waitpid(child, &status, 0) == child);
+        REQUIRE(WIFSIGNALED(status));
+    } else {
+        // An NDEBUG build reports the same and throws InvariantError, naming the condition and the message.
         auto other_log = make_test_log("other", other);
         auto own_log = make_test_log("own", own);
-        assertion_log_msg(&own_log, 1 + 1 == 3, "the given log carries this");
-        ::_exit(0);
+        REQUIRE_THROWS_WITH([&] { assertion_log_msg(&own_log, 1 + 1 == 3, "the given log carries this"); }(),
+                            "invariant (1 + 1 == 3) violation: the given log carries this");
     }
-    int status = 0;
-    REQUIRE(::waitpid(child, &status, 0) == child);
-    REQUIRE(WIFSIGNALED(status));
     CHECK(read_all(own).find("the given log carries this") != std::string::npos);
     CHECK(read_all(other).find("the given log carries this") == std::string::npos);
     std::filesystem::remove_all(root);

@@ -103,9 +103,6 @@ namespace components::logical_plan {
         bool host_bound{false};
         // The view whose body carries the pin, for the stale refusal.
         std::string bound_by;
-        // REFRESH MATERIALIZED VIEW: a read of this matview runs its stored body as a view's read does. Not part of
-        // the request identity.
-        bool expands_matview{false};
 
         components::catalog::oid_t namespace_oid{components::catalog::INVALID_OID};
         components::catalog::oid_t database_oid{components::catalog::INVALID_OID};

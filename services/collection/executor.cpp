@@ -540,6 +540,36 @@ namespace services::collection::executor {
                                                   std::pmr::vector<explain_plan_node>{resource()});
         };
 
+        // The functions a view body calls are the ones CREATE bound it to (pg_proc read by the 'f' rows' oids).
+        auto pin_functions = [this, session, resolve_txn](
+                                 [[maybe_unused]] executor_t* self,
+                                 const components::logical_plan::resolved_table_metadata_t* view,
+                                 components::logical_plan::node_t* body) -> executor_t::unique_future<core::error_t> {
+            auto function_oids = view_function_oids(resource(), *view);
+            if (function_oids.empty()) {
+                co_return core::error_t::no_error();
+            }
+            std::pmr::vector<std::uint64_t> key_columns{resource()};
+            key_columns.push_back(0);
+            auto [_rp, rpf] =
+                actor_zeta::otterbrix::send(disk_address_,
+                                            &services::disk::manager_disk_t::read_chunks_by_keys,
+                                            components::execution_context_t{session, resolve_txn, {}},
+                                            components::catalog::well_known_oid::pg_proc_table,
+                                            std::move(key_columns),
+                                            components::operators::make_keys_chunk(resource(), function_oids),
+                                            std::pmr::vector<std::uint64_t>{resource()});
+            auto proc_chunks = co_await std::move(rpf);
+            if (proc_chunks.has_error()) {
+                co_return core::error_on(resource(), proc_chunks.error());
+            }
+            co_return pin_view_functions(resource(),
+                                         *view,
+                                         proc_rows_of(resource(), proc_chunks.value()),
+                                         function_registry_,
+                                         body);
+        };
+
         auto collect_resolve_nodes = [](const components::logical_plan::catalog_resolves_t& resolves,
                                         std::pmr::vector<components::logical_plan::node_ptr>& out) {
             for (const auto* slot :
@@ -563,6 +593,9 @@ namespace services::collection::executor {
             components::logical_plan::resolved_table_metadata_t view;
         };
         std::pmr::vector<expanded_view_t> expanded_views{resource()};
+        for (auto& stored : plan.stored_bodies) {
+            expanded_views.push_back({std::move(stored.reference), std::move(stored.relation)});
+        }
 
         {
             std::pmr::vector<components::logical_plan::node_ptr> resolve_nodes{resource()};
@@ -577,8 +610,8 @@ namespace services::collection::executor {
                 }
             }
         }
-        // REFRESH MATERIALIZED VIEW (PostgreSQL 18 matview.c): the stored body runs again and replaces the rows, as
-        // two statements of this one transaction.
+        // REFRESH MATERIALIZED VIEW (PostgreSQL 18 matview.c): the matview's rows are deleted and its stored body is
+        // inserted again (refresh_matview_plan), as two statements of this one transaction.
         if (original_type == node_type::refresh_matview_t) {
             const auto* refresh =
                 static_cast<const components::logical_plan::node_refresh_matview_t*>(plan.sub_queries.back().get());
@@ -603,29 +636,35 @@ namespace services::collection::executor {
                 }
                 return out + "\"";
             };
-            const std::string target = quoted(refresh->dbname()) + "." + quoted(refresh->matviewname());
-            // The rows come from a read of the matview itself that runs its stored body, pinned to what CREATE bound
-            // and checked against its columns as a view's read is; re-parsing the text as `INSERT INTO mv <body>`
-            // would look every body name up again.
-            std::pmr::vector<std::string> statements{resource()};
-            statements.push_back("DELETE FROM " + target + ";");
-            if (refresh->with_data()) {
-                statements.push_back("INSERT INTO " + target + " SELECT * FROM " + target + ";");
-            }
-            for (const auto& sql : statements) {
-                auto parsed = components::planner::parse_statement(resource(), sql, "materialized view refresh");
+            {
+                auto parsed = components::planner::parse_statement(
+                    resource(),
+                    "DELETE FROM " + quoted(refresh->dbname()) + "." + quoted(refresh->matviewname()) + ";",
+                    "materialized view refresh");
                 if (parsed.has_error()) {
                     co_return execute_result_t{make_cursor(resource(), parsed.error())};
                 }
-                auto step = std::move(parsed.value());
-                step.commits_when_done = false;
-                if (step.catalog_resolves.tables) {
-                    for (auto& entry : step.catalog_resolves.tables->entries()) {
-                        entry.expands_matview =
-                            entry.dbname == refresh->dbname() && entry.relname == refresh->matviewname();
-                    }
+                auto emptied = std::move(parsed.value());
+                emptied.commits_when_done = false;
+                auto done = co_await execute_statement_(session, std::move(emptied), session_ctx, host_names);
+                if (done.cursor->is_error()) {
+                    co_return done;
                 }
-                auto done = co_await execute_statement_(session, std::move(step), session_ctx, host_names);
+            }
+            if (refresh->with_data()) {
+                auto refill = components::planner::refresh_matview_plan(resource(), *matview, refresh->dbname());
+                if (refill.has_error()) {
+                    co_return execute_result_t{make_cursor(resource(), refill.error())};
+                }
+                auto insert = std::move(refill.value());
+                if (auto pinned = co_await pin_functions(this,
+                                                         &insert.stored_bodies.front().relation,
+                                                         insert.stored_bodies.front().reference->children().front().get());
+                    pinned.contains_error()) {
+                    co_return execute_result_t{make_cursor(resource(), std::move(pinned))};
+                }
+                insert.commits_when_done = false;
+                auto done = co_await execute_statement_(session, std::move(insert), session_ctx, host_names);
                 if (done.cursor->is_error()) {
                     co_return done;
                 }
@@ -680,29 +719,8 @@ namespace services::collection::executor {
                         err.contains_error()) {
                         co_return execute_result_t{make_cursor(resource(), std::move(err))};
                     }
-                    if (auto function_oids = view_function_oids(resource(), views[i]); !function_oids.empty()) {
-                        std::pmr::vector<std::uint64_t> key_columns{resource()};
-                        key_columns.push_back(0);
-                        auto [_rp, rpf] = actor_zeta::otterbrix::send(
-                            disk_address_,
-                            &services::disk::manager_disk_t::read_chunks_by_keys,
-                            components::execution_context_t{session, resolve_txn, {}},
-                            components::catalog::well_known_oid::pg_proc_table,
-                            std::move(key_columns),
-                            components::operators::make_keys_chunk(resource(), function_oids),
-                            std::pmr::vector<std::uint64_t>{resource()});
-                        auto proc_chunks = co_await std::move(rpf);
-                        if (proc_chunks.has_error()) {
-                            co_return execute_result_t{make_cursor(resource(), proc_chunks.error())};
-                        }
-                        if (auto err = pin_view_functions(resource(),
-                                                          views[i],
-                                                          proc_rows_of(resource(), proc_chunks.value()),
-                                                          function_registry_,
-                                                          body.plan.get());
-                            err.contains_error()) {
-                            co_return execute_result_t{make_cursor(resource(), std::move(err))};
-                        }
+                    if (auto err = co_await pin_functions(this, &views[i], body.plan.get()); err.contains_error()) {
+                        co_return execute_result_t{make_cursor(resource(), std::move(err))};
                     }
                     components::planner::renumber_body_parameters(resource(),
                                                                   body.plan.get(),

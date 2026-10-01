@@ -1,5 +1,6 @@
 #include "pg_functions.h"
 #include "nodes/makefuncs.h"
+#include <algorithm>
 #include <cstdarg>
 #include <cstring>
 #include <iostream>
@@ -100,9 +101,9 @@ void* palloc0fast(std::pmr::memory_resource* resource, size_t n) {
     memset(ptr, 0, n);
     return ptr;
 }
-void* repalloc(std::pmr::memory_resource* resource, void* ptr, size_t n) {
-    void* new_ptr = resource->allocate(n);
-    memmove(new_ptr, ptr, n);
+void* repalloc(std::pmr::memory_resource* resource, void* ptr, size_t old_size, size_t new_size) {
+    void* new_ptr = resource->allocate(new_size);
+    memcpy(new_ptr, ptr, std::min(old_size, new_size));
     return new_ptr;
 }
 

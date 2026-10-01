@@ -122,7 +122,7 @@ namespace Duckstax.Otterbrix
     }
 
     // TODO: Add connection support
-    public class OtterbrixWrapper {
+    public class OtterbrixWrapper : IDisposable {
         const string libotterbrix = "otterbrix";
 
         [StructLayout(LayoutKind.Sequential)]
@@ -197,21 +197,41 @@ namespace Duckstax.Otterbrix
                 throw new OtterbrixStartupException(error);
             }
         }
-        ~OtterbrixWrapper() {
-            if (otterbrixPtr != IntPtr.Zero) {
-                OtterbrixDestroy(otterbrixPtr);
-            }
-        }
-        public CursorWrapper Execute(string sql) {
-            return new CursorWrapper(ExecuteSQL(otterbrixPtr, new StringPasser(ref sql)));
-        }
-        public CursorWrapper CreateDatabase(string databaseName) {
-            return new CursorWrapper(CreateDatabase(otterbrixPtr, new StringPasser(ref databaseName)));
-        }
-        public CursorWrapper CreateCollection(string databaseName, string collectionName) {
-            return new CursorWrapper(CreateCollection(otterbrixPtr, new StringPasser(ref databaseName), new StringPasser(ref collectionName)));
+        ~OtterbrixWrapper() { Dispose(false); }
+
+        public void Dispose() {
+            Dispose(true);
+            GC.SuppressFinalize(this);
         }
 
-        private readonly IntPtr otterbrixPtr;
+        private void Dispose(bool disposing) {
+            IntPtr ptr = Interlocked.Exchange(ref otterbrixPtr, IntPtr.Zero);
+            if (ptr != IntPtr.Zero) {
+                OtterbrixDestroy(ptr);
+            }
+        }
+
+        private IntPtr Live() {
+            ObjectDisposedException.ThrowIf(otterbrixPtr == IntPtr.Zero, this);
+            return otterbrixPtr;
+        }
+
+        public CursorWrapper Execute(string sql) {
+            IntPtr cursor = ExecuteSQL(Live(), new StringPasser(ref sql));
+            GC.KeepAlive(this);
+            return new CursorWrapper(cursor);
+        }
+        public CursorWrapper CreateDatabase(string databaseName) {
+            IntPtr cursor = CreateDatabase(Live(), new StringPasser(ref databaseName));
+            GC.KeepAlive(this);
+            return new CursorWrapper(cursor);
+        }
+        public CursorWrapper CreateCollection(string databaseName, string collectionName) {
+            IntPtr cursor = CreateCollection(Live(), new StringPasser(ref databaseName), new StringPasser(ref collectionName));
+            GC.KeepAlive(this);
+            return new CursorWrapper(cursor);
+        }
+
+        private IntPtr otterbrixPtr;
     }
 }

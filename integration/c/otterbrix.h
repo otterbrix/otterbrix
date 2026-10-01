@@ -49,6 +49,10 @@ typedef struct error_message {
 // otterbrix_free_string. On success out_error->code is 0 and out_error->message is nullptr.
 // out_error must not be null.
 otterbrix_ptr otterbrix_create(config_t cfg, error_message* out_error);
+// Every cursor and value holds the engine it came from. otterbrix_destroy gives up the caller's handle: the engine
+// (its threads, its memory, the lock on main_path) goes when the last cursor or value is released too, on whichever
+// thread releases it, so they may be released in any order and from any thread. After otterbrix_destroy the handle
+// itself must not be passed to any call again.
 void otterbrix_destroy(otterbrix_ptr);
 
 cursor_ptr execute_sql(otterbrix_ptr ptr, string_view_t query);

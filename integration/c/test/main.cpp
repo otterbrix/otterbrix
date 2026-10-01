@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <string>
+#include <thread>
 #include <type_traits>
 #include <unistd.h>
 
@@ -516,5 +517,54 @@ TEST_CASE("c-api: a second engine on the same main_path is refused", "[c-api][li
     first.ptr = otterbrix_create(cfg, &none);
     REQUIRE(first.ptr != nullptr);
     CHECK(none.code == 0);
+    CHECK(none.message == nullptr);
+}
+
+TEST_CASE("c-api: a cursor and a value outlive otterbrix_destroy", "[c-api][lifecycle]") {
+    test_db_t t("outlive_destroy");
+    REQUIRE(t.ptr != nullptr);
+
+    run_ok(t.ptr, "CREATE DATABASE db;");
+    run_ok(t.ptr, "CREATE TABLE db.t (name string);");
+    run_ok(t.ptr, "INSERT INTO db.t (name) VALUES ('kept');");
+
+    cursor_ptr cur = execute_sql(t.ptr, sv(std::string("SELECT name FROM db.t;")));
+    REQUIRE(cur != nullptr);
+    REQUIRE(cursor_is_success(cur));
+    value_ptr val = cursor_get_value(cur, 0, 0);
+    REQUIRE(val != nullptr);
+
+    otterbrix_destroy(t.ptr);
+    t.ptr = nullptr;
+
+    config_t cfg{};
+    cfg.level = 0;
+    cfg.log_path = sv(t.log_path);
+    cfg.wal_path = sv(t.wal_path);
+    cfg.disk_path = sv(t.disk_path);
+    cfg.main_path = sv(t.main_path);
+
+    CHECK(cursor_size(cur) == 1);
+    char* name = cursor_column_name(cur, 0);
+    REQUIRE(name != nullptr);
+    CHECK(std::string(name) == "name");
+    otterbrix_free_string(name);
+    release_cursor(cur);
+
+    char* text = value_get_string(val);
+    REQUIRE(text != nullptr);
+    CHECK(std::string(text) == "kept");
+    otterbrix_free_string(text);
+
+    // the value still holds the engine, and with it main_path
+    error_message refusal{};
+    CHECK(otterbrix_create(cfg, &refusal) == nullptr);
+    otterbrix_free_string(refusal.message);
+
+    std::thread([val] { release_value(val); }).join();
+
+    error_message none{};
+    t.ptr = otterbrix_create(cfg, &none);
+    CHECK(t.ptr != nullptr);
     CHECK(none.message == nullptr);
 }

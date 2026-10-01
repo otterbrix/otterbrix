@@ -19,6 +19,10 @@ namespace Duckstax.Otterbrix
         [DllImport(libotterbrix, EntryPoint="cursor_size", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
         private static extern int CursorSize(IntPtr ptr);
 
+        [DllImport(libotterbrix, EntryPoint="cursor_affected_rows", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
+        [return: MarshalAs(UnmanagedType.I1)]
+        private static extern bool CursorAffectedRows(IntPtr ptr, out ulong rows);
+
         [DllImport(libotterbrix, EntryPoint="cursor_column_count", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
         private static extern int CursorColumnCount(IntPtr ptr);
 
@@ -60,6 +64,9 @@ namespace Duckstax.Otterbrix
         }
 
         public int Size() { return CursorSize(cursorStoragePtr); }
+        public ulong? AffectedRows() {
+            return CursorAffectedRows(cursorStoragePtr, out ulong rows) ? rows : null;
+        }
         public int ColumnCount() { return CursorColumnCount(cursorStoragePtr); }
         public bool HasNext() { return CursorHasNext(cursorStoragePtr); }
         public bool IsSuccess() { return CursorIsSuccess(cursorStoragePtr); }

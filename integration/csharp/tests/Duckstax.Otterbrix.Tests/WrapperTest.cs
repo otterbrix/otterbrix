@@ -42,6 +42,44 @@ public class Tests
         GC.KeepAlive(otterbrix);
     }
 
+    [Test]
+    public void WritesReportAffectedRows() {
+        OtterbrixWrapper otterbrix = Open("WritesReportAffectedRows");
+        {
+            using CursorWrapper cursor = otterbrix.Execute("CREATE DATABASE db;");
+            Assert.IsTrue(cursor.IsSuccess());
+            Assert.That(cursor.AffectedRows(), Is.Null);
+        }
+        {
+            using CursorWrapper cursor = otterbrix.Execute("CREATE TABLE db.users (name string, age bigint);");
+            Assert.IsTrue(cursor.IsSuccess());
+        }
+        {
+            using CursorWrapper cursor = otterbrix.Execute("INSERT INTO db.users (name, age) VALUES ('Alice', 30), ('Bob', 25);");
+            Assert.IsTrue(cursor.IsSuccess());
+            Assert.That(cursor.AffectedRows(), Is.EqualTo(2));
+            Assert.That(cursor.Size(), Is.EqualTo(0));
+        }
+        {
+            using CursorWrapper cursor = otterbrix.Execute("UPDATE db.users SET age = 31 WHERE name = 'Alice';");
+            Assert.IsTrue(cursor.IsSuccess());
+            Assert.That(cursor.AffectedRows(), Is.EqualTo(1));
+            Assert.That(cursor.Size(), Is.EqualTo(0));
+        }
+        {
+            using CursorWrapper cursor = otterbrix.Execute("DELETE FROM db.users WHERE age > 100;");
+            Assert.IsTrue(cursor.IsSuccess());
+            Assert.That(cursor.AffectedRows(), Is.EqualTo(0));
+        }
+        {
+            using CursorWrapper cursor = otterbrix.Execute("SELECT * FROM db.users;");
+            Assert.IsTrue(cursor.IsSuccess());
+            Assert.That(cursor.AffectedRows(), Is.Null);
+            Assert.That(cursor.Size(), Is.EqualTo(2));
+        }
+        GC.KeepAlive(otterbrix);
+    }
+
     // [Test]
     public void Base() {
         OtterbrixWrapper otterbrix = new OtterbrixWrapper(Config.CreateConfig(System.Environment.CurrentDirectory + "/Base"));

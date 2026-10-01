@@ -1134,11 +1134,13 @@ addlit(char *ytext, int yleng, core_yyscan_t yyscanner)
 	/* enlarge buffer if needed */
 	if ((yyextra->literallen + yleng) >= yyextra->literalalloc)
 	{
+		const int old_alloc = yyextra->literalalloc;
 		do {
 			yyextra->literalalloc *= 2;
 		} while ((yyextra->literallen + yleng) >= yyextra->literalalloc);
 		yyextra->literalbuf = (char *) repalloc(yyextra->resource,
 		                                        yyextra->literalbuf,
+		                                        old_alloc,
 												yyextra->literalalloc);
 	}
 	/* append new data */
@@ -1153,9 +1155,11 @@ addlitchar(unsigned char ychar, core_yyscan_t yyscanner)
 	/* enlarge buffer if needed */
 	if ((yyextra->literallen + 1) >= yyextra->literalalloc)
 	{
+		const int old_alloc = yyextra->literalalloc;
 		yyextra->literalalloc *= 2;
 		yyextra->literalbuf = (char *) repalloc(yyextra->resource,
 		                                        yyextra->literalbuf,
+		                                        old_alloc,
 												yyextra->literalalloc);
 	}
 	/* append new data */

@@ -927,6 +927,71 @@ namespace components::catalog {
         return out;
     }
 
+    core::result_wrapper_t<std::pmr::vector<components::compute::parameter_type>>
+    decode_proargmatchers(std::pmr::memory_resource* resource, std::string_view text) {
+        using components::compute::parameter_type;
+        std::pmr::vector<parameter_type> out{resource};
+        const auto corrupt = [resource, text]() {
+            return core::error_t{core::error_code_t::data_corruption,
+                                 std::pmr::string{"pg_proc.proargmatchers \"" + std::string{text} +
+                                                      "\" is outside its grammar",
+                                                  resource}};
+        };
+        const auto number = [](std::string_view digits, int& value) {
+            const auto [end, ec] = std::from_chars(digits.data(), digits.data() + digits.size(), value);
+            return ec == std::errc{} && end == digits.data() + digits.size();
+        };
+        if (text.empty()) {
+            return out;
+        }
+        std::size_t start = 0;
+        while (start <= text.size()) {
+            const auto bar = text.find('|', start);
+            const auto item = text.substr(start, bar == std::string_view::npos ? std::string_view::npos : bar - start);
+            if (item.size() < 3 || item[1] != ':') {
+                return corrupt();
+            }
+            if (item[0] == 'e') {
+                int type = 0;
+                if (!number(item.substr(2), type)) {
+                    return corrupt();
+                }
+                out.push_back(parameter_type::exact(types::complex_logical_type{static_cast<types::logical_type>(type)}));
+            } else if (item[0] == 'v') {
+                const auto rest = item.substr(2);
+                const auto colon = rest.find(':');
+                int id = 0;
+                if (!number(rest.substr(0, colon), id)) {
+                    return corrupt();
+                }
+                std::pmr::vector<types::complex_logical_type> admissible{resource};
+                if (colon != std::string_view::npos) {
+                    auto list = rest.substr(colon + 1);
+                    while (true) {
+                        const auto comma = list.find(',');
+                        int type = 0;
+                        if (!number(list.substr(0, comma), type)) {
+                            return corrupt();
+                        }
+                        admissible.emplace_back(static_cast<types::logical_type>(type));
+                        if (comma == std::string_view::npos) {
+                            break;
+                        }
+                        list = list.substr(comma + 1);
+                    }
+                }
+                out.push_back(parameter_type::variable(static_cast<parameter_type::variable_id>(id), std::move(admissible)));
+            } else {
+                return corrupt();
+            }
+            if (bar == std::string_view::npos) {
+                break;
+            }
+            start = bar + 1;
+        }
+        return out;
+    }
+
     std::string encode_prorettype(const std::vector<components::compute::output_type>& outputs) {
         using K = components::compute::output_type::kind_t;
         std::string out;

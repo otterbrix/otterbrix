@@ -723,17 +723,6 @@ namespace services::dispatcher {
             error(log_, "dispatcher_t::unregister_udf: {}", refused.what);
             co_return refused;
         }
-        if (!registered) {
-            core::error_t unknown{core::error_code_t::unrecognized_function,
-                                  std::pmr::string{"unregister_udf: no executor holds an overload of '" + function_name +
-                                                       "' matching this signature; pg_proc left untouched. A "
-                                                       "function a previous process registered cannot be "
-                                                       "unregistered, only replaced: register_udf it again",
-                                                   resource()}};
-            error(log_, "dispatcher_t::unregister_udf: {}", unknown.what);
-            co_return unknown;
-        }
-
         const std::string name_for_master = function_name;
         const std::pmr::vector<components::types::complex_logical_type> inputs_for_master{inputs.begin(),
                                                                                            inputs.end(),
@@ -786,6 +775,10 @@ namespace services::dispatcher {
                                     std::pmr::string{"unregister_udf: the operator reported failure without naming a "
                                                      "reason",
                                                      resource()}};
+        }
+        // The rows of a function no process holds were all there was to drop.
+        if (!registered) {
+            co_return core::error_t::no_error();
         }
         [[maybe_unused]] const bool master_dropped =
             function_registry_.remove_function_by_signature(name_for_master, inputs_for_master);

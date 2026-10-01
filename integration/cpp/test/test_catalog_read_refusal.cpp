@@ -267,9 +267,10 @@ TEST_CASE("integration::cpp::test_catalog_read_refusal::register_udf_fails_when_
     CHECK(rows == 1);
 }
 
-// Guard: with nothing injected, the same two registrations must be refused as `already_exists`.
-// Without it, the case above could pass vacuously if every second registration just started failing.
-TEST_CASE("integration::cpp::test_catalog_read_refusal::a_healthy_second_overload_is_already_exists") {
+// Guard: with nothing injected, the same two registrations succeed, the second as a pg_proc row of its own
+// (PostgreSQL 18 overloading). Without it, the case above could pass vacuously if every second registration just
+// started failing.
+TEST_CASE("integration::cpp::test_catalog_read_refusal::a_healthy_second_overload_is_a_row_of_its_own") {
     const std::filesystem::path dir = integration_fixture_path("test_catalog_read_refusal/duplicate");
     std::filesystem::remove_all(dir);
     auto config = test_helpers::make_test_config(dir);
@@ -282,8 +283,8 @@ TEST_CASE("integration::cpp::test_catalog_read_refusal::a_healthy_second_overloa
     REQUIRE_FALSE(first.contains_error());
 
     auto second = dispatcher->register_udf(otterbrix::session_id_t(), make_probe_binary(dispatcher->resource()));
-    REQUIRE(second.contains_error());
-    CHECK(second.type == core::error_code_t::already_exists);
+    INFO("second overload: " << second.what.c_str());
+    REQUIRE_FALSE(second.contains_error());
 
-    CHECK(pg_proc_rows_named(space, kFuncName) == 1);
+    CHECK(pg_proc_rows_named(space, kFuncName) == 2);
 }

@@ -5,24 +5,68 @@ namespace Duckstax.Otterbrix
 
     [StructLayout(LayoutKind.Sequential)]
     public struct StringPasser {
-        [MarshalAs(UnmanagedType.LPStr)] public string data;
-        public uint size;
+        [MarshalAs(UnmanagedType.LPUTF8Str)] public string data;
+        public nuint size;
         public StringPasser(ref string str) {
             data = str;
-            size = (uint) str.Length;
+            size = (nuint) System.Text.Encoding.UTF8.GetByteCount(str);
         }
     }
 
+    // core::error_code_t, member for member and in the same order
     public enum ErrorCode : int {
+        OtherError = -1,
         None = 0,
-        DatabaseAlreadyExists = 1,
-        DatabaseNotExists = 2,
-        CollectionAlreadyExists = 3,
-        CollectionNotExists = 4,
-        CollectionDropped = 5,
-        SqlParseError = 6,
-        CreatePhisicalPlanError = 7,
-        OtherError = -1
+        AlreadyExists,
+        DoNotExists,
+        UnimplementedYet,
+
+        DuplicateField,
+        MissingField,
+        MissingPrimaryKeyId,
+        MissingNamespace,
+        TransactionInactive,
+        TransactionFinalized,
+        MissingSavepoint,
+        CommitFailed,
+        MissingTable,
+        DatabaseAlreadyExists,
+        DatabaseNotExists,
+        TableAlreadyExists,
+        TableNotExists,
+        TableDropped,
+        TypeAlreadyExists,
+        TypeNotExists,
+        AmbiguousName,
+        FieldNotExists,
+        InvalidParameter,
+
+        PhysicalPlanError,
+        CreatePhysicalPlanError,
+
+        ArithmeticsFailure,
+        ComparisonFailure,
+        ConversionFailure,
+
+        IndexCreateFail,
+        IndexNotExists,
+        SqlParseError,
+        SchemaError,
+        KernelError,
+        FunctionRegistryError,
+        UnrecognizedFunction,
+        IncorrectFunctionArgument,
+        IncorrectFunctionReturnType,
+        InvalidConstraint,
+
+        OutOfMemory,
+        DataCorruption,
+        IoError,
+        WriteConflict,
+        StaleIndex,
+
+        ActorAgentMissing,
+        ConnectionClosed,
     }
 
     public struct ErrorMessage {
@@ -79,7 +123,7 @@ namespace Duckstax.Otterbrix
 
     // TODO: Add connection support
     public class OtterbrixWrapper {
-        const string libotterbrix = "libotterbrix.so";
+        const string libotterbrix = "otterbrix";
 
         [StructLayout(LayoutKind.Sequential)]
         private struct TransferConfig {
@@ -116,6 +160,12 @@ namespace Duckstax.Otterbrix
                    CallingConvention = CallingConvention.Cdecl)]
         private static extern void OtterbrixFreeString(IntPtr str);
 
+        internal static string? TakeString(IntPtr str) {
+            string? result = Marshal.PtrToStringUTF8(str);
+            OtterbrixFreeString(str);
+            return result;
+        }
+
         [DllImport(libotterbrix,
                    EntryPoint = "otterbrix_destroy",
                    ExactSpelling = false,
@@ -143,8 +193,7 @@ namespace Duckstax.Otterbrix
             if (otterbrixPtr == IntPtr.Zero) {
                 ErrorMessage error = new ErrorMessage();
                 error.type = (ErrorCode)refusal.type;
-                error.what = Marshal.PtrToStringAnsi(refusal.what) ?? "";
-                OtterbrixFreeString(refusal.what);
+                error.what = TakeString(refusal.what) ?? "";
                 throw new OtterbrixStartupException(error);
             }
         }

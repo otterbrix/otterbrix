@@ -5,7 +5,7 @@ namespace Duckstax.Otterbrix
 
     public class ValueWrapper : IDisposable
     {
-        const string libotterbrix = "libotterbrix.so";
+        const string libotterbrix = "otterbrix";
 
         [DllImport(libotterbrix, EntryPoint="release_value", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
         private static extern void ReleaseValue(IntPtr ptr);
@@ -71,10 +71,7 @@ namespace Duckstax.Otterbrix
         public ulong GetUint() { return ValueGetUint(valuePtr); }
         public double GetDouble() { return ValueGetDouble(valuePtr); }
         public string GetString() {
-            IntPtr strPtr = ValueGetString(valuePtr);
-            string? result = Marshal.PtrToStringAnsi(strPtr);
-            Marshal.FreeHGlobal(strPtr);
-            return result ?? "";
+            return OtterbrixWrapper.TakeString(ValueGetString(valuePtr)) ?? "";
         }
 
         private IntPtr valuePtr;

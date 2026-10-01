@@ -5,7 +5,7 @@ namespace Duckstax.Otterbrix
 
     public class CursorWrapper : IDisposable
     {
-        const string libotterbrix = "libotterbrix.so";
+        const string libotterbrix = "otterbrix";
 
         [StructLayout(LayoutKind.Sequential)]
         private struct TransferErrorMessage {
@@ -18,6 +18,10 @@ namespace Duckstax.Otterbrix
 
         [DllImport(libotterbrix, EntryPoint="cursor_size", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
         private static extern int CursorSize(IntPtr ptr);
+
+        [DllImport(libotterbrix, EntryPoint="cursor_affected_rows", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
+        [return: MarshalAs(UnmanagedType.I1)]
+        private static extern bool CursorAffectedRows(IntPtr ptr, out ulong rows);
 
         [DllImport(libotterbrix, EntryPoint="cursor_column_count", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
         private static extern int CursorColumnCount(IntPtr ptr);
@@ -60,6 +64,9 @@ namespace Duckstax.Otterbrix
         }
 
         public int Size() { return CursorSize(cursorStoragePtr); }
+        public ulong? AffectedRows() {
+            return CursorAffectedRows(cursorStoragePtr, out ulong rows) ? rows : null;
+        }
         public int ColumnCount() { return CursorColumnCount(cursorStoragePtr); }
         public bool HasNext() { return CursorHasNext(cursorStoragePtr); }
         public bool IsSuccess() { return CursorIsSuccess(cursorStoragePtr); }
@@ -69,18 +76,12 @@ namespace Duckstax.Otterbrix
             TransferErrorMessage transfer = CursorGetError(cursorStoragePtr);
             ErrorMessage message = new ErrorMessage();
             message.type = (ErrorCode)transfer.type;
-            string? str = Marshal.PtrToStringAnsi(transfer.what);
-            message.what = str ?? "";
-            Marshal.FreeHGlobal(transfer.what);
+            message.what = OtterbrixWrapper.TakeString(transfer.what) ?? "";
             return message;
         }
 
         public string ColumnName(int columnIndex) {
-            IntPtr strPtr = CursorColumnName(cursorStoragePtr, columnIndex);
-            if (strPtr == IntPtr.Zero) return "";
-            string? result = Marshal.PtrToStringAnsi(strPtr);
-            Marshal.FreeHGlobal(strPtr);
-            return result ?? "";
+            return OtterbrixWrapper.TakeString(CursorColumnName(cursorStoragePtr, columnIndex)) ?? "";
         }
 
         public ValueWrapper GetValue(int rowIndex, int columnIndex) {

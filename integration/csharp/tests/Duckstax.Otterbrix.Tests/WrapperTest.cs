@@ -97,42 +97,42 @@ public class Tests
         GC.KeepAlive(otterbrix);
     }
 
-    // [Test]
+    [Test]
     public void Base() {
-        OtterbrixWrapper otterbrix = new OtterbrixWrapper(Config.CreateConfig(System.Environment.CurrentDirectory + "/Base"));
+        OtterbrixWrapper otterbrix = Open("Base");
         {
-            Assert.IsTrue(otterbrix.CreateDatabase("TestDatabase").IsSuccess());
-            Assert.IsTrue(otterbrix.CreateCollection("TestDatabase", "TestCollection").IsSuccess());
+            using (CursorWrapper created = otterbrix.CreateDatabase("testdatabase")) Assert.IsTrue(created.IsSuccess());
+            using (CursorWrapper created = otterbrix.CreateCollection("testdatabase", "testcollection")) Assert.IsTrue(created.IsSuccess());
         }
         {
-            string query = "INSERT INTO TestDatabase.TestCollection (name, count) VALUES ";
+            string query = "INSERT INTO testdatabase.testcollection (name, count) VALUES ";
             for (int num = 0; num < 100; ++num) {
                 query += ("('Name " + num + "', " + num + ")" +
                           (num == 99 ? ";" : ", "));
             }
-            CursorWrapper cursor = otterbrix.Execute(query);
+            using CursorWrapper cursor = otterbrix.Execute(query);
             Assert.IsTrue(cursor.IsSuccess());
             Assert.IsFalse(cursor.IsError());
-            Assert.IsTrue(cursor.Size() == 100);
+            Assert.That(cursor.AffectedRows(), Is.EqualTo(100));
         }
         {
-            string query = "SELECT * FROM TestDatabase.TestCollection;";
-            CursorWrapper cursor = otterbrix.Execute(query);
+            string query = "SELECT * FROM testdatabase.testcollection;";
+            using CursorWrapper cursor = otterbrix.Execute(query);
             Assert.IsTrue(cursor.IsSuccess());
             Assert.IsTrue(cursor.GetError().type == ErrorCode.None);
             Assert.IsFalse(cursor.IsError());
             Assert.IsTrue(cursor.Size() == 100);
         }
         {
-            string query = "SELECT * FROM TestDatabase.TestCollection WHERE count > 90;";
-            CursorWrapper cursor = otterbrix.Execute(query);
+            string query = "SELECT * FROM testdatabase.testcollection WHERE count > 90;";
+            using CursorWrapper cursor = otterbrix.Execute(query);
             Assert.IsTrue(cursor.IsSuccess());
             Assert.IsFalse(cursor.IsError());
             Assert.IsTrue(cursor.Size() == 9);
         }
         {
-            string query = "SELECT * FROM TestDatabase.TestCollection ORDER BY count;";
-            CursorWrapper cursor = otterbrix.Execute(query);
+            string query = "SELECT * FROM testdatabase.testcollection ORDER BY count;";
+            using CursorWrapper cursor = otterbrix.Execute(query);
             Assert.IsTrue(cursor.IsSuccess());
             Assert.IsFalse(cursor.IsError());
             Assert.IsTrue(cursor.Size() == 100);
@@ -145,8 +145,8 @@ public class Tests
             }
         }
         {
-            string query = "SELECT * FROM TestDatabase.TestCollection ORDER BY count DESC;";
-            CursorWrapper cursor = otterbrix.Execute(query);
+            string query = "SELECT * FROM testdatabase.testcollection ORDER BY count DESC;";
+            using CursorWrapper cursor = otterbrix.Execute(query);
             Assert.IsTrue(cursor.IsSuccess());
             Assert.IsFalse(cursor.IsError());
             Assert.IsTrue(cursor.Size() == 100);
@@ -160,8 +160,8 @@ public class Tests
             }
         }
         {
-            string query = "SELECT * FROM TestDatabase.TestCollection ORDER BY name;";
-            CursorWrapper cursor = otterbrix.Execute(query);
+            string query = "SELECT * FROM testdatabase.testcollection ORDER BY name;";
+            using CursorWrapper cursor = otterbrix.Execute(query);
             Assert.IsTrue(cursor.IsSuccess());
             Assert.IsFalse(cursor.IsError());
             Assert.IsTrue(cursor.Size() == 100);
@@ -175,78 +175,79 @@ public class Tests
             }
         }
         {
-            string query = "SELECT * FROM TestDatabase.TestCollection WHERE count > 90;";
-            CursorWrapper cursor = otterbrix.Execute(query);
+            string query = "SELECT * FROM testdatabase.testcollection WHERE count > 90;";
+            using CursorWrapper cursor = otterbrix.Execute(query);
             Assert.IsTrue(cursor.IsSuccess());
             Assert.IsFalse(cursor.IsError());
             Assert.IsTrue(cursor.Size() == 9);
         }
         {
-            string query = "DELETE FROM TestDatabase.TestCollection WHERE count > 90;";
-            CursorWrapper cursor = otterbrix.Execute(query);
+            string query = "DELETE FROM testdatabase.testcollection WHERE count > 90;";
+            using CursorWrapper cursor = otterbrix.Execute(query);
             Assert.IsTrue(cursor.IsSuccess());
             Assert.IsFalse(cursor.IsError());
-            Assert.IsTrue(cursor.Size() == 9);
+            Assert.That(cursor.AffectedRows(), Is.EqualTo(9));
         }
         {
-            string query = "SELECT * FROM TestDatabase.TestCollection WHERE count > 90;";
-            CursorWrapper cursor = otterbrix.Execute(query);
-            Assert.IsFalse(cursor.IsSuccess());
+            string query = "SELECT * FROM testdatabase.testcollection WHERE count > 90;";
+            using CursorWrapper cursor = otterbrix.Execute(query);
+            Assert.IsTrue(cursor.IsSuccess());
             Assert.IsFalse(cursor.IsError());
             Assert.IsTrue(cursor.Size() == 0);
         }
         {
-            string query = "SELECT * FROM TestDatabase.TestCollection WHERE count < 20;";
-            CursorWrapper cursor = otterbrix.Execute(query);
+            string query = "SELECT * FROM testdatabase.testcollection WHERE count < 20;";
+            using CursorWrapper cursor = otterbrix.Execute(query);
             Assert.IsTrue(cursor.IsSuccess());
             Assert.IsFalse(cursor.IsError());
             Assert.IsTrue(cursor.Size() == 20);
         }
         {
-            string query = "UPDATE TestDatabase.TestCollection SET count = 1000 WHERE count < 20;";
-            CursorWrapper cursor = otterbrix.Execute(query);
+            string query = "UPDATE testdatabase.testcollection SET count = 1000 WHERE count < 20;";
+            using CursorWrapper cursor = otterbrix.Execute(query);
             Assert.IsTrue(cursor.IsSuccess());
             Assert.IsFalse(cursor.IsError());
-            Assert.IsTrue(cursor.Size() == 20);
+            Assert.That(cursor.AffectedRows(), Is.EqualTo(20));
         }
         {
-            string query = "SELECT * FROM TestDatabase.TestCollection WHERE count < 20;";
-            CursorWrapper cursor = otterbrix.Execute(query);
-            Assert.IsFalse(cursor.IsSuccess());
+            string query = "SELECT * FROM testdatabase.testcollection WHERE count < 20;";
+            using CursorWrapper cursor = otterbrix.Execute(query);
+            Assert.IsTrue(cursor.IsSuccess());
             Assert.IsFalse(cursor.IsError());
             Assert.IsTrue(cursor.Size() == 0);
         }
         {
-            string query = "SELECT * FROM TestDatabase.TestCollection WHERE count == 1000;";
-            CursorWrapper cursor = otterbrix.Execute(query);
+            string query = "SELECT * FROM testdatabase.testcollection WHERE count == 1000;";
+            using CursorWrapper cursor = otterbrix.Execute(query);
             Assert.IsTrue(cursor.IsSuccess());
             Assert.IsFalse(cursor.IsError());
             Assert.IsTrue(cursor.Size() == 20);
         }
+        GC.KeepAlive(otterbrix);
     }
 
-    // [Test]
+    [Test]
     public void GroupBy() {
-        OtterbrixWrapper otterbrix = new OtterbrixWrapper(Config.CreateConfig(System.Environment.CurrentDirectory + "/GroupBy"));
+        OtterbrixWrapper otterbrix = Open("GroupBy");
         {
-            Assert.IsTrue(otterbrix.CreateDatabase("TestDatabase").IsSuccess());
-            Assert.IsTrue(otterbrix.CreateCollection("TestDatabase", "TestCollection").IsSuccess());
+            using (CursorWrapper created = otterbrix.CreateDatabase("testdatabase")) Assert.IsTrue(created.IsSuccess());
+            using (CursorWrapper created = otterbrix.CreateCollection("testdatabase", "testcollection")) Assert.IsTrue(created.IsSuccess());
         }
         {
-            string query = "INSERT INTO TestDatabase.TestCollection (name, count) VALUES ";
+            string query = "INSERT INTO testdatabase.testcollection (name, count) VALUES ";
             for (int num = 0; num < 100; ++num) {
                 query += "('Name " + (num % 10) + "', " + (num % 20) + ")" +
                          (num == 99 ? ";" : ", ");
             }
-            CursorWrapper cursor = otterbrix.Execute(query);
+            using CursorWrapper cursor = otterbrix.Execute(query);
             Assert.IsTrue(cursor.IsSuccess());
-            Assert.IsTrue(cursor.Size() == 100);
+            Assert.That(cursor.AffectedRows(), Is.EqualTo(100));
         }
         {
             string query = "SELECT name, COUNT(count) AS count_, " + "SUM(count) AS sum_, AVG(count) AS avg_, " +
-                           "MIN(count) AS min_, MAX(count) AS max_ " + "FROM TestDatabase.TestCollection " +
+                           "MIN(count) AS min_, MAX(count) AS max_ " + "FROM testdatabase.testcollection " +
                            "GROUP BY name;";
-            CursorWrapper cursor = otterbrix.Execute(query);
+            using CursorWrapper cursor = otterbrix.Execute(query);
             Assert.IsTrue(cursor.IsSuccess());
             Assert.IsTrue(cursor.Size() == 10);
 
@@ -258,7 +259,7 @@ public class Tests
                 using ValueWrapper minVal = cursor.GetValue(number, "min_");
                 using ValueWrapper maxVal = cursor.GetValue(number, "max_");
                 Assert.IsTrue(nameVal.GetString() == "Name " + number.ToString());
-                Assert.IsTrue(countVal.GetInt() == 10);
+                Assert.IsTrue(countVal.GetUint() == 10);
                 Assert.IsTrue(sumVal.GetInt() == 5 * (number % 20) + 5 * ((number + 10) % 20));
                 Assert.IsTrue(avgVal.GetDouble() == (number % 20 + (number + 10) % 20) / 2);
                 Assert.IsTrue(minVal.GetInt() == number % 20);
@@ -267,9 +268,9 @@ public class Tests
         }
         {
             string query = "SELECT name, COUNT(count) AS count_, " + "SUM(count) AS sum_, AVG(count) AS avg_, " +
-                           "MIN(count) AS min_, MAX(count) AS max_ " + "FROM TestDatabase.TestCollection " +
+                           "MIN(count) AS min_, MAX(count) AS max_ " + "FROM testdatabase.testcollection " +
                            "GROUP BY name " + "ORDER BY name DESC;";
-            CursorWrapper cursor = otterbrix.Execute(query);
+            using CursorWrapper cursor = otterbrix.Execute(query);
             Assert.IsTrue(cursor.IsSuccess());
             Assert.IsTrue(cursor.Size() == 10);
 
@@ -282,13 +283,14 @@ public class Tests
                 using ValueWrapper minVal = cursor.GetValue(i, "min_");
                 using ValueWrapper maxVal = cursor.GetValue(i, "max_");
                 Assert.IsTrue(nameVal.GetString() == "Name " + number.ToString());
-                Assert.IsTrue(countVal.GetInt() == 10);
+                Assert.IsTrue(countVal.GetUint() == 10);
                 Assert.IsTrue(sumVal.GetInt() == 5 * (number % 20) + 5 * ((number + 10) % 20));
                 Assert.IsTrue(avgVal.GetDouble() == (number % 20 + (number + 10) % 20) / 2);
                 Assert.IsTrue(minVal.GetInt() == number % 20);
                 Assert.IsTrue(maxVal.GetInt() == (number + 10) % 20);
             }
         }
+        GC.KeepAlive(otterbrix);
     }
 
     [Test]
@@ -324,17 +326,17 @@ public class Tests
         GC.KeepAlive(otterbrix);
     }
 
-    // [Test]
+    [Test]
     public void TestJoin() {
-        const string databaseName = "TestDatabase";
-        const string collectionName1 = "TestCollection_1";
-        const string collectionName2 = "TestCollection_2";
+        const string databaseName = "testdatabase";
+        const string collectionName1 = "testcollection_1";
+        const string collectionName2 = "testcollection_2";
 
-        OtterbrixWrapper otterbrix = new OtterbrixWrapper(Config.CreateConfig(System.Environment.CurrentDirectory + "/TestJoin"));
+        OtterbrixWrapper otterbrix = Open("TestJoin");
         {
-            Assert.IsTrue(otterbrix.CreateDatabase(databaseName).IsSuccess());
-            Assert.IsTrue(otterbrix.CreateCollection(databaseName, collectionName1).IsSuccess());
-            Assert.IsTrue(otterbrix.CreateCollection(databaseName, collectionName2).IsSuccess());
+            using (CursorWrapper created = otterbrix.CreateDatabase(databaseName)) Assert.IsTrue(created.IsSuccess());
+            using (CursorWrapper created = otterbrix.CreateCollection(databaseName, collectionName1)) Assert.IsTrue(created.IsSuccess());
+            using (CursorWrapper created = otterbrix.CreateCollection(databaseName, collectionName2)) Assert.IsTrue(created.IsSuccess());
         }
         {
             string query = "";
@@ -343,9 +345,9 @@ public class Tests
             for (int num = 0, reversed = 100; num < 101; ++num, --reversed) {
                 query += "('Name " + num.ToString() + "', " + num.ToString() + ", " + reversed.ToString() + ")" + (reversed == 0 ? ";" : ", ");
             }
-            CursorWrapper cursor = otterbrix.Execute(query);
+            using CursorWrapper cursor = otterbrix.Execute(query);
             Assert.IsTrue(cursor.IsSuccess());
-            Assert.IsTrue(cursor.Size() == 101);
+            Assert.That(cursor.AffectedRows(), Is.EqualTo(101));
         }
         {
             string query = "";
@@ -354,9 +356,9 @@ public class Tests
                 query += "(" + ((num + 25) * 2 * 10).ToString() + ", " + ((num + 25) * 2).ToString() + ")"
                       + (num == 99 ? ";" : ", ");
             }
-            CursorWrapper cursor = otterbrix.Execute(query);
+            using CursorWrapper cursor = otterbrix.Execute(query);
             Assert.IsTrue(cursor.IsSuccess());
-            Assert.IsTrue(cursor.Size() == 100);
+            Assert.That(cursor.AffectedRows(), Is.EqualTo(100));
         }
         {
             string query = "";
@@ -364,7 +366,7 @@ public class Tests
                   + "." + collectionName2 + " ON " + databaseName + "." + collectionName1 + ".key_1"
                   + " = " + databaseName + "." + collectionName2 + ".key"
                   + " ORDER BY key_1 ASC;";
-            CursorWrapper cursor = otterbrix.Execute(query);
+            using CursorWrapper cursor = otterbrix.Execute(query);
             Assert.IsTrue(cursor.IsSuccess());
             Assert.IsTrue(cursor.Size() == 26);
 
@@ -379,5 +381,6 @@ public class Tests
                 Assert.IsTrue(nameVal.GetString() == "Name " + ((num + 25) * 2).ToString());
             }
         }
+        GC.KeepAlive(otterbrix);
     }
 }

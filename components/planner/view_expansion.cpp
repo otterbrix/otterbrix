@@ -52,14 +52,10 @@ namespace components::planner {
             }
         }
 
-        // A view, or the matview a REFRESH runs the body of: a relation whose read is its stored body.
+        // Does this resolved entry describe a plain view with a body we can re-parse?
         bool is_expandable_view(const logical_plan::resolve_entry_t* entry) {
-            if (entry == nullptr || !entry->table_md.has_value() || entry->table_md->view_sql.empty()) {
-                return false;
-            }
-            const char relkind = entry->table_md->relkind;
-            return relkind == components::catalog::relkind::view ||
-                   (relkind == components::catalog::relkind::materialized_view && entry->expands_matview);
+            return entry != nullptr && entry->table_md.has_value() &&
+                   entry->table_md->relkind == components::catalog::relkind::view && !entry->table_md->view_sql.empty();
         }
 
         // Any correlated (LATERAL) join anywhere in the body. Its correlation ids are
@@ -395,6 +391,38 @@ namespace components::planner {
         }
         wrapper->append_child(std::move(select));
         return wrapper;
+    }
+
+    core::result_wrapper_t<logical_plan::execution_plan_t>
+    refresh_matview_plan(std::pmr::memory_resource* resource,
+                         const logical_plan::resolved_table_metadata_t& matview,
+                         const std::string& dbname) {
+        auto body = expand_view_body(resource, matview.view_sql);
+        if (body.error.contains_error()) {
+            return std::move(body.error);
+        }
+        if (!body.resolves) {
+            body.resolves.emplace();
+        }
+        RETURN_IF_ERROR(pin_view_body_names(resource, *body.resolves, matview));
+
+        auto reference = logical_plan::make_node_aggregate(resource, core::dbname_t{}, core::relname_t{});
+        RETURN_IF_ERROR(splice_view_body(reference.get(), project_view_body(resource, std::move(body.plan), matview)));
+        auto insert = logical_plan::make_node_insert(resource);
+        insert->set_dbname(dbname);
+        insert->set_relname(matview.name);
+        insert->append_child(reference);
+
+        logical_plan::execution_plan_t plan{resource,
+                                            insert,
+                                            body.params ? body.params : logical_plan::make_parameter_node(resource)};
+        plan.catalog_resolves = std::move(*body.resolves);
+        sql::transform::register_catalog_resolve_write_target(resource,
+                                                              &plan.catalog_resolves,
+                                                              qualified_name_t{dbname, matview.name},
+                                                              sql::transform::constraint_resolve_kind::outgoing);
+        plan.stored_bodies.push_back({reference, matview});
+        return plan;
     }
 
     void renumber_body_parameters(std::pmr::memory_resource* resource,

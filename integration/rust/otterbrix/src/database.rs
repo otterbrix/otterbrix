@@ -285,7 +285,8 @@ impl Database {
     /// # Errors
     ///
     /// Returns [`Error::Query`] if the database already exists or the name is
-    /// invalid.
+    /// invalid. The name must be lower case: SQL folds an unquoted name, so a
+    /// mixed-case database could not be named back.
     pub fn create_database(&self, name: &str) -> Result<Cursor<'_>> {
         let ptr = unsafe { otterbrix_sys::create_database(self.ptr, make_sv(name)) };
         cursor_or_error(ptr)

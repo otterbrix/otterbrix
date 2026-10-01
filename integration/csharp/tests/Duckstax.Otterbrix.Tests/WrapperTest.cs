@@ -293,6 +293,27 @@ public class Tests
         GC.KeepAlive(otterbrix);
     }
 
+    // SQL folds an unquoted name, so the names CreateDatabase / CreateCollection take as written must be lower case.
+    [Test]
+    public void MixedCaseNamesAreRefused() {
+        OtterbrixWrapper otterbrix = Open("MixedCaseNamesAreRefused");
+        {
+            using CursorWrapper database = otterbrix.CreateDatabase("TestDatabase");
+            Assert.IsTrue(database.IsError());
+            Assert.That(database.GetError().type, Is.EqualTo(ErrorCode.InvalidParameter));
+            Assert.That(database.GetError().what, Is.EqualTo("create_database: name \"TestDatabase\" must be lower case"));
+        }
+        {
+            using CursorWrapper database = otterbrix.CreateDatabase("testdatabase");
+            Assert.IsTrue(database.IsSuccess());
+            using CursorWrapper collection = otterbrix.CreateCollection("testdatabase", "TestCollection");
+            Assert.IsTrue(collection.IsError());
+            Assert.That(collection.GetError().what,
+                        Is.EqualTo("create_collection: name \"TestCollection\" must be lower case"));
+        }
+        GC.KeepAlive(otterbrix);
+    }
+
     [Test]
     public void InvalidQueries() {
         OtterbrixWrapper otterbrix = Open("InvalidQueries");

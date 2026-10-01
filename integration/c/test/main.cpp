@@ -118,6 +118,56 @@ TEST_CASE("c-api: create_collection in a database that does not exist is refused
     release_cursor(other);
 }
 
+// Same rule as create_collection: a database name is taken as written, so it must already be lower case.
+TEST_CASE("c-api: create_database takes a lower-case name only", "[c-api][ddl]") {
+    test_db_t t("create_database_case");
+    REQUIRE(t.ptr != nullptr);
+
+    cursor_ptr mixed = create_database(t.ptr, sv(std::string("TestDatabase")));
+    REQUIRE(mixed != nullptr);
+    CHECK(cursor_is_error(mixed));
+    error_message refusal = cursor_get_error(mixed);
+    REQUIRE(refusal.message != nullptr);
+    CHECK(std::string(refusal.message) == "create_database: name \"TestDatabase\" must be lower case");
+    otterbrix_free_string(refusal.message);
+    release_cursor(mixed);
+
+    cursor_ptr catalog = execute_sql(t.ptr,
+                                     sv(std::string("SELECT nspname FROM pg_catalog.pg_namespace "
+                                                    "WHERE nspname = 'testdatabase';")));
+    REQUIRE(cursor_is_success(catalog));
+    CHECK(cursor_size(catalog) == 0);
+    release_cursor(catalog);
+
+    run_ok(t.ptr, "CREATE DATABASE SqlDatabase;");
+    cursor_ptr folded = execute_sql(t.ptr,
+                                    sv(std::string("SELECT nspname FROM pg_catalog.pg_namespace "
+                                                   "WHERE nspname = 'sqldatabase';")));
+    REQUIRE(cursor_is_success(folded));
+    CHECK(cursor_size(folded) == 1);
+    release_cursor(folded);
+}
+
+// Document mode through the C API: a lower-case database, a table without columns, fields registered by INSERT.
+TEST_CASE("c-api: document flow in a database created through the C API", "[c-api][ddl]") {
+    test_db_t t("document_flow");
+    REQUIRE(t.ptr != nullptr);
+
+    cursor_ptr db_cur = create_database(t.ptr, sv(std::string("docdb")));
+    REQUIRE(cursor_is_success(db_cur));
+    release_cursor(db_cur);
+    cursor_ptr coll_cur = create_collection(t.ptr, sv(std::string("docdb")), sv(std::string("docs")));
+    REQUIRE(cursor_is_success(coll_cur));
+    release_cursor(coll_cur);
+
+    run_ok(t.ptr, "INSERT INTO docdb.docs (id, name) VALUES (1, 'a'), (2, 'b');");
+    run_ok(t.ptr, "INSERT INTO docdb.docs (id, score) VALUES (3, 30);");
+    cursor_ptr read = execute_sql(t.ptr, sv(std::string("SELECT id FROM docdb.docs;")));
+    REQUIRE(cursor_is_success(read));
+    CHECK(cursor_size(read) == 3);
+    release_cursor(read);
+}
+
 // SQL folds an unquoted name to lower case, so a table created under a mixed-case name could never be read back.
 TEST_CASE("c-api: create_collection takes a lower-case name only", "[c-api][ddl]") {
     test_db_t t("create_collection_case");
@@ -133,7 +183,8 @@ TEST_CASE("c-api: create_collection takes a lower-case name only", "[c-api][ddl]
     otterbrix_free_string(refusal.message);
     release_cursor(mixed);
     cursor_ptr catalog =
-        execute_sql(t.ptr, sv(std::string("SELECT relname FROM pg_catalog.pg_class WHERE relname = 'TestCollection';")));
+        execute_sql(t.ptr,
+                    sv(std::string("SELECT relname FROM pg_catalog.pg_class WHERE relname = 'TestCollection';")));
     REQUIRE(cursor_is_success(catalog));
     CHECK(cursor_size(catalog) == 0);
     release_cursor(catalog);

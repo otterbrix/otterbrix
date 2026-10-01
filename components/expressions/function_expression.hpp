@@ -27,6 +27,12 @@ namespace components::expressions {
         const std::pmr::vector<param_storage>& args() const noexcept;
         void add_function_uid(compute::function_uid uid);
         compute::function_uid function_uid() const;
+        // The kernel signature of function_uid() the validation chose (index into get_signatures()).
+        void set_signature(size_t signature) noexcept;
+        size_t signature() const noexcept;
+        // A view read: the call resolves among these alone, not among every function of its name.
+        void set_pins(std::pmr::vector<compute::function_pin_t> pins);
+        const std::pmr::vector<compute::function_pin_t>& pins() const noexcept;
 
         void set_key(const key_t& key);
 
@@ -42,6 +48,8 @@ namespace components::expressions {
         bool distinct_{false};
         bool star_argument_{false};
         compute::function_uid function_uid_{compute::invalid_function_uid};
+        size_t signature_{0};
+        std::pmr::vector<compute::function_pin_t> pins_;
 
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;

@@ -8,6 +8,8 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/ddl_metadata_builder.hpp>
+#include <components/catalog/system_table_schemas.hpp>
 #include <components/compute/function.hpp>
 #include <services/disk/manager_disk.hpp>
 
@@ -166,6 +168,38 @@ namespace {
         auto rows = std::move(fut).take_ready();
         REQUIRE_FALSE(rows.has_error());
         return {rows.value().begin(), rows.value().end()};
+    }
+
+    // No statement gives a function's oid another signature; this does, to see a view read refuse it.
+    void forge_proc_row(view_space_t& space, catalog::oid_t oid, logical_type input, logical_type output) {
+        auto* resource = space.dispatcher()->resource();
+        components::table::transaction_data td{0, 0};
+        td.snapshot_horizon = std::numeric_limits<uint64_t>::max();
+        components::execution_context_t ctx{otterbrix::session_id_t{}, td, {}};
+        std::pmr::vector<services::disk::pg_catalog_delete_spec_t> specs{resource};
+        specs.push_back({catalog::well_known_oid::pg_proc_table, std::int64_t{0}, oid});
+        auto [_d, deleted] = actor_zeta::otterbrix::send(space.disk_address(),
+                                                         &services::disk::manager_disk_t::delete_pg_catalog_rows_many,
+                                                         ctx,
+                                                         std::move(specs));
+        spin_until_ready(deleted);
+        REQUIRE_FALSE(std::move(deleted).take_ready().has_error());
+        auto writes = catalog::build_create_function_writes(
+            resource,
+            "twice",
+            catalog::well_known_oid::pg_catalog_namespace,
+            oid,
+            1,
+            0,
+            catalog::encode_proargmatchers({components::compute::parameter_type::exact(input)}),
+            catalog::encode_prorettype({components::compute::output_type::fixed(output)}));
+        auto [_a, appended] = actor_zeta::otterbrix::send(space.disk_address(),
+                                                          &services::disk::manager_disk_t::append_pg_catalog_row,
+                                                          ctx,
+                                                          writes.front().table_oid,
+                                                          std::move(writes.front().row));
+        spin_until_ready(appended);
+        REQUIRE_FALSE(std::move(appended).take_ready().has_error());
     }
 
     bool depends_on(otterbrix::wrapper_dispatcher_t* d, catalog::oid_t objid, catalog::oid_t refobjid) {
@@ -861,4 +895,87 @@ TEST_CASE("integration::cpp::view_binding::unregister_udf_of_a_function_left_by_
 
     auto unknown = d->unregister_udf(otterbrix::session_id_t(), "twice", {logical_type::BIGINT});
     CHECK(unknown.contains_error());
+}
+
+// A view calls the function its body was bound to (PostgreSQL 18 FuncExpr.funcid): an overload registered later that
+// fits the arguments better is what a direct call takes, not what the view reads.
+TEST_CASE("integration::cpp::view_binding::a_view_calls_the_overload_it_was_created_over") {
+    view_space_t space(config_for("udf_pinned_overload"));
+    auto* d = space.dispatcher();
+    seed(d);
+    REQUIRE_FALSE(d->register_udf(otterbrix::session_id_t(),
+                                  make_twice(d->resource(), {{logical_type::DOUBLE, logical_type::DOUBLE}}))
+                      .contains_error());
+    run_ok(d, "CREATE VIEW vb.v AS SELECT twice(a) AS t2 FROM vb.t;");
+    REQUIRE_FALSE(d->register_udf(otterbrix::session_id_t(), make_twice(d->resource())).contains_error());
+    REQUIRE(run_ok(d, "SELECT twice(a) AS t2 FROM vb.t;")->chunks().front().data[0].type().type() ==
+            logical_type::BIGINT);
+
+    auto read = run_ok(d, "SELECT t2 FROM vb.v;");
+    REQUIRE(read->chunks().front().data[0].type().type() == logical_type::DOUBLE);
+    std::set<double> values;
+    for (const auto& chunk : read->chunks()) {
+        for (std::uint64_t r = 0; r < chunk.size(); ++r) {
+            values.insert(chunk.get_value<double>(0, r));
+        }
+    }
+    CHECK(values == std::set<double>{2.0, 4.0});
+}
+
+// The view records the function it calls as an 'f' row and depends on that overload alone.
+TEST_CASE("integration::cpp::view_binding::a_view_depends_on_the_overload_it_calls") {
+    view_space_t space(config_for("udf_overload_dependency"));
+    auto* d = space.dispatcher();
+    seed(d);
+    REQUIRE_FALSE(d->register_udf(otterbrix::session_id_t(), make_twice(d->resource())).contains_error());
+    REQUIRE_FALSE(d->register_udf(otterbrix::session_id_t(),
+                                  make_twice(d->resource(), {{logical_type::DOUBLE, logical_type::DOUBLE}}))
+                      .contains_error());
+    run_ok(d, "CREATE VIEW vb.v AS SELECT twice(a) AS t2 FROM vb.t;");
+    const auto v = std::to_string(oid_of(d, "v"));
+    const auto rows = proc_rows(space, "twice");
+    const auto bigint_row = std::find_if(rows.begin(), rows.end(), [](const auto& r) {
+        return r.proargmatchers ==
+               catalog::encode_proargmatchers({components::compute::parameter_type::exact(logical_type::BIGINT)});
+    });
+    REQUIRE(bigint_row != rows.end());
+    auto pinned = run_ok(d,
+                         "SELECT refobjid FROM pg_catalog.pg_rewrite_ref WHERE ev_class = " + v +
+                             " AND refkind = 'f' AND relname = 'twice';");
+    REQUIRE(pinned->size() == 1);
+    CHECK(pinned->chunks().front().get_value<std::uint32_t>(0, 0) == bigint_row->oid);
+
+    auto dropped = d->unregister_udf(otterbrix::session_id_t(), "twice", {logical_type::DOUBLE});
+    INFO("error: " << dropped.what);
+    CHECK_FALSE(dropped.contains_error());
+    CHECK(bigints(run_ok(d, "SELECT t2 FROM vb.v;")) == std::set<std::int64_t>{2, 4});
+}
+
+TEST_CASE("integration::cpp::view_binding::a_view_over_a_function_no_process_holds_names_it") {
+    const auto config = config_for("udf_pinned_not_registered");
+    {
+        view_space_t space(config);
+        auto* d = space.dispatcher();
+        seed(d);
+        REQUIRE_FALSE(d->register_udf(otterbrix::session_id_t(), make_twice(d->resource())).contains_error());
+        run_ok(d, "CREATE VIEW vb.v AS SELECT twice(a) AS t2 FROM vb.t;");
+    }
+    view_space_t space(config);
+    auto* d = space.dispatcher();
+
+    CHECK(error_text(exec(d, "SELECT t2 FROM vb.v;")) == "function twice(int8) used by view \"v\" is not registered");
+}
+
+TEST_CASE("integration::cpp::view_binding::a_view_whose_function_oid_has_another_signature_is_stale") {
+    view_space_t space(config_for("udf_pinned_stale"));
+    auto* d = space.dispatcher();
+    seed(d);
+    REQUIRE_FALSE(d->register_udf(otterbrix::session_id_t(), make_twice(d->resource())).contains_error());
+    run_ok(d, "CREATE VIEW vb.v AS SELECT twice(a) AS t2 FROM vb.t;");
+    const auto fn_oid = proc_rows(space, "twice").front().oid;
+    forge_proc_row(space, fn_oid, logical_type::DOUBLE, logical_type::DOUBLE);
+
+    CHECK(error_text(exec(d, "SELECT t2 FROM vb.v;")) ==
+          "view \"v\" is stale: function twice(int8) it was created over (oid " + std::to_string(fn_oid) +
+              ") is now twice(float8); recreate the view");
 }

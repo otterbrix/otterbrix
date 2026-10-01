@@ -142,6 +142,11 @@ namespace components::compute {
     using function_ptr = std::unique_ptr<function>;
     using function_uid = size_t;
     constexpr inline size_t invalid_function_uid = std::numeric_limits<size_t>::max();
+    // A function a view body was bound to: the function this process holds, and which of its kernel signatures.
+    struct function_pin_t {
+        function_uid uid{invalid_function_uid};
+        size_t signature{0};
+    };
     namespace detail {
         template<typename KernelType>
         class function_impl : public function {

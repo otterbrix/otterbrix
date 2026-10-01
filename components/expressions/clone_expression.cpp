@@ -62,6 +62,8 @@ namespace components::expressions {
                 auto dst = make_aggregate_over(make_function_expression(resource, qualified_name_t{src->full_name()}),
                                                src->key());
                 dst->add_function_uid(src->function_uid());
+                dst->set_signature(src->signature());
+                dst->set_pins({src->pins().begin(), src->pins().end(), resource});
                 dst->set_distinct(src->is_distinct());
                 dst->set_mergeable(src->is_mergeable());
                 for (const auto& param : src->params()) {
@@ -89,6 +91,8 @@ namespace components::expressions {
                 auto dst = make_function_expression(resource, qualified_name_t{src->full_name()}, std::move(args));
                 dst->set_key(src->key());
                 dst->add_function_uid(src->function_uid());
+                dst->set_signature(src->signature());
+                dst->set_pins({src->pins().begin(), src->pins().end(), resource});
                 copy = std::move(dst);
                 break;
             }

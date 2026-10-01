@@ -256,7 +256,8 @@ namespace services::dispatcher::validation {
                                                  context_.function_registry,
                                                  qualified_name_t{"regexp_like"},
                                                  arguments,
-                                                 context_.allowed_functions);
+                                                 context_.allowed_functions,
+                                                 {});
                 if (resolved.has_error()) {
                     error_ = core::error_on(context_.resource, resolved.error());
                     return;
@@ -435,7 +436,8 @@ namespace services::dispatcher::validation {
                                      context_.function_registry,
                                      aggregate->full_name(),
                                      argument_types,
-                                     components::compute::create_mask(components::compute::function_type_t::aggregate));
+                                     components::compute::create_mask(components::compute::function_type_t::aggregate),
+                                     aggregate->pins());
                 if (resolved.has_error()) {
                     error_ = core::error_on(context_.resource, resolved.error());
                     return;
@@ -448,6 +450,7 @@ namespace services::dispatcher::validation {
                                 resolved.value().arguments[index].cast);
                 }
                 aggregate->add_function_uid(resolved.value().uid);
+                aggregate->set_signature(resolved.value().signature);
                 aggregate->set_mergeable(resolved.value().mergeable);
                 aggregate->set_result_type(resolved.value().result);
             }
@@ -481,7 +484,8 @@ namespace services::dispatcher::validation {
                                                  context_.function_registry,
                                                  call->full_name(),
                                                  argument_types,
-                                                 allowed_functions);
+                                                 allowed_functions,
+                                                 call->pins());
                 if (resolved.has_error()) {
                     error_ = core::error_on(context_.resource, resolved.error());
                     return;
@@ -511,6 +515,7 @@ namespace services::dispatcher::validation {
                 }
 
                 call->add_function_uid(resolved.value().uid);
+                call->set_signature(resolved.value().signature);
                 call->set_result_type(resolved.value().result);
                 if (!reduces) {
                     last_cardinality_ = combined;

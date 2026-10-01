@@ -10,6 +10,7 @@ namespace components::catalog {
         inline constexpr char relation = 'r';  // a relation, by pg_class oid
         inline constexpr char host_name = 'h'; // a name the host resolved; no catalog oid
         inline constexpr char host_node = 'x'; // a host node's declared columns (refspec) under its name
+        inline constexpr char function = 'f';  // a function by pg_proc oid, its signature in refspec
     } // namespace view_refkind
 
     // One pg_rewrite_ref row: a view body name as written and what CREATE VIEW bound it to.

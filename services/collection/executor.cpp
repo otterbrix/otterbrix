@@ -45,6 +45,7 @@
 #include <components/logical_plan/node_transaction.hpp>
 #include <components/logical_plan/node_update.hpp>
 #include <components/logical_plan/param_storage.hpp>
+#include <components/physical_plan/operators/operator_data.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
 #include <components/planner/optimizer.hpp>
 #include <components/planner/view_expansion.hpp>
@@ -679,6 +680,30 @@ namespace services::collection::executor {
                         err.contains_error()) {
                         co_return execute_result_t{make_cursor(resource(), std::move(err))};
                     }
+                    if (auto function_oids = view_function_oids(resource(), views[i]); !function_oids.empty()) {
+                        std::pmr::vector<std::uint64_t> key_columns{resource()};
+                        key_columns.push_back(0);
+                        auto [_rp, rpf] = actor_zeta::otterbrix::send(
+                            disk_address_,
+                            &services::disk::manager_disk_t::read_chunks_by_keys,
+                            components::execution_context_t{session, resolve_txn, {}},
+                            components::catalog::well_known_oid::pg_proc_table,
+                            std::move(key_columns),
+                            components::operators::make_keys_chunk(resource(), function_oids),
+                            std::pmr::vector<std::uint64_t>{resource()});
+                        auto proc_chunks = co_await std::move(rpf);
+                        if (proc_chunks.has_error()) {
+                            co_return execute_result_t{make_cursor(resource(), proc_chunks.error())};
+                        }
+                        if (auto err = pin_view_functions(resource(),
+                                                          views[i],
+                                                          proc_rows_of(resource(), proc_chunks.value()),
+                                                          function_registry_,
+                                                          body.plan.get());
+                            err.contains_error()) {
+                            co_return execute_result_t{make_cursor(resource(), std::move(err))};
+                        }
+                    }
                     components::planner::renumber_body_parameters(resource(),
                                                                   body.plan.get(),
                                                                   body.params,
@@ -1276,30 +1301,39 @@ namespace services::collection::executor {
                         break;
                     }
                 }
-                auto dependencies = view->dependencies();
+                const auto functions = view_body_user_functions(resource(), body.get());
+                if (functions.empty() || disk_address_ == actor_zeta::address_t::empty_address()) {
+                    break;
+                }
                 const components::execution_context_t proc_ctx{session, resolve_txn, {}};
-                const bool has_catalog = disk_address_ != actor_zeta::address_t::empty_address();
-                for (const auto& name : view_body_user_functions(resource(), body.get(), function_registry_)) {
-                    if (!has_catalog) {
-                        break;
+                std::pmr::vector<std::string> names{resource()};
+                std::pmr::vector<services::disk::resolve_function_result_t> rows{resource()};
+                for (const auto& use : functions) {
+                    const auto* function = function_registry_.get_function(use.uid);
+                    if (function == nullptr ||
+                        std::find(names.begin(), names.end(), function->name()) != names.end()) {
+                        continue;
                     }
+                    names.push_back(function->name());
                     auto [_rf, rff] =
                         actor_zeta::otterbrix::send(disk_address_,
                                                     &services::disk::manager_disk_t::resolve_function_by_name,
                                                     proc_ctx,
-                                                    name);
+                                                    function->name());
                     auto procs = co_await std::move(rff);
                     if (procs.has_error()) {
                         error = make_cursor(resource(), procs.error());
                         break;
                     }
-                    for (const auto& proc : procs.value()) {
-                        if (proc.oid >= components::catalog::FIRST_USER_OID) {
-                            dependencies.push_back({components::catalog::well_known_oid::pg_proc_table, proc.oid});
-                        }
-                    }
+                    rows.insert(rows.end(), procs.value().begin(), procs.value().end());
                 }
-                view->set_dependencies(std::move(dependencies));
+                if (error) {
+                    break;
+                }
+                if (auto described = describe_view_functions(resource(), *view, function_registry_, functions, rows);
+                    described.contains_error()) {
+                    error = make_cursor(resource(), std::move(described));
+                }
                 break;
             }
             case node_type::alter_table_t: {

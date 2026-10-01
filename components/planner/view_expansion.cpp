@@ -308,7 +308,9 @@ namespace components::planner {
         for (auto& entry : body_resolves.tables->entries()) {
             const auto binding =
                 std::find_if(view.view_bindings.begin(), view.view_bindings.end(), [&entry](const auto& b) {
-                    return b.refkind != logical_plan::view_refkind::host_node && b.dbname == entry.dbname &&
+                    return (b.refkind == logical_plan::view_refkind::relation ||
+                            b.refkind == logical_plan::view_refkind::host_name) &&
+                           b.dbname == entry.dbname &&
                            b.schema == entry.schema && b.relname == entry.relname;
                 });
             if (binding == view.view_bindings.end()) {

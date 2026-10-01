@@ -1845,7 +1845,8 @@ namespace services::dispatcher {
                                      function_node->full_name(),
                                      function_input,
                                      components::compute::create_mask(components::compute::function_type_t::vector,
-                                                                      components::compute::function_type_t::expand));
+                                                                      components::compute::function_type_t::expand),
+                                     {});
                 if (fn_resolved.has_error()) {
                     return fn_resolved.convert_error<named_schema>();
                 }

@@ -74,7 +74,7 @@ namespace {
                                 functions(),
                                 qualified_name_t{std::string{name}},
                                 arguments,
-                                any_kind());
+                                any_kind(), {});
     }
 
 } // namespace
@@ -168,7 +168,7 @@ TEST_CASE("dispatcher::resolve_function: the function decides its own return typ
                                  functions(),
                                  qualified_name_t{"count"},
                                  none,
-                                 any_kind());
+                                 any_kind(), {});
     REQUIRE_FALSE(star.has_error());
     REQUIRE(star.value().result.type() == logical_type::UBIGINT);
 }
@@ -202,7 +202,7 @@ TEST_CASE("dispatcher::resolve_function: a family entry keeps the argument's par
                                      functions(),
                                      qualified_name_t{"sum"},
                                      arguments,
-                                     any_kind());
+                                     any_kind(), {});
     REQUIRE_FALSE(resolved.has_error());
     REQUIRE_FALSE(resolved.value().arguments[0].cast);
     REQUIRE(resolved.value().arguments[0].target == decimal);
@@ -225,7 +225,7 @@ TEST_CASE("dispatcher::resolve_function: the clause decides which function kinds
                                          functions(),
                                          qualified_name_t{"sum"},
                                          integer,
-                                         scalar_only);
+                                         scalar_only, {});
     REQUIRE(sum_in_where.has_error());
     REQUIRE(sum_in_where.error().type == core::error_code_t::incorrect_function_argument);
 
@@ -235,7 +235,7 @@ TEST_CASE("dispatcher::resolve_function: the clause decides which function kinds
                                                 functions(),
                                                 qualified_name_t{"length"},
                                                 text,
-                                                aggregate_only);
+                                                aggregate_only, {});
     REQUIRE(length_in_aggregate.has_error());
 
     // Each is fine in the clause that accepts it.
@@ -245,7 +245,7 @@ TEST_CASE("dispatcher::resolve_function: the clause decides which function kinds
                                    functions(),
                                    qualified_name_t{"sum"},
                                    integer,
-                                   aggregate_only)
+                                   aggregate_only, {})
                       .has_error());
     REQUIRE_FALSE(resolve_function(resource(),
                                    casts(),
@@ -253,7 +253,7 @@ TEST_CASE("dispatcher::resolve_function: the clause decides which function kinds
                                    functions(),
                                    qualified_name_t{"length"},
                                    text,
-                                   scalar_only)
+                                   scalar_only, {})
                       .has_error());
 }
 
@@ -281,7 +281,7 @@ TEST_CASE("dispatcher::resolve_function: abs resolves per argument type") {
                                    functions(),
                                    qualified_name_t{"abs"},
                                    decimal_arg,
-                                   any_kind());
+                                   any_kind(), {});
     REQUIRE_FALSE(scaled.has_error());
     REQUIRE_FALSE(scaled.value().arguments[0].cast);
     REQUIRE(scaled.value().result == decimal);

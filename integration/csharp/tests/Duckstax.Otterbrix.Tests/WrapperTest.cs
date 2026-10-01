@@ -43,6 +43,23 @@ public class Tests
     }
 
     [Test]
+    public void NonAsciiTextRoundTrips() {
+        OtterbrixWrapper otterbrix = Open("NonAsciiTextRoundTrips");
+        {
+            using CursorWrapper cursor = otterbrix.Execute("SELECT 'Привет' AS greeting, 7 AS \"число\";");
+            Assert.IsTrue(cursor.IsSuccess(), cursor.GetError().what);
+            Assert.That(cursor.ColumnName(0), Is.EqualTo("greeting"));
+            Assert.That(cursor.ColumnName(1), Is.EqualTo("число"));
+            using ValueWrapper greeting = cursor.GetValue(0, 0);
+            Assert.That(greeting.GetString(), Is.EqualTo("Привет"));
+            using ValueWrapper number = cursor.GetValue(0, "число");
+            Assert.IsFalse(number.IsNull());
+            Assert.That(number.GetInt(), Is.EqualTo(7));
+        }
+        GC.KeepAlive(otterbrix);
+    }
+
+    [Test]
     public void WritesReportAffectedRows() {
         OtterbrixWrapper otterbrix = Open("WritesReportAffectedRows");
         {

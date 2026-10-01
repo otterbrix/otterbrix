@@ -5,11 +5,11 @@ namespace Duckstax.Otterbrix
 
     [StructLayout(LayoutKind.Sequential)]
     public struct StringPasser {
-        [MarshalAs(UnmanagedType.LPStr)] public string data;
-        public uint size;
+        [MarshalAs(UnmanagedType.LPUTF8Str)] public string data;
+        public nuint size;
         public StringPasser(ref string str) {
             data = str;
-            size = (uint) str.Length;
+            size = (nuint) System.Text.Encoding.UTF8.GetByteCount(str);
         }
     }
 
@@ -161,7 +161,7 @@ namespace Duckstax.Otterbrix
         private static extern void OtterbrixFreeString(IntPtr str);
 
         internal static string? TakeString(IntPtr str) {
-            string? result = Marshal.PtrToStringAnsi(str);
+            string? result = Marshal.PtrToStringUTF8(str);
             OtterbrixFreeString(str);
             return result;
         }

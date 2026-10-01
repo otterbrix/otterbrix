@@ -19,7 +19,7 @@ fn main() {
         env::var("OTTERBRIX_LIB_DIR").unwrap_or_else(|_| default_lib_dir.display().to_string());
 
     if let Ok(abs) = PathBuf::from(&lib_dir).canonicalize() {
-        println!("cargo:rustc-link-arg-tests=-Wl,-rpath,{}", abs.display());
+        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", abs.display());
     }
     println!("cargo:rerun-if-env-changed=OTTERBRIX_LIB_DIR");
 }

@@ -440,15 +440,16 @@ namespace {
         std::pmr::vector<types::complex_logical_type> columns;
     };
 
+    // Runs on an executor thread: a refusal goes back as the hook's error, never as a Catch assertion.
     template<class Write>
-    void bind_write_target(logical_plan::node_t& node,
-                           std::pmr::memory_resource* resource,
-                           const std::vector<declared_t>& declared) {
+    core::error_t bind_write_target(logical_plan::node_t& node,
+                                    std::pmr::memory_resource* resource,
+                                    const std::vector<declared_t>& declared) {
         const auto& write = static_cast<const Write&>(node);
         const auto name = qualified(write.dbname(), write.schema(), write.relname());
         auto it = std::find_if(declared.begin(), declared.end(), [&](const declared_t& d) { return d.name == name; });
         if (it == declared.end()) {
-            return;
+            return core::error_t::no_error();
         }
         auto relation =
             logical_plan::make_node_extension(resource,
@@ -456,26 +457,31 @@ namespace {
                                               it->columns,
                                               &make_remote_source,
                                               logical_plan::extension_payload_ptr{new remote_payload_t{name}});
-        REQUIRE_FALSE(relation.has_error());
-        auto bound = logical_plan::bind_host_write_target(resource, node, relation.value(), &make_remote_write);
-        REQUIRE_FALSE(bound.contains_error());
+        if (relation.has_error()) {
+            return relation.error();
+        }
+        return logical_plan::bind_host_write_target(resource, node, relation.value(), &make_remote_write);
     }
 
-    void replace_names(logical_plan::node_ptr& node,
-                       std::pmr::memory_resource* resource,
-                       const std::vector<declared_t>& declared) {
+    core::error_t replace_names(logical_plan::node_ptr& node,
+                                std::pmr::memory_resource* resource,
+                                const std::vector<declared_t>& declared) {
+        core::error_t bound = core::error_t::no_error();
         switch (node->type()) {
             case logical_plan::node_type::insert_t:
-                bind_write_target<logical_plan::node_insert_t>(*node, resource, declared);
+                bound = bind_write_target<logical_plan::node_insert_t>(*node, resource, declared);
                 break;
             case logical_plan::node_type::update_t:
-                bind_write_target<logical_plan::node_update_t>(*node, resource, declared);
+                bound = bind_write_target<logical_plan::node_update_t>(*node, resource, declared);
                 break;
             case logical_plan::node_type::delete_t:
-                bind_write_target<logical_plan::node_delete_t>(*node, resource, declared);
+                bound = bind_write_target<logical_plan::node_delete_t>(*node, resource, declared);
                 break;
             default:
                 break;
+        }
+        if (bound.contains_error()) {
+            return bound;
         }
         if (node->type() == logical_plan::node_type::aggregate_t) {
             const auto* agg = static_cast<const logical_plan::node_aggregate_t*>(node.get());
@@ -491,13 +497,15 @@ namespace {
                                                       it->columns,
                                                       &make_remote_source,
                                                       logical_plan::extension_payload_ptr{new remote_payload_t{name}});
-                REQUIRE_FALSE(ext.has_error());
+                if (ext.has_error()) {
+                    return ext.error();
+                }
                 ext.value()->set_result_alias(agg->result_alias().empty()
                                                   ? static_cast<const std::string&>(agg->relname())
                                                   : agg->result_alias());
                 if (node->children().empty()) {
                     node = ext.value();
-                    return;
+                    return core::error_t::no_error();
                 }
                 auto wrapper = logical_plan::make_node_aggregate(resource, core::dbname_t{}, core::relname_t{});
                 wrapper->set_result_alias(node->result_alias());
@@ -506,12 +514,15 @@ namespace {
                     wrapper->append_child(child);
                 }
                 node = wrapper;
-                return;
+                return core::error_t::no_error();
             }
         }
         for (auto& child : node->children()) {
-            replace_names(child, resource, declared);
+            if (auto replaced = replace_names(child, resource, declared); replaced.contains_error()) {
+                return replaced;
+            }
         }
+        return core::error_t::no_error();
     }
 
     // Phase "decide": a name with declared columns becomes a host node; one without stays and is refused later.
@@ -556,7 +567,9 @@ namespace {
             }
             declared.push_back(std::move(d));
         }
-        replace_names(tree, resource, declared);
+        if (auto replaced = replace_names(tree, resource, declared); replaced.contains_error()) {
+            return replaced;
+        }
         return tree;
     }
 
@@ -1155,4 +1168,21 @@ TEST_CASE("integration::cpp::host_names::a_write_function_reads_the_validated_st
                                    "delete m2|shop|orders where column 0 left = parameter limit 1",
                                    "delete m2|shop|orders where all rows"});
     CHECK(backend()["m2.shop.orders"].empty());
+}
+
+// Trino 483 lower-cases every connector column name (ColumnMetadata); a host maps its remote names to lower case
+// itself, so a declared name otterbrix would never find by an unquoted reference is refused where it is declared.
+TEST_CASE("integration::cpp::host_names::a_host_column_name_must_be_lower_case") {
+    HOST_TEST_BOILERPLATE("test_host_names/column_case")
+    REQUIRE(run(dispatcher,
+                "INSERT INTO otterstax.remote_columns (tbl, col, type, ord) VALUES "
+                "('m2.shop.orders', 'id', 'BIGINT', 1), ('m2.shop.orders', 'Amount', 'BIGINT', 2);")
+                ->is_success());
+
+    for (const char* sql : {"SELECT id FROM m2.shop.orders;", "INSERT INTO m2.shop.orders (id) VALUES (4);"}) {
+        INFO(sql);
+        auto refused = run(dispatcher, sql);
+        REQUIRE(refused->is_error());
+        CHECK(std::string{refused->get_error().what} == "host column \"Amount\" must be lower case");
+    }
 }

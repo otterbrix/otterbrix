@@ -159,6 +159,39 @@ TEST_CASE("c-api: cursor_size matches inserted row count", "[c-api][cursor]") {
     release_cursor(cur);
 }
 
+TEST_CASE("c-api: cursor_affected_rows reports the rows a write changed", "[c-api][cursor]") {
+    test_db_t t("affected_rows");
+    REQUIRE(t.ptr != nullptr);
+
+    run_ok(t.ptr, "CREATE DATABASE test_db;");
+    run_ok(t.ptr, "CREATE TABLE test_db.users (name string, age bigint);");
+
+    auto affected = [&](const std::string& sql, uint64_t* rows) {
+        cursor_ptr cur = execute_sql(t.ptr, sv(sql));
+        REQUIRE(cur != nullptr);
+        REQUIRE(cursor_is_success(cur));
+        const bool wrote = cursor_affected_rows(cur, rows);
+        CHECK(cursor_size(cur) == 0);
+        release_cursor(cur);
+        return wrote;
+    };
+
+    uint64_t rows = 99;
+    REQUIRE(affected("INSERT INTO test_db.users (name, age) VALUES ('Alice', 30), ('Bob', 25);", &rows));
+    CHECK(rows == 2);
+    REQUIRE(affected("UPDATE test_db.users SET age = 31 WHERE name = 'Alice';", &rows));
+    CHECK(rows == 1);
+    REQUIRE(affected("DELETE FROM test_db.users WHERE age > 100;", &rows));
+    CHECK(rows == 0);
+
+    cursor_ptr select = execute_sql(t.ptr, sv(std::string("SELECT * FROM test_db.users;")));
+    REQUIRE(cursor_is_success(select));
+    rows = 99;
+    CHECK_FALSE(cursor_affected_rows(select, &rows));
+    CHECK(rows == 99);
+    release_cursor(select);
+}
+
 // Mirrors cursor.rs column_logical_type_returns_none_for_negative_index, ..._out_of_bounds_index,
 // and column_name_returns_none_for_out_of_bounds_index.
 

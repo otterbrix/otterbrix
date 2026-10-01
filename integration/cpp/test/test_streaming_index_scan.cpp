@@ -51,7 +51,7 @@ namespace {
         }
         auto cur = exec(dispatcher, q.str());
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == kRowCount);
+        REQUIRE(cur->affected_rows() == kRowCount);
     }
 } // namespace
 

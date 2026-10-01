@@ -69,6 +69,12 @@ namespace services::catalog_resolve {
                                    components::logical_plan::catalog_resolves_t& resolves,
                                    const components::logical_plan::node_t* root);
 
+    // A write into a host relation, first step: no RETURNING, no UPDATE ... FROM / DELETE ... USING, and only as its
+    // own statement (the host's write is not undone by a ROLLBACK, #663).
+    core::error_t refuse_host_write_shapes(std::pmr::memory_resource* resource,
+                                           const components::logical_plan::node_t* root,
+                                           bool ends_its_transaction);
+
     // A REFERENCES target with a uid or schema segment is refused, not dropped.
     core::error_t refuse_referenced_segments(std::pmr::memory_resource* resource,
                                              const components::logical_plan::catalog_resolves_t& resolves);

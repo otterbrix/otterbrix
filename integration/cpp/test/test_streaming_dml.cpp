@@ -40,7 +40,7 @@ TEST_CASE("integration::cpp::streaming_dml::insert_select_streams_and_lands") {
         }
         auto cur = exec(dispatcher, q.str());
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == kRowCount);
+        REQUIRE(cur->affected_rows() == kRowCount);
     }
 
     const auto runs_before = services::collection::executor::streaming_pipeline_runs();
@@ -48,7 +48,7 @@ TEST_CASE("integration::cpp::streaming_dml::insert_select_streams_and_lands") {
         auto cur = exec(dispatcher, "INSERT INTO StreamDb.dst (id, grp, val) SELECT id, grp, val FROM StreamDb.src;");
         INFO("INSERT...SELECT error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == kRowCount);
+        REQUIRE(cur->affected_rows() == kRowCount);
     }
     const auto runs_after = services::collection::executor::streaming_pipeline_runs();
 
@@ -85,7 +85,7 @@ TEST_CASE("integration::cpp::streaming_dml::insert_values_streams") {
     {
         auto cur = exec(dispatcher, "INSERT INTO StreamDb.t (id, val) VALUES (1, 10), (2, 20), (3, 30);");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 3);
+        REQUIRE(cur->affected_rows() == 3);
     }
     const auto runs_after = services::collection::executor::streaming_pipeline_runs();
     REQUIRE(runs_after > runs_before);
@@ -152,7 +152,7 @@ TEST_CASE("integration::cpp::streaming_dml::delete_predicate_streams_and_lands")
         }
         auto cur = exec(dispatcher, q.str());
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == kRowCount);
+        REQUIRE(cur->affected_rows() == kRowCount);
     }
 
     constexpr unsigned kThreshold = 3000;
@@ -204,7 +204,7 @@ TEST_CASE("integration::cpp::streaming_dml::update_predicate_streams_and_lands")
         }
         auto cur = exec(dispatcher, q.str());
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == kRowCount);
+        REQUIRE(cur->affected_rows() == kRowCount);
     }
 
     constexpr unsigned kThreshold = 2500;

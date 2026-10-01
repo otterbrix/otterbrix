@@ -354,7 +354,7 @@ TEST_CASE("integration::cpp::test_wal_pool::sql_dml_full_cycle") {
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == kDocuments);
+            REQUIRE(cur->affected_rows() == kDocuments);
         }
 
         // Verify insert: total + exact match + range + boundary
@@ -368,7 +368,7 @@ TEST_CASE("integration::cpp::test_wal_pool::sql_dml_full_cycle") {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE count > 90;");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 9);
+            REQUIRE(cur->affected_rows() == 9);
         }
 
         // Verify delete: deleted gone + boundary intact
@@ -383,7 +383,7 @@ TEST_CASE("integration::cpp::test_wal_pool::sql_dml_full_cycle") {
             auto cur = dispatcher->execute_sql(session,
                                                "UPDATE TestDatabase.TestCollection SET count = 999 WHERE count = 50;");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->affected_rows() == 1);
         }
 
         // Verify update: old gone, new present, total unchanged
@@ -446,7 +446,7 @@ TEST_CASE("integration::cpp::test_wal_pool::sql_constraint_enforcement") {
                                                "INSERT INTO TestDatabase.TestCollection (name, tag) VALUES "
                                                "('alice', 'red'), ('bob', 'green'), ('charlie', 'blue');");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 3);
+            REQUIRE(cur->affected_rows() == 3);
         }
 
         CHECK_FIND_SQL_WAL("SELECT * FROM TestDatabase.TestCollection;", 3);
@@ -471,7 +471,7 @@ TEST_CASE("integration::cpp::test_wal_pool::sql_constraint_enforcement") {
                                                "INSERT INTO TestDatabase.TestCollection (name, tag) VALUES "
                                                "('eve', 'yellow'), ('frank', 'white');");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 2);
+            REQUIRE(cur->affected_rows() == 2);
         }
 
         CHECK_FIND_SQL_WAL("SELECT * FROM TestDatabase.TestCollection;", 5);
@@ -533,7 +533,7 @@ TEST_CASE("integration::cpp::test_wal_pool::constant_data_checkpoint_restart") {
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 100);
+            REQUIRE(cur->affected_rows() == 100);
         }
 
         CHECK_FIND_SQL_WAL("SELECT * FROM TestDatabase.TestCollection;", 100);
@@ -588,7 +588,7 @@ TEST_CASE("integration::cpp::test_wal_pool::insert_delete_checkpoint_restart") {
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 100);
+            REQUIRE(cur->affected_rows() == 100);
         }
 
         CHECK_FIND_SQL_WAL("SELECT * FROM TestDatabase.TestCollection;", 100);
@@ -598,7 +598,7 @@ TEST_CASE("integration::cpp::test_wal_pool::insert_delete_checkpoint_restart") {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE count < 50;");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 50);
+            REQUIRE(cur->affected_rows() == 50);
         }
 
         CHECK_FIND_SQL_WAL("SELECT * FROM TestDatabase.TestCollection;", 50);

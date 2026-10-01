@@ -328,6 +328,16 @@ extern "C" int32_t cursor_size(cursor_ptr ptr) {
     return static_cast<int32_t>(storage->cursor->size());
 }
 
+extern "C" bool cursor_affected_rows(cursor_ptr ptr, uint64_t* rows) {
+    auto storage = convert_cursor(ptr);
+    const auto written = storage->cursor->affected_rows();
+    if (!written) {
+        return false;
+    }
+    *rows = *written;
+    return true;
+}
+
 extern "C" int32_t cursor_column_count(cursor_ptr ptr) {
     auto storage = convert_cursor(ptr);
     return static_cast<int32_t>(storage->cursor->column_count());

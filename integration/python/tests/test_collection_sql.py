@@ -28,7 +28,7 @@ def test_collection_sql():
         else:
             query += ", "
     c = client.execute(query)
-    assert len(c) == 100
+    assert c.rowcount == 100
     c.close()
 
     # select
@@ -44,7 +44,7 @@ def test_collection_sql():
     c.close()
 
     c = client.execute("DELETE FROM schema.table WHERE count > 90;")
-    assert len(c) == 9
+    assert c.rowcount == 9
     c.close()
 
     c = client.execute("SELECT * FROM schema.table WHERE count > 90;")
@@ -66,7 +66,7 @@ def test_collection_sql():
     c.close()
 
     c = client.execute("UPDATE schema.table SET count = 1000 WHERE count < 20;")
-    assert len(c) == 20
+    assert c.rowcount == 20
     c.close()
 
     c = client.execute("SELECT * FROM schema.table WHERE count < 20;")

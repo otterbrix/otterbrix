@@ -183,7 +183,7 @@ TEST_CASE("integration::cpp::test_persistence_gaps::default_lost_across_restart"
         {
             auto ins = exec("INSERT INTO b.t (id) VALUES (2);");
             REQUIRE(ins->is_success());
-            REQUIRE(ins->size() == 1);
+            REQUIRE(ins->affected_rows() == 1);
         }
         {
             auto cur = exec("SELECT c FROM b.t WHERE id = 2;");
@@ -202,7 +202,7 @@ TEST_CASE("integration::cpp::test_persistence_gaps::default_lost_across_restart"
             auto ins = exec("INSERT INTO b.t2 (id) VALUES (1);");
             INFO("INSERT omitting a NOT NULL DEFAULT column after restart");
             REQUIRE(ins->is_success());
-            CHECK(ins->size() == 1);
+            CHECK(ins->affected_rows() == 1);
         }
         {
             auto cur = exec("SELECT id FROM b.t2;");

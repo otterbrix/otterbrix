@@ -131,7 +131,7 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount", "[engin
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, query.str());
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 10);
+        REQUIRE(cur->affected_rows() == 10);
         REQUIRE(inst->use_count() == 2u);
     }
 
@@ -216,7 +216,7 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount_client_th
             }
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, query.str());
-            ok[op] = cur->is_success() && cur->size() == 10;
+            ok[op] = cur->is_success() && cur->affected_rows() == 10u;
             counts[op] = inst->use_count();
             ++op;
         }
@@ -299,7 +299,7 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount_wrapper_s
                     query << "('name_" << num << "', " << num << ")" << (num == 9 ? ";" : ", ");
                 }
                 auto cur = wrapper.execute_sql(query.str());
-                ok[op] = cur->is_success() && cur->size() == 10;
+                ok[op] = cur->is_success() && cur->affected_rows() == 10u;
                 counts[op] = wrapper.engine_use_count();
                 ++op;
             }
@@ -398,9 +398,10 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::concurrent_insert_scan_evict
         }
         auto session = make_session();
         auto cur = dispatcher->execute_sql(session, query.str());
-        auto failure = describe_failure(cur, static_cast<size_t>(batch_size));
-        if (failure.empty() && cur->size() != static_cast<size_t>(batch_size)) {
-            failure = "insert size mismatch: got " + std::to_string(cur->size());
+        auto failure = describe_failure(cur, 0);
+        if (failure.empty() && cur->affected_rows() != static_cast<std::uint64_t>(batch_size)) {
+            failure = "insert count mismatch: got " +
+                      (cur->affected_rows() ? std::to_string(*cur->affected_rows()) : std::string{"none"});
         }
         return failure;
     };

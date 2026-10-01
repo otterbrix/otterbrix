@@ -16,14 +16,14 @@ namespace components::operators {
     // its hash table from the working set and probes the streaming base scan. Each call
     // emits a COPY of one working-set chunk (the working set is shared — owned by the
     // recursive_cte and read again by the NEXT iteration — so its chunks must not be moved
-    // out), then a 0-column drain sentinel so the pump stops. Mirrors operator_raw_data's
+    // out), then ends the stream. Mirrors operator_raw_data's
     // source_next, but reads *working_set_ (which moves under it) instead of a fixed output_.
     class operator_cte_scan_t final : public read_only_operator_t {
     public:
         operator_cte_scan_t(std::pmr::memory_resource* resource, log_t log, operator_data_ptr* working_set);
 
         [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::source; }
-        [[nodiscard]] actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
+        [[nodiscard]] actor_zeta::unique_future<core::result_wrapper_t<std::optional<vector::data_chunk_t>>>
         source_next(pipeline::context_t* ctx) override;
 
         // Rewind the working-set walk so the next fixpoint iteration re-reads from the head

@@ -84,15 +84,12 @@ namespace {
             return operators::pipeline_role::source;
         }
 
-        [[nodiscard]] actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
+        [[nodiscard]] actor_zeta::unique_future<core::result_wrapper_t<std::optional<vector::data_chunk_t>>>
         source_next(components::pipeline::context_t*) override {
-            actor_zeta::promise<core::result_wrapper_t<vector::data_chunk_t>> promise(resource());
+            actor_zeta::promise<core::result_wrapper_t<std::optional<vector::data_chunk_t>>> promise(resource());
             auto future = promise.get_future();
             if (drained_) {
-                // Drained sentinel is a 0-column chunk; a schema'd 0-row chunk is real input
-                // (the empty-guard a scalar aggregate needs) per execute_pipeline's pump contract.
-                vector::data_chunk_t sentinel(resource(), std::pmr::vector<types::complex_logical_type>{resource()}, 0);
-                promise.set_value(core::result_wrapper_t<vector::data_chunk_t>{std::move(sentinel)});
+                promise.set_value(core::result_wrapper_t<std::optional<vector::data_chunk_t>>{std::nullopt});
                 return future;
             }
             drained_ = true;
@@ -101,10 +98,11 @@ namespace {
                 // a host backend actor answering a fetch; the promise outlives this stack frame.
                 std::thread([p = std::move(promise), chunk = build_pairs(resource(), spec_)]() mutable {
                     std::this_thread::sleep_for(std::chrono::milliseconds(30));
-                    p.set_value(core::result_wrapper_t<vector::data_chunk_t>{std::move(chunk)});
+                    p.set_value(core::result_wrapper_t<std::optional<vector::data_chunk_t>>{std::move(chunk)});
                 }).detach();
             } else {
-                promise.set_value(core::result_wrapper_t<vector::data_chunk_t>{build_pairs(resource(), spec_)});
+                promise.set_value(
+                    core::result_wrapper_t<std::optional<vector::data_chunk_t>>{build_pairs(resource(), spec_)});
             }
             return future;
         }
@@ -179,7 +177,7 @@ namespace {
             return operators::pipeline_role::source;
         }
 
-        [[nodiscard]] actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
+        [[nodiscard]] actor_zeta::unique_future<core::result_wrapper_t<std::optional<vector::data_chunk_t>>>
         source_next(components::pipeline::context_t* ctx) override {
             int unset = -1;
             open_probe().opens_at_first_next.compare_exchange_strong(unset, open_probe().opens.load());
@@ -189,15 +187,15 @@ namespace {
             if (ctx == open_ctx_) {
                 open_probe().next_on_open_ctx.fetch_add(1);
             }
-            actor_zeta::promise<core::result_wrapper_t<vector::data_chunk_t>> promise(resource());
+            actor_zeta::promise<core::result_wrapper_t<std::optional<vector::data_chunk_t>>> promise(resource());
             auto future = promise.get_future();
             if (drained_) {
-                vector::data_chunk_t sentinel(resource(), std::pmr::vector<types::complex_logical_type>{resource()}, 0);
-                promise.set_value(core::result_wrapper_t<vector::data_chunk_t>{std::move(sentinel)});
+                promise.set_value(core::result_wrapper_t<std::optional<vector::data_chunk_t>>{std::nullopt});
                 return future;
             }
             drained_ = true;
-            promise.set_value(core::result_wrapper_t<vector::data_chunk_t>{build_pairs(resource(), spec_)});
+            promise.set_value(
+                core::result_wrapper_t<std::optional<vector::data_chunk_t>>{build_pairs(resource(), spec_)});
             return future;
         }
 

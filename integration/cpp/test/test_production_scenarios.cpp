@@ -125,7 +125,7 @@ TEST_CASE("integration::cpp::production::scale_100k_group_by") {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, ss.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 1000);
+            REQUIRE(cur->affected_rows() == 1000);
         }
     }
 
@@ -190,7 +190,7 @@ TEST_CASE("integration::cpp::production::multi_table_join") {
                                            "('NYC', 'USA'), ('London', 'UK'), ('Paris', 'France'), "
                                            "('Berlin', 'Germany'), ('Tokyo', 'Japan');");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 5);
+        REQUIRE(cur->affected_rows() == 5);
     }
 
     INFO("insert customers");
@@ -207,7 +207,7 @@ TEST_CASE("integration::cpp::production::multi_table_join") {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, ss.str());
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 20);
+        REQUIRE(cur->affected_rows() == 20);
     }
 
     INFO("insert orders");
@@ -223,7 +223,7 @@ TEST_CASE("integration::cpp::production::multi_table_join") {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, ss.str());
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 200);
+        REQUIRE(cur->affected_rows() == 200);
     }
 
     INFO("2-table JOIN: orders + customers");
@@ -287,7 +287,7 @@ TEST_CASE("integration::cpp::production::null_join_keys") {
                                                "INSERT INTO TestDatabase.table_a (id, label) VALUES "
                                                "(1, 'a1'), (2, 'a2'), (4, 'a4');");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 3);
+            REQUIRE(cur->affected_rows() == 3);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -295,7 +295,7 @@ TEST_CASE("integration::cpp::production::null_join_keys") {
                                                "INSERT INTO TestDatabase.table_a (label) VALUES "
                                                "('a_null_1'), ('a_null_2');");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 2);
+            REQUIRE(cur->affected_rows() == 2);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -303,13 +303,13 @@ TEST_CASE("integration::cpp::production::null_join_keys") {
                                                "INSERT INTO TestDatabase.table_b (id, tag) VALUES "
                                                "(2, 'b2'), (4, 'b4'), (5, 'b5');");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 3);
+            REQUIRE(cur->affected_rows() == 3);
         }
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "INSERT INTO TestDatabase.table_b (tag) VALUES ('b_null');");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->affected_rows() == 1);
         }
     }
 
@@ -393,7 +393,7 @@ TEST_CASE("integration::cpp::production::unicode_strings") {
                                            "(2, 'Привет мир'), "
                                            "(3, 'emoji_test_fire');");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 3);
+        REQUIRE(cur->affected_rows() == 3);
     }
 
     INFO("exact match on ASCII");
@@ -627,7 +627,7 @@ TEST_CASE("integration::cpp::production::large_checkpoint_100k") {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, ss.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 1000);
+            REQUIRE(cur->affected_rows() == 1000);
         }
 
         {
@@ -700,7 +700,7 @@ TEST_CASE("integration::cpp::production::complex_where") {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, ss.str());
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 100);
+        REQUIRE(cur->affected_rows() == 100);
     }
 
     INFO("complex WHERE: (category = 'A' AND value > 50) OR (category = 'B' AND status = 'inactive')");
@@ -768,7 +768,7 @@ TEST_CASE("integration::cpp::production::corrupted_otbx_recovery") {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, ss.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 50);
+            REQUIRE(cur->affected_rows() == 50);
         }
 
         {
@@ -869,7 +869,7 @@ TEST_CASE("integration::cpp::production::wal_segment_rotation") {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, ss.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 10);
+            REQUIRE(cur->affected_rows() == 10);
         }
 
         {
@@ -954,7 +954,7 @@ TEST_CASE("integration::cpp::production::compaction_checkpoint_cycle") {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, ss.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 100);
+            REQUIRE(cur->affected_rows() == 100);
         }
 
         CHECK_SQL("SELECT * FROM TestDatabase.TestCollection;", 1000);
@@ -963,7 +963,7 @@ TEST_CASE("integration::cpp::production::compaction_checkpoint_cycle") {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE id > 200;");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 800);
+            REQUIRE(cur->affected_rows() == 800);
         }
 
         CHECK_SQL("SELECT * FROM TestDatabase.TestCollection;", 200);
@@ -1108,7 +1108,7 @@ TEST_CASE("integration::cpp::production::large_scan_segfault_red", "[step1]") {
             auto cur = dispatcher->execute_sql(session, ss.str());
             // Write-through must keep each batch BOUNDED; an OOM means the bound broke -- investigate, don't weaken.
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == rows_per_batch);
+            REQUIRE(cur->affected_rows() == rows_per_batch);
         }
     }
 
@@ -1172,7 +1172,7 @@ TEST_CASE("integration::cpp::production::reopen_resolves_columns_after_checkpoin
                 "(lo_orderkey, lo_orderdate, lo_quantity, lo_extendedprice, lo_discount) VALUES "
                 "(1, 1993, 10, 1000, 2), (2, 1994, 30, 2000, 5), (3, 1993, 20, 1500, 1);");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 3);
+            REQUIRE(cur->affected_rows() == 3);
         }
         {
             // CHECKPOINT folds the durable frontier into pg_attribute and the table's row-groups into its .otbx.

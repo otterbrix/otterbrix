@@ -121,6 +121,8 @@ set( ${PROJECT_NAME}_SOURCES
         test_fk_cascade_set_default_specs.cpp
         test_pipeline_context_move.cpp
         test_delete_affected_count.cpp
+        test_dml_affected_rows.cpp
+        test_insert_positional_values.cpp
         test_tinyint_numeric_cast.cpp
         test_alter_add_column_reads.cpp
         test_computed_drop_complex_type.cpp

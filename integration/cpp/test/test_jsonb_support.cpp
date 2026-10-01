@@ -424,7 +424,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::insert_select_maps_projection_t
 
     auto unaliased = exec(d, "INSERT INTO jp.t (id, a.b) SELECT 5, 55;");
     REQUIRE(unaliased->is_success());
-    CHECK(unaliased->size() == 1);
+    CHECK(unaliased->affected_rows() == 1);
 
     auto cur = exec(d, "SELECT * FROM jp.t ORDER BY id;");
     REQUIRE(cur->is_success());

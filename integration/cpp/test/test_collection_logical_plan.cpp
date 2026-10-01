@@ -108,7 +108,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             auto cur =
                 dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == kNumInserts);
+            REQUIRE(cur->affected_rows() == kNumInserts);
         }
     }
 
@@ -251,7 +251,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             auto cur =
                 dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == kNumInserts);
+            REQUIRE(cur->affected_rows() == kNumInserts);
         }
     }
 
@@ -299,7 +299,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             auto cur =
                 dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), del, params});
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 10);
+            REQUIRE(cur->affected_rows() == 10);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -359,7 +359,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             auto cur =
                 dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), del, nullptr});
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 90);
+            REQUIRE(cur->affected_rows() == 90);
         }
     }
 
@@ -414,7 +414,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             auto cur =
                 dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), upd, params});
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 19);
+            REQUIRE(cur->affected_rows() == 19);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -493,7 +493,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             auto cur =
                 dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), upd, params});
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 19);
+            REQUIRE(cur->affected_rows() == 19);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -567,7 +567,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             auto cur = dispatcher->execute_plan(session,
                                                 logical_plan::execution_plan_t{dispatcher->resource(), update, params});
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 10);
+            REQUIRE(cur->affected_rows() == 10);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -609,7 +609,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             auto cur =
                 dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), del, params});
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->affected_rows() == 1);
         }
     }
 
@@ -639,7 +639,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             auto cur =
                 dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), del, params});
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 5);
+            REQUIRE(cur->affected_rows() == 5);
         }
     }
 
@@ -675,7 +675,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             auto cur =
                 dispatcher->execute_plan(session, logical_plan::execution_plan_t{dispatcher->resource(), upd, params});
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->affected_rows() == 1);
         }
     }
 
@@ -713,7 +713,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             REQUIRE(cur->is_success());
             // There were 18 rows with count==1000 after delete limit 1 removed 1, delete limit 5 removed 5, and update limit 1 changed 1
             // So 12 remain with count==1000, limit 5 should update 5
-            REQUIRE(cur->size() == 5);
+            REQUIRE(cur->affected_rows() == 5);
         }
     }
 

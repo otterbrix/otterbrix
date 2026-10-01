@@ -404,7 +404,12 @@ namespace components::sql::transform {
             if constexpr (requires { node.set_relname(written.collection); }) {
                 node.set_relname(written.collection);
             }
-            const bool leads_elsewhere = !written.unique_identifier.empty() || !written.schema.empty() ||
+            constexpr bool keeps_schema = requires { node.set_schema(written.schema); };
+            if constexpr (keeps_schema) {
+                node.set_schema(written.schema);
+            }
+            const bool leads_elsewhere = !written.unique_identifier.empty() ||
+                                         (!keeps_schema && !written.schema.empty()) ||
                                          (!written.database.empty() && written.database != dbname);
             if (leads_elsewhere) {
                 catalog_resolves_.external_targets.push_back(logical_plan::external_target_t{written, base.type()});

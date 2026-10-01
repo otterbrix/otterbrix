@@ -35,6 +35,11 @@ namespace components::operators {
         }
 
     private:
+        // The DML below writes; this operator only checks what it wrote.
+        std::optional<uint64_t> affected_rows_impl() const noexcept override {
+            return left_ ? left_->affected_rows() : std::nullopt;
+        }
+
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
         catalog::fk_info_t fk_;

@@ -437,6 +437,13 @@ namespace components::sql::transform {
                                         const std::string& relname,
                                         constraint_resolve_kind with_constraints = constraint_resolve_kind::none);
 
+    // The target of an INSERT / UPDATE / DELETE, schema slot included: a name the catalog does not know reaches
+    // the host whole.
+    void register_catalog_resolve_write_target(std::pmr::memory_resource* resource,
+                                               logical_plan::catalog_resolves_t* resolves,
+                                               const qualified_name_t& written,
+                                               constraint_resolve_kind with_constraints);
+
     void register_catalog_resolve_types(std::pmr::memory_resource* resource,
                                         logical_plan::catalog_resolves_t* resolves,
                                         const std::vector<std::string>& type_names);

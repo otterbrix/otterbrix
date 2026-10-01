@@ -36,6 +36,7 @@
 #include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/node_delete.hpp>
 #include <components/logical_plan/node_drop.hpp>
+#include <components/logical_plan/host_write_target.hpp>
 #include <components/logical_plan/node_extension.hpp>
 #include <components/logical_plan/node_fk_cascade.hpp>
 #include <components/logical_plan/node_fk_check.hpp>
@@ -614,6 +615,35 @@ namespace services::dispatcher {
                 msg += '"';
             }
             return core::error_t(core::error_code_t::sql_parse_error, std::move(msg));
+        }
+
+        // A host relation has no defaults in otterbrix: an INSERT writes every declared column. Without a column
+        // list the values fill the columns in order.
+        core::error_t refuse_unlisted_host_columns(std::pmr::memory_resource* resource,
+                                                   const components::logical_plan::node_extension_t& relation,
+                                                   const std::pmr::vector<components::expressions::key_t>& listed,
+                                                   std::size_t written) {
+            std::pmr::string missing{resource};
+            for (std::size_t i = 0; i < relation.columns().size(); ++i) {
+                const auto name = relation.columns()[i].alias();
+                const bool is_listed = listed.empty() ? i < written
+                                                      : std::any_of(listed.begin(), listed.end(), [&](const auto& key) {
+                                                            return key.as_string() == name;
+                                                        });
+                if (is_listed) {
+                    continue;
+                }
+                missing += missing.empty() ? "" : ", ";
+                missing += name;
+            }
+            if (missing.empty()) {
+                return core::error_t::no_error();
+            }
+            std::pmr::string msg{"INSERT into host relation \"", resource};
+            msg += relation.name();
+            msg += "\" must list every column; missing: ";
+            msg += missing;
+            return core::error_t(core::error_code_t::schema_error, std::move(msg));
         }
     } // namespace
 
@@ -1906,7 +1936,17 @@ namespace services::dispatcher {
                     validate_schema(context, node->children().front().get(), parameters, cte_schemas);
                 if (incoming_schema.has_error()) {
                     return incoming_schema;
-                } else {
+                }
+                if (const auto* host = host_write_target(*insert_node)) {
+                    if (auto missing = refuse_unlisted_host_columns(resource,
+                                                                    host->relation(),
+                                                                    insert_node->key_translation(),
+                                                                    incoming_schema.value().size());
+                        missing.contains_error()) {
+                        return missing;
+                    }
+                }
+                {
                     named_schema table_schema(resource);
                     bool is_computed = false;
                     const std::string& target_relname_ins = tbl_ins ? tbl_ins->name : std::string{};
@@ -2012,6 +2052,17 @@ namespace services::dispatcher {
                         }
                         return core::error_t::no_error();
                     };
+                    // VALUES without a column list names its columns by position only; a dynamic-schema table
+                    // takes its column names from the INSERT.
+                    if (is_computed && insert_node->key_translation().empty() &&
+                        node->children().front()->type() == node_type::data_t) {
+                        return core::error_t(core::error_code_t::schema_error,
+                                             std::pmr::string{"INSERT into dynamic-schema table \"" +
+                                                                  target_relname_ins +
+                                                                  "\" needs a column list: its columns are named "
+                                                                  "by the INSERT",
+                                                              resource});
+                    }
                     if (table_schema.empty()) {
                         // Must stay relkind='r' (test_persistence::zero_column_regular_table_stays_regular).
                         if (!is_computed) {
@@ -2028,16 +2079,22 @@ namespace services::dispatcher {
                         if (auto rename_err = bind_computed_rename(); rename_err.contains_error()) {
                             return rename_err;
                         }
-                    } else if (incoming_schema.value().size() > table_schema.size()) {
-                        return core::error_t(core::error_code_t::schema_error,
-                                             std::pmr::string{"insert_node: too many columns in INSERT", resource});
                     } else {
-                        if (insert_node->key_translation().size() != incoming_schema.value().size() &&
-                            table_schema.size() != incoming_schema.value().size()) {
+                        // PostgreSQL 18 transformInsertRow: the target columns are the list, or every column of the
+                        // table; more values than targets is refused, fewer only with a list.
+                        const auto& listed = insert_node->key_translation();
+                        const std::size_t targets = listed.empty() ? table_schema.size() : listed.size();
+                        if (incoming_schema.value().size() > targets) {
                             return core::error_t(
-                                core::error_code_t::schema_error,
-                                std::pmr::string{"insert_node: number of columns do not match", resource});
-                        } else {
+                                core::error_code_t::sql_parse_error,
+                                std::pmr::string{"INSERT has more expressions than target columns", resource});
+                        }
+                        if (!listed.empty() && incoming_schema.value().size() < targets) {
+                            return core::error_t(
+                                core::error_code_t::sql_parse_error,
+                                std::pmr::string{"INSERT has more target columns than expressions", resource});
+                        }
+                        {
                             for (auto& key : insert_node->key_translation()) {
                                 auto key_res = validation::validate_key(resource, key, &table_schema);
                                 if (key_res.has_error()) {

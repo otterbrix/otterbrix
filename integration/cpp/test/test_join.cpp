@@ -40,7 +40,7 @@ TEST_CASE("integration::cpp::test_join") {
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 101);
+            REQUIRE(cur->affected_rows() == 101);
         }
         {
             std::stringstream query;
@@ -50,7 +50,7 @@ TEST_CASE("integration::cpp::test_join") {
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 100);
+            REQUIRE(cur->affected_rows() == 100);
         }
     }
 

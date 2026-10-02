@@ -157,3 +157,38 @@ TEST_CASE("integration::cpp::commit_discard_horizon::a_discarded_transactions_ro
         REQUIRE(cur->size() == 1);
     }
 }
+
+TEST_CASE("integration::cpp::commit_discard_horizon::a_refused_commit_leaves_its_rows_writable") {
+    auto config = make_test_config(integration_fixture_path("test_commit_discard_horizon/writable"));
+    config.log.level = log_t::level::off;
+
+    wal_fault_scope_t fault;
+    fault.faulty_marker = "wal_";
+
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    REQUIRE(exec(dispatcher, "CREATE DATABASE undone;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE TABLE undone.t (id bigint, v bigint);")->is_success());
+    REQUIRE(exec(dispatcher, "INSERT INTO undone.t (id, v) VALUES (1, 1), (2, 2);")->is_success());
+
+    auto doomed = otterbrix::session_id_t();
+    REQUIRE(dispatcher->execute_sql(doomed, "BEGIN;")->is_success());
+    REQUIRE(dispatcher->execute_sql(doomed, "DELETE FROM undone.t WHERE id = 1;")->is_success());
+    REQUIRE(dispatcher->execute_sql(doomed, "UPDATE undone.t SET v = 20 WHERE id = 2;")->is_success());
+    fault.plan.fail_syncs_from = fault.plan.syncs_seen + 1;
+    auto commit_cursor = dispatcher->execute_sql(doomed, "COMMIT;");
+    fault.plan.fail_syncs_from = 0;
+    REQUIRE(commit_cursor->is_error());
+
+    // DELETE's reported count cannot tell: it counts the rows it matched, not the ones it stamped.
+    REQUIRE(exec(dispatcher, "DELETE FROM undone.t WHERE id = 1;")->is_success());
+    REQUIRE(exec(dispatcher, "UPDATE undone.t SET v = 200 WHERE id = 2;")->is_success());
+
+    INFO("the row the refused transaction deleted is gone now, and the one it updated has one version");
+    auto cur = exec(dispatcher, "SELECT id, v FROM undone.t;");
+    REQUIRE(cur->is_success());
+    REQUIRE(cur->size() == 1);
+    REQUIRE(cur->value(0, 0).value<int64_t>() == 2);
+    REQUIRE(cur->value(1, 0).value<int64_t>() == 200);
+}

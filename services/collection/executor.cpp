@@ -393,7 +393,8 @@ namespace services::collection::executor {
         for (std::size_t i = 0; (run_sub_queries || plan_only) && i + 1 < plan.sub_queries.size(); ++i) {
             auto* sub_root = plan.sub_queries[i].get();
             const node_type sub_type = sub_root ? sub_root->type() : node_type::unused;
-            if (sub_type == node_type::insert_t || sub_type == node_type::update_t || sub_type == node_type::delete_t) {
+            if (sub_type == node_type::insert_t || sub_type == node_type::insert_on_conflict_t ||
+                sub_type == node_type::update_t || sub_type == node_type::delete_t) {
                 co_return execute_result_t{make_cursor(
                     resource(),
                     core::error_t{core::error_code_t::sql_parse_error,
@@ -505,8 +506,9 @@ namespace services::collection::executor {
             original_type == node_type::create_matview_t;
         const bool is_plan_only_explain = plan.explain == components::logical_plan::explain_type::plan;
         const bool needs_dml_txn =
-            !is_plan_only_explain && (original_type == node_type::insert_t || original_type == node_type::update_t ||
-                                      original_type == node_type::delete_t);
+            !is_plan_only_explain &&
+            (original_type == node_type::insert_t || original_type == node_type::insert_on_conflict_t ||
+             original_type == node_type::update_t || original_type == node_type::delete_t);
         const bool needs_commit_txn = original_type == node_type::set_setting_t || original_type == node_type::vacuum_t;
 
         auto run_resolve_subplan = [this, session, resolve_txn, &session_ctx, &context_storage, &plan](
@@ -1553,8 +1555,7 @@ namespace services::collection::executor {
                 auto [_pa, paf] = actor_zeta::otterbrix::send(disk_address_,
                                                               &services::disk::manager_disk_t::storage_revert_appends,
                                                               pgc_ctx,
-                                                              std::move(revert_ranges),
-                                                              /*tail_only=*/false);
+                                                              std::move(revert_ranges));
                 if (const auto reverted = co_await std::move(paf); reverted.contains_error()) {
                     ::error(log_, "executor: pg_catalog append rollback did not complete: {}", reverted.what);
                 }
@@ -1615,6 +1616,23 @@ namespace services::collection::executor {
                 co_await std::move(rdf);
             }
             exec_result.pg_catalog_delete_tables.clear();
+
+            std::pmr::set<components::catalog::oid_t> column_stamped_tables{resource()};
+            for (const auto& backfill : exec_result.pg_attribute_commit_id_backfills) {
+                if (const auto table_oid = backfill.column_stamped_table();
+                    table_oid != components::catalog::INVALID_OID) {
+                    column_stamped_tables.insert(table_oid);
+                }
+            }
+            if (resolve_txn.transaction_id != 0 && !column_stamped_tables.empty()) {
+                components::execution_context_t cs_ctx{session, resolve_txn, session_ctx.settings.timezone_offset};
+                auto [_cs, csf] = actor_zeta::otterbrix::send(disk_address_,
+                                                              &services::disk::manager_disk_t::revert_column_stamps,
+                                                              cs_ctx,
+                                                              std::move(column_stamped_tables));
+                co_await std::move(csf);
+            }
+            exec_result.pg_attribute_commit_id_backfills.clear();
 
             exec_result.dml_appends.clear();
             exec_result.dml_deletes.clear();
@@ -1744,8 +1762,7 @@ namespace services::collection::executor {
                         actor_zeta::otterbrix::send(disk_address_,
                                                     &services::disk::manager_disk_t::storage_revert_appends,
                                                     rv_ctx,
-                                                    std::move(revert_ranges),
-                                                    /*tail_only=*/false);
+                                                    std::move(revert_ranges));
                     if (const auto reverted = co_await std::move(rvf); reverted.contains_error()) {
                         ::error(log_, "executor: pg_index append rollback did not complete: {}", reverted.what);
                     }

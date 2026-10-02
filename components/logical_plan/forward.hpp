@@ -17,6 +17,7 @@ namespace components::logical_plan {
         drop_t,
         function_t,
         insert_t,
+        insert_on_conflict_t,
         join_t,
         intersect_t,
         limit_t,

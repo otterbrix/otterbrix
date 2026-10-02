@@ -75,7 +75,9 @@ namespace services::dispatcher { namespace {
                                          const components::logical_plan::resolved_table_metadata_t& md) {
         auto* resource = node->resource();
         components::logical_plan::insert_fill_list_t fill(resource);
-        if (node->column_bindings().empty()) {
+        // A dynamic-schema table's bindings name source positions, not its columns; the storage
+        // fills what such a payload lacks by name (data_table_t::widen_by_name).
+        if (node->column_bindings().empty() || md.relkind == 'g') {
             node->set_fill_list(std::move(fill));
             return core::error_t::no_error();
         }
@@ -99,6 +101,7 @@ namespace services::dispatcher { namespace {
                 }
             }
             fill.push_back(components::logical_plan::insert_fill_column_t{
+                i,
                 std::pmr::string{col.attname.c_str(), resource},
                 col.type,
                 decoded.has_value() ? std::move(*decoded)
@@ -112,19 +115,23 @@ namespace services::dispatcher { namespace {
 
     // FK columns resolve positionally against statement columns then DEFAULT fill-list columns, in that
     // order; an unresolved position silently qualifies 0 rows, so `pid bigint DEFAULT 42` inserts unchecked.
-    std::vector<std::string> insert_chunk_column_names(const components::logical_plan::node_insert_t* node) {
-        std::vector<std::string> names;
+    std::pmr::vector<std::string> insert_chunk_column_names(std::pmr::memory_resource* resource,
+                                                            const components::logical_plan::node_insert_t* node) {
+        std::pmr::vector<std::string> names(resource);
         const auto& bindings = node->column_bindings();
+        const auto& fill = node->fill_list();
         if (!bindings.empty()) {
-            names.reserve(bindings.size() + node->fill_list().size());
-            for (const auto& binding : bindings) {
-                names.emplace_back(binding.target_name.c_str());
+            auto source_of = components::logical_plan::insert_target_order(resource, bindings, fill);
+            names.reserve(source_of.size());
+            for (const auto source : source_of) {
+                names.emplace_back(source < bindings.size() ? bindings[source].target_name.c_str()
+                                                            : fill[source - bindings.size()].name.c_str());
             }
-        } else {
-            names.reserve(node->key_translation().size() + node->fill_list().size());
-            for (const auto& key : node->key_translation()) {
-                names.emplace_back(key.as_string());
-            }
+            return names;
+        }
+        names.reserve(node->key_translation().size() + node->fill_list().size());
+        for (const auto& key : node->key_translation()) {
+            names.emplace_back(key.as_string());
         }
         for (const auto& column : node->fill_list()) {
             names.emplace_back(column.name.c_str());
@@ -286,7 +293,7 @@ namespace services::dispatcher { namespace {
         node->set_array_size_reqs(collect_array_size_reqs(*md));
     }
 
-}} // namespace services::dispatcher
+}} // namespace services::dispatcher::
 
 namespace services::catalog_resolve {
 
@@ -1006,7 +1013,7 @@ namespace services::dispatcher { namespace {
                     resolves ? resolves->constraints_for(node->table_oid(), resolve_direction::outgoing) : nullptr;
                 if (constraints) {
                     auto fks = constraints->fks;
-                    const auto chunk_columns = insert_chunk_column_names(node);
+                    const auto chunk_columns = insert_chunk_column_names(resource, node);
                     for (auto& fk : fks) {
                         for (const auto& col_name : fk.child_col_names) {
                             std::size_t pos = std::numeric_limits<std::size_t>::max();
@@ -1032,7 +1039,7 @@ namespace services::dispatcher { namespace {
                         node->set_check_predicates(std::move(predicates));
                         node->set_check_params(std::move(check_params));
                     }
-                    node->set_unique_groups(constraints->unique_constraints);
+                    node->set_unique_keys(constraints->unique_constraints);
                     if (!constraints->pk_columns.empty()) {
                         auto nn = node->not_null_cols();
                         merge_pk_not_null(constraints->pk_columns, nn);
@@ -1077,7 +1084,7 @@ namespace services::dispatcher { namespace {
                         node->set_check_predicates(std::move(predicates));
                         node->set_check_params(std::move(check_params));
                     }
-                    node->set_unique_groups(constraints->unique_constraints);
+                    node->set_unique_groups(components::catalog::unique_key_columns(constraints->unique_constraints));
                     if (!constraints->pk_columns.empty()) {
                         auto nn = node->not_null_cols();
                         merge_pk_not_null(constraints->pk_columns, nn);
@@ -1307,7 +1314,7 @@ namespace services::dispatcher { namespace {
         }
         co_return core::error_t::no_error();
     }
-}} // namespace services::dispatcher
+}} // namespace services::dispatcher::
 
 namespace services::dispatcher {
     namespace {
@@ -1335,6 +1342,7 @@ namespace services::dispatcher {
                 case node_type::alter_table_t:
                     return "ALTER TABLE";
                 case node_type::insert_t:
+                case node_type::insert_on_conflict_t:
                     return "INSERT";
                 case node_type::update_t:
                     return "UPDATE";
@@ -1347,7 +1355,7 @@ namespace services::dispatcher {
 
         // TODO: remove after federation & search path work
         core::error_t refuse_external_targets(std::pmr::memory_resource* resource,
-                                             const components::logical_plan::catalog_resolves_t& resolves) {
+                                              const components::logical_plan::catalog_resolves_t& resolves) {
             if (resolves.external_targets.empty()) {
                 return core::error_t::no_error();
             }

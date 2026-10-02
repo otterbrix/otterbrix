@@ -556,6 +556,7 @@ namespace services::wal {
     manager_wal_replicate_t::unique_future<core::result_wrapper_t<wal::id_t>>
     manager_wal_replicate_t::write_physical_insert(session_id_t session,
                                                    components::catalog::oid_t table_oid,
+                                                   column_attoids_t attoids,
                                                    std::pmr::vector<components::vector::data_chunk_t> chunks,
                                                    uint64_t row_start,
                                                    uint64_t row_count,
@@ -575,6 +576,7 @@ namespace services::wal {
                                                               &wal_worker_t::write_physical_insert,
                                                               session,
                                                               table_oid,
+                                                              std::move(attoids),
                                                               std::move(chunks),
                                                               row_start,
                                                               row_count,
@@ -619,6 +621,7 @@ namespace services::wal {
     manager_wal_replicate_t::write_physical_update(session_id_t session,
                                                    components::catalog::oid_t table_oid,
                                                    std::pmr::vector<int64_t> row_ids,
+                                                   column_attoids_t attoids,
                                                    std::pmr::vector<components::vector::data_chunk_t> new_data,
                                                    uint64_t count,
                                                    uint64_t txn_id,
@@ -637,6 +640,7 @@ namespace services::wal {
                                                               session,
                                                               table_oid,
                                                               std::move(row_ids),
+                                                              std::move(attoids),
                                                               std::move(new_data),
                                                               count,
                                                               txn_id,
@@ -652,7 +656,8 @@ namespace services::wal {
     manager_wal_replicate_t::write_physical_grow(session_id_t session,
                                                  components::catalog::oid_t table_oid,
                                                  std::unique_ptr<components::vector::data_chunk_t> schema_chunk,
-                                                 uint64_t column_count,
+                                                 uint64_t first_position,
+                                                 column_attoids_t attoids,
                                                  std::pmr::vector<components::vector::data_chunk_t> chunks,
                                                  uint64_t row_start,
                                                  uint64_t row_count,
@@ -670,7 +675,8 @@ namespace services::wal {
                                                               session,
                                                               table_oid,
                                                               std::move(schema_chunk),
-                                                              column_count,
+                                                              first_position,
+                                                              std::move(attoids),
                                                               std::move(chunks),
                                                               row_start,
                                                               row_count,
@@ -687,8 +693,9 @@ namespace services::wal {
     manager_wal_replicate_t::unique_future<core::result_wrapper_t<wal::id_t>>
     manager_wal_replicate_t::write_physical_add_column(session_id_t session,
                                                        components::catalog::oid_t table_oid,
+                                                       column_attoids_t attoids,
                                                        std::unique_ptr<components::vector::data_chunk_t> schema_chunk,
-                                                       uint64_t column_count,
+                                                       uint64_t first_position,
                                                        uint64_t txn_id,
                                                        components::catalog::oid_t database_oid) {
         if (recovery_error_.contains_error()) {
@@ -700,8 +707,9 @@ namespace services::wal {
                                                               &wal_worker_t::write_physical_add_column,
                                                               session,
                                                               table_oid,
+                                                              std::move(attoids),
                                                               std::move(schema_chunk),
-                                                              column_count,
+                                                              first_position,
                                                               txn_id,
                                                               next_wal_id());
         if (needs_sched) {

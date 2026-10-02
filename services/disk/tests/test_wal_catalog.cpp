@@ -567,7 +567,7 @@ TEST_CASE("services::disk::wal_catalog::a_growth_append_journals_the_add_column_
                   table_oid,
                   catalog::well_known_oid::main_database,
                   cols,
-                  /*is_computed=*/false);
+                  /*is_computed=*/true);
 
         {
             auto r = fx.invoke(&manager_disk_t::storage_append,
@@ -726,14 +726,17 @@ TEST_CASE("services::disk::wal_catalog::the_backfill_stamp_survives_a_kill_throu
                 continue;
             if (r.record_type == services::wal::wal_record_type::PHYSICAL_INSERT) {
                 for (auto& chunk : r.physical_data) {
-                    auto append_r =
-                        fx2.disk->append_sync(pg_attr, chunk, components::table::transaction_data::committed());
+                    auto append_r = fx2.disk->append_sync(pg_attr,
+                                                          r.physical_attoids,
+                                                          chunk,
+                                                          components::table::transaction_data::committed());
                     REQUIRE_FALSE(append_r.has_error());
                 }
             } else if (r.record_type == services::wal::wal_record_type::PHYSICAL_UPDATE) {
                 REQUIRE_FALSE(r.physical_data.empty());
                 auto upd_r = fx2.disk->update_sync(pg_attr,
                                                    r.physical_row_ids,
+                                                   r.physical_attoids,
                                                    r.physical_data.front(),
                                                    components::table::transaction_data::committed());
                 REQUIRE_FALSE(upd_r.has_error());

@@ -1,4 +1,5 @@
 #include "manager_disk_impl.hpp"
+#include "oid_reservation.hpp"
 
 #include <charconv>
 #include <stdexcept>
@@ -192,7 +193,10 @@ namespace services::disk {
 
         // txn 0: a builtin row is committed the moment it lands, so it needs no commit_append_sync.
         auto seed_row = [&](catalog::oid_t tbl_oid, std::string_view tbl_name, components::vector::data_chunk_t& row) {
-            if (auto seeded = append_sync(tbl_oid, row, components::table::transaction_data::committed());
+            if (auto seeded = append_sync(tbl_oid,
+                                          catalog::system_column_attoids(resource(), tbl_oid),
+                                          row,
+                                          components::table::transaction_data::committed());
                 seeded.has_error()) {
                 error(log_,
                       "bootstrap , builtin row for system table {} oid={} was not written: {}",
@@ -496,6 +500,14 @@ namespace services::disk {
             }
         }
 
+        auto reserved = read_oid_reservation(resource(), config_.path);
+        if (reserved.has_error()) {
+            throw std::runtime_error(std::string{"refusing to start: "} + reserved.error().what.c_str());
+        }
+        oid_reserved_until_ = reserved.value();
+        if (oid_reserved_until_ != components::catalog::INVALID_OID && oid_reserved_until_ - 1 > high_water) {
+            high_water = oid_reserved_until_ - 1;
+        }
         oid_gen_.seed(high_water);
         trace(log_, "manager_disk_t::restore_oid_generator_sync : seeded high_water={}", high_water);
     }
@@ -821,12 +833,6 @@ namespace services::disk {
                 continue;
             }
 
-            std::set<catalog::oid_t> live_attoids;
-            for (const auto& def : it->second) {
-                if (def.attoid() != 0) {
-                    live_attoids.insert(static_cast<catalog::oid_t>(def.attoid()));
-                }
-            }
             std::size_t catalog_unidentified = 0;
             for (const auto& def : it->second) {
                 if (def.attoid() == 0) {
@@ -844,71 +850,59 @@ namespace services::disk {
                 continue;
             }
 
-            // A loaded column with no attoid is can be repaired
             auto& loaded_table = owned->table_storage.table();
-            std::vector<std::string> unidentified;
-            for (uint64_t position = 0; position < loaded_table.columns().size(); position++) {
-                if (loaded_table.columns()[position].attoid() != 0) {
-                    continue;
-                }
-                const auto& name = loaded_table.columns()[position].name();
-                const auto match = std::find_if(it->second.begin(), it->second.end(), [&name](const auto& def) {
-                    return def.name() == name;
-                });
-                if (match == it->second.end() || match->attoid() == 0) {
-                    unidentified.push_back(name);
-                    continue;
-                }
-                loaded_table.stamp_column_identity(position, match->attoid());
-                trace(log_,
-                      "manager_disk_t::reconcile_storage_column_names_sync: oid={} column '{}' relearned "
-                      "attoid={} from the catalog",
-                      static_cast<unsigned>(oid),
-                      name,
-                      static_cast<unsigned>(match->attoid()));
-            }
-            if (!unidentified.empty()) {
+            const auto& layout = it->second;
+            if (loaded_table.columns().size() > layout.size()) {
                 error(log_,
-                      "manager_disk_t::reconcile_storage_column_names_sync: oid={} has {} storage column(s) "
-                      "the catalog cannot identify (first: '{}') — the storage schema is left as it loaded",
+                      "manager_disk_t::reconcile_storage_with_catalog_sync: oid={} holds {} storage column(s) and "
+                      "its catalog {} — the storage schema is left as it loaded",
                       static_cast<unsigned>(oid),
-                      unidentified.size(),
-                      unidentified.front());
+                      loaded_table.columns().size(),
+                      layout.size());
                 continue;
             }
-            const auto& storage_columns = loaded_table.columns();
+            bool identities_agree = true;
+            for (uint64_t position = 0; position < loaded_table.columns().size(); position++) {
+                auto stored = loaded_table.columns()[position].attoid();
+                if (stored != 0 && stored != layout[position].attoid()) {
+                    error(log_,
+                          "manager_disk_t::reconcile_storage_with_catalog_sync: oid={} position {} holds attoid {} "
+                          "in the storage and {} in the catalog — the storage schema is left as it loaded",
+                          static_cast<unsigned>(oid),
+                          position,
+                          static_cast<unsigned>(stored),
+                          static_cast<unsigned>(layout[position].attoid()));
+                    identities_agree = false;
+                    break;
+                }
+            }
+            if (!identities_agree) {
+                continue;
+            }
 
             struct storage_rename_t {
                 std::string from;
                 std::string to;
             };
-            std::vector<std::string> to_drop;
             std::vector<storage_rename_t> to_rename;
-            for (const auto& column : storage_columns) {
-                if (live_attoids.find(static_cast<catalog::oid_t>(column.attoid())) == live_attoids.end()) {
-                    to_drop.push_back(column.name());
+            for (size_t position = 0; position < loaded_table.columns().size(); position++) {
+                const auto& column = loaded_table.columns()[position];
+                const auto& def = layout[position];
+                if (column.attoid() == 0) {
+                    loaded_table.stamp_column_identity(position, def.attoid());
+                }
+                // A drop whose storage stamp a crash discarded
+                if (def.dropped_at() != components::table::NOT_DELETED_ID &&
+                    column.dropped_at() == components::table::NOT_DELETED_ID) {
+                    loaded_table.stamp_column_dropped(position, def.dropped_at());
                     continue;
                 }
-                for (const auto& def : it->second) {
-                    if (def.attoid() == column.attoid()) {
-                        if (def.name() != column.name()) {
-                            to_rename.push_back(storage_rename_t{column.name(), def.name()});
-                        }
-                        break;
-                    }
+                if (def.dropped_at() == components::table::NOT_DELETED_ID && def.name() != column.name()) {
+                    to_rename.push_back(storage_rename_t{column.name(), def.name()});
                 }
             }
-            if (to_drop.size() >= owned->table_storage.table().column_count() && !to_drop.empty()) {
-                // Sharing NO attoid with the catalog is a schema mismatch, not a DROP COLUMN.
-                error(log_,
-                      "manager_disk_t::reconcile_storage_with_catalog_sync: oid={} shares NO column attoid with "
-                      "its {} live pg_attribute column(s) — refusing to drop all {} storage columns",
-                      static_cast<unsigned>(oid),
-                      it->second.size(),
-                      to_drop.size());
-                continue;
-            }
 
+            // After the drop stamps: a rename looks among live columns only// name is not the one it takes.
             for (const auto& r : to_rename) {
                 auto renamed = owned->rename_column(r.from, r.to);
                 if (renamed.has_error()) {
@@ -928,26 +922,6 @@ namespace services::disk {
                       r.from,
                       r.to);
             }
-
-            if (to_drop.empty()) {
-                continue;
-            }
-
-            for (const auto& attname : to_drop) {
-                if (!owned->drop_column(attname, resource())) {
-                    error(log_,
-                          "manager_disk_t::reconcile_storage_with_catalog_sync: oid={} column '{}' is in the "
-                          "storage schema but drop_column refused it — its blocks stay leaked",
-                          static_cast<unsigned>(oid),
-                          attname);
-                    continue;
-                }
-                trace(log_,
-                      "manager_disk_t::reconcile_storage_with_catalog_sync: oid={} re-armed the release of "
-                      "column '{}' dropped before the crash",
-                      static_cast<unsigned>(oid),
-                      attname);
-            }
         }
     }
 
@@ -956,12 +930,14 @@ namespace services::disk {
         // NOT-NULL is enforced above storage, not in this scan.
         namespace att = catalog::pg_attribute_col;
         // Uses the widest ordinal read below, not a hand-written count — a literal `< 9` once left attdefspec out.
-        constexpr std::uint64_t widest_read = att::attdefspec;
+        constexpr std::uint64_t widest_read = att::dropped_at_commit_id;
         struct catalog_col_t {
             std::int32_t attnum{0};
             catalog::oid_t attoid{catalog::INVALID_OID};
             std::string name;
             components::types::complex_logical_type type;
+            uint64_t added_at{0};
+            uint64_t dropped_at{components::table::NOT_DELETED_ID};
             // Decoded on resource_, not the scan's local arena, since the value outlives this function.
             std::optional<components::types::logical_value_t> default_value;
         };
@@ -1005,9 +981,17 @@ namespace services::disk {
                     const auto relid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(att::attrelid, i));
                     if (wanted.find(relid) == wanted.end())
                         continue;
-                    if (!chunk.is_null(att::attisdropped, i) && chunk.get_value<bool>(att::attisdropped, i))
-                        continue;
                     catalog_col_t rc;
+                    // A dropped column keeps its row and its attnum
+                    if (!chunk.is_null(att::added_at_commit_id, i)) {
+                        rc.added_at = static_cast<uint64_t>(chunk.get_value<std::int64_t>(att::added_at_commit_id, i));
+                    }
+                    if (!chunk.is_null(att::attisdropped, i) && chunk.get_value<bool>(att::attisdropped, i)) {
+                        rc.dropped_at =
+                            chunk.is_null(att::dropped_at_commit_id, i)
+                                ? 0
+                                : static_cast<uint64_t>(chunk.get_value<std::int64_t>(att::dropped_at_commit_id, i));
+                    }
                     rc.attoid = chunk.is_null(att::attoid, i)
                                     ? catalog::INVALID_OID
                                     : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(att::attoid, i));
@@ -1075,6 +1059,8 @@ namespace services::disk {
                 defs.emplace_back(c.name, c.type);
                 defs.back().set_attoid(static_cast<std::uint32_t>(c.attoid));
                 defs.back().set_default_value(std::move(c.default_value));
+                defs.back().set_added_at(c.added_at);
+                defs.back().set_dropped_at(c.dropped_at);
             }
             result.emplace(relid, std::move(defs));
         }

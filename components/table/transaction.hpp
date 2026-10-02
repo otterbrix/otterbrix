@@ -29,6 +29,33 @@ namespace components::table {
         components::catalog::oid_t index_oid;
     };
 
+    // Everything an aborting (or refused-commit) transaction left behind. Plain std containers: it crosses the
+    // dispatcher, disk and index mailboxes. manager_disk_t::abort_transaction and manager_index_t::abort_transaction
+    // each undo their half of it.
+    //
+    // base_append_tables / base_delete_tables name the user tables whose PENDING index entries / delete markers must
+    // be reverted; pg_catalog tables are absent, they carry no indexes. pg_catalog_delete_tables are the catalog
+    // tables a DROP stamped delete marks on: invisible to readers, but they block a later re-DELETE of the same row
+    // until un-stamped.
+    struct txn_abort_drain_t {
+        transaction_data txn{0, 0};
+        std::vector<pg_catalog_append_range_t> swap_appends{};
+        // The USER-table ranges this txn appended, kept whole (not collapsed to oids like
+        // base_append_tables) so the rows physically go, which is what stops their never-committed
+        // stamps deferring every later checkpoint round.
+        std::vector<pg_catalog_append_range_t> base_appends{};
+        std::set<catalog::oid_t> base_append_tables{};
+        std::set<catalog::oid_t> base_delete_tables{};
+        std::set<catalog::oid_t> pg_catalog_delete_tables{};
+        // Tables whose storage column set an ADD / DROP COLUMN of this txn stamped
+        std::set<catalog::oid_t> column_stamped_tables{};
+        // Storage oids retired by DROP in this txn; their drop marks are erased.
+        std::vector<catalog::oid_t> dropped_storage_oids{};
+        // Storage oids / indexes a CREATE in this txn brought into being; dropped again.
+        std::vector<catalog::oid_t> created_storage_oids{};
+        std::vector<created_index_t> created_indexes{};
+    };
+
     enum class transaction_state_t : uint8_t
     {
         active,

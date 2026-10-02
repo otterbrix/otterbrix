@@ -1,4 +1,5 @@
 #include "manager_disk_impl.hpp"
+#include "oid_reservation.hpp"
 
 namespace services::disk {
 
@@ -175,7 +176,17 @@ namespace services::disk {
         std::vector<components::catalog::oid_t> batch;
         batch.reserve(count);
         for (std::size_t i = 0; i < count; ++i) {
-            batch.push_back(oid_gen_.allocate());
+            const auto oid = oid_gen_.allocate();
+            if (!config_.path.empty() && oid >= oid_reserved_until_) {
+                components::catalog::oid_t bound = oid + OID_RESERVATION_BLOCK;
+                if (auto persisted = persist_oid_reservation(resource(), config_.path, bound);
+                    persisted.contains_error()) {
+                    error(log_, "manager_disk_t::allocate_oids_batch: no oid is handed out: {}", persisted.what);
+                    co_return std::vector<components::catalog::oid_t>{};
+                }
+                oid_reserved_until_ = bound;
+            }
+            batch.push_back(oid);
         }
         co_return batch;
     }

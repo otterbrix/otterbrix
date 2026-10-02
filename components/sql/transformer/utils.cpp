@@ -472,6 +472,10 @@ namespace components::sql::transform {
                 return "T_XmlSerialize";
             case T_WithClause:
                 return "T_WithClause";
+            case T_InferClause:
+                return "T_InferClause";
+            case T_OnConflictClause:
+                return "T_OnConflictClause";
             case T_CommonTableExpr:
                 return "T_CommonTableExpr";
             case T_ColumnReferenceStorageDirective:
@@ -580,11 +584,12 @@ namespace components::sql::transform {
                 const auto raw_scale = intVal(&scale->val);
                 if (raw_width < 0 || raw_scale < 0 || raw_width > types::DECIMAL_MAX_WIDTH ||
                     raw_scale > types::DECIMAL_MAX_WIDTH) {
-                    return core::error_t(core::error_code_t::invalid_parameter,
-                                         std::pmr::string{"DECIMAL width must be between 1 and " +
-                                                              std::to_string(static_cast<unsigned>(types::DECIMAL_MAX_WIDTH)) +
-                                                              " and scale must not exceed width",
-                                                          resource});
+                    return core::error_t(
+                        core::error_code_t::invalid_parameter,
+                        std::pmr::string{"DECIMAL width must be between 1 and " +
+                                             std::to_string(static_cast<unsigned>(types::DECIMAL_MAX_WIDTH)) +
+                                             " and scale must not exceed width",
+                                         resource});
                 }
                 VALUE_OR_RETURN(column,
                                 types::complex_logical_type::create_decimal(resource,
@@ -1783,6 +1788,9 @@ namespace components::sql::transform {
                 n->set_relname(relname);
                 break;
             }
+            case logical_plan::node_type::insert_on_conflict_t:
+                name_catalog_target(dbname, relname, node->children().front());
+                break;
             case logical_plan::node_type::update_t: {
                 auto* n = static_cast<logical_plan::node_update_t*>(node.get());
                 n->set_dbname(dbname);
@@ -1833,7 +1841,8 @@ namespace components::sql::transform {
         }
     }
 
-    core::result_wrapper_t<qualified_name_t> called_function(std::pmr::memory_resource* resource, const List* funcname) {
+    core::result_wrapper_t<qualified_name_t> called_function(std::pmr::memory_resource* resource,
+                                                             const List* funcname) {
         if (!funcname || funcname->lst.empty()) {
             return qualified_name_t{};
         }

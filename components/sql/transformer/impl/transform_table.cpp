@@ -223,24 +223,23 @@ namespace components::sql::transform {
                                          std::pmr::string{"incorrect drop: arguments size", resource_});
                 }
                 // DROP INDEX names two pg_class rows — the parent table and the index itself
-                auto wrap_index = [&](const qualified_name_t& written,
-                                      const std::string& index_name,
-                                      logical_plan::node_ptr n) {
-                    auto* drop = static_cast<logical_plan::node_drop_t*>(n.get());
-                    set_target(*drop, written);
-                    drop->set_index_name(index_name);
-                    // Same wiring as wrap_one; rewrite_drop_index reads this when the index name
-                    // doesn't resolve.
-                    drop->set_missing_ok(node.missing_ok);
-                    // Not read yet (rewrite_drop_index builds its own delete sequence, not the
-                    // dynamic cascade), but this is the only place it could be set.
-                    drop->set_behavior(drop_behavior_of(node.behavior));
-                    std::vector<std::pair<std::string, std::string>> targets;
-                    targets.emplace_back(written.database, written.collection);
-                    targets.emplace_back(written.database, index_name);
-                    register_catalog_resolve_tables(resource_, &catalog_resolves_, targets);
-                    return n;
-                };
+                auto wrap_index =
+                    [&](const qualified_name_t& written, const std::string& index_name, logical_plan::node_ptr n) {
+                        auto* drop = static_cast<logical_plan::node_drop_t*>(n.get());
+                        set_target(*drop, written);
+                        drop->set_index_name(index_name);
+                        // Same wiring as wrap_one; rewrite_drop_index reads this when the index name
+                        // doesn't resolve.
+                        drop->set_missing_ok(node.missing_ok);
+                        // Not read yet (rewrite_drop_index builds its own delete sequence, not the
+                        // dynamic cascade), but this is the only place it could be set.
+                        drop->set_behavior(drop_behavior_of(node.behavior));
+                        std::vector<std::pair<std::string, std::string>> targets;
+                        targets.emplace_back(written.database, written.collection);
+                        targets.emplace_back(written.database, index_name);
+                        register_catalog_resolve_tables(resource_, &catalog_resolves_, targets);
+                        return n;
+                    };
                 //when casting to enum -1 is used to account for obligated index name
                 switch (static_cast<table_name>(drop_name.size() - 1)) {
                     case database_table: {

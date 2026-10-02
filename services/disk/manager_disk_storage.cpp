@@ -1,4 +1,3 @@
-#include "expand_chunk.hpp"
 #include "manager_disk_impl.hpp"
 
 #include <cassert>
@@ -10,16 +9,19 @@ namespace services::disk {
     using namespace detail;
 
     core::result_wrapper_t<uint64_t> manager_disk_t::append_sync(catalog::oid_t table_oid,
+                                                                 const std::pmr::vector<catalog::oid_t>& attoids,
                                                                  components::vector::data_chunk_t& data,
                                                                  components::table::transaction_data txn) {
         // storage_entry_sync's borrow is safe here: bootstrap and replay are single-threaded.
         components::storage::storage_t* s = nullptr;
+        const collection_storage_entry_t* entry = nullptr;
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
             if (agents_[pool_idx] != nullptr) {
                 if (const auto* agent_entry = agents_[pool_idx]->storage_entry_sync(table_oid);
                     agent_entry != nullptr && agent_entry->storage != nullptr) {
                     s = agent_entry->storage.get();
+                    entry = agent_entry;
                 }
             }
         }
@@ -41,15 +43,12 @@ namespace services::disk {
             s->adopt_schema(local.types());
         }
 
-        const auto& table_columns = s->columns();
-        if (!table_columns.empty() && local.column_count() < table_columns.size()) {
-            if (auto expanded = detail::expand_chunk_to_columns(resource(),
-                                                                table_oid,
-                                                                table_columns,
-                                                                local,
-                                                                /*is_computed=*/false);
-                expanded.contains_error()) {
-                return expanded;
+        if (!s->columns().empty() && local.column_count() > 0) {
+            const auto& table = entry->table_storage.table();
+            if (auto widened =
+                    entry->is_computed ? table.widen_by_name(txn, local) : table.widen_by_attoid(attoids, local);
+                widened.contains_error()) {
+                return widened;
             }
         }
 
@@ -129,6 +128,7 @@ namespace services::disk {
     core::result_wrapper_t<components::storage::appended_range_t>
     manager_disk_t::update_sync(catalog::oid_t table_oid,
                                 const std::pmr::vector<int64_t>& row_ids,
+                                const std::pmr::vector<catalog::oid_t>& attoids,
                                 components::vector::data_chunk_t& new_data,
                                 components::table::transaction_data txn) {
         if (agents_.empty()) {
@@ -140,11 +140,13 @@ namespace services::disk {
             return core::error_t{core::error_code_t::io_error,
                                  std::pmr::string{"update_sync: owning disk agent is null", resource()}};
         }
-        return agents_[pool_idx]->update_sync(table_oid, row_ids, new_data, txn);
+        return agents_[pool_idx]->update_sync(table_oid, row_ids, attoids, new_data, txn);
     }
 
     core::error_t manager_disk_t::direct_add_column_sync(catalog::oid_t table_oid,
-                                                         const components::vector::data_chunk_t& schema_chunk) {
+                                                         const std::pmr::vector<catalog::oid_t>& attoids,
+                                                         const components::vector::data_chunk_t& schema_chunk,
+                                                         uint64_t first_position) {
         if (agents_.empty()) {
             return core::error_t{core::error_code_t::io_error,
                                  std::pmr::string{"direct_add_column_sync: no disk agents", resource()}};
@@ -154,7 +156,7 @@ namespace services::disk {
             return core::error_t{core::error_code_t::io_error,
                                  std::pmr::string{"direct_add_column_sync: owning disk agent is null", resource()}};
         }
-        return agents_[pool_idx]->direct_add_column_sync(table_oid, schema_chunk);
+        return agents_[pool_idx]->direct_add_column_sync(table_oid, attoids, schema_chunk, first_position);
     }
 
     // Every site routes through agents_[pool_idx_for_oid(oid)]; no manager-side storage_t* survives.
@@ -502,7 +504,7 @@ namespace services::disk {
         co_return components::storage::appended_range_t{range_start, total_count};
     }
 
-    manager_disk_t::unique_future<core::result_wrapper_t<components::storage::appended_range_t>>
+    manager_disk_t::unique_future<core::result_wrapper_t<components::storage::updated_rows_t>>
     manager_disk_t::storage_update(execution_context_t ctx,
                                    catalog::oid_t table_oid,
                                    std::pmr::vector<components::vector::vector_t> row_ids,
@@ -514,8 +516,11 @@ namespace services::disk {
                 break;
             }
         }
+        components::storage::updated_rows_t result{{},
+                                                   std::pmr::vector<components::vector::data_chunk_t>{resource()},
+                                                   std::pmr::vector<std::uint32_t>{resource()}};
         if (!has_rows) {
-            co_return components::storage::appended_range_t{};
+            co_return result;
         }
         if (agents_.empty()) {
             co_return core::error_t{core::error_code_t::io_error,
@@ -548,14 +553,19 @@ namespace services::disk {
             if (update_r.has_error()) {
                 co_return std::move(update_r);
             }
-            auto upd = update_r.value();
+            auto& upd = update_r.value();
             if (!have_range) {
-                range_start = upd.start_row;
+                range_start = upd.range.start_row;
                 have_range = true;
             }
-            total_count += upd.count;
+            total_count += upd.range.count;
+            for (auto& written : upd.written) {
+                result.written.push_back(std::move(written));
+            }
+            result.attoids = std::move(upd.attoids);
         }
-        co_return components::storage::appended_range_t{range_start, total_count};
+        result.range = components::storage::appended_range_t{range_start, total_count};
+        co_return result;
     }
 
     // The reply wraps the count: a route that doesn't exist is a delete that DID NOT HAPPEN, not 0 rows.
@@ -668,8 +678,7 @@ namespace services::disk {
 
     manager_disk_t::unique_future<core::error_t>
     manager_disk_t::storage_revert_appends(execution_context_t /*ctx*/,
-                                           std::vector<components::pg_catalog_append_range_t> ranges,
-                                           bool tail_only) {
+                                           std::vector<components::pg_catalog_append_range_t> ranges) {
         auto first_error = core::error_t::no_error();
         // Each agent's inner handler reverse-iterates to unwind in the opposite of append order.
         if (!agents_.empty()) {
@@ -692,8 +701,7 @@ namespace services::disk {
                 auto& agent = agents_[i];
                 auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
                                                                       &agent_disk_t::storage_revert_appends_inner,
-                                                                      std::move(per_agent[i]),
-                                                                      tail_only);
+                                                                      std::move(per_agent[i]));
                 if (needs_sched) {
                     scheduler_disk_->enqueue(agent.get());
                 }

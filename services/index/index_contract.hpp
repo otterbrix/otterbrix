@@ -14,6 +14,7 @@
 #include <components/logical_plan/node_create_index.hpp>
 #include <components/session/session.hpp>
 #include <components/table/row_version_manager.hpp>
+#include <components/table/transaction.hpp>
 #include <components/vector/data_chunk.hpp>
 
 #include <core/result_wrapper.hpp>
@@ -129,8 +130,9 @@ namespace services::index {
         // mark_table_dropped recorded the value in TXN-ID space; this remaps it once commit_id is known.
         unique_future<void> table_dropped_committed(session_id_t session, uint64_t txn_id, uint64_t commit_id);
 
-        // Abort mirror of table_dropped_committed: erases, not remaps, since the table must stay indexed.
-        unique_future<void> table_drop_aborted(session_id_t session, uint64_t txn_id);
+        // The index half of a transaction's undo: pending entries and delete markers of its tables, the DROP marks
+        // it left (erased, not remapped, since the tables stay indexed), and the indexes / tables it created.
+        unique_future<void> abort_transaction(session_id_t session, components::table::txn_abort_drain_t drain);
 
         // Only the insert leg is applied; an undecided delete could withhold an id from a still-live row.
         unique_future<void> apply_wal_record_for_index(session_id_t session,
@@ -168,7 +170,7 @@ namespace services::index {
                                                             &index_contract::on_horizon_advanced,
                                                             &index_contract::mark_table_dropped,
                                                             &index_contract::table_dropped_committed,
-                                                            &index_contract::table_drop_aborted,
+                                                            &index_contract::abort_transaction,
                                                             &index_contract::apply_wal_record_for_index>;
 
         index_contract() = delete;

@@ -46,7 +46,8 @@ namespace services::planner::impl {
                 boost::intrusive_ptr(new components::operators::operator_unique_constraint_t(context.resource,
                                                                                              context.log.clone(),
                                                                                              n->table_oid(),
-                                                                                             n->unique_groups()));
+                                                                                             n->unique_groups(),
+                                                                                             n->conflict_groups()));
             if (child) {
                 unique->set_children(child);
             }

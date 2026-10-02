@@ -29,7 +29,6 @@ namespace components::operators {
                         log_t log,
                         components::catalog::oid_t table_oid,
                         std::pmr::vector<expressions::expression_ptr> updates,
-                        bool upsert,
                         std::pmr::vector<projected_column_t> returning,
                         expressions::expression_ptr expr = nullptr,
                         // Matched-row bound for the UPDATE ... FROM source path
@@ -47,6 +46,9 @@ namespace components::operators {
         // False skips the index mirror entirely. Defaults to true: an unstamped plan must
         // behave as before, because guessing "no index" leaves a stale index behind.
         void set_table_has_indexes(bool value) noexcept { table_has_indexes_ = value; }
+
+        // The FROM side pairs with the target input row for row
+        void set_paired_from(bool value) noexcept { paired_from_ = value; }
 
         // STREAMING DML (STEP 3b). Both UPDATE shapes are SINKs on the LEFT (target)
         // scan input:
@@ -94,6 +96,9 @@ namespace components::operators {
         core::error_t consume_join_batch_(pipeline::context_t* ctx,
                                           const vector::data_chunk_t& chunk_left,
                                           const chunks_vector_t& right_chunks);
+        core::error_t consume_paired_batch_(pipeline::context_t* ctx,
+                                            vector::data_chunk_t&& chunk_left,
+                                            const chunks_vector_t& right_chunks);
         [[nodiscard]] core::error_t apply_updates_(pipeline::context_t* pipeline_context,
                                                    vector::data_chunk_t& out_chunk,
                                                    const vector::data_chunk_t* from_chunk,
@@ -107,7 +112,6 @@ namespace components::operators {
         expressions::condition_kind condition_;
         std::unique_ptr<execution_dag::execution_dag_t> graph_;
         std::unique_ptr<execution_dag::execution_dag_t> updates_graph_;
-        bool upsert_;
         std::pmr::vector<projected_column_t> returning_;
         bool table_has_indexes_{true};
         std::unique_ptr<execution_dag::execution_dag_t> returning_graph_;
@@ -136,6 +140,10 @@ namespace components::operators {
         // per flush, so a flush-derived count would miss already-flushed matches.
         std::int64_t affected_bound_{-1};
         uint64_t matched_total_{0};
+        bool paired_from_{false};
+        std::size_t paired_batches_{0};
+        std::pmr::vector<types::complex_logical_type> paired_left_types_{resource_};
+        std::pmr::vector<types::complex_logical_type> paired_right_types_{resource_};
     };
 
 } // namespace components::operators

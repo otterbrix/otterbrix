@@ -315,26 +315,18 @@ TEST_CASE("components::planner::update") {
 
     components::logical_plan::storage_parameters parameters{&resource};
     {
-        auto node = make_node_update(&resource,
-                                     match,
-                                     make_node_limit(&resource, {}, {}, limit_t::unlimit()),
-                                     {update},
-                                     /*upsert=*/true);
+        auto node =
+            make_node_update(&resource, match, make_node_limit(&resource, {}, {}, limit_t::unlimit()), {update});
         components::planner::planner_t planner;
         auto node_update = planner.create_plan(&resource, node);
-        REQUIRE(node_update->to_string() ==
-                R"_($update: <oid:0> {$upsert: 1, $match: {"key": {$eq: #1}}, $limit: -1})_");
+        REQUIRE(node_update->to_string() == R"_($update: <oid:0> {$match: {"key": {$eq: #1}}, $limit: -1})_");
     }
     {
-        auto node = make_node_update(&resource,
-                                     match,
-                                     make_node_limit(&resource, {}, {}, limit_t::limit_one()),
-                                     {update},
-                                     /*upsert=*/false);
+        auto node =
+            make_node_update(&resource, match, make_node_limit(&resource, {}, {}, limit_t::limit_one()), {update});
         components::planner::planner_t planner;
         auto node_update = planner.create_plan(&resource, node);
-        REQUIRE(node_update->to_string() ==
-                R"_($update: <oid:0> {$upsert: 0, $match: {"key": {$eq: #1}}, $limit: 1})_");
+        REQUIRE(node_update->to_string() == R"_($update: <oid:0> {$match: {"key": {$eq: #1}}, $limit: 1})_");
     }
 }
 

@@ -646,7 +646,7 @@ namespace components::operators {
                 }
             }
 
-            std::vector<std::vector<std::string>> unique_groups;
+            std::vector<catalog::unique_key_t> unique_groups;
             std::vector<std::string> pk_columns;
             if (!pending_uniques.empty()) {
                 std::pmr::vector<std::uint64_t> attr_keys(resource_);
@@ -727,7 +727,7 @@ namespace components::operators {
                     if (pending.is_pk) {
                         pk_columns.insert(pk_columns.end(), names.begin(), names.end());
                     }
-                    unique_groups.push_back(std::move(names));
+                    unique_groups.push_back(catalog::unique_key_t{pending.constraint_name, std::move(names)});
                 }
             }
 

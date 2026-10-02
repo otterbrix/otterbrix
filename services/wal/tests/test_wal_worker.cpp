@@ -26,6 +26,7 @@
 #include <services/wal/wal_sync_mode.hpp>
 #include <thread>
 #include <unistd.h>
+#include "wal_test_attoids.hpp"
 
 using namespace services::wal;
 using namespace components::session;
@@ -124,6 +125,7 @@ struct test_wal_worker {
                                                                  &manager_wal_replicate_t::write_physical_insert,
                                                                  session_id_t::generate_uid(),
                                                                  table_oid,
+                                                                 wal_test::attoids_for(chunk_ptr),
                                                                  std::move(chunk_ptr),
                                                                  row_start,
                                                                  row_count,
@@ -163,6 +165,7 @@ struct test_wal_worker {
                                                                  session_id_t::generate_uid(),
                                                                  table_oid,
                                                                  std::move(ids_copy),
+                                                                 wal_test::attoids_for(chunk_ptr),
                                                                  std::move(chunk_ptr),
                                                                  static_cast<uint64_t>(row_count),
                                                                  txn_id,
@@ -338,10 +341,12 @@ TEST_CASE("wal_worker::corruption_stop") {
         for (int i = 0; i < 5; ++i) {
             auto* arena = &resource;
             auto chunk = gen_data_chunk(4, arena);
+            auto attoids = wal_test::attoids_for(chunk);
             auto [ns, fut] = actor_zeta::otterbrix::send(manager->address(),
                                                          &manager_wal_replicate_t::write_physical_insert,
                                                          session_id_t::generate_uid(),
                                                          kTestTableOid,
+                                                         std::move(attoids),
                                                          to_batch(std::make_unique<data_chunk_t>(std::move(chunk))),
                                                          static_cast<uint64_t>(i * 4),
                                                          uint64_t{4},
@@ -442,10 +447,12 @@ TEST_CASE("wal_worker::crc_chain_startup") {
         {
             auto* arena = &resource;
             auto chunk = gen_data_chunk(8, arena);
+            auto attoids = wal_test::attoids_for(chunk);
             auto [ns, fut] = actor_zeta::otterbrix::send(manager->address(),
                                                          &manager_wal_replicate_t::write_physical_insert,
                                                          session_id_t::generate_uid(),
                                                          kTestTableOid,
+                                                         std::move(attoids),
                                                          to_batch(std::make_unique<data_chunk_t>(std::move(chunk))),
                                                          uint64_t{0},
                                                          uint64_t{8},
@@ -500,6 +507,8 @@ TEST_CASE("wal_worker::crc_chain_startup") {
             &manager_wal_replicate_t::write_physical_insert,
             session_id_t::generate_uid(),
             kTestTableOid,
+            wal_test::attoids_for(
+                to_batch(std::make_unique<data_chunk_t>(gen_data_chunk(3, std::pmr::get_default_resource())))),
             to_batch(std::make_unique<data_chunk_t>(gen_data_chunk(3, std::pmr::get_default_resource()))),
             uint64_t{0},
             uint64_t{3},
@@ -539,10 +548,12 @@ TEST_CASE("wal_worker::segment_rotation") {
     for (uint64_t i = 0; i < 50; ++i) {
         auto* arena = &resource;
         auto chunk = gen_data_chunk(20, arena);
+        auto attoids = wal_test::attoids_for(chunk);
         auto [ns, fut] = actor_zeta::otterbrix::send(manager->address(),
                                                      &manager_wal_replicate_t::write_physical_insert,
                                                      session_id_t::generate_uid(),
                                                      kTestTableOid,
+                                                     std::move(attoids),
                                                      to_batch(std::make_unique<data_chunk_t>(std::move(chunk))),
                                                      i * 20,
                                                      uint64_t{20},
@@ -583,6 +594,7 @@ TEST_CASE("wal_worker::spanning_record") {
                                                      &manager_wal_replicate_t::write_physical_insert,
                                                      session_id_t::generate_uid(),
                                                      kTestTableOid,
+                                                     wal_test::attoids_for(chunk_ptr),
                                                      std::move(chunk_ptr),
                                                      uint64_t{0},
                                                      uint64_t{500},
@@ -630,10 +642,12 @@ TEST_CASE("wal_worker::fsync_full_mode") {
     {
         auto* arena = &resource;
         auto chunk = gen_data_chunk(10, arena);
+        auto attoids = wal_test::attoids_for(chunk);
         auto [ns, fut] = actor_zeta::otterbrix::send(manager->address(),
                                                      &manager_wal_replicate_t::write_physical_insert,
                                                      session_id_t::generate_uid(),
                                                      kTestTableOid,
+                                                     std::move(attoids),
                                                      to_batch(std::make_unique<data_chunk_t>(std::move(chunk))),
                                                      uint64_t{0},
                                                      uint64_t{10},
@@ -689,10 +703,12 @@ TEST_CASE("wal_worker::fsync_off_mode") {
     {
         auto* arena = &resource;
         auto chunk = gen_data_chunk(10, arena);
+        auto attoids = wal_test::attoids_for(chunk);
         auto [ns, fut] = actor_zeta::otterbrix::send(manager->address(),
                                                      &manager_wal_replicate_t::write_physical_insert,
                                                      session_id_t::generate_uid(),
                                                      kTestTableOid,
+                                                     std::move(attoids),
                                                      to_batch(std::make_unique<data_chunk_t>(std::move(chunk))),
                                                      uint64_t{0},
                                                      uint64_t{10},

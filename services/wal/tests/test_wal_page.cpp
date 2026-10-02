@@ -1,3 +1,4 @@
+#include "wal_test_attoids.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <components/tests/generaty.hpp>
 #include <core/pmr.hpp>
@@ -86,6 +87,7 @@ namespace {
                                      wal_id,
                                      txn_id,
                                      table_oid,
+                                     wal_test::attoids_for(chunk),
                                      to_chunk_batch(chunk),
                                      row_start,
                                      row_count);
@@ -128,6 +130,7 @@ namespace {
                                      txn_id,
                                      table_oid,
                                      row_ids.data(),
+                                     wal_test::attoids_for(chunk),
                                      to_chunk_batch(chunk),
                                      count);
         info.data = buffer_to_vec(buf);

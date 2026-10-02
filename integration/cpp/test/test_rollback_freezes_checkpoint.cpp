@@ -274,9 +274,9 @@ TEST_CASE("integration::cpp::rollback_freezes_checkpoint::the_same_explicit_tran
 // (components/table/collection.cpp collection_t::revert_append: total_rows_ -= count, and each
 // touched row group reverts from the local start), so it is only ever safe while the aborted range
 // is still the table's LAST one. This case puts a committed range behind it and requires that the
-// ROLLBACK leave that range alone. Drop the tail_only guard in
-// agent_disk_t::storage_revert_appends_inner and it goes red: the truncation walks back over the
-// neighbour's rows and they vanish from a table that never touched them.
+// ROLLBACK leave that range alone. Drop the tail check in data_table_t::revert_append and it goes
+// red: the truncation walks back over the neighbour's rows and they vanish from a table that never
+// touched them. The aborted range stays, stamped ABORTED.
 TEST_CASE("integration::cpp::rollback_freezes_checkpoint::a_rollback_may_not_truncate_a_neighbours_committed_rows") {
     auto config = quiet_config(integration_fixture_path("test_rollback_freezes_checkpoint/neighbour"));
     test_clear_directory(config);
@@ -318,7 +318,7 @@ TEST_CASE("integration::cpp::rollback_freezes_checkpoint::a_rollback_may_not_tru
         REQUIRE(cur->size() == 0);
     }
 
-    // Not asserted: whether this table checkpoints again. It is exactly the case the guard declines
-    // to fix, and pinning today's answer either way would freeze a decision this test does not own.
+    // Not asserted: whether this table checkpoints again. An ABORTED stamp still defers it, and
+    // pinning today's answer either way would freeze a decision this test does not own.
     REQUIRE(exec(d, "CHECKPOINT;")->is_success());
 }

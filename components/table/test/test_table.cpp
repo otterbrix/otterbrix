@@ -450,7 +450,8 @@ TEST_CASE("components::table::data_table") {
             v.set_value(i / 2, int64_t(i));
         }
         auto state = data_table->initialize_delete({});
-        auto deleted_count = deleted_or_fail(data_table->delete_rows(*state, v, test_size / 2, 0));
+        auto deleted_count =
+            deleted_or_fail(data_table->delete_rows(*state, v, test_size / 2, transaction_data::committed()));
         REQUIRE(deleted_count == test_size / 2);
     }
     INFO("Scan after delete");

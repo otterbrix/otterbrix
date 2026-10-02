@@ -139,7 +139,7 @@ namespace components::table {
     }
 
     void collection_t::fetch(vector::data_chunk_t& result,
-                             const std::vector<storage_index_t>& column_ids,
+                             const std::pmr::vector<storage_index_t>& column_ids,
                              const vector::vector_t& row_identifiers,
                              uint64_t fetch_count,
                              column_fetch_state& state,
@@ -322,6 +322,26 @@ namespace components::table {
         }
     }
 
+    bool collection_t::is_tail(int64_t row_start, uint64_t count) const {
+        return row_start + static_cast<int64_t>(count) == row_start_ + static_cast<int64_t>(total_rows_.load());
+    }
+
+    void collection_t::abort_append(int64_t row_start, uint64_t count) {
+        auto row_end = row_start + static_cast<int64_t>(count);
+        for (auto& rg : row_groups_->segments()) {
+            auto rg_end = rg.start + static_cast<int64_t>(rg.count.load());
+            if (rg.start >= row_end) {
+                break;
+            }
+            if (rg_end <= row_start) {
+                continue;
+            }
+            auto local_start = static_cast<uint64_t>(std::max(int64_t{0}, row_start - rg.start));
+            auto local_end = std::min(rg.count.load(), static_cast<uint64_t>(row_end - rg.start));
+            rg.abort_append(local_start, local_end - local_start);
+        }
+    }
+
     void collection_t::commit_all_deletes(uint64_t txn_id, uint64_t commit_id) {
         for (auto& rg : row_groups_->segments()) {
             rg.commit_all_deletes(txn_id, commit_id);
@@ -347,6 +367,31 @@ namespace components::table {
         return row_group->delete_stamp(row_id);
     }
 
+    void collection_t::fill_stamps(int64_t row_start, uint64_t count, uint64_t* inserted, uint64_t* deleted) {
+        uint64_t filled = 0;
+        while (filled < count) {
+            int64_t row_id = row_start + static_cast<int64_t>(filled);
+            row_group_t* row_group = nullptr;
+            {
+                uint64_t segment_index;
+                auto l = row_groups_->lock();
+                if (row_groups_->try_segment_index(l, row_id, segment_index)) {
+                    row_group = row_groups_->segment_at(l, static_cast<int64_t>(segment_index));
+                }
+            }
+            if (row_group == nullptr) {
+                // Past the last row group
+                std::fill_n(inserted + filled, count - filled, ABORTED_ID);
+                std::fill_n(deleted + filled, count - filled, NOT_DELETED_ID);
+                return;
+            }
+            int64_t group_end = row_group->start + static_cast<int64_t>(row_group->count.load());
+            uint64_t take = std::min(count - filled, static_cast<uint64_t>(group_end - row_id));
+            row_group->fill_stamps(row_id, take, inserted + filled, deleted + filled);
+            filled += take;
+        }
+    }
+
     void release_disk_blocks(storage::block_manager_t& block_manager, std::pmr::vector<uint64_t> block_ids) {
         std::sort(block_ids.begin(), block_ids.end());
         block_ids.erase(std::unique(block_ids.begin(), block_ids.end()), block_ids.end());
@@ -361,7 +406,7 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> collection_t::revert_append(int64_t row_start, uint64_t count) {
-        if (row_start + static_cast<int64_t>(count) != row_start_ + static_cast<int64_t>(total_rows_.load())) {
+        if (!is_tail(row_start, count)) {
             return core::error_t(core::error_code_t::invalid_parameter,
                                  std::pmr::string("table revert: the range is not the table's tail", resource_));
         }

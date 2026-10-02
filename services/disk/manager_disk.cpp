@@ -69,9 +69,12 @@ namespace services::disk {
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::on_horizon_advanced>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::mark_storage_dropped_many>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_dropped_committed>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_drop_aborted>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::abort_transaction>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_open_scan_hold>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_compact_epoch>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::revert_column_stamps>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_prepare>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_release_prepared>,
         };
 
         constexpr bool behavior_covers_all_implements() noexcept {
@@ -523,6 +526,18 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::storage_compact_epoch, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::revert_column_stamps>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::revert_column_stamps, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_prepare>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_prepare, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_release_prepared>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_release_prepared, msg);
+                break;
+            }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_reduce>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::storage_reduce, msg);
                 break;
@@ -639,8 +654,8 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::storage_dropped_committed, msg);
                 break;
             }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_drop_aborted>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_drop_aborted, msg);
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::abort_transaction>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::abort_transaction, msg);
                 break;
             }
             default:
@@ -766,8 +781,47 @@ namespace services::disk {
         co_return;
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::storage_drop_aborted(session_id_t /*session*/,
-                                                                             uint64_t txn_id) {
+    manager_disk_t::unique_future<core::error_t>
+    manager_disk_t::abort_transaction(session_id_t session, components::table::txn_abort_drain_t drain) {
+        trace(log_, "manager_disk::abort_transaction , txn_id : {}", drain.txn.transaction_id);
+        const execution_context_t ctx{session, drain.txn, {}};
+
+        auto reverted = core::error_t::no_error();
+        std::vector<components::pg_catalog_append_range_t> appends = std::move(drain.swap_appends);
+        appends.insert(appends.end(), drain.base_appends.begin(), drain.base_appends.end());
+        if (!appends.empty()) {
+            reverted = co_await storage_revert_appends(ctx, std::move(appends));
+        }
+
+        std::set<catalog::oid_t> delete_tables = std::move(drain.base_delete_tables);
+        delete_tables.insert(drain.pg_catalog_delete_tables.begin(), drain.pg_catalog_delete_tables.end());
+        if (!delete_tables.empty()) {
+            co_await storage_revert_deletes(ctx,
+                                            std::vector<catalog::oid_t>{delete_tables.begin(), delete_tables.end()});
+        }
+
+        if (!drain.column_stamped_tables.empty()) {
+            co_await revert_column_stamps(ctx,
+                                          std::pmr::set<catalog::oid_t>{drain.column_stamped_tables.begin(),
+                                                                        drain.column_stamped_tables.end(),
+                                                                        resource()});
+        }
+
+        if (!drain.dropped_storage_oids.empty()) {
+            co_await storage_drop_aborted(drain.txn.transaction_id);
+        }
+
+        // manager_index_t::abort_transaction has already unregistered them
+        if (!drain.created_storage_oids.empty()) {
+            co_await drop_storage_many(session,
+                                       std::pmr::vector<catalog::oid_t>{drain.created_storage_oids.begin(),
+                                                                        drain.created_storage_oids.end(),
+                                                                        resource()});
+        }
+        co_return reverted;
+    }
+
+    manager_disk_t::unique_future<void> manager_disk_t::storage_drop_aborted(uint64_t txn_id) {
         // Abort mirror of storage_dropped_committed: ERASES (not remaps) so the .otbx is never reclaimed.
         trace(log_, "manager_disk::storage_drop_aborted , txn_id : {}", txn_id);
 

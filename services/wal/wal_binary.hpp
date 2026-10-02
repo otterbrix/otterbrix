@@ -33,6 +33,7 @@ namespace services::wal {
                           id_t wal_id,
                           uint64_t txn_id,
                           components::catalog::oid_t table_oid,
+                          const column_attoids_t& attoids,
                           const std::pmr::vector<components::vector::data_chunk_t>& chunks,
                           uint64_t row_start,
                           uint64_t row_count);
@@ -45,15 +46,16 @@ namespace services::wal {
                           const int64_t* row_ids,
                           uint64_t count);
 
-    // Schema-growth record: payload is a 0-row data_chunk whose columns ARE the
-    // new columns (alias-tagged types). Written BEFORE the dependent PHYSICAL_INSERT.
+    // Schema-growth record: payload is a data_chunk whose columns ARE the new columns (alias-tagged
+    // types), with one row holding each column's default. Written BEFORE the dependent PHYSICAL_INSERT.
     crc32_t encode_add_column(buffer_t& buffer,
                               crc32_t last_crc32,
                               id_t wal_id,
                               uint64_t txn_id,
                               components::catalog::oid_t table_oid,
+                              const column_attoids_t& attoids,
                               const components::vector::data_chunk_t& schema_chunk,
-                              uint64_t column_count);
+                              uint64_t first_position);
 
     crc32_t encode_update(buffer_t& buffer,
                           std::pmr::memory_resource* resource,
@@ -62,6 +64,7 @@ namespace services::wal {
                           uint64_t txn_id,
                           components::catalog::oid_t table_oid,
                           const int64_t* row_ids,
+                          const column_attoids_t& attoids,
                           const std::pmr::vector<components::vector::data_chunk_t>& new_chunks,
                           uint64_t count);
 

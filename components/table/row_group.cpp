@@ -525,7 +525,7 @@ namespace components::table {
     }
 
     void row_group_t::fetch_row(column_fetch_state& state,
-                                const std::vector<storage_index_t>& column_ids,
+                                const std::pmr::vector<storage_index_t>& column_ids,
                                 int64_t row_id,
                                 vector::data_chunk_t& result,
                                 uint64_t result_idx,
@@ -574,6 +574,16 @@ namespace components::table {
         return versions->delete_stamp(static_cast<uint64_t>(row_id));
     }
 
+    void row_group_t::fill_stamps(int64_t row_id, uint64_t count, uint64_t* inserted, uint64_t* deleted) {
+        auto* versions = version_info();
+        if (!versions) {
+            std::fill_n(inserted, count, uint64_t{0});
+            std::fill_n(deleted, count, NOT_DELETED_ID);
+            return;
+        }
+        versions->fill_stamps(static_cast<uint64_t>(row_id), count, inserted, deleted);
+    }
+
     void row_group_t::append_version_info(transaction_data txn, uint64_t count) {
         uint64_t row_group_start = this->count.load();
         uint64_t row_group_end = row_group_start + count;
@@ -595,6 +605,13 @@ namespace components::table {
         }
         if (commit_id > current_version_) {
             current_version_ = commit_id;
+        }
+    }
+
+    void row_group_t::abort_append(uint64_t row_group_start, uint64_t count) {
+        auto vinfo = version_info();
+        if (vinfo) {
+            vinfo->abort_append(row_group_start, count);
         }
     }
 

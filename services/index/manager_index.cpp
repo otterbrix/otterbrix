@@ -470,8 +470,8 @@ namespace services::index {
                 co_await actor_zeta::dispatch(this, &manager_index_t::table_dropped_committed, msg);
                 break;
             }
-            case actor_zeta::msg_id<manager_index_t, &manager_index_t::table_drop_aborted>: {
-                co_await actor_zeta::dispatch(this, &manager_index_t::table_drop_aborted, msg);
+            case actor_zeta::msg_id<manager_index_t, &manager_index_t::abort_transaction>: {
+                co_await actor_zeta::dispatch(this, &manager_index_t::abort_transaction, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_index_t, &manager_index_t::apply_wal_record_for_index>: {
@@ -516,19 +516,39 @@ namespace services::index {
         co_return;
     }
 
-    manager_index_t::unique_future<void> manager_index_t::table_drop_aborted(session_id_t /*session*/,
-                                                                             uint64_t txn_id) {
-        trace(log_, "manager_index_t::table_drop_aborted , txn_id : {}", txn_id);
+    void manager_index_t::forget_aborted_drops(uint64_t txn_id) {
         for (auto it = dropped_table_agents_.begin(); it != dropped_table_agents_.end();) {
             if (it->second == txn_id) {
                 trace(log_,
-                      "manager_index_t::table_drop_aborted: un-marked DROP for oid {} (txn_id {})",
+                      "manager_index_t::forget_aborted_drops: un-marked DROP for oid {} (txn_id {})",
                       static_cast<unsigned>(it->first),
                       txn_id);
                 it = dropped_table_agents_.erase(it);
             } else {
                 ++it;
             }
+        }
+    }
+
+    manager_index_t::unique_future<void>
+    manager_index_t::abort_transaction(session_id_t session, components::table::txn_abort_drain_t drain) {
+        trace(log_, "manager_index_t::abort_transaction , txn_id : {}", drain.txn.transaction_id);
+        const execution_context_t ctx{session, drain.txn, {}};
+        for (auto table_oid : drain.base_append_tables) {
+            co_await revert_insert(ctx, table_oid);
+        }
+        for (auto table_oid : drain.base_delete_tables) {
+            co_await revert_delete(ctx, table_oid);
+        }
+        if (!drain.dropped_storage_oids.empty()) {
+            forget_aborted_drops(drain.txn.transaction_id);
+        }
+        for (const auto& created : drain.created_indexes) {
+            co_await drop_index(session, created.table_oid, created.index_oid);
+        }
+        // Before manager_disk_t::abort_transaction drops their storage
+        for (auto table_oid : drain.created_storage_oids) {
+            co_await unregister_collection(session, table_oid);
         }
         co_return;
     }

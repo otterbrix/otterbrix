@@ -345,6 +345,9 @@ namespace components::sql::transform {
         core::result_wrapper_t<expressions::expression_ptr>
         transform_update_expr(Node* node, const name_collection_t& names, logical_plan::execution_plan_t* plan);
 
+        core::result_wrapper_t<std::pmr::vector<expressions::expression_ptr>>
+        transform_set_list(List* targets, const name_collection_t& names, logical_plan::execution_plan_t* plan);
+
         core::result_wrapper_t<std::string> get_str_value(Node* node);
 
         core::result_wrapper_t<core::parameter_id_t> add_param_value(Node* node,

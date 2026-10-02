@@ -19,8 +19,7 @@ namespace components::logical_plan {
         explicit node_update_t(std::pmr::memory_resource* resource,
                                const node_match_ptr& match,
                                const node_limit_ptr& limit,
-                               const std::pmr::vector<expressions::expression_ptr>& updates,
-                               bool upsert = false);
+                               const std::pmr::vector<expressions::expression_ptr>& updates);
 
         // The update target, as written. Kept on the node so enrich binds it to a
         // resolved entry by name rather than inferring it from a child.
@@ -31,7 +30,6 @@ namespace components::logical_plan {
 
         const std::pmr::vector<expressions::expression_ptr>& updates() const;
         std::pmr::vector<expressions::expression_ptr>& updates();
-        bool upsert() const;
 
         std::pmr::vector<expressions::expression_ptr>& returning();
         const std::pmr::vector<expressions::expression_ptr>& returning() const;
@@ -73,12 +71,16 @@ namespace components::logical_plan {
         void set_unique_groups(std::vector<std::vector<std::string>> v) { unique_groups_ = std::move(v); }
         const std::vector<std::vector<std::string>>& unique_groups() const { return unique_groups_; }
 
+        // required for ON CONFLICT DO UPDATE resolution
+        void set_excluded_alias(std::string alias) { excluded_alias_ = std::move(alias); }
+        const std::string& excluded_alias() const noexcept { return excluded_alias_; }
+
     private:
         std::string dbname_;
         std::string relname_;
+        std::string excluded_alias_;
         std::pmr::vector<expressions::expression_ptr> update_expressions_;
         std::pmr::vector<expressions::expression_ptr> returning_;
-        bool upsert_;
 
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
@@ -97,7 +99,6 @@ namespace components::logical_plan {
     node_update_ptr make_node_update(std::pmr::memory_resource* resource,
                                      const node_match_ptr& match,
                                      const node_limit_ptr& limit,
-                                     const std::pmr::vector<expressions::expression_ptr>& updates,
-                                     bool upsert = false);
+                                     const std::pmr::vector<expressions::expression_ptr>& updates);
 
 } // namespace components::logical_plan

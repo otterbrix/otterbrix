@@ -1039,7 +1039,7 @@ namespace services::dispatcher { namespace {
                         node->set_check_predicates(std::move(predicates));
                         node->set_check_params(std::move(check_params));
                     }
-                    node->set_unique_groups(constraints->unique_constraints);
+                    node->set_unique_keys(constraints->unique_constraints);
                     if (!constraints->pk_columns.empty()) {
                         auto nn = node->not_null_cols();
                         merge_pk_not_null(constraints->pk_columns, nn);
@@ -1084,7 +1084,7 @@ namespace services::dispatcher { namespace {
                         node->set_check_predicates(std::move(predicates));
                         node->set_check_params(std::move(check_params));
                     }
-                    node->set_unique_groups(constraints->unique_constraints);
+                    node->set_unique_groups(components::catalog::unique_key_columns(constraints->unique_constraints));
                     if (!constraints->pk_columns.empty()) {
                         auto nn = node->not_null_cols();
                         merge_pk_not_null(constraints->pk_columns, nn);
@@ -1342,6 +1342,7 @@ namespace services::dispatcher {
                 case node_type::alter_table_t:
                     return "ALTER TABLE";
                 case node_type::insert_t:
+                case node_type::insert_on_conflict_t:
                     return "INSERT";
                 case node_type::update_t:
                     return "UPDATE";

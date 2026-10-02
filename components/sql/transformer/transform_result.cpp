@@ -97,12 +97,22 @@ namespace components::sql::transform {
         // for catalog-resolve enrichment. The bind / finalize logic still cares
         // about the consumer type (insert_t carries param_insert_map_; others use
         // param_map_), so dig through the wrapper to find it.
+        // ON CONFLICT wraps the insert too; its parameters are the insert's.
+        components::logical_plan::node_t* consumer_of(const components::logical_plan::node_ptr& n) noexcept {
+            components::logical_plan::node_t* consumer =
+                (n && n->type() == components::logical_plan::node_type::sequence_t && !n->children().empty())
+                    ? n->children().back().get()
+                    : n.get();
+            if (consumer && consumer->type() == components::logical_plan::node_type::insert_on_conflict_t) {
+                consumer = consumer->children().front().get();
+            }
+            return consumer;
+        }
+
         components::logical_plan::node_type
         effective_consumer_type(const components::logical_plan::node_ptr& n) noexcept {
-            if (n && n->type() == components::logical_plan::node_type::sequence_t && !n->children().empty()) {
-                return n->children().back()->type();
-            }
-            return n ? n->type() : components::logical_plan::node_type::alias_t;
+            const auto* consumer = consumer_of(n);
+            return consumer ? consumer->type() : components::logical_plan::node_type::alias_t;
         }
     } // namespace
 
@@ -160,9 +170,7 @@ namespace components::sql::transform {
         // TODO?: check all sub queries
         auto& node = plan_.sub_queries.back();
         bool prev_finalized = std::exchange(finalized_, false);
-        auto* consumer = (node->type() == logical_plan::node_type::sequence_t && !node->children().empty())
-                             ? node->children().back().get()
-                             : node.get();
+        auto* consumer = consumer_of(node);
         if (effective_consumer_type(node) == logical_plan::node_type::insert_t) {
             if (prev_finalized) {
                 const auto& bound =
@@ -345,11 +353,8 @@ namespace components::sql::transform {
             auto& node = plan_.sub_queries.back();
 
             if (effective_consumer_type(node) == logical_plan::node_type::insert_t) {
-                // Reach the insert_t consumer through the sequence_t wrap (if present)
-                // and rewrite its data child with the bound row chunk.
-                auto* consumer = (node->type() == logical_plan::node_type::sequence_t && !node->children().empty())
-                                     ? node->children().back().get()
-                                     : node.get();
+                // Reach the insert_t consumer through its wraps and rewrite its data child with the bound row chunk.
+                auto* consumer = consumer_of(node);
                 consumer->children().front() =
                     logical_plan::make_node_raw_data(node->resource(), std::move(param_insert_rows_));
             }

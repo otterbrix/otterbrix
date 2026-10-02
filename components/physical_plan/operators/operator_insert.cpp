@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <components/context/context.hpp>
 #include <components/context/execution_context.hpp>
+#include <components/vector/vector_operations.hpp>
 #include <services/disk/manager_disk.hpp>
 #include <services/index/manager_index.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
@@ -236,6 +237,7 @@ namespace components::operators {
                         if (proj.has_error()) {
                             co_return dml_detail::flush_outcome_t{proj.error(), true, appended.start_row, count};
                         }
+                        vector::vector_ops::copy(seg.row_ids, proj.value().row_ids, seg.size(), 0, 0);
                         returning_accum_.emplace_back(std::move(proj.value()));
                     }
                 }

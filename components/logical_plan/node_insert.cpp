@@ -36,6 +36,10 @@ namespace components::logical_plan {
     std::pmr::vector<expressions::expression_ptr>& node_insert_t::returning() { return returning_; }
     const std::pmr::vector<expressions::expression_ptr>& node_insert_t::returning() const { return returning_; }
 
+    std::vector<std::vector<std::string>> node_insert_t::unique_groups() const {
+        return catalog::unique_key_columns(unique_keys_);
+    }
+
     hash_t node_insert_t::hash_impl() const { return 0; }
 
     std::string node_insert_t::to_string_impl() const {

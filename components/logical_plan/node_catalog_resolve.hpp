@@ -4,6 +4,7 @@
 
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/fk_info.hpp>
+#include <components/catalog/unique_key.hpp>
 #include <components/logical_plan/identifier_types.hpp>
 #include <components/types/types.hpp>
 
@@ -93,7 +94,7 @@ namespace components::logical_plan {
         std::vector<std::pair<std::string, std::string>> check_exprs;
         // UNIQUE/PRIMARY KEY column groups (contype 'u'/'p'); enrich stamps these for
         // operator_unique_constraint_t to enforce.
-        std::vector<std::vector<std::string>> unique_constraints;
+        std::vector<catalog::unique_key_t> unique_constraints;
         // PRIMARY KEY column names (contype 'p', flattened); pg_attribute.attnotnull is never
         // backfilled by ALTER TABLE ADD PRIMARY KEY, so enrich merges these into not_null_cols instead.
         std::vector<std::string> pk_columns;

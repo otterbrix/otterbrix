@@ -95,6 +95,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_alter_drop_column_positions.cpp
         test_ddl_in_transaction.cpp
         test_cursor_under_concurrent_ddl.cpp
+        test_insert_on_conflict.cpp
         test_alter_rename_column.cpp
         test_alter_rename_column_collisions.cpp
         test_alter_missing_column.cpp
@@ -106,7 +107,6 @@ set( ${PROJECT_NAME}_SOURCES
         test_insert_param_retype_preserves_cells.cpp
         test_select_missing_table_refusal.cpp
         test_unresolved_target_dml_refusal.cpp
-        test_update_upsert_refusal.cpp
         test_fk_cascade_set_default_specs.cpp
         test_pipeline_context_move.cpp
         test_delete_affected_count.cpp

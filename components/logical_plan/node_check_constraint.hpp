@@ -43,6 +43,9 @@ namespace components::logical_plan {
         const std::vector<std::vector<std::string>>& unique_groups() const { return unique_groups_; }
         void set_unique_groups(std::vector<std::vector<std::string>> v) { unique_groups_ = std::move(v); }
 
+        const std::vector<std::vector<std::string>>& conflict_groups() const { return conflict_groups_; }
+        void set_conflict_groups(std::vector<std::vector<std::string>> v) { conflict_groups_ = std::move(v); }
+
         components::catalog::oid_t table_oid() const noexcept { return table_oid_; }
         void set_table_oid(components::catalog::oid_t oid) noexcept { table_oid_ = oid; }
 
@@ -62,6 +65,7 @@ namespace components::logical_plan {
         std::vector<std::pair<std::string, expressions::expression_ptr>> check_predicates_;
         parameter_node_ptr check_params_;
         std::vector<std::vector<std::string>> unique_groups_; // UNIQUE / PK column groups
+        std::vector<std::vector<std::string>> conflict_groups_;
         // no column_defaults_/write_set_named_: by the time constraint operators run,
         // INSERT omissions are already filled to DEFAULT/NULL and the UPDATE write-set
         // is the actual stored row, so there is nothing left to look up by name

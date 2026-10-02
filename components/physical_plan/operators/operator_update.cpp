@@ -24,11 +24,122 @@ namespace components::operators {
     uint64_t update_gather_copy_calls() noexcept { return g_update_gather_copy_calls.load(std::memory_order_relaxed); }
 #endif
 
+    vector::data_chunk_t merged_view(std::pmr::memory_resource* resource,
+                                     const vector::data_chunk_t& left,
+                                     const vector::data_chunk_t& right,
+                                     uint64_t count) {
+        vector::data_chunk_t merged(resource, std::pmr::vector<types::complex_logical_type>{resource}, count);
+        merged.data.reserve(left.column_count() + right.column_count());
+        for (const auto* side : {&left, &right}) {
+            for (const auto& column : side->data) {
+                vector::vector_t vec(resource, column.type(), false, false, count);
+                vec.reference(column);
+                merged.data.push_back(std::move(vec));
+            }
+        }
+        merged.set_cardinality(count);
+        return merged;
+    }
+
+    core::error_t operator_update::consume_paired_batch_(pipeline::context_t* pipeline_context,
+                                                         vector::data_chunk_t&& chunk_left,
+                                                         const chunks_vector_t& right_chunks) {
+        using vector::data_chunk_t;
+        ensure_simple_init_();
+        if (chunk_left.size() == 0) {
+            return core::error_t::no_error();
+        }
+        assert(paired_batches_ < right_chunks.size() && "paired update: one FROM chunk per target batch");
+        const auto& chunk_right = right_chunks[paired_batches_++];
+        assert(chunk_right.size() == chunk_left.size() && "paired update: the FROM chunk pairs row for row");
+        auto* resource = resource_;
+        uint64_t count = chunk_left.size();
+        // Both layouts are fixed
+        if (paired_left_types_.empty()) {
+            paired_left_types_ = chunk_left.types();
+            paired_right_types_ = chunk_right.types();
+        }
+
+        if (condition_ == expressions::condition_kind::never) {
+            return core::error_t::no_error();
+        }
+        std::optional<vector::data_chunk_t> produced;
+        if (condition_ == expressions::condition_kind::computed) {
+            auto merged = merged_view(resource, chunk_left, chunk_right, count);
+            if (!graph_) {
+                auto built = expressions::build_condition_graph(resource,
+                                                                pipeline_context->parameters.parameters,
+                                                                expr_.get(),
+                                                                merged.types(),
+                                                                paired_left_types_.size());
+                if (built.has_error()) {
+                    return built.error();
+                }
+                graph_ = std::move(built.value());
+            }
+            auto decided = expressions::run_graph(graph_.get(),
+                                                  pipeline_context->parameters.parameters,
+                                                  merged,
+                                                  pipeline_context->execution_context);
+            if (decided.has_error()) {
+                return decided.error();
+            }
+            produced = std::move(decided.value());
+        }
+        const vector::vector_t* decisions = produced.has_value() ? &produced->data.front() : nullptr;
+        auto passes = [decisions](uint64_t row) {
+            return decisions == nullptr || (!decisions->is_null(row) && decisions->get_value<bool>(row));
+        };
+        uint64_t matched = 0;
+        for (uint64_t row = 0; row < count; ++row) {
+            if (passes(row)) {
+                ++matched;
+            }
+        }
+        if (matched == 0) {
+            return core::error_t::no_error();
+        }
+
+        std::optional<data_chunk_t> passing_right;
+        data_chunk_t out_chunk = [&]() -> data_chunk_t {
+            if (matched == count) {
+                return std::move(chunk_left);
+            }
+            vector::indexing_vector_t matched_indexing(resource, count);
+            uint64_t index = 0;
+            for (uint64_t row = 0; row < count; ++row) {
+                if (passes(row)) {
+                    matched_indexing.set_index(index++, row);
+                }
+            }
+            data_chunk_t rows(resource, paired_left_types_, matched);
+            chunk_left.copy(rows, matched_indexing, matched);
+            vector::vector_ops::copy(chunk_left.row_ids, rows.row_ids, matched_indexing, matched, 0, 0);
+            passing_right.emplace(resource, paired_right_types_, matched);
+            chunk_right.copy(*passing_right, matched_indexing, matched);
+            return rows;
+        }();
+        const data_chunk_t& from_rows = passing_right.has_value() ? *passing_right : chunk_right;
+
+        data_chunk_t old_chunk(resource, paired_left_types_, matched);
+        out_chunk.copy(old_chunk, 0);
+        index_old_chunks_.emplace_back(std::move(old_chunk));
+
+        if (auto err = apply_updates_(pipeline_context, out_chunk, &from_rows, matched); err.contains_error()) {
+            return err;
+        }
+        output_->append_chunk(std::move(out_chunk));
+        if (!returning_.empty()) {
+            returning_from_chunks_.emplace_back(
+                passing_right.has_value() ? std::move(*passing_right) : chunk_right.partial_copy(resource, 0, matched));
+        }
+        return core::error_t::no_error();
+    }
+
     operator_update::operator_update(std::pmr::memory_resource* resource,
                                      log_t log,
                                      components::catalog::oid_t table_oid,
                                      std::pmr::vector<expressions::expression_ptr> updates,
-                                     bool upsert,
                                      std::pmr::vector<projected_column_t> returning,
                                      expressions::expression_ptr expr,
                                      std::int64_t affected_bound)
@@ -37,7 +148,6 @@ namespace components::operators {
         , updates_(std::move(updates))
         , expr_(std::move(expr))
         , condition_(expressions::classify_condition(expr_))
-        , upsert_(upsert)
         , returning_(std::move(returning))
         , returning_from_chunks_(resource)
         , affected_bound_(affected_bound) {}
@@ -200,19 +310,7 @@ namespace components::operators {
         const size_t right_offset = out_chunk.column_count();
         std::optional<vector::data_chunk_t> merged;
         if (from_chunk != nullptr) {
-            merged.emplace(resource_, std::pmr::vector<types::complex_logical_type>{resource_}, match_count);
-            merged->data.reserve(right_offset + from_chunk->column_count());
-            for (const auto& column : out_chunk.data) {
-                vector::vector_t vec(resource_, column.type(), match_count);
-                vec.reference(column);
-                merged->data.push_back(std::move(vec));
-            }
-            for (const auto& column : from_chunk->data) {
-                vector::vector_t vec(resource_, column.type(), match_count);
-                vec.reference(column);
-                merged->data.push_back(std::move(vec));
-            }
-            merged->set_cardinality(match_count);
+            merged.emplace(merged_view(resource_, out_chunk, *from_chunk, match_count));
         }
         const vector::data_chunk_t& input = merged.has_value() ? merged.value() : out_chunk;
 
@@ -475,6 +573,9 @@ namespace components::operators {
 
     core::error_t
     operator_update::push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& /*out*/) {
+        if (paired_from_) {
+            return consume_paired_batch_(ctx, std::move(input), right_->output()->chunks());
+        }
         if (right_ && right_->output()) {
             return consume_join_batch_(ctx, input, right_->output()->chunks());
         }
@@ -484,17 +585,6 @@ namespace components::operators {
     actor_zeta::unique_future<void> operator_update::await_async_and_resume(pipeline::context_t* ctx) {
         using components::vector::data_chunk_t;
         using components::vector::vector_t;
-
-        // Accepted into the plan but not implemented: a plain UPDATE would report SUCCESS with 0 rows instead of
-        // the insert the plan declared. No SQL reaches this flag, only the logical-plan API — refuse it now.
-        if (upsert_) {
-            set_error(core::error_t{core::error_code_t::unimplemented_yet,
-                                    std::pmr::string{"UPDATE with upsert=true: upsert semantics are not implemented — "
-                                                     "the plan declares an insert-or-update this engine cannot deliver",
-                                                     resource_}});
-            mark_failed();
-            co_return;
-        }
 
         // Driven once per mid-pump buffer-full and once at the final drive; only the final call emits output.
         const bool is_final = ctx->dml_flush_is_final;

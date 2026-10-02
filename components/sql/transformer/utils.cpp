@@ -472,6 +472,10 @@ namespace components::sql::transform {
                 return "T_XmlSerialize";
             case T_WithClause:
                 return "T_WithClause";
+            case T_InferClause:
+                return "T_InferClause";
+            case T_OnConflictClause:
+                return "T_OnConflictClause";
             case T_CommonTableExpr:
                 return "T_CommonTableExpr";
             case T_ColumnReferenceStorageDirective:
@@ -1784,6 +1788,9 @@ namespace components::sql::transform {
                 n->set_relname(relname);
                 break;
             }
+            case logical_plan::node_type::insert_on_conflict_t:
+                name_catalog_target(dbname, relname, node->children().front());
+                break;
             case logical_plan::node_type::update_t: {
                 auto* n = static_cast<logical_plan::node_update_t*>(node.get());
                 n->set_dbname(dbname);

@@ -6,6 +6,7 @@
 #include "expressions/function_expression.hpp"
 #include "logical_plan/node_create_index.hpp"
 #include "logical_plan/node_insert.hpp"
+#include "logical_plan/node_insert_on_conflict.hpp"
 #include "logical_plan/node_update.hpp"
 #include "resolve_function.hpp"
 #include "validation/resolve_expression.hpp"
@@ -392,6 +393,84 @@ namespace services::dispatcher {
                     return predicate_schema;
                 }
             }
+        }
+
+        [[nodiscard]] core::error_t resolve_on_conflict(const validation::validation_context_t& context,
+                                                        node_insert_on_conflict_t* statement,
+                                                        const storage_parameters& parameters) {
+            auto* resource = context.resource;
+            auto& on_conflict = statement->on_conflict();
+            const auto* node = statement->insert();
+            const auto* table = node->table_metadata();
+            if (!table) {
+                return core::error_t(core::error_code_t::table_not_exists,
+                                     std::pmr::string{"INSERT target collection does not exist", resource});
+            }
+            if (table->relkind == 'g') {
+                return core::error_t(
+                    core::error_code_t::unimplemented_yet,
+                    std::pmr::string{"ON CONFLICT is not supported on a table without a fixed schema", resource});
+            }
+            named_schema table_schema(resource);
+            for (const auto& column : table->columns) {
+                table_schema.emplace_back(
+                    type_from_t{node->result_alias().empty() ? table->name : node->result_alias(), column.type});
+            }
+            // Read from the resolved constraints: enrich stamps them onto the node only after validation.
+            const auto* constraints =
+                context.resolves ? context.resolves->constraints_for(table->table_oid, resolve_direction::outgoing)
+                                 : nullptr;
+            std::vector<unique_key_t> no_keys;
+            const auto& unique_keys = constraints ? constraints->unique_constraints : no_keys;
+            if (on_conflict.action == on_conflict_action_t::do_update && on_conflict.constraint_name.empty() &&
+                on_conflict.target_columns.empty()) {
+                return core::error_t(core::error_code_t::invalid_parameter,
+                                     std::pmr::string{"ON CONFLICT DO UPDATE requires a conflict target: a column "
+                                                      "list or ON CONSTRAINT",
+                                                      resource});
+            }
+            std::vector<std::vector<std::string>> arbiters;
+            if (!on_conflict.constraint_name.empty()) {
+                std::string_view wanted{on_conflict.constraint_name};
+                for (const auto& key : unique_keys) {
+                    if (std::string_view{key.name} == wanted) {
+                        arbiters.push_back(key.columns);
+                    }
+                }
+                if (arbiters.empty()) {
+                    std::pmr::string what{"ON CONFLICT: constraint \"", resource};
+                    what += on_conflict.constraint_name;
+                    what += "\" is not a UNIQUE or PRIMARY KEY constraint of the target table";
+                    return core::error_t(core::error_code_t::do_not_exists, std::move(what));
+                }
+            } else if (!on_conflict.target_columns.empty()) {
+                std::set<std::string_view> target(on_conflict.target_columns.begin(), on_conflict.target_columns.end());
+                for (const auto& key : unique_keys) {
+                    if (std::set<std::string_view>(key.columns.begin(), key.columns.end()) == target) {
+                        arbiters.push_back(key.columns);
+                    }
+                }
+                if (arbiters.empty()) {
+                    return core::error_t(core::error_code_t::invalid_constraint,
+                                         std::pmr::string{"ON CONFLICT: no UNIQUE or PRIMARY KEY constraint matches "
+                                                          "the conflict target",
+                                                          resource});
+                }
+            } else {
+                arbiters = unique_key_columns(unique_keys);
+            }
+            if (on_conflict.target_where) {
+                auto match = make_node_match(resource,
+                                             core::dbname_t{node->dbname()},
+                                             core::relname_t{node->relname()},
+                                             on_conflict.target_where);
+                if (auto checked = validate_schema(context, match.get(), parameters, &table_schema);
+                    checked.has_error()) {
+                    return checked.error();
+                }
+            }
+            on_conflict.arbiter_groups = std::move(arbiters);
+            return core::error_t::no_error();
         }
 
         core::result_wrapper_t<named_schema>
@@ -1853,6 +1932,24 @@ namespace services::dispatcher {
                 }
                 break;
             }
+            case node_type::insert_on_conflict_t: {
+                auto* statement = static_cast<node_insert_on_conflict_t*>(node);
+                auto inserted = validate_schema(context, statement->insert(), parameters, cte_schemas);
+                if (inserted.has_error()) {
+                    return inserted;
+                }
+                if (auto resolved = impl::resolve_on_conflict(context, statement, parameters);
+                    resolved.contains_error()) {
+                    return resolved;
+                }
+                if (statement->children().size() > 1) {
+                    auto updated = validate_schema(context, statement->children()[1].get(), parameters, cte_schemas);
+                    if (updated.has_error()) {
+                        return updated;
+                    }
+                }
+                return inserted;
+            }
             case node_type::insert_t: {
                 auto* insert_node = reinterpret_cast<node_insert_t*>(node);
                 if (auto guard = check_dml_target_not_catalog(resource, node); guard.contains_error()) {
@@ -2187,6 +2284,14 @@ namespace services::dispatcher {
                     incoming_schema = std::move(source_res.value());
                     for (auto& entry : incoming_schema) {
                         entry.side = components::expressions::side_t::right;
+                    }
+                } else if (node->type() == node_type::update_t &&
+                           !reinterpret_cast<node_update_t*>(node)->excluded_alias().empty()) {
+                    // ON CONFLICT DO UPDATE: the proposed rows carry the target's own columns.
+                    const auto& alias = reinterpret_cast<node_update_t*>(node)->excluded_alias();
+                    for (const auto& column : tbl_upd->columns) {
+                        incoming_schema.emplace_back(type_from_t{alias, column.type});
+                        incoming_schema.back().side = components::expressions::side_t::right;
                     }
                 } else {
                     incoming_schema = table_schema;

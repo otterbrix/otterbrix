@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cassert>
 #include <cstdint>
 #include <memory_resource>
 
@@ -67,14 +68,24 @@ namespace components::operators::dml_detail {
             if (!constraint_accum) {
                 constraint_accum = make_operator_data(resource, chunks_vector_t{resource});
             }
+            int64_t written_row_id = outcome.append_start;
             for (const auto& src : constraint_rows) {
                 if (src.size() == 0) {
                     continue;
                 }
                 vector::data_chunk_t dst(resource, src.types(), src.size());
                 src.copy(dst, 0);
+                if (outcome.has_append) {
+                    auto* row_ids = dst.row_ids.data<int64_t>();
+                    for (uint64_t row = 0; row < dst.size(); ++row) {
+                        row_ids[row] = written_row_id++;
+                    }
+                }
                 constraint_accum->append_chunk(std::move(dst));
             }
+            assert((!outcome.has_append ||
+                    written_row_id == outcome.append_start + static_cast<int64_t>(outcome.append_count)) &&
+                   "record_flush: the constraint rows are the appended range");
         }
         return core::error_t::no_error();
     }

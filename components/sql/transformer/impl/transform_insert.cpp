@@ -2,9 +2,13 @@
 #include <atomic>
 
 #include <components/expressions/aggregate_expression.hpp>
+#include <components/expressions/compare_expression.hpp>
 #include <components/expressions/jsonb_path.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node_insert.hpp>
+#include <components/logical_plan/node_insert_on_conflict.hpp>
+#include <components/logical_plan/node_match.hpp>
+#include <components/logical_plan/node_update.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <components/vector/vector_operations.hpp>
@@ -368,6 +372,80 @@ namespace components::sql::transform {
             VALUE_OR_RETURN(returning, transform_returning(node.returningList, rnames, plan));
         }
 
+        logical_plan::insert_on_conflict_t on_conflict(resource_);
+        logical_plan::node_update_ptr conflict_update;
+        if (node.onConflictClause) {
+            const auto* clause = node.onConflictClause;
+            on_conflict.action = clause->action == ONCONFLICT_UPDATE ? logical_plan::on_conflict_action_t::do_update
+                                                                     : logical_plan::on_conflict_action_t::do_nothing;
+            if (clause->action == ONCONFLICT_UPDATE) {
+                auto target = rangevar_to_qualified_name(node.relation);
+                name_collection_t names;
+                names.left_name = target;
+                names.left_alias = construct_alias(node.relation->alias);
+                names.right_alias = "excluded";
+                VALUE_OR_RETURN(auto updates, transform_set_list(clause->targetList, names, plan));
+                expressions::expression_ptr where_expr = make_compare_expression(resource_, compare_type::all_true);
+                if (clause->whereClause) {
+                    VALUE_OR_RETURN(where_expr, transform_predicate(clause->whereClause, names, plan));
+                }
+                auto match = logical_plan::make_node_match(resource_,
+                                                           core::dbname_t{target.database},
+                                                           core::relname_t{target.collection},
+                                                           where_expr);
+                VALUE_OR_RETURN(auto limit,
+                                build_dml_limit(nullptr,
+                                                core::dbname_t{target.database},
+                                                core::relname_t{target.collection},
+                                                plan));
+                conflict_update = logical_plan::make_node_update(resource_, match, limit, updates);
+                conflict_update->set_excluded_alias(names.right_alias);
+                set_target(*conflict_update, target);
+                if (node.returningList) {
+                    name_collection_t target_names;
+                    target_names.left_name = target;
+                    target_names.left_alias = names.left_alias;
+                    VALUE_OR_RETURN(conflict_update->returning(),
+                                    transform_returning(node.returningList, target_names, plan));
+                }
+            }
+            if (const auto* infer = clause->infer) {
+                if (infer->conname) {
+                    on_conflict.constraint_name = std::pmr::string{infer->conname, resource_};
+                }
+                for (const auto& cell : pg_ptr_cast<List>(infer->indexElems)->lst) {
+                    const auto* elem = pg_ptr_cast<IndexElem>(cell.data);
+                    if (!elem->name || !pg_ptr_cast<List>(elem->collation)->lst.empty() ||
+                        !pg_ptr_cast<List>(elem->opclass)->lst.empty() || elem->ordering != SORTBY_DEFAULT ||
+                        elem->nulls_ordering != SORTBY_NULLS_DEFAULT) {
+                        return core::error_t(
+                            core::error_code_t::unimplemented_yet,
+                            std::pmr::string{"ON CONFLICT target supports plain column names only", resource_});
+                    }
+                    on_conflict.target_columns.emplace_back(elem->name);
+                }
+                if (infer->whereClause) {
+                    name_collection_t target_names;
+                    target_names.left_name = rangevar_to_qualified_name(node.relation);
+                    target_names.left_alias = construct_alias(node.relation->alias);
+                    VALUE_OR_RETURN(on_conflict.target_where,
+                                    transform_predicate(infer->whereClause, target_names, plan));
+                }
+            }
+        }
+        auto with_on_conflict = [&](logical_plan::node_insert_ptr insert) -> logical_plan::node_ptr {
+            if (!node.onConflictClause) {
+                return insert;
+            }
+            auto statement = logical_plan::node_insert_on_conflict_ptr{
+                new logical_plan::node_insert_on_conflict_t(resource_, std::move(insert))};
+            statement->on_conflict() = std::move(on_conflict);
+            if (conflict_update) {
+                statement->append_child(std::move(conflict_update));
+            }
+            return statement;
+        };
+
         if (!node.selectStmt) {
             return core::error_t(core::error_code_t::unimplemented_yet,
                                  std::pmr::string{"INSERT ... DEFAULT VALUES is not supported", resource_});
@@ -585,7 +663,7 @@ namespace components::sql::transform {
                                            qn.database,
                                            qn.collection,
                                            constraint_resolve_kind::outgoing);
-            return ins;
+            return with_on_conflict(logical_plan::node_insert_ptr{ins_node});
         } else {
             auto qn = rangevar_to_qualified_name(node.relation);
             auto res = logical_plan::make_node_insert(resource_);
@@ -599,7 +677,7 @@ namespace components::sql::transform {
                                            qn.database,
                                            qn.collection,
                                            constraint_resolve_kind::outgoing);
-            return res;
+            return with_on_conflict(std::move(res));
         }
     }
 } // namespace components::sql::transform

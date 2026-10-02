@@ -67,6 +67,9 @@ namespace services::collection {
                 case ops::operator_type::insert:
                     label = "Insert";
                     break;
+                case ops::operator_type::insert_on_conflict:
+                    label = "Insert On Conflict";
+                    break;
                 case ops::operator_type::remove:
                     label = "Delete";
                     break;

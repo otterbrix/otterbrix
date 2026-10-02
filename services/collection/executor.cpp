@@ -393,7 +393,8 @@ namespace services::collection::executor {
         for (std::size_t i = 0; (run_sub_queries || plan_only) && i + 1 < plan.sub_queries.size(); ++i) {
             auto* sub_root = plan.sub_queries[i].get();
             const node_type sub_type = sub_root ? sub_root->type() : node_type::unused;
-            if (sub_type == node_type::insert_t || sub_type == node_type::update_t || sub_type == node_type::delete_t) {
+            if (sub_type == node_type::insert_t || sub_type == node_type::insert_on_conflict_t ||
+                sub_type == node_type::update_t || sub_type == node_type::delete_t) {
                 co_return execute_result_t{make_cursor(
                     resource(),
                     core::error_t{core::error_code_t::sql_parse_error,
@@ -505,8 +506,9 @@ namespace services::collection::executor {
             original_type == node_type::create_matview_t;
         const bool is_plan_only_explain = plan.explain == components::logical_plan::explain_type::plan;
         const bool needs_dml_txn =
-            !is_plan_only_explain && (original_type == node_type::insert_t || original_type == node_type::update_t ||
-                                      original_type == node_type::delete_t);
+            !is_plan_only_explain &&
+            (original_type == node_type::insert_t || original_type == node_type::insert_on_conflict_t ||
+             original_type == node_type::update_t || original_type == node_type::delete_t);
         const bool needs_commit_txn = original_type == node_type::set_setting_t || original_type == node_type::vacuum_t;
 
         auto run_resolve_subplan = [this, session, resolve_txn, &session_ctx, &context_storage, &plan](

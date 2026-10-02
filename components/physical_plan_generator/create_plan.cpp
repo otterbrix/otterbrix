@@ -22,6 +22,7 @@
 #include "impl/create_plan_function.hpp"
 #include "impl/create_plan_group.hpp"
 #include "impl/create_plan_insert.hpp"
+#include "impl/create_plan_insert_on_conflict.hpp"
 #include "impl/create_plan_join.hpp"
 #include "impl/create_plan_match.hpp"
 #include "impl/create_plan_recursive_cte.hpp"
@@ -82,6 +83,8 @@ namespace services::planner {
                 return impl::create_plan_delete(context, function_registry, node, params);
             case node_type::insert_t:
                 return impl::create_plan_insert(context, function_registry, node, params);
+            case node_type::insert_on_conflict_t:
+                return impl::create_plan_insert_on_conflict(context, function_registry, node, params);
             case node_type::match_t:
                 return impl::create_plan_match(context, node, std::move(limit));
             // No having_t case: a HAVING node exists only as an aggregate child and is lowered

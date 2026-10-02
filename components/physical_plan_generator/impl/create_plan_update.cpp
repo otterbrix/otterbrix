@@ -43,12 +43,22 @@ namespace services::planner::impl {
         if (!context.has_table_oid(table_oid)) {
             return nullptr;
         }
+        if (!node_update->excluded_alias().empty()) {
+            auto plan = boost::intrusive_ptr(new components::operators::operator_update(context.resource,
+                                                                                        context.log.clone(),
+                                                                                        table_oid,
+                                                                                        node_update->updates(),
+                                                                                        std::move(returning),
+                                                                                        node_match->expressions()[0]));
+            plan->set_table_has_indexes(node->table_has_indexes());
+            plan->set_paired_from(true);
+            return plan;
+        }
         if (!node_source) {
             auto plan = boost::intrusive_ptr(new components::operators::operator_update(context.resource,
                                                                                         context.log.clone(),
                                                                                         table_oid,
                                                                                         node_update->updates(),
-                                                                                        node_update->upsert(),
                                                                                         std::move(returning)));
             plan->set_table_has_indexes(node->table_has_indexes());
             auto scan = create_plan_match(context, node_match, limit);
@@ -68,7 +78,6 @@ namespace services::planner::impl {
                                                                                     context.log.clone(),
                                                                                     table_oid,
                                                                                     node_update->updates(),
-                                                                                    node_update->upsert(),
                                                                                     std::move(returning),
                                                                                     node_match->expressions()[0],
                                                                                     limit.limit()));

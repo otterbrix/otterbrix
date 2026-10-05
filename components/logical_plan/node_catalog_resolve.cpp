@@ -220,21 +220,27 @@ namespace components::logical_plan {
         return nullptr;
     }
 
-    const resolve_entry_t*
-    catalog_resolves_t::constraint_names_for(components::catalog::oid_t table_oid) const noexcept {
+    components::catalog::oid_t catalog_resolves_t::constraint_oid(components::catalog::oid_t table_oid,
+                                                                  std::string_view name) const noexcept {
         if (!constraints || !tables || table_oid == components::catalog::INVALID_OID) {
-            return nullptr;
+            return components::catalog::INVALID_OID;
         }
         for (const auto& entry : constraints->entries()) {
             if (entry.direction != resolve_direction::outgoing || entry.target >= tables->entries().size()) {
                 continue;
             }
             const auto& target_md = tables->entries()[entry.target].table_md;
-            if (target_md.has_value() && target_md->table_oid == table_oid) {
-                return &entry;
+            if (!target_md.has_value() || target_md->table_oid != table_oid) {
+                continue;
             }
+            for (const auto& [conname, oid] : entry.constraint_oids) {
+                if (conname == name) {
+                    return oid;
+                }
+            }
+            return components::catalog::INVALID_OID;
         }
-        return nullptr;
+        return components::catalog::INVALID_OID;
     }
 
 } // namespace components::logical_plan

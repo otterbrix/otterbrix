@@ -369,6 +369,23 @@ namespace services::catalog_resolve {
                     return {};
             }
         }
+
+        // Breadth-first over the plan: every node once, a node before its children.
+        template<typename Node, typename Visit>
+        void for_each_node(Node* root, Visit&& visit) {
+            std::queue<Node*> q;
+            q.push(root);
+            while (!q.empty()) {
+                auto* n = q.front();
+                q.pop();
+                visit(n);
+                for (const auto& child : n->children()) {
+                    if (child) {
+                        q.push(child.get());
+                    }
+                }
+            }
+        }
     } // namespace
 
     void stamp_table_has_indexes(components::logical_plan::node_t* root,
@@ -378,31 +395,18 @@ namespace services::catalog_resolve {
         if (root == nullptr || table_oid == components::catalog::INVALID_OID) {
             return;
         }
-        std::queue<node_t*> q;
-        q.push(root);
-        while (!q.empty()) {
-            auto* n = q.front();
-            q.pop();
+        for_each_node(root, [table_oid, has_indexes](node_t* n) {
             if (n->table_oid() == table_oid) {
                 n->set_table_has_indexes(has_indexes);
             }
-            for (const auto& child : n->children()) {
-                if (child) {
-                    q.push(child.get());
-                }
-            }
-        }
+        });
     }
 
     void bind_catalog_data(components::logical_plan::node_t* root, const catalog_resolves_t& resolves) {
         using namespace components::logical_plan;
         if (!root)
             return;
-        std::queue<node_t*> q;
-        q.push(root);
-        while (!q.empty()) {
-            auto* n = q.front();
-            q.pop();
+        for_each_node(root, [&resolves](node_t* n) {
             const auto names = target_names_of(n);
             {
                 const entry_view_t rn{
@@ -533,27 +537,6 @@ namespace services::catalog_resolve {
                             }
                             break;
                         }
-                        case node_type::insert_t: {
-                            auto* d = static_cast<node_insert_t*>(n);
-                            if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
-                                d->set_table_oid(rt->table_oid());
-                            }
-                            break;
-                        }
-                        case node_type::update_t: {
-                            auto* d = static_cast<node_update_t*>(n);
-                            if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
-                                d->set_table_oid(rt->table_oid());
-                            }
-                            break;
-                        }
-                        case node_type::delete_t: {
-                            auto* d = static_cast<node_delete_t*>(n);
-                            if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
-                                d->set_table_oid(rt->table_oid());
-                            }
-                            break;
-                        }
                         case node_type::alter_table_t:
                         case node_type::alter_column_t: {
                             if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
@@ -566,11 +549,7 @@ namespace services::catalog_resolve {
                     }
                 }
             }
-            for (const auto& c : n->children()) {
-                if (c)
-                    q.push(c.get());
-            }
-        }
+        });
     }
 
     void register_plan_targets(std::pmr::memory_resource* resource,
@@ -580,11 +559,7 @@ namespace services::catalog_resolve {
         if (!root || !resolves) {
             return;
         }
-        std::queue<const node_t*> q;
-        q.push(root);
-        while (!q.empty()) {
-            const auto* n = q.front();
-            q.pop();
+        for_each_node(root, [resource, resolves](const node_t* n) {
             const auto names = target_names_of(n);
             const auto namespace_dbname = names.namespace_dbname.empty() ? names.dbname : names.namespace_dbname;
             if (!namespace_dbname.empty()) {
@@ -618,12 +593,7 @@ namespace services::catalog_resolve {
                 entry.type_name = names.type_name;
                 resolves->ensure(resource, resolve_kind::type).add(std::move(entry));
             }
-            for (const auto& c : n->children()) {
-                if (c) {
-                    q.push(c.get());
-                }
-            }
-        }
+        });
     }
 
     core::error_t refuse_referenced_segments(std::pmr::memory_resource* resource, const catalog_resolves_t& resolves) {
@@ -1226,16 +1196,8 @@ namespace services::dispatcher { namespace {
                         if (sub.kind != components::logical_plan::alter_table_kind::drop_constraint) {
                             continue;
                         }
-                        const auto* names = resolves ? resolves->constraint_names_for(node->table_oid()) : nullptr;
-                        auto found = components::catalog::INVALID_OID;
-                        if (names) {
-                            for (const auto& [cname, coid] : names->constraint_oids) {
-                                if (cname == sub.constraint_name) {
-                                    found = coid;
-                                    break;
-                                }
-                            }
-                        }
+                        const auto found = resolves ? resolves->constraint_oid(node->table_oid(), sub.constraint_name)
+                                                    : components::catalog::INVALID_OID;
                         if (found == components::catalog::INVALID_OID) {
                             std::pmr::string msg{resource};
                             msg.append("constraint \"");

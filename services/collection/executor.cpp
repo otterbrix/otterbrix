@@ -1273,11 +1273,8 @@ namespace services::collection::executor {
                                 return column.attname == sub.column_name;
                             });
                         } else if (sub.kind == components::logical_plan::alter_table_kind::drop_constraint) {
-                            const auto* names = plan.catalog_resolves.constraint_names_for(md->table_oid);
-                            missing = names == nullptr ||
-                                      std::none_of(names->constraint_oids.begin(),
-                                                   names->constraint_oids.end(),
-                                                   [&sub](const auto& named) { return named.first == sub.constraint_name; });
+                            missing = plan.catalog_resolves.constraint_oid(md->table_oid, sub.constraint_name) ==
+                                      components::catalog::INVALID_OID;
                         }
                         if (missing) {
                             info(log_,

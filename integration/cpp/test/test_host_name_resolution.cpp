@@ -573,7 +573,7 @@ namespace {
                     ++row;
                     continue;
                 }
-                ++changed_;
+                ++written_;
                 if (spec_.is_update) {
                     (*row)[spec_.set_column] = ctx->parameters.parameters.at(spec_.set_value).value<int64_t>();
                     ++row;
@@ -586,10 +586,7 @@ namespace {
         }
 
     private:
-        std::optional<uint64_t> affected_rows_impl() const noexcept override { return changed_; }
-
         remote_modify_spec_t spec_;
-        uint64_t changed_{0};
     };
 
     logical_plan::storage_operator_t make_remote_modify(const services::context_storage_t& context,
@@ -686,8 +683,8 @@ namespace {
         {planner::optimizer_stage::after_simplify, &push_whole_modify},
     };
 
-    services::engine::primitives_t host_primitives() {
-        return services::engine::primitives_t{host_rules, {&need_remote_columns, &decide_remote_storages}};
+    components::planner::primitives_t host_primitives() {
+        return components::planner::primitives_t{host_rules, {&need_remote_columns, &decide_remote_storages}};
     }
 
     components::cursor::cursor_t_ptr
@@ -1065,7 +1062,7 @@ TEST_CASE("integration::cpp::host_names::insert_into_a_storage_table") {
             run(dispatcher, "INSERT INTO m2.shop.orders (id, amount) VALUES (4, CAST(400 AS INTEGER)), (5, 500);");
         INFO(error_of(inserted));
         REQUIRE(inserted->is_success());
-        CHECK(inserted->affected_rows() == std::optional<std::uint64_t>{2});
+        CHECK(inserted->affected_rows() == 2);
         CHECK(inserted->size() == 0);
         CHECK(write_log() == std::vector<std::string>{"insert m2.shop.orders id:bigint,amount:bigint"});
         auto read = run(dispatcher, "SELECT id, amount FROM m2.shop.orders;");
@@ -1083,7 +1080,7 @@ TEST_CASE("integration::cpp::host_names::insert_into_a_storage_table") {
         auto copied = run(dispatcher, "INSERT INTO m2.shop.orders (id, amount) SELECT id, amount FROM loc.t;");
         INFO(error_of(copied));
         REQUIRE(copied->is_success());
-        CHECK(copied->affected_rows() == std::optional<std::uint64_t>{2});
+        CHECK(copied->affected_rows() == 2);
         auto positional = run(dispatcher, "INSERT INTO m2.shop.orders SELECT id + 10, amount FROM loc.t;");
         INFO(error_of(positional));
         REQUIRE(positional->is_success());
@@ -1133,17 +1130,17 @@ TEST_CASE("integration::cpp::host_names::a_simple_update_or_delete_is_one_remote
     auto updated = run(dispatcher, "UPDATE m2.shop.orders SET amount = 250 WHERE id = 2;");
     INFO(error_of(updated));
     REQUIRE(updated->is_success());
-    CHECK(updated->affected_rows() == std::optional<std::uint64_t>{1});
+    CHECK(updated->affected_rows() == 1);
     CHECK(updated->size() == 0);
 
     auto deleted = run(dispatcher, "DELETE FROM m2.shop.orders WHERE id = 1;");
     INFO(error_of(deleted));
     REQUIRE(deleted->is_success());
-    CHECK(deleted->affected_rows() == std::optional<std::uint64_t>{1});
+    CHECK(deleted->affected_rows() == 1);
 
     auto untouched = run(dispatcher, "DELETE FROM m2.shop.orders WHERE id = 99;");
     REQUIRE(untouched->is_success());
-    CHECK(untouched->affected_rows() == std::optional<std::uint64_t>{0});
+    CHECK(untouched->affected_rows() == 0);
 
     CHECK(write_log() == std::vector<std::string>{"update m2.shop.orders where column 0 set column 1",
                                                   "delete m2.shop.orders where column 0",
@@ -1152,7 +1149,7 @@ TEST_CASE("integration::cpp::host_names::a_simple_update_or_delete_is_one_remote
 
     auto all = run(dispatcher, "DELETE FROM m2.shop.orders;");
     REQUIRE(all->is_success());
-    CHECK(all->affected_rows() == std::optional<std::uint64_t>{2});
+    CHECK(all->affected_rows() == 2);
     CHECK(write_log().back() == "delete m2.shop.orders");
     CHECK(backend()["m2.shop.orders"].empty());
 }
@@ -1249,7 +1246,7 @@ TEST_CASE("integration::cpp::host_names::update_and_delete_by_row_number") {
                            "WHERE m2.shop.orders.id = t.id;");
         INFO(error_of(updated));
         REQUIRE(updated->is_success());
-        CHECK(updated->affected_rows() == std::optional<std::uint64_t>{2});
+        CHECK(updated->affected_rows() == 2);
         CHECK(write_log() == std::vector<std::string>{"update m2.shop.orders rows 2"});
         CHECK(backend()["m2.shop.orders"] == rows_t{{1, 111}, {2, 200}, {3, 333}});
     }
@@ -1257,7 +1254,7 @@ TEST_CASE("integration::cpp::host_names::update_and_delete_by_row_number") {
         auto deleted = run(dispatcher, "DELETE FROM m2.shop.orders USING loc.t AS t WHERE m2.shop.orders.id = t.id;");
         INFO(error_of(deleted));
         REQUIRE(deleted->is_success());
-        CHECK(deleted->affected_rows() == std::optional<std::uint64_t>{2});
+        CHECK(deleted->affected_rows() == 2);
         CHECK(write_log() == std::vector<std::string>{"delete m2.shop.orders rows 2"});
         CHECK(backend()["m2.shop.orders"] == rows_t{{2, 200}});
     }
@@ -1383,7 +1380,7 @@ TEST_CASE("integration::cpp::host_names::delete_rows_without_columns_by_row_numb
     auto deleted = run(dispatcher, "DELETE FROM m2.shop.marks LIMIT 2;");
     INFO(error_of(deleted));
     REQUIRE(deleted->is_success());
-    CHECK(deleted->affected_rows() == std::optional<std::uint64_t>{2});
+    CHECK(deleted->affected_rows() == 2);
     CHECK(write_log() == std::vector<std::string>{"delete m2.shop.marks rows 2"});
     CHECK(backend()["m2.shop.marks"].size() == 1);
 }

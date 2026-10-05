@@ -17,8 +17,8 @@ namespace components::table {
     // functions by uid, its parameters by value on the receiver's resource, and the evaluation
     // context without the fill-value pointer. The agent builds its own table_filter_t from it.
     struct pushed_filter_t final {
-        pushed_filter_t(expressions::detached_expression_t expression,
-                        types::parameter_map_t parameters,
+        pushed_filter_t(expressions::detached_expression_t&& expression,
+                        types::parameter_map_t&& parameters,
                         const graph_execution_context& context);
 
         expressions::detached_expression_t expression;

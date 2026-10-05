@@ -17,8 +17,8 @@ namespace components::table {
         }
     } // namespace
 
-    pushed_filter_t::pushed_filter_t(expressions::detached_expression_t expression,
-                                     types::parameter_map_t parameters,
+    pushed_filter_t::pushed_filter_t(expressions::detached_expression_t&& expression,
+                                     types::parameter_map_t&& parameters,
                                      const graph_execution_context& context)
         : expression(std::move(expression))
         , parameters(std::move(parameters))

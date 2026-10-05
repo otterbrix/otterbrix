@@ -58,19 +58,15 @@ namespace services::dispatcher {
             bool waiting{false};
         };
 
-        // Host customization: the dispatcher keeps a copy and hands every executor its own.
-        manager_dispatcher_t(
-            std::pmr::memory_resource*,
-            actor_zeta::scheduler_raw,
-            log_t& log,
-            actor_zeta::address_t wal_address,
-            actor_zeta::address_t disk_address,
-            actor_zeta::address_t index_address,
-            uint64_t dml_flush_row_threshold = 0,
-            std::span<const components::planner::optimizer_rule_t> optimizer_rules = {},
-            components::planner::name_resolution_hook_t name_resolution = {},
-            std::size_t executor_pool_size = configuration::config_execution::default_executor_pool_size,
-            configuration::pump_intervals_t pump = {});
+        // Host customization: every executor copies the primitives at spawn.
+        manager_dispatcher_t(std::pmr::memory_resource*,
+                             actor_zeta::scheduler_raw,
+                             log_t& log,
+                             actor_zeta::address_t wal_address,
+                             actor_zeta::address_t disk_address,
+                             actor_zeta::address_t index_address,
+                             const configuration::config_execution& execution,
+                             components::planner::primitives_t primitives);
         ~manager_dispatcher_t();
         // Joins the loop thread and keeps its suspended coroutines: a neighbour's loop must not
         // resume against them while they are torn down. Idempotent; the destructor calls it too.
@@ -170,6 +166,12 @@ namespace services::dispatcher {
         unwind_udf_fanout_(components::session::session_id_t session,
                            std::pmr::vector<std::pair<std::size_t, components::compute::function_uid>> registered);
 
+        // Runs a catalog write operator (UDF / cast register and unregister) to completion in the committed snapshot;
+        // its error, logged under `what`, is the answer.
+        unique_future<core::error_t> run_catalog_op_(components::session::session_id_t session,
+                                                     components::operators::operator_ptr op,
+                                                     std::string_view what);
+
         void try_trigger_cleanup_if_horizon_advanced() noexcept;
 
         std::size_t next_executor_index() noexcept;
@@ -230,9 +232,6 @@ namespace services::dispatcher {
         std::pmr::memory_resource* resource_;
         actor_zeta::scheduler_raw scheduler_;
         log_t log_;
-
-        std::pmr::vector<components::planner::optimizer_rule_t> optimizer_rules_;
-        components::planner::name_resolution_hook_t name_resolution_;
 
         std::pmr::vector<services::collection::executor::executor_ptr> executors_;
         std::pmr::vector<actor_zeta::address_t> executor_addresses_;

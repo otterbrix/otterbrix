@@ -22,8 +22,6 @@ namespace components::operators {
         , target_type_oid_(target_type_oid) {}
 
     actor_zeta::unique_future<void> operator_register_cast_t::await_async_and_resume(pipeline::context_t* ctx) {
-        success_ = false;
-
         // The pg_cast row IS the cast (unlike the UDF sibling, this operator mutates no registry), so with
         // no disk actor there is nothing to write and reporting success would be a lie.
         if (ctx->disk_address == actor_zeta::address_t::empty_address()) {
@@ -86,7 +84,6 @@ namespace components::operators {
             co_return;
         }
 
-        success_ = true;
         output_ = nullptr;
         mark_executed();
     }
@@ -100,8 +97,6 @@ namespace components::operators {
         , target_type_oid_(target_type_oid) {}
 
     actor_zeta::unique_future<void> operator_unregister_cast_t::await_async_and_resume(pipeline::context_t* ctx) {
-        success_ = false;
-
         // Same refusal as the register sibling: pg_cast is the cast, and with no disk actor there's
         // neither a row to delete nor a way to know one exists.
         if (ctx->disk_address == actor_zeta::address_t::empty_address()) {
@@ -176,7 +171,6 @@ namespace components::operators {
             co_return;
         }
 
-        success_ = true;
         output_ = nullptr;
         mark_executed();
     }

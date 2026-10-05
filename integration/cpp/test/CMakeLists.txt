@@ -127,6 +127,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_long_string_literal.cpp
         test_tinyint_numeric_cast.cpp
         test_alter_add_column_reads.cpp
+        test_alter_add_column_types.cpp
         test_computed_drop_complex_type.cpp
         test_multiple_primary_keys.cpp
         test_sql_features.cpp

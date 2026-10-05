@@ -322,7 +322,7 @@ namespace services::planner::impl {
                                 child,
                                 static_cast<const components::logical_plan::node_sort_t*>(child.get())->read_cap()));
                     } else if (child->type() == node_type::select_t) {
-                        VALUE_OR_RETURN(push_select_op, create_plan_select(context, child));
+                        push_select_op = create_plan_select(context, child);
                     }
                 }
                 if (push_sort_op) {
@@ -385,7 +385,7 @@ namespace services::planner::impl {
                     break;
                 }
                 case node_type::select_t: {
-                    VALUE_OR_RETURN(select_op, create_plan_select(context, child));
+                    select_op = create_plan_select(context, child);
                     break;
                 }
                 case node_type::having_t: {

@@ -4,10 +4,14 @@
 #include <components/casts/cast_registry.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/settings.hpp>
+#include <components/catalog/table_id.hpp>
 #include <components/compute/function.hpp>
+#include <components/configuration/configuration.hpp>
 #include <components/context/pg_catalog_swap.hpp>
 #include <components/context/subplan_runner.hpp>
 #include <components/logical_plan/execution_plan.hpp>
+#include <components/logical_plan/node_alter_table.hpp>
+#include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/node_limit.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/vector/data_chunk.hpp>
@@ -94,6 +98,8 @@ namespace services::collection::executor {
         std::optional<explain_plan_node> captured_explain_ir{};
         std::optional<std::pair<components::types::complex_logical_type, components::types::complex_logical_type>>
             resolved_cast{};
+        // written() of the plan root; the cursor reports it only for an INSERT / UPDATE / DELETE.
+        uint64_t written{0};
     };
 
     using function_result_t = core::result_wrapper_t<components::compute::function_uid>;
@@ -133,6 +139,7 @@ namespace services::collection::executor {
         uint64_t commit_id{0};
         components::catalog::setting_id applied_setting{};
         std::string applied_setting_value;
+        uint64_t written{0};
     };
 
     // Implements subplan_runner_t: an operator inside this executor's coroutine drives a child sub-plan via
@@ -150,9 +157,8 @@ namespace services::collection::executor {
                    actor_zeta::address_t disk_address,
                    actor_zeta::address_t index_address,
                    log_t&& log,
-                   uint64_t dml_flush_row_threshold = 0,
-                   std::span<const components::planner::optimizer_rule_t> optimizer_rules = {},
-                   components::planner::name_resolution_hook_t name_resolution = {});
+                   const configuration::config_execution& execution,
+                   components::planner::primitives_t primitives);
         ~executor_t() = default;
 
         // INTERNAL: called only from execute_plan_full via co_await, never through the mailbox. captured_subplans
@@ -222,6 +228,65 @@ namespace services::collection::executor {
                                                            host_names_t host_names,
                                                            std::pmr::vector<expanded_view_t> expanded_views);
 
+        // The catalog read of `resolve_nodes`, in the statement's snapshot, into `resolves`.
+        unique_future<execute_result_t>
+        run_resolve_subplan_(components::session::session_id_t session,
+                             const services::dispatcher::txn_session_context_t& session_ctx,
+                             const components::graph_execution_context& settings,
+                             components::logical_plan::catalog_resolves_t* resolves,
+                             std::pmr::vector<components::logical_plan::node_ptr> resolve_nodes);
+
+        // The functions a view body calls are the ones CREATE bound it to (pg_proc read by the 'f' rows' oids).
+        unique_future<core::error_t> pin_functions_(components::session::session_id_t session,
+                                                    components::table::transaction_data txn,
+                                                    const components::logical_plan::resolved_table_metadata_t* view,
+                                                    components::logical_plan::node_t* body);
+
+        unique_future<execute_result_t> refresh_matview_(components::session::session_id_t session,
+                                                         const components::logical_plan::execution_plan_t& plan,
+                                                         const services::dispatcher::txn_session_context_t& session_ctx,
+                                                         host_names_t host_names,
+                                                         const components::graph_execution_context& settings);
+
+        unique_future<core::error_t>
+        resolve_external_names_(components::session::session_id_t session,
+                                components::logical_plan::execution_plan_t& plan,
+                                const services::dispatcher::txn_session_context_t& session_ctx);
+
+        // The statement's IF EXISTS turns "its target does not exist", reported only through this, into an empty
+        // success; every other refusal stays one.
+        components::cursor::cursor_t_ptr refuse_missing_target_(const components::logical_plan::execution_plan_t& plan,
+                                                                core::error_t missing);
+        core::error_t missing_relation_(std::string_view dbname, std::string_view relname) const;
+        core::error_t missing_database_(std::string_view dbname) const;
+
+        components::cursor::cursor_t_ptr check_drop_target_(const components::logical_plan::execution_plan_t& plan,
+                                                            const components::catalog::table_id& id);
+
+        // How many table and type entries of the resolve are the statement's own, before a view expansion adds any.
+        struct own_entries_t {
+            std::size_t tables{0};
+            std::size_t types{0};
+        };
+        static own_entries_t own_entries_of(const components::logical_plan::catalog_resolves_t& resolves) noexcept;
+
+        unique_future<core::error_t> validate_create_view_(components::session::session_id_t session,
+                                                           components::table::transaction_data txn,
+                                                           components::logical_plan::execution_plan_t& plan,
+                                                           const components::graph_execution_context& settings,
+                                                           own_entries_t own,
+                                                           const std::pmr::vector<expanded_view_t>& expanded_views);
+
+        enum class alter_subcommands_t : bool
+        {
+            remain,
+            none_left
+        };
+        core::result_wrapper_t<alter_subcommands_t>
+        check_alter_subcommands_(const components::logical_plan::execution_plan_t& plan,
+                                 const components::logical_plan::resolved_table_metadata_t& table,
+                                 std::vector<components::logical_plan::alter_table_subcommand_t>& subcommands);
+
         plan_t traverse_plan_(components::operators::operator_ptr&& plan,
                               const components::logical_plan::storage_parameters& parameters,
                               services::context_storage_t&& context_storage);
@@ -239,15 +304,20 @@ namespace services::collection::executor {
         unique_future<core::error_t> drive_subplan_(components::operators::operator_ptr root,
                                                     components::pipeline::context_t* ctx);
 
+        // The context a sub-plan of `plan_data` runs in: this executor, the plan's parameters, the statement's snapshot.
+        components::pipeline::context_t make_pipeline_context_(components::session::session_id_t session,
+                                                               const plan_t& plan_data,
+                                                               components::table::transaction_data txn,
+                                                               uint64_t lowest_active_start_time);
+
         // Starts open() on every not-yet-executed source under root without awaiting any, so backend fetches overlap.
         void open_sources_(components::operators::operator_t* root,
                            components::pipeline::context_t* ctx,
                            opened_sources_t& opened);
 
-        // Both await every matching future even after an error and return the first error.
-        unique_future<core::error_t> await_opened_in_(opened_sources_t& opened,
-                                                      components::operators::operator_t* piece);
-        unique_future<core::error_t> await_all_opened_(opened_sources_t& opened);
+        // Awaits the open of every source under `piece` (every source when `piece` is null), even after an error, and
+        // returns the first error.
+        unique_future<core::error_t> await_opened_(opened_sources_t& opened, components::operators::operator_t* piece);
 
         // Precondition: every source under root was opened and its open awaited.
         unique_future<core::error_t> drive_opened_subplan_(components::operators::operator_ptr root,

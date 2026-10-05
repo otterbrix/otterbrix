@@ -23,7 +23,7 @@ namespace {
     struct aggregate_registry_fixture {
         core::pmr::otterbrix_resource resource;
         function_registry_t registry{&resource};
-        exec_context_t ctx{&resource, &registry};
+        exec_context_t ctx{&resource};
 
         aggregate_registry_fixture() { register_default_functions(registry); }
 

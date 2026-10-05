@@ -75,10 +75,10 @@ namespace services::planner::impl {
 
     } // namespace
 
-    plan_result_t create_plan_group(const context_storage_t& context,
-                                    const components::compute::function_registry_t&,
-                                    const components::logical_plan::node_ptr& node,
-                                    const components::logical_plan::storage_parameters*) {
+    components::operators::operator_ptr create_plan_group(const context_storage_t& context,
+                                                          const components::compute::function_registry_t&,
+                                                          const components::logical_plan::node_ptr& node,
+                                                          const components::logical_plan::storage_parameters*) {
         // create_plan_group is only ever dispatched with a group_t node (create_plan.cpp's
         // case group_t and the aggregate's group child), so the static_cast is safe.
         const auto* group_node = static_cast<const components::logical_plan::node_group_t*>(node.get());

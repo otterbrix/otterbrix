@@ -56,9 +56,10 @@ namespace components::cursor {
         // fresh copies per call would span two unrelated buffers.
         const core::error_t& get_error() const noexcept;
 
-        // The rows an INSERT / UPDATE / DELETE wrote; std::nullopt for a statement that writes no rows.
-        [[nodiscard]] std::optional<std::uint64_t> affected_rows() const noexcept;
-        void set_affected_rows(std::uint64_t rows) noexcept;
+        // The rows an INSERT / UPDATE / DELETE wrote; 0 for a statement that is not a write (is_write() tells).
+        [[nodiscard]] std::uint64_t affected_rows() const noexcept;
+        [[nodiscard]] bool is_write() const noexcept;
+        void set_written(std::uint64_t rows) noexcept;
 
     private:
         // Result rows as a batch of ≤DEFAULT_VECTOR_CAPACITY chunks (never combined into
@@ -69,7 +70,8 @@ namespace components::cursor {
         std::pmr::vector<vector::data_chunk_t> chunks_;
         std::pmr::vector<components::types::complex_logical_type> type_data_;
         core::error_t error_;
-        std::optional<std::uint64_t> affected_rows_;
+        std::uint64_t affected_rows_ = 0;
+        bool is_write_ = false;
     };
 
     using cursor_t_ptr = boost::intrusive_ptr<cursor_t>;

@@ -29,9 +29,7 @@ namespace components::logical_plan {
 
     class node_create_index_t final : public node_t {
     public:
-        explicit node_create_index_t(std::pmr::memory_resource* resource,
-                                     core::indexname_t indexname = core::indexname_t{std::string{"unnamed"}},
-                                     index_type type = index_type::single);
+        node_create_index_t(std::pmr::memory_resource* resource, core::indexname_t indexname, index_type type);
 
         index_type type() const noexcept;
         keys_base_storage_t& keys() noexcept;
@@ -75,8 +73,6 @@ namespace components::logical_plan {
     using node_create_index_ptr = boost::intrusive_ptr<node_create_index_t>;
 
     node_create_index_ptr
-    make_node_create_index(std::pmr::memory_resource* resource,
-                           core::indexname_t indexname = core::indexname_t{std::string{"unnamed"}},
-                           index_type type = index_type::single);
+    make_node_create_index(std::pmr::memory_resource* resource, core::indexname_t indexname, index_type type);
 
 } // namespace components::logical_plan

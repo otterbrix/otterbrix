@@ -24,6 +24,7 @@ namespace components::operators {
         // fk_cascade is the plan root: its result is the DELETE's RETURNING rows; the matched parent rows (R6)
         // only drive the cascade.
         output_ = left_->output();
+        written_ = left_->written();
         const auto& source = constraint_detail::resolve_constraint_source(left_);
         if (!source || source->size() == 0) {
             mark_executed();

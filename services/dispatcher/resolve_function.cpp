@@ -326,8 +326,7 @@ namespace services::dispatcher {
                     continue;
                 }
                 resolved_function_t resolved{resource};
-                resolved.uid = uid;
-                resolved.signature = index;
+                resolved.pin = components::compute::function_pin_t{uid, index};
                 resolved.arguments = std::move(candidate->arguments);
                 resolved.result = std::move(candidate->result);
                 resolved.function_type = signature.function_type;

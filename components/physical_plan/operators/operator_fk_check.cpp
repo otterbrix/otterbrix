@@ -21,6 +21,7 @@ namespace components::operators {
         // marks the root executed after the pump). fk_check validates the DML's
         // constraint_input() snapshot: constraint ops STACK above one DML, so walk DOWN
         // the left_ spine to the DML's snapshot (single canonical source, R6).
+        written_ = left_->written();
         const auto& source = constraint_detail::resolve_constraint_source(left_);
         if (!source || source->size() == 0) {
             // Nothing to validate; still surface the DML result as the cursor.

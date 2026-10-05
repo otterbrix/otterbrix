@@ -132,7 +132,7 @@ namespace {
 TEST_CASE("integration::cpp::test_raw_join") {
     auto config = test_create_config(integration_fixture_path("test_raw_join/base"));
     test_clear_directory(config);
-    test_spaces space(config, services::engine::primitives_t{{}, {&planner::no_name_reads, &pairs_decide}});
+    test_spaces space(config, components::planner::primitives_t{{}, {&planner::no_name_reads, &pairs_decide}});
     auto dispatcher = space.dispatcher();
 
     INFO("triple JOIN, 4-part qualifiers");

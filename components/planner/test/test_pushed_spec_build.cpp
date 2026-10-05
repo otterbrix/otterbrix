@@ -86,7 +86,7 @@ TEST_CASE("pushed_spec::field_fidelity") {
     // GROUP BY g(col 1), SUM(v col 2) AS s_out (non-distinct); output types BIGINT, BIGINT.
     auto grp = make_scalar_expression(&node_res, scalar_type::group_field, col(&node_res, "g", 1));
     auto sum = make_aggregate_expression(&node_res, "sum", key(&node_res, "s_out", side_t::left));
-    sum->add_function_uid(sum_uid(&node_res));
+    sum->set_pin(components::compute::function_pin_t{sum_uid(&node_res)});
     sum->append_param(param_storage{col(&node_res, "v", 2)});
 
     std::pmr::vector<types::complex_logical_type> ot{&node_res};
@@ -172,7 +172,7 @@ TEST_CASE("pushed_spec::rejects_coalesce_key") {
 TEST_CASE("pushed_spec::rejects_distinct_aggregate") {
     std::pmr::monotonic_buffer_resource r;
     auto sum = make_aggregate_expression(&r, "sum", key(&r, "s", side_t::left));
-    sum->add_function_uid(sum_uid(&r));
+    sum->set_pin(components::compute::function_pin_t{sum_uid(&r)});
     sum->set_distinct(true);
     sum->append_param(param_storage{col(&r, "v", 2)});
     std::vector<expression_ptr> exprs{expression_ptr(sum)};
@@ -185,7 +185,7 @@ TEST_CASE("pushed_spec::rejects_distinct_aggregate") {
 TEST_CASE("pushed_spec::rejects_multiarg_aggregate") {
     std::pmr::monotonic_buffer_resource r;
     auto sum = make_aggregate_expression(&r, "sum", key(&r, "s", side_t::left));
-    sum->add_function_uid(sum_uid(&r));
+    sum->set_pin(components::compute::function_pin_t{sum_uid(&r)});
     sum->append_param(param_storage{col(&r, "a", 1)});
     sum->append_param(param_storage{col(&r, "b", 2)}); // second arg => not POD-representable
     std::vector<expression_ptr> exprs{expression_ptr(sum)};

@@ -64,17 +64,10 @@ namespace components::operators {
     private:
         // A write into external storage reads as the storage's sink says it, as postgres_fdw's "Foreign Insert on".
         std::pmr::string explain_label_impl() const override {
-            return storage_sink_ ? storage_sink_->explain_label() : type_label();
+            return storage_sink_ ? storage_sink_->explain_label() : std::pmr::string{resource_};
         }
         std::pmr::vector<std::pmr::string> explain_details_impl() const override {
             return storage_sink_ ? storage_sink_->explain_details() : std::pmr::vector<std::pmr::string>{resource_};
-        }
-
-        std::optional<uint64_t> affected_rows_impl() const noexcept override {
-            if (components::catalog::is_catalog_table(table_oid_)) {
-                return std::nullopt;
-            }
-            return affected_rows_;
         }
 
         // Matches expression_ over one scan chunk, staging matched rows/ids for RETURNING and the index mirror.
@@ -99,7 +92,6 @@ namespace components::operators {
         std::pmr::vector<int64_t> index_old_row_ids_{resource_};
         bool simple_init_done_{false};
         // delete_marker_recorded_ guards ctx->dml_deletes so repeated mid-flushes push it only once.
-        uint64_t affected_rows_{0};
         bool delete_marker_recorded_{false};
         // matched_total_ persists across mid-pump flushes, since modified_ clears on every flush.
         std::int64_t affected_bound_{-1};

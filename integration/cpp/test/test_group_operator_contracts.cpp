@@ -150,7 +150,7 @@ TEST_CASE("group operator contracts: aggregator error on empty-input global aggr
     const components::types::complex_logical_type double_type{components::types::logical_type::DOUBLE};
     expressions::key_t agg_key{&resource, "a"};
     auto aggregate = expressions::make_aggregate_expression(&resource, "avg", agg_key);
-    aggregate->add_function_uid(avg_uid);
+    aggregate->set_pin(components::compute::function_pin_t{avg_uid});
     aggregate->set_result_type(double_type);
     aggregate->append_param(core::parameter_id_t(1)); // AVG($1), $1 bound to a string below
     group->add_value(std::pmr::string("a", &resource), double_type);

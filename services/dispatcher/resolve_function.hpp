@@ -16,9 +16,7 @@ namespace services::dispatcher {
     };
 
     struct resolved_function_t {
-        components::compute::function_uid uid;
-        // Index into the function's get_signatures().
-        size_t signature{0};
+        components::compute::function_pin_t pin;
         std::pmr::vector<resolved_argument_t> arguments;
         components::types::complex_logical_type result;
         components::compute::function_type_t function_type{components::compute::function_type_t::invalid};

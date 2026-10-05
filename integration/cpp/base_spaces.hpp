@@ -24,7 +24,7 @@ namespace otterbrix {
         // A refused start answers the error; its message lives on new_delete_resource, since the
         // engine's own arena is gone by the time the caller reads it.
         [[nodiscard]] static core::result_wrapper_t<host_ptr> open(const configuration::config& config,
-                                                                   services::engine::primitives_t primitives = {});
+                                                                   components::planner::primitives_t primitives = {});
 
         base_otterbrix_t(const base_otterbrix_t&) = delete;
         base_otterbrix_t& operator=(const base_otterbrix_t&) = delete;

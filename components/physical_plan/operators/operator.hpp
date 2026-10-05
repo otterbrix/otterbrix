@@ -116,7 +116,6 @@ namespace components::operators {
 
     // One operator as EXPLAIN sees it; the views live until the sink returns.
     struct explain_entry_t {
-        operator_type type;
         catalog::oid_t oid;
         uint64_t rows;
         std::chrono::nanoseconds time;
@@ -181,9 +180,8 @@ namespace components::operators {
         // Catalog-mode DML returns 0 too: its single-shot path must not be mid-flushed.
         [[nodiscard]] virtual uint64_t buffered_rows() const noexcept { return 0; }
 
-        // The rows a write changed, read by the executor from the plan root once the plan ran; std::nullopt for
-        // an operator that writes no rows of a user table.
-        [[nodiscard]] std::optional<uint64_t> affected_rows() const noexcept { return affected_rows_impl(); }
+        // The rows a write changed; the executor reads it from the plan root of an INSERT / UPDATE / DELETE.
+        [[nodiscard]] uint64_t written() const noexcept { return written_; }
 
         // Covers per-run streaming state reset_for_reuse() doesn't reach (a source's cursor, a
         // sink's built accumulator); the recursive-CTE driver calls both on every node per pass.
@@ -237,19 +235,12 @@ namespace components::operators {
         void explain(const explain_sink& s) const { explain_impl(s); }
 
         // What EXPLAIN prints for this operator: its line, and the lines printed under it.
-        [[nodiscard]] std::pmr::string explain_label() const { return explain_label_impl(); }
+        [[nodiscard]] std::pmr::string explain_label() const;
         [[nodiscard]] std::pmr::vector<std::pmr::string> explain_details() const { return explain_details_impl(); }
 
     protected:
-        // The engine's name for type(), e.g. "Seq Scan", "Hash Join", "Extension Scan": what explain_label() says
-        // unless an override says more.
-        [[nodiscard]] std::pmr::string type_label() const;
-
-        void explain_begin(const explain_sink& s, catalog::oid_t oid) const {
-            const auto label = explain_label();
-            const auto details = explain_details();
-            s.begin(explain_entry_t{type(), oid, analyze_rows_, analyze_time_, analyze_loops_, label, details});
-        }
+        // Allocates nothing for an operator that overrides neither explain_*_impl.
+        void explain_begin(const explain_sink& s, catalog::oid_t oid) const;
 
         // Prevents constant creation of empty chunks just to pass its schema
         void note_emitted() noexcept { emitted_ = true; }
@@ -263,14 +254,13 @@ namespace components::operators {
         operator_data_ptr output_{nullptr};
         operator_write_data_ptr modified_{nullptr};
         operator_data_ptr constraint_input_{nullptr};
+        uint64_t written_ = 0;
 
     private:
         virtual actor_zeta::unique_future<core::error_t> open_impl(pipeline::context_t* ctx);
 
-        virtual std::optional<uint64_t> affected_rows_impl() const noexcept { return std::nullopt; }
-
-        // type_label() unless overridden.
-        virtual std::pmr::string explain_label_impl() const;
+        // Empty: the engine's name for type(), e.g. "Seq Scan", "Hash Join", "Extension Scan".
+        virtual std::pmr::string explain_label_impl() const { return std::pmr::string{resource_}; }
         virtual std::pmr::vector<std::pmr::string> explain_details_impl() const {
             return std::pmr::vector<std::pmr::string>{resource_};
         }

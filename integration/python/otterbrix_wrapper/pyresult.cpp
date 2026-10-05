@@ -132,8 +132,8 @@ namespace otterbrix {
         if (!result) {
             return -1;
         }
-        if (const auto written = result->affected_rows()) {
-            return static_cast<int64_t>(*written);
+        if (result->is_write()) {
+            return static_cast<int64_t>(result->affected_rows());
         }
         return static_cast<int64_t>(result->size());
     }

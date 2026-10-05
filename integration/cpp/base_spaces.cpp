@@ -23,7 +23,7 @@ namespace otterbrix {
     void base_otterbrix_t::host_deleter_t::operator()(host_t* host) const noexcept { delete host; }
 
     core::result_wrapper_t<base_otterbrix_t::host_ptr>
-    base_otterbrix_t::open(const configuration::config& config, services::engine::primitives_t primitives) {
+    base_otterbrix_t::open(const configuration::config& config, components::planner::primitives_t primitives) {
         host_ptr host{new host_t()};
         auto log = make_log("otterbrix", config.log.path, std::pmr::new_delete_resource());
         if (log.has_error()) {

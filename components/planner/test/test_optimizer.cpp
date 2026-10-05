@@ -1105,7 +1105,7 @@ TEST_CASE("optimizer::pushdown_aggregate::udf_reference_is_skipped") {
     auto sum = make_aggregate_expression(&resource, "sum", key(&resource, "s"));
     sum->set_mergeable(true);
     auto udf = make_function_expression(&resource, function_qualified_name_t{core::function_name_t{"my_udf"}});
-    udf->add_function_uid(components::compute::DEFAULT_FUNCTIONS.size());
+    udf->set_pin(components::compute::function_pin_t{components::compute::DEFAULT_FUNCTIONS.size()});
     sum->append_param(expression_ptr(udf));
     exprs.push_back(expression_ptr(sum));
     auto group = make_node_group(&resource, exprs);

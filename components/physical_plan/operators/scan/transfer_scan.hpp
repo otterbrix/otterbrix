@@ -45,8 +45,6 @@ namespace components::operators {
             s.end();
         }
 
-        vector::data_chunk_t make_guard_chunk();
-
         // OFFSET is applied by operator_limit above; every scan receives offset()==0 here.
         actor_zeta::unique_future<core::result_wrapper_t<std::optional<vector::data_chunk_t>>>
         emit_or_skip(pipeline::context_t* ctx, std::unique_ptr<vector::data_chunk_t> batch);

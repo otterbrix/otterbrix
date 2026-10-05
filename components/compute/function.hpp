@@ -291,6 +291,9 @@ namespace components::compute {
         function* get_function(function_uid uid) const;
         [[nodiscard]] std::vector<std::pair<std::string, function_uid>> get_functions() const;
         [[nodiscard]] std::pmr::vector<function_uid> find_functions(std::string_view name) const;
+        // The function `name` with a signature these inputs match, invalid_function_uid when there is none.
+        [[nodiscard]] function_uid find_overload(std::string_view name,
+                                                 const std::pmr::vector<types::complex_logical_type>& inputs) const;
 
         // Remove a function by uid (DROP FUNCTION / unregister_udf path). No-op if uid not present.
         bool remove_function(function_uid uid);

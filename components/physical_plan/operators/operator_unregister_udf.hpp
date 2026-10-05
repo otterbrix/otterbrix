@@ -25,8 +25,6 @@ namespace components::operators {
                                   std::pmr::vector<types::complex_logical_type> inputs,
                                   components::catalog::drop_behavior_t behavior);
 
-        bool success() const noexcept { return success_; }
-
         // Sourceless SINK leaf (no data pipeline, no children): the registry
         // existence-check and the pg_proc/pg_depend purge run in
         // await_async_and_resume. The dispatcher drives this operator's async
@@ -39,7 +37,6 @@ namespace components::operators {
         std::string function_name_;
         std::pmr::vector<types::complex_logical_type> inputs_;
         components::catalog::drop_behavior_t behavior_;
-        bool success_{false};
     };
 
 } // namespace components::operators

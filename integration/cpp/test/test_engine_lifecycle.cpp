@@ -402,7 +402,7 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::concurrent_insert_scan_evict
         auto failure = describe_failure(cur, 0);
         if (failure.empty() && cur->affected_rows() != static_cast<std::uint64_t>(batch_size)) {
             failure = "insert count mismatch: got " +
-                      (cur->affected_rows() ? std::to_string(*cur->affected_rows()) : std::string{"none"});
+                      (cur->is_write() ? std::to_string(cur->affected_rows()) : std::string{"none"});
         }
         return failure;
     };

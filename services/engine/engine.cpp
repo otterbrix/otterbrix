@@ -243,7 +243,7 @@ namespace services::engine {
                                   schedulers_t schedulers,
                                   const configuration::config& config,
                                   log_t& log,
-                                  primitives_t primitives) {
+                                  components::planner::primitives_t primitives) {
         auto parts = std::move(prepared.parts_);
         assert(parts != nullptr && parts->resource == resource);
         parts->schedulers = schedulers;
@@ -283,11 +283,8 @@ namespace services::engine {
                                                                           parts->wal->address(),
                                                                           parts->disk->address(),
                                                                           parts->index->address(),
-                                                                          config.execution.dml_flush_row_threshold,
-                                                                          primitives.optimizer_rules,
-                                                                          primitives.name_resolution,
-                                                                          config.execution.executor_pool_size,
-                                                                          config.execution.pump);
+                                                                          config.execution,
+                                                                          primitives);
 
         // Dispatcher address published into every manager: disk/index for the GC-ack path
         // (disk -> dispatcher -> wal truncate), wal for the auto-checkpoint watermark.

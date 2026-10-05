@@ -22,6 +22,7 @@
 #include <functional>
 #include <list>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <thread>
 #include <unordered_map>
@@ -203,7 +204,8 @@ namespace services::wal {
         // Single-actor state on loop_thread_ only, no atomic; prevents a commit burst from stacking checkpoints.
         bool auto_checkpoint_in_flight_{false};
         bool auto_checkpoint_stopped_{false};
-        std::pmr::vector<actor_zeta::promise<void>> round_end_waiters_{resource_};
+        // Only engine shutdown stops the auto-checkpoint, once, so one waiter at most.
+        std::optional<actor_zeta::promise<void>> round_end_waiter_;
 
         std::unordered_map<components::catalog::oid_t, wal_worker_ptr> wal_actors_;
 

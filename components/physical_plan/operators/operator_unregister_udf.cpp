@@ -37,27 +37,13 @@ namespace components::operators {
         , behavior_(behavior) {}
 
     actor_zeta::unique_future<void> operator_unregister_udf_t::await_async_and_resume(pipeline::context_t* ctx) {
-        success_ = false;
 
         // 1. The overload the master registry holds, if any: its pg_proc rows are the rows of its signatures. A
         //    function a previous process registered has its rows only; they are the rows these inputs match.
-        const auto* reg = ctx->function_registry;
-        const components::compute::function* live = nullptr;
-        for (auto& [n, uid] : reg->get_functions()) {
-            if (n != function_name_)
-                continue;
-            auto* fn = reg->get_function(uid);
-            if (!fn)
-                continue;
-            for (auto& sig : fn->get_signatures()) {
-                if (sig.matches_inputs(inputs_)) {
-                    live = fn;
-                    break;
-                }
-            }
-            if (live != nullptr)
-                break;
-        }
+        const auto live_uid = ctx->function_registry->find_overload(function_name_, inputs_);
+        const components::compute::function* live = live_uid == components::compute::invalid_function_uid
+                                                         ? nullptr
+                                                         : ctx->function_registry->get_function(live_uid);
 
 #ifdef DEV_MODE
         if (g_unregister_udf_purge_refusal.load()) {
@@ -133,7 +119,6 @@ namespace components::operators {
             co_return;
         }
 
-        success_ = true;
         output_ = nullptr;
         mark_executed();
     }

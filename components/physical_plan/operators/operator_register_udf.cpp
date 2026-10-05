@@ -29,7 +29,6 @@ namespace components::operators {
         , executor_uids_(std::move(executor_uids)) {}
 
     actor_zeta::unique_future<void> operator_register_udf_t::await_async_and_resume(pipeline::context_t* ctx) {
-        success_ = false;
         if (!function_) {
             set_error(
                 core::error_t{core::error_code_t::invalid_parameter,
@@ -235,7 +234,6 @@ namespace components::operators {
             }
         }
 
-        success_ = true;
         output_ = nullptr;
         mark_executed();
     }

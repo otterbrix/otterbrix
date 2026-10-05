@@ -12,7 +12,8 @@ namespace services::planner::impl {
     // node_dynamic_cascade_delete_t. Wired into create_plan.cpp's switch on
     // node_type. Task #49 will add the corresponding planner-rewrite that
     // actually emits this node from DROP statements.
-    plan_result_t create_plan_dynamic_cascade_delete(const context_storage_t& context,
-                                                     const components::logical_plan::node_ptr& node);
+    components::operators::operator_ptr
+    create_plan_dynamic_cascade_delete(const context_storage_t& context,
+                                       const components::logical_plan::node_ptr& node);
 
 } // namespace services::planner::impl

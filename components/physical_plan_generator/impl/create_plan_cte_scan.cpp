@@ -5,10 +5,11 @@
 
 namespace services::planner::impl {
 
-    plan_result_t create_plan_cte_scan(const context_storage_t& context,
-                                       const components::compute::function_registry_t& /*function_registry*/,
-                                       const components::logical_plan::node_ptr& node,
-                                       const components::logical_plan::storage_parameters* /*params*/) {
+    components::operators::operator_ptr
+    create_plan_cte_scan(const context_storage_t& context,
+                         const components::compute::function_registry_t& /*function_registry*/,
+                         const components::logical_plan::node_ptr& node,
+                         const components::logical_plan::storage_parameters* /*params*/) {
         const auto* scan_node = static_cast<const components::logical_plan::node_cte_scan_t*>(node.get());
         auto it = context.cte_working_sets.find(scan_node->cte_name());
         if (it == context.cte_working_sets.end()) {

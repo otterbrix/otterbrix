@@ -213,7 +213,9 @@ namespace components::logical_plan {
         // than a duplicated oid; names_only entries are skipped since they would enforce nothing.
         [[nodiscard]] const resolve_entry_t* constraints_for(components::catalog::oid_t table_oid,
                                                              resolve_direction direction) const noexcept;
-        // Any outgoing entry (full or names_only); the DROP CONSTRAINT name->oid lookup
-        [[nodiscard]] const resolve_entry_t* constraint_names_for(components::catalog::oid_t table_oid) const noexcept;
+        // The oid of the constraint `name` of `table_oid` (any outgoing entry, full or names_only), INVALID_OID when the
+        // table has none of that name: DROP CONSTRAINT's lookup.
+        [[nodiscard]] components::catalog::oid_t constraint_oid(components::catalog::oid_t table_oid,
+                                                                std::string_view name) const noexcept;
     };
 } // namespace components::logical_plan

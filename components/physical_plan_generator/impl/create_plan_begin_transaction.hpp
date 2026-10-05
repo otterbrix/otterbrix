@@ -11,7 +11,7 @@ namespace services::planner::impl {
     // Lower a node_transaction_t(begin) into operator_begin_transaction_t.
     // The operator carries no fields; its inputs (session, txn_manager) flow
     // through pipeline::context_t at execution time.
-    plan_result_t create_plan_begin_transaction(const context_storage_t& context,
-                                                const components::logical_plan::node_ptr& node);
+    components::operators::operator_ptr create_plan_begin_transaction(const context_storage_t& context,
+                                                                      const components::logical_plan::node_ptr& node);
 
 } // namespace services::planner::impl

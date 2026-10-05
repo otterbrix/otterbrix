@@ -262,7 +262,7 @@ namespace services::dispatcher::validation {
                     error_ = core::error_on(context_.resource, resolved.error());
                     return;
                 }
-                comparison->add_function_uid(resolved.value().uid);
+                comparison->add_function_uid(resolved.value().pin.uid);
             }
 
             void resolve_compare(compare_expression_t* comparison, bool inside_aggregate) {
@@ -449,8 +449,7 @@ namespace services::dispatcher::validation {
                                 resolved.value().arguments[index].target,
                                 resolved.value().arguments[index].cast);
                 }
-                aggregate->add_function_uid(resolved.value().uid);
-                aggregate->set_signature(resolved.value().signature);
+                aggregate->set_pin(resolved.value().pin);
                 aggregate->set_mergeable(resolved.value().mergeable);
                 aggregate->set_result_type(resolved.value().result);
             }
@@ -514,8 +513,7 @@ namespace services::dispatcher::validation {
                                 resolved.value().arguments[index].cast);
                 }
 
-                call->add_function_uid(resolved.value().uid);
-                call->set_signature(resolved.value().signature);
+                call->set_pin(resolved.value().pin);
                 call->set_result_type(resolved.value().result);
                 if (!reduces) {
                     last_cardinality_ = combined;

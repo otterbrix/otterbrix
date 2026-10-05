@@ -134,8 +134,8 @@ struct dispatcher_fixture : actor_zeta::actor::actor_mixin<dispatcher_fixture> {
                                                                       manager_disk_->address(),
                                                                       wire_index ? manager_index_->address()
                                                                                  : components::pipeline::no_mailbox(),
-                                                                      0,
-                                                                      optimizer_rules)) {
+                                                                      configuration::config_execution{},
+                                                                      components::planner::primitives_t{optimizer_rules, {}})) {
         manager_wal_->set_manager_dispatcher_sync(manager_dispatcher_->address());
         manager_disk_->set_manager_wal_sync(manager_wal_->address());
         manager_index_->set_manager_dispatcher_sync(manager_dispatcher_->address());

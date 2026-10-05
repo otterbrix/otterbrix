@@ -22,7 +22,7 @@ namespace components::logical_plan {
         alter_table_kind kind{alter_table_kind::drop_column};
         std::string column_name;
         std::string new_column_name; // rename_column only
-        // drop_constraint only: enrich resolves constraint_name to constraint_oid
+        // drop_constraint only: the executor resolves constraint_name to constraint_oid
         std::string constraint_name;
         components::catalog::oid_t constraint_oid{components::catalog::INVALID_OID};
         // drop_column only: RESTRICT (default or written) or CASCADE; see
@@ -50,7 +50,7 @@ namespace components::logical_plan {
         const components::table::column_definition_t& column() const { return subcommands_.front().column; }
 
         const std::vector<alter_table_subcommand_t>& subcommands() const noexcept { return subcommands_; }
-        // Mutable: enrich stamps constraint_oid onto drop_constraint subcommands.
+        // Mutable: the executor stamps constraint_oid onto drop_constraint subcommands and drops skipped ones.
         std::vector<alter_table_subcommand_t>& subcommands() noexcept { return subcommands_; }
 
         char relkind() const noexcept { return relkind_; }

@@ -1,5 +1,8 @@
 #include "create_plan_match.hpp"
 
+#include <cassert>
+#include <cstdlib>
+
 #include "index_selection_helpers.hpp"
 
 #include <components/catalog/catalog_codes.hpp>
@@ -251,7 +254,8 @@ namespace services::planner::impl {
                                                     static_cast<const std::string&>(match_node->target().collection));
                 }
             }
-            return plan_refusal(context.resource, "unknown source of a WHERE scan");
+            assert(false && "unknown source of a WHERE scan");
+            std::abort();
         } else {
             const auto* match_node = static_cast<const components::logical_plan::node_match_t*>(node.get());
             return create_plan_match_(context,
@@ -266,9 +270,7 @@ namespace services::planner::impl {
     // create_plan_having takes no limit parameter. context.resource is always non-null and
     // outlives the operator, so there's no null-resource sentinel here.
     plan_result_t create_plan_having(const context_storage_t& context, const components::logical_plan::node_ptr& node) {
-        if (node->expressions().empty()) {
-            return plan_refusal(context.resource, "HAVING carries no predicate");
-        }
+        assert(!node->expressions().empty() && "HAVING carries a predicate");
         return boost::intrusive_ptr(new components::operators::operator_having_t(context.resource,
                                                                                  context.log.clone(),
                                                                                  node->expressions()[0]));

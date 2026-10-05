@@ -10,6 +10,7 @@
 #include <memory_resource>
 #include <span>
 #include <string>
+#include <string_view>
 
 namespace services::collection {
 
@@ -26,6 +27,15 @@ namespace services::collection {
                                      std::size_t own_tables,
                                      std::size_t own_types,
                                      const dispatcher::validation::column_uses_t& uses);
+
+    // The statement names a view or a materialized view (`expected` relkind) and the relation of that name is of
+    // another kind: PostgreSQL 18 ERRCODE_WRONG_OBJECT_TYPE, here schema_error. REFRESH (matview.c) and CREATE OR
+    // REPLACE VIEW (view.c) say only that.
+    core::error_t wrong_relation_kind(std::pmr::memory_resource* resource, std::string_view name, char expected);
+    // DROP VIEW / DROP MATERIALIZED VIEW add the hint naming the DROP for the kind `found` (tablecmds.c
+    // DropErrorMsgWrongType); a kind PostgreSQL has no DROP hint for gets none.
+    core::error_t
+    wrong_relation_kind_to_drop(std::pmr::memory_resource* resource, std::string_view name, char expected, char found);
 
     // CREATE OR REPLACE VIEW over `existing` (PostgreSQL 18 view.c): only a view is replaced, never by a body that
     // reads it (`read_views` are the views the new body expands to), and its columns may only be appended to

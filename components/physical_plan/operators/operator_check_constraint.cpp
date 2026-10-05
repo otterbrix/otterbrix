@@ -145,6 +145,7 @@ namespace components::operators {
     void operator_check_constraint_t::validate_(const compute::function_registry_t& registry) {
         if (!left_)
             return;
+        written_ = left_->written();
 
         // The DML's constraint_input() snapshot of the just-written rows. Constraint
         // ops STACK above one DML (this check sits OUTERMOST, above the per-FK

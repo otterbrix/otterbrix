@@ -87,17 +87,10 @@ namespace components::operators {
     private:
         // A write into external storage reads as the storage's sink says it, as postgres_fdw's "Foreign Insert on".
         std::pmr::string explain_label_impl() const override {
-            return storage_sink_ ? storage_sink_->explain_label() : type_label();
+            return storage_sink_ ? storage_sink_->explain_label() : std::pmr::string{resource_};
         }
         std::pmr::vector<std::pmr::string> explain_details_impl() const override {
             return storage_sink_ ? storage_sink_->explain_details() : std::pmr::vector<std::pmr::string>{resource_};
-        }
-
-        std::optional<uint64_t> affected_rows_impl() const noexcept override {
-            if (components::catalog::is_catalog_table(table_oid_)) {
-                return std::nullopt;
-            }
-            return affected_rows_;
         }
 
         // Shared SIMPLE-path core. Matches expr_ (all-true when null — the scan
@@ -143,15 +136,14 @@ namespace components::operators {
         // Bounded-sink accumulators — persist ACROSS incremental flushes (each
         // flush clears output_/index_old_chunks_/returning_from_chunks_, but these
         // must span the whole statement). returning_accum_ gathers the projected
-        // RETURNING chunks from every flush; affected_rows_ totals the storage_update
+        // RETURNING chunks from every flush; written_ totals the storage_update
         // counts; delete_marker_recorded_ guards the single MVCC delete tombstone
         // (one per txn/table, not per flush).
         chunks_vector_t returning_accum_{resource_};
-        uint64_t affected_rows_{0};
         bool delete_marker_recorded_{false};
         // UPDATE ... FROM matched-row bound (UPDATE ... LIMIT n); -1 = unbounded.
         // matched_total_ counts MATCHED left rows at MATCH time (in consume_join_batch_)
-        // and persists across mid-pump flushes — output_/affected_rows_ are cleared/lag
+        // and persists across mid-pump flushes — output_/written_ are cleared/lag
         // per flush, so a flush-derived count would miss already-flushed matches.
         std::int64_t affected_bound_{-1};
         uint64_t matched_total_{0};

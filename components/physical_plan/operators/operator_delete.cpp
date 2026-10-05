@@ -349,7 +349,7 @@ namespace components::operators {
                         mark_failed();
                         co_return;
                     }
-                    affected_rows_ += rows;
+                    written_ += rows;
                 }
                 modified_ = operators::make_operator_write_data(resource_);
                 index_old_chunks_.clear();
@@ -459,7 +459,7 @@ namespace components::operators {
                     }
                 }
 
-                affected_rows_ += static_cast<uint64_t>(modified_size);
+                written_ += static_cast<uint64_t>(modified_size);
                 co_return dml_detail::flush_outcome_t{core::error_t::no_error(), false, 0, 0};
             };
 
@@ -495,7 +495,7 @@ namespace components::operators {
             co_return;
         }
 
-        // Without RETURNING output_ stays null: the count is affected_rows().
+        // Without RETURNING output_ stays null: the count is written().
         if (!returning_.empty()) {
             if (returning_staged_.empty()) {
                 // Nothing matched, but we still have to return correct columns

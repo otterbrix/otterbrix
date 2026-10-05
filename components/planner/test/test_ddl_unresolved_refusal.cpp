@@ -25,7 +25,9 @@ namespace {
 
 TEST_CASE("components::planner::ddl_unresolved::create_index_on_a_missing_table_is_refused") {
     auto resource = core::pmr::otterbrix_resource();
-    auto node = components::logical_plan::make_node_create_index(&resource, core::indexname_t{std::string{"idx"}});
+    auto node = components::logical_plan::make_node_create_index(&resource,
+                                                                 core::indexname_t{std::string{"idx"}},
+                                                                 components::logical_plan::index_type::single);
     node->set_target(
         qualified_name_t{core::dbname_t{std::string{"db"}}, core::relname_t{std::string{"no_such_table"}}});
     // enrich left namespace_oid()/table_oid() at INVALID_OID: the table is not in the catalog.

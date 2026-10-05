@@ -8,6 +8,6 @@
 
 namespace services::planner::impl {
 
-    plan_result_t create_plan_function(const context_storage_t& context,
-                                       const components::logical_plan::node_ptr& node);
+    components::operators::operator_ptr create_plan_function(const context_storage_t& context,
+                                                             const components::logical_plan::node_ptr& node);
 }

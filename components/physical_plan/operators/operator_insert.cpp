@@ -168,7 +168,7 @@ namespace components::operators {
                         mark_failed();
                         co_return;
                     }
-                    affected_rows_ += rows;
+                    written_ += rows;
                 }
                 output_->chunks().clear();
                 co_await storage_sink_->await_async_and_resume(ctx);
@@ -233,7 +233,7 @@ namespace components::operators {
                     }
                 }
 
-                affected_rows_ += count;
+                written_ += count;
                 if (!returning_.empty() && count > 0) {
                     // A point read: the reply range IS the ids just written (generated columns need it).
                     vector::vector_t row_ids(resource_, types::logical_type::BIGINT, count);

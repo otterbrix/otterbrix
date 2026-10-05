@@ -1,4 +1,5 @@
 #include "full_scan.hpp"
+#include "guard_chunk.hpp"
 
 #include <components/expressions/compare_expression.hpp>
 #include <services/disk/manager_disk.hpp>
@@ -35,17 +36,6 @@ namespace components::operators {
         , expression_(expression)
         , limit_(limit)
         , projected_cols_(std::move(projected_cols)) {}
-
-    vector::data_chunk_t full_scan::make_guard_chunk() {
-        if (projected_cols_.empty()) {
-            return vector::data_chunk_t{resource_, guard_types_, 0};
-        }
-        // Pruned-scan contract (PR #477): pruned scans emit full-width chunks whose non-projected
-        // columns are buffer-less placeholders, so column ordinals stay stable plan-wide (expression
-        // key paths are never remapped after prune_columns). The schema'd 0-row empty-guard must honor
-        // the same shape as real batches, since operators above index it by table ordinal.
-        return vector::data_chunk_t{resource_, guard_types_, projected_cols_, 0};
-    }
 
     // Each call does at most one cross-actor fetch await; the N awaits are sequential across calls in
     // this nested operator coroutine (driven by execute_pipeline), so the single-slot awaited
@@ -91,7 +81,7 @@ namespace components::operators {
                                 expression_->type() == expressions::compare_type::all_unknown)) {
                 drained_ = true;
                 emitted_any_ = true;
-                co_return make_guard_chunk();
+                co_return make_guard_chunk(resource_, guard_types_, projected_cols_);
             }
 
             // Short-circuit: null parameter in a scalar comparison — SQL NULL semantics.
@@ -106,7 +96,7 @@ namespace components::operators {
                     if (expression_->type() != expressions::compare_type::all) {
                         drained_ = true;
                         emitted_any_ = true;
-                        co_return make_guard_chunk();
+                        co_return make_guard_chunk(resource_, guard_types_, projected_cols_);
                     }
                     null_param_skip_filter = true;
                 }
@@ -226,7 +216,7 @@ namespace components::operators {
             // scalar aggregate emits COUNT=0 and an OUTER join NULL-pads.
             if (!emitted_any_) {
                 emitted_any_ = true;
-                co_return make_guard_chunk();
+                co_return make_guard_chunk(resource_, guard_types_, projected_cols_);
             }
             co_return std::nullopt;
         }

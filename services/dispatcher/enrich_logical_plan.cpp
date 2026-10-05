@@ -369,6 +369,23 @@ namespace services::catalog_resolve {
                     return {};
             }
         }
+
+        // Breadth-first over the plan: every node once, a node before its children.
+        template<typename Node, typename Visit>
+        void for_each_node(Node* root, Visit&& visit) {
+            std::queue<Node*> q;
+            q.push(root);
+            while (!q.empty()) {
+                auto* n = q.front();
+                q.pop();
+                visit(n);
+                for (const auto& child : n->children()) {
+                    if (child) {
+                        q.push(child.get());
+                    }
+                }
+            }
+        }
     } // namespace
 
     void stamp_table_has_indexes(components::logical_plan::node_t* root,
@@ -378,31 +395,18 @@ namespace services::catalog_resolve {
         if (root == nullptr || table_oid == components::catalog::INVALID_OID) {
             return;
         }
-        std::queue<node_t*> q;
-        q.push(root);
-        while (!q.empty()) {
-            auto* n = q.front();
-            q.pop();
+        for_each_node(root, [table_oid, has_indexes](node_t* n) {
             if (n->table_oid() == table_oid) {
                 n->set_table_has_indexes(has_indexes);
             }
-            for (const auto& child : n->children()) {
-                if (child) {
-                    q.push(child.get());
-                }
-            }
-        }
+        });
     }
 
     void bind_catalog_data(components::logical_plan::node_t* root, const catalog_resolves_t& resolves) {
         using namespace components::logical_plan;
         if (!root)
             return;
-        std::queue<node_t*> q;
-        q.push(root);
-        while (!q.empty()) {
-            auto* n = q.front();
-            q.pop();
+        for_each_node(root, [&resolves](node_t* n) {
             const auto names = target_names_of(n);
             {
                 const entry_view_t rn{
@@ -533,27 +537,6 @@ namespace services::catalog_resolve {
                             }
                             break;
                         }
-                        case node_type::insert_t: {
-                            auto* d = static_cast<node_insert_t*>(n);
-                            if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
-                                d->set_table_oid(rt->table_oid());
-                            }
-                            break;
-                        }
-                        case node_type::update_t: {
-                            auto* d = static_cast<node_update_t*>(n);
-                            if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
-                                d->set_table_oid(rt->table_oid());
-                            }
-                            break;
-                        }
-                        case node_type::delete_t: {
-                            auto* d = static_cast<node_delete_t*>(n);
-                            if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
-                                d->set_table_oid(rt->table_oid());
-                            }
-                            break;
-                        }
                         case node_type::alter_table_t:
                         case node_type::alter_column_t: {
                             if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
@@ -566,11 +549,7 @@ namespace services::catalog_resolve {
                     }
                 }
             }
-            for (const auto& c : n->children()) {
-                if (c)
-                    q.push(c.get());
-            }
-        }
+        });
     }
 
     void register_plan_targets(std::pmr::memory_resource* resource,
@@ -580,11 +559,7 @@ namespace services::catalog_resolve {
         if (!root || !resolves) {
             return;
         }
-        std::queue<const node_t*> q;
-        q.push(root);
-        while (!q.empty()) {
-            const auto* n = q.front();
-            q.pop();
+        for_each_node(root, [resource, resolves](const node_t* n) {
             const auto names = target_names_of(n);
             const auto namespace_dbname = names.namespace_dbname.empty() ? names.dbname : names.namespace_dbname;
             if (!namespace_dbname.empty()) {
@@ -618,24 +593,29 @@ namespace services::catalog_resolve {
                 entry.type_name = names.type_name;
                 resolves->ensure(resource, resolve_kind::type).add(std::move(entry));
             }
-            for (const auto& c : n->children()) {
-                if (c) {
-                    q.push(c.get());
-                }
-            }
-        }
+        });
     }
+
+    namespace {
+        // `role` is what the name is in its statement, e.g. "REFERENCES target".
+        core::error_t refuse_segments(std::pmr::memory_resource* resource,
+                                      std::string_view role,
+                                      const qualified_name_t& written) {
+            std::pmr::string msg{role, resource};
+            msg += " \"";
+            msg += written.to_string();
+            msg += "\" names a uid or schema segment, which this catalog has no place for: a relation lives in a "
+                   "database — write it as [database.]name; nothing was changed";
+            return core::error_t{core::error_code_t::invalid_parameter, std::move(msg)};
+        }
+    } // namespace
 
     core::error_t refuse_referenced_segments(std::pmr::memory_resource* resource, const catalog_resolves_t& resolves) {
         for (const auto& written : resolves.referenced_tables) {
             if (written.unique_identifier.t.empty() && written.schema.t.empty()) {
                 continue;
             }
-            std::pmr::string msg{"REFERENCES target \"", resource};
-            msg += written.to_string();
-            msg += "\" names a uid or schema segment, which this catalog has no place for: a relation lives in a "
-                   "database — write it as [database.]name; nothing was changed";
-            return core::error_t{core::error_code_t::invalid_parameter, std::move(msg)};
+            return refuse_segments(resource, "REFERENCES target", written);
         }
         return core::error_t::no_error();
     }
@@ -1221,33 +1201,6 @@ namespace services::dispatcher { namespace {
                 if (const auto* tbl = node->table_metadata()) {
                     node->set_relkind(tbl->relkind);
                 }
-                if (node->table_oid() != components::catalog::INVALID_OID) {
-                    for (auto& sub : node->subcommands()) {
-                        if (sub.kind != components::logical_plan::alter_table_kind::drop_constraint) {
-                            continue;
-                        }
-                        const auto* names = resolves ? resolves->constraint_names_for(node->table_oid()) : nullptr;
-                        auto found = components::catalog::INVALID_OID;
-                        if (names) {
-                            for (const auto& [cname, coid] : names->constraint_oids) {
-                                if (cname == sub.constraint_name) {
-                                    found = coid;
-                                    break;
-                                }
-                            }
-                        }
-                        if (found == components::catalog::INVALID_OID) {
-                            std::pmr::string msg{resource};
-                            msg.append("constraint \"");
-                            msg.append(sub.constraint_name.data(), sub.constraint_name.size());
-                            msg.append("\" of relation \"");
-                            msg.append(node->target().collection.t);
-                            msg.append("\" does not exist");
-                            co_return core::error_t(core::error_code_t::invalid_constraint, std::move(msg));
-                        }
-                        sub.constraint_oid = found;
-                    }
-                }
                 break;
             }
             case node_type::drop_t: {
@@ -1310,17 +1263,17 @@ namespace services::dispatcher {
                 return core::error_t::no_error();
             }
             const auto& target = resolves.external_targets.front();
-            std::pmr::string msg{statement_of(target.type), resource};
-            msg += " target \"";
-            msg += target.written.to_string();
+            std::string role{statement_of(target.type)};
+            role += " target";
             if (!target.written.unique_identifier.t.empty() || !target.written.schema.t.empty()) {
-                msg += "\" names a uid or schema segment, which this catalog has no place for: a relation lives in a "
-                       "database — write it as [database.]name; nothing was changed";
-            } else {
-                // Nothing but a database is left, and the only statement that records one is a type:
-                // pg_type rows all sit in public, so the database it names is unreachable.
-                msg += "\" names a database, but a type always lives in \"public\"; nothing was changed";
+                return catalog_resolve::refuse_segments(resource, role, target.written);
             }
+            // Nothing but a database is left, and the only statement that records one is a type:
+            // pg_type rows all sit in public, so the database it names is unreachable.
+            std::pmr::string msg{role, resource};
+            msg += " \"";
+            msg += target.written.to_string();
+            msg += "\" names a database, but a type always lives in \"public\"; nothing was changed";
             return core::error_t{core::error_code_t::invalid_parameter, std::move(msg)};
         }
     } // namespace

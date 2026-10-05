@@ -512,7 +512,7 @@ namespace components::operators {
                         mark_failed();
                         co_return;
                     }
-                    affected_rows_ += rows;
+                    written_ += rows;
                 }
                 chunks.clear();
                 index_old_chunks_.clear();
@@ -675,7 +675,7 @@ namespace components::operators {
                     }
                 }
 
-                affected_rows_ += appended.count;
+                written_ += appended.count;
 
                 co_return dml_detail::flush_outcome_t{core::error_t::no_error(),
                                                       true,

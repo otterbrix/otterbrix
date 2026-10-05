@@ -1344,7 +1344,13 @@ TEST_CASE("name_resolution::drop_matview::kind_mismatch_is_refused") {
         auto refused = run_refused(db, sql);
         INFO(sql << ": " << to_std(refused.what));
         CHECK(to_std(refused.what).find(text) != std::string::npos);
+        CHECK(refused.type == core::error_code_t::schema_error);
     }
+    // PostgreSQL 18 DropErrorMsgWrongType: the hint names the DROP for the kind the name has.
+    CHECK(to_std(run_refused(db, "DROP VIEW d.t;").what).find("HINT: Use DROP TABLE to remove a table.") !=
+          std::string::npos);
+    CHECK(to_std(run_refused(db, "DROP MATERIALIZED VIEW d.v;").what).find("HINT: Use DROP VIEW to remove a view.") !=
+          std::string::npos);
     run_ok(db, "SELECT * FROM d.mv;");
     run_ok(db, "SELECT * FROM d.v;");
 }

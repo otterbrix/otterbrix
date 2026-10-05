@@ -5,8 +5,8 @@
 
 namespace services::planner::impl {
 
-    plan_result_t create_plan_allocate_oids(const context_storage_t& context,
-                                            const components::logical_plan::node_ptr& node) {
+    components::operators::operator_ptr create_plan_allocate_oids(const context_storage_t& context,
+                                                                  const components::logical_plan::node_ptr& node) {
         auto* n = static_cast<components::logical_plan::node_allocate_oids_t*>(node.get());
         return boost::intrusive_ptr(
             new components::operators::operator_allocate_oids_t(context.resource, context.log.clone(), n->count(), n));

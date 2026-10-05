@@ -443,10 +443,15 @@ namespace services::wal {
     std::uintmax_t manager_wal_replicate_t::total_wal_bytes() const noexcept {
         if (config_.path.empty())
             return 0;
-        // A measure for the auto-checkpoint threshold: what cannot be listed or sized adds nothing.
+        // A measure for the auto-checkpoint threshold: what cannot be listed or sized adds nothing, and the
+        // listing failure is logged.
         std::uintmax_t total = 0;
         auto listed = core::filesystem::list_dir(resource_, config_.path);
         if (listed.has_error()) {
+            auto log = log_.clone();
+            error(log,
+                  "manager_wal_replicate::total_wal_bytes: the WAL size is undercounted: {}",
+                  listed.error().what);
             return total;
         }
         for (const auto& db_entry : listed.value()) {
@@ -455,6 +460,10 @@ namespace services::wal {
             }
             auto segments = find_wal_segments(resource_, db_entry.path, "wal_");
             if (segments.has_error()) {
+                auto log = log_.clone();
+                error(log,
+                      "manager_wal_replicate::total_wal_bytes: the WAL size is undercounted: {}",
+                      segments.error().what);
                 continue;
             }
             for (const auto& seg_path : segments.value()) {

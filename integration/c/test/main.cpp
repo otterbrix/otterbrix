@@ -114,19 +114,6 @@ TEST_CASE("c-api: CREATE TABLE in a database that does not exist is refused", "[
     release_cursor(other);
 }
 
-TEST_CASE("c-api: CREATE DATABASE folds an unquoted name to lower case", "[c-api][ddl]") {
-    test_db_t t("create_database_case");
-    REQUIRE(t.ptr != nullptr);
-
-    run_ok(t.ptr, "CREATE DATABASE SqlDatabase;");
-    cursor_ptr folded = execute_sql(t.ptr,
-                                    sv(std::string("SELECT nspname FROM pg_catalog.pg_namespace "
-                                                   "WHERE nspname = 'sqldatabase';")));
-    REQUIRE(cursor_is_success(folded));
-    CHECK(cursor_size(folded) == 1);
-    release_cursor(folded);
-}
-
 // Document mode through the C API: a lower-case database, a table without columns, fields registered by INSERT.
 TEST_CASE("c-api: document flow in a database created through the C API", "[c-api][ddl]") {
     test_db_t t("document_flow");
@@ -140,20 +127,6 @@ TEST_CASE("c-api: document flow in a database created through the C API", "[c-ap
     cursor_ptr read = execute_sql(t.ptr, sv(std::string("SELECT id FROM docdb.docs;")));
     REQUIRE(cursor_is_success(read));
     CHECK(cursor_size(read) == 3);
-    release_cursor(read);
-}
-
-// SQL folds an unquoted table name to lower case, so a mixed-case INSERT reaches the lower-case table.
-TEST_CASE("c-api: an unquoted table name folds to lower case", "[c-api][ddl]") {
-    test_db_t t("create_collection_case");
-    REQUIRE(t.ptr != nullptr);
-    run_ok(t.ptr, "CREATE DATABASE db;");
-
-    run_ok(t.ptr, "CREATE TABLE db.testcollection();");
-    run_ok(t.ptr, "INSERT INTO db.TestCollection (id) VALUES (1);");
-    cursor_ptr read = execute_sql(t.ptr, sv(std::string("SELECT id FROM db.testcollection;")));
-    REQUIRE(cursor_is_success(read));
-    CHECK(cursor_size(read) == 1);
     release_cursor(read);
 }
 

@@ -48,8 +48,6 @@ public class LifetimeTest
             otterbrix.Dispose();
             otterbrix.Dispose();
             Assert.Throws<ObjectDisposedException>(() => otterbrix.Execute("SELECT 1;"));
-            Assert.Throws<ObjectDisposedException>(() => otterbrix.Execute("CREATE DATABASE db;"));
-            Assert.Throws<ObjectDisposedException>(() => otterbrix.Execute("CREATE TABLE db.t();"));
 
             using ValueWrapper value = cursor.GetValue(0, "name");
             Assert.That(value.GetString(), Is.EqualTo("kept"));

@@ -26,7 +26,7 @@ namespace components::operators {
     operator_alter_column_drop_t::operator_alter_column_drop_t(std::pmr::memory_resource* resource,
                                                                log_t log,
                                                                catalog::oid_t table_oid,
-                                                               std::string column_name,
+                                                               core::columnname_t column_name,
                                                                qualified_name_t relation,
                                                                char relkind,
                                                                catalog::oid_t attoid,
@@ -49,7 +49,7 @@ namespace components::operators {
 
         // Match by (attrelid, attname), not attoid_: node_alter_column_t::set_attoid has no callers, so keying
         // on it would silently no-op every DROP COLUMN; attoid_ is kept only as a cross-check when present.
-        if (column_name_.empty()) {
+        if (column_name_.t.empty()) {
             mark_executed();
             co_return;
         }
@@ -89,7 +89,7 @@ namespace components::operators {
                 // get_value<string_view>, not chunk.value(): the latter's logical_value_t is a temporary the
                 // view would outlive.
                 const auto attname_cell = chunk.get_value<std::string_view>(2, i);
-                if (attname_cell != column_name_)
+                if (attname_cell != column_name_.t)
                     continue;
                 const auto row_attoid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
                 if (attoid_ != catalog::INVALID_OID && row_attoid != attoid_)
@@ -136,7 +136,7 @@ namespace components::operators {
                 rel += std::to_string(table_oid_);
             }
             std::string msg = "column \"";
-            msg += column_name_;
+            msg += column_name_.t;
             msg += "\" of relation \"";
             msg += rel;
             msg += "\" does not exist; use DROP COLUMN IF EXISTS to ignore it";
@@ -192,7 +192,7 @@ namespace components::operators {
                     std::string msg = "alter_column_drop: a pg_depend row for constraint oid ";
                     msg += std::to_string(dep_oid);
                     msg += " has no readable deptype — whether it blocks dropping column \"";
-                    msg += column_name_;
+                    msg += column_name_.t;
                     msg += "\" cannot be determined";
                     set_error(
                         core::error_t{core::error_code_t::schema_error, std::pmr::string{std::move(msg), resource_}});
@@ -264,7 +264,7 @@ namespace components::operators {
                 con_table += std::to_string(con_relid);
             }
             std::string msg = "cannot drop column \"";
-            msg += column_name_;
+            msg += column_name_.t;
             msg += "\": foreign key constraint \"";
             msg += con_name;
             msg += "\" on table \"";
@@ -278,15 +278,14 @@ namespace components::operators {
         // What depends on the column goes the way any DROP takes its dependents: RESTRICT refuses a normal one
         // anywhere in the closure, CASCADE drops each whole (an index with its pg_index row, a view with its
         // pg_rewrite rows). The column itself is tombstoned below.
-        if (auto dropped = co_await drop_with_dependents(
-                resource_,
-                ctx,
-                pg_attr_oid,
-                attoid,
-                behavior_,
-                "column " + column_name_ + " of " +
-                    (relkind_ == catalog::relkind::materialized_view ? "materialized view " : "table ") +
-                    relation_.to_string());
+        if (auto dropped = co_await drop_with_dependents(resource_,
+                                                         ctx,
+                                                         pg_attr_oid,
+                                                         attoid,
+                                                         behavior_,
+                                                         relation_,
+                                                         relkind_,
+                                                         column_name_);
             dropped.contains_error()) {
             set_error(dropped);
             co_return;
@@ -321,7 +320,7 @@ namespace components::operators {
         auto tombstone = catalog::build_pg_attribute_row(resource_,
                                                          attoid,
                                                          table_oid_,
-                                                         column_name_,
+                                                         column_name_.t,
                                                          atttypid,
                                                          attnum,
                                                          att_not_null,
@@ -373,7 +372,7 @@ namespace components::operators {
             attoid,
             components::pg_attribute_commit_id_backfill_t::kind_t::dropped_at,
             table_oid_,
-            column_name_,
+            column_name_.t,
             std::string{},
             components::types::complex_logical_type{}});
 

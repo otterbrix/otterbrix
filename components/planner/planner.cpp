@@ -504,48 +504,45 @@ namespace components::planner {
         // DROP INDEX is not routed here (see rewrite_drop_index): this never tears down the index actor.
         node_ptr rewrite_drop(std::pmr::memory_resource* r, node_ptr node) {
             auto* d = static_cast<logical_plan::node_drop_t*>(node.get());
-            catalog::oid_t classid = catalog::INVALID_OID;
-            catalog::oid_t seed_objid = catalog::INVALID_OID;
-            const auto relation = [d, &classid, &seed_objid](const char* kind) {
-                classid = catalog::well_known_oid::pg_class_table;
-                seed_objid = d->table_oid();
-                return std::string{kind} + d->target().to_string();
-            };
-            std::string target;
+            catalog::oid_t classid = catalog::well_known_oid::pg_class_table;
+            catalog::oid_t seed_objid = d->table_oid();
+            qualified_name_t target = d->target();
+            char relkind = catalog::relkind::regular;
             switch (d->kind()) {
                 case logical_plan::drop_target_kind::database:
                     classid = catalog::well_known_oid::pg_namespace_table;
                     seed_objid = d->namespace_oid();
-                    target = "database " + d->target().database.t;
                     break;
                 case logical_plan::drop_target_kind::type:
                     classid = catalog::well_known_oid::pg_type_table;
                     seed_objid = d->type_oid();
-                    target = "type " + d->target().collection.t;
+                    target = qualified_name_t{d->target().collection};
                     break;
                 case logical_plan::drop_target_kind::collection:
-                    target = relation("table ");
-                    break;
-                case logical_plan::drop_target_kind::sequence:
-                    target = relation("sequence ");
-                    break;
-                case logical_plan::drop_target_kind::view:
-                    target = relation("view ");
-                    break;
-                case logical_plan::drop_target_kind::materialized_view:
-                    target = relation("materialized view ");
-                    break;
-                case logical_plan::drop_target_kind::macro:
-                    target = relation("function ");
                     break;
                 case logical_plan::drop_target_kind::index:
+                    classid = catalog::INVALID_OID;
+                    seed_objid = catalog::INVALID_OID;
+                    break;
+                case logical_plan::drop_target_kind::sequence:
+                    relkind = catalog::relkind::sequence;
+                    break;
+                case logical_plan::drop_target_kind::view:
+                    relkind = catalog::relkind::view;
+                    break;
+                case logical_plan::drop_target_kind::materialized_view:
+                    relkind = catalog::relkind::materialized_view;
+                    break;
+                case logical_plan::drop_target_kind::macro:
+                    relkind = catalog::relkind::macro;
                     break;
             }
             return boost::intrusive_ptr(new logical_plan::node_dynamic_cascade_delete_t(r,
                                                                                         classid,
                                                                                         seed_objid,
                                                                                         d->behavior(),
-                                                                                        std::move(target)));
+                                                                                        std::move(target),
+                                                                                        relkind));
         }
 
         // No OIDs are pre-allocated — add/drop resolve their attoid at execution time.
@@ -601,12 +598,13 @@ namespace components::planner {
                         msg.append(": constraint oid unresolved — nothing was dropped");
                         return core::error_t(core::error_code_t::invalid_constraint, std::move(msg));
                     }
-                    seq->append_child(boost::intrusive_ptr(
-                        new logical_plan::node_dynamic_cascade_delete_t(r,
-                                                                        catalog::well_known_oid::pg_constraint_table,
-                                                                        sub.constraint_oid,
-                                                                        sub.behavior,
-                                                                        "constraint " + sub.constraint_name)));
+                    seq->append_child(boost::intrusive_ptr(new logical_plan::node_dynamic_cascade_delete_t(
+                        r,
+                        catalog::well_known_oid::pg_constraint_table,
+                        sub.constraint_oid,
+                        sub.behavior,
+                        qualified_name_t{core::relname_t{sub.constraint_name}},
+                        catalog::relkind::regular)));
                 }
             }
             return node_ptr{seq};

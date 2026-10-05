@@ -6,12 +6,13 @@ namespace components::logical_plan {
                                                                  components::catalog::oid_t seed_classid,
                                                                  components::catalog::oid_t seed_objid,
                                                                  components::catalog::drop_behavior_t behavior,
-                                                                 std::string target)
-        : node_t(resource, node_type::dynamic_cascade_delete_t)
+                                                                 qualified_name_t target,
+                                                                 char relkind)
+        : node_t(resource, node_type::dynamic_cascade_delete_t, std::move(target))
         , seed_classid_(seed_classid)
         , seed_objid_(seed_objid)
         , behavior_(behavior)
-        , target_(std::move(target)) {}
+        , relkind_(relkind) {}
 
     hash_t node_dynamic_cascade_delete_t::hash_impl() const { return 0; }
 

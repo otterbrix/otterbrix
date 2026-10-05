@@ -71,6 +71,41 @@ namespace components::operators {
             return out;
         }
 
+        std::string described(catalog::oid_t classid,
+                              char relkind,
+                              const qualified_name_t& target,
+                              const core::columnname_t& column) {
+            using namespace catalog::well_known_oid;
+            const auto relation = [relkind, &target] {
+                switch (relkind) {
+                    case catalog::relkind::sequence:
+                        return "sequence " + target.to_string();
+                    case catalog::relkind::view:
+                        return "view " + target.to_string();
+                    case catalog::relkind::materialized_view:
+                        return "materialized view " + target.to_string();
+                    case catalog::relkind::macro:
+                        return "function " + target.to_string();
+                    default:
+                        return "table " + target.to_string();
+                }
+            };
+            switch (classid) {
+                case pg_namespace_table:
+                    return "database " + target.to_string();
+                case pg_type_table:
+                    return "type " + target.to_string();
+                case pg_constraint_table:
+                    return "constraint " + target.to_string();
+                case pg_proc_table:
+                    return "function " + target.to_string();
+                case pg_attribute_table:
+                    return "column " + column.t + " of " + relation();
+                default:
+                    return relation();
+            }
+        }
+
     } // namespace
 
     actor_zeta::unique_future<core::error_t> drop_with_dependents(std::pmr::memory_resource* resource,
@@ -78,7 +113,9 @@ namespace components::operators {
                                                                   catalog::oid_t seed_classid,
                                                                   catalog::oid_t seed_objid,
                                                                   catalog::drop_behavior_t behavior,
-                                                                  std::string target) {
+                                                                  const qualified_name_t& target,
+                                                                  char relkind,
+                                                                  const core::columnname_t& column) {
         execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
         if (seed_objid == catalog::INVALID_OID) {
@@ -155,7 +192,9 @@ namespace components::operators {
         dep_graph.clear();
 
         if (plan.status == catalog::ddl_status::restrict_blocked) {
-            co_return catalog::dependent_objects_error(resource, target, plan.blocking_oid);
+            co_return catalog::dependent_objects_error(resource,
+                                                       described(seed_classid, relkind, target, column),
+                                                       plan.blocking_oid);
         }
         if (plan.status == catalog::ddl_status::cycle_detected) {
             std::string msg = "DROP: pg_depend cycle detected at oid ";
@@ -322,16 +361,25 @@ namespace components::operators {
                                                                          catalog::oid_t seed_classid,
                                                                          catalog::oid_t seed_objid,
                                                                          catalog::drop_behavior_t behavior,
-                                                                         std::string target)
+                                                                         qualified_name_t target,
+                                                                         char relkind)
         : read_write_operator_t(resource, std::move(log), operator_type::dynamic_cascade_delete)
         , seed_classid_(seed_classid)
         , seed_objid_(seed_objid)
         , behavior_(behavior)
-        , target_(std::move(target)) {}
+        , target_(std::move(target))
+        , relkind_(relkind) {}
 
     actor_zeta::unique_future<void>
     operator_dynamic_cascade_delete_t::await_async_and_resume(pipeline::context_t* ctx) {
-        auto dropped = co_await drop_with_dependents(resource_, ctx, seed_classid_, seed_objid_, behavior_, target_);
+        auto dropped = co_await drop_with_dependents(resource_,
+                                                     ctx,
+                                                     seed_classid_,
+                                                     seed_objid_,
+                                                     behavior_,
+                                                     target_,
+                                                     relkind_,
+                                                     core::columnname_t{});
         if (dropped.contains_error()) {
             set_error(dropped);
             co_return;

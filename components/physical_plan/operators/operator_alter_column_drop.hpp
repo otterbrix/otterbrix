@@ -16,7 +16,7 @@ namespace components::operators {
         operator_alter_column_drop_t(std::pmr::memory_resource* resource,
                                      log_t log,
                                      components::catalog::oid_t table_oid,
-                                     std::string column_name,
+                                     core::columnname_t column_name,
                                      qualified_name_t relation,
                                      char relkind,
                                      components::catalog::oid_t attoid,
@@ -31,7 +31,7 @@ namespace components::operators {
         components::catalog::oid_t table_oid_;
         // No namespace_oid_: the column resolves by (attrelid=table_oid_, attname), and table_oid is already
         // unique across namespaces, so a stored namespace oid would be dead state nobody reads.
-        std::string column_name_;
+        core::columnname_t column_name_;
         qualified_name_t relation_;
         char relkind_;
         components::catalog::oid_t attoid_;

@@ -11,7 +11,7 @@ namespace services::planner::impl {
         return boost::intrusive_ptr(new components::operators::operator_alter_column_drop_t(context.resource,
                                                                                             context.log.clone(),
                                                                                             n->table_oid(),
-                                                                                            n->column_name().t,
+                                                                                            n->column_name(),
                                                                                             n->target(),
                                                                                             n->relkind(),
                                                                                             n->attoid(),

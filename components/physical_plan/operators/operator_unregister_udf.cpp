@@ -4,6 +4,7 @@
 #include "operator_dynamic_cascade_delete.hpp"
 
 #include <components/base/collection_full_name.hpp>
+#include <components/catalog/catalog_codes.hpp>
 #include <components/compute/function.hpp>
 #include <components/context/context.hpp>
 #include <core/result_wrapper.hpp>
@@ -116,7 +117,9 @@ namespace components::operators {
                                                              components::catalog::well_known_oid::pg_proc_table,
                                                              oid,
                                                              behavior_,
-                                                             "function " + function_name_);
+                                                             qualified_name_t{core::relname_t{function_name_}},
+                                                             components::catalog::relkind::regular,
+                                                             core::columnname_t{});
                 if (dropped.contains_error()) {
                     set_error(dropped);
                     mark_failed();

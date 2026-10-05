@@ -25,15 +25,14 @@ use sqlx_core::HashMap;
 /// Maps an [`otterbrix::Error`] to the corresponding [`sqlx_core::error::Error`].
 ///
 /// Engine query errors are wrapped in [`OtterbrixDbError`] and surface as
-/// `Error::Database`; a `TypeMismatch` becomes `Error::Protocol`; invalid paths and a refused start become `Error::Configuration`.
+/// `Error::Database`; a `TypeMismatch` becomes `Error::Protocol`; invalid paths become `Error::Configuration`.
 /// The original `Display` text is preserved in every variant.
 pub(crate) fn map_otterbrix_error(err: otterbrix::Error) -> Error {
     let msg = err.to_string();
     match err {
-        otterbrix::Error::Query { code, message } => {
+        otterbrix::Error::Engine { code, message } => {
             Error::Database(Box::new(OtterbrixDbError { code, message }))
         }
-        otterbrix::Error::Open { .. } => Error::Configuration(msg.into()),
         otterbrix::Error::InvalidPath(_) => Error::Configuration(msg.into()),
         otterbrix::Error::TypeMismatch { .. } => Error::Protocol(msg),
     }
@@ -281,7 +280,7 @@ mod error_mapping_tests {
 
     #[test]
     fn query_error_becomes_database_error_with_code_and_message() {
-        let err = map_otterbrix_error(ObError::Query {
+        let err = map_otterbrix_error(ObError::Engine {
             code: 42,
             message: "boom".to_owned(),
         });

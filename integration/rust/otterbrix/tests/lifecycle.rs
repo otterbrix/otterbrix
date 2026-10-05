@@ -52,7 +52,7 @@ fn a_second_open_of_the_same_directory_is_refused() {
     let dir = format!("/tmp/otterbrix_safe_locked_{}_{id}", process::id());
     let first = Database::open(Config::new(&dir)).expect("first open");
     match Database::open(Config::new(&dir)) {
-        Err(otterbrix::Error::Open { code, message }) => {
+        Err(otterbrix::Error::Engine { code, message }) => {
             assert_ne!(code, 0);
             assert!(message.contains("unique directory"), "refusal: {message}");
         }

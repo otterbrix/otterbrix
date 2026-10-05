@@ -1,26 +1,15 @@
 use otterbrix::Error;
 
 #[test]
-fn display_query_error() {
-    let msg = Error::Query {
+fn display_engine_error() {
+    let msg = Error::Engine {
         code: 42,
         message: "boom".to_string(),
     }
     .to_string();
-    assert!(msg.contains("query error"), "missing prefix: {msg:?}");
+    assert!(msg.contains("core error"), "missing prefix: {msg:?}");
     assert!(msg.contains("42"), "missing code: {msg:?}");
     assert!(msg.contains("boom"), "missing message: {msg:?}");
-}
-
-#[test]
-fn display_open_error() {
-    let msg = Error::Open {
-        code: 1,
-        message: "directory taken".to_string(),
-    }
-    .to_string();
-    assert!(msg.contains("refused to open"), "missing prefix: {msg:?}");
-    assert!(msg.contains("directory taken"), "missing message: {msg:?}");
 }
 
 #[test]

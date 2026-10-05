@@ -615,6 +615,7 @@ TEST_CASE("integration::cpp::view_binding::or_replace_of_a_table_is_refused") {
     auto refused = exec(d, "CREATE OR REPLACE VIEW vb.t AS SELECT 1 AS one;");
     INFO("error: " << error_text(refused));
     CHECK(error_text(refused).find("\"t\" is not a view") != std::string::npos);
+    CHECK(refused->get_error().type == core::error_code_t::schema_error);
     CHECK(run_ok(d, "SELECT a FROM vb.t;")->size() == 2);
 }
 
@@ -707,6 +708,7 @@ TEST_CASE("integration::cpp::view_binding::refresh_of_a_table_is_refused") {
     auto refused = exec(d, "REFRESH MATERIALIZED VIEW vb.t;");
     INFO("error: " << error_text(refused));
     CHECK(error_text(refused).find("\"t\" is not a materialized view") != std::string::npos);
+    CHECK(refused->get_error().type == core::error_code_t::schema_error);
     CHECK(run_ok(d, "SELECT a FROM vb.t;")->size() == 2);
 }
 

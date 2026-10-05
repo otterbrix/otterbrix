@@ -156,6 +156,42 @@ namespace services::collection {
         return core::error_t::no_error();
     }
 
+    namespace {
+        core::error_t
+        wrong_kind(std::pmr::memory_resource* resource, std::string_view name, char expected, std::string_view hint) {
+            assert(expected == catalog::relkind::view || expected == catalog::relkind::materialized_view);
+            std::pmr::string msg{"\"", resource};
+            msg.append(name);
+            msg.append(expected == catalog::relkind::view ? "\" is not a view" : "\" is not a materialized view");
+            if (!hint.empty()) {
+                msg.append("\nHINT: ");
+                msg.append(hint);
+            }
+            return core::error_t{core::error_code_t::schema_error, std::move(msg)};
+        }
+    } // namespace
+
+    core::error_t wrong_relation_kind(std::pmr::memory_resource* resource, std::string_view name, char expected) {
+        return wrong_kind(resource, name, expected, {});
+    }
+
+    core::error_t
+    wrong_relation_kind_to_drop(std::pmr::memory_resource* resource, std::string_view name, char expected, char found) {
+        switch (found) {
+            case catalog::relkind::regular:
+            case catalog::relkind::computed:
+                return wrong_kind(resource, name, expected, "Use DROP TABLE to remove a table.");
+            case catalog::relkind::view:
+                return wrong_kind(resource, name, expected, "Use DROP VIEW to remove a view.");
+            case catalog::relkind::materialized_view:
+                return wrong_kind(resource, name, expected, "Use DROP MATERIALIZED VIEW to remove a materialized view.");
+            case catalog::relkind::sequence:
+                return wrong_kind(resource, name, expected, "Use DROP SEQUENCE to remove a sequence.");
+            default:
+                return wrong_kind(resource, name, expected, {});
+        }
+    }
+
     core::error_t check_view_replacement(std::pmr::memory_resource* resource,
                                          const components::logical_plan::node_create_view_t& view,
                                          const components::logical_plan::resolved_table_metadata_t& existing,
@@ -164,7 +200,7 @@ namespace services::collection {
             return core::error_t{core::error_code_t::schema_error, std::pmr::string{std::move(msg), resource}};
         };
         if (existing.relkind != catalog::relkind::view) {
-            return refuse("\"" + view.viewname().t + "\" is not a view");
+            return wrong_relation_kind(resource, view.viewname().t, catalog::relkind::view);
         }
         if (std::find(read_views.begin(), read_views.end(), existing.table_oid) != read_views.end()) {
             return refuse("view \"" + view.viewname().t + "\" would read itself");

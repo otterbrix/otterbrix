@@ -611,15 +611,19 @@ namespace services::collection::executor {
                 static_cast<const components::logical_plan::node_refresh_matview_t*>(plan.sub_queries.back().get());
             const auto& matview_name = refresh->target();
             const auto* matview = plan.catalog_resolves.table_md(matview_name.database.t, matview_name.collection.t);
-            if (matview == nullptr || matview->relkind != components::catalog::relkind::materialized_view) {
+            if (matview == nullptr) {
                 std::pmr::string msg{"\"", resource()};
                 msg.append(matview_name.collection.t);
-                msg.append(matview == nullptr ? "\" does not exist" : "\" is not a materialized view");
+                msg.append("\" does not exist");
+                co_return execute_result_t{
+                    make_cursor(resource(), core::error_t{core::error_code_t::table_not_exists, std::move(msg)})};
+            }
+            if (matview->relkind != components::catalog::relkind::materialized_view) {
                 co_return execute_result_t{make_cursor(
                     resource(),
-                    core::error_t{matview == nullptr ? core::error_code_t::table_not_exists
-                                                     : core::error_code_t::schema_error,
-                                  std::move(msg)})};
+                    wrong_relation_kind(resource(),
+                                        matview_name.collection.t,
+                                        components::catalog::relkind::materialized_view))};
             }
             {
                 auto done = co_await execute_statement_(session,
@@ -1107,22 +1111,9 @@ namespace services::collection::executor {
                         const char expected = is_view_statement ? components::catalog::relkind::view
                                                                 : components::catalog::relkind::materialized_view;
                         if (md->relkind != expected) {
-                            std::pmr::string msg{"\"", resource()};
-                            msg.append(id.table_name());
-                            msg.append(is_view_statement ? "\" is not a view" : "\" is not a materialized view");
-                            switch (md->relkind) {
-                                case components::catalog::relkind::view:
-                                    msg.append("; use DROP VIEW to remove a view");
-                                    break;
-                                case components::catalog::relkind::materialized_view:
-                                    msg.append("; use DROP MATERIALIZED VIEW to remove a materialized view");
-                                    break;
-                                default:
-                                    msg.append("; use DROP TABLE to remove a table");
-                                    break;
-                            }
-                            error = make_cursor(resource(),
-                                                core::error_t{core::error_code_t::invalid_parameter, std::move(msg)});
+                            error = make_cursor(
+                                resource(),
+                                wrong_relation_kind_to_drop(resource(), id.table_name(), expected, md->relkind));
                         }
                         break;
                     }

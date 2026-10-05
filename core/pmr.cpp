@@ -4,16 +4,6 @@
 
 #include <cstring>
 
-// clang answers neither __SANITIZE_ADDRESS__ (GCC) nor _ADDRESS_SANITIZER (MSVC) -- only
-// __has_feature(address_sanitizer) -- so without that arm an ASAN build on clang silently kept the pool.
-#if defined(__SANITIZE_ADDRESS__) || defined(_ADDRESS_SANITIZER)
-#define OTTERBRIX_ADDRESS_SANITIZER 1
-#elif defined(__has_feature)
-#if __has_feature(address_sanitizer)
-#define OTTERBRIX_ADDRESS_SANITIZER 1
-#endif
-#endif
-
 namespace core::pmr {
 
     namespace {

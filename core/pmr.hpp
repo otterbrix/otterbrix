@@ -3,6 +3,7 @@
 #include "resource_tracer.hpp"
 
 #include <cstddef>
+#include <iosfwd>
 #include <memory>
 #include <memory_resource>
 #include <string>

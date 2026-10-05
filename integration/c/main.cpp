@@ -8,9 +8,11 @@
 #include <integration/cpp/otterbrix.hpp>
 
 #include <cassert>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
-#include <stdexcept>
+#include <new>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -50,6 +52,12 @@ namespace {
         return reinterpret_cast<value_storage_t*>(ptr);
     }
 
+    // otterbrix.h: running out of memory aborts.
+    [[noreturn]] void out_of_memory() {
+        std::fputs("otterbrix C API: out of memory\n", stderr);
+        std::abort();
+    }
+
     cursor_ptr store_cursor(otterbrix_t* engine, components::cursor::cursor_t_ptr c) {
         auto storage = std::make_unique<cursor_storage_t>();
         storage->engine = otterbrix::otterbrix_ptr{engine};
@@ -57,71 +65,48 @@ namespace {
         return reinterpret_cast<cursor_ptr>(storage.release());
     }
 
-    cursor_ptr exception_cursor(otterbrix_t* engine, const std::exception& ex) {
-        if (engine == nullptr) {
-            return nullptr;
-        }
-        auto* resource = engine->dispatcher()->resource();
+    cursor_ptr error_cursor(otterbrix_t* engine, core::error_code_t code, std::string_view text) noexcept {
         try {
-            return store_cursor(engine, components::cursor::make_cursor(
-                resource,
-                core::error_t(core::error_code_t::other_error, std::pmr::string{ex.what(), resource})));
-        } catch (...) {
-            return nullptr;
-        }
-    }
-
-    cursor_ptr unknown_exception_cursor(otterbrix_t* engine) {
-        if (engine == nullptr) {
-            return nullptr;
-        }
-        auto* resource = engine->dispatcher()->resource();
-        try {
-            return store_cursor(engine, components::cursor::make_cursor(
-                resource,
-                core::error_t(core::error_code_t::other_error, std::pmr::string{"unknown C++ exception", resource})));
-        } catch (...) {
-            return nullptr;
+            auto* resource = engine->dispatcher()->resource();
+            return store_cursor(engine,
+                                components::cursor::make_cursor(resource, core::error_t(code, std::pmr::string{text, resource})));
+        } catch (const std::bad_alloc&) {
+            out_of_memory();
         }
     }
 
     // Freed by the caller with otterbrix_free_string.
-    char* copy_to_c_string(std::string_view text) {
-        auto* copy = new char[text.size() + 1];
+    char* copy_to_c_string(std::string_view text) noexcept {
+        auto* copy = new (std::nothrow) char[text.size() + 1];
+        if (copy == nullptr) {
+            out_of_memory();
+        }
         std::memcpy(copy, text.data(), text.size());
         copy[text.size()] = '\0';
         return copy;
     }
 
-    error_message make_error_message(const core::error_t& error) {
+    error_message make_error_message(const core::error_t& error) noexcept {
         return error_message{static_cast<int32_t>(error.type),
                              copy_to_c_string(std::string_view{error.what.data(), error.what.size()})};
     }
 
-    std::string string_view_to_string(string_view_t sv) {
-        if (sv.size == 0) {
-            return {};
-        }
-        if (sv.data == nullptr) {
-            throw std::invalid_argument("string_view_t: non-zero size with null data");
-        }
-        return std::string(sv.data, sv.size);
+    std::string_view to_view(string_view_t sv) {
+        assert((sv.data != nullptr || sv.size == 0) && "string_view_t: non-zero size with null data");
+        return std::string_view{sv.data, sv.size};
     }
 } // namespace
 
 extern "C" otterbrix_ptr otterbrix_create(config_t cfg, error_message* out_error) {
     assert(out_error != nullptr && "otterbrix_create: out_error is required");
-    if (out_error == nullptr) {
-        return nullptr;
-    }
     *out_error = error_message{static_cast<int32_t>(core::error_code_t::none), nullptr};
     try {
         auto config = create_config();
         config.log.level = static_cast<log_t::level>(cfg.level);
-        config.log.path = std::pmr::string(cfg.log_path.data, cfg.log_path.size);
-        config.wal.path = std::pmr::string(cfg.wal_path.data, cfg.wal_path.size);
-        config.disk.path = std::pmr::string(cfg.disk_path.data, cfg.disk_path.size);
-        config.main_path = std::pmr::string(cfg.main_path.data, cfg.main_path.size);
+        config.log.path = std::pmr::string(to_view(cfg.log_path));
+        config.wal.path = std::pmr::string(to_view(cfg.wal_path));
+        config.disk.path = std::pmr::string(to_view(cfg.disk_path));
+        config.main_path = std::pmr::string(to_view(cfg.main_path));
 
         auto engine = otterbrix::make_otterbrix(config);
         if (engine.has_error()) {
@@ -131,6 +116,8 @@ extern "C" otterbrix_ptr otterbrix_create(config_t cfg, error_message* out_error
         otterbrix_t* handle = engine.value().get();
         intrusive_ptr_add_ref(handle);
         return reinterpret_cast<otterbrix_ptr>(handle);
+    } catch (const std::bad_alloc&) {
+        out_of_memory();
     } catch (...) {
         *out_error = error_message{static_cast<int32_t>(core::error_code_t::other_error),
                                    copy_to_c_string("otterbrix_create: unknown C++ exception")};
@@ -140,41 +127,34 @@ extern "C" otterbrix_ptr otterbrix_create(config_t cfg, error_message* out_error
 
 extern "C" void otterbrix_destroy(otterbrix_ptr ptr) { intrusive_ptr_release(live_otterbrix(ptr)); }
 
-extern "C" cursor_ptr execute_sql(otterbrix_ptr ptr, string_view_t query_raw) {
-    otterbrix_t* engine = nullptr;
+extern "C" cursor_ptr execute_sql(otterbrix_ptr ptr, string_view_t query) {
+    otterbrix_t* engine = live_otterbrix(ptr);
     try {
-        engine = live_otterbrix(ptr);
-        if (engine == nullptr) {
-            return nullptr;
-        }
-        auto session = otterbrix::session_id_t();
-        std::string query = string_view_to_string(query_raw);
-        auto cursor = engine->dispatcher()->execute_sql(session, query);
+        auto cursor = engine->dispatcher()->execute_sql(otterbrix::session_id_t(), std::string{to_view(query)});
         return store_cursor(engine, std::move(cursor));
+    } catch (const std::bad_alloc&) {
+        out_of_memory();
     } catch (const std::exception& ex) {
-        return exception_cursor(engine, ex);
+        return error_cursor(engine, core::error_code_t::other_error, ex.what());
     } catch (...) {
-        return unknown_exception_cursor(engine);
+        return error_cursor(engine, core::error_code_t::other_error, "unknown C++ exception");
     }
 }
 
 extern "C" cursor_ptr
-execute_sql_params(otterbrix_ptr ptr, string_view_t query_raw, const sql_param_t* params, size_t param_count) {
-    otterbrix_t* engine = nullptr;
+execute_sql_params(otterbrix_ptr ptr, string_view_t query, const sql_param_t* params, size_t param_count) {
+    assert(params != nullptr || param_count == 0);
+    otterbrix_t* engine = live_otterbrix(ptr);
     try {
-        engine = live_otterbrix(ptr);
-        if (engine == nullptr) {
-            return nullptr;
-        }
-        auto session = otterbrix::session_id_t();
-        std::string query = string_view_to_string(query_raw);
         auto* resource = engine->dispatcher()->resource();
         std::vector<std::pair<size_t, logical_value_t>> bound;
         bound.reserve(param_count);
         for (size_t i = 0; i < param_count; ++i) {
             const sql_param_t& p = params[i];
             if (p.index < 1) {
-                throw std::invalid_argument("sql_param_t: index must be >= 1 (e.g. $1 -> 1)");
+                return error_cursor(engine,
+                                    core::error_code_t::invalid_parameter,
+                                    "sql_param_t: index must be >= 1 (e.g. $1 -> 1)");
             }
             const size_t id = static_cast<size_t>(p.index);
             switch (p.kind) {
@@ -193,21 +173,22 @@ execute_sql_params(otterbrix_ptr ptr, string_view_t query_raw, const sql_param_t
                 case SQL_PARAM_DOUBLE:
                     bound.emplace_back(id, logical_value_t(resource, p.double_value));
                     break;
-                case SQL_PARAM_STRING: {
-                    std::string s = string_view_to_string(p.string_value);
-                    bound.emplace_back(id, logical_value_t(resource, std::move(s)));
+                case SQL_PARAM_STRING:
+                    bound.emplace_back(id, logical_value_t(resource, to_view(p.string_value)));
                     break;
-                }
                 default:
-                    throw std::invalid_argument("sql_param_t: unknown kind");
+                    return error_cursor(engine, core::error_code_t::invalid_parameter, "sql_param_t: unknown kind");
             }
         }
-        auto cursor = engine->dispatcher()->execute_sql_with_params(session, query, bound);
+        auto cursor =
+            engine->dispatcher()->execute_sql_with_params(otterbrix::session_id_t(), std::string{to_view(query)}, bound);
         return store_cursor(engine, std::move(cursor));
+    } catch (const std::bad_alloc&) {
+        out_of_memory();
     } catch (const std::exception& ex) {
-        return exception_cursor(engine, ex);
+        return error_cursor(engine, core::error_code_t::other_error, ex.what());
     } catch (...) {
-        return unknown_exception_cursor(engine);
+        return error_cursor(engine, core::error_code_t::other_error, "unknown C++ exception");
     }
 }
 
@@ -221,6 +202,7 @@ extern "C" int32_t cursor_size(cursor_ptr ptr) {
 }
 
 extern "C" bool cursor_affected_rows(cursor_ptr ptr, uint64_t* rows) {
+    assert(rows != nullptr);
     auto storage = convert_cursor(ptr);
     if (!storage->cursor->is_write()) {
         return false;
@@ -235,16 +217,12 @@ extern "C" int32_t cursor_column_count(cursor_ptr ptr) {
 }
 
 extern "C" int32_t cursor_column_logical_type(cursor_ptr ptr, int32_t column_index) {
-    try {
-        auto storage = convert_cursor(ptr);
-        const auto& types = storage->cursor->type_data();
-        if (column_index < 0 || static_cast<size_t>(column_index) >= types.size()) {
-            return -1;
-        }
-        return static_cast<int32_t>(types[static_cast<size_t>(column_index)].type());
-    } catch (...) {
+    auto storage = convert_cursor(ptr);
+    const auto& types = storage->cursor->type_data();
+    if (column_index < 0 || static_cast<size_t>(column_index) >= types.size()) {
         return -1;
     }
+    return static_cast<int32_t>(types[static_cast<size_t>(column_index)].type());
 }
 
 extern "C" bool cursor_has_next(cursor_ptr ptr) {
@@ -263,28 +241,17 @@ extern "C" bool cursor_is_error(cursor_ptr ptr) {
 }
 
 extern "C" error_message cursor_get_error(cursor_ptr ptr) {
-    try {
-        auto storage = convert_cursor(ptr);
-        return make_error_message(storage->cursor->get_error());
-    } catch (...) {
-        return error_message{static_cast<int32_t>(core::error_code_t::other_error), nullptr};
-    }
+    auto storage = convert_cursor(ptr);
+    return make_error_message(storage->cursor->get_error());
 }
 
 extern "C" char* cursor_column_name(cursor_ptr ptr, int32_t column_index) {
-    try {
-        auto storage = convert_cursor(ptr);
-        const auto& types = storage->cursor->type_data();
-        if (static_cast<size_t>(column_index) < types.size()) {
-            auto name = types[static_cast<size_t>(column_index)].alias();
-            char* str_ptr = new char[name.size() + 1];
-            std::strcpy(str_ptr, std::string(name).data());
-            return str_ptr;
-        }
-        return nullptr;
-    } catch (...) {
+    auto storage = convert_cursor(ptr);
+    const auto& types = storage->cursor->type_data();
+    if (static_cast<size_t>(column_index) >= types.size()) {
         return nullptr;
     }
+    return copy_to_c_string(types[static_cast<size_t>(column_index)].alias());
 }
 
 extern "C" value_ptr cursor_get_value(cursor_ptr ptr, int32_t row_index, int32_t column_index) {
@@ -296,18 +263,22 @@ extern "C" value_ptr cursor_get_value(cursor_ptr ptr, int32_t row_index, int32_t
         return nullptr;
     }
 
-    auto value_storage = std::make_unique<value_storage_t>();
-    value_storage->engine = storage->engine;
-    // value() spans the result batch — it locates the chunk owning the global row.
-    value_storage->value = cursor.value(static_cast<uint64_t>(column_index), static_cast<uint64_t>(row_index));
-    return reinterpret_cast<void*>(value_storage.release());
+    try {
+        auto value_storage = std::make_unique<value_storage_t>();
+        value_storage->engine = storage->engine;
+        // value() spans the result batch — it locates the chunk owning the global row.
+        value_storage->value = cursor.value(static_cast<uint64_t>(column_index), static_cast<uint64_t>(row_index));
+        return reinterpret_cast<value_ptr>(value_storage.release());
+    } catch (const std::bad_alloc&) {
+        out_of_memory();
+    }
 }
 
 extern "C" value_ptr cursor_get_value_by_name(cursor_ptr ptr, int32_t row_index, string_view_t column_name) {
     auto storage = convert_cursor(ptr);
     const auto& types = storage->cursor->type_data();
 
-    std::string name(column_name.data, column_name.size);
+    const std::string_view name = to_view(column_name);
     for (size_t col = 0; col < types.size(); ++col) {
         if (types[col].alias() == name) {
             return cursor_get_value(ptr, row_index, static_cast<int32_t>(col));
@@ -404,16 +375,8 @@ extern "C" double value_get_double(value_ptr ptr) {
 }
 
 extern "C" char* value_get_string(value_ptr ptr) {
-    try {
-        auto storage = convert_value(ptr);
-        auto sv = storage->value.value<std::string_view>();
-        char* str_ptr = new char[sv.size() + 1];
-        std::memcpy(str_ptr, sv.data(), sv.size());
-        str_ptr[sv.size()] = '\0';
-        return str_ptr;
-    } catch (...) {
-        return nullptr;
-    }
+    auto storage = convert_value(ptr);
+    return copy_to_c_string(storage->value.value<std::string_view>());
 }
 
 extern "C" void otterbrix_free_string(char* str) { delete[] str; }

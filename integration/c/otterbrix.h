@@ -29,6 +29,11 @@ typedef struct config_t {
     string_view_t main_path;
 } config_t;
 
+// Contract of every call below; a violation is asserted, never answered:
+// - an otterbrix_ptr, cursor_ptr or value_ptr passed in is never nullptr;
+// - a string_view_t with size > 0 has non-null data;
+// - out_error and rows are never nullptr, params is nullptr only with param_count 0.
+// Running out of memory aborts with a message on stderr, so a call that answers a cursor never answers nullptr.
 typedef void* otterbrix_ptr;
 typedef void* cursor_ptr;
 typedef void* value_ptr;
@@ -40,7 +45,6 @@ typedef struct error_message {
 
 // A refused start answers nullptr and fills *out_error; the caller frees out_error->message with
 // otterbrix_free_string. On success out_error->code is 0 and out_error->message is nullptr.
-// out_error must not be null.
 otterbrix_ptr otterbrix_create(config_t cfg, error_message* out_error);
 // Every cursor and value holds the engine it came from. otterbrix_destroy gives up the caller's handle: the engine
 // (its threads, its memory, the lock on main_path) goes when the last cursor or value is released too, on whichever
@@ -70,6 +74,7 @@ typedef struct sql_param_t {
     string_view_t string_value;
 } sql_param_t;
 
+// A parameter with index < 1 or an unknown kind answers an error cursor with code invalid_parameter.
 cursor_ptr execute_sql_params(otterbrix_ptr ptr, string_view_t query, const sql_param_t* params, size_t param_count);
 
 void release_cursor(cursor_ptr ptr);

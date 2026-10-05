@@ -154,7 +154,7 @@ namespace components::catalog {
         }
 
         // A view's body names, as written, and what each was bound to at CREATE VIEW: 'r' a relation by oid,
-        // 'h' a name the host resolved, 'x' a host node's declared columns (refspec) under its name.
+        // 'h' a name the host resolved.
         std::vector<column_definition_t> pg_rewrite_ref_columns() {
             std::vector<column_definition_t> c;
             c.emplace_back("ev_class", oid_col(), /*not_null*/ true);

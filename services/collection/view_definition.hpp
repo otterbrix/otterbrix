@@ -16,7 +16,7 @@ namespace services::collection {
     // What a validated CREATE VIEW body was bound to, stamped onto the node for the planner to write:
     //  - the output columns (names must be unique and present, types persistable);
     //  - a pg_rewrite_ref row per table name of the body itself (its first `own_tables` resolve entries): 'r' with
-    //    the relation's oid, 'h' for a name the host resolved; an 'x' row per host node with its declared columns;
+    //    the relation's oid, 'h' for a name the host resolved;
     //  - a pg_depend edge per user relation, per column of it the body reads, per user type of its first
     //    `own_types` type entries (PostgreSQL 18 skips pinned objects, oid < FIRST_USER_OID).
     core::error_t describe_view_body(std::pmr::memory_resource* resource,
@@ -66,10 +66,6 @@ namespace services::collection {
     std::pmr::vector<services::disk::resolve_function_result_t>
     proc_rows_of(std::pmr::memory_resource* resource,
                  const std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>>& per_key);
-
-    // A host node's declared columns as one comparable text.
-    std::string host_node_spec(std::pmr::memory_resource* resource,
-                               const std::pmr::vector<components::types::complex_logical_type>& columns);
 
     // A read of a view is what CREATE VIEW recorded (Trino 483 checkViewStaleness): the validated body answers as
     // many columns as were stored, each named the same without regard to case and of exactly the stored type. A host

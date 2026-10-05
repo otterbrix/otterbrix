@@ -4,7 +4,6 @@
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/expressions/udf_references.hpp>
-#include <components/logical_plan/node_extension.hpp>
 #include <components/physical_plan/operators/catalog_util.hpp>
 #include <components/planner/view_expansion.hpp>
 #include <services/dispatcher/validate_logical_plan.hpp>
@@ -125,30 +124,7 @@ namespace services::collection {
             return proargmatchers + function_spec_separator + prorettype;
         }
 
-        void collect_host_nodes(std::pmr::memory_resource* resource,
-                                const node_t* node,
-                                std::pmr::vector<std::pair<std::string, std::string>>& out) {
-            if (!node) {
-                return;
-            }
-            if (node->type() == components::logical_plan::node_type::extension_t) {
-                const auto* ext = static_cast<const components::logical_plan::node_extension_t*>(node);
-                std::string name{ext->name()};
-                if (std::none_of(out.begin(), out.end(), [&](const auto& seen) { return seen.first == name; })) {
-                    out.emplace_back(std::move(name), host_node_spec(resource, ext->columns()));
-                }
-            }
-            for (const auto& c : node->children()) {
-                collect_host_nodes(resource, c.get(), out);
-            }
-        }
     } // namespace
-
-    std::string host_node_spec(std::pmr::memory_resource* resource,
-                               const std::pmr::vector<components::types::complex_logical_type>& columns) {
-        std::pmr::vector<components::types::complex_logical_type> fields(columns.begin(), columns.end(), resource);
-        return catalog::encode_type_spec(components::types::complex_logical_type::create_struct("host", fields));
-    }
 
     core::error_t check_expanded_view(std::pmr::memory_resource* resource,
                                       const components::logical_plan::resolved_table_metadata_t& view,
@@ -396,7 +372,6 @@ namespace services::collection {
                                      std::size_t own_types,
                                      const dispatcher::validation::column_uses_t& uses) {
         using components::logical_plan::view_refkind::host_name;
-        using components::logical_plan::view_refkind::host_node;
         using components::logical_plan::view_refkind::relation;
 
         std::pmr::vector<components::table::column_definition_t> columns{resource};
@@ -461,16 +436,6 @@ namespace services::collection {
                     add_dependency(dependencies, catalog::well_known_oid::pg_type_table, entries[i].type_md->type_oid);
                 }
             }
-        }
-
-        std::pmr::vector<std::pair<std::string, std::string>> host_nodes{resource};
-        collect_host_nodes(resource, view.body().get(), host_nodes);
-        for (auto& [name, spec] : host_nodes) {
-            catalog::view_binding_t binding;
-            binding.refkind = host_node;
-            binding.relname = std::move(name);
-            binding.refspec = std::move(spec);
-            bindings.push_back(std::move(binding));
         }
 
         view.set_columns(std::move(columns));

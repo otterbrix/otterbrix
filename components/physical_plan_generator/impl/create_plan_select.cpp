@@ -67,7 +67,8 @@ namespace services::planner::impl {
         return columns;
     }
 
-    plan_result_t create_plan_select(const context_storage_t& context, const components::logical_plan::node_ptr& node) {
+    components::operators::operator_ptr create_plan_select(const context_storage_t& context,
+                                                           const components::logical_plan::node_ptr& node) {
         auto* plan_resource = context.resource;
         auto op =
             boost::intrusive_ptr(new components::operators::operator_select_t(plan_resource, context.log.clone()));

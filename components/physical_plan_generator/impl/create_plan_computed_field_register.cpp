@@ -7,8 +7,9 @@
 
 namespace services::planner::impl {
 
-    plan_result_t create_plan_computed_field_register(const context_storage_t& context,
-                                                      const components::logical_plan::node_ptr& node) {
+    components::operators::operator_ptr
+    create_plan_computed_field_register(const context_storage_t& context,
+                                        const components::logical_plan::node_ptr& node) {
         auto* n = static_cast<components::logical_plan::node_alter_column_t*>(node.get());
         // node holds registered_cols as a pmr::vector; the operator
         // ctor takes std::vector by value — copy the range across.

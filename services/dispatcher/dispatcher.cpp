@@ -574,12 +574,8 @@ namespace services::dispatcher {
         auto master_copy = plan->function()->get_copy(resource());
         const auto uid = executor_uids.front();
         services::context_storage_t cstor{resource(), log_.clone(), session_settings(session)};
-        auto planned = services::planner::impl::create_plan_register_udf(cstor, plan, std::move(executor_uids));
-        if (planned.has_error()) {
-            co_await unwind_udf_fanout_(session, std::move(registered));
-            co_return core::error_on(resource(), planned.error());
-        }
-        if (auto op_error = co_await run_catalog_op_(session, std::move(planned.value()), "register_udf");
+        auto op = services::planner::impl::create_plan_register_udf(cstor, plan, std::move(executor_uids));
+        if (auto op_error = co_await run_catalog_op_(session, std::move(op), "register_udf");
             op_error.contains_error()) {
             co_await unwind_udf_fanout_(session, std::move(registered));
             co_return op_error;
@@ -743,17 +739,10 @@ namespace services::dispatcher {
             }
             ack_futures.push_back(std::move(fut));
         }
-        for (std::size_t i = 0; i < ack_futures.size(); ++i) {
-            const bool dropped = co_await std::move(ack_futures[i]);
-            if (!dropped) {
-                // Executors copy the master, so a copy without the overload is a broken invariant, not a refusal.
-                error(log_,
-                      "dispatcher_t::unregister_udf: executor {} of {} held no copy of '{}' although the master did",
-                      i,
-                      ack_futures.size(),
-                      plan->function_name());
-                assert(dropped && "an executor's registry diverged from the master");
-            }
+        for (auto& ack : ack_futures) {
+            // Executors copy the master, so a copy without the overload is a broken invariant, not a refusal.
+            [[maybe_unused]] const bool dropped = co_await std::move(ack);
+            assert(dropped && "an executor's registry diverged from the master");
         }
         co_return core::error_t::no_error();
     }
@@ -875,11 +864,8 @@ namespace services::dispatcher {
         auto write_leaf = boost::intrusive_ptr(
             new components::logical_plan::node_register_cast_t(resource(), resolved_source, resolved_target, entry));
         services::context_storage_t cstor{resource(), log_.clone(), session_settings(session)};
-        auto planned = services::planner::impl::create_plan_register_cast(cstor, write_leaf);
-        if (planned.has_error()) {
-            co_return core::error_on(resource(), planned.error());
-        }
-        if (auto op_error = co_await run_catalog_op_(session, std::move(planned.value()), "register_cast");
+        auto op = services::planner::impl::create_plan_register_cast(cstor, write_leaf);
+        if (auto op_error = co_await run_catalog_op_(session, std::move(op), "register_cast");
             op_error.contains_error()) {
             co_return op_error;
         }
@@ -978,11 +964,8 @@ namespace services::dispatcher {
         auto write_leaf = boost::intrusive_ptr(
             new components::logical_plan::node_unregister_cast_t(resource(), resolved_source, resolved_target));
         services::context_storage_t cstor{resource(), log_.clone(), session_settings(session)};
-        auto planned = services::planner::impl::create_plan_unregister_cast(cstor, write_leaf);
-        if (planned.has_error()) {
-            co_return core::error_on(resource(), planned.error());
-        }
-        if (auto op_error = co_await run_catalog_op_(session, std::move(planned.value()), "unregister_cast");
+        auto op = services::planner::impl::create_plan_unregister_cast(cstor, write_leaf);
+        if (auto op_error = co_await run_catalog_op_(session, std::move(op), "unregister_cast");
             op_error.contains_error()) {
             co_return op_error;
         }

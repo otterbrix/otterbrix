@@ -1,5 +1,8 @@
 #include "create_plan.hpp"
 
+#include <cassert>
+#include <cstdlib>
+
 #include "impl/create_plan_abort_transaction.hpp"
 #include "impl/create_plan_aggregate.hpp"
 #include "impl/create_plan_allocate_oids.hpp"
@@ -133,12 +136,12 @@ namespace services::planner {
                             case components::logical_plan::alter_column_op::drop:
                                 return impl::create_plan_computed_field_unregister(context, node);
                             case components::logical_plan::alter_column_op::rename:
-                                // computed rename is never emitted: rewrite_alter_table never sets computed_
-                                // on a rename clause, since a document table's RENAME is answered by
-                                // operator_alter_column_rename_t itself.
-                                return plan_refusal(context.resource, "a computed column is never renamed by ALTER");
+                                // rewrite_alter_table never sets computed_ on a rename clause: a document table's
+                                // RENAME is answered by operator_alter_column_rename_t itself.
+                                break;
                         }
-                        return plan_refusal(context.resource, "unknown ALTER COLUMN operation on a computed column");
+                        assert(false && "a computed column is never renamed by ALTER");
+                        std::abort();
                     }
                     switch (ac->op()) {
                         case components::logical_plan::alter_column_op::add:
@@ -148,7 +151,8 @@ namespace services::planner {
                         case components::logical_plan::alter_column_op::drop:
                             return impl::create_plan_alter_column_drop(context, node);
                     }
-                    return plan_refusal(context.resource, "unknown ALTER COLUMN operation");
+                    assert(false && "unknown ALTER COLUMN operation");
+                    std::abort();
                 }
                 case node_type::dynamic_cascade_delete_t:
                     return impl::create_plan_dynamic_cascade_delete(context, node);
@@ -172,7 +176,8 @@ namespace services::planner {
                         case components::logical_plan::transaction_op::abort:
                             return impl::create_plan_abort_transaction(context, node);
                     }
-                    return plan_refusal(context.resource, "unknown transaction operation");
+                    assert(false && "unknown transaction operation");
+                    std::abort();
                 }
                 case node_type::catalog_resolve_t: {
                     const auto* rn = static_cast<const components::logical_plan::node_catalog_resolve_t*>(node.get());
@@ -188,7 +193,8 @@ namespace services::planner {
                         case components::logical_plan::resolve_kind::constraint:
                             return impl::create_plan_resolve_constraint(context, node);
                     }
-                    return plan_refusal(context.resource, "unknown catalog resolve kind");
+                    assert(false && "unknown catalog resolve kind");
+                    std::abort();
                 }
                 case node_type::allocate_oids_t:
                     return impl::create_plan_allocate_oids(context, node);

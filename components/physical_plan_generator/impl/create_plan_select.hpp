@@ -11,7 +11,8 @@
 
 namespace services::planner::impl {
 
-    plan_result_t create_plan_select(const context_storage_t& context, const components::logical_plan::node_ptr& node);
+    components::operators::operator_ptr create_plan_select(const context_storage_t& context,
+                                                           const components::logical_plan::node_ptr& node);
 
     // Build physical projection columns from a DML node's RETURNING expression list.
     // Returns an empty vector when `returning` is empty (no RETURNING clause).

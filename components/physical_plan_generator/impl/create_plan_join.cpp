@@ -1,5 +1,8 @@
 #include "create_plan_join.hpp"
 
+#include <cassert>
+#include <cstdlib>
+
 #include <components/logical_plan/effective_table_oid.hpp>
 #include <components/logical_plan/node_join.hpp>
 #include <components/physical_plan/operators/operator_hash_join.hpp>
@@ -47,9 +50,7 @@ namespace services::planner::impl {
         using join_algo = components::logical_plan::node_join_t::join_algo;
 
         auto lower_input = [&](const components::logical_plan::node_ptr& input) -> plan_result_t {
-            if (!input) {
-                return plan_refusal(context.resource, "a join input is missing");
-            }
+            assert(input && "a join has both inputs");
             return create_plan(context, function_registry, input, components::logical_plan::limit_t::unlimit(), params);
         };
 
@@ -135,7 +136,8 @@ namespace services::planner::impl {
                 case join_type::invalid:
                 case join_type::semi:
                 case join_type::anti:
-                    return plan_refusal(context.resource, "a hash join is only inner, left, right or full");
+                    assert(false && "a hash join is only inner, left, right or full");
+                    std::abort();
             }
             const auto& probe_child = swap_build_side ? node->children().back() : node->children().front();
             const auto& build_child = swap_build_side ? node->children().front() : node->children().back();
@@ -162,7 +164,8 @@ namespace services::planner::impl {
             case join_type::semi:
             case join_type::anti:
                 // invalid never fires (validation); semi/anti appear only as LATERAL joins (handled above).
-                return plan_refusal(context.resource, "a semi, anti or invalid join outside LATERAL");
+                assert(false && "a semi, anti or invalid join outside LATERAL");
+                std::abort();
         }
         VALUE_OR_RETURN(auto left, lower_input(node->children().front()));
         VALUE_OR_RETURN(auto right, lower_input(node->children().back()));

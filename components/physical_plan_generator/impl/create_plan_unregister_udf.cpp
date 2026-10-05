@@ -7,8 +7,8 @@
 
 namespace services::planner::impl {
 
-    plan_result_t create_plan_unregister_udf(const context_storage_t& context,
-                                             const components::logical_plan::node_ptr& node) {
+    components::operators::operator_ptr create_plan_unregister_udf(const context_storage_t& context,
+                                                                   const components::logical_plan::node_ptr& node) {
         auto* n = static_cast<components::logical_plan::node_unregister_udf_t*>(node.get());
 
         // Re-pack inputs into a fresh pmr-vector backed by the planner's

@@ -7,5 +7,5 @@
 
 namespace services::planner::impl {
 
-    plan_result_t create_plan_data(const components::logical_plan::node_ptr& node);
+    components::operators::operator_ptr create_plan_data(const components::logical_plan::node_ptr& node);
 }

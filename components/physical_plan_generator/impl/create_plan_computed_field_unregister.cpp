@@ -5,8 +5,9 @@
 
 namespace services::planner::impl {
 
-    plan_result_t create_plan_computed_field_unregister(const context_storage_t& context,
-                                                        const components::logical_plan::node_ptr& node) {
+    components::operators::operator_ptr
+    create_plan_computed_field_unregister(const context_storage_t& context,
+                                          const components::logical_plan::node_ptr& node) {
         auto* n = static_cast<components::logical_plan::node_alter_column_t*>(node.get());
         return boost::intrusive_ptr(
             new components::operators::operator_computed_field_unregister_t(context.resource,

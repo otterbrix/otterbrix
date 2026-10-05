@@ -5,8 +5,8 @@
 
 namespace services::planner::impl {
 
-    plan_result_t create_plan_resolve_constraint(const context_storage_t& context,
-                                                 const components::logical_plan::node_ptr& node) {
+    components::operators::operator_ptr create_plan_resolve_constraint(const context_storage_t& context,
+                                                                       const components::logical_plan::node_ptr& node) {
         const auto* tables = context.catalog_resolves ? context.catalog_resolves->tables.get() : nullptr;
         return boost::intrusive_ptr(new components::operators::operator_resolve_constraint_t(
             context.resource,

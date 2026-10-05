@@ -4,7 +4,7 @@
 
 namespace services::planner::impl {
 
-    plan_result_t create_plan_data(const components::logical_plan::node_ptr& node) {
+    components::operators::operator_ptr create_plan_data(const components::logical_plan::node_ptr& node) {
         const auto* data = static_cast<const components::logical_plan::node_data_t*>(node.get());
         return boost::intrusive_ptr(new components::operators::operator_raw_data_t(data->chunks()));
     }

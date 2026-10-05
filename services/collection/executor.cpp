@@ -4,6 +4,7 @@
 
 #include <array>
 #include <atomic>
+#include <cassert>
 #include <chrono>
 
 #include <components/casts/default_casts.hpp>
@@ -1195,9 +1196,10 @@ namespace services::collection::executor {
                     }
                 }
                 const auto functions = view_body_user_functions(resource(), body.get());
-                if (functions.empty() || disk_address_ == actor_zeta::address_t::empty_address()) {
+                if (functions.empty()) {
                     break;
                 }
+                assert(disk_address_ != actor_zeta::address_t::empty_address() && "an executor always has a disk");
                 const components::execution_context_t proc_ctx{session, resolve_txn, {}};
                 std::pmr::vector<std::string> names{resource()};
                 std::pmr::vector<services::disk::resolve_function_result_t> rows{resource()};
@@ -1241,29 +1243,41 @@ namespace services::collection::executor {
                     break;
                 }
                 auto& subcommands = alter_node->subcommands();
-                // A subcommand written with IF EXISTS whose column / constraint is missing is skipped alone
-                // (PostgreSQL: a notice); the others still apply. Checked against what resolve found, before any
-                // operator runs, so the operators keep refusing a missing target.
+                // Checked against what resolve found, before any operator runs. A DROP CONSTRAINT gets its
+                // constraint's oid here; a missing one is refused. A subcommand written with IF EXISTS whose column /
+                // constraint is missing is skipped alone (PostgreSQL: a notice); the others still apply, and the
+                // operators keep refusing a missing column.
                 if (const auto* md = plan.catalog_resolves.table_md(id.database(), std::string_view(id.table_name()))) {
-                    std::pmr::vector<std::size_t> skipped{plan.if_exists_subcommands.begin(),
-                                                          plan.if_exists_subcommands.end(),
-                                                          resource()};
-                    std::sort(skipped.rbegin(), skipped.rend());
-                    for (const auto index : skipped) {
-                        if (index >= subcommands.size()) {
-                            continue;
+                    // if_exists_subcommands is ascending: walked from the back, erasing keeps the lower indices.
+                    auto written_if_exists = plan.if_exists_subcommands.rbegin();
+                    for (std::size_t index = subcommands.size(); index-- > 0;) {
+                        auto& sub = subcommands[index];
+                        const bool if_exists =
+                            written_if_exists != plan.if_exists_subcommands.rend() && *written_if_exists == index;
+                        if (if_exists) {
+                            ++written_if_exists;
                         }
-                        const auto& sub = subcommands[index];
                         bool missing = false;
                         if (sub.kind == components::logical_plan::alter_table_kind::drop_column) {
                             missing = std::none_of(md->columns.begin(), md->columns.end(), [&sub](const auto& column) {
                                 return column.attname == sub.column_name;
                             });
                         } else if (sub.kind == components::logical_plan::alter_table_kind::drop_constraint) {
-                            missing = plan.catalog_resolves.constraint_oid(md->table_oid, sub.constraint_name) ==
-                                      components::catalog::INVALID_OID;
+                            sub.constraint_oid = plan.catalog_resolves.constraint_oid(md->table_oid, sub.constraint_name);
+                            missing = sub.constraint_oid == components::catalog::INVALID_OID;
+                            if (missing && !if_exists) {
+                                std::pmr::string msg{"constraint \"", resource()};
+                                msg.append(sub.constraint_name);
+                                msg.append("\" of relation \"");
+                                msg.append(md->name);
+                                msg.append("\" does not exist");
+                                error = make_cursor(
+                                    resource(),
+                                    core::error_t{core::error_code_t::invalid_constraint, std::move(msg)});
+                                break;
+                            }
                         }
-                        if (missing) {
+                        if (missing && if_exists) {
                             info(log_,
                                  "notice: {} \"{}\" of relation \"{}\" does not exist, skipping",
                                  sub.kind == components::logical_plan::alter_table_kind::drop_column ? "column"
@@ -1275,6 +1289,11 @@ namespace services::collection::executor {
                             subcommands.erase(subcommands.begin() + static_cast<std::ptrdiff_t>(index));
                         }
                     }
+                    if (error) {
+                        break;
+                    }
+                    assert(written_if_exists == plan.if_exists_subcommands.rend() &&
+                           "every IF EXISTS subcommand index names a subcommand");
                     if (subcommands.empty()) {
                         co_return execute_result_t{make_cursor(resource())};
                     }
@@ -2332,6 +2351,11 @@ namespace services::collection::executor {
                     break;
                 }
                 auto batch = std::move(*next.value());
+                // The engine's own sources slice their batches; a source an external storage or a host rule built
+                // (operator_type::extension) is held to it here.
+                assert((source->type() == ops::operator_type::extension ||
+                        batch.size() <= components::vector::DEFAULT_VECTOR_CAPACITY) &&
+                       "an engine source emitted a batch over DEFAULT_VECTOR_CAPACITY");
                 if (batch.size() > components::vector::DEFAULT_VECTOR_CAPACITY) {
                     co_await release_source_cursor(resource());
                     std::pmr::string what{"source batch of ", resource()};

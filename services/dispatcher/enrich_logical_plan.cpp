@@ -1201,25 +1201,6 @@ namespace services::dispatcher { namespace {
                 if (const auto* tbl = node->table_metadata()) {
                     node->set_relkind(tbl->relkind);
                 }
-                if (node->table_oid() != components::catalog::INVALID_OID) {
-                    for (auto& sub : node->subcommands()) {
-                        if (sub.kind != components::logical_plan::alter_table_kind::drop_constraint) {
-                            continue;
-                        }
-                        const auto found = resolves ? resolves->constraint_oid(node->table_oid(), sub.constraint_name)
-                                                    : components::catalog::INVALID_OID;
-                        if (found == components::catalog::INVALID_OID) {
-                            std::pmr::string msg{resource};
-                            msg.append("constraint \"");
-                            msg.append(sub.constraint_name.data(), sub.constraint_name.size());
-                            msg.append("\" of relation \"");
-                            msg.append(node->target().collection.t);
-                            msg.append("\" does not exist");
-                            co_return core::error_t(core::error_code_t::invalid_constraint, std::move(msg));
-                        }
-                        sub.constraint_oid = found;
-                    }
-                }
                 break;
             }
             case node_type::drop_t: {

@@ -1,5 +1,8 @@
 #include "create_plan_sort.hpp"
 
+#include <cassert>
+#include <cstdlib>
+
 #include <components/expressions/scalar_expression.hpp>
 #include <components/expressions/sort_expression.hpp>
 #include <components/physical_plan/operators/operator_sort.hpp>
@@ -38,9 +41,7 @@ namespace services::planner::impl {
             const auto nulls = resolve_null_order(sort_expr->null_order(), ord);
             if (components::expressions::is_key(sort_expr->operand())) {
                 const auto& path = components::expressions::as_key(sort_expr->operand()).path();
-                if (path.empty()) {
-                    return plan_refusal(context.resource, "ORDER BY key was not resolved to a column");
-                }
+                assert(!path.empty() && "validation resolves every ORDER BY key to a column");
                 sort->add(path, ord, nulls);
                 continue;
             }

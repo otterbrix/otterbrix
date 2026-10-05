@@ -13,7 +13,6 @@
 #include <components/log/log.hpp>
 #include <components/session/session.hpp>
 #include <components/tests/generaty.hpp>
-#include <core/config.hpp>
 #include <core/executor.hpp>
 #include <core/pmr.hpp>
 #include <filesystem>
@@ -39,23 +38,6 @@ inline std::pmr::vector<data_chunk_t> to_batch(std::unique_ptr<data_chunk_t> chu
     batch.emplace_back(std::move(*chunk));
     return batch;
 }
-
-#if defined(OTTERBRIX_TSAN_ENABLED)
-// TSAN false-positives on synchronized_pool_resource's cross-thread reuse (manager loop vs
-// scheduler workers); delegate to new_delete_resource instead (same workaround as base_spaces.cpp).
-struct test_pool_resource_t final : std::pmr::memory_resource {
-protected:
-    void* do_allocate(size_t bytes, size_t align) override {
-        return std::pmr::new_delete_resource()->allocate(bytes, align);
-    }
-    void do_deallocate(void* p, size_t bytes, size_t align) override {
-        std::pmr::new_delete_resource()->deallocate(p, bytes, align);
-    }
-    bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override { return this == &other; }
-};
-#else
-using test_pool_resource_t = core::pmr::otterbrix_resource;
-#endif
 
 // The manager runs its own loop thread, so send() futures become ready asynchronously; poll
 // with a wall-clock deadline (survives TSAN/ctest -j oversubscription) before take_ready.
@@ -183,7 +165,7 @@ struct test_wal_manager {
     }
 
     std::filesystem::path path_;
-    test_pool_resource_t resource_;
+    core::pmr::otterbrix_resource resource_;
     log_t log_;
     actor_zeta::scheduler_ptr scheduler_;
     configuration::config_wal config_;

@@ -12,7 +12,8 @@ namespace core::pmr {
 
     // The engine's arena. One class with one layout whatever the including translation unit was
     // compiled with; the library picks the backing store when it is built (core/pmr.cpp): a pool,
-    // resource_tracer_t under ASAN so an intra-pool overflow stays visible, new/delete under TSAN.
+    // resource_tracer_t under ASAN so an intra-pool overflow stays visible, the upstream itself under
+    // TSAN, every block overwritten before it is freed.
     class otterbrix_resource final : public std::pmr::memory_resource {
     public:
         otterbrix_resource();
@@ -20,8 +21,6 @@ namespace core::pmr {
         otterbrix_resource(const otterbrix_resource&) = delete;
         otterbrix_resource& operator=(const otterbrix_resource&) = delete;
         ~otterbrix_resource() override;
-
-        std::pmr::memory_resource* upstream_resource() const noexcept;
 
     private:
         void* do_allocate(std::size_t bytes, std::size_t alignment) override;

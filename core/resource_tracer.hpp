@@ -25,8 +25,6 @@ public:
     // allocated it; freeing them here would hide the leak.
     ~resource_tracer_t() override { live_.clear(); }
 
-    std::pmr::memory_resource* upstream_resource() const noexcept { return upstream_; }
-
     size_t total_allocated() const noexcept { return allocated_.load(std::memory_order_relaxed); }
     size_t total_deallocated() const noexcept { return deallocated_.load(std::memory_order_relaxed); }
     size_t leaked_bytes() const noexcept { return total_allocated() - total_deallocated(); }

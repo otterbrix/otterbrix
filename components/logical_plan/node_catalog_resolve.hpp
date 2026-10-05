@@ -1,6 +1,7 @@
 #pragma once
 
 #include "node.hpp"
+#include "table_storage.hpp"
 
 #include <components/base/identifier_types.hpp>
 #include <components/catalog/catalog_oids.hpp>
@@ -46,6 +47,8 @@ namespace components::logical_plan {
         std::string view_sql;
         // relkind 'v': pg_rewrite_ref rows.
         std::vector<view_binding_t> view_bindings;
+        // relkind 'f': the table's external storage for this statement, owned by its resolve entry.
+        table_storage_t* storage{nullptr};
     };
 
     // Stamped by operator_resolve_type_t.
@@ -75,6 +78,22 @@ namespace components::logical_plan {
         referencing
     };
 
+    // What CREATE VIEW bound a view body name to: a relation, read by its pg_class oid and never looked up by name,
+    // or a name the host resolved to an external storage, which the catalog never answers.
+    struct view_pin_t {
+        enum class kind_t : std::uint8_t
+        {
+            none,
+            relation,
+            storage
+        };
+        kind_t kind{kind_t::none};
+        // kind == relation.
+        components::catalog::oid_t oid{components::catalog::INVALID_OID};
+        // The view whose body carries the pin, for the stale refusal.
+        core::viewname_t view;
+    };
+
     // Request fields are filled in by the transformer; result fields are stamped by operator_resolve_*_t.
     struct resolve_entry_t {
         static constexpr std::size_t no_target = static_cast<std::size_t>(-1);
@@ -94,15 +113,10 @@ namespace components::logical_plan {
         // Constraint entries only: gathers (conname, oid) without enforcement decode, so DROP
         // CONSTRAINT can repair an invalid catalog state (e.g. doubled PRIMARY KEY) instead of refusing it.
         bool names_only{false};
-        // Unresolved, and the host's name resolution rewrote away every node naming it: neither resolved again
-        // nor refused. Not part of the request identity.
-        bool superseded{false};
-        // A view body name: read by this pg_class oid, never looked up by name. Not part of the request identity.
-        components::catalog::oid_t pinned_oid{components::catalog::INVALID_OID};
-        // A view body name the host resolved at CREATE VIEW: the catalog never answers it.
-        bool host_bound{false};
-        // The view whose body carries the pin, for the stale refusal.
-        core::viewname_t bound_by;
+        // A view body name: what CREATE VIEW bound it to. Not part of the request identity.
+        view_pin_t pin;
+        // The external storage the host's decide gave this name for the statement; its table_md is relkind 'f'.
+        table_storage_ptr storage{nullptr, core::pmr::polymorphic_deleter_t{nullptr, 0, 0}};
 
         components::catalog::oid_t namespace_oid{components::catalog::INVALID_OID};
         components::catalog::oid_t database_oid{components::catalog::INVALID_OID};

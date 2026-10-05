@@ -1,15 +1,13 @@
-// e2e for the host-extension SOURCE/SINK operators: the host's name resolution swaps uid-qualified external
-// leaves for node_extension_t leaves with declared columns; each node lowers through its own operator function.
+// e2e for storage SOURCE/SINK operators: the host's name resolution answers remote names with a per-statement
+// storage over a simulated backend; each storage builds the operators that read and write it.
 
 #include "integration_fixture_path.hpp"
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
-#include <components/expressions/compare_expression.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
+#include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/node_extension.hpp>
-#include <components/sql/parser/parser.h>
-#include <components/sql/transformer/transformer.hpp>
-#include <components/sql/transformer/utils.hpp>
+#include <components/logical_plan/table_storage.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <services/collection/context_storage.hpp>
@@ -52,33 +50,12 @@ namespace {
         return chunk;
     }
 
-    struct mock_ext_data_t {
-        rows_spec_t spec;
-        bool async_delivery{true};
-        std::vector<std::pair<int64_t, int64_t>>* sink_written{nullptr};
-        bool fetch_on_open{false};
-        std::chrono::milliseconds fetch_latency{0};
-        bool fail_open{false};
-        bool no_operator{false};
-    };
-
-    struct mock_payload_t final : logical_plan::extension_payload_t {
-        explicit mock_payload_t(mock_ext_data_t data)
-            : data(std::move(data)) {}
-        mock_ext_data_t data;
-    };
-
     class mock_source_op_t final : public operators::read_only_operator_t {
     public:
-        mock_source_op_t(std::pmr::memory_resource* resource,
-                         log_t log,
-                         rows_spec_t spec,
-                         bool async_delivery,
-                         components::catalog::oid_t table_oid)
+        mock_source_op_t(std::pmr::memory_resource* resource, log_t log, rows_spec_t spec, bool async_delivery)
             : operators::read_only_operator_t(resource, std::move(log), operators::operator_type::extension)
             , spec_(std::move(spec))
-            , async_delivery_(async_delivery)
-            , table_oid_(table_oid) {}
+            , async_delivery_(async_delivery) {}
 
         [[nodiscard]] operators::pipeline_role role() const noexcept override {
             return operators::pipeline_role::source;
@@ -109,15 +86,9 @@ namespace {
 
         void reset_pipeline_state() noexcept override { drained_ = false; }
 
-        void explain_impl(const operators::explain_sink& s) const override {
-            explain_begin(s, table_oid_);
-            s.end();
-        }
-
     private:
         rows_spec_t spec_;
         bool async_delivery_{true};
-        components::catalog::oid_t table_oid_{components::catalog::INVALID_OID};
         bool drained_{false};
     };
 
@@ -127,6 +98,8 @@ namespace {
         std::atomic<int> opens{0};
         std::atomic<int> opens_at_first_next{-1};
         std::atomic<int> fetches_done{0};
+        std::atomic<int> fetches_in_flight{0};
+        std::atomic<int> peak_fetches_in_flight{0};
         std::atomic<int> next_before_ready{0};
         std::atomic<int> next_on_open_ctx{0};
         std::atomic<int> destroyed_in_flight{0};
@@ -137,6 +110,8 @@ namespace {
             opens.store(0);
             opens_at_first_next.store(-1);
             fetches_done.store(0);
+            fetches_in_flight.store(0);
+            peak_fetches_in_flight.store(0);
             next_before_ready.store(0);
             next_on_open_ctx.store(0);
             destroyed_in_flight.store(0);
@@ -158,13 +133,11 @@ namespace {
                                   log_t log,
                                   rows_spec_t spec,
                                   std::chrono::milliseconds fetch_latency,
-                                  bool fail_open,
-                                  components::catalog::oid_t table_oid)
+                                  bool fail_open)
             : operators::read_only_operator_t(resource, std::move(log), operators::operator_type::extension)
             , spec_(std::move(spec))
             , fetch_latency_(fetch_latency)
             , fail_open_(fail_open)
-            , table_oid_(table_oid)
             , slot_(open_probe().slots_used.fetch_add(1) % open_probe_t::kSlots) {}
 
         ~fetch_on_open_source_op_t() override {
@@ -205,6 +178,10 @@ namespace {
         actor_zeta::unique_future<core::error_t> open_impl(components::pipeline::context_t* ctx) override {
             open_probe().opens.fetch_add(1);
             open_probe().ready[slot_].store(false);
+            const int in_flight = open_probe().fetches_in_flight.fetch_add(1) + 1;
+            int peak = open_probe().peak_fetches_in_flight.load();
+            while (in_flight > peak && !open_probe().peak_fetches_in_flight.compare_exchange_weak(peak, in_flight)) {
+            }
             opened_ = true;
             open_ctx_ = ctx;
             auto outcome = fail_open_ ? core::error_t(core::error_code_t::physical_plan_error,
@@ -218,36 +195,29 @@ namespace {
                          slot = slot_]() mutable {
                 std::this_thread::sleep_for(d);
                 open_probe().fetches_done.fetch_add(1);
+                open_probe().fetches_in_flight.fetch_sub(1);
                 open_probe().ready[slot].store(true);
                 p.set_value(std::move(outcome));
             }).detach();
             return future;
         }
 
-        void explain_impl(const operators::explain_sink& s) const override {
-            explain_begin(s, table_oid_);
-            s.end();
-        }
-
         rows_spec_t spec_;
         std::chrono::milliseconds fetch_latency_;
         bool fail_open_;
-        components::catalog::oid_t table_oid_;
         std::size_t slot_;
         const components::pipeline::context_t* open_ctx_{nullptr};
         bool drained_{false};
         bool opened_{false};
     };
 
-    class mock_sink_op_t final : public operators::read_only_operator_t {
+    class mock_sink_op_t final : public operators::read_write_operator_t {
     public:
         mock_sink_op_t(std::pmr::memory_resource* resource,
                        log_t log,
                        std::vector<std::pair<int64_t, int64_t>>* written)
-            : operators::read_only_operator_t(resource, std::move(log), operators::operator_type::extension)
+            : operators::read_write_operator_t(resource, std::move(log), operators::operator_type::extension)
             , written_(written) {}
-
-        [[nodiscard]] operators::pipeline_role role() const noexcept override { return operators::pipeline_role::sink; }
 
         [[nodiscard]] core::error_t
         push(components::pipeline::context_t*, vector::data_chunk_t&& input, operators::chunks_vector_t&) override {
@@ -257,44 +227,12 @@ namespace {
             return core::error_t::no_error();
         }
 
-        [[nodiscard]] core::error_t finalize(components::pipeline::context_t*, operators::chunks_vector_t&) override {
-            return core::error_t::no_error();
-        }
-
     private:
         std::vector<std::pair<int64_t, int64_t>>* written_;
     };
 
-    // Dispatch by shape: a leaf is a source (reads a backend), a node with a child is a sink (writes one).
-    services::planner::plan_result_t make_mock_extension(const services::context_storage_t& context,
-                                                         const compute::function_registry_t&,
-                                                         const logical_plan::node_extension_t& node) {
-        const auto& data = static_cast<const mock_payload_t*>(node.payload())->data;
-        if (data.no_operator) {
-            // A successful result without an operator breaks the contract.
-            return operators::operator_ptr{};
-        }
-        if (node.children().empty() && data.fetch_on_open) {
-            return {new fetch_on_open_source_op_t(context.resource,
-                                                  context.log.clone(),
-                                                  data.spec,
-                                                  data.fetch_latency,
-                                                  data.fail_open,
-                                                  node.table_oid())};
-        }
-        if (node.children().empty()) {
-            return {new mock_source_op_t(context.resource,
-                                         context.log.clone(),
-                                         data.spec,
-                                         data.async_delivery,
-                                         node.table_oid())};
-        }
-        return {new mock_sink_op_t(context.resource, context.log.clone(), data.sink_written)};
-    }
-
-    static constexpr const char* kExtDb = "extreg";
-
-    struct external_source_t {
+    // One table of the simulated backend: its rows and how its server answers.
+    struct remote_table_t {
         rows_spec_t spec;
         std::pmr::vector<types::complex_logical_type> schema;
         bool async_delivery{true};
@@ -303,106 +241,105 @@ namespace {
         bool fail_open{false};
         bool no_operator{false};
     };
-    using externals_by_uid_t = std::unordered_map<std::string, external_source_t>;
+    using remote_tables_t = std::unordered_map<std::string, remote_table_t>;
 
-    // What the test host's name resolution swaps in for the next statement; its hooks are plain functions.
-    struct host_state_t {
-        externals_by_uid_t externals;
-        bool named_wrapper{false};
-        std::vector<logical_plan::node_extension_ptr> made;
-    };
-    host_state_t& host_state() {
-        static host_state_t state;
-        return state;
+    // The simulated backend's catalog, keyed by database.name: the remote system, not host state. The host's hooks
+    // and its rule read nothing else global: a rule finds its table through the storage on the read node.
+    remote_tables_t& remote_server() {
+        static remote_tables_t tables;
+        return tables;
     }
 
-    // Declared after the engine, so the host's nodes go before the resource they live on.
-    struct host_state_reset_t {
-        host_state_reset_t() { host_state() = host_state_t{}; }
-        ~host_state_reset_t() { host_state() = host_state_t{}; }
-    };
-
-    logical_plan::node_extension_ptr
-    make_extension(std::pmr::memory_resource* res, const std::string& name, const external_source_t& source) {
-        auto ext = logical_plan::make_node_extension(
-            res,
-            name,
-            std::pmr::vector<types::complex_logical_type>(source.schema, res),
-            &make_mock_extension,
-            logical_plan::extension_payload_ptr{new mock_payload_t{mock_ext_data_t{source.spec,
-                                                                                   source.async_delivery,
-                                                                                   nullptr,
-                                                                                   source.fetch_on_open,
-                                                                                   source.fetch_latency,
-                                                                                   source.fail_open,
-                                                                                   source.no_operator}}});
-        REQUIRE_FALSE(ext.has_error());
-        host_state().made.push_back(ext.value());
-        return ext.value();
+    // What the backend received through the storages' insert sinks.
+    std::vector<std::pair<int64_t, int64_t>>& remote_written() {
+        static std::vector<std::pair<int64_t, int64_t>> rows;
+        return rows;
     }
 
-    // `named_wrapper`: the host names the rebuilt aggregate after a local table (extreg.<uid>), so it resolves to
-    // that table's oid like any FROM target.
-    void swap_to_extension(logical_plan::node_ptr& node,
-                           std::pmr::memory_resource* res,
-                           const externals_by_uid_t& externals,
-                           bool named_wrapper) {
-        if (!node) {
-            return;
+    // Scans the storages built, for the statement under test.
+    std::atomic<int>& scans_made() {
+        static std::atomic<int> made{0};
+        return made;
+    }
+
+    // Declared after the engine, so the backend's types go before the resource they live on.
+    struct remote_server_reset_t {
+        remote_server_reset_t() { reset(); }
+        ~remote_server_reset_t() { reset(); }
+        static void reset() {
+            remote_server().clear();
+            remote_written().clear();
+            scans_made().store(0);
         }
-        if (node->type() == logical_plan::node_type::aggregate_t) {
-            const auto* agg = static_cast<const logical_plan::node_aggregate_t*>(node.get());
-            const auto& uid_s = agg->target().unique_identifier.t;
-            if (!uid_s.empty()) {
-                auto it = externals.find(uid_s);
-                if (it != externals.end()) {
-                    auto ext = make_extension(res, uid_s, it->second);
-                    ext->set_result_alias(agg->result_alias().empty()
-                                              ? static_cast<const std::string&>(agg->target().collection)
-                                              : agg->result_alias());
-                    if (node->children().empty()) {
-                        node = ext;
-                    } else {
-                        // The extension replaces only the implicit scan: rebuild as an identity aggregate
-                        // whose data child is the extension leaf, keeping the uid aggregate's own stages.
-                        auto wrapper = named_wrapper
-                                           ? logical_plan::make_node_aggregate(
-                                                 res,
-                                                 qualified_name_t{core::dbname_t{kExtDb}, core::relname_t{uid_s}})
-                                           : logical_plan::make_node_aggregate(res, qualified_name_t{});
-                        wrapper->set_result_alias(node->result_alias());
-                        wrapper->append_child(ext);
-                        for (auto& child : node->children()) {
-                            wrapper->append_child(child);
-                        }
-                        node = wrapper;
-                    }
-                    return;
-                }
+    };
+
+    const int host_tag = 0;
+
+    class ext_storage_t final : public logical_plan::table_storage_t {
+    public:
+        // The server's table outlives the statement: the backend is not changed while a statement runs.
+        ext_storage_t(std::pmr::memory_resource*, const remote_table_t* table)
+            : logical_plan::table_storage_t(&host_tag)
+            , table_(table) {}
+
+    private:
+        logical_plan::storage_operator_t make_scan_impl(const services::context_storage_t& context) override {
+            scans_made().fetch_add(1);
+            if (table_->no_operator) {
+                // A successful result without an operator breaks the contract.
+                return operators::operator_ptr{};
             }
+            if (table_->fetch_on_open) {
+                return operators::operator_ptr{new fetch_on_open_source_op_t(context.resource,
+                                                                             context.log.clone(),
+                                                                             table_->spec,
+                                                                             table_->fetch_latency,
+                                                                             table_->fail_open)};
+            }
+            return operators::operator_ptr{
+                new mock_source_op_t(context.resource, context.log.clone(), table_->spec, table_->async_delivery)};
         }
-        for (auto& child : node->children()) {
-            swap_to_extension(child, res, externals, named_wrapper);
+
+        logical_plan::storage_operator_t make_insert_impl(const services::context_storage_t& context) override {
+            return operators::operator_ptr{new mock_sink_op_t(context.resource, context.log.clone(), &remote_written())};
         }
-    }
 
-    core::result_wrapper_t<logical_plan::node_ptr>
-    swap_decide(std::pmr::memory_resource* res,
-                logical_plan::node_ptr tree,
-                std::span<const qualified_name_t>,
-                std::span<const std::pmr::vector<vector::data_chunk_t>>) {
-        swap_to_extension(tree, res, host_state().externals, host_state().named_wrapper);
-        return tree;
-    }
+        logical_plan::storage_operator_t read_only(const services::context_storage_t& context) const {
+            return core::error_t{core::error_code_t::unimplemented_yet,
+                                 std::pmr::string{"this backend only reads and appends", context.resource}};
+        }
+        logical_plan::storage_operator_t make_update_impl(const services::context_storage_t& context) override {
+            return read_only(context);
+        }
+        logical_plan::storage_operator_t make_delete_impl(const services::context_storage_t& context) override {
+            return read_only(context);
+        }
 
-    services::engine::primitives_t swapping_host(std::span<const planner::optimizer_rule_t> rules = {}) {
-        return services::engine::primitives_t{rules, {&planner::no_name_reads, &swap_decide}};
-    }
-
-    struct run_result_t {
-        cursor::cursor_t_ptr cursor;
-        std::chrono::steady_clock::duration elapsed;
+        const remote_table_t* table_;
     };
+
+    std::string qualified(const qualified_name_t& name) { return name.database.t + "." + name.collection.t; }
+
+    core::result_wrapper_t<std::pmr::vector<planner::table_storage_answer_t>>
+    remote_decide(std::pmr::memory_resource* res,
+                  std::span<const qualified_name_t> unresolved,
+                  std::span<const std::pmr::vector<vector::data_chunk_t>>,
+                  bool) {
+        std::pmr::vector<planner::table_storage_answer_t> answers{res};
+        for (const auto& name : unresolved) {
+            planner::table_storage_answer_t answer{std::pmr::vector<types::complex_logical_type>{res}};
+            if (auto it = remote_server().find(qualified(name)); it != remote_server().end()) {
+                answer.columns.assign(it->second.schema.begin(), it->second.schema.end());
+                answer.storage = core::pmr::make_polymorphic_unique<ext_storage_t>(res, &it->second);
+            }
+            answers.push_back(std::move(answer));
+        }
+        return answers;
+    }
+
+    services::engine::primitives_t remote_host(std::span<const planner::optimizer_rule_t> rules = {}) {
+        return services::engine::primitives_t{rules, {&planner::no_name_reads, &remote_decide}};
+    }
 
     // A hung executor must fail the run, not wedge it: the dispatcher wait has no deadline of its own.
     cursor::cursor_t_ptr execute_within_deadline(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& sql) {
@@ -428,40 +365,18 @@ namespace {
         return cursor;
     }
 
-    // named_wrapper needs the local table the wrapper is named after.
-    void create_named_wrapper_tables(otterbrix::wrapper_dispatcher_t* dispatcher, const externals_by_uid_t& externals) {
-        dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE DATABASE extreg;"); // idempotent per test dir
-        for (const auto& [uid, source] : externals) {
-            std::string columns;
-            for (const auto& t : source.schema) {
-                columns += (columns.empty() ? "" : ", ") + t.alias() + " BIGINT";
-            }
-            REQUIRE(
-                dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE TABLE extreg." + uid + " (" + columns + ");")
-                    ->is_success());
-        }
+    cursor::cursor_t_ptr run_over_remote(otterbrix::wrapper_dispatcher_t* dispatcher,
+                                         const std::string& sql,
+                                         remote_tables_t tables) {
+        remote_server() = std::move(tables);
+        scans_made().store(0);
+        return execute_within_deadline(dispatcher, sql);
     }
 
-    run_result_t run_with_extension_sources(otterbrix::wrapper_dispatcher_t* dispatcher,
-                                            const std::string& sql,
-                                            externals_by_uid_t externals,
-                                            bool named_wrapper = false) {
-        if (named_wrapper) {
-            create_named_wrapper_tables(dispatcher, externals);
-        }
-        host_state().externals = std::move(externals);
-        host_state().named_wrapper = named_wrapper;
-        host_state().made.clear();
-        const auto started = std::chrono::steady_clock::now();
-        auto cursor = execute_within_deadline(dispatcher, sql);
-        return {std::move(cursor), std::chrono::steady_clock::now() - started};
-    }
-
-    std::string explain_extension_plan(otterbrix::wrapper_dispatcher_t* dispatcher,
-                                       const std::string& sql,
-                                       externals_by_uid_t externals) {
-        host_state().externals = std::move(externals);
-        host_state().named_wrapper = false;
+    std::string explain_remote_plan(otterbrix::wrapper_dispatcher_t* dispatcher,
+                                    const std::string& sql,
+                                    remote_tables_t tables) {
+        remote_server() = std::move(tables);
         auto cursor = dispatcher->execute_sql(otterbrix::session_id_t(), "EXPLAIN " + sql);
         REQUIRE(cursor->is_success());
         std::string out;
@@ -482,25 +397,30 @@ namespace {
         return schema;
     }
 
-    // A `last`-stage rule: gives a FROM aggregate over a local table the host serves an extension source child,
-    // the way a host rule replaces the implicit table scan late in optimization.
-    logical_plan::node_ptr attach_extension_source_rule(std::pmr::memory_resource* res,
-                                                        logical_plan::node_ptr node,
-                                                        const planner::optimizer_rule_context_t& context) {
-        if (!node) {
-            return node;
-        }
+    // What the passthrough rule puts in place of the aggregate's own scan: the same storage's scan, as a host node.
+    struct passthrough_payload_t final : logical_plan::extension_payload_t {
+        explicit passthrough_payload_t(logical_plan::table_storage_t* storage)
+            : storage(storage) {}
+        logical_plan::table_storage_t* storage;
+    };
+
+    logical_plan::storage_operator_t passthrough_scan(const services::context_storage_t& context,
+                                                      const compute::function_registry_t&,
+                                                      const logical_plan::node_extension_t& node) {
+        return static_cast<const passthrough_payload_t&>(*node.payload()).storage->make_scan(context);
+    }
+
+    // A `last`-stage rule: gives a FROM aggregate over the host's own storage an explicit source child, the way a
+    // host rule replaces the implicit scan late in optimization. The table is recognized by its storage's owner.
+    logical_plan::node_ptr attach_passthrough_rule(std::pmr::memory_resource* res, logical_plan::node_ptr node) {
         for (auto& child : node->children()) {
-            child = attach_extension_source_rule(res, child, context);
+            child = attach_passthrough_rule(res, child);
         }
         if (node->type() != logical_plan::node_type::aggregate_t) {
             return node;
         }
-        const auto* agg = static_cast<const logical_plan::node_aggregate_t*>(node.get());
-        const auto& db = static_cast<const std::string&>(agg->target().database);
-        const auto& rel = static_cast<const std::string&>(agg->target().collection);
-        auto it = host_state().externals.find(rel);
-        if (db != kExtDb || it == host_state().externals.end()) {
+        const auto* table = node->table_metadata();
+        if (table == nullptr || table->storage == nullptr || table->storage->owner() != &host_tag) {
             return node;
         }
         for (const auto& child : node->children()) {
@@ -508,280 +428,224 @@ namespace {
                 return node;
             }
         }
-        node->append_child(make_extension(res, rel, it->second));
+        node->append_child(logical_plan::node_ptr{
+            new logical_plan::node_extension_t(res,
+                                               table->name,
+                                               std::pmr::vector<types::complex_logical_type>{res},
+                                               &passthrough_scan,
+                                               logical_plan::extension_payload_ptr{
+                                                   new passthrough_payload_t{table->storage}})});
         return node;
     }
 
 } // namespace
 
-static externals_by_uid_t one_source(std::pmr::memory_resource* res,
-                                     const std::string& uid,
-                                     const std::string& col_a,
-                                     const std::string& col_b,
-                                     std::vector<std::pair<int64_t, int64_t>> rows,
-                                     bool async_delivery) {
-    externals_by_uid_t externals;
-    externals.emplace(
-        uid,
-        external_source_t{rows_spec_t{col_a, col_b, std::move(rows)}, pair_schema(res, col_a, col_b), async_delivery});
-    return externals;
+static remote_tables_t one_table(std::pmr::memory_resource* res,
+                                 const std::string& name,
+                                 const std::string& col_a,
+                                 const std::string& col_b,
+                                 std::vector<std::pair<int64_t, int64_t>> rows,
+                                 bool async_delivery) {
+    remote_tables_t tables;
+    tables.emplace(
+        name,
+        remote_table_t{rows_spec_t{col_a, col_b, std::move(rows)}, pair_schema(res, col_a, col_b), async_delivery});
+    return tables;
 }
 
 #define EXT_TEST_BOILERPLATE(DIR)                                                                                      \
     auto config = test_create_config(DIR);                                                                             \
     test_clear_directory(config);                                                                                      \
-    test_spaces space(config, swapping_host()); /* the host's name resolution, given at engine start */                \
-    host_state_reset_t host_state_reset;                                                                               \
+    test_spaces space(config, remote_host()); /* the host's name resolution, given at engine start */                 \
+    remote_server_reset_t remote_server_reset;                                                                         \
     auto dispatcher = space.dispatcher();                                                                              \
     auto* res = dispatcher->resource();
 
 TEST_CASE("integration::cpp::extension_source::sync_single_leaf") {
     EXT_TEST_BOILERPLATE(integration_fixture_path("test_ext_sync/base"))
-    auto externals = one_source(res, "uid_x", "key", "val", {{7, 70}}, /*async=*/false);
-    auto r = run_with_extension_sources(dispatcher, "SELECT * FROM uid_x.remote.db1.t1;", externals);
-    REQUIRE(r.cursor->is_success());
-    REQUIRE(r.cursor->size() == 1);
+    auto tables = one_table(res, "remote.t1", "key", "val", {{7, 70}}, /*async=*/false);
+    auto cursor = run_over_remote(dispatcher, "SELECT * FROM remote.t1;", tables);
+    REQUIRE(cursor->is_success());
+    REQUIRE(cursor->size() == 1);
 }
 
 TEST_CASE("integration::cpp::extension_source::async_single_leaf") {
     EXT_TEST_BOILERPLATE(integration_fixture_path("test_ext_async/base"))
-    auto externals = one_source(res, "uid_x", "key", "val", {{1, 10}, {2, 20}, {3, 30}}, /*async=*/true);
-    auto r = run_with_extension_sources(dispatcher, "SELECT * FROM uid_x.remote.db1.t1;", externals);
-    REQUIRE(r.cursor->is_success());
-    REQUIRE(r.cursor->size() == 3);
+    auto tables = one_table(res, "remote.t1", "key", "val", {{1, 10}, {2, 20}, {3, 30}}, /*async=*/true);
+    auto cursor = run_over_remote(dispatcher, "SELECT * FROM remote.t1;", tables);
+    REQUIRE(cursor->is_success());
+    REQUIRE(cursor->size() == 3);
 }
 
 TEST_CASE("integration::cpp::extension_source::empty_result") {
     EXT_TEST_BOILERPLATE(integration_fixture_path("test_ext_empty/base"))
-    auto externals = one_source(res, "uid_x", "key", "val", {}, /*async=*/true);
-    auto r = run_with_extension_sources(dispatcher, "SELECT * FROM uid_x.remote.db1.t1;", externals);
-    REQUIRE(r.cursor->is_success());
-    REQUIRE(r.cursor->size() == 0);
+    auto tables = one_table(res, "remote.t1", "key", "val", {}, /*async=*/true);
+    auto cursor = run_over_remote(dispatcher, "SELECT * FROM remote.t1;", tables);
+    REQUIRE(cursor->is_success());
+    REQUIRE(cursor->size() == 0);
 }
 
-TEST_CASE("integration::cpp::extension_source::join_two_extensions") {
+TEST_CASE("integration::cpp::extension_source::join_two_storages") {
     EXT_TEST_BOILERPLATE(integration_fixture_path("test_ext_join2/base"))
-    externals_by_uid_t externals;
-    externals.emplace("uid_l",
-                      external_source_t{rows_spec_t{"key", "name", {{1, 11}, {2, 22}, {3, 33}}},
-                                        pair_schema(res, "key", "name"),
-                                        /*async_delivery=*/true});
-    externals.emplace("uid_r",
-                      external_source_t{rows_spec_t{"key", "value", {{1, 100}, {3, 300}, {9, 900}}},
-                                        pair_schema(res, "key", "value"),
-                                        /*async_delivery=*/true});
-    auto r = run_with_extension_sources(dispatcher,
-                                        "SELECT l.name, r.value FROM uid_l.remote.db1.t1 AS l "
-                                        "JOIN uid_r.remote.db1.t2 AS r ON l.key = r.key;",
-                                        externals);
-    REQUIRE(r.cursor->is_success());
-    REQUIRE(r.cursor->size() == 2);
+    remote_tables_t tables;
+    tables.emplace("remote.t1",
+                   remote_table_t{rows_spec_t{"key", "name", {{1, 11}, {2, 22}, {3, 33}}},
+                                  pair_schema(res, "key", "name"),
+                                  /*async_delivery=*/true});
+    tables.emplace("remote.t2",
+                   remote_table_t{rows_spec_t{"key", "value", {{1, 100}, {3, 300}, {9, 900}}},
+                                  pair_schema(res, "key", "value"),
+                                  /*async_delivery=*/true});
+    auto cursor = run_over_remote(dispatcher,
+                                  "SELECT l.name, r.value FROM remote.t1 AS l JOIN remote.t2 AS r ON l.key = r.key;",
+                                  tables);
+    REQUIRE(cursor->is_success());
+    REQUIRE(cursor->size() == 2);
 }
 
 TEST_CASE("integration::cpp::extension_source::group_by") {
     EXT_TEST_BOILERPLATE(integration_fixture_path("test_ext_group/base"))
-    auto externals =
-        one_source(res, "uid_g", "grp", "val", {{1, 10}, {1, 15}, {2, 20}, {2, 5}, {3, 1}}, /*async=*/true);
-    auto r = run_with_extension_sources(dispatcher,
-                                        "SELECT grp, SUM(val) AS s FROM uid_g.remote.db1.t1 GROUP BY grp;",
-                                        externals);
-    REQUIRE(r.cursor->is_success());
-    REQUIRE(r.cursor->size() == 3);
+    auto tables = one_table(res, "remote.t1", "grp", "val", {{1, 10}, {1, 15}, {2, 20}, {2, 5}, {3, 1}}, true);
+    auto cursor = run_over_remote(dispatcher, "SELECT grp, SUM(val) AS s FROM remote.t1 GROUP BY grp;", tables);
+    REQUIRE(cursor->is_success());
+    REQUIRE(cursor->size() == 3);
 }
 
 TEST_CASE("integration::cpp::extension_source::barrier_where_above_join") {
     EXT_TEST_BOILERPLATE(integration_fixture_path("test_ext_barrier/base"))
-    externals_by_uid_t externals;
-    externals.emplace("uid_l",
-                      external_source_t{rows_spec_t{"key", "name", {{1, 11}, {2, 22}, {3, 33}}},
-                                        pair_schema(res, "key", "name"),
-                                        /*async_delivery=*/true});
-    externals.emplace("uid_r",
-                      external_source_t{rows_spec_t{"key", "value", {{1, 100}, {2, 200}, {3, 300}}},
-                                        pair_schema(res, "key", "value"),
-                                        /*async_delivery=*/false});
-    auto r = run_with_extension_sources(dispatcher,
-                                        "SELECT l.name, r.value FROM uid_l.remote.db1.t1 AS l "
-                                        "JOIN uid_r.remote.db1.t2 AS r ON l.key = r.key "
-                                        "WHERE r.value > 150;",
-                                        externals);
-    REQUIRE(r.cursor->is_success());
-    REQUIRE(r.cursor->size() == 2);
-
-    // Extension leaves must survive optimize() untouched: identity intact, no predicate/limit injected.
-    REQUIRE(host_state().made.size() == 2);
-    const auto* ext =
-        host_state().made.front()->name() == "uid_l" ? host_state().made.front().get() : host_state().made.back().get();
-    REQUIRE(ext->name() == "uid_l");
-    REQUIRE(ext->expressions().empty());
-    REQUIRE(ext->children().empty());
+    remote_tables_t tables;
+    tables.emplace("remote.t1",
+                   remote_table_t{rows_spec_t{"key", "name", {{1, 11}, {2, 22}, {3, 33}}},
+                                  pair_schema(res, "key", "name"),
+                                  /*async_delivery=*/true});
+    tables.emplace("remote.t2",
+                   remote_table_t{rows_spec_t{"key", "value", {{1, 100}, {2, 200}, {3, 300}}},
+                                  pair_schema(res, "key", "value"),
+                                  /*async_delivery=*/false});
+    auto cursor = run_over_remote(dispatcher,
+                                  "SELECT l.name, r.value FROM remote.t1 AS l JOIN remote.t2 AS r ON l.key = r.key "
+                                  "WHERE r.value > 150;",
+                                  tables);
+    REQUIRE(cursor->is_success());
+    REQUIRE(cursor->size() == 2);
+    // One scan per storage table: the pushed-down filter stays above the storage's scan.
+    CHECK(scans_made().load() == 2);
 }
 
 TEST_CASE("integration::cpp::extension_source::join_with_local_table") {
-    EXT_TEST_BOILERPLATE(integration_fixture_path("test_ext_local/base")) {
-        auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, "CREATE DATABASE extdb;");
-    }
-    {
-        auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, "CREATE TABLE extdb.local_t (key BIGINT, amount BIGINT);");
-    }
-    {
-        auto session = otterbrix::session_id_t();
-        auto cur =
-            dispatcher->execute_sql(session,
-                                    "INSERT INTO extdb.local_t (key, amount) VALUES (1, 1000), (2, 2000), (5, 5000);");
-        REQUIRE(cur->is_success());
-    }
-    auto externals = one_source(res, "uid_l", "key", "name", {{1, 11}, {2, 22}, {3, 33}}, /*async=*/true);
-    auto r = run_with_extension_sources(dispatcher,
-                                        "SELECT e.name, t.amount FROM uid_l.remote.db1.t1 AS e "
-                                        "JOIN extdb.local_t AS t ON e.key = t.key;",
-                                        externals);
-    REQUIRE(r.cursor->is_success());
-    REQUIRE(r.cursor->size() == 2);
+    EXT_TEST_BOILERPLATE(integration_fixture_path("test_ext_local/base"))
+    REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE DATABASE extdb;")->is_success());
+    REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE TABLE extdb.local_t (key BIGINT, amount BIGINT);")
+                ->is_success());
+    REQUIRE(dispatcher
+                ->execute_sql(otterbrix::session_id_t(),
+                              "INSERT INTO extdb.local_t (key, amount) VALUES (1, 1000), (2, 2000), (5, 5000);")
+                ->is_success());
+    auto tables = one_table(res, "remote.t1", "key", "name", {{1, 11}, {2, 22}, {3, 33}}, /*async=*/true);
+    auto cursor = run_over_remote(dispatcher,
+                                  "SELECT e.name, t.amount FROM remote.t1 AS e JOIN extdb.local_t AS t ON e.key = t.key;",
+                                  tables);
+    REQUIRE(cursor->is_success());
+    REQUIRE(cursor->size() == 2);
 }
 
-// A host operator function that builds no operator must surface a clean error, not a crash.
+// A storage whose scan factory builds no operator must surface a clean error, not a crash.
 TEST_CASE("integration::cpp::extension_source::missing_operator_errors_not_crash") {
-    EXT_TEST_BOILERPLATE(integration_fixture_path("test_ext_norule/base")) {
-        auto s = otterbrix::session_id_t();
-        dispatcher->execute_sql(s, "CREATE DATABASE extdb;");
+    EXT_TEST_BOILERPLATE(integration_fixture_path("test_ext_norule/base"))
+    REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE DATABASE extdb;")->is_success());
+    REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE TABLE extdb.local_t (key BIGINT, amount BIGINT);")
+                ->is_success());
+    {
+        auto tables = one_table(res, "remote.t1", "key", "name", {{1, 11}}, /*async=*/false);
+        tables.at("remote.t1").no_operator = true;
+        auto cursor = run_over_remote(
+            dispatcher,
+            "SELECT e.name, t.amount FROM remote.t1 AS e JOIN extdb.local_t AS t ON e.key = t.key;",
+            tables);
+        REQUIRE(cursor->is_error());
+        CHECK(std::string{cursor->get_error().what} == "the storage of \"t1\" built no operator");
     }
     {
-        auto s = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(s, "CREATE TABLE extdb.local_t (key BIGINT, amount BIGINT);")->is_success());
-    }
-    {
-        auto externals = one_source(res, "uid_l", "key", "name", {{1, 11}}, /*async=*/false);
-        externals.at("uid_l").no_operator = true;
-        auto r = run_with_extension_sources(dispatcher,
-                                            "SELECT e.name, t.amount FROM uid_l.remote.db1.t1 AS e "
-                                            "JOIN extdb.local_t AS t ON e.key = t.key;",
-                                            externals);
-        REQUIRE(r.cursor->is_error());
-        CHECK(std::string{r.cursor->get_error().what} ==
-              "the physical plan generator built no operator for $extension: uid_l");
-    }
-    {
-        auto externals = one_source(res, "uid_g", "key", "val", {{1, 10}}, /*async=*/false);
-        externals.at("uid_g").no_operator = true;
-        auto r = run_with_extension_sources(dispatcher,
-                                            "SELECT key, count(val) FROM uid_g.remote.db1.t1 GROUP BY key;",
-                                            externals);
-        REQUIRE(r.cursor->is_error());
-        CHECK(std::string{r.cursor->get_error().what} ==
-              "the physical plan generator built no operator for $extension: uid_g");
+        auto tables = one_table(res, "remote.t2", "key", "val", {{1, 10}}, /*async=*/false);
+        tables.at("remote.t2").no_operator = true;
+        auto cursor = run_over_remote(dispatcher, "SELECT key, count(val) FROM remote.t2 GROUP BY key;", tables);
+        REQUIRE(cursor->is_error());
+        CHECK(std::string{cursor->get_error().what} == "the storage of \"t2\" built no operator");
     }
 }
 
 TEST_CASE("integration::cpp::extension_source::explain_shows_backend") {
     EXT_TEST_BOILERPLATE(integration_fixture_path("test_ext_explain/base"))
-    externals_by_uid_t externals;
-    externals.emplace("uid_l",
-                      external_source_t{rows_spec_t{"key", "name", {{1, 11}}},
-                                        pair_schema(res, "key", "name"),
-                                        /*async_delivery=*/false});
-    externals.emplace("uid_r",
-                      external_source_t{rows_spec_t{"key", "value", {{1, 100}}},
-                                        pair_schema(res, "key", "value"),
-                                        /*async_delivery=*/false});
-    auto text = explain_extension_plan(dispatcher,
-                                       "SELECT l.name, r.value FROM uid_l.remote.db1.t1 AS l "
-                                       "JOIN uid_r.remote.db1.t2 AS r ON l.key = r.key;",
-                                       externals);
+    remote_tables_t tables;
+    tables.emplace("remote.t1",
+                   remote_table_t{rows_spec_t{"key", "name", {{1, 11}}},
+                                  pair_schema(res, "key", "name"),
+                                  /*async_delivery=*/false});
+    tables.emplace("remote.t2",
+                   remote_table_t{rows_spec_t{"key", "value", {{1, 100}}},
+                                  pair_schema(res, "key", "value"),
+                                  /*async_delivery=*/false});
+    auto text = explain_remote_plan(dispatcher,
+                                    "SELECT l.name, r.value FROM remote.t1 AS l JOIN remote.t2 AS r ON l.key = r.key;",
+                                    tables);
     INFO(text);
     const auto first = text.find("Extension Scan");
     REQUIRE(first != std::string::npos);
     REQUIRE(text.find("Extension Scan", first + 1) != std::string::npos);
 }
 
-// Built by hand: there is no SQL syntax for INSERT INTO <backend>, so this wires a node_extension_t directly.
+// INSERT INTO a storage table: the rows of a local query reach the storage's insert sink.
 TEST_CASE("integration::cpp::extension_source::sink_writes_backend") {
     EXT_TEST_BOILERPLATE(integration_fixture_path("test_ext_sink/base"))
+    REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE DATABASE sdb;")->is_success());
+    REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE TABLE sdb.local_src (key BIGINT, val BIGINT);")
+                ->is_success());
+    REQUIRE(dispatcher
+                ->execute_sql(otterbrix::session_id_t(),
+                              "INSERT INTO sdb.local_src (key, val) VALUES (1,10),(2,20),(3,30);")
+                ->is_success());
 
-    {
-        auto s = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(s, "CREATE DATABASE sdb;")->is_success());
-    }
-    {
-        auto s = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(s, "CREATE TABLE sdb.local_src (key BIGINT, val BIGINT);")->is_success());
-    }
-    {
-        auto s = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(s, "INSERT INTO sdb.local_src (key, val) VALUES (1,10),(2,20),(3,30);")
-                    ->is_success());
-    }
-    {
-        auto s = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(s, "CREATE TABLE sdb.sink_target (key BIGINT, val BIGINT);")->is_success());
-    }
+    auto tables = one_table(res, "remote.sink_target", "key", "val", {}, /*async=*/false);
+    auto cursor =
+        run_over_remote(dispatcher, "INSERT INTO remote.sink_target SELECT key, val FROM sdb.local_src;", tables);
+    REQUIRE(cursor->is_success());
 
-    std::pmr::monotonic_buffer_resource arena(res);
-    sql::transform::transformer transformer(res);
-    auto* raw = raw_parser(&arena, "SELECT key, val FROM sdb.local_src;");
-    REQUIRE(raw != nullptr);
-    auto& ast = sql::transform::pg_cell_to_node_cast(linitial(raw));
-    auto binder = transformer.transform(ast);
-    REQUIRE_FALSE(binder.has_error());
-    auto finalized = binder.finalize();
-    REQUIRE_FALSE(finalized.has_error());
-    auto exec_plan = std::move(finalized.value());
-    auto child = exec_plan.sub_queries.back();
-    REQUIRE(child);
-
-    std::vector<std::pair<int64_t, int64_t>> written;
-    mock_ext_data_t sink_data;
-    sink_data.sink_written = &written;
-    auto sink = logical_plan::make_node_extension(res,
-                                                  "sink_target",
-                                                  std::pmr::vector<types::complex_logical_type>{res},
-                                                  &make_mock_extension,
-                                                  logical_plan::extension_payload_ptr{new mock_payload_t{sink_data}});
-    REQUIRE_FALSE(sink.has_error());
-    sink.value()->append_child(child);
-
-    auto session = otterbrix::session_id_t();
-    exec_plan.sub_queries.back() = sink.value();
-    auto cur = dispatcher->execute_plan(session, std::move(exec_plan));
-    REQUIRE(cur->is_success());
-
+    auto written = remote_written();
     REQUIRE(written.size() == 3);
     std::sort(written.begin(), written.end());
     REQUIRE(written == std::vector<std::pair<int64_t, int64_t>>{{1, 10}, {2, 20}, {3, 30}});
 }
 
-static externals_by_uid_t fetch_on_open_sources(std::pmr::memory_resource* res,
-                                                const std::string& uid_prefix,
-                                                const std::vector<std::chrono::milliseconds>& latencies,
-                                                int failing = -1) {
-    externals_by_uid_t externals;
+static remote_tables_t fetch_on_open_tables(std::pmr::memory_resource* res,
+                                            const std::string& prefix,
+                                            const std::vector<std::chrono::milliseconds>& latencies,
+                                            int failing = -1) {
+    remote_tables_t tables;
     for (std::size_t i = 0; i < latencies.size(); ++i) {
         const auto n = static_cast<int64_t>(i);
         const auto value_col = "v" + std::to_string(i);
-        externals.emplace(uid_prefix + std::to_string(i),
-                          external_source_t{rows_spec_t{"key", value_col, {{1, 10 + n}, {2, 20 + n}}},
-                                            pair_schema(res, "key", value_col),
-                                            /*async_delivery=*/true,
-                                            /*fetch_on_open=*/true,
-                                            latencies[i],
-                                            static_cast<int>(i) == failing});
+        tables.emplace("remote." + prefix + std::to_string(i),
+                       remote_table_t{rows_spec_t{"key", value_col, {{1, 10 + n}, {2, 20 + n}}},
+                                      pair_schema(res, "key", value_col),
+                                      /*async_delivery=*/true,
+                                      /*fetch_on_open=*/true,
+                                      latencies[i],
+                                      static_cast<int>(i) == failing});
     }
-    return externals;
+    return tables;
 }
 
 static std::vector<std::chrono::milliseconds> same_latency(int count, std::chrono::milliseconds latency) {
     return std::vector<std::chrono::milliseconds>(static_cast<std::size_t>(count), latency);
 }
 
-static std::string n_way_join(const std::string& uid_prefix, int count) {
+static std::string n_way_join(const std::string& prefix, int count) {
     std::string select = "SELECT s0.v0";
-    std::string from = " FROM " + uid_prefix + "0.remote.db1.t0 AS s0";
+    std::string from = " FROM remote." + prefix + "0 AS s0";
     for (int i = 1; i < count; ++i) {
         const auto n = std::to_string(i);
         select += ", s" + n + ".v" + n;
-        from += " JOIN " + uid_prefix + n + ".remote.db1.t" + n + " AS s" + n + " ON s0.key = s" + n + ".key";
+        from += " JOIN remote." + prefix + n + " AS s" + n + " ON s0.key = s" + n + ".key";
     }
     return select + from + ";";
 }
@@ -802,35 +666,22 @@ static std::vector<std::vector<int64_t>> sorted_rows(const cursor::cursor_t_ptr&
     return rows;
 }
 
-// K backends x fetch_latency each: opened together the query pays ~one latency, pumped one by one it pays K.
+// The executor opens every storage scan of the plan before it pumps any, so the fetches run at the same time: the
+// peak of fetches in flight is the number of scans. Opened one by one, it would be 1.
 TEST_CASE("integration::cpp::extension_source::sources_open_in_parallel") {
     EXT_TEST_BOILERPLATE(integration_fixture_path("test_ext_parallel_open/base"))
     constexpr int kSources = 4;
-    constexpr auto kLatency = std::chrono::milliseconds(50);
-
-    auto instant = run_with_extension_sources(
-        dispatcher,
-        n_way_join("uid_i", kSources),
-        fetch_on_open_sources(res, "uid_i", same_latency(kSources, std::chrono::milliseconds(0))));
-    REQUIRE(instant.cursor->is_success());
-    REQUIRE(instant.cursor->size() == 2);
-
     open_probe().reset();
-    auto slow = run_with_extension_sources(dispatcher,
-                                           n_way_join("uid_s", kSources),
-                                           fetch_on_open_sources(res, "uid_s", same_latency(kSources, kLatency)));
-    REQUIRE(slow.cursor->is_success());
-    REQUIRE(slow.cursor->size() == 2);
-
-    const auto instant_ms = std::chrono::duration_cast<std::chrono::milliseconds>(instant.elapsed);
-    const auto slow_ms = std::chrono::duration_cast<std::chrono::milliseconds>(slow.elapsed);
-    INFO("instant " << instant_ms.count() << " ms, " << kSources << " x " << kLatency.count()
-                    << " ms: " << slow_ms.count() << " ms");
+    auto cursor = run_over_remote(dispatcher,
+                                  n_way_join("s", kSources),
+                                  fetch_on_open_tables(res, "s", same_latency(kSources, std::chrono::milliseconds(50))));
+    REQUIRE(cursor->is_success());
+    REQUIRE(cursor->size() == 2);
     CHECK(open_probe().opens.load() == kSources);
+    CHECK(open_probe().peak_fetches_in_flight.load() == kSources);
     CHECK(open_probe().opens_at_first_next.load() == kSources);
     CHECK(open_probe().next_before_ready.load() == 0);
     CHECK(open_probe().next_on_open_ctx.load() == 0);
-    REQUIRE(slow_ms - instant_ms < 2 * kLatency);
 }
 
 // Whichever piece the failing backend lands in, the query fails and no other open is left in flight.
@@ -840,14 +691,14 @@ TEST_CASE("integration::cpp::extension_source::failed_open_awaits_the_rest") {
     for (int failing = 0; failing < kSources; ++failing) {
         std::vector<std::chrono::milliseconds> latencies = same_latency(kSources, std::chrono::milliseconds(200));
         latencies[static_cast<std::size_t>(failing)] = std::chrono::milliseconds(0);
-        const std::string prefix = "uid_f" + std::to_string(failing) + "_";
+        const std::string prefix = "f" + std::to_string(failing) + "_";
         open_probe().reset();
-        auto r = run_with_extension_sources(dispatcher,
-                                            n_way_join(prefix, kSources),
-                                            fetch_on_open_sources(res, prefix, latencies, failing));
+        auto cursor = run_over_remote(dispatcher,
+                                      n_way_join(prefix, kSources),
+                                      fetch_on_open_tables(res, prefix, latencies, failing));
         INFO("failing source " << failing);
-        REQUIRE(r.cursor->is_error());
-        CHECK(r.cursor->get_error().what == "backend unavailable");
+        REQUIRE(cursor->is_error());
+        CHECK(cursor->get_error().what == "backend unavailable");
         CHECK(open_probe().fetches_done.load() == open_probe().opens.load());
         CHECK(open_probe().destroyed_in_flight.load() == 0);
     }
@@ -856,47 +707,40 @@ TEST_CASE("integration::cpp::extension_source::failed_open_awaits_the_rest") {
 TEST_CASE("integration::cpp::extension_source::uneven_open_latencies") {
     EXT_TEST_BOILERPLATE(integration_fixture_path("test_ext_uneven_open/base"))
     open_probe().reset();
-    auto r = run_with_extension_sources(
+    auto cursor = run_over_remote(
         dispatcher,
-        n_way_join("uid_u", 3),
-        fetch_on_open_sources(
+        n_way_join("u", 3),
+        fetch_on_open_tables(
             res,
-            "uid_u",
+            "u",
             {std::chrono::milliseconds(10), std::chrono::milliseconds(50), std::chrono::milliseconds(200)}));
-    REQUIRE(r.cursor->is_success());
-    REQUIRE(sorted_rows(r.cursor) == std::vector<std::vector<int64_t>>{{10, 11, 12}, {20, 21, 22}});
+    REQUIRE(cursor->is_success());
+    REQUIRE(sorted_rows(cursor) == std::vector<std::vector<int64_t>>{{10, 11, 12}, {20, 21, 22}});
     CHECK(open_probe().opens.load() == 3);
     CHECK(open_probe().next_before_ready.load() == 0);
 }
 
 // A LATERAL inner is a private sub-plan the up-front open never reaches: run_subplan opens it on every re-drive.
 TEST_CASE("integration::cpp::extension_source::lateral_inner_source_opened_per_drive") {
-    EXT_TEST_BOILERPLATE(integration_fixture_path("test_ext_lateral_open/base")) {
-        auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE extdb;")->is_success());
-    }
-    {
-        auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE extdb.outer_t (id BIGINT);")->is_success());
-    }
-    {
-        auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "INSERT INTO extdb.outer_t (id) VALUES (1), (2), (3);")->is_success());
-    }
+    EXT_TEST_BOILERPLATE(integration_fixture_path("test_ext_lateral_open/base"))
+    REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE DATABASE extdb;")->is_success());
+    REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE TABLE extdb.outer_t (id BIGINT);")->is_success());
+    REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "INSERT INTO extdb.outer_t (id) VALUES (1), (2), (3);")
+                ->is_success());
     open_probe().reset();
-    auto r = run_with_extension_sources(dispatcher,
-                                        "SELECT o.id, s.v0 FROM extdb.outer_t AS o, "
-                                        "LATERAL (SELECT e.v0 FROM uid_lat0.remote.db1.t0 AS e WHERE e.key = o.id) s;",
-                                        fetch_on_open_sources(res, "uid_lat", {std::chrono::milliseconds(20)}));
-    REQUIRE(r.cursor->is_success());
-    REQUIRE(sorted_rows(r.cursor) == std::vector<std::vector<int64_t>>{{1, 10}, {2, 20}});
+    auto cursor = run_over_remote(dispatcher,
+                                  "SELECT o.id, s.v0 FROM extdb.outer_t AS o, "
+                                  "LATERAL (SELECT e.v0 FROM remote.lat0 AS e WHERE e.key = o.id) s;",
+                                  fetch_on_open_tables(res, "lat", {std::chrono::milliseconds(20)}));
+    REQUIRE(cursor->is_success());
+    REQUIRE(sorted_rows(cursor) == std::vector<std::vector<int64_t>>{{1, 10}, {2, 20}});
     CHECK(open_probe().opens.load() == 3);
     CHECK(open_probe().fetches_done.load() == 3);
     CHECK(open_probe().next_before_ready.load() == 0);
 }
 
 // The engine takes at most DEFAULT_VECTOR_CAPACITY rows per source batch; slicing a wider backend page is the
-// host's job, so a wider chunk is refused whatever the query does with it.
+// storage's job, so a wider chunk is refused whatever the query does with it.
 TEST_CASE("integration::cpp::extension_source::chunk_over_vector_capacity") {
     EXT_TEST_BOILERPLATE(integration_fixture_path("test_ext_wide_chunk/base"))
     constexpr int64_t n = 2500;
@@ -905,22 +749,22 @@ TEST_CASE("integration::cpp::extension_source::chunk_over_vector_capacity") {
     for (int64_t i = 0; i < n; ++i) {
         rows.emplace_back(i, i % 3);
     }
-    auto externals = one_source(res, "uid_w", "key", "grp", rows, /*async=*/false);
+    auto tables = one_table(res, "remote.wide", "key", "grp", rows, /*async=*/false);
     auto expect_refused = [&](const std::string& query) {
-        auto r = run_with_extension_sources(dispatcher, query, externals);
+        auto cursor = run_over_remote(dispatcher, query, tables);
         INFO(query);
-        REQUIRE(r.cursor);
-        REQUIRE_FALSE(r.cursor->is_success());
-        CHECK(r.cursor->get_error().type == core::error_code_t::invalid_parameter);
-        CHECK(std::string{r.cursor->get_error().what}.find(std::to_string(vector::DEFAULT_VECTOR_CAPACITY)) !=
+        REQUIRE(cursor);
+        REQUIRE_FALSE(cursor->is_success());
+        CHECK(cursor->get_error().type == core::error_code_t::invalid_parameter);
+        CHECK(std::string{cursor->get_error().what}.find(std::to_string(vector::DEFAULT_VECTOR_CAPACITY)) !=
               std::string::npos);
     };
 
-    SECTION("scan") { expect_refused("SELECT * FROM uid_w.remote.db1.t1;"); }
-    SECTION("filter") { expect_refused("SELECT key FROM uid_w.remote.db1.t1 WHERE key >= 2000;"); }
-    SECTION("projection") { expect_refused("SELECT key + 1 AS k FROM uid_w.remote.db1.t1;"); }
-    SECTION("group_by") { expect_refused("SELECT grp, COUNT(*) AS c FROM uid_w.remote.db1.t1 GROUP BY grp;"); }
-    SECTION("scalar_aggregate") { expect_refused("SELECT SUM(key) AS s FROM uid_w.remote.db1.t1;"); }
+    SECTION("scan") { expect_refused("SELECT * FROM remote.wide;"); }
+    SECTION("filter") { expect_refused("SELECT key FROM remote.wide WHERE key >= 2000;"); }
+    SECTION("projection") { expect_refused("SELECT key + 1 AS k FROM remote.wide;"); }
+    SECTION("group_by") { expect_refused("SELECT grp, COUNT(*) AS c FROM remote.wide GROUP BY grp;"); }
+    SECTION("scalar_aggregate") { expect_refused("SELECT SUM(key) AS s FROM remote.wide;"); }
     auto seed_local = [&] {
         REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE DATABASE widedb;")->is_success());
         REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE TABLE widedb.t (key BIGINT, amount BIGINT);")
@@ -932,43 +776,40 @@ TEST_CASE("integration::cpp::extension_source::chunk_over_vector_capacity") {
     };
     SECTION("join_wide_on_the_left") {
         seed_local();
-        expect_refused("SELECT w.grp, t.amount FROM uid_w.remote.db1.t1 AS w JOIN widedb.t AS t ON w.key = t.key;");
+        expect_refused("SELECT w.grp, t.amount FROM remote.wide AS w JOIN widedb.t AS t ON w.key = t.key;");
     }
     SECTION("join_wide_on_the_right") {
         seed_local();
-        expect_refused("SELECT w.grp, t.amount FROM widedb.t AS t JOIN uid_w.remote.db1.t1 AS w ON t.key = w.key;");
+        expect_refused("SELECT w.grp, t.amount FROM widedb.t AS t JOIN remote.wide AS w ON t.key = w.key;");
     }
 }
 
-// count(*) without WHERE over a host source: the host aggregate resolves to the registered (empty) catalog
-// table, which must not turn the aggregate into a disk reduce of that table instead of counting the source.
-TEST_CASE("integration::cpp::extension_source::count_star_over_named_host_aggregate") {
+// count(*) without WHERE over a storage table counts the storage's rows: a storage table has no oid, so no
+// pushdown turns the aggregate into a disk reduce.
+TEST_CASE("integration::cpp::extension_source::count_star_over_a_storage_table") {
     EXT_TEST_BOILERPLATE(integration_fixture_path("test_ext_count_named/base"))
-    auto externals = one_source(res, "uid_c", "key", "val", {{1, 10}, {2, 20}, {3, 30}}, /*async=*/false);
-    auto r = run_with_extension_sources(dispatcher,
-                                        "SELECT count(*) AS c FROM uid_c.remote.db1.t1;",
-                                        externals,
-                                        /*named_wrapper=*/true);
-    REQUIRE(r.cursor->is_success());
-    REQUIRE(r.cursor->size() == 1);
-    REQUIRE(r.cursor->value(0, 0).value<int64_t>() == 3);
+    auto tables = one_table(res, "remote.c", "key", "val", {{1, 10}, {2, 20}, {3, 30}}, /*async=*/false);
+    auto cursor = run_over_remote(dispatcher, "SELECT count(*) AS c FROM remote.c;", tables);
+    REQUIRE(cursor->is_success());
+    REQUIRE(cursor->size() == 1);
+    REQUIRE(cursor->value(0, 0).value<int64_t>() == 3);
 }
 
-// Same bug through a host rule at the last optimizer stage, after pushdown_aggregate stamped the aggregate.
+// A host rule at the last optimizer stage gives the aggregate an explicit source child built from the same
+// storage; count(*) counts that child's rows.
 TEST_CASE("integration::cpp::extension_source::count_star_after_host_optimizer_rule") {
     auto config = test_create_config(integration_fixture_path("test_ext_count_pass/base"));
     test_clear_directory(config);
-    const planner::optimizer_rule_t rules[] = {{planner::optimizer_stage::last, &attach_extension_source_rule}};
-    test_spaces space(config, swapping_host(rules));
-    host_state_reset_t host_state_reset;
+    const planner::optimizer_rule_t rules[] = {{planner::optimizer_stage::last, &attach_passthrough_rule}};
+    test_spaces space(config, remote_host(rules));
+    remote_server_reset_t remote_server_reset;
     auto dispatcher = space.dispatcher();
     auto* res = dispatcher->resource();
-    auto externals = one_source(res, "uid_p", "key", "val", {{1, 10}, {2, 20}, {3, 30}}, /*async=*/false);
-    create_named_wrapper_tables(dispatcher, externals);
-    host_state().externals = std::move(externals);
+    auto tables = one_table(res, "remote.p", "key", "val", {{1, 10}, {2, 20}, {3, 30}}, /*async=*/false);
 
-    auto cur = dispatcher->execute_sql(otterbrix::session_id_t(), "SELECT count(*) AS c FROM extreg.uid_p;");
-    REQUIRE(cur->is_success());
-    REQUIRE(cur->size() == 1);
-    REQUIRE(cur->value(0, 0).value<int64_t>() == 3);
+    auto cursor = run_over_remote(dispatcher, "SELECT count(*) AS c FROM remote.p;", tables);
+    REQUIRE(cursor->is_success());
+    REQUIRE(cursor->size() == 1);
+    REQUIRE(cursor->value(0, 0).value<int64_t>() == 3);
+    CHECK(scans_made().load() == 1);
 }

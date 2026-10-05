@@ -4,6 +4,8 @@
 #include <components/logical_plan/node.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/param_storage.hpp>
+#include <components/logical_plan/table_storage.hpp>
+#include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <core/result_wrapper.hpp>
 
@@ -25,15 +27,9 @@ namespace components::planner {
         last                      // prune_columns
     };
 
-    struct optimizer_rule_context_t {
-        const logical_plan::catalog_resolves_t* resolves;
-        const logical_plan::parameter_node_t* parameters;
-        bool can_push_to_agent;
-    };
-
-    using optimizer_rule_fn = logical_plan::node_ptr (*)(std::pmr::memory_resource*,
-                                                         logical_plan::node_ptr,
-                                                         const optimizer_rule_context_t&);
+    // A rule recognizes the tables it serves by the owner tag of their storage (a read node's table_metadata()), and
+    // reads a parameter's value at run time from the operator's context, so it gets the tree only.
+    using optimizer_rule_fn = logical_plan::node_ptr (*)(std::pmr::memory_resource*, logical_plan::node_ptr);
 
     // Within one stage the rules run in registration order.
     struct optimizer_rule_t {
@@ -48,12 +44,22 @@ namespace components::planner {
         const logical_plan::node_ptr& tree,
         std::span<const qualified_name_t> unresolved);
 
-    // Phase "decide": the rows of every read, in request order; answers the tree to validate.
-    using name_resolution_decide_fn = core::result_wrapper_t<logical_plan::node_ptr> (*)(
+    // decide's answer for one unresolved name: the declared columns (named by their type alias, lower case as an
+    // unquoted reference is) and the storage that reads and writes them in this statement. A null storage is
+    // "not mine": the name stays unresolved and is refused as "does not exist".
+    struct table_storage_answer_t {
+        std::pmr::vector<types::complex_logical_type> columns;
+        logical_plan::table_storage_ptr storage{nullptr, core::pmr::polymorphic_deleter_t{nullptr, 0, 0}};
+    };
+
+    // Phase "decide": the rows of every read, in request order; one answer per unresolved name, in its order. The
+    // tree is not the host's to change. `explicit_transaction`: the statement runs inside BEGIN ... COMMIT, where a
+    // ROLLBACK does not undo what the storage wrote (#663); the storage decides what it allows there.
+    using name_resolution_decide_fn = core::result_wrapper_t<std::pmr::vector<table_storage_answer_t>> (*)(
         std::pmr::memory_resource*,
-        logical_plan::node_ptr tree,
         std::span<const qualified_name_t> unresolved,
-        std::span<const std::pmr::vector<vector::data_chunk_t>> read_results);
+        std::span<const std::pmr::vector<vector::data_chunk_t>> read_results,
+        bool explicit_transaction);
 
     inline core::result_wrapper_t<std::pmr::vector<logical_plan::execution_plan_t>>
     no_name_reads(std::pmr::memory_resource* resource,
@@ -62,17 +68,22 @@ namespace components::planner {
         return std::pmr::vector<logical_plan::execution_plan_t>{resource};
     }
 
-    inline core::result_wrapper_t<logical_plan::node_ptr>
-    keep_tree(std::pmr::memory_resource*,
-              logical_plan::node_ptr tree,
-              std::span<const qualified_name_t>,
-              std::span<const std::pmr::vector<vector::data_chunk_t>>) {
-        return tree;
+    inline core::result_wrapper_t<std::pmr::vector<table_storage_answer_t>>
+    no_storages(std::pmr::memory_resource* resource,
+                std::span<const qualified_name_t> unresolved,
+                std::span<const std::pmr::vector<vector::data_chunk_t>>,
+                bool) {
+        std::pmr::vector<table_storage_answer_t> answers{resource};
+        answers.reserve(unresolved.size());
+        for (std::size_t i = 0; i < unresolved.size(); ++i) {
+            answers.push_back(table_storage_answer_t{std::pmr::vector<types::complex_logical_type>{resource}});
+        }
+        return answers;
     }
 
     struct name_resolution_hook_t {
         name_resolution_need_fn need = &no_name_reads;
-        name_resolution_decide_fn decide = &keep_tree;
+        name_resolution_decide_fn decide = &no_storages;
     };
 
 } // namespace components::planner

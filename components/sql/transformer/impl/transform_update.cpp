@@ -77,12 +77,12 @@ namespace components::sql::transform {
             expressions::expression_ptr where_expr = std::move(where_res);
             match =
                 logical_plan::make_node_match(resource_,
-                                              qualified_name_t{names.left_name.database, names.left_name.collection},
+                                              names.left_name,
                                               where_expr);
         } else {
             match =
                 logical_plan::make_node_match(resource_,
-                                              qualified_name_t{names.left_name.database, names.left_name.collection},
+                                              names.left_name,
                                               make_compare_expression(resource_, compare_type::all_true));
         }
 

@@ -4,9 +4,11 @@
 #include "create_plan_select.hpp"
 #include <algorithm>
 #include <components/expressions/compare_expression.hpp>
+#include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/node_delete.hpp>
 #include <components/logical_plan/node_limit.hpp>
 #include <components/physical_plan/operators/operator_delete.hpp>
+#include <components/physical_plan/operators/operator_match.hpp>
 #include <components/physical_plan/operators/scan/full_scan.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
 #include <limits>
@@ -75,6 +77,55 @@ namespace services::planner::impl {
             }
             return required;
         }
+
+        // The rows come from the storage's scan, numbered in row_ids; the matched ones go to its delete sink. A
+        // WHERE without USING filters above the scan; with USING the semi-join applies it, as for a local table.
+        plan_result_t create_plan_storage_delete(const context_storage_t& context,
+                                                 const components::compute::function_registry_t& function_registry,
+                                                 const components::logical_plan::node_delete_t& node_delete,
+                                                 const components::logical_plan::resolved_table_metadata_t& table,
+                                                 const components::logical_plan::node_ptr& node_match,
+                                                 const components::logical_plan::node_ptr& node_source,
+                                                 components::logical_plan::limit_t limit,
+                                                 std::pmr::vector<components::operators::projected_column_t> returning,
+                                                 const components::logical_plan::storage_parameters* params) {
+            VALUE_OR_RETURN(auto sink,
+                            storage_operator(context.resource, table.name, table.storage->make_delete(context)));
+            VALUE_OR_RETURN(auto scan, storage_operator(context.resource, table.name, table.storage->make_scan(context)));
+            std::pmr::vector<components::types::complex_logical_type> columns(context.resource);
+            columns.reserve(table.columns.size());
+            for (const auto& column : table.columns) {
+                columns.push_back(column.type);
+            }
+            const auto& where = node_match->expressions()[0];
+            if (!node_source) {
+                auto plan = boost::intrusive_ptr(new components::operators::operator_delete(context.resource,
+                                                                                            context.log.clone(),
+                                                                                            node_delete.table_oid(),
+                                                                                            std::move(returning)));
+                plan->set_storage_sink(std::move(sink), std::move(columns));
+                auto filter = boost::intrusive_ptr(
+                    new components::operators::operator_match_t(context.resource, context.log.clone(), where, limit));
+                filter->set_children(std::move(scan));
+                plan->set_children(std::move(filter));
+                return plan;
+            }
+            auto plan = boost::intrusive_ptr(new components::operators::operator_delete(context.resource,
+                                                                                        context.log.clone(),
+                                                                                        node_delete.table_oid(),
+                                                                                        std::move(returning),
+                                                                                        where,
+                                                                                        limit.limit()));
+            plan->set_storage_sink(std::move(sink), std::move(columns));
+            VALUE_OR_RETURN(auto source_op,
+                            create_plan(context,
+                                        function_registry,
+                                        node_source,
+                                        components::logical_plan::limit_t::unlimit(),
+                                        params));
+            plan->set_children(std::move(scan), std::move(source_op));
+            return plan;
+        }
     } // namespace
 
     plan_result_t create_plan_delete(const context_storage_t& context,
@@ -114,6 +165,17 @@ namespace services::planner::impl {
             }
         }
         auto limit = static_cast<components::logical_plan::node_limit_t*>(node_limit.get())->limit();
+        if (const auto* table = node->table_metadata(); table != nullptr && table->storage != nullptr) {
+            return create_plan_storage_delete(context,
+                                              function_registry,
+                                              *node_delete,
+                                              *table,
+                                              node_match,
+                                              node_source,
+                                              std::move(limit),
+                                              std::move(returning),
+                                              params);
+        }
         auto table_oid = node->table_oid();
         // Past the catalog arm the target is always a NAMED table; a target the
         // context cannot vouch for is a table that never resolved. Validation refuses

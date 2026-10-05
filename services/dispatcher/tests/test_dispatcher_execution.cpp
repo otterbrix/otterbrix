@@ -54,8 +54,7 @@ namespace {
     std::atomic<uint64_t> g_host_pass_calls{0};
 
     components::logical_plan::node_ptr counting_host_pass(std::pmr::memory_resource*,
-                                                          components::logical_plan::node_ptr node,
-                                                          const components::planner::optimizer_rule_context_t&) {
+                                                          components::logical_plan::node_ptr node) {
         g_host_pass_calls.fetch_add(1, std::memory_order_relaxed);
         return node;
     }

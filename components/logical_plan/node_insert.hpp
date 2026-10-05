@@ -1,6 +1,5 @@
 #pragma once
 
-#include "host_write_target.hpp"
 #include "node.hpp"
 
 #include <components/casts/cast_function.hpp>
@@ -10,7 +9,9 @@
 #include <components/types/logical_value.hpp>
 #include <components/vector/data_chunk.hpp>
 
+#include <string>
 #include <utility>
+#include <vector>
 
 namespace components::logical_plan {
 
@@ -51,9 +52,6 @@ namespace components::logical_plan {
     class node_insert_t final : public node_t {
     public:
         explicit node_insert_t(std::pmr::memory_resource* resource);
-
-        const host_write_target_ptr& host_target() const noexcept { return host_target_; }
-        void set_host_target(host_write_target_ptr target) { host_target_ = std::move(target); }
 
         std::pmr::vector<expressions::key_t>& key_translation();
         const std::pmr::vector<expressions::key_t>& key_translation() const;
@@ -119,7 +117,6 @@ namespace components::logical_plan {
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
-        host_write_target_ptr host_target_;
         std::pmr::vector<expressions::key_t> key_translation_;
         std::pmr::vector<expressions::expression_ptr> returning_;
 

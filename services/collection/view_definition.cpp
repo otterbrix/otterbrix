@@ -432,7 +432,7 @@ namespace services::collection {
                 binding.dbname = entry.dbname;
                 binding.schema = entry.schema;
                 binding.relname = entry.relname;
-                if (entry.superseded) {
+                if (entry.storage) {
                     binding.refkind = host_name;
                 } else if (entry.table_md.has_value() && entry.table_md->table_oid != view.replaced_oid()) {
                     // The view OR REPLACE names is a lookup of the statement, not of the body.

@@ -1055,12 +1055,10 @@ TEST_CASE("optimizer::pushdown_aggregate::extension_child_is_skipped") {
     auto resource = core::pmr::otterbrix_resource();
     auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
     auto agg = make_agg(&resource, group);
-    auto ext = make_node_extension(&resource,
-                                   collection_name,
-                                   std::pmr::vector<components::types::complex_logical_type>{&resource},
-                                   &no_host_operator);
-    REQUIRE_FALSE(ext.has_error());
-    agg->append_child(ext.value());
+    agg->append_child(node_ptr{new node_extension_t(&resource,
+                                                    collection_name,
+                                                    std::pmr::vector<components::types::complex_logical_type>{&resource},
+                                                    &no_host_operator)});
     REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
 }
 
@@ -2117,8 +2115,7 @@ namespace {
     }
 
     template<int Tag>
-    node_ptr
-    trace_rule(std::pmr::memory_resource*, node_ptr node, const components::planner::optimizer_rule_context_t&) {
+    node_ptr trace_rule(std::pmr::memory_resource*, node_ptr node) {
         rule_trace().push_back(Tag);
         return node;
     }
@@ -2139,8 +2136,7 @@ namespace {
     }
 
     template<int Tag>
-    node_ptr
-    stamp_rule(std::pmr::memory_resource*, node_ptr node, const components::planner::optimizer_rule_context_t&) {
+    node_ptr stamp_rule(std::pmr::memory_resource*, node_ptr node) {
         stamp_trace().emplace_back(Tag, group_stamped(node));
         return node;
     }

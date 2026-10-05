@@ -344,8 +344,37 @@ namespace components::operators {
             co_return;
         }
 
-        // DELETE writes its own WAL, unlike INSERT where the disk agent owns it.
-        if (modified_ && modified_->size() > 0) {
+        if (storage_sink_) {
+            if (modified_ && modified_->size() > 0) {
+                chunks_vector_t ignored{resource_};
+                std::size_t next_id = 0;
+                for (auto& matched : index_old_chunks_) {
+                    const uint64_t rows = matched.size();
+                    for (uint64_t row = 0; row < rows; ++row) {
+                        matched.row_ids.data<int64_t>()[row] = index_old_row_ids_[next_id++];
+                    }
+                    if (rows == 0) {
+                        continue;
+                    }
+                    if (auto error = storage_sink_->push(ctx, std::move(matched), ignored); error.contains_error()) {
+                        set_error(error);
+                        mark_failed();
+                        co_return;
+                    }
+                    affected_rows_ += rows;
+                }
+                modified_ = operators::make_operator_write_data(resource_);
+                index_old_chunks_.clear();
+                index_old_row_ids_.clear();
+                co_await storage_sink_->await_async_and_resume(ctx);
+                if (storage_sink_->has_error()) {
+                    set_error(storage_sink_->get_error());
+                    mark_failed();
+                    co_return;
+                }
+            }
+        } else if (modified_ && modified_->size() > 0) {
+            // DELETE writes its own WAL, unlike INSERT where the disk agent owns it.
             const bool mirror_index = table_has_indexes_ &&
                                       ctx->index_address != actor_zeta::address_t::empty_address() &&
                                       !index_old_chunks_.empty();
@@ -482,17 +511,23 @@ namespace components::operators {
         if (!returning_.empty()) {
             if (returning_staged_.empty()) {
                 // Nothing matched, but we still have to return correct columns
-                auto [_rt, rtf] = actor_zeta::otterbrix::send(ctx->disk_address,
-                                                              &services::disk::manager_disk_t::storage_types,
-                                                              ctx->session,
-                                                              table_oid_);
-                auto returning_types = co_await std::move(rtf);
-                if (returning_types.has_error()) {
-                    set_error(returning_types.error());
-                    mark_failed();
-                    co_return;
+                std::pmr::vector<types::complex_logical_type> columns{resource_};
+                if (storage_sink_) {
+                    columns = storage_columns_;
+                } else {
+                    auto [_rt, rtf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                                  &services::disk::manager_disk_t::storage_types,
+                                                                  ctx->session,
+                                                                  table_oid_);
+                    auto returning_types = co_await std::move(rtf);
+                    if (returning_types.has_error()) {
+                        set_error(returning_types.error());
+                        mark_failed();
+                        co_return;
+                    }
+                    columns = std::move(returning_types.value());
                 }
-                data_chunk_t empty(resource_, returning_types.value(), 0);
+                data_chunk_t empty(resource_, columns, 0);
                 empty.set_cardinality(0);
                 auto proj = evaluate_projection(resource_,
                                                 *ctx->function_registry,

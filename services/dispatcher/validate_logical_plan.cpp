@@ -36,8 +36,6 @@
 #include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/node_delete.hpp>
 #include <components/logical_plan/node_drop.hpp>
-#include <components/logical_plan/host_write_target.hpp>
-#include <components/logical_plan/node_extension.hpp>
 #include <components/logical_plan/node_fk_cascade.hpp>
 #include <components/logical_plan/node_fk_check.hpp>
 #include <components/logical_plan/node_function.hpp>
@@ -617,35 +615,6 @@ namespace services::dispatcher {
             }
             return core::error_t(core::error_code_t::sql_parse_error, std::move(msg));
         }
-
-        // A host relation has no defaults in otterbrix: an INSERT writes every declared column. Without a column
-        // list the values fill the columns in order.
-        core::error_t refuse_unlisted_host_columns(std::pmr::memory_resource* resource,
-                                                   const components::logical_plan::node_extension_t& relation,
-                                                   const std::pmr::vector<components::expressions::key_t>& listed,
-                                                   std::size_t written) {
-            std::pmr::string missing{resource};
-            for (std::size_t i = 0; i < relation.columns().size(); ++i) {
-                const auto name = relation.columns()[i].alias();
-                const bool is_listed = listed.empty() ? i < written
-                                                      : std::any_of(listed.begin(), listed.end(), [&](const auto& key) {
-                                                            return key.as_string() == name;
-                                                        });
-                if (is_listed) {
-                    continue;
-                }
-                missing += missing.empty() ? "" : ", ";
-                missing += name;
-            }
-            if (missing.empty()) {
-                return core::error_t::no_error();
-            }
-            std::pmr::string msg{"INSERT into host relation \"", resource};
-            msg += relation.name();
-            msg += "\" must list every column; missing: ";
-            msg += missing;
-            return core::error_t(core::error_code_t::schema_error, std::move(msg));
-        }
     } // namespace
 
     core::error_t check_type_exists(std::pmr::memory_resource* resource,
@@ -838,24 +807,6 @@ namespace services::dispatcher {
         named_schema result{resource};
 
         switch (node->type()) {
-            case node_type::extension_t: {
-                const auto* ext = static_cast<const components::logical_plan::node_extension_t*>(node);
-                if (!node->children().empty()) {
-                    auto child = validate_schema(context, node->children().front().get(), parameters, cte_schemas);
-                    if (child.has_error()) {
-                        return child;
-                    }
-                }
-                const std::string visible_alias =
-                    node->result_alias().empty() ? std::string{ext->name()} : node->result_alias();
-                for (const auto& column : ext->columns()) {
-                    type_from_t entry;
-                    entry.result_alias = visible_alias;
-                    entry.type = column;
-                    result.push_back(std::move(entry));
-                }
-                return result;
-            }
             case node_type::transaction_t:
                 break;
             case node_type::aggregate_t: {
@@ -1940,15 +1891,6 @@ namespace services::dispatcher {
                     validate_schema(context, node->children().front().get(), parameters, cte_schemas);
                 if (incoming_schema.has_error()) {
                     return incoming_schema;
-                }
-                if (const auto* host = host_write_target(*insert_node)) {
-                    if (auto missing = refuse_unlisted_host_columns(resource,
-                                                                    host->relation(),
-                                                                    insert_node->key_translation(),
-                                                                    incoming_schema.value().size());
-                        missing.contains_error()) {
-                        return missing;
-                    }
                 }
                 {
                     named_schema table_schema(resource);

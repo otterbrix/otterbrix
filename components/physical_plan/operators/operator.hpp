@@ -91,8 +91,6 @@ namespace components::operators {
         resolve_constraint,
         allocate_oids,
         extension,
-        // Casts an INSERT's rows to the declared columns of a host relation; EXPLAIN shows its input instead.
-        assign_cast,
         batch
     };
 

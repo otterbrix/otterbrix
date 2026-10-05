@@ -53,35 +53,24 @@ namespace services::catalog_resolve {
     std::pmr::vector<qualified_name_t> unresolved_tables(std::pmr::memory_resource* resource,
                                                          const components::logical_plan::catalog_resolves_t& resolves);
 
-    std::size_t entry_count(const components::logical_plan::catalog_resolves_t& resolves);
+    // The host's answers, one per name of unresolved_tables and in its order: a storage binds its entry, its
+    // declared columns becoming the table's metadata (relkind 'f'), as the catalog's would for a local table.
+    void bind_storages(components::logical_plan::catalog_resolves_t& resolves,
+                       std::span<components::planner::table_storage_answer_t> answers);
 
-    // A view body name pinned to a relation the catalog no longer holds: the view is stale.
+    // A view body name pinned to a relation the catalog no longer holds: the view is stale. Runs before the host.
     core::error_t refuse_stale_pins(std::pmr::memory_resource* resource,
                                     const components::logical_plan::catalog_resolves_t& resolves);
 
-    // A view body name the host resolved at CREATE VIEW and did not resolve now: the view is stale.
-    core::error_t refuse_stale_host_names(std::pmr::memory_resource* resource,
-                                          const components::logical_plan::catalog_resolves_t& resolves);
-
-    // Marks unresolved table / namespace entries that no node of `root` names any more.
-    void supersede_unnamed_entries(std::pmr::memory_resource* resource,
-                                   components::logical_plan::catalog_resolves_t& resolves,
-                                   const components::logical_plan::node_t* root);
-
-    // A write into a host relation, first step: no RETURNING, no UPDATE ... FROM / DELETE ... USING, and only as its
-    // own statement (the host's write is not undone by a ROLLBACK, #663).
-    core::error_t refuse_host_write_shapes(std::pmr::memory_resource* resource,
-                                           const components::logical_plan::node_t* root,
-                                           bool ends_its_transaction);
+    // After the host, one pass over the table names: a view body name the host resolved at CREATE VIEW and gave no
+    // storage now makes the view stale; a schema segment (database.schema.name) the catalog has no place for is
+    // refused — the uid form keeps its meaning database.name, and a storage table's whole name is the host's.
+    core::error_t refuse_unbound_names(std::pmr::memory_resource* resource,
+                                       const components::logical_plan::catalog_resolves_t& resolves);
 
     // A REFERENCES target with a uid or schema segment is refused, not dropped.
     core::error_t refuse_referenced_segments(std::pmr::memory_resource* resource,
                                              const components::logical_plan::catalog_resolves_t& resolves);
-
-    // A read never drops part of a name: a schema segment (database.schema.name) is refused. The uid form keeps its
-    // meaning for the host's swap hooks.
-    core::error_t refuse_local_schema_segments(std::pmr::memory_resource* resource,
-                                               const components::logical_plan::catalog_resolves_t& resolves);
 
     // search_dbnames is ordered by precedence over the type-name search path.
     const components::logical_plan::resolved_type_metadata_t*

@@ -2,8 +2,7 @@
 
 #include <boost/container_hash/hash.hpp>
 
-#include <algorithm>
-#include <cctype>
+#include <cassert>
 #include <sstream>
 
 namespace components::logical_plan {
@@ -17,7 +16,9 @@ namespace components::logical_plan {
         , name_(name, resource)
         , columns_(std::move(columns), resource)
         , operator_fn_(operator_fn)
-        , payload_(std::move(payload)) {}
+        , payload_(std::move(payload)) {
+        assert(operator_fn_ != nullptr && "a host node needs its operator function");
+    }
 
     hash_t node_extension_t::hash_impl() const {
         hash_t hash_value{0};
@@ -33,37 +34,6 @@ namespace components::logical_plan {
         std::stringstream stream;
         stream << "$extension: " << name_;
         return stream.str();
-    }
-
-    core::result_wrapper_t<node_extension_ptr>
-    make_node_extension(std::pmr::memory_resource* resource,
-                        std::string_view name,
-                        std::pmr::vector<types::complex_logical_type> columns,
-                        extension_operator_fn operator_fn,
-                        extension_payload_ptr payload) {
-        if (operator_fn == nullptr) {
-            std::pmr::string msg{"host node \"", resource};
-            msg.append(name);
-            msg.append("\" has no operator function");
-            return core::error_t{core::error_code_t::create_physical_plan_error, std::move(msg)};
-        }
-        // Column references are matched as written, and an unquoted one is lower case (PostgreSQL 18 folds it).
-        for (const auto& column : columns) {
-            if (!column.has_alias()) {
-                continue;
-            }
-            const auto& alias = column.alias();
-            if (std::any_of(alias.begin(), alias.end(), [](char c) {
-                    return std::isupper(static_cast<unsigned char>(c)) != 0;
-                })) {
-                std::pmr::string msg{"host column \"", resource};
-                msg.append(alias);
-                msg.append("\" must be lower case");
-                return core::error_t{core::error_code_t::schema_error, std::move(msg)};
-            }
-        }
-        return node_extension_ptr{
-            new node_extension_t{resource, name, std::move(columns), operator_fn, std::move(payload)}};
     }
 
 } // namespace components::logical_plan

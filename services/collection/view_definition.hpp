@@ -65,7 +65,7 @@ namespace services::collection {
                        components::logical_plan::node_t* body);
 
     // A read of a view is what CREATE VIEW recorded (Trino 483 checkViewStaleness): the validated body answers as
-    // many columns as were stored, each named the same without regard to case and of exactly the stored type. A host
+    // many columns as were stored, each named byte for byte the same and of exactly the stored type. A host
     // node's own columns are not compared: one the view does not read cannot make it stale.
     core::error_t check_expanded_view(std::pmr::memory_resource* resource,
                                       const components::logical_plan::resolved_table_metadata_t& view,

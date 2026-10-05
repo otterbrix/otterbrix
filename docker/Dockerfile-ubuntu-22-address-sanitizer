@@ -62,4 +62,4 @@ RUN mkdir -p integration/csharp/src/Duckstax.Otterbrix/bin/Release/net7.0 && \
 
 RUN cd integration/csharp && \
     export ASAN_LIB=$(find /usr/lib/ -name "libasan.so.*" | head -n 1) && \
-    ASAN_OPTIONS=detect_leaks=0 LD_PRELOAD=$ASAN_LIB dotnet test -c Release
+    LD_PRELOAD=$ASAN_LIB dotnet test -c Release

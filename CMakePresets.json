@@ -20,7 +20,7 @@
       "name": "sanitizer",
       "hidden": true,
       "inherits": "base",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "CMAKE_CXX_FLAGS_RELEASE": "-O1 -g -DNDEBUG" }
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "CMAKE_CXX_FLAGS_RELEASE": "-O1 -g" }
     },
     { "name": "asan", "inherits": "sanitizer", "cacheVariables": { "ENABLE_ASAN": "ON" } },
     { "name": "tsan", "inherits": "sanitizer", "cacheVariables": { "ENABLE_TSAN": "ON" } },
@@ -59,8 +59,9 @@
       "inherits": "test-base",
       "configurePreset": "tsan",
       "environment": {
-        "TSAN_OPTIONS": "suppressions=${sourceDir}/.github/tsan-suppressions.txt second_deadlock_stack=1 halt_on_error=1"
-      }
+        "TSAN_OPTIONS": "suppressions=${sourceDir}/.github/tsan-suppressions.txt second_deadlock_stack=1 history_size=7 print_full_thread_history=1 io_sync=0"
+      },
+      "execution": { "repeat": { "mode": "until-fail", "count": 3 }, "scheduleRandom": true }
     },
     {
       "name": "ubsan",

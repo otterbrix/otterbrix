@@ -149,6 +149,11 @@ namespace {
         std::vector<std::size_t> positions_;
     };
 
+    // The table's name on its server: m2.shop.orders lives there as shop.orders.
+    std::string remote_name(const remote_storage_t& storage) {
+        return storage.name().substr(storage.name().find('.') + 1);
+    }
+
     class remote_source_t final : public operators::read_only_operator_t {
     public:
         remote_source_t(std::pmr::memory_resource* resource,
@@ -206,8 +211,7 @@ namespace {
         }
         std::pmr::vector<std::pmr::string> explain_details_impl() const override {
             std::pmr::vector<std::pmr::string> details{resource()};
-            const auto& name = storage_->name();
-            details.emplace_back("Remote SQL: SELECT * FROM " + name.substr(name.find('.') + 1));
+            details.emplace_back("Remote SQL: SELECT * FROM " + remote_name(*storage_));
             return details;
         }
 
@@ -282,6 +286,16 @@ namespace {
         }
 
     private:
+        std::pmr::string explain_label_impl() const override {
+            return std::pmr::string{"Foreign Insert on " + storage_->name(), resource()};
+        }
+        std::pmr::vector<std::pmr::string> explain_details_impl() const override {
+            std::pmr::vector<std::pmr::string> details{resource()};
+            details.emplace_back("Remote SQL: INSERT INTO " + remote_name(*storage_) + " VALUES ($1, $2)");
+            details.emplace_back("Batch Size: 1");
+            return details;
+        }
+
         std::string types_;
         rows_t rows_;
     };
@@ -315,6 +329,16 @@ namespace {
         }
 
     private:
+        std::pmr::string explain_label_impl() const override {
+            return std::pmr::string{"Foreign Update on " + storage_->name(), resource()};
+        }
+        std::pmr::vector<std::pmr::string> explain_details_impl() const override {
+            std::pmr::vector<std::pmr::string> details{resource()};
+            details.emplace_back("Remote SQL: UPDATE " + remote_name(*storage_) +
+                                 " SET id = $1, amount = $2 WHERE ctid = $3");
+            return details;
+        }
+
         std::vector<std::pair<std::size_t, std::vector<int64_t>>> changed_;
     };
 
@@ -348,6 +372,15 @@ namespace {
         }
 
     private:
+        std::pmr::string explain_label_impl() const override {
+            return std::pmr::string{"Foreign Delete on " + storage_->name(), resource()};
+        }
+        std::pmr::vector<std::pmr::string> explain_details_impl() const override {
+            std::pmr::vector<std::pmr::string> details{resource()};
+            details.emplace_back("Remote SQL: DELETE FROM " + remote_name(*storage_) + " WHERE ctid = $1");
+            return details;
+        }
+
         std::vector<std::size_t> positions_;
     };
 
@@ -1164,6 +1197,39 @@ TEST_CASE("integration::cpp::host_names::explain_prints_the_storage_scan_label_a
                                                 "    ->  Foreign Scan on m2.shop.orders",
                                                 "          Remote SQL: SELECT * FROM shop.orders",
                                                 "    ->  Seq Scan on c"});
+    }
+    SECTION("a write into the storage table: the storage sink's line, not the engine's") {
+        CHECK(explain_lines(dispatcher, "EXPLAIN INSERT INTO m2.shop.orders (id, amount) VALUES (4, 400);") ==
+              std::vector<std::string>{"Foreign Insert on m2.shop.orders",
+                                       "  Remote SQL: INSERT INTO shop.orders VALUES ($1, $2)",
+                                       "  Batch Size: 1",
+                                       "  ->  Values Scan"});
+        // RETURNING keeps both off the host's one-statement rule: the batch path's sinks say their lines, and the
+        // storage's scan feeds them.
+        struct write_line_t {
+            const char* sql;
+            const char* label;
+            const char* remote_sql;
+        };
+        const write_line_t writes[] = {
+            {"EXPLAIN UPDATE m2.shop.orders SET amount = 1 WHERE id = 1 RETURNING id;",
+             "Foreign Update on m2.shop.orders",
+             "  Remote SQL: UPDATE shop.orders SET id = $1, amount = $2 WHERE ctid = $3"},
+            {"EXPLAIN DELETE FROM m2.shop.orders WHERE id = 1 RETURNING id;",
+             "Foreign Delete on m2.shop.orders",
+             "  Remote SQL: DELETE FROM shop.orders WHERE ctid = $1"},
+        };
+        for (const auto& write : writes) {
+            INFO(write.sql);
+            auto lines = explain_lines(dispatcher, write.sql);
+            REQUIRE(lines.size() >= 3);
+            CHECK(lines[0] == write.label);
+            CHECK(lines[1] == write.remote_sql);
+            CHECK(std::any_of(lines.begin(), lines.end(), [](const std::string& line) {
+                return line.find("->  Foreign Scan on m2.shop.orders") != std::string::npos;
+            }));
+        }
+        CHECK(backend()["m2.shop.orders"] == rows_t{{1, 100}, {2, 200}, {3, 300}});
     }
 }
 

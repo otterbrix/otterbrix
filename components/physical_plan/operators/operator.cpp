@@ -127,9 +127,11 @@ namespace components::operators {
         }
     } // namespace
 
-    std::pmr::string operator_t::explain_label_impl() const {
+    std::pmr::string operator_t::type_label() const {
         return std::pmr::string{default_explain_label(type()), resource_};
     }
+
+    std::pmr::string operator_t::explain_label_impl() const { return type_label(); }
 
     operator_t::operator_t(std::pmr::memory_resource* resource, log_t log, operator_type type)
         : resource_(resource)

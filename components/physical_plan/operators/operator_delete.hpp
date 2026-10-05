@@ -62,6 +62,14 @@ namespace components::operators {
         [[nodiscard]] uint64_t buffered_rows() const noexcept override { return modified_ ? modified_->size() : 0; }
 
     private:
+        // A write into external storage reads as the storage's sink says it, as postgres_fdw's "Foreign Insert on".
+        std::pmr::string explain_label_impl() const override {
+            return storage_sink_ ? storage_sink_->explain_label() : type_label();
+        }
+        std::pmr::vector<std::pmr::string> explain_details_impl() const override {
+            return storage_sink_ ? storage_sink_->explain_details() : std::pmr::vector<std::pmr::string>{resource_};
+        }
+
         std::optional<uint64_t> affected_rows_impl() const noexcept override {
             if (components::catalog::is_catalog_table(table_oid_)) {
                 return std::nullopt;

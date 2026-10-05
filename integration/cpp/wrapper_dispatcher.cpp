@@ -5,6 +5,7 @@
 #include <components/sql/transformer/utils.hpp>
 #include <components/types/logical_value.hpp>
 #include <core/executor.hpp>
+#include <core/pmr.hpp>
 #include <services/dispatcher/dispatcher.hpp>
 #include <thread>
 
@@ -120,7 +121,7 @@ namespace otterbrix {
         using namespace components::sql::transform;
 
         trace(log_, "wrapper_dispatcher_t::execute sql session: {}", session.data());
-        std::pmr::monotonic_buffer_resource parser_arena(resource());
+        core::pmr::arena_resource_t parser_arena(resource());
         List* parse_tree;
         try {
             parse_tree = raw_parser(&parser_arena, query.c_str(), parser_extensions_);
@@ -174,7 +175,7 @@ namespace otterbrix {
         using namespace components::sql::transform;
 
         trace(log_, "wrapper_dispatcher_t::execute sql (params) session: {}", session.data());
-        std::pmr::monotonic_buffer_resource parser_arena(resource());
+        core::pmr::arena_resource_t parser_arena(resource());
         List* parse_tree;
         try {
             parse_tree = raw_parser(&parser_arena, query.c_str(), parser_extensions_);

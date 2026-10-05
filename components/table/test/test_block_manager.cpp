@@ -54,7 +54,7 @@ TEST_CASE("single_file_block_manager: write and read blocks") {
         block_ids.push_back(id);
 
         auto blk =
-            std::make_unique<block_t>(env.resource.upstream_resource(), id, static_cast<uint64_t>(bm.block_size()));
+            std::make_unique<block_t>(std::pmr::new_delete_resource(), id, static_cast<uint64_t>(bm.block_size()));
         auto* data = blk->buffer();
         auto sz = blk->size();
 
@@ -70,7 +70,7 @@ TEST_CASE("single_file_block_manager: write and read blocks") {
     REQUIRE(bm.total_blocks() == NUM_BLOCKS);
 
     for (size_t i = 0; i < NUM_BLOCKS; i++) {
-        auto blk = std::make_unique<block_t>(env.resource.upstream_resource(),
+        auto blk = std::make_unique<block_t>(std::pmr::new_delete_resource(),
                                              block_ids[i],
                                              static_cast<uint64_t>(bm.block_size()));
         REQUIRE(!bm.read(*blk).has_error());
@@ -94,7 +94,7 @@ TEST_CASE("single_file_block_manager: create, close, load existing") {
 
         uint64_t id = bm.free_block_id();
         auto blk =
-            std::make_unique<block_t>(env.resource.upstream_resource(), id, static_cast<uint64_t>(bm.block_size()));
+            std::make_unique<block_t>(std::pmr::new_delete_resource(), id, static_cast<uint64_t>(bm.block_size()));
         auto* data = blk->buffer();
         for (size_t j = 0; j < blk->size(); j++) {
             data[j] = static_cast<std::byte>(42);
@@ -113,7 +113,7 @@ TEST_CASE("single_file_block_manager: create, close, load existing") {
         REQUIRE(bm.total_blocks() == 1);
 
         auto blk =
-            std::make_unique<block_t>(env.resource.upstream_resource(), 0, static_cast<uint64_t>(bm.block_size()));
+            std::make_unique<block_t>(std::pmr::new_delete_resource(), 0, static_cast<uint64_t>(bm.block_size()));
         REQUIRE(!bm.read(*blk).has_error());
 
         auto* data = blk->buffer();
@@ -195,7 +195,7 @@ TEST_CASE("single_file_block_manager: free list survives checkpoint/load") {
         for (int i = 0; i < 5; i++) {
             uint64_t id = bm.free_block_id();
             auto blk =
-                std::make_unique<block_t>(env.resource.upstream_resource(), id, static_cast<uint64_t>(bm.block_size()));
+                std::make_unique<block_t>(std::pmr::new_delete_resource(), id, static_cast<uint64_t>(bm.block_size()));
             std::memset(blk->buffer(), static_cast<int>(i), blk->size());
             REQUIRE_FALSE(bm.write(*blk, id).has_error());
         }
@@ -245,7 +245,7 @@ TEST_CASE("single_file_block_manager: empty free list persistence") {
         for (int i = 0; i < 3; i++) {
             uint64_t id = bm.free_block_id();
             auto blk =
-                std::make_unique<block_t>(env.resource.upstream_resource(), id, static_cast<uint64_t>(bm.block_size()));
+                std::make_unique<block_t>(std::pmr::new_delete_resource(), id, static_cast<uint64_t>(bm.block_size()));
             std::memset(blk->buffer(), 0, blk->size());
             REQUIRE_FALSE(bm.write(*blk, id).has_error());
         }
@@ -296,7 +296,7 @@ TEST_CASE("single_file_block_manager: corrupt block payload -> data_corruption (
         REQUIRE(!bm.create_new_database().has_error());
 
         block_id = bm.free_block_id();
-        auto blk = std::make_unique<block_t>(env.resource.upstream_resource(),
+        auto blk = std::make_unique<block_t>(std::pmr::new_delete_resource(),
                                              block_id,
                                              static_cast<uint64_t>(bm.block_size()));
         auto* data = blk->buffer();
@@ -333,7 +333,7 @@ TEST_CASE("single_file_block_manager: corrupt block payload -> data_corruption (
         single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
         REQUIRE(!bm.load_existing_database().has_error());
 
-        auto blk = std::make_unique<block_t>(env.resource.upstream_resource(),
+        auto blk = std::make_unique<block_t>(std::pmr::new_delete_resource(),
                                              block_id,
                                              static_cast<uint64_t>(bm.block_size()));
         core::result_wrapper_t<bool> result = false;

@@ -4,6 +4,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
+#include <core/config.hpp>
 #include <core/date/date_parse.hpp>
 #include <core/date/timezones.hpp>
 #include <random>
@@ -97,7 +98,7 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_stress_1000_rando
     // is roomy for any not-yet-optimized dispatcher path while still catching
     // a true regression (e.g. quadratic schema-merge cost). ASan instrumentation
     // adds ~3× overhead so the threshold is raised in that build only.
-#ifdef __SANITIZE_ADDRESS__
+#if defined(OTTERBRIX_ADDRESS_SANITIZER)
     REQUIRE(elapsed_ms < 180000);
 #else
     REQUIRE(elapsed_ms < 60000);

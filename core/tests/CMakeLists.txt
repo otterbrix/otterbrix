@@ -7,7 +7,7 @@ set(${PROJECT_NAME}_SOURCES
         test_resource_tracer.cpp
         test_regex.cpp
         test_error_residency.cpp
-        test_pmr_overflow_visibility.cpp
+        test_sanitizers_see_bugs.cpp
         )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})
@@ -17,6 +17,8 @@ target_link_libraries(
         Catch2::Catch2WithMain
         Boost::boost
         otterbrix::assert
+        otterbrix::pmr
+        otterbrix::string_buffer
         otterbrix::log
         otterbrix::regex
         ${CMAKE_THREAD_LIBS_INIT}

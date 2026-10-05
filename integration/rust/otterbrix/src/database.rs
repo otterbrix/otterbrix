@@ -194,7 +194,7 @@ impl Database {
     /// use otterbrix::{Config, Database};
     /// let cfg = Config::new("./data");
     /// let db = Database::open(cfg).expect("open database");
-    /// db.create_database("app").unwrap();
+    /// db.execute("CREATE DATABASE app;").unwrap();
     /// ```
     pub fn open(config: Config) -> Result<Self> {
         let log_path = path_to_str(&config.log_path)?;
@@ -256,8 +256,8 @@ impl Database {
     /// ```no_run
     /// use otterbrix::{Config, Database, SqlParam, SqlParamValue};
     /// # let db = Database::open(Config::new("./data")).unwrap();
-    /// # db.create_database("app").unwrap();
-    /// # db.create_collection("app", "t").unwrap();
+    /// # db.execute("CREATE DATABASE app;").unwrap();
+    /// # db.execute("CREATE TABLE app.t();").unwrap();
     /// let params = [
     ///     SqlParam { index: 1, value: SqlParamValue::Int64(7) },
     ///     SqlParam { index: 2, value: SqlParamValue::Str("ok") },
@@ -271,65 +271,6 @@ impl Database {
         let raw = raw_sql_params(params);
         let ptr = unsafe {
             otterbrix_sys::execute_sql_params(self.ptr, make_sv(sql), raw.as_ptr(), raw.len())
-        };
-        cursor_or_error(ptr)
-    }
-
-    /// Creates a new logical database.
-    ///
-    /// Uses the engine's dedicated `create_database` entry point — preferable
-    /// to the equivalent `CREATE DATABASE` SQL statement, since it avoids SQL
-    /// parsing and never has to be escaped against injection. Returns an
-    /// empty cursor on success.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::Query`] if the database already exists or the name is
-    /// invalid. The name must be lower case: SQL folds an unquoted name, so a
-    /// mixed-case database could not be named back.
-    pub fn create_database(&self, name: &str) -> Result<Cursor<'_>> {
-        let ptr = unsafe { otterbrix_sys::create_database(self.ptr, make_sv(name)) };
-        cursor_or_error(ptr)
-    }
-
-    /// Creates a new collection inside an existing database.
-    ///
-    /// Uses the engine's dedicated `create_collection` entry point —
-    /// preferable to the equivalent `CREATE TABLE` SQL statement, since it
-    /// avoids SQL parsing and never has to be escaped against injection.
-    /// Returns an empty cursor on success.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::Query`] if `database` does not exist, the collection
-    /// already exists, or the name is invalid. The collection name must be
-    /// lower case: SQL folds an unquoted name, so a mixed-case table could not
-    /// be read back.
-    pub fn create_collection(&self, database: &str, collection: &str) -> Result<Cursor<'_>> {
-        let ptr = unsafe {
-            otterbrix_sys::create_collection(self.ptr, make_sv(database), make_sv(collection))
-        };
-        cursor_or_error(ptr)
-    }
-
-    /// Drops a logical database (`DROP DATABASE`).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::Query`] if `name` does not refer to an existing database.
-    pub fn drop_database(&self, name: &str) -> Result<Cursor<'_>> {
-        let ptr = unsafe { otterbrix_sys::drop_database(self.ptr, make_sv(name)) };
-        cursor_or_error(ptr)
-    }
-
-    /// Drops a collection from a database (`DROP COLLECTION`).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::Query`] if either `database` or `collection` does not exist.
-    pub fn drop_collection(&self, database: &str, collection: &str) -> Result<Cursor<'_>> {
-        let ptr = unsafe {
-            otterbrix_sys::drop_collection(self.ptr, make_sv(database), make_sv(collection))
         };
         cursor_or_error(ptr)
     }

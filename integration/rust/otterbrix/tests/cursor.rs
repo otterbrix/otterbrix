@@ -3,8 +3,8 @@ mod common;
 #[test]
 fn has_next_is_true_when_select_returns_rows() {
     let db = common::open_test_db();
-    db.create_database("db").unwrap();
-    db.create_collection("db", "t").unwrap();
+    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE TABLE db.t();").unwrap();
     db.execute("INSERT INTO db.t (x) VALUES (1), (2), (3);")
         .unwrap();
 

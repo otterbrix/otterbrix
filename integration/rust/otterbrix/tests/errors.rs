@@ -5,7 +5,7 @@ use otterbrix::Error;
 #[test]
 fn select_from_nonexistent_table() {
     let db = common::open_test_db();
-    db.create_database("db").unwrap();
+    db.execute("CREATE DATABASE db;").unwrap();
     let result = db.execute("SELECT * FROM db.nonexistent;");
     assert!(result.is_err());
 }
@@ -13,7 +13,7 @@ fn select_from_nonexistent_table() {
 #[test]
 fn invalid_sql_returns_error() {
     let db = common::open_test_db();
-    db.create_database("db").unwrap();
+    db.execute("CREATE DATABASE db;").unwrap();
     assert!(db.execute("THIS IS NOT SQL;").is_err());
     assert!(db.execute("SELECT * FROM;").is_err());
 }
@@ -21,7 +21,7 @@ fn invalid_sql_returns_error() {
 #[test]
 fn query_error_carries_code_and_message() {
     let db = common::open_test_db();
-    db.create_database("db").unwrap();
+    db.execute("CREATE DATABASE db;").unwrap();
 
     let err = db
         .execute("SELECT * FROM db.nonexistent;")
@@ -38,8 +38,8 @@ fn query_error_carries_code_and_message() {
 #[test]
 fn create_database_twice_returns_error() {
     let db = common::open_test_db();
-    db.create_database("dup").unwrap();
-    let res = db.create_database("dup");
+    db.execute("CREATE DATABASE dup;").unwrap();
+    let res = db.execute("CREATE DATABASE dup;");
     assert!(
         res.is_err(),
         "creating an already-existing database must return Err"
@@ -49,8 +49,8 @@ fn create_database_twice_returns_error() {
 #[test]
 fn drop_nonexistent_collection_returns_error() {
     let db = common::open_test_db();
-    db.create_database("d").unwrap();
-    let res = db.drop_collection("d", "missing");
+    db.execute("CREATE DATABASE d;").unwrap();
+    let res = db.execute("DROP TABLE d.missing;");
     assert!(
         res.is_err(),
         "dropping a missing collection must return Err"
@@ -60,6 +60,6 @@ fn drop_nonexistent_collection_returns_error() {
 #[test]
 fn drop_nonexistent_database_returns_error() {
     let db = common::open_test_db();
-    let res = db.drop_database("never_created");
+    let res = db.execute("DROP DATABASE never_created;");
     assert!(res.is_err(), "dropping a missing database must return Err");
 }

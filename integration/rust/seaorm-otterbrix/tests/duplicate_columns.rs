@@ -13,7 +13,7 @@ async fn open_proxy_with_two_tables() -> sea_orm::DatabaseConnection {
             .as_nanos()
     );
     let db = Database::open(Config::new(&dir)).expect("open");
-    db.create_database("app").expect("create db");
+    db.execute("CREATE DATABASE app;").expect("create db");
     db.execute("CREATE TABLE app.t1 (id bigint, val bigint);")
         .expect("ddl t1");
     db.execute("CREATE TABLE app.t2 (id bigint, label string);")

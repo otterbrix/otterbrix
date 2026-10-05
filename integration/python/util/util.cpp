@@ -7,6 +7,13 @@ using namespace components::types;
 
 namespace otterbrix { namespace util {
 
+    int64_t rowcount_of(const components::cursor::cursor_t& cursor) {
+        if (cursor.is_write()) {
+            return static_cast<int64_t>(cursor.affected_rows());
+        }
+        return static_cast<int64_t>(cursor.size());
+    }
+
     std::string logical_value_to_string(const components::types::logical_value_t& value) {
         switch (value.type().to_physical_type()) {
             case physical_type::NA:

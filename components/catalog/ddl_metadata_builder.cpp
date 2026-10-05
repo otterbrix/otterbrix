@@ -321,34 +321,37 @@ namespace components::catalog {
         return result;
     }
 
-    std::vector<catalog_write_t> build_create_view_writes(std::pmr::memory_resource* resource,
-                                                          const std::string& name,
-                                                          oid_t namespace_oid,
-                                                          oid_t view_oid,
-                                                          oid_t rule_oid,
-                                                          const std::string& body_sql,
-                                                          std::span<table::column_definition_t> columns,
-                                                          oid_batch_t& oid_batch,
-                                                          std::span<const view_binding_t> bindings,
-                                                          std::span<const view_dependency_t> dependencies,
-                                                          bool write_class_row,
-                                                          char relkind) {
+    catalog_write_t build_view_class_row(std::pmr::memory_resource* resource,
+                                         oid_t view_oid,
+                                         const std::string& name,
+                                         oid_t namespace_oid,
+                                         char relkind) {
+        const auto& def = system_table(pg_class_oid);
+        const std::string relkind_str(1, relkind);
+        const std::string storagemode_str(1, relstoragemode::disk);
+        auto chunk = make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
+            set_oid(c, 0, 0, view_oid);
+            set_str(c, 1, 0, name, r);
+            set_oid(c, 2, 0, namespace_oid);
+            set_str(c, 3, 0, relkind_str, r);
+            set_str(c, 4, 0, storagemode_str, r);
+        });
+        return make_write(pg_class_oid, std::move(chunk));
+    }
+
+    std::vector<catalog_write_t> build_view_body_writes(std::pmr::memory_resource* resource,
+                                                        oid_t view_oid,
+                                                        std::span<table::column_definition_t> columns,
+                                                        std::span<const view_binding_t> bindings,
+                                                        std::span<const view_dependency_t> dependencies,
+                                                        oid_t namespace_oid,
+                                                        oid_t rule_oid,
+                                                        const std::string& name,
+                                                        const std::string& body_sql,
+                                                        char relkind,
+                                                        oid_batch_t& oid_batch) {
         std::vector<catalog_write_t> result;
         const std::string relkind_str(1, relkind);
-
-        if (write_class_row) {
-            const auto& def = system_table(pg_class_oid);
-            const std::string storagemode_str(1, relstoragemode::disk);
-            auto chunk =
-                make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
-                    set_oid(c, 0, 0, view_oid);
-                    set_str(c, 1, 0, name, r);
-                    set_oid(c, 2, 0, namespace_oid);
-                    set_str(c, 3, 0, relkind_str, r);
-                    set_str(c, 4, 0, storagemode_str, r);
-                });
-            result.push_back(make_write(pg_class_oid, std::move(chunk)));
-        }
 
         if (!columns.empty()) {
             struct attr_t {

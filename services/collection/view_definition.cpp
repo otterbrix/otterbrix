@@ -228,7 +228,7 @@ namespace services::collection {
                                                                                    const node_t* body) {
         std::pmr::vector<components::compute::function_pin_t> out{resource};
         auto visit = [&out](const expressions::function_expression_t& call) {
-            const components::compute::function_pin_t use{call.function_uid(), call.signature()};
+            const components::compute::function_pin_t use = call.pin();
             if (expressions::is_udf_uid(use.uid) && std::none_of(out.begin(), out.end(), [&use](const auto& seen) {
                     return seen.uid == use.uid && seen.signature == use.signature;
                 })) {

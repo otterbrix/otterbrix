@@ -22,7 +22,7 @@ namespace {
                                  components::compute::function_uid uid = components::compute::invalid_function_uid) {
         auto expr = make_function_expression(resource, std::move(written));
         expr->args().emplace_back(key(resource, "x"));
-        expr->add_function_uid(uid);
+        expr->set_pin(components::compute::function_pin_t{uid});
         return expr;
     }
 } // namespace

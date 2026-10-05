@@ -1807,7 +1807,7 @@ namespace services::dispatcher {
                 {
                     const std::string& alias =
                         function_node->result_alias().empty() ? function_node->name() : function_node->result_alias();
-                    function_node->add_function_uid(fn_resolved.value().uid);
+                    function_node->add_function_uid(fn_resolved.value().pin.uid);
                     complex_logical_type out_type = fn_resolved.value().result;
                     out_type.set_alias(alias);
                     result.emplace_back(type_from_t{alias, std::move(out_type)});

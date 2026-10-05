@@ -93,7 +93,7 @@ namespace {
         pa.arg_col_path.push_back(static_cast<uint64_t>(val_col));
         components::expressions::key_t alias{r, std::string("sum_val")};
         auto reduction = components::expressions::make_aggregate_expression(r, "sum", alias);
-        reduction->add_function_uid(pa.func_uid);
+        reduction->set_pin(components::compute::function_pin_t{pa.func_uid});
         reduction->set_result_type(pa.result_type);
         components::expressions::key_t argument{r};
         std::pmr::vector<size_t> argument_path{r};

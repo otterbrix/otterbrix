@@ -34,13 +34,11 @@ namespace components::expressions {
 
     const std::pmr::vector<param_storage>& function_expression_t::args() const noexcept { return args_; }
 
-    void function_expression_t::add_function_uid(compute::function_uid uid) { function_uid_ = uid; }
+    void function_expression_t::set_pin(compute::function_pin_t pin) noexcept { pin_ = pin; }
 
-    compute::function_uid function_expression_t::function_uid() const { return function_uid_; }
+    const compute::function_pin_t& function_expression_t::pin() const noexcept { return pin_; }
 
-    void function_expression_t::set_signature(size_t signature) noexcept { signature_ = signature; }
-
-    size_t function_expression_t::signature() const noexcept { return signature_; }
+    compute::function_uid function_expression_t::function_uid() const { return pin_.uid; }
 
     void function_expression_t::set_pins(std::pmr::vector<compute::function_pin_t> pins) { pins_ = std::move(pins); }
 

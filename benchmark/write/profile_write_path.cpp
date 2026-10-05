@@ -10,7 +10,7 @@
 #include <components/logical_plan/node_insert.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <components/vector/data_chunk.hpp>
-#include <integration/cpp/base_spaces.hpp>
+#include <integration/cpp/otterbrix.hpp>
 
 #include <sys/resource.h>
 
@@ -93,32 +93,17 @@ namespace {
         return true;
     }
 
-    class write_space_t final : public otterbrix::base_otterbrix_t {
-    public:
-        explicit write_space_t(const options_t& o)
-            : base_otterbrix_t(open_or_exit(make_config(o))) {}
-
-    private:
-        static host_ptr open_or_exit(const configuration::config& config) {
-            auto host = open(config);
-            if (host.has_error()) {
-                std::cerr << "otterbrix refused to start: " << host.error().what << '\n';
-                std::exit(EXIT_FAILURE);
-            }
-            return std::move(host.value());
-        }
-        static configuration::config make_config(const options_t& o) {
-            // One named base dir via create_config -- hand-assigning `current_path()/"disk"`
-            // and `.../"wal"` instead scatters both into whatever directory the profiler was
-            // launched from.
-            auto cfg = configuration::config::create_config(std::filesystem::current_path() /
-                                                            "otterbrix_write_profile_data");
-            cfg.log.level = (o.log == "trace") ? log_t::level::trace : log_t::level::off;
-            // The WAL is NOT optional here: a run without it misleads -- DELETE column
-            // pruning measured 3.6x without durable writes and exactly nothing with them.
-            return cfg;
-        }
-    };
+    configuration::config make_config(const options_t& o) {
+        // One named base dir via create_config -- hand-assigning `current_path()/"disk"`
+        // and `.../"wal"` instead scatters both into whatever directory the profiler was
+        // launched from.
+        auto cfg = configuration::config::create_config(std::filesystem::current_path() /
+                                                        "otterbrix_write_profile_data");
+        cfg.log.level = (o.log == "trace") ? log_t::level::trace : log_t::level::off;
+        // The WAL is NOT optional here: a run without it misleads -- DELETE column
+        // pruning measured 3.6x without durable writes and exactly nothing with them.
+        return cfg;
+    }
 
     // Per-statement latency samples, in microseconds.
     struct stats_t {
@@ -331,8 +316,8 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    write_space_t space(options);
-    auto* dispatcher = space.dispatcher();
+    auto space = otterbrix::make_otterbrix_or_exit(make_config(options));
+    auto* dispatcher = space->dispatcher();
 
     if (!create_schema(dispatcher, options)) {
         return 1;

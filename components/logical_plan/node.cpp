@@ -12,6 +12,13 @@ namespace components::logical_plan {
         , expressions_(resource)
         , output_types_(resource) {}
 
+    node_t::node_t(std::pmr::memory_resource* resource, node_type type, qualified_name_t target)
+        : type_(type)
+        , target_(std::move(target))
+        , children_(resource)
+        , expressions_(resource)
+        , output_types_(resource) {}
+
     node_type node_t::type() const { return type_; }
 
     const std::string& node_t::result_alias() const { return result_alias_; }

@@ -10,12 +10,12 @@ namespace components::sql::transform {
     namespace {
         // No `default:` on purpose: the compiler must break the build when the parser
         // learns a new ObjectType, rather than let it fall through to a generic sentence.
-        struct rename_form_t {
+        struct statement_form_t {
             std::string_view stmt_keyword;
             std::string_view sub_keyword; // empty when the object itself is renamed
         };
 
-        rename_form_t rename_form_of(ObjectType kind) noexcept {
+        statement_form_t statement_form_of(ObjectType kind) noexcept {
             switch (kind) {
                 case OBJECT_AGGREGATE:
                     return {"AGGREGATE", {}};
@@ -248,12 +248,13 @@ namespace components::sql::transform {
         constexpr std::string_view alter_table_refusal_tail = " is not implemented; the table was not altered";
     } // namespace
 
-    core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_rename(RenameStmt& node) {
+    core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_rename(RenameStmt& node,
+                                                                                 logical_plan::execution_plan_t* plan) {
         if (node.renameType != OBJECT_COLUMN) {
             // Everything but RENAME COLUMN is refused: an empty-named DROP COLUMN node
             // no-ops on operator_alter_column_drop_t, so e.g. `ALTER TABLE t RENAME TO t2`
             // would otherwise report SUCCESS and leave the object under its old name.
-            const rename_form_t form = rename_form_of(node.renameType);
+            const statement_form_t form = statement_form_of(node.renameType);
             std::pmr::string msg{"ALTER ", resource_};
             if (!form.stmt_keyword.empty()) {
                 msg += form.stmt_keyword;
@@ -274,7 +275,7 @@ namespace components::sql::transform {
             return core::error_t(core::error_code_t::unimplemented_yet, std::move(msg));
         }
         auto qn = rangevar_to_qualified_name(node.relation);
-        const std::string rel_for_resolve = qn.collection;
+        const std::string rel_for_resolve = qn.collection.t;
         std::string old_name = node.subname ? node.subname : "";
         std::string new_name = node.newname ? node.newname : "";
         // operator_alter_column_rename_t carries the same empty-name no-op as its
@@ -288,52 +289,38 @@ namespace components::sql::transform {
                                  resource_});
         }
         auto n = logical_plan::make_node_alter_table_rename_column(resource_, std::move(old_name), std::move(new_name));
-        if_exists_ = node.missing_ok;
+        plan->if_exists = node.missing_ok;
         // The altered table's identity stays ON the node: enrich binds it to a
         // resolved entry by name and stamps table_oid() + relkind from there.
-        const std::string db_for_resolve = set_target(*n, qn);
-        register_catalog_resolve_table(resource_, &catalog_resolves_, db_for_resolve, rel_for_resolve);
+        const std::string db_for_resolve = set_target(*n, qn, target_slots::relation);
+        register_table(db_for_resolve, rel_for_resolve, constraint_resolve_kind::none);
         return n;
     }
 
     core::result_wrapper_t<logical_plan::node_ptr>
     transformer::transform_alter_table(AlterTableStmt& node, logical_plan::execution_plan_t* plan) {
         auto qn = rangevar_to_qualified_name(node.relation);
-        const std::string& db = qn.database;
-        const std::string& rel = qn.collection;
-        if_exists_ = node.missing_ok;
+        const std::string& db = qn.database.t;
+        const std::string& rel = qn.collection.t;
+        plan->if_exists = node.missing_ok;
         // The grammar hands the table subcommands of ALTER VIEW / INDEX / SEQUENCE / MATERIALIZED VIEW /
         // FOREIGN TABLE over as an AlterTableStmt of that kind; they would otherwise change whatever table has
         // the name. ALTER TYPE shares the statement too and keeps its own path.
-        {
-            std::string_view kind;
-            switch (node.relkind) {
-                case OBJECT_VIEW:
-                    kind = "VIEW";
-                    break;
-                case OBJECT_INDEX:
-                    kind = "INDEX";
-                    break;
-                case OBJECT_SEQUENCE:
-                    kind = "SEQUENCE";
-                    break;
-                case OBJECT_MATVIEW:
-                    kind = "MATERIALIZED VIEW";
-                    break;
-                case OBJECT_FOREIGN_TABLE:
-                    kind = "FOREIGN TABLE";
-                    break;
-                default:
-                    break;
-            }
-            if (!kind.empty()) {
+        switch (node.relkind) {
+            case OBJECT_VIEW:
+            case OBJECT_INDEX:
+            case OBJECT_SEQUENCE:
+            case OBJECT_MATVIEW:
+            case OBJECT_FOREIGN_TABLE: {
                 std::pmr::string msg{"ALTER ", resource_};
-                msg.append(kind);
+                msg.append(statement_form_of(node.relkind).stmt_keyword);
                 msg += " \"";
                 msg += qn.to_string();
                 msg += "\" with table subcommands is not supported; nothing was changed";
                 return core::error_t(core::error_code_t::unimplemented_yet, std::move(msg));
             }
+            default:
+                break;
         }
         // Helper: every return path below targets (db, rel) — name the node and
         // register the lookup once.
@@ -344,9 +331,9 @@ namespace components::sql::transform {
                 if (node.relkind == OBJECT_TYPE) {
                     alter->set_relkind(components::catalog::relkind::composite_type);
                 }
-                target_db = set_target(*alter, qn);
+                target_db = set_target(*alter, qn, target_slots::relation);
             }
-            register_catalog_resolve_table(resource_, &catalog_resolves_, target_db, rel);
+            register_table(target_db, rel, constraint_resolve_kind::none);
             return n;
         };
         if (!node.cmds || node.cmds->lst.empty()) {
@@ -386,7 +373,7 @@ namespace components::sql::transform {
                         components::types::walk_user_type_refs(cols.front().type(), [&](std::string_view name) {
                             udt_names.emplace_back(name);
                         });
-                        register_catalog_resolve_types(resource_, &catalog_resolves_, udt_names);
+                        register_types(udt_names);
                     }
                     logical_plan::alter_table_subcommand_t sub;
                     sub.kind = logical_plan::alter_table_kind::add_column;
@@ -407,7 +394,7 @@ namespace components::sql::transform {
                     sub.kind = logical_plan::alter_table_kind::drop_column;
                     sub.column_name = cmd->name;
                     if (cmd->missing_ok) {
-                        if_exists_subcommands_.push_back(subs.size());
+                        plan->if_exists_subcommands.push_back(subs.size());
                     }
                     sub.behavior = drop_behavior_of(cmd->behavior);
                     subs.push_back(std::move(sub));
@@ -432,24 +419,17 @@ namespace components::sql::transform {
                         return core::error_t(core::error_code_t::unimplemented_yet, std::move(msg));
                     }
                     if (constr->contype == CONSTR_FOREIGN && constr->pktable) {
-                        catalog_resolves_.referenced_tables.push_back(referenced_table_as_written(constr->pktable));
+                        const auto referenced = referenced_table_as_written(constr->pktable);
+                        catalog_resolves_.referenced_tables.push_back(referenced);
                         std::string con_name = constr->conname ? constr->conname : "";
-                        std::string ref_db;
-                        if (constr->pktable->catalogname) {
-                            ref_db = constr->pktable->catalogname;
-                        } else if (constr->pktable->schemaname) {
-                            ref_db = constr->pktable->schemaname;
-                        } else {
-                            ref_db = db;
-                        }
-                        std::string ref_rel = constr->pktable->relname ? constr->pktable->relname : "";
-                        auto fk_node =
-                            logical_plan::make_node_create_constraint(resource_,
-                                                                      db,
-                                                                      rel,
-                                                                      core::constraint_name_t{std::move(con_name)},
-                                                                      logical_plan::constraint_kind::foreign_key,
-                                                                      ref_db);
+                        const std::string& ref_db = referenced.database.t.empty() ? db : referenced.database.t;
+                        const std::string& ref_rel = referenced.collection.t;
+                        auto fk_node = logical_plan::make_node_create_constraint(
+                            resource_,
+                            qualified_name_t{qn.database, qn.collection},
+                            core::constraint_name_t{std::move(con_name)},
+                            logical_plan::constraint_kind::foreign_key,
+                            qualified_name_t{core::dbname_t{ref_db}, core::relname_t{ref_rel}});
                         if (constr->fk_attrs) {
                             std::vector<std::string> fk_cols;
                             fk_cols.reserve(constr->fk_attrs->lst.size());
@@ -476,38 +456,18 @@ namespace components::sql::transform {
                                                                                                                 : 'a');
                         // FK requires BOTH the constrained table and the
                         // referenced table to be resolved at Pass 1 time.
-                        const std::string fk_ref_db = fk_node->ref_dbname();
-                        std::string effective_ref_db;
-                        std::vector<std::pair<std::string, std::string>> targets;
-                        targets.emplace_back(db, rel);
-                        if (!ref_rel.empty()) {
-                            effective_ref_db = fk_ref_db.empty() ? db : fk_ref_db;
-                            targets.emplace_back(effective_ref_db, ref_rel);
-                        }
-                        // Both identities stay ON the node — enrich looks each up by
-                        // name, so neither depends on registration order.
-                        fk_node->set_ref_relname(ref_rel);
                         // Omitted referenced column list binds to the parent's PRIMARY KEY;
                         // ask for that table's constraint gather too (enrich reads pk_columns
                         // off the resolved entry).
                         const auto gather = fk_node->ref_col_names().empty() ? constraint_resolve_kind::outgoing
                                                                              : constraint_resolve_kind::none;
-                        if (!ref_rel.empty() && effective_ref_db.empty()) {
+                        if (!ref_rel.empty() && ref_db.empty()) {
                             // Neither name says a database: the target lives where the altered table is found.
-                            register_catalog_resolve_table_in_owner_database(resource_,
-                                                                             &catalog_resolves_,
-                                                                             db,
-                                                                             rel,
-                                                                             ref_rel,
-                                                                             gather);
+                            register_table_in_owner_database(db, rel, ref_rel, gather);
                         } else {
-                            register_catalog_resolve_tables(resource_, &catalog_resolves_, targets);
-                            if (gather != constraint_resolve_kind::none && !ref_rel.empty()) {
-                                register_catalog_resolve_table(resource_,
-                                                               &catalog_resolves_,
-                                                               effective_ref_db,
-                                                               ref_rel,
-                                                               gather);
+                            register_table(db, rel, constraint_resolve_kind::none);
+                            if (!ref_rel.empty()) {
+                                register_table(ref_db, ref_rel, gather);
                             }
                         }
                         return logical_plan::node_ptr{std::move(fk_node)};
@@ -534,8 +494,7 @@ namespace components::sql::transform {
                         std::string con_name = constr->conname ? constr->conname : "";
                         auto check_node =
                             logical_plan::make_node_create_constraint(resource_,
-                                                                      db,
-                                                                      rel,
+                                                                      qualified_name_t{qn.database, qn.collection},
                                                                       core::constraint_name_t{std::move(con_name)},
                                                                       logical_plan::constraint_kind::check);
                         check_node->set_check_expression(std::move(expr));
@@ -554,8 +513,7 @@ namespace components::sql::transform {
                                               : logical_plan::constraint_kind::unique;
                         auto uq_node =
                             logical_plan::make_node_create_constraint(resource_,
-                                                                      db,
-                                                                      rel,
+                                                                      qualified_name_t{qn.database, qn.collection},
                                                                       core::constraint_name_t{std::move(con_name)},
                                                                       kind);
                         if (constr->keys) {
@@ -594,16 +552,12 @@ namespace components::sql::transform {
                     sub.kind = logical_plan::alter_table_kind::drop_constraint;
                     sub.constraint_name = cmd->name;
                     if (cmd->missing_ok) {
-                        if_exists_subcommands_.push_back(subs.size());
+                        plan->if_exists_subcommands.push_back(subs.size());
                     }
                     sub.behavior = drop_behavior_of(cmd->behavior);
                     subs.push_back(std::move(sub));
                     // names_only so a doubled-PRIMARY-KEY catalog cannot refuse its own repair statement.
-                    register_catalog_resolve_table(resource_,
-                                                   &catalog_resolves_,
-                                                   db,
-                                                   rel,
-                                                   constraint_resolve_kind::names_only);
+                    register_table(db, rel, constraint_resolve_kind::names_only);
                     break;
                 }
                 default: {

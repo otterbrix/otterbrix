@@ -18,37 +18,60 @@ namespace components::sql::transform {
             return core::error_t(core::error_code_t::sql_parse_error,
                                  std::pmr::string{"CREATE VIEW requires a SELECT body", resource_});
         }
+        VALUE_OR_RETURN(auto v,
+                        create_view_node(pg_cast<SelectStmt>(*node.query),
+                                         node.query_location,
+                                         node.query_end_location,
+                                         node.view,
+                                         false,
+                                         node.replace,
+                                         plan));
+        if (node.replace) {
+            const auto* view = static_cast<const logical_plan::node_create_view_t*>(v.get());
+            register_table(view->target().database.t, view->viewname().t, constraint_resolve_kind::none);
+        }
+        register_types(cast_type_names_);
+        return v;
+    }
+
+    core::result_wrapper_t<logical_plan::node_ptr> transformer::create_view_node(SelectStmt& query,
+                                                                                 int query_location,
+                                                                                 int query_end_location,
+                                                                                 RangeVar* name,
+                                                                                 bool materialized,
+                                                                                 bool replace,
+                                                                                 logical_plan::execution_plan_t* plan) {
+        const std::string noun = materialized ? "materialized view" : "view";
         // Stored verbatim and re-parsed on every read, so it must match exactly what the user wrote.
-        VALUE_OR_RETURN(
-            auto query_sql,
-            view_body_text(resource_, raw_sql_, node.query_location, node.query_end_location, "CREATE VIEW"));
+        VALUE_OR_RETURN(auto query_sql,
+                        view_body_text(resource_,
+                                       raw_sql_,
+                                       query_location,
+                                       query_end_location,
+                                       materialized ? "CREATE MATERIALIZED VIEW" : "CREATE VIEW"));
 
         // The body goes through the canonical path now, so a broken body is refused here and not on the first read.
         const auto sub_queries_before = plan->sub_queries.size();
-        VALUE_OR_RETURN(auto body, transform_select(pg_cast<SelectStmt>(*node.query), plan));
+        VALUE_OR_RETURN(auto body, transform_select(query, plan));
         if (!body) {
             return core::error_t(core::error_code_t::sql_parse_error,
-                                 std::pmr::string{"view body lowered to an empty plan", resource_});
+                                 std::pmr::string{noun + " body lowered to an empty plan", resource_});
         }
         // Expansion refuses the same shape on every read (view_expansion.cpp); a view nobody can read is not created.
         if (plan->sub_queries.size() != sub_queries_before) {
-            return core::error_t(core::error_code_t::sql_parse_error,
-                                 std::pmr::string{"a view body containing a sub-query is not supported yet", resource_});
+            return core::error_t(
+                core::error_code_t::sql_parse_error,
+                std::pmr::string{"a " + noun + " body containing a sub-query is not supported yet", resource_});
         }
 
-        auto qn = rangevar_to_qualified_name(node.view);
-
+        auto qn = rangevar_to_qualified_name(name);
         auto v = logical_plan::make_node_create_view(resource_,
-                                                     core::viewname_t{qn.collection},
-                                                     core::query_sql_t{std::move(query_sql)});
+                                                     core::viewname_t{qn.collection.t},
+                                                     core::query_sql_t{std::move(query_sql)},
+                                                     materialized,
+                                                     replace);
         v->append_child(std::move(body));
-        const std::string db_for_resolve = set_target(*v, qn);
-        register_catalog_resolve_namespace(resource_, &catalog_resolves_, db_for_resolve);
-        if (node.replace) {
-            v->set_replace(true);
-            register_catalog_resolve_table(resource_, &catalog_resolves_, v->dbname(), v->viewname());
-        }
-        register_catalog_resolve_types(resource_, &catalog_resolves_, cast_type_names_);
-        return v;
+        register_namespace(set_target(*v, qn, target_slots::database));
+        return logical_plan::node_ptr{std::move(v)};
     }
 } // namespace components::sql::transform

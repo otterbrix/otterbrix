@@ -195,7 +195,11 @@ TEST_CASE("integration::cpp::test_batch_where") {
             for (const auto& type : types) {
                 columns.emplace_back(type.alias(), type);
             }
-            test_create_collection(dispatcher, session, database_name, collection_name, columns);
+            test_create_collection(dispatcher,
+                                   session,
+                                   core::dbname_t{database_name},
+                                   core::relname_t{collection_name},
+                                   columns);
         }
     }
 
@@ -203,8 +207,8 @@ TEST_CASE("integration::cpp::test_batch_where") {
     {
         auto chunk = gen_data_chunk(N, dispatcher->resource());
         auto ins = components::sql::transform::name_catalog_target(
-            database_name,
-            collection_name,
+            core::dbname_t{database_name},
+            core::relname_t{collection_name},
             logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
         auto session = otterbrix::session_id_t();
         auto cur =
@@ -319,7 +323,11 @@ TEST_CASE("integration::cpp::test_batch_aggregate") {
             for (const auto& type : types) {
                 columns.emplace_back(type.alias(), type);
             }
-            test_create_collection(dispatcher, session, database_name, collection_name, columns);
+            test_create_collection(dispatcher,
+                                   session,
+                                   core::dbname_t{database_name},
+                                   core::relname_t{collection_name},
+                                   columns);
         }
     }
 
@@ -328,8 +336,8 @@ TEST_CASE("integration::cpp::test_batch_aggregate") {
         for (int batch = 0; batch < 2; batch++) {
             auto chunk = gen_data_chunk(N, dispatcher->resource());
             auto ins = components::sql::transform::name_catalog_target(
-                database_name,
-                collection_name,
+                core::dbname_t{database_name},
+                core::relname_t{collection_name},
                 logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
             auto session = otterbrix::session_id_t();
             auto cur =
@@ -670,7 +678,11 @@ TEST_CASE("integration::cpp::test_batch_edge_cases") {
             for (const auto& type : types) {
                 columns.emplace_back(type.alias(), type);
             }
-            test_create_collection(dispatcher, session, database_name, collection_name, columns);
+            test_create_collection(dispatcher,
+                                   session,
+                                   core::dbname_t{database_name},
+                                   core::relname_t{collection_name},
+                                   columns);
         }
     }
 
@@ -678,8 +690,8 @@ TEST_CASE("integration::cpp::test_batch_edge_cases") {
     {
         auto chunk = gen_data_chunk(1, dispatcher->resource());
         auto ins = components::sql::transform::name_catalog_target(
-            database_name,
-            collection_name,
+            core::dbname_t{database_name},
+            core::relname_t{collection_name},
             logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
         auto session = otterbrix::session_id_t();
         auto cur =
@@ -769,7 +781,7 @@ TEST_CASE("integration::cpp::test_batch_boundaries") {
     }
     {
         auto session = otterbrix::session_id_t();
-        test_create_collection(dispatcher, session, database_name, collection_name);
+        test_create_collection(dispatcher, session, core::dbname_t{database_name}, core::relname_t{collection_name});
     }
     {
         auto session = otterbrix::session_id_t();

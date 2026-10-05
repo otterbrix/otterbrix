@@ -75,25 +75,21 @@ namespace components::sql::transform {
         if (node.whereClause) {
             VALUE_OR_RETURN(auto where_res, transform_predicate(node.whereClause, names, plan));
             expressions::expression_ptr where_expr = std::move(where_res);
-            match = logical_plan::make_node_match(resource_,
-                                                  core::dbname_t{names.left_name.database},
-                                                  core::relname_t{names.left_name.collection},
-                                                  where_expr);
+            match =
+                logical_plan::make_node_match(resource_,
+                                              qualified_name_t{names.left_name.database, names.left_name.collection},
+                                              where_expr);
         } else {
-            match = logical_plan::make_node_match(resource_,
-                                                  core::dbname_t{names.left_name.database},
-                                                  core::relname_t{names.left_name.collection},
-                                                  make_compare_expression(resource_, compare_type::all_true));
+            match =
+                logical_plan::make_node_match(resource_,
+                                              qualified_name_t{names.left_name.database, names.left_name.collection},
+                                              make_compare_expression(resource_, compare_type::all_true));
         }
 
-        VALUE_OR_RETURN(auto upd_limit_res,
-                        build_dml_limit(node.limitCount,
-                                        core::dbname_t{names.left_name.database},
-                                        core::relname_t{names.left_name.collection},
-                                        plan));
+        VALUE_OR_RETURN(auto upd_limit_res, build_dml_limit(node.limitCount, plan));
         auto upd_limit = std::move(upd_limit_res);
-        auto upd = logical_plan::make_node_update(resource_, match, upd_limit, updates, false);
-        set_target(*upd, names.left_name);
+        auto upd = logical_plan::make_node_update(resource_, match, upd_limit, updates);
+        set_target(*upd, names.left_name, target_slots::relation_with_schema);
         // The FROM source is a child sub-plan (the RIGHT side of the update join).
         // Its scans self-resolve by name during enrich, so no table_oid_from / sibling
         // resolve_table splice is needed.
@@ -106,10 +102,7 @@ namespace components::sql::transform {
         // Catalog-resolve for the UPDATE target table, with the outgoing
         // constraint gather so enrich reads FKs stamped by
         // operator_resolve_constraint_t.
-        register_catalog_resolve_write_target(resource_,
-                                              &catalog_resolves_,
-                                              names.left_name,
-                                              constraint_resolve_kind::outgoing);
+        register_write_target(names.left_name, constraint_resolve_kind::outgoing);
         return upd;
     }
 } // namespace components::sql::transform

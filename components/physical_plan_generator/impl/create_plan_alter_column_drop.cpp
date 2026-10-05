@@ -12,7 +12,8 @@ namespace services::planner::impl {
                                                                                             context.log.clone(),
                                                                                             n->table_oid(),
                                                                                             n->column_name(),
-                                                                                            n->relation_label(),
+                                                                                            n->target(),
+                                                                                            n->relkind(),
                                                                                             n->attoid(),
                                                                                             n->behavior()));
     }

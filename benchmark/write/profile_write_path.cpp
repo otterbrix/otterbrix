@@ -246,8 +246,8 @@ namespace {
         chunk.set_cardinality(count);
 
         auto node = components::sql::transform::name_catalog_target(
-            "wp",
-            "t",
+            core::dbname_t{"wp"},
+            core::relname_t{"t"},
             components::logical_plan::make_node_insert(resource, std::move(chunk)));
 
         auto session = otterbrix::session_id_t();

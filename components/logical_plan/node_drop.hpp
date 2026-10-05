@@ -28,13 +28,8 @@ namespace components::logical_plan {
 
         drop_target_kind kind() const noexcept { return kind_; }
 
-        // Kept as written so enrich binds by name, not positional coupling to another node.
-        const std::string& dbname() const noexcept { return dbname_; }
-        void set_dbname(std::string dbname) { dbname_ = std::move(dbname); }
-        const std::string& relname() const noexcept { return relname_; }
-        void set_relname(std::string relname) { relname_ = std::move(relname); }
-        const std::string& index_name() const noexcept { return index_name_; }
-        void set_index_name(std::string name) { index_name_ = std::move(name); }
+        const core::indexname_t& index_name() const noexcept { return index_name_; }
+        void set_index_name(core::indexname_t name) { index_name_ = std::move(name); }
 
         components::catalog::oid_t namespace_oid() const noexcept { return namespace_oid_; }
         void set_namespace_oid(components::catalog::oid_t oid) noexcept { namespace_oid_ = oid; }
@@ -55,9 +50,7 @@ namespace components::logical_plan {
         std::string to_string_impl() const override;
 
         const drop_target_kind kind_;
-        std::string dbname_;
-        std::string relname_;
-        std::string index_name_;
+        core::indexname_t index_name_;
         components::catalog::oid_t namespace_oid_{components::catalog::INVALID_OID};
         components::catalog::oid_t type_oid_{components::catalog::INVALID_OID};
         components::catalog::oid_t index_oid_{components::catalog::INVALID_OID};

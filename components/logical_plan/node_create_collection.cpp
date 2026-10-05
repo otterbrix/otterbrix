@@ -7,8 +7,7 @@ namespace components::logical_plan {
     node_create_collection_t::node_create_collection_t(std::pmr::memory_resource* resource,
                                                        core::relname_t relname,
                                                        bool if_not_exists)
-        : node_t(resource, node_type::create_collection_t)
-        , relname_(std::move(static_cast<std::string&>(relname)))
+        : node_t(resource, node_type::create_collection_t, qualified_name_t{std::move(relname)})
         , if_not_exists_(if_not_exists) {}
 
     node_create_collection_t::node_create_collection_t(std::pmr::memory_resource* resource,
@@ -16,8 +15,7 @@ namespace components::logical_plan {
                                                        std::vector<table::column_definition_t> column_definitions,
                                                        std::vector<table::table_constraint_t> constraints,
                                                        bool if_not_exists)
-        : node_t(resource, node_type::create_collection_t)
-        , relname_(std::move(static_cast<std::string&>(relname)))
+        : node_t(resource, node_type::create_collection_t, qualified_name_t{std::move(relname)})
         , column_definitions_(std::move(column_definitions))
         , constraints_(std::move(constraints))
         , if_not_exists_(if_not_exists) {}
@@ -35,7 +33,7 @@ namespace components::logical_plan {
 
     std::string node_create_collection_t::to_string_impl() const {
         std::stringstream stream;
-        stream << "$create_collection: " << relname_;
+        stream << "$create_collection: " << target_.collection;
         return stream.str();
     }
 

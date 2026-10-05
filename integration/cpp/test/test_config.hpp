@@ -55,31 +55,14 @@ inline void test_clear_directory(const configuration::config& config) {
 }
 
 // Names a DML target as the transformer would, so register_plan_targets resolves it like a transformed plan.
-inline components::logical_plan::node_ptr
-test_dml_target(components::logical_plan::node_ptr node, const std::string& database, const std::string& collection) {
-    using namespace components::logical_plan;
-    switch (node->type()) {
-        case node_type::insert_t: {
-            auto* n = static_cast<node_insert_t*>(node.get());
-            n->set_dbname(database);
-            n->set_relname(collection);
-            break;
-        }
-        case node_type::update_t: {
-            auto* n = static_cast<node_update_t*>(node.get());
-            n->set_dbname(database);
-            n->set_relname(collection);
-            break;
-        }
-        case node_type::delete_t: {
-            auto* n = static_cast<node_delete_t*>(node.get());
-            n->set_dbname(database);
-            n->set_relname(collection);
-            break;
-        }
-        default:
-            // Everything else (aggregate/match/...) already carries its own names.
-            break;
+inline components::logical_plan::node_ptr test_dml_target(components::logical_plan::node_ptr node,
+                                                          const core::dbname_t& database,
+                                                          const core::relname_t& collection) {
+    using components::logical_plan::node_type;
+    // Everything else (aggregate/match/...) already carries its own names.
+    if (node->type() == node_type::insert_t || node->type() == node_type::update_t ||
+        node->type() == node_type::delete_t) {
+        node->set_target(qualified_name_t{database, collection});
     }
     return node;
 }
@@ -88,20 +71,20 @@ test_dml_target(components::logical_plan::node_ptr node, const std::string& data
 inline components::cursor::cursor_t_ptr
 test_create_collection(otterbrix::wrapper_dispatcher_t* dispatcher,
                        const otterbrix::session_id_t& session,
-                       const database_name_t& database,
-                       const collection_name_t& collection,
+                       const core::dbname_t& database,
+                       const core::relname_t& collection,
                        std::vector<components::table::column_definition_t> column_definitions = {},
                        std::vector<components::table::table_constraint_t> constraints = {}) {
     auto* resource = dispatcher->resource();
     auto node = components::logical_plan::make_node_create_collection(resource,
-                                                                      core::relname_t{collection},
+                                                                      collection,
                                                                       std::move(column_definitions),
                                                                       std::move(constraints));
-    node->set_dbname(database);
+    node->set_target(qualified_name_t{database, collection});
     components::logical_plan::execution_plan_t plan{resource,
                                                     node,
                                                     components::logical_plan::make_parameter_node(resource)};
-    components::sql::transform::register_catalog_resolve_namespace(resource, &plan.catalog_resolves, database);
+    components::sql::transform::register_catalog_resolve_namespace(resource, &plan.catalog_resolves, database.t);
     return dispatcher->execute_plan(session, std::move(plan));
 }
 

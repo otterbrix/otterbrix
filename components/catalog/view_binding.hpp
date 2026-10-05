@@ -2,6 +2,8 @@
 
 #include "catalog_oids.hpp"
 
+#include <components/base/identifier_types.hpp>
+
 #include <string>
 
 namespace components::catalog {
@@ -16,9 +18,9 @@ namespace components::catalog {
     // One pg_rewrite_ref row: a view body name as written and what CREATE VIEW bound it to.
     struct view_binding_t {
         char refkind{view_refkind::relation};
-        std::string dbname;
-        std::string schema;
-        std::string relname;
+        core::dbname_t dbname;
+        core::schema_t schema;
+        core::relname_t relname;
         oid_t refobjid{INVALID_OID};
         std::string refspec;
     };

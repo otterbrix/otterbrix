@@ -1,6 +1,6 @@
 #include "utils.hpp"
 
-#include <components/logical_plan/identifier_types.hpp>
+#include <components/base/identifier_types.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/node_create_collection.hpp>
 #include <components/logical_plan/node_create_index.hpp>
@@ -27,7 +27,7 @@ namespace components::sql::transform {
             const std::string* alias;
             expressions::side_t side;
 
-            bool exists() const noexcept { return !name->collection.empty() || !alias->empty(); }
+            bool exists() const noexcept { return !name->collection.t.empty() || !alias->empty(); }
             const std::string& visible_name() const noexcept { return transform::visible_name(*name, *alias); }
         };
 
@@ -48,12 +48,12 @@ namespace components::sql::transform {
             };
 
             if (!element.alias->empty()) {
-                return ref.table == qualified_name_t{*element.alias};
+                return ref.table == qualified_name_t{core::relname_t{*element.alias}};
             }
-            return slot_answers(ref.table.unique_identifier, element.name->unique_identifier) &&
-                   slot_answers(ref.table.database, element.name->database) &&
-                   slot_answers(ref.table.schema, element.name->schema) &&
-                   slot_answers(ref.table.collection, element.name->collection);
+            return slot_answers(ref.table.unique_identifier.t, element.name->unique_identifier.t) &&
+                   slot_answers(ref.table.database.t, element.name->database.t) &&
+                   slot_answers(ref.table.schema.t, element.name->schema.t) &&
+                   slot_answers(ref.table.collection.t, element.name->collection.t);
         }
 
         std::string spell(const element_view_t& element) {
@@ -214,7 +214,7 @@ namespace components::sql::transform {
         }
 
         for (const auto& element : elements) {
-            if (element.exists() && !element.alias->empty() && *element.alias == ref.table.collection) {
+            if (element.exists() && !element.alias->empty() && *element.alias == ref.table.collection.t) {
                 return refusal(resource, ref, refusal_reason::alias_is_not_qualifiable, *element.alias);
             }
         }
@@ -274,8 +274,8 @@ namespace components::sql::transform {
 
         column_ref_t out(resource);
         auto it = segments.begin();
-        auto take = [&](std::string& slot) {
-            slot = strVal(it->data);
+        auto take = [&](auto& slot) {
+            slot = std::string{strVal(it->data)};
             ++it;
         };
         switch (segments.size()) {
@@ -323,7 +323,7 @@ namespace components::sql::transform {
             }
             return out;
         }
-        out.field.set_qualifier(out.table.collection);
+        out.field.set_qualifier(out.table.collection.t);
         VALUE_OR_RETURN(auto side, names.resolve(resource, out));
         out.field.set_side(side);
         return out;
@@ -1477,14 +1477,9 @@ namespace components::sql::transform {
                 }
             }
             if (constraint->pktable) {
-                if (constraint->pktable->catalogname) {
-                    tc.ref_database = constraint->pktable->catalogname;
-                } else if (constraint->pktable->schemaname) {
-                    tc.ref_database = constraint->pktable->schemaname;
-                }
-                if (constraint->pktable->relname) {
-                    tc.ref_collection = constraint->pktable->relname;
-                }
+                const auto referenced = referenced_table_as_written(constraint->pktable);
+                tc.ref_database = referenced.database.t;
+                tc.ref_collection = referenced.collection.t;
             }
             // PostgreSQL stores ' '/'\0' for unspecified MATCH/action; normalize so downstream never sees it.
             if (constraint->fk_matchtype == 'f' || constraint->fk_matchtype == 'p' || constraint->fk_matchtype == 's') {
@@ -1503,10 +1498,10 @@ namespace components::sql::transform {
 
     qualified_name_t referenced_table_as_written(RangeVar* target) {
         auto written = rangevar_to_qualified_name(target);
-        if (written.database.empty() && !written.schema.empty()) {
+        if (written.database.t.empty() && !written.schema.t.empty()) {
             // Two parts: the grammar's schema slot is this catalog's database slot.
-            written.database = std::move(written.schema);
-            written.schema.clear();
+            written.database = core::dbname_t{std::move(written.schema.t)};
+            written.schema = core::schema_t{};
         }
         return written;
     }
@@ -1832,55 +1827,16 @@ namespace components::sql::transform {
     }
 
     logical_plan::node_ptr
-    name_catalog_target(const std::string& dbname, const std::string& relname, logical_plan::node_ptr node) {
-        if (!node) {
-            return node;
-        }
-        switch (node->type()) {
-            case logical_plan::node_type::insert_t: {
-                auto* n = static_cast<logical_plan::node_insert_t*>(node.get());
-                n->set_dbname(dbname);
-                n->set_relname(relname);
-                break;
-            }
-            case logical_plan::node_type::update_t: {
-                auto* n = static_cast<logical_plan::node_update_t*>(node.get());
-                n->set_dbname(dbname);
-                n->set_relname(relname);
-                break;
-            }
-            case logical_plan::node_type::delete_t: {
-                auto* n = static_cast<logical_plan::node_delete_t*>(node.get());
-                n->set_dbname(dbname);
-                n->set_relname(relname);
-                break;
-            }
-            case logical_plan::node_type::drop_t: {
-                auto* n = static_cast<logical_plan::node_drop_t*>(node.get());
-                n->set_dbname(dbname);
-                n->set_relname(relname);
-                break;
-            }
-            case logical_plan::node_type::create_collection_t: {
-                auto* n = static_cast<logical_plan::node_create_collection_t*>(node.get());
-                n->set_dbname(dbname);
-                break;
-            }
-            case logical_plan::node_type::create_index_t: {
-                auto* n = static_cast<logical_plan::node_create_index_t*>(node.get());
-                n->set_dbname(dbname);
-                n->set_relname(relname);
-                break;
-            }
-            default:
-                break;
+    name_catalog_target(const core::dbname_t& dbname, const core::relname_t& relname, logical_plan::node_ptr node) {
+        if (node) {
+            node->set_target(qualified_name_t{dbname, relname});
         }
         return node;
     }
 
     void register_catalog_resolve_types(std::pmr::memory_resource* resource,
                                         logical_plan::catalog_resolves_t* resolves,
-                                        const std::vector<std::string>& type_names) {
+                                        std::span<const std::string> type_names) {
         if (type_names.empty()) {
             return;
         }
@@ -1893,9 +1849,10 @@ namespace components::sql::transform {
         }
     }
 
-    core::result_wrapper_t<qualified_name_t> called_function(std::pmr::memory_resource* resource, const List* funcname) {
+    core::result_wrapper_t<function_qualified_name_t> called_function(std::pmr::memory_resource* resource,
+                                                                      const List* funcname) {
         if (!funcname || funcname->lst.empty()) {
-            return qualified_name_t{};
+            return function_qualified_name_t{};
         }
         std::vector<std::string> parts;
         for (const auto& part : funcname->lst) {
@@ -1905,26 +1862,38 @@ namespace components::sql::transform {
             }
             parts.emplace_back(strVal(part.data));
         }
+        std::string written = parts.front();
+        for (auto part = std::next(parts.begin()); part != parts.end(); ++part) {
+            written += '.';
+            written += *part;
+        }
         switch (parts.size()) {
             case 1:
-                return qualified_name_t{parts[0]};
+                return function_qualified_name_t{core::function_name_t{parts[0]}};
             case 2:
-                return qualified_name_t{parts[0], parts[1]};
+                return function_qualified_name_t{core::dbname_t{parts[0]},
+                                                 core::schema_t{},
+                                                 core::function_name_t{parts[1]}};
             case 3:
-                return qualified_name_t{parts[0], parts[1], parts[2]};
+                return function_qualified_name_t{core::dbname_t{parts[0]},
+                                                 core::schema_t{parts[1]},
+                                                 core::function_name_t{parts[2]}};
             case 4:
-                return qualified_name_t{parts[0], parts[1], parts[2], parts[3]};
+                return refuse_function_segment(resource, written);
             default: {
                 std::pmr::string msg{"function \"", resource};
-                msg += parts.front();
-                for (auto part = std::next(parts.begin()); part != parts.end(); ++part) {
-                    msg += '.';
-                    msg += *part;
-                }
+                msg += written;
                 msg += "\": improper qualified name (too many dotted names)";
                 return core::error_t(core::error_code_t::sql_parse_error, std::move(msg));
             }
         }
+    }
+
+    core::error_t refuse_function_segment(std::pmr::memory_resource* resource, std::string_view written) {
+        std::pmr::string msg{"function '", resource};
+        msg += written;
+        msg += "' names a uid or schema segment, which this catalog has no place for: call it as [namespace.]name";
+        return core::error_t(core::error_code_t::invalid_parameter, std::move(msg));
     }
 
     void register_catalog_resolve_namespace(std::pmr::memory_resource* resource,
@@ -1939,23 +1908,10 @@ namespace components::sql::transform {
     }
 
     namespace {
-        void register_table_entry(std::pmr::memory_resource* resource,
-                                  logical_plan::catalog_resolves_t* resolves,
-                                  const std::string& dbname,
-                                  const std::string& schema,
-                                  const std::string& relname,
-                                  constraint_resolve_kind with_constraints) {
-            register_catalog_resolve_namespace(resource, resolves, dbname);
-            if (relname.empty()) {
-                return;
-            }
-            logical_plan::resolve_entry_t table_entry;
-            table_entry.dbname = dbname;
-            table_entry.schema = schema;
-            table_entry.relname = relname;
-            const auto table_index =
-                resolves->ensure(resource, logical_plan::resolve_kind::table).add(std::move(table_entry));
-
+        void register_constraint_entry(std::pmr::memory_resource* resource,
+                                       logical_plan::catalog_resolves_t* resolves,
+                                       std::size_t table_index,
+                                       constraint_resolve_kind with_constraints) {
             if (with_constraints == constraint_resolve_kind::none) {
                 return;
             }
@@ -1966,6 +1922,26 @@ namespace components::sql::transform {
                                              : logical_plan::resolve_direction::outgoing;
             constraint_entry.names_only = (with_constraints == constraint_resolve_kind::names_only);
             resolves->ensure(resource, logical_plan::resolve_kind::constraint).add(std::move(constraint_entry));
+        }
+
+        std::size_t register_table_entry(std::pmr::memory_resource* resource,
+                                         logical_plan::catalog_resolves_t* resolves,
+                                         const std::string& dbname,
+                                         const std::string& schema,
+                                         const std::string& relname,
+                                         constraint_resolve_kind with_constraints) {
+            register_catalog_resolve_namespace(resource, resolves, dbname);
+            if (relname.empty()) {
+                return logical_plan::resolve_entry_t::no_target;
+            }
+            logical_plan::resolve_entry_t table_entry;
+            table_entry.dbname = dbname;
+            table_entry.schema = schema;
+            table_entry.relname = relname;
+            const auto table_index =
+                resolves->ensure(resource, logical_plan::resolve_kind::table).add(std::move(table_entry));
+            register_constraint_entry(resource, resolves, table_index, with_constraints);
+            return table_index;
         }
     } // namespace
 
@@ -1983,28 +1959,10 @@ namespace components::sql::transform {
                                                constraint_resolve_kind with_constraints) {
         register_table_entry(resource,
                              resolves,
-                             written.database,
-                             written.unique_identifier.empty() ? written.schema : std::string{},
-                             written.collection,
+                             written.database.t,
+                             std::string{logical_plan::catalog_schema(written)},
+                             written.collection.t,
                              with_constraints);
-    }
-
-    void register_catalog_resolve_written_table(std::pmr::memory_resource* resource,
-                                                logical_plan::catalog_resolves_t* resolves,
-                                                const logical_plan::node_aggregate_t& from) {
-        const auto& dbname = static_cast<const std::string&>(from.dbname());
-        const auto& relname = static_cast<const std::string&>(from.relname());
-        register_catalog_resolve_namespace(resource, resolves, dbname);
-        if (relname.empty()) {
-            return;
-        }
-        logical_plan::resolve_entry_t entry;
-        entry.dbname = dbname;
-        if (static_cast<const std::string&>(from.uid()).empty()) {
-            entry.schema = from.schema();
-        }
-        entry.relname = relname;
-        resolves->ensure(resource, logical_plan::resolve_kind::table).add(std::move(entry));
     }
 
     void register_catalog_resolve_table_in_owner_database(std::pmr::memory_resource* resource,
@@ -2013,25 +1971,12 @@ namespace components::sql::transform {
                                                           const std::string& owner_rel,
                                                           const std::string& relname,
                                                           constraint_resolve_kind with_constraints) {
-        register_catalog_resolve_namespace(resource, resolves, owner_db);
-        auto& tables = resolves->ensure(resource, logical_plan::resolve_kind::table);
-        logical_plan::resolve_entry_t owner;
-        owner.dbname = owner_db;
-        owner.relname = owner_rel;
         logical_plan::resolve_entry_t target;
         target.relname = relname;
-        target.namespace_of = tables.add(std::move(owner));
-        const auto target_index = tables.add(std::move(target));
-        if (with_constraints == constraint_resolve_kind::none) {
-            return;
-        }
-        logical_plan::resolve_entry_t constraint_entry;
-        constraint_entry.target = target_index;
-        constraint_entry.direction = (with_constraints == constraint_resolve_kind::referencing)
-                                         ? logical_plan::resolve_direction::referencing
-                                         : logical_plan::resolve_direction::outgoing;
-        constraint_entry.names_only = (with_constraints == constraint_resolve_kind::names_only);
-        resolves->ensure(resource, logical_plan::resolve_kind::constraint).add(std::move(constraint_entry));
+        target.namespace_of =
+            register_table_entry(resource, resolves, owner_db, std::string{}, owner_rel, constraint_resolve_kind::none);
+        const auto target_index = resolves->ensure(resource, logical_plan::resolve_kind::table).add(std::move(target));
+        register_constraint_entry(resource, resolves, target_index, with_constraints);
     }
 
     void register_catalog_resolve_tables(std::pmr::memory_resource* resource,

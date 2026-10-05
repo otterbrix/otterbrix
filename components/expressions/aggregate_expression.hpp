@@ -25,7 +25,7 @@ namespace components::expressions {
         const expression_ptr& child() const noexcept { return child_; }
 
         const std::string& function_name() const;
-        const qualified_name_t& full_name() const;
+        const function_qualified_name_t& full_name() const;
         void add_function_uid(compute::function_uid uid);
         compute::function_uid function_uid() const;
         void set_signature(size_t signature) noexcept;

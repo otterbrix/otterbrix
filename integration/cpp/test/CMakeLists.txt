@@ -117,7 +117,6 @@ set( ${PROJECT_NAME}_SOURCES
         test_insert_param_retype_preserves_cells.cpp
         test_select_missing_table_refusal.cpp
         test_unresolved_target_dml_refusal.cpp
-        test_update_upsert_refusal.cpp
         test_fk_cascade_set_default_specs.cpp
         test_pipeline_context_move.cpp
         test_delete_affected_count.cpp
@@ -209,6 +208,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_unique_constraint_e2e.cpp
         test_bounded_dml_flush.cpp
         test_aggregate_pushdown_e2e.cpp
+        test_clause_answers.cpp
         test_pushdown_traffic.cpp
         test_pushed_reduce_scan_lateral.cpp
         test_jsonb_support.cpp

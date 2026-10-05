@@ -358,7 +358,8 @@ namespace services::dispatcher {
                 const auto* tbl = node->table_metadata();
                 if (tbl && tbl->relkind != 'g') {
                     named_schema result(resource);
-                    const auto& table_alias = node->result_alias().empty() ? node->relname() : node->result_alias();
+                    const auto& table_alias =
+                        node->result_alias().empty() ? node->target().collection.t : node->result_alias();
                     for (const auto& column : tbl->columns) {
                         result.emplace_back(catalog_column(context, table_alias, *tbl, column));
                     }
@@ -367,18 +368,18 @@ namespace services::dispatcher {
                 if (tbl && tbl->relkind == 'g') {
                     named_schema result(resource);
                     for (const auto& column : tbl->columns) {
-                        result.emplace_back(catalog_column(
-                            context,
-                            node->result_alias().empty() ? node->relname() : node->result_alias(),
-                            *tbl,
-                            column));
+                        result.emplace_back(catalog_column(context,
+                                                           node->result_alias().empty() ? node->target().collection.t
+                                                                                        : node->result_alias(),
+                                                           *tbl,
+                                                           column));
                     }
                     return result;
                 } else {
                     std::pmr::string msg{"collection does not exist: ", resource};
-                    msg.append(node->dbname().begin(), node->dbname().end());
+                    msg.append(node->target().database.t.begin(), node->target().database.t.end());
                     msg += '.';
-                    msg.append(node->relname().begin(), node->relname().end());
+                    msg.append(node->target().collection.t.begin(), node->target().collection.t.end());
                     return core::error_t(core::error_code_t::table_not_exists, std::move(msg));
                 }
             } else {
@@ -755,7 +756,9 @@ namespace services::dispatcher {
                                            std::pmr::string{"collection does not exist", resource});
                     return false;
                 }
-                insert_target_relkind = tbl->relkind;
+                if (node->type() == node_type::insert_t) {
+                    insert_target_relkind = tbl->relkind;
+                }
             }
             if (node->type() == node_type::data_t) {
                 auto* data_node = reinterpret_cast<node_data_t*>(node);
@@ -918,9 +921,9 @@ namespace services::dispatcher {
                         incoming_schema = std::move(node_data_res.value());
                     }
                 } else if (auto* agg_node = static_cast<node_aggregate_t*>(node);
-                           !static_cast<const std::string&>(agg_node->relname()).empty()) {
-                    const auto& agg_dbname_s = static_cast<const std::string&>(agg_node->dbname());
-                    const auto& agg_relname_s = static_cast<const std::string&>(agg_node->relname());
+                           !static_cast<const std::string&>(agg_node->target().collection).empty()) {
+                    const auto& agg_dbname_s = static_cast<const std::string&>(agg_node->target().database);
+                    const auto& agg_relname_s = static_cast<const std::string&>(agg_node->target().collection);
                     const auto& visible_alias = node->result_alias().empty() ? agg_relname_s : node->result_alias();
                     const auto* tbl = node->table_metadata();
                     if (tbl) {
@@ -2455,7 +2458,7 @@ namespace services::dispatcher {
                 if (saw_reduction) {
                     return core::error_t(
                         core::error_code_t::invalid_constraint,
-                        std::pmr::string{"CHECK constraint \"" + constraint_node->name() +
+                        std::pmr::string{"CHECK constraint \"" + constraint_node->name().t +
                                              "\" uses an aggregate; a CHECK is evaluated for one row at a time",
                                          resource});
                 }

@@ -43,7 +43,7 @@ namespace components::planner {
 
     // Each reference gets its own body -- filter pushdown appends a match child into it, so two
     // references cannot share a subtree (same policy as CTE inlining in optimizer.cpp).
-    view_body_t expand_view_body(std::pmr::memory_resource* resource, const std::string& view_sql);
+    view_body_t expand_view_body(std::pmr::memory_resource* resource, const core::body_sql_t& view_sql);
 
     // Spliced at position 0 (appending would silently disable filter pushdown, which reads
     // children()[0] as the source). Refuses a correlated (LATERAL) `body`: node_join_t::correlations()
@@ -87,7 +87,7 @@ namespace components::planner {
     core::result_wrapper_t<logical_plan::execution_plan_t>
     refresh_matview_plan(std::pmr::memory_resource* resource,
                          const logical_plan::resolved_table_metadata_t& matview,
-                         const std::string& dbname);
+                         const core::dbname_t& dbname);
 
     // A true cycle should be impossible, but this is the loud stop instead of an endless resolve loop.
     inline constexpr std::size_t max_view_expansion_depth = 16;

@@ -68,12 +68,9 @@ namespace services::planner::impl {
     }
 
     plan_result_t create_plan_select(const context_storage_t& context, const components::logical_plan::node_ptr& node) {
-        auto table_oid = node->table_oid();
-        bool known = context.has_table_oid(table_oid);
-        auto plan_resource = known ? context.resource : node->resource();
-        auto plan_log = known ? context.log.clone() : log_t{};
-
-        auto op = boost::intrusive_ptr(new components::operators::operator_select_t(plan_resource, plan_log));
+        auto* plan_resource = context.resource;
+        auto op =
+            boost::intrusive_ptr(new components::operators::operator_select_t(plan_resource, context.log.clone()));
 
         for (const auto& expression : node->expressions()) {
             if (projects_column(expression)) {

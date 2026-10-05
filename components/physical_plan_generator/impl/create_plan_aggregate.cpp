@@ -205,8 +205,7 @@ namespace services::planner::impl {
                                               const lp::node_ptr& node,
                                               const lp::node_group_t* group,
                                               const std::vector<size_t>& base_projected_cols) {
-            const bool known = context.has_table_oid(node->table_oid());
-            auto* resource = known ? context.resource : node->resource();
+            auto* resource = context.resource;
 
             ops::pushed_aggregate_spec_t spec{resource};
             if (!build_pushed_spec(group, node, resource, spec)) {
@@ -249,13 +248,13 @@ namespace services::planner::impl {
             }
 
             auto scan = boost::intrusive_ptr(new ops::pushed_reduce_scan(resource,
-                                                                         known ? context.log.clone() : log_t{},
+                                                                         context.log.clone(),
                                                                          node->table_oid(),
                                                                          where_expr,
                                                                          std::move(projected_cols),
                                                                          std::move(spec)));
             auto merge = boost::intrusive_ptr(new ops::operator_group_merge_t(resource,
-                                                                              known ? context.log.clone() : log_t{},
+                                                                              context.log.clone(),
                                                                               scalar,
                                                                               std::move(merge_types),
                                                                               std::move(merge_aggs)));
@@ -277,7 +276,7 @@ namespace services::planner::impl {
             }
         }
 
-        auto* plan_resource = context.has_table_oid(node->table_oid()) ? context.resource : node->resource();
+        auto* plan_resource = context.resource;
 
         // Populated by the column_pruning optimizer rule; empty means read all columns.
         const auto* agg_node = static_cast<const components::logical_plan::node_aggregate_t*>(node.get());
@@ -291,12 +290,8 @@ namespace services::planner::impl {
             if (!limit_effective) {
                 return op;
             }
-            auto limit_op =
-                context.has_table_oid(node->table_oid())
-                    ? boost::intrusive_ptr(
-                          new components::operators::operator_limit_t(context.resource, context.log.clone(), limit))
-                    : boost::intrusive_ptr(
-                          new components::operators::operator_limit_t(node->resource(), log_t{}, limit));
+            auto limit_op = boost::intrusive_ptr(
+                new components::operators::operator_limit_t(context.resource, context.log.clone(), limit));
             limit_op->set_children(std::move(op));
             return limit_op;
         };
@@ -338,12 +333,8 @@ namespace services::planner::impl {
                     executor = std::move(push_select_op);
                 }
                 if (agg_node->is_distinct()) {
-                    auto distinct_op =
-                        context.has_table_oid(node->table_oid())
-                            ? boost::intrusive_ptr(
-                                  new components::operators::operator_distinct_t(context.resource, context.log.clone()))
-                            : boost::intrusive_ptr(
-                                  new components::operators::operator_distinct_t(node->resource(), log_t{}));
+                    auto distinct_op = boost::intrusive_ptr(
+                        new components::operators::operator_distinct_t(context.resource, context.log.clone()));
                     distinct_op->set_children(std::move(executor));
                     executor = std::move(distinct_op);
                 }
@@ -428,9 +419,10 @@ namespace services::planner::impl {
                         break;
                     case components::logical_plan::match_source::table:
                         if (!context.has_table_oid(node->table_oid())) {
-                            return unresolved_table_refusal(context.resource,
-                                                            static_cast<const std::string&>(agg_node->dbname()),
-                                                            static_cast<const std::string&>(agg_node->relname()));
+                            return unresolved_table_refusal(
+                                context.resource,
+                                static_cast<const std::string&>(agg_node->target().database),
+                                static_cast<const std::string&>(agg_node->target().collection));
                         }
                         break;
                 }
@@ -462,11 +454,8 @@ namespace services::planner::impl {
         // DISTINCT ON dedups on the ON-key subset BELOW the projection, so ON columns that don't survive it
         // are still present; keep-first over sorted input gives "first row per ON key in ORDER BY order".
         if (agg_node->is_distinct() && !agg_node->distinct_on_keys().empty()) {
-            auto distinct_op =
-                context.has_table_oid(node->table_oid())
-                    ? boost::intrusive_ptr(
-                          new components::operators::operator_distinct_t(context.resource, context.log.clone()))
-                    : boost::intrusive_ptr(new components::operators::operator_distinct_t(node->resource(), log_t{}));
+            auto distinct_op = boost::intrusive_ptr(
+                new components::operators::operator_distinct_t(context.resource, context.log.clone()));
             std::pmr::vector<size_t> on_cols(node->resource());
             on_cols.reserve(agg_node->distinct_on_keys().size());
             for (const auto& key : agg_node->distinct_on_keys()) {
@@ -482,11 +471,8 @@ namespace services::planner::impl {
         }
 
         if (agg_node->is_distinct() && agg_node->distinct_on_keys().empty()) {
-            auto distinct_op =
-                context.has_table_oid(node->table_oid())
-                    ? boost::intrusive_ptr(
-                          new components::operators::operator_distinct_t(context.resource, context.log.clone()))
-                    : boost::intrusive_ptr(new components::operators::operator_distinct_t(node->resource(), log_t{}));
+            auto distinct_op = boost::intrusive_ptr(
+                new components::operators::operator_distinct_t(context.resource, context.log.clone()));
             distinct_op->set_children(std::move(executor));
             executor = std::move(distinct_op);
         }

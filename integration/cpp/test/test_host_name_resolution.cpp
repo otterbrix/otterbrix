@@ -345,7 +345,7 @@ namespace {
 
     template<class Write>
     std::string target_of(const Write& write) {
-        return write.dbname() + "|" + write.schema() + "|" + write.relname();
+        return write.target().database.t + "|" + write.target().schema.t + "|" + write.target().collection.t;
     }
 
     std::string describe_write(const logical_plan::node_t& write) {
@@ -409,26 +409,27 @@ namespace {
     core::result_wrapper_t<std::pmr::vector<logical_plan::execution_plan_t>>
     need_remote_columns(std::pmr::memory_resource* resource,
                         const logical_plan::node_ptr&,
-                        std::span<const planner::unresolved_table_t> unresolved) {
+                        std::span<const qualified_name_t> unresolved) {
         counters().need.fetch_add(1);
         std::pmr::vector<logical_plan::execution_plan_t> reads{resource};
         for (const auto& name : unresolved) {
-            asked_names().push_back(qualified(name.dbname, name.schema, name.relname));
-            auto agg = logical_plan::make_node_aggregate(resource,
-                                                         core::dbname_t{"otterstax"},
-                                                         core::relname_t{"remote_columns"});
+            asked_names().push_back(qualified(name.database.t, name.schema.t, name.collection.t));
+            auto agg = logical_plan::make_node_aggregate(
+                resource,
+                qualified_name_t{core::dbname_t{"otterstax"}, core::relname_t{"remote_columns"}});
             auto expr =
                 expressions::make_compare_expression(resource,
                                                      expressions::compare_type::eq,
                                                      expressions::key_t{resource, "tbl", expressions::side_t::left},
                                                      core::parameter_id_t{1});
-            agg->append_child(logical_plan::make_node_match(resource,
-                                                            core::dbname_t{"otterstax"},
-                                                            core::relname_t{"remote_columns"},
-                                                            std::move(expr)));
+            agg->append_child(logical_plan::make_node_match(
+                resource,
+                qualified_name_t{core::dbname_t{"otterstax"}, core::relname_t{"remote_columns"}},
+                std::move(expr)));
             auto params = logical_plan::make_parameter_node(resource);
-            params->add_parameter(core::parameter_id_t{1},
-                                  types::logical_value_t(resource, qualified(name.dbname, name.schema, name.relname)));
+            params->add_parameter(
+                core::parameter_id_t{1},
+                types::logical_value_t(resource, qualified(name.database.t, name.schema.t, name.collection.t)));
             reads.emplace_back(resource, std::move(agg), std::move(params));
         }
         counters().reads.fetch_add(static_cast<int>(reads.size()));
@@ -446,7 +447,7 @@ namespace {
                                     std::pmr::memory_resource* resource,
                                     const std::vector<declared_t>& declared) {
         const auto& write = static_cast<const Write&>(node);
-        const auto name = qualified(write.dbname(), write.schema(), write.relname());
+        const auto name = qualified(write.target().database.t, write.target().schema.t, write.target().collection.t);
         auto it = std::find_if(declared.begin(), declared.end(), [&](const declared_t& d) { return d.name == name; });
         if (it == declared.end()) {
             return core::error_t::no_error();
@@ -485,9 +486,7 @@ namespace {
         }
         if (node->type() == logical_plan::node_type::aggregate_t) {
             const auto* agg = static_cast<const logical_plan::node_aggregate_t*>(node.get());
-            const auto name = qualified(static_cast<const std::string&>(agg->dbname()),
-                                        agg->schema(),
-                                        static_cast<const std::string&>(agg->relname()));
+            const auto name = qualified(agg->target().database.t, agg->target().schema.t, agg->target().collection.t);
             auto it =
                 std::find_if(declared.begin(), declared.end(), [&](const declared_t& d) { return d.name == name; });
             if (it != declared.end()) {
@@ -501,13 +500,13 @@ namespace {
                     return ext.error();
                 }
                 ext.value()->set_result_alias(agg->result_alias().empty()
-                                                  ? static_cast<const std::string&>(agg->relname())
+                                                  ? static_cast<const std::string&>(agg->target().collection)
                                                   : agg->result_alias());
                 if (node->children().empty()) {
                     node = ext.value();
                     return core::error_t::no_error();
                 }
-                auto wrapper = logical_plan::make_node_aggregate(resource, core::dbname_t{}, core::relname_t{});
+                auto wrapper = logical_plan::make_node_aggregate(resource, qualified_name_t{});
                 wrapper->set_result_alias(node->result_alias());
                 wrapper->append_child(ext.value());
                 for (auto& child : node->children()) {
@@ -529,7 +528,7 @@ namespace {
     core::result_wrapper_t<logical_plan::node_ptr>
     decide_remote_nodes(std::pmr::memory_resource* resource,
                         logical_plan::node_ptr tree,
-                        std::span<const planner::unresolved_table_t> unresolved,
+                        std::span<const qualified_name_t> unresolved,
                         std::span<const std::pmr::vector<vector::data_chunk_t>> read_results) {
         counters().decide.fetch_add(1);
         std::vector<declared_t> declared;
@@ -560,7 +559,7 @@ namespace {
                 continue;
             }
             std::sort(ordered.begin(), ordered.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
-            declared_t d{qualified(unresolved[i].dbname, unresolved[i].schema, unresolved[i].relname),
+            declared_t d{qualified(unresolved[i].database.t, unresolved[i].schema.t, unresolved[i].collection.t),
                          std::pmr::vector<types::complex_logical_type>{resource}};
             for (auto& [_, type] : ordered) {
                 d.columns.push_back(std::move(type));

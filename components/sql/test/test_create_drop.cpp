@@ -500,8 +500,8 @@ TEST_CASE("components::sql::create_function_shape_is_carried_or_refused") {
         auto node = result.value().sub_queries.back();
         REQUIRE(node->type() == node_type::create_macro_t);
         auto* macro = static_cast<node_create_macro_t*>(node.get());
-        CHECK(macro->macroname() == "add2");
-        CHECK(macro->dbname() == "db");
+        CHECK(macro->macroname().t == "add2");
+        CHECK(macro->target().database.t == "db");
         REQUIRE(macro->parameters().size() == 2);
         CHECK(macro->parameters()[0] == "x");
         CHECK(macro->parameters()[1] == "y");
@@ -514,8 +514,8 @@ TEST_CASE("components::sql::create_function_shape_is_carried_or_refused") {
         auto node = result.value().sub_queries.back();
         REQUIRE(node->type() == node_type::create_macro_t);
         auto* macro = static_cast<node_create_macro_t*>(node.get());
-        CHECK(macro->macroname() == "solo");
-        CHECK(macro->dbname() == "public");
+        CHECK(macro->macroname().t == "solo");
+        CHECK(macro->target().database.t == "public");
     }
 }
 

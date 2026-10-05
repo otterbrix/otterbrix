@@ -10,8 +10,8 @@
 
 #include <map>
 
-static const database_name_t database_name = "testdatabase";
-static const collection_name_t collection_name = "testcollection";
+static const core::dbname_t database_name{"testdatabase"};
+static const core::relname_t collection_name{"testcollection"};
 
 using namespace components;
 using namespace components::cursor;
@@ -35,7 +35,7 @@ TEST_CASE("integration::cpp::test_arithmetic") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -680,7 +680,7 @@ TEST_CASE("integration::cpp::test_arithmetic::join") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -766,7 +766,7 @@ TEST_CASE("integration::cpp::test_arithmetic::having") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -844,7 +844,7 @@ TEST_CASE("integration::cpp::test_arithmetic::case_when") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -950,7 +950,7 @@ TEST_CASE("integration::cpp::test_arithmetic::edge_cases") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1016,7 +1016,7 @@ TEST_CASE("integration::cpp::test_arithmetic::interleaved_group_by") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1115,7 +1115,7 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();

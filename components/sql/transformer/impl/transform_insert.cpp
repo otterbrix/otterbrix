@@ -392,13 +392,6 @@ namespace components::sql::transform {
             std::pmr::vector<std::string> field_names(resource_);
             if (fields.empty()) {
                 const auto width = pg_ptr_cast<List>(vals.front().data)->lst.size();
-                for (auto row : vals) {
-                    if (pg_ptr_cast<List>(row.data)->lst.size() != width) {
-                        return core::error_t(
-                            core::error_code_t::sql_parse_error,
-                            std::pmr::string{"VALUES lists must all be the same length", resource_});
-                    }
-                }
                 field_names.reserve(width);
                 for (std::size_t position = 1; position <= width; ++position) {
                     field_names.emplace_back("?column?" + std::to_string(position));
@@ -417,15 +410,12 @@ namespace components::sql::transform {
                                 size_t global_row,
                                 List* values_list) -> core::error_t {
                 auto values = values_list->lst;
-                if (values.size() > field_names.size()) {
-                    return core::error_t(
-                        core::error_code_t::sql_parse_error,
-                        std::pmr::string{"INSERT has more expressions than target columns", resource_});
-                }
-                if (values.size() < field_names.size()) {
-                    return core::error_t(
-                        core::error_code_t::sql_parse_error,
-                        std::pmr::string{"INSERT has more target columns than expressions", resource_});
+                if (values.size() != field_names.size()) {
+                    const char* what = fields.empty() ? "VALUES lists must all be the same length"
+                                       : values.size() > field_names.size()
+                                           ? "INSERT has more expressions than target columns"
+                                           : "INSERT has more target columns than expressions";
+                    return core::error_t(core::error_code_t::sql_parse_error, std::pmr::string{what, resource_});
                 }
 
                 std::size_t field_pos = 0;
@@ -597,8 +587,8 @@ namespace components::sql::transform {
             auto* ins_node = static_cast<logical_plan::node_insert_t*>(ins.get());
             ins_node->set_literal_digits(std::move(literal_digits));
             ins_node->returning() = returning;
-            set_target(*ins_node, qn);
-            register_catalog_resolve_write_target(resource_, &catalog_resolves_, qn, constraint_resolve_kind::outgoing);
+            set_target(*ins_node, qn, target_slots::relation_with_schema);
+            register_write_target(qn, constraint_resolve_kind::outgoing);
             return ins;
         } else {
             auto qn = rangevar_to_qualified_name(node.relation);
@@ -607,8 +597,8 @@ namespace components::sql::transform {
             res->append_child(std::move(source));
             res->key_translation() = key_translation;
             res->returning() = returning;
-            set_target(*res, qn);
-            register_catalog_resolve_write_target(resource_, &catalog_resolves_, qn, constraint_resolve_kind::outgoing);
+            set_target(*res, qn, target_slots::relation_with_schema);
+            register_write_target(qn, constraint_resolve_kind::outgoing);
             return res;
         }
     }

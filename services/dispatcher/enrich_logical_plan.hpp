@@ -49,10 +49,9 @@ namespace services::catalog_resolve {
 
     bool has_unresolved_entries(const components::logical_plan::catalog_resolves_t& resolves);
 
-    // Table names the catalog did not resolve; the views point into `resolves`.
-    std::pmr::vector<components::planner::unresolved_table_t>
-    unresolved_tables(std::pmr::memory_resource* resource,
-                      const components::logical_plan::catalog_resolves_t& resolves);
+    // Table names the catalog did not resolve.
+    std::pmr::vector<qualified_name_t> unresolved_tables(std::pmr::memory_resource* resource,
+                                                         const components::logical_plan::catalog_resolves_t& resolves);
 
     std::size_t entry_count(const components::logical_plan::catalog_resolves_t& resolves);
 

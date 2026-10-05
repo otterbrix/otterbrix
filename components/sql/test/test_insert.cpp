@@ -150,13 +150,13 @@ WHERE condition = true;)_"));
         }(transformer.transform(pg_cell_to_node_cast(select)).finalize()));
         auto node = dml_consumer(result.sub_queries.back());
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
-        REQUIRE(
-            static_cast<const std::string&>(
-                static_cast<components::logical_plan::node_aggregate_t*>(node->children().front().get())->dbname()) ==
-            "");
-        REQUIRE(
-            static_cast<const std::string&>(
-                static_cast<components::logical_plan::node_aggregate_t*>(node->children().front().get())->relname()) ==
-            "table1");
+        REQUIRE(static_cast<const std::string&>(
+                    static_cast<components::logical_plan::node_aggregate_t*>(node->children().front().get())
+                        ->target()
+                        .database) == "");
+        REQUIRE(static_cast<const std::string&>(
+                    static_cast<components::logical_plan::node_aggregate_t*>(node->children().front().get())
+                        ->target()
+                        .collection) == "table1");
     }
 }

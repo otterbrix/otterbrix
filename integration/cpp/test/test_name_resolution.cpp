@@ -1039,7 +1039,8 @@ namespace {
 
     reference_slots_t reference_slots(const std::string& sql) {
         sql::transform::name_collection_t names;
-        names.left_name = qualified_name_t{"u", "d", "s", "t"};
+        names.left_name =
+            qualified_name_t{core::uid_t{"u"}, core::dbname_t{"d"}, core::schema_t{"s"}, core::relname_t{"t"}};
         return with_parsed(sql, [&names](SelectStmt* select, std::pmr::memory_resource* resource) {
             auto* target = sql::transform::pg_ptr_cast<ResTarget>(select->targetList->lst.front().data);
             auto parsed = sql::transform::columnref_to_field(resource,
@@ -1047,10 +1048,10 @@ namespace {
                                                              names);
             REQUIRE_FALSE(parsed.has_error());
             const auto& ref = parsed.value();
-            return reference_slots_t{ref.table.unique_identifier,
-                                     ref.table.database,
-                                     ref.table.schema,
-                                     ref.table.collection,
+            return reference_slots_t{ref.table.unique_identifier.t,
+                                     ref.table.database.t,
+                                     ref.table.schema.t,
+                                     ref.table.collection.t,
                                      ref.field.as_string()};
         });
     }
@@ -1060,31 +1061,31 @@ TEST_CASE("name_resolution::from_name::from_arities_fill_the_slots") {
     // The shorter forms drop the middle slots: two segments are db.relname, not schema.relname.
     {
         auto name = from_slots("SELECT 1 FROM t;");
-        CHECK(name.collection == "t");
-        CHECK(name.database.empty());
-        CHECK(name.schema.empty());
-        CHECK(name.unique_identifier.empty());
+        CHECK(name.collection.t == "t");
+        CHECK(name.database.t.empty());
+        CHECK(name.schema.t.empty());
+        CHECK(name.unique_identifier.t.empty());
     }
     {
         auto name = from_slots("SELECT 1 FROM d.t;");
-        CHECK(name.database == "d");
-        CHECK(name.collection == "t");
-        CHECK(name.schema.empty());
-        CHECK(name.unique_identifier.empty());
+        CHECK(name.database.t == "d");
+        CHECK(name.collection.t == "t");
+        CHECK(name.schema.t.empty());
+        CHECK(name.unique_identifier.t.empty());
     }
     {
         auto name = from_slots("SELECT 1 FROM d.s.t;");
-        CHECK(name.database == "d");
-        CHECK(name.schema == "s");
-        CHECK(name.collection == "t");
-        CHECK(name.unique_identifier.empty());
+        CHECK(name.database.t == "d");
+        CHECK(name.schema.t == "s");
+        CHECK(name.collection.t == "t");
+        CHECK(name.unique_identifier.t.empty());
     }
     {
         auto name = from_slots("SELECT 1 FROM u.d.s.t;");
-        CHECK(name.unique_identifier == "u");
-        CHECK(name.database == "d");
-        CHECK(name.schema == "s");
-        CHECK(name.collection == "t");
+        CHECK(name.unique_identifier.t == "u");
+        CHECK(name.database.t == "d");
+        CHECK(name.schema.t == "s");
+        CHECK(name.collection.t == "t");
     }
 }
 

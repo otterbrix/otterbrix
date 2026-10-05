@@ -32,11 +32,11 @@ namespace planner_test {
              const components::logical_plan::node_group_ptr& group,
              components::catalog::oid_t table_oid,
              components::expressions::expression_ptr having = nullptr) {
-        auto agg = components::logical_plan::make_node_aggregate(r, dbn(), reln());
+        auto agg = components::logical_plan::make_node_aggregate(r, qualified_name_t{dbn(), reln()});
         agg->set_table_oid(table_oid);
         agg->append_child(group);
         if (having != nullptr) {
-            agg->append_child(components::logical_plan::make_node_having(r, dbn(), reln(), having));
+            agg->append_child(components::logical_plan::make_node_having(r, having));
         }
         return agg;
     }
@@ -49,7 +49,7 @@ namespace planner_test {
              components::catalog::oid_t table_oid,
              std::pmr::vector<components::types::complex_logical_type> out_types,
              bool agg_distinct) {
-        auto agg = components::logical_plan::make_node_aggregate(r, dbn(), reln());
+        auto agg = components::logical_plan::make_node_aggregate(r, qualified_name_t{dbn(), reln()});
         agg->set_table_oid(table_oid);
         agg->set_distinct(agg_distinct);
         if (!out_types.empty()) {
@@ -82,7 +82,7 @@ namespace planner_test {
         cnt->set_mergeable(true);
         cnt->append_param(key(r, "v"));
         exprs.push_back(expression_ptr(cnt));
-        return components::logical_plan::make_node_group(r, dbn(), reln(), exprs);
+        return components::logical_plan::make_node_group(r, exprs);
     }
 
 } // namespace planner_test

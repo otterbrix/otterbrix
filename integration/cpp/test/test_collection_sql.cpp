@@ -6,8 +6,8 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
-static const database_name_t database_name = "testdatabase";
-static const collection_name_t collection_name = "testcollection";
+static const core::dbname_t database_name{"testdatabase"};
+static const core::relname_t collection_name{"testcollection"};
 
 using namespace components;
 using namespace components::cursor;
@@ -25,7 +25,7 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -425,7 +425,7 @@ TEST_CASE("integration::cpp::test_collection::sql::group_by") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -552,7 +552,7 @@ TEST_CASE("integration::cpp::test_collection::sql::index") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();

@@ -39,14 +39,15 @@ namespace services::planner::impl {
         // generation; if that refusal is ever lost again, lowering anyway builds a sink
         // with no table behind it — an UPDATE that changes nothing and reports SUCCESS.
         if (!context.has_table_oid(table_oid)) {
-            return unresolved_table_refusal(context.resource, node_update->dbname(), node_update->relname());
+            return unresolved_table_refusal(context.resource,
+                                            node_update->target().database.t,
+                                            node_update->target().collection.t);
         }
         if (!node_source) {
             auto plan = boost::intrusive_ptr(new components::operators::operator_update(context.resource,
                                                                                         context.log.clone(),
                                                                                         table_oid,
                                                                                         node_update->updates(),
-                                                                                        node_update->upsert(),
                                                                                         std::move(returning)));
             plan->set_table_has_indexes(node->table_has_indexes());
             VALUE_OR_RETURN(auto scan, create_plan_match(context, node_match, limit));
@@ -61,7 +62,6 @@ namespace services::planner::impl {
                                                                                     context.log.clone(),
                                                                                     table_oid,
                                                                                     node_update->updates(),
-                                                                                    node_update->upsert(),
                                                                                     std::move(returning),
                                                                                     node_match->expressions()[0],
                                                                                     limit.limit()));

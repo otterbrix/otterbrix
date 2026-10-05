@@ -5,8 +5,8 @@
 #include <integration/cpp/connection.hpp>
 #include <unistd.h>
 
-static const database_name_t database_name = "testdatabase";
-static const collection_name_t collection_name = "testcollection";
+static const core::dbname_t database_name{"testdatabase"};
+static const core::relname_t collection_name{"testcollection"};
 constexpr size_t doc_num = 1000;
 constexpr size_t num_threads = 4;
 constexpr size_t work_per_thread = doc_num / num_threads;
@@ -21,7 +21,7 @@ TEST_CASE("integration::cpp::test_otterbrix_multithread") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -91,7 +91,7 @@ TEST_CASE("integration::cpp::test_connectors") {
         auto* dispatcher = otterbrix->dispatcher();
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();

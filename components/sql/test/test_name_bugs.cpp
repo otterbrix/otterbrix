@@ -105,16 +105,16 @@ TEST_CASE("components::sql::name_bugs::fk_target_keeps_its_schema_and_uid") {
         INFO(sql << ": " << t.what);
         REQUIRE(t.ok);
         REQUIRE(t.resolves.referenced_tables.size() == 1);
-        CHECK(t.resolves.referenced_tables.front().database == "d");
-        CHECK(t.resolves.referenced_tables.front().schema == "s");
-        CHECK(t.resolves.referenced_tables.front().collection == "p");
+        CHECK(t.resolves.referenced_tables.front().database.t == "d");
+        CHECK(t.resolves.referenced_tables.front().schema.t == "s");
+        CHECK(t.resolves.referenced_tables.front().collection.t == "p");
     }
     auto plain = transform_one("CREATE TABLE c (id BIGINT REFERENCES d.p (id));");
     INFO(plain.what);
     REQUIRE(plain.ok);
     REQUIRE(plain.resolves.referenced_tables.size() == 1);
-    CHECK(plain.resolves.referenced_tables.front().database == "d");
-    CHECK(plain.resolves.referenced_tables.front().schema.empty());
+    CHECK(plain.resolves.referenced_tables.front().database.t == "d");
+    CHECK(plain.resolves.referenced_tables.front().schema.t.empty());
 }
 
 // B7: clauses CREATE TABLE cannot carry out are refused instead of dropped.

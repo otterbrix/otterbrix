@@ -168,7 +168,7 @@ namespace services::collection::executor {
                                                                        components::compute::function_ptr function);
 
         unique_future<bool> unregister_udf(components::session::session_id_t session,
-                                           std::string name,
+                                           core::function_name_t name,
                                            std::pmr::vector<components::types::complex_logical_type> inputs);
 
         // Compensation for a failed register_udf fan-out; appended last in dispatch_traits (message ids positional).

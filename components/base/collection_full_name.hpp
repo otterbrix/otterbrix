@@ -1,53 +1,15 @@
 #pragma once
 
-#include <compare>
-#include <sstream>
+#include <components/base/identifier_types.hpp>
+
+#include <initializer_list>
 #include <string>
+#include <utility>
 
-using uid_name_t = std::string;
-using database_name_t = std::string;
-using schema_name_t = std::string;
-using collection_name_t = std::string;
-
-// Qualified SQL table identity. Retained at the SQL parser / error reporting
-// / membership-cache boundary; storage routing uses pg_class.oid
-// (see docs/oid-migration-strategy.md, Phase 8+9 COMPLETE 2026-05-10).
-//
-// The 4-part shape (uuid.db.schema.table) mirrors PostgreSQL-style fully-
-// qualified identifiers — `unique_identifier` is the optional uuid prefix
-// used by the SQL parser when the user writes `<uuid>.<db>.<schema>.<rel>`,
-// and is consumed by `table_id` for catalog dependency-set keying.
-struct qualified_name_t {
-    uid_name_t unique_identifier;
-    database_name_t database;
-    schema_name_t schema;
-    collection_name_t collection;
-    qualified_name_t() = default;
-
-    explicit qualified_name_t(const collection_name_t& collection)
-        : collection(collection) {}
-
-    qualified_name_t(const database_name_t& database, const collection_name_t& collection)
-        : database(database)
-        , collection(collection) {}
-
-    qualified_name_t(const database_name_t& database, const schema_name_t& schema, const collection_name_t& collection)
-        : database(database)
-        , schema(schema)
-        , collection(collection) {}
-
-    qualified_name_t(const uid_name_t& unique_identifier,
-                     const database_name_t& database,
-                     const schema_name_t& schema,
-                     const collection_name_t& collection)
-        : unique_identifier(unique_identifier)
-        , database(database)
-        , schema(schema)
-        , collection(collection) {}
-
-    inline std::string to_string() const {
+namespace qualified_name_detail {
+    inline std::string dotted(std::initializer_list<const std::string*> slots) {
         std::string written;
-        for (const auto* slot : {&unique_identifier, &database, &schema, &collection}) {
+        for (const auto* slot : slots) {
             if (slot->empty()) {
                 continue;
             }
@@ -58,15 +20,70 @@ struct qualified_name_t {
         }
         return written;
     }
+} // namespace qualified_name_detail
 
-    bool empty() const noexcept {
-        return unique_identifier.empty() && database.empty() && schema.empty() && collection.empty();
+// Qualified SQL table identity. Retained at the SQL parser / error reporting
+// / membership-cache boundary; storage routing uses pg_class.oid
+// (see docs/oid-migration-strategy.md, Phase 8+9 COMPLETE 2026-05-10).
+//
+// The 4-part shape (uuid.db.schema.table) mirrors PostgreSQL-style fully-
+// qualified identifiers — `unique_identifier` is the optional uuid prefix
+// used by the SQL parser when the user writes `<uuid>.<db>.<schema>.<rel>`,
+// and is consumed by `table_id` for catalog dependency-set keying.
+struct qualified_name_t {
+    core::uid_t unique_identifier;
+    core::dbname_t database;
+    core::schema_t schema;
+    core::relname_t collection;
+    qualified_name_t() = default;
+
+    explicit qualified_name_t(core::relname_t collection)
+        : collection(std::move(collection)) {}
+
+    qualified_name_t(core::dbname_t database, core::relname_t collection)
+        : database(std::move(database))
+        , collection(std::move(collection)) {}
+
+    qualified_name_t(core::dbname_t database, core::schema_t schema, core::relname_t collection)
+        : database(std::move(database))
+        , schema(std::move(schema))
+        , collection(std::move(collection)) {}
+
+    qualified_name_t(core::uid_t unique_identifier,
+                     core::dbname_t database,
+                     core::schema_t schema,
+                     core::relname_t collection)
+        : unique_identifier(std::move(unique_identifier))
+        , database(std::move(database))
+        , schema(std::move(schema))
+        , collection(std::move(collection)) {}
+
+    std::string to_string() const {
+        return qualified_name_detail::dotted({&unique_identifier.t, &database.t, &schema.t, &collection.t});
     }
 
-    // Lexicographic over declaration order (unique_identifier, database,
-    // schema, collection) — the 4-part uid.db.schema.rel syntax order, uid
-    // outermost. Note this SORT order differs from table_id's namespace
-    // STORAGE order, which is database-first (resolution order).
+    bool empty() const noexcept {
+        return unique_identifier.t.empty() && database.t.empty() && schema.t.empty() && collection.t.empty();
+    }
+
     bool operator==(const qualified_name_t&) const = default;
-    auto operator<=>(const qualified_name_t&) const = default;
+};
+
+struct function_qualified_name_t {
+    core::dbname_t database;
+    core::schema_t schema;
+    core::function_name_t function;
+    function_qualified_name_t() = default;
+
+    explicit function_qualified_name_t(core::function_name_t function)
+        : function(std::move(function)) {}
+
+    function_qualified_name_t(core::dbname_t database, core::schema_t schema, core::function_name_t function)
+        : database(std::move(database))
+        , schema(std::move(schema))
+        , function(std::move(function)) {}
+
+    std::string to_string() const { return qualified_name_detail::dotted({&database.t, &schema.t, &function.t}); }
+
+    bool operator==(const function_qualified_name_t&) const = default;
 };

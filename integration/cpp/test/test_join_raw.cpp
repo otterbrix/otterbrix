@@ -52,15 +52,16 @@ namespace {
         }
         if (node->type() == logical_plan::node_type::aggregate_t) {
             const auto* agg = static_cast<const logical_plan::node_aggregate_t*>(node.get());
-            const auto& uid_s = static_cast<const std::string&>(agg->uid());
+            const auto& uid_s = agg->target().unique_identifier.t;
             if (!uid_s.empty()) {
                 auto it = chunks_by_uid.find(uid_s);
                 if (it != chunks_by_uid.end()) {
                     auto raw = logical_plan::make_node_raw_data(
                         res,
                         build_pairs(res, it->second.col_a, it->second.col_b, it->second.rows));
-                    raw->set_result_alias(agg->result_alias().empty() ? static_cast<const std::string&>(agg->relname())
-                                                                      : agg->result_alias());
+                    raw->set_result_alias(agg->result_alias().empty()
+                                              ? static_cast<const std::string&>(agg->target().collection)
+                                              : agg->result_alias());
                     node = raw;
                     return; // leaf is now data
                 }
@@ -74,7 +75,7 @@ namespace {
     core::result_wrapper_t<logical_plan::node_ptr>
     swap_decide(std::pmr::memory_resource* res,
                 logical_plan::node_ptr tree,
-                std::span<const planner::unresolved_table_t>,
+                std::span<const qualified_name_t>,
                 std::span<const std::pmr::vector<vector::data_chunk_t>>) {
         swap_externals(tree, res, current_chunks());
         return tree;

@@ -33,7 +33,7 @@ namespace services::dispatcher {
                      const components::casts::cast_registry_t& cast_registry,
                      const components::graph_execution_context& graph_execution_context,
                      const components::compute::function_registry_t& function_registry,
-                     const qualified_name_t& name,
+                     const function_qualified_name_t& name,
                      const std::pmr::vector<components::types::complex_logical_type>& arguments,
                      components::compute::function_types_mask allowed_function_types,
                      std::span<const components::compute::function_pin_t> pins);

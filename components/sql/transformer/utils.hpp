@@ -7,8 +7,8 @@
 #include <components/expressions/forward.hpp>
 #include <components/expressions/key.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
-#include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/node_alter_table.hpp>
+#include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/node_drop.hpp>
 #include <components/logical_plan/node_join.hpp>
 #include <components/sql/parser/nodes/parsenodes.h>
@@ -16,6 +16,7 @@
 #include <components/table/column_definition.hpp>
 #include <components/table/constraint.hpp>
 #include <components/types/types.hpp>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -58,10 +59,10 @@ namespace components::sql::transform {
     core::error_t refuse_dropped_call_decorations(std::pmr::memory_resource* resource, const FuncCall& call);
 
     inline qualified_name_t rangevar_to_qualified_name(RangeVar* table) {
-        return qualified_name_t{construct(table->uid),
-                                construct(table->catalogname),
-                                construct(table->schemaname),
-                                construct(table->relname)};
+        return qualified_name_t{core::uid_t{construct(table->uid)},
+                                core::dbname_t{construct(table->catalogname)},
+                                core::schema_t{construct(table->schemaname)},
+                                core::relname_t{construct(table->relname)}};
     }
 
     // A REFERENCES target as written; one with a uid or schema segment is refused after resolve.
@@ -85,19 +86,32 @@ namespace components::sql::transform {
         }
         switch (static_cast<table_name>(segments.size())) {
             case table:
-                return qualified_name_t{segments[0]};
+                return qualified_name_t{core::relname_t{segments[0]}};
             case database_table:
-                return qualified_name_t{segments[0], segments[1]};
+                return qualified_name_t{core::dbname_t{segments[0]}, core::relname_t{segments[1]}};
             case database_schema_table:
-                return qualified_name_t{segments[0], segments[1], segments[2]};
+                return qualified_name_t{core::dbname_t{segments[0]},
+                                        core::schema_t{segments[1]},
+                                        core::relname_t{segments[2]}};
             case uuid_database_schema_table:
-                return qualified_name_t{segments[0], segments[1], segments[2], segments[3]};
+                return qualified_name_t{core::uid_t{segments[0]},
+                                        core::dbname_t{segments[1]},
+                                        core::schema_t{segments[2]},
+                                        core::relname_t{segments[3]}};
         }
         std::pmr::string msg{"name has ", resource};
         msg += std::to_string(segments.size());
         msg += " parts; write it as [uid.][database.][schema.]name";
         return core::error_t{core::error_code_t::sql_parse_error, std::move(msg)};
     }
+
+    // What a node keeps of the name it was written with.
+    enum class target_slots
+    {
+        database,
+        relation,
+        relation_with_schema
+    };
 
     enum class namespace_policy
     {
@@ -134,12 +148,13 @@ namespace components::sql::transform {
         }
     }
 
-    inline std::string database_for(const qualified_name_t& written, namespace_policy policy) {
+    inline const core::dbname_t& database_for(const qualified_name_t& written, namespace_policy policy) {
+        static const core::dbname_t public_database{"public"};
         switch (policy) {
             case namespace_policy::default_public:
-                return written.database.empty() ? std::string{"public"} : written.database;
+                return written.database.t.empty() ? public_database : written.database;
             case namespace_policy::public_only:
-                return "public";
+                return public_database;
             case namespace_policy::as_written:
                 break;
         }
@@ -147,7 +162,7 @@ namespace components::sql::transform {
     }
 
     inline const std::string& visible_name(const qualified_name_t& name, const std::string& alias) noexcept {
-        return alias.empty() ? name.collection : alias;
+        return alias.empty() ? name.collection.t : alias;
     }
 
     struct from_element_t {
@@ -192,7 +207,7 @@ namespace components::sql::transform {
         explicit column_ref_t(expressions::key_t field)
             : field(std::move(field)) {}
 
-        bool is_qualified() const noexcept { return !table.collection.empty(); }
+        bool is_qualified() const noexcept { return !table.collection.t.empty(); }
     };
 
     core::result_wrapper_t<column_ref_t>
@@ -413,14 +428,7 @@ namespace components::sql::transform {
 
     // Names a hand-built plan node's catalog target — what transform_* does for SQL-built plans.
     logical_plan::node_ptr
-    name_catalog_target(const std::string& dbname, const std::string& relname, logical_plan::node_ptr node);
-
-    // with_constraints gathers INSERT/UPDATE's outgoing or DELETE's referencing constraints.
-    // A FROM table as written: database.schema.name keeps its schema slot (to be refused); the uid form keeps its
-    // meaning database.name.
-    void register_catalog_resolve_written_table(std::pmr::memory_resource* resource,
-                                                logical_plan::catalog_resolves_t* resolves,
-                                                const logical_plan::node_aggregate_t& from);
+    name_catalog_target(const core::dbname_t& dbname, const core::relname_t& relname, logical_plan::node_ptr node);
 
     // An unqualified REFERENCES target of the table (owner_db, owner_rel): looked up in the database the owner is
     // found in, after the owner.
@@ -437,8 +445,9 @@ namespace components::sql::transform {
                                         const std::string& relname,
                                         constraint_resolve_kind with_constraints = constraint_resolve_kind::none);
 
-    // The target of an INSERT / UPDATE / DELETE, schema slot included: a name the catalog does not know reaches
-    // the host whole.
+    // The target of an INSERT / UPDATE / DELETE or a FROM table, schema slot included: a name the catalog does not
+    // know reaches the host whole. with_constraints gathers INSERT/UPDATE's outgoing or DELETE's referencing
+    // constraints.
     void register_catalog_resolve_write_target(std::pmr::memory_resource* resource,
                                                logical_plan::catalog_resolves_t* resolves,
                                                const qualified_name_t& written,
@@ -446,9 +455,11 @@ namespace components::sql::transform {
 
     void register_catalog_resolve_types(std::pmr::memory_resource* resource,
                                         logical_plan::catalog_resolves_t* resolves,
-                                        const std::vector<std::string>& type_names);
+                                        std::span<const std::string> type_names);
 
-    core::result_wrapper_t<qualified_name_t> called_function(std::pmr::memory_resource* resource, const List* funcname);
+    core::result_wrapper_t<function_qualified_name_t> called_function(std::pmr::memory_resource* resource,
+                                                                      const List* funcname);
+    core::error_t refuse_function_segment(std::pmr::memory_resource* resource, std::string_view written);
 
     void register_catalog_resolve_namespace(std::pmr::memory_resource* resource,
                                             logical_plan::catalog_resolves_t* resolves,

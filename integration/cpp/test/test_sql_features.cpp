@@ -15,8 +15,8 @@
 #include <set>
 #include <string>
 
-static const database_name_t database_name = "testdatabase";
-static const collection_name_t collection_name = "testcollection";
+static const core::dbname_t database_name{"testdatabase"};
+static const core::relname_t collection_name{"testcollection"};
 
 TEST_CASE("integration::cpp::test_sql_features::is_null") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/is_null"));
@@ -671,17 +671,18 @@ TEST_CASE("integration::cpp::test_sql_features::regex_invalid_pattern_disk_error
     {
         auto* resource = dispatcher->resource();
         auto session = otterbrix::session_id_t();
-        auto plan =
-            components::logical_plan::make_node_aggregate(resource, core::dbname_t{"regexdb"}, core::relname_t{"t"});
+        auto plan = components::logical_plan::make_node_aggregate(
+            resource,
+            qualified_name_t{core::dbname_t{"regexdb"}, core::relname_t{"t"}});
         auto expr = components::expressions::make_compare_expression(
             resource,
             components::expressions::compare_type::regex,
             components::expressions::key_t{resource, "s", components::expressions::side_t::left},
             core::parameter_id_t{1});
-        plan->append_child(components::logical_plan::make_node_match(resource,
-                                                                     core::dbname_t{"regexdb"},
-                                                                     core::relname_t{"t"},
-                                                                     std::move(expr)));
+        plan->append_child(
+            components::logical_plan::make_node_match(resource,
+                                                      qualified_name_t{core::dbname_t{"regexdb"}, core::relname_t{"t"}},
+                                                      std::move(expr)));
         auto params = components::logical_plan::make_parameter_node(resource);
         params->add_parameter(core::parameter_id_t{1}, components::types::logical_value_t(resource, "(a)\\1"));
         auto cur =

@@ -40,14 +40,8 @@ namespace services::planner::impl {
                                    const components::logical_plan::node_ptr& node,
                                    const components::logical_plan::storage_parameters* params) {
         const auto* join_node = static_cast<const components::logical_plan::node_join_t*>(node.get());
-        // Try left child context first, fall back to right (one side may be raw data with nullptr context)
-        auto left_oid = node->children().front()->table_oid();
-        auto right_oid = node->children().back()->table_oid();
-        bool known = context.has_table_oid(left_oid) || context.has_table_oid(right_oid);
-        // Neither side may be a known table; fall back to the logical node's own resource so the
-        // operator still has a valid allocator for its working state (mirrors create_plan_aggregate).
-        auto* resource = known ? context.resource : node->resource();
-        auto log = known ? context.log.clone() : log_t{};
+        auto* resource = context.resource;
+        auto log = context.log.clone();
 
         using join_type = components::logical_plan::join_type;
         using join_algo = components::logical_plan::node_join_t::join_algo;

@@ -1,7 +1,7 @@
 #pragma once
 
-#include "identifier_types.hpp"
 #include "node.hpp"
+#include <components/base/identifier_types.hpp>
 
 #include <components/catalog/catalog_oids.hpp>
 #include <components/expressions/expression.hpp>
@@ -22,20 +22,17 @@ namespace components::logical_plan {
     class node_create_constraint_t final : public node_t {
     public:
         node_create_constraint_t(std::pmr::memory_resource* resource,
-                                 std::string dbname,
-                                 std::string relname,
+                                 qualified_name_t target,
                                  core::constraint_name_t name,
                                  constraint_kind kind,
-                                 std::string ref_dbname = {});
+                                 qualified_name_t ref = {});
 
-        const std::string& name() const noexcept { return name_; }
+        const core::constraint_name_t& name() const noexcept { return name_; }
         constraint_kind kind() const noexcept { return kind_; }
-        // The FK's referenced table, as written. With ref_dbname() it is how enrich
-        // binds ref_table_oid() to a resolved entry by name — the local table and the
-        // referenced table are two independent lookups, not "the first and second".
-        const std::string& ref_dbname() const noexcept { return ref_dbname_; }
-        const std::string& ref_relname() const noexcept { return ref_relname_; }
-        void set_ref_relname(std::string relname) { ref_relname_ = std::move(relname); }
+        // The FK's referenced table, as written: enrich binds ref_table_oid() by it, a lookup of its own beside the
+        // constrained table's.
+        const qualified_name_t& ref() const noexcept { return ref_; }
+        void set_ref(qualified_name_t ref) { ref_ = std::move(ref); }
 
         const std::vector<std::string>& local_col_names() const noexcept { return local_col_names_; }
         const std::vector<std::string>& ref_col_names() const noexcept { return ref_col_names_; }
@@ -57,9 +54,6 @@ namespace components::logical_plan {
         void set_check_expression_sql(std::string sql) { check_expression_sql_ = std::move(sql); }
 
         const std::vector<components::catalog::oid_t>& check_col_attoids() const noexcept { return check_col_attoids_; }
-        void set_check_col_attoids(std::vector<components::catalog::oid_t> v) noexcept {
-            check_col_attoids_ = std::move(v);
-        }
 
         components::catalog::oid_t ref_table_oid() const noexcept { return ref_table_oid_; }
         void set_ref_table_oid(components::catalog::oid_t oid) noexcept { ref_table_oid_ = oid; }
@@ -71,9 +65,6 @@ namespace components::logical_plan {
         void set_ref_col_attoids(std::vector<components::catalog::oid_t> v) noexcept {
             ref_col_attoids_ = std::move(v);
         }
-
-        const std::string& relname() const noexcept { return relname_; }
-        const std::string& dbname() const noexcept { return dbname_; }
 
         // set when this node is a child of node_create_collection_t: its table doesn't
         // exist yet, so the parent's enrich case checks names and rewrite_create_table
@@ -90,12 +81,9 @@ namespace components::logical_plan {
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
-        std::string dbname_;
-        std::string relname_;
-        std::string ref_relname_;
-        std::string name_;
+        core::constraint_name_t name_;
         constraint_kind kind_;
-        std::string ref_dbname_;
+        qualified_name_t ref_;
         std::vector<std::string> local_col_names_;
         std::vector<std::string> ref_col_names_;
         char match_type_{'s'};
@@ -114,10 +102,9 @@ namespace components::logical_plan {
     using node_create_constraint_ptr = boost::intrusive_ptr<node_create_constraint_t>;
 
     node_create_constraint_ptr make_node_create_constraint(std::pmr::memory_resource* resource,
-                                                           std::string dbname,
-                                                           std::string relname,
+                                                           qualified_name_t target,
                                                            core::constraint_name_t name,
                                                            constraint_kind kind,
-                                                           std::string ref_dbname = {});
+                                                           qualified_name_t ref = {});
 
 } // namespace components::logical_plan

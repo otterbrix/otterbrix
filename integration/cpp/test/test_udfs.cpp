@@ -8,8 +8,8 @@
 #include <components/tests/generaty.hpp>
 #include <core/operations_helper.hpp>
 
-static const database_name_t database_name = "testdatabase";
-static const collection_name_t collection_name = "testcollection";
+static const core::dbname_t database_name{"testdatabase"};
+static const core::relname_t collection_name{"testcollection"};
 
 using namespace components;
 using namespace components::compute;
@@ -172,7 +172,7 @@ TEST_CASE("integration::cpp::test_udfs") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();

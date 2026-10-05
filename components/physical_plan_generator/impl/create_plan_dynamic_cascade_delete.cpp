@@ -13,7 +13,8 @@ namespace services::planner::impl {
                                                                                                  n->seed_classid(),
                                                                                                  n->seed_objid(),
                                                                                                  n->behavior(),
-                                                                                                 n->target()));
+                                                                                                 n->target(),
+                                                                                                 n->relkind()));
     }
 
 } // namespace services::planner::impl

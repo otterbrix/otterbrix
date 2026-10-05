@@ -190,10 +190,10 @@ namespace services::collection {
             return core::error_t{core::error_code_t::schema_error, std::pmr::string{std::move(msg), resource}};
         };
         if (existing.relkind != catalog::relkind::view) {
-            return refuse("\"" + view.viewname() + "\" is not a view");
+            return refuse("\"" + view.viewname().t + "\" is not a view");
         }
         if (std::find(read_views.begin(), read_views.end(), existing.table_oid) != read_views.end()) {
-            return refuse("view \"" + view.viewname() + "\" would read itself");
+            return refuse("view \"" + view.viewname().t + "\" would read itself");
         }
         const auto& columns = view.columns();
         if (columns.size() < existing.columns.size()) {
@@ -301,7 +301,7 @@ namespace services::collection {
             const std::string proargmatchers = binding.refspec.substr(0, separator);
             const std::string prorettype =
                 separator == std::string::npos ? std::string{} : binding.refspec.substr(separator + 1);
-            const std::string pinned = describe_function(resource, binding.relname, proargmatchers);
+            const std::string pinned = describe_function(resource, binding.relname.t, proargmatchers);
             const auto row = std::find_if(rows.begin(), rows.end(), [&binding](const auto& r) {
                 return r.oid == binding.refobjid;
             });
@@ -310,7 +310,7 @@ namespace services::collection {
             if (row == rows.end()) {
                 return components::planner::view_stale_error(resource, view.name, created_over + " no longer exists");
             }
-            if (row->name != binding.relname || row->proargmatchers != proargmatchers) {
+            if (row->name != binding.relname.t || row->proargmatchers != proargmatchers) {
                 return components::planner::view_stale_error(
                     resource,
                     view.name,
@@ -322,7 +322,7 @@ namespace services::collection {
                                                              created_over + " returns another type now");
             }
             bool found = false;
-            for (const auto uid : registry.find_functions(binding.relname)) {
+            for (const auto uid : registry.find_functions(binding.relname.t)) {
                 const auto* function = registry.get_function(uid);
                 if (function == nullptr || static_cast<std::uint64_t>(uid) != row->prouid) {
                     continue;
@@ -331,7 +331,7 @@ namespace services::collection {
                 for (std::size_t index = 0; index < signatures.size() && !found; ++index) {
                     if (signatures[index].proargmatchers == proargmatchers &&
                         signatures[index].prorettype == prorettype) {
-                        pins.push_back({binding.relname, {uid, index}});
+                        pins.push_back({binding.relname.t, {uid, index}});
                         found = true;
                     }
                 }

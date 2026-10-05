@@ -47,7 +47,7 @@ namespace {
         auto grp_field =
             make_scalar_expression(r, scalar_type::group_field, components::expressions::key_t(r, "g", side_t::left));
         std::vector<expression_ptr> group_exprs{expression_ptr(grp_field)};
-        auto group = make_node_group(r, dbn(), reln(), group_exprs);
+        auto group = make_node_group(r, group_exprs);
         group->set_pushdown(pushdown);
         group->set_table_oid(components::catalog::oid_t{123});
 

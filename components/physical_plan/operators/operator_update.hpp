@@ -29,7 +29,6 @@ namespace components::operators {
                         log_t log,
                         components::catalog::oid_t table_oid,
                         std::pmr::vector<expressions::expression_ptr> updates,
-                        bool upsert,
                         std::pmr::vector<projected_column_t> returning,
                         expressions::expression_ptr expr = nullptr,
                         // Matched-row bound for the UPDATE ... FROM source path
@@ -114,7 +113,6 @@ namespace components::operators {
         expressions::condition_kind condition_;
         std::unique_ptr<execution_dag::execution_dag_t> graph_;
         std::unique_ptr<execution_dag::execution_dag_t> updates_graph_;
-        bool upsert_;
         std::pmr::vector<projected_column_t> returning_;
         bool table_has_indexes_{true};
         std::unique_ptr<execution_dag::execution_dag_t> returning_graph_;

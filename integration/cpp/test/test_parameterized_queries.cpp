@@ -59,7 +59,7 @@ TEST_CASE("integration::cpp::params::bind_each_type") {
     }
     {
         auto session = otterbrix::session_id_t();
-        test_create_collection(dispatcher, session, "paramdb", "alltypes");
+        test_create_collection(dispatcher, session, core::dbname_t{"paramdb"}, core::relname_t{"alltypes"});
     }
 
     INFO("bind Int64 / UInt64 / Double / Str / Bool via $N");
@@ -117,7 +117,7 @@ TEST_CASE("integration::cpp::params::uint64_max") {
     }
     {
         auto session = otterbrix::session_id_t();
-        test_create_collection(dispatcher, session, "paramdb", "u");
+        test_create_collection(dispatcher, session, core::dbname_t{"paramdb"}, core::relname_t{"u"});
     }
 
     INFO("UInt64 max round-trips through a schema-free column");
@@ -155,7 +155,7 @@ TEST_CASE("integration::cpp::params::placeholders") {
     }
     {
         auto session = otterbrix::session_id_t();
-        test_create_collection(dispatcher, session, "paramdb", "place");
+        test_create_collection(dispatcher, session, core::dbname_t{"paramdb"}, core::relname_t{"place"});
     }
 
     INFO("repeated placeholder bound once fills both columns");
@@ -219,7 +219,7 @@ TEST_CASE("integration::cpp::params::where_update_delete") {
     }
     {
         auto session = otterbrix::session_id_t();
-        test_create_collection(dispatcher, session, "paramdb", "rows");
+        test_create_collection(dispatcher, session, core::dbname_t{"paramdb"}, core::relname_t{"rows"});
     }
     {
         auto session = otterbrix::session_id_t();
@@ -319,7 +319,7 @@ TEST_CASE("integration::cpp::params::validation_errors") {
     }
     {
         auto session = otterbrix::session_id_t();
-        test_create_collection(dispatcher, session, "paramdb", "val");
+        test_create_collection(dispatcher, session, core::dbname_t{"paramdb"}, core::relname_t{"val"});
     }
 
     INFO("missing param: query has $2, only $1 bound");
@@ -362,7 +362,7 @@ TEST_CASE("integration::cpp::params::injection_quote_in_string_stored_verbatim")
     }
     {
         auto session = otterbrix::session_id_t();
-        test_create_collection(dispatcher, session, "paramdb", "t");
+        test_create_collection(dispatcher, session, core::dbname_t{"paramdb"}, core::relname_t{"t"});
     }
 
     const std::string nasty = "Robert'); DROP TABLE ParamDb.T;--";
@@ -396,7 +396,7 @@ TEST_CASE("integration::cpp::params::injection_or_1_eq_1_matches_no_rows") {
     }
     {
         auto session = otterbrix::session_id_t();
-        test_create_collection(dispatcher, session, "paramdb", "t");
+        test_create_collection(dispatcher, session, core::dbname_t{"paramdb"}, core::relname_t{"t"});
     }
     {
         auto session = otterbrix::session_id_t();
@@ -427,11 +427,11 @@ TEST_CASE("integration::cpp::params::injection_semicolon_does_not_chain") {
     }
     {
         auto session = otterbrix::session_id_t();
-        test_create_collection(dispatcher, session, "paramdb", "t");
+        test_create_collection(dispatcher, session, core::dbname_t{"paramdb"}, core::relname_t{"t"});
     }
     {
         auto session = otterbrix::session_id_t();
-        test_create_collection(dispatcher, session, "paramdb", "victim");
+        test_create_collection(dispatcher, session, core::dbname_t{"paramdb"}, core::relname_t{"victim"});
     }
     {
         auto session = otterbrix::session_id_t();
@@ -477,7 +477,7 @@ TEST_CASE("integration::cpp::params::injection_int_param_type_safety") {
     }
     {
         auto session = otterbrix::session_id_t();
-        test_create_collection(dispatcher, session, "paramdb", "t");
+        test_create_collection(dispatcher, session, core::dbname_t{"paramdb"}, core::relname_t{"t"});
     }
     {
         auto session = otterbrix::session_id_t();
@@ -511,7 +511,7 @@ TEST_CASE("integration::cpp::params::injection_comment_marker_stored_literally")
     }
     {
         auto session = otterbrix::session_id_t();
-        test_create_collection(dispatcher, session, "paramdb", "t");
+        test_create_collection(dispatcher, session, core::dbname_t{"paramdb"}, core::relname_t{"t"});
     }
     {
         auto session = otterbrix::session_id_t();

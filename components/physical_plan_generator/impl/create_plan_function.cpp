@@ -10,8 +10,8 @@ namespace services::planner::impl {
                                        const components::logical_plan::node_ptr& node) {
         const auto* function_node = static_cast<const components::logical_plan::node_function_t*>(node.get());
 
-        auto* resource = context.has_table_oid(node->table_oid()) ? context.resource : node->resource();
-        auto log = context.has_table_oid(node->table_oid()) ? context.log.clone() : log_t{};
+        auto* resource = context.resource;
+        auto log = context.log.clone();
 
         // Moved into the operator (lives on `resource`) after the logical plan's own arena is gone,
         // so every key must be placed on `resource` too.

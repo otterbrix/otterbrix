@@ -787,14 +787,14 @@ namespace services::dispatcher {
         std::pmr::vector<actor_zeta::unique_future<bool>> ack_futures(resource());
         ack_futures.reserve(executor_addresses_.size());
         for (std::size_t i = 0; i < executor_addresses_.size(); ++i) {
-            auto [needs_sched, fut] = actor_zeta::otterbrix::send(executor_addresses_[i],
-                                                                  &collection::executor::executor_t::unregister_udf,
-                                                                  session,
-                                                                  name_for_master,
-                                                                  std::pmr::vector<components::types::complex_logical_type>{
-                                                                      inputs_for_master.begin(),
-                                                                      inputs_for_master.end(),
-                                                                      resource()});
+            auto [needs_sched, fut] = actor_zeta::otterbrix::send(
+                executor_addresses_[i],
+                &collection::executor::executor_t::unregister_udf,
+                session,
+                core::function_name_t{name_for_master},
+                std::pmr::vector<components::types::complex_logical_type>{inputs_for_master.begin(),
+                                                                          inputs_for_master.end(),
+                                                                          resource()});
             if (needs_sched && executors_[i]) {
                 scheduler_->enqueue(executors_[i].get());
             }

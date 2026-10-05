@@ -396,8 +396,7 @@ TEST_CASE("services::dispatcher::alter_add_column_gates_persistable_type") {
     auto node = components::logical_plan::make_node_alter_table_add_column(
         mr.get(),
         components::table::column_definition_t{"too_deep", deep});
-    node->set_dbname("db");
-    node->set_relname("t");
+    node->set_target(qualified_name_t{core::dbname_t{"db"}, core::relname_t{"t"}});
     components::logical_plan::execution_plan_t plan{mr.get(),
                                                     components::logical_plan::node_ptr{node},
                                                     components::logical_plan::make_parameter_node(mr.get())};

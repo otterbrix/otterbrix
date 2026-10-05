@@ -28,7 +28,6 @@ namespace components::operators {
                                      log_t log,
                                      components::catalog::oid_t table_oid,
                                      std::pmr::vector<expressions::expression_ptr> updates,
-                                     bool upsert,
                                      std::pmr::vector<projected_column_t> returning,
                                      expressions::expression_ptr expr,
                                      std::int64_t affected_bound)
@@ -37,7 +36,6 @@ namespace components::operators {
         , updates_(std::move(updates))
         , expr_(std::move(expr))
         , condition_(expressions::classify_condition(expr_))
-        , upsert_(upsert)
         , returning_(std::move(returning))
         , returning_from_chunks_(resource)
         , affected_bound_(affected_bound) {}
@@ -487,17 +485,6 @@ namespace components::operators {
     actor_zeta::unique_future<void> operator_update::await_async_and_resume(pipeline::context_t* ctx) {
         using components::vector::data_chunk_t;
         using components::vector::vector_t;
-
-        // Accepted into the plan but not implemented: a plain UPDATE would report SUCCESS with 0 rows instead of
-        // the insert the plan declared. No SQL reaches this flag, only the logical-plan API — refuse it now.
-        if (upsert_) {
-            set_error(core::error_t{core::error_code_t::unimplemented_yet,
-                                    std::pmr::string{"UPDATE with upsert=true: upsert semantics are not implemented — "
-                                                     "the plan declares an insert-or-update this engine cannot deliver",
-                                                     resource_}});
-            mark_failed();
-            co_return;
-        }
 
         // Driven once per mid-pump buffer-full and once at the final drive; only the final call emits output.
         const bool is_final = ctx->dml_flush_is_final;

@@ -14,6 +14,7 @@
 #include <components/sql/parser/nodes/parsenodes.h>
 
 #include <optional>
+#include <span>
 
 namespace components::sql::parser {
     class parser_extension_registry_t;
@@ -77,11 +78,13 @@ namespace components::sql::transform {
 
     private:
         core::result_wrapper_t<logical_plan::node_ptr> transform_create_database(CreatedbStmt& node);
-        core::result_wrapper_t<logical_plan::node_ptr> transform_drop_database(DropdbStmt& node);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_drop_database(DropdbStmt& node,
+                                                                               logical_plan::execution_plan_t* plan);
         core::result_wrapper_t<logical_plan::node_ptr> transform_checkpoint(CheckPointStmt& node);
         core::result_wrapper_t<logical_plan::node_ptr> transform_vacuum(VacuumStmt& node);
         core::result_wrapper_t<logical_plan::node_ptr> transform_create_table(CreateStmt& node);
-        core::result_wrapper_t<logical_plan::node_ptr> transform_drop(DropStmt& node);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_drop(DropStmt& node,
+                                                                      logical_plan::execution_plan_t* plan);
         core::result_wrapper_t<logical_plan::node_ptr> transform_select(SelectStmt& node,
                                                                         logical_plan::execution_plan_t* plan);
         // Build a node_limit from a limitCount/limitOffset pair (nullptr when neither is present). A
@@ -89,17 +92,12 @@ namespace components::sql::transform {
         // SELECT path). Shared by the simple-select, the UNION tail-clause, the top-level VALUES, and
         // the DML (DELETE/UPDATE) LIMIT lowering — hence a raw (limitCount, limitOffset) pair rather
         // than a SelectStmt&.
-        core::result_wrapper_t<logical_plan::node_ptr> build_limit_node(Node* limit_count,
-                                                                        Node* limit_offset,
-                                                                        const core::dbname_t& db,
-                                                                        const core::relname_t& rel,
-                                                                        logical_plan::execution_plan_t* plan);
+        core::result_wrapper_t<logical_plan::node_ptr>
+        build_limit_node(Node* limit_count, Node* limit_offset, logical_plan::execution_plan_t* plan);
         // Build the node_limit child for a DELETE/UPDATE ... [LIMIT n]. Returns an unlimited
         // limit node when limit_count is null; otherwise validates the count exactly like a
         // SELECT limit (integer / bound parameter). DML has NO OFFSET (grammar-enforced).
         core::result_wrapper_t<logical_plan::node_limit_ptr> build_dml_limit(Node* limit_count,
-                                                                             const core::dbname_t& db,
-                                                                             const core::relname_t& rel,
                                                                              logical_plan::execution_plan_t* plan);
         // Register a statement's WITH (CTE) definitions into cte_queries_ / recursive_cte_queries_ so the
         // body can reference them. Shared by SELECT (simple + UNION) and DML (DELETE/UPDATE/INSERT). A
@@ -117,13 +115,17 @@ namespace components::sql::transform {
         core::result_wrapper_t<logical_plan::node_ptr> transform_create_sequence(CreateSeqStmt& node);
         core::result_wrapper_t<logical_plan::node_ptr> transform_create_view(ViewStmt& node,
                                                                              logical_plan::execution_plan_t* plan);
-        // CREATE MATERIALIZED VIEW … AS SELECT … (PostgreSQL-canonical, relkind='m').
-        // Body is transformed via transform_select; source's catalog_resolve_table
-        // is hoisted to the outer sequence_t front so Pass 1 stamps source's
-        // pg_attribute. The planner reads body_plan + stamped source metadata to
-        // derive output schema before lowering to physical operators.
         core::result_wrapper_t<logical_plan::node_ptr> transform_create_matview(CreateTableAsStmt& cs,
                                                                                 logical_plan::execution_plan_t* plan);
+        // The part CREATE VIEW and CREATE MATERIALIZED VIEW share: the body, stored verbatim and lowered through the
+        // canonical path, and the node naming the view.
+        core::result_wrapper_t<logical_plan::node_ptr> create_view_node(SelectStmt& query,
+                                                                        int query_location,
+                                                                        int query_end_location,
+                                                                        RangeVar* name,
+                                                                        bool materialized,
+                                                                        bool replace,
+                                                                        logical_plan::execution_plan_t* plan);
         // REFRESH MATERIALIZED VIEW [CONCURRENTLY] mv [WITH NO DATA].
         // Wrapped with catalog_resolve_table(mv) so Pass 1 stamps view_sql from
         // pg_rewrite.ev_action (already supported for relkind='m' by Phase A.A2).
@@ -136,7 +138,8 @@ namespace components::sql::transform {
                                                                              logical_plan::execution_plan_t* plan);
         // RENAME COLUMN comes through T_RenameStmt with renameType=OBJECT_COLUMN.
         // Routes here from the top-level transform() switch.
-        core::result_wrapper_t<logical_plan::node_ptr> transform_rename(RenameStmt& node);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_rename(RenameStmt& node,
+                                                                        logical_plan::execution_plan_t* plan);
         // BEGIN / COMMIT / ROLLBACK; unsupported variants (SAVEPOINT / 2PC)
         // return nullptr (see impl).
         core::result_wrapper_t<logical_plan::node_ptr> transform_transaction(TransactionStmt& node);
@@ -391,29 +394,54 @@ namespace components::sql::transform {
         // Every catalog lookup the statement depends on, accumulated across all
         // sub-queries and moved onto the execution_plan_t at the end of transform()
         logical_plan::catalog_resolves_t catalog_resolves_;
-        // The statement's IF EXISTS, moved onto execution_plan_t::if_exists.
-        bool if_exists_{false};
-        // Moved onto execution_plan_t::if_exists_subcommands.
-        std::vector<std::size_t> if_exists_subcommands_;
 
-        template<class Node>
-        std::string set_target(Node& node, const qualified_name_t& written) {
-            const logical_plan::node_t& base = node;
-            std::string dbname = database_for(written, policy_of(base));
-            node.set_dbname(dbname);
-            if constexpr (requires { node.set_relname(written.collection); }) {
-                node.set_relname(written.collection);
+        void register_namespace(const std::string& dbname) {
+            register_catalog_resolve_namespace(resource_, &catalog_resolves_, dbname);
+        }
+        void register_table(const std::string& dbname,
+                            const std::string& relname,
+                            constraint_resolve_kind with_constraints) {
+            register_catalog_resolve_table(resource_, &catalog_resolves_, dbname, relname, with_constraints);
+        }
+        void register_write_target(const qualified_name_t& written, constraint_resolve_kind with_constraints) {
+            register_catalog_resolve_write_target(resource_, &catalog_resolves_, written, with_constraints);
+        }
+        void register_written_table(const logical_plan::node_aggregate_t& from) {
+            register_write_target(from.target(), constraint_resolve_kind::none);
+        }
+        void register_table_in_owner_database(const std::string& owner_db,
+                                              const std::string& owner_rel,
+                                              const std::string& relname,
+                                              constraint_resolve_kind with_constraints) {
+            register_catalog_resolve_table_in_owner_database(resource_,
+                                                             &catalog_resolves_,
+                                                             owner_db,
+                                                             owner_rel,
+                                                             relname,
+                                                             with_constraints);
+        }
+        void register_types(std::span<const std::string> type_names) {
+            register_catalog_resolve_types(resource_, &catalog_resolves_, type_names);
+        }
+
+        // A slot of `written` the node does not keep is recorded as an external target, which enrich refuses.
+        std::string set_target(logical_plan::node_t& node, const qualified_name_t& written, target_slots slots) {
+            qualified_name_t target{database_for(written, policy_of(node)), core::relname_t{}};
+            if (slots != target_slots::database) {
+                target.collection = written.collection;
             }
-            constexpr bool keeps_schema = requires { node.set_schema(written.schema); };
-            if constexpr (keeps_schema) {
-                node.set_schema(written.schema);
+            const bool keeps_schema = slots == target_slots::relation_with_schema;
+            if (keeps_schema) {
+                target.schema = written.schema;
             }
-            const bool leads_elsewhere = !written.unique_identifier.empty() ||
-                                         (!keeps_schema && !written.schema.empty()) ||
-                                         (!written.database.empty() && written.database != dbname);
+            const bool leads_elsewhere = !written.unique_identifier.t.empty() ||
+                                         (!keeps_schema && !written.schema.t.empty()) ||
+                                         (!written.database.t.empty() && written.database != target.database);
             if (leads_elsewhere) {
-                catalog_resolves_.external_targets.push_back(logical_plan::external_target_t{written, base.type()});
+                catalog_resolves_.external_targets.push_back(logical_plan::external_target_t{written, node.type()});
             }
+            std::string dbname = target.database.t;
+            node.set_target(std::move(target));
             return dbname;
         }
 

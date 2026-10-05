@@ -149,15 +149,15 @@ namespace components::sql::transform {
         }
 
         auto seq = logical_plan::make_node_create_sequence(resource_,
-                                                           core::seqname_t{qn.collection},
+                                                           core::seqname_t{qn.collection.t},
                                                            start,
                                                            increment,
                                                            min_value,
                                                            max_value);
         // The target namespace stays ON the node so enrich's create_sequence_t case
         // can bind it by name and stamp ns_oid.
-        const std::string db_for_resolve = set_target(*seq, qn);
-        register_catalog_resolve_namespace(resource_, &catalog_resolves_, db_for_resolve);
+        const std::string db_for_resolve = set_target(*seq, qn, target_slots::database);
+        register_namespace(db_for_resolve);
         return seq;
     }
 } // namespace components::sql::transform

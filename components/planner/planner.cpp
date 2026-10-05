@@ -156,7 +156,7 @@ namespace components::planner {
 
         node_ptr rewrite_create_database(std::pmr::memory_resource* r, node_ptr node, catalog::oid_batch_t& oid_batch) {
             auto* cd = static_cast<logical_plan::node_create_database_t*>(node.get());
-            const std::string ns_name(cd->dbname());
+            const std::string ns_name(cd->target().database);
             const catalog::oid_t ns_oid = oid_batch.allocate();
 
             auto writes = catalog::build_create_namespace_writes(r, ns_name, ns_oid);
@@ -178,7 +178,7 @@ namespace components::planner {
             const catalog::oid_t table_oid = oid_batch.peek();
             auto writes = catalog::build_create_table_writes(r,
                                                              std::string{},
-                                                             cc->relname(),
+                                                             cc->target().collection.t,
                                                              cc->column_definitions(),
                                                              ns_oid,
                                                              oid_batch,
@@ -316,7 +316,7 @@ namespace components::planner {
                     logical_plan::make_node_catalog_delete(r, pg_rewrite_ref_table, std::int64_t{0}, view_oid));
             }
             auto writes = catalog::build_create_view_writes(r,
-                                                            std::string(cv->viewname()),
+                                                            cv->viewname().t,
                                                             ns_oid,
                                                             view_oid,
                                                             rule_oid,
@@ -330,12 +330,12 @@ namespace components::planner {
                                                                                : catalog::relkind::view);
             if (cv->materialized()) {
                 // The heap and the catalog rows go in one operator, which undoes the heap if a row is refused.
-                auto mv = logical_plan::make_node_create_matview(r, core::matviewname_t{cv->viewname()});
-                mv->set_namespace_oid(ns_oid);
-                mv->set_matview_oid(view_oid);
-                mv->set_columns({cv->columns().begin(), cv->columns().end()});
-                mv->set_catalog_writes(std::move(writes));
-                return mv;
+                return logical_plan::make_node_create_matview(r,
+                                                              core::matviewname_t{cv->viewname().t},
+                                                              ns_oid,
+                                                              view_oid,
+                                                              {cv->columns().begin(), cv->columns().end()},
+                                                              std::move(writes));
             }
             for (auto& w : writes) {
                 seq->append_child(make_catalog_write(r, w.table_oid, std::move(w.row)));
@@ -426,11 +426,11 @@ namespace components::planner {
             if (ns_oid == catalog::INVALID_OID || table_oid == catalog::INVALID_OID) {
                 std::pmr::string msg{r};
                 msg.append("CREATE INDEX ");
-                msg.append(ci->name());
+                msg.append(ci->indexname().t);
                 msg.append(": table ");
-                msg.append(ci->dbname());
+                msg.append(ci->target().database.t);
                 msg.append(".");
-                msg.append(ci->relname());
+                msg.append(ci->target().collection.t);
                 msg.append(" does not exist");
                 return core::error_t{core::error_code_t::table_not_exists, std::move(msg)};
             }
@@ -439,9 +439,9 @@ namespace components::planner {
             if (ci->name_conflict_oid() != catalog::INVALID_OID) {
                 std::pmr::string msg{r};
                 msg.append("CREATE INDEX: relation ");
-                msg.append(ci->dbname());
+                msg.append(ci->target().database.t);
                 msg.append(".");
-                msg.append(ci->name());
+                msg.append(ci->indexname().t);
                 msg.append(" already exists (oid ");
                 msg.append(std::to_string(static_cast<std::uint64_t>(ci->name_conflict_oid())));
                 msg.append("); no index was created");
@@ -452,7 +452,7 @@ namespace components::planner {
             ci->set_index_oid(index_oid);
 
             auto writes = catalog::build_create_index_writes(r,
-                                                             ci->name(),
+                                                             ci->indexname().t,
                                                              ns_oid,
                                                              table_oid,
                                                              index_oid,
@@ -479,11 +479,11 @@ namespace components::planner {
             if (index_oid == catalog::INVALID_OID) {
                 std::pmr::string msg{r};
                 msg.append("DROP INDEX: index ");
-                msg.append(di->dbname());
+                msg.append(di->target().database.t);
                 msg.append(".");
-                msg.append(di->relname());
+                msg.append(di->target().collection.t);
                 msg.append(".");
-                msg.append(di->index_name());
+                msg.append(di->index_name().t);
                 msg.append(" does not exist");
                 return core::error_t{core::error_code_t::index_not_exists, std::move(msg)};
             }
@@ -504,48 +504,45 @@ namespace components::planner {
         // DROP INDEX is not routed here (see rewrite_drop_index): this never tears down the index actor.
         node_ptr rewrite_drop(std::pmr::memory_resource* r, node_ptr node) {
             auto* d = static_cast<logical_plan::node_drop_t*>(node.get());
-            catalog::oid_t classid = catalog::INVALID_OID;
-            catalog::oid_t seed_objid = catalog::INVALID_OID;
-            const auto relation = [d, &classid, &seed_objid](const char* kind) {
-                classid = catalog::well_known_oid::pg_class_table;
-                seed_objid = d->table_oid();
-                return std::string{kind} + (d->dbname().empty() ? d->relname() : d->dbname() + "." + d->relname());
-            };
-            std::string target;
+            catalog::oid_t classid = catalog::well_known_oid::pg_class_table;
+            catalog::oid_t seed_objid = d->table_oid();
+            qualified_name_t target = d->target();
+            char relkind = catalog::relkind::regular;
             switch (d->kind()) {
                 case logical_plan::drop_target_kind::database:
                     classid = catalog::well_known_oid::pg_namespace_table;
                     seed_objid = d->namespace_oid();
-                    target = "database " + d->dbname();
                     break;
                 case logical_plan::drop_target_kind::type:
                     classid = catalog::well_known_oid::pg_type_table;
                     seed_objid = d->type_oid();
-                    target = "type " + d->relname();
+                    target = qualified_name_t{d->target().collection};
                     break;
                 case logical_plan::drop_target_kind::collection:
-                    target = relation("table ");
-                    break;
-                case logical_plan::drop_target_kind::sequence:
-                    target = relation("sequence ");
-                    break;
-                case logical_plan::drop_target_kind::view:
-                    target = relation("view ");
-                    break;
-                case logical_plan::drop_target_kind::materialized_view:
-                    target = relation("materialized view ");
-                    break;
-                case logical_plan::drop_target_kind::macro:
-                    target = relation("function ");
                     break;
                 case logical_plan::drop_target_kind::index:
+                    classid = catalog::INVALID_OID;
+                    seed_objid = catalog::INVALID_OID;
+                    break;
+                case logical_plan::drop_target_kind::sequence:
+                    relkind = catalog::relkind::sequence;
+                    break;
+                case logical_plan::drop_target_kind::view:
+                    relkind = catalog::relkind::view;
+                    break;
+                case logical_plan::drop_target_kind::materialized_view:
+                    relkind = catalog::relkind::materialized_view;
+                    break;
+                case logical_plan::drop_target_kind::macro:
+                    relkind = catalog::relkind::macro;
                     break;
             }
             return boost::intrusive_ptr(new logical_plan::node_dynamic_cascade_delete_t(r,
                                                                                         classid,
                                                                                         seed_objid,
                                                                                         d->behavior(),
-                                                                                        std::move(target)));
+                                                                                        std::move(target),
+                                                                                        relkind));
         }
 
         // No OIDs are pre-allocated — add/drop resolve their attoid at execution time.
@@ -589,10 +586,8 @@ namespace components::planner {
                         drop->set_computed(true);
                     } else {
                         drop->set_behavior(sub.behavior);
-                        drop->set_relation_label(
-                            (alter->relkind() == catalog::relkind::materialized_view ? "materialized view "
-                                                                                     : "table ") +
-                            (alter->dbname().empty() ? alter->relname() : alter->dbname() + "." + alter->relname()));
+                        drop->set_target(alter->target());
+                        drop->set_relkind(alter->relkind());
                     }
                     seq->append_child(drop);
                 } else if (sub.kind == logical_plan::alter_table_kind::drop_constraint) {
@@ -603,12 +598,13 @@ namespace components::planner {
                         msg.append(": constraint oid unresolved — nothing was dropped");
                         return core::error_t(core::error_code_t::invalid_constraint, std::move(msg));
                     }
-                    seq->append_child(boost::intrusive_ptr(
-                        new logical_plan::node_dynamic_cascade_delete_t(r,
-                                                                        catalog::well_known_oid::pg_constraint_table,
-                                                                        sub.constraint_oid,
-                                                                        sub.behavior,
-                                                                        "constraint " + sub.constraint_name)));
+                    seq->append_child(boost::intrusive_ptr(new logical_plan::node_dynamic_cascade_delete_t(
+                        r,
+                        catalog::well_known_oid::pg_constraint_table,
+                        sub.constraint_oid,
+                        sub.behavior,
+                        qualified_name_t{core::relname_t{sub.constraint_name}},
+                        catalog::relkind::regular)));
                 }
             }
             return node_ptr{seq};

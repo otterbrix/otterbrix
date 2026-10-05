@@ -113,9 +113,6 @@ namespace components::logical_plan {
         // Constraint entries only: gathers (conname, oid) without enforcement decode, so DROP
         // CONSTRAINT can repair an invalid catalog state (e.g. doubled PRIMARY KEY) instead of refusing it.
         bool names_only{false};
-        // Unresolved, and the host's name resolution rewrote away every node naming it: neither resolved again
-        // nor refused. Not part of the request identity.
-        bool superseded{false};
         // A view body name: what CREATE VIEW bound it to. Not part of the request identity.
         view_pin_t pin;
         // The external storage the host's decide gave this name for the statement; its table_md is relkind 'f'.

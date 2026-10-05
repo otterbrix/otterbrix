@@ -1,6 +1,5 @@
 #pragma once
 
-#include "host_write_target.hpp"
 #include "node.hpp"
 #include "node_limit.hpp"
 #include "node_match.hpp"
@@ -15,9 +14,6 @@ namespace components::logical_plan {
         explicit node_delete_t(std::pmr::memory_resource* resource,
                                const node_match_ptr& match,
                                const node_limit_ptr& limit);
-
-        const host_write_target_ptr& host_target() const noexcept { return host_target_; }
-        void set_host_target(host_write_target_ptr target) { host_target_ = std::move(target); }
 
         std::pmr::vector<expressions::expression_ptr>& returning();
         const std::pmr::vector<expressions::expression_ptr>& returning() const;
@@ -44,7 +40,6 @@ namespace components::logical_plan {
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
-        host_write_target_ptr host_target_;
         std::vector<catalog::fk_info_t> referencing_fks_;
         std::pmr::vector<expressions::expression_ptr> returning_;
         std::int64_t oid_col_idx_{-1};

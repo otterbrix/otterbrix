@@ -1,6 +1,5 @@
 #pragma once
 
-#include "host_write_target.hpp"
 #include "node.hpp"
 #include "node_limit.hpp"
 #include "node_match.hpp"
@@ -11,7 +10,9 @@
 #include <components/logical_plan/param_storage.hpp>
 #include <components/types/logical_value.hpp>
 
+#include <string>
 #include <utility>
+#include <vector>
 
 namespace components::logical_plan {
 
@@ -21,9 +22,6 @@ namespace components::logical_plan {
                                const node_match_ptr& match,
                                const node_limit_ptr& limit,
                                const std::pmr::vector<expressions::expression_ptr>& updates);
-
-        const host_write_target_ptr& host_target() const noexcept { return host_target_; }
-        void set_host_target(host_write_target_ptr target) { host_target_ = std::move(target); }
 
         const std::pmr::vector<expressions::expression_ptr>& updates() const;
         std::pmr::vector<expressions::expression_ptr>& updates();
@@ -69,7 +67,6 @@ namespace components::logical_plan {
         const std::vector<std::vector<std::string>>& unique_groups() const { return unique_groups_; }
 
     private:
-        host_write_target_ptr host_target_;
         std::pmr::vector<expressions::expression_ptr> update_expressions_;
         std::pmr::vector<expressions::expression_ptr> returning_;
 

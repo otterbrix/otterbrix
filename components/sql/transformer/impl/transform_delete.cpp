@@ -21,7 +21,7 @@ namespace components::sql::transform {
             auto del = logical_plan::make_node_delete(
                 resource_,
                 logical_plan::make_node_match(resource_,
-                                              qualified_name_t{qn.database, qn.collection},
+                                              qn,
                                               make_compare_expression(resource_, compare_type::all_true)),
                 del_limit);
             // The target identity stays ON the node: enrich binds it to a resolved
@@ -66,7 +66,7 @@ namespace components::sql::transform {
         auto del = logical_plan::make_node_delete(
             resource_,
             logical_plan::make_node_match(resource_,
-                                          qualified_name_t{names.left_name.database, names.left_name.collection},
+                                          names.left_name,
                                           where_expr),
             del_limit);
         // The target identity stays ON the node: enrich binds it to a resolved

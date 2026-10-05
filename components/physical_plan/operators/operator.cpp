@@ -8,7 +8,7 @@ namespace components::operators {
         // PostgreSQL-style names. EXHAUSTIVE over operator_type with NO `default`: -Wswitch then forces any new
         // operator to be named. The ops that never sit on an EXPLAINed SELECT/DML spine (DDL/txn/utility statements
         // are refused by transform_explain; resolve_* run in separate resolve sub-plans; sequence is flattened;
-        // assign_cast shows its input; empty/batch/unused are never rendered) share one "?".
+        // empty/batch/unused are never rendered) share one "?".
         std::string_view default_explain_label(operator_type type) {
             std::string_view label;
             switch (type) {
@@ -119,7 +119,6 @@ namespace components::operators {
                 case operator_type::resolve_type:
                 case operator_type::resolve_constraint:
                 case operator_type::allocate_oids:
-                case operator_type::assign_cast:
                 case operator_type::batch:
                     label = "?";
                     break;

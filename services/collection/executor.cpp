@@ -580,14 +580,14 @@ namespace services::collection::executor {
             }
         };
 
-        // The statement's own names come first; the entries a view expansion or the host adds come after them.
+        // The statement's own names come first; the entries a view expansion adds come after them.
         const auto own_entries = [](const components::logical_plan::node_catalog_resolve_ptr& slot) {
             return slot ? slot->entries().size() : std::size_t{0};
         };
         const std::size_t own_tables = own_entries(plan.catalog_resolves.tables);
         const std::size_t own_types = own_entries(plan.catalog_resolves.types);
         // Every view this statement reads, as its catalog row described it before the expansion.
-        // The body is read back as the first child of the view's reference: the host may replace the body's own root.
+        // The body is read back as the first child of the view's reference.
         struct expanded_view_t {
             components::logical_plan::node_ptr reference;
             components::logical_plan::resolved_table_metadata_t view;
@@ -795,15 +795,11 @@ namespace services::collection::executor {
                 services::catalog_resolve::bind_storages(plan.catalog_resolves, answers.value());
             }
         }
-        if (auto stale = services::catalog_resolve::refuse_stale_host_names(resource(), plan.catalog_resolves);
-            stale.contains_error()) {
-            co_return execute_result_t{make_cursor(resource(), std::move(stale))};
+        if (auto unbound = services::catalog_resolve::refuse_unbound_names(resource(), plan.catalog_resolves);
+            unbound.contains_error()) {
+            co_return execute_result_t{make_cursor(resource(), std::move(unbound))};
         }
         if (auto segment = services::catalog_resolve::refuse_referenced_segments(resource(), plan.catalog_resolves);
-            segment.contains_error()) {
-            co_return execute_result_t{make_cursor(resource(), std::move(segment))};
-        }
-        if (auto segment = services::catalog_resolve::refuse_local_schema_segments(resource(), plan.catalog_resolves);
             segment.contains_error()) {
             co_return execute_result_t{make_cursor(resource(), std::move(segment))};
         }

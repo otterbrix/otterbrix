@@ -21,7 +21,6 @@
 #include "impl/create_plan_fk_check.hpp"
 #include "impl/create_plan_function.hpp"
 #include "impl/create_plan_group.hpp"
-#include "impl/create_plan_host_write.hpp"
 #include "impl/create_plan_insert.hpp"
 #include "impl/create_plan_join.hpp"
 #include "impl/create_plan_match.hpp"
@@ -42,7 +41,6 @@
 
 #include <components/logical_plan/node_alter_column.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
-#include <components/logical_plan/host_write_target.hpp>
 #include <components/logical_plan/node_extension.hpp>
 #include <components/logical_plan/node_transaction.hpp>
 
@@ -117,14 +115,8 @@ namespace services::planner {
                 case node_type::cte_scan_t:
                     return impl::create_plan_cte_scan(context, function_registry, node, params);
                 case node_type::delete_t:
-                    if (components::logical_plan::host_write_target(*node) != nullptr) {
-                        return impl::create_plan_host_write(context, function_registry, node, params);
-                    }
                     return impl::create_plan_delete(context, function_registry, node, params);
                 case node_type::insert_t:
-                    if (components::logical_plan::host_write_target(*node) != nullptr) {
-                        return impl::create_plan_host_write(context, function_registry, node, params);
-                    }
                     return impl::create_plan_insert(context, function_registry, node, params);
                 case node_type::match_t:
                     return impl::create_plan_match(context, node, std::move(limit));
@@ -137,9 +129,6 @@ namespace services::planner {
                 case node_type::sort_t:
                     return impl::create_plan_sort(context, node);
                 case node_type::update_t:
-                    if (components::logical_plan::host_write_target(*node) != nullptr) {
-                        return impl::create_plan_host_write(context, function_registry, node, params);
-                    }
                     return impl::create_plan_update(context, function_registry, node, params);
                 case node_type::join_t:
                     return impl::create_plan_join(context, function_registry, node, params);

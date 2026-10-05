@@ -1155,7 +1155,7 @@ namespace components::sql::transform {
                     }
                     agg->append_child(logical_plan::make_node_match(
                         resource_,
-                        qualified_name_t{agg->target().database, agg->target().collection},
+                        agg->target(),
                         std::move(where_expr)));
                 }
                 where_consumed_by_semi_anti = true;
@@ -1168,7 +1168,7 @@ namespace components::sql::transform {
             if (expr) {
                 agg->append_child(
                     logical_plan::make_node_match(resource_,
-                                                  qualified_name_t{agg->target().database, agg->target().collection},
+                                                  agg->target(),
                                                   expr));
             }
         }

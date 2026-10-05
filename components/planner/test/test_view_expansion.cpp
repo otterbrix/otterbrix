@@ -188,7 +188,9 @@ namespace {
                                       core::dbname_t{"db"},
                                       core::schema_t{},
                                       core::relname_t{"t"},
-                                      16500});
+                                      16500,
+                                      std::string{},
+                                      std::string{}});
         return view;
     }
 
@@ -244,7 +246,9 @@ TEST_CASE("planner::view_expansion::refresh is an insert into the matview over i
                                      core::dbname_t{"db"},
                                      core::schema_t{},
                                      core::relname_t{"t"},
-                                     16500});
+                                     16500,
+                                     std::string{},
+                                     std::string{}});
 
     auto refresh = refresh_matview_plan(res(), matview, core::dbname_t{"db"});
     REQUIRE_FALSE(refresh.has_error());

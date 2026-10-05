@@ -66,6 +66,16 @@ namespace services::planner {
         return plan_refusal(resource, what);
     }
 
+    plan_result_t storage_operator(std::pmr::memory_resource* resource, std::string_view relname, plan_result_t built) {
+        if (built.has_error() || built.value()) {
+            return built;
+        }
+        std::pmr::string what{"the storage of \"", resource};
+        what += relname;
+        what += "\" built no operator";
+        return plan_refusal(resource, what);
+    }
+
     namespace {
         plan_result_t lower_extension(const context_storage_t& context,
                                       const components::compute::function_registry_t& function_registry,

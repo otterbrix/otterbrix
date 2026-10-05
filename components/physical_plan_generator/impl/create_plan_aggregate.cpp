@@ -9,6 +9,7 @@
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
+#include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/node_group.hpp>
 #include <components/logical_plan/node_limit.hpp>
 #include <components/logical_plan/node_match.hpp>
@@ -407,6 +408,14 @@ namespace services::planner::impl {
         components::operators::operator_ptr executor;
         if (child_op) {
             executor = std::move(child_op);
+            if (match_op) {
+                match_op->set_children(std::move(executor));
+                executor = std::move(match_op);
+            }
+        } else if (const auto* table = node->table_metadata(); table != nullptr && table->storage != nullptr) {
+            // A table with external storage: its own scan, the WHERE filtered above it here.
+            VALUE_OR_RETURN(executor,
+                            storage_operator(context.resource, table->name, table->storage->make_scan(context)));
             if (match_op) {
                 match_op->set_children(std::move(executor));
                 executor = std::move(match_op);

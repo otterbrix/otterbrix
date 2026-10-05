@@ -22,6 +22,9 @@ namespace services::planner {
     core::error_t
     unresolved_table_refusal(std::pmr::memory_resource* resource, std::string_view dbname, std::string_view relname);
 
+    // What one factory of a table's external storage built for `relname`; a success without an operator is refused.
+    plan_result_t storage_operator(std::pmr::memory_resource* resource, std::string_view relname, plan_result_t built);
+
     plan_result_t create_plan(const context_storage_t& context,
                               const components::compute::function_registry_t& function_registry,
                               const components::logical_plan::node_ptr& node,

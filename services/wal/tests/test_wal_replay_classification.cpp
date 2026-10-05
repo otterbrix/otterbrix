@@ -170,6 +170,53 @@ TEST_CASE("wal::classification::replay_skips_a_foreign_named_directory") {
     std::filesystem::remove_all(path);
 }
 
+// An entry under the WAL root whose kind cannot be read may be a database directory holding committed
+// transactions, so replay refuses instead of skipping it. A dangling symlink names nothing and is no such entry.
+TEST_CASE("wal::classification::an_entry_that_cannot_be_examined_refuses_replay") {
+    if (::geteuid() == 0) {
+        SKIP("root examines a mode-000 directory anyway");
+    }
+    const auto path = base_path() / "unexaminable_entry";
+    const auto blocked = base_path() / "unexaminable_blocked";
+    std::filesystem::remove_all(path);
+    std::filesystem::remove_all(blocked);
+    std::filesystem::create_directories(path);
+    std::filesystem::create_directories(blocked / "inner");
+
+    {
+        journal_writer_t writer(path);
+        writer.write_committed_insert(/*txn_id=*/7, /*rows=*/4);
+    }
+
+    auto log = make_test_log("python", "/tmp/docker_logs/");
+    core::pmr::otterbrix_resource resource;
+    configuration::config_wal config(path);
+
+    std::filesystem::create_directory_symlink(blocked / "inner", config.path / "777");
+    std::filesystem::permissions(blocked, std::filesystem::perms::none);
+    {
+        wal_reader_t reader(&resource, config, log);
+        auto records = reader.read_committed_records();
+        std::filesystem::permissions(blocked, std::filesystem::perms::owner_all);
+        INFO("replay answered " << (records.has_error() ? records.error().what.c_str() : "records"));
+        REQUIRE(records.has_error());
+        CHECK(records.error().type == core::error_code_t::io_error);
+    }
+
+    std::filesystem::remove(config.path / "777");
+    std::filesystem::create_directory_symlink(blocked / "missing", config.path / "778");
+    {
+        wal_reader_t reader(&resource, config, log);
+        auto records = reader.read_committed_records();
+        INFO("replay refused with " << (records.has_error() ? records.error().what.c_str() : ""));
+        REQUIRE_FALSE(records.has_error());
+        REQUIRE_FALSE(records.value().empty());
+    }
+
+    std::filesystem::remove_all(path);
+    std::filesystem::remove_all(blocked);
+}
+
 TEST_CASE("wal::classification::segment_index_parses_the_whole_suffix_or_refuses") {
     constexpr auto refused = static_cast<uint32_t>(-1);
 

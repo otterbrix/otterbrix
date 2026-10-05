@@ -744,39 +744,8 @@ namespace services::wal {
         return database_dir_ / segment_filename(database_dir_name_, seg_index);
     }
 
-    core::result_wrapper_t<std::vector<std::filesystem::path>> wal_worker_t::discover_segments() {
-        std::vector<std::filesystem::path> result;
-
-        std::error_code ec;
-        if (!std::filesystem::exists(database_dir_, ec) && !ec) {
-            return result;
-        }
-
-        std::string prefix = "wal_" + database_dir_name_ + "_";
-
-        std::filesystem::directory_iterator it(database_dir_, ec);
-        for (const std::filesystem::directory_iterator end; !ec && it != end; it.increment(ec)) {
-            const auto& entry = *it;
-            std::error_code kind_ec;
-            if (!entry.is_regular_file(kind_ec)) {
-                continue;
-            }
-            auto fname = entry.path().filename().string();
-            if (fname.size() >= prefix.size() && fname.compare(0, prefix.size(), prefix) == 0) {
-                result.push_back(entry.path());
-            }
-        }
-
-        if (ec) {
-            return core::error_t(core::error_code_t::io_error,
-                                 std::pmr::string{"wal_worker: the journal directory " + database_dir_.string() +
-                                                      " could not be listed: " + ec.message(),
-                                                  this->resource()});
-        }
-
-        // Sorted lexicographically, which works because the suffix is zero-padded.
-        std::sort(result.begin(), result.end());
-        return result;
+    core::result_wrapper_t<std::pmr::vector<std::filesystem::path>> wal_worker_t::discover_segments() {
+        return find_wal_segments(this->resource(), database_dir_, "wal_" + database_dir_name_ + "_");
     }
 
     uint32_t wal_worker_t::parse_segment_index(const std::filesystem::path& path, const std::string& db_dir_name) {

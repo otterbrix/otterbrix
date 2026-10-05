@@ -734,7 +734,7 @@ namespace services::engine {
 
         // Re-derives a column drop a crash discarded; must run before bootstrap_indexes_sync opens
         // index stores against this schema.
-        disk.reconcile_storage_with_catalog_sync();
+        RETURN_IF_ERROR(disk.reconcile_storage_with_catalog_sync());
 
         disk.restore_oid_generator_sync();
 

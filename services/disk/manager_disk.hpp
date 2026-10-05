@@ -317,7 +317,7 @@ namespace services::disk {
         // Rebuilds the .otbx for tables load_user_table_storages_sync couldn't load; returns divergences not closed.
         [[nodiscard]] core::result_wrapper_t<std::size_t> rehydrate_missing_user_storages_sync();
         // Re-derives a column drop whose release a crash discarded; runs after both user-table walks and WAL replay.
-        void reconcile_storage_with_catalog_sync();
+        [[nodiscard]] core::error_t reconcile_storage_with_catalog_sync();
         std::unordered_set<components::catalog::oid_t> alive_user_oids_sync() const;
         // '\0' means "no such row" only — an unreadable pg_class travels the error wrapper instead, or
         // a DOCUMENT table's dynamic schema would silently vanish.

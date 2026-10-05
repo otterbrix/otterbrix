@@ -1,5 +1,7 @@
 #include "manager_wal_replicate.hpp"
 
+#include <core/file/list_dir.hpp>
+
 #include <algorithm>
 #include <cassert>
 #include <charconv>
@@ -97,23 +99,18 @@ namespace services::wal {
             error(log_, "{}", recovery_error_.what);
         } else if (!config_.path.empty()) {
             wal::id_t max_recovered_id = 0;
-            const auto refuse_listing = [this](const std::filesystem::path& dir, const std::error_code& ec) {
-                recovery_error_ = core::error_t(core::error_code_t::io_error,
-                                                std::pmr::string{"manager_wal_replicate: the directory " +
-                                                                     dir.string() +
-                                                                     " could not be listed: " + ec.message(),
-                                                                 resource_});
-                error(log_, "{}", recovery_error_.what);
-            };
-            std::filesystem::directory_iterator root_it(config_.path, root_ec);
-            for (const std::filesystem::directory_iterator end; !root_ec && root_it != end;
-                 root_it.increment(root_ec)) {
-                const auto& entry = *root_it;
-                std::error_code kind_ec;
-                if (!entry.is_directory(kind_ec)) {
+            auto listed = core::filesystem::list_dir(resource_, config_.path);
+            if (listed.has_error()) {
+                recovery_error_ = listed.error();
+                error(log_, "manager_wal_replicate: {}", recovery_error_.what);
+            }
+            const auto entries = listed.has_error() ? std::pmr::vector<core::filesystem::dir_entry_t>(resource_)
+                                                    : std::move(listed.value());
+            for (const auto& entry : entries) {
+                if (entry.kind != std::filesystem::file_type::directory) {
                     continue;
                 }
-                auto db_dir_name = entry.path().filename().string();
+                auto db_dir_name = entry.path.filename().string();
                 // parse_database_dir_name, not std::stoul+catch (half-parses "9zz"->9), matches wal_reader_t's walk.
                 components::catalog::oid_t db_oid;
                 if (!parse_database_dir_name(db_dir_name, db_oid)) {
@@ -125,26 +122,17 @@ namespace services::wal {
                 }
                 trace(log_, "manager_wal_replicate: recovering database_oid={}", static_cast<unsigned>(db_oid));
 
-                bool has_wal_segment = false;
+                // Same wal_ prefix as wal_reader_t, else a stray file could poison the allocator.
+                auto segments = find_wal_segments(resource_, entry.path, "wal_");
+                if (segments.has_error()) {
+                    recovery_error_ = segments.error();
+                    error(log_, "manager_wal_replicate: {}", recovery_error_.what);
+                    break;
+                }
+                const bool has_wal_segment = !segments.value().empty();
 
-                std::error_code seg_ec;
-                std::filesystem::directory_iterator seg_it(entry.path(), seg_ec);
-                for (const std::filesystem::directory_iterator seg_end; !seg_ec && seg_it != seg_end;
-                     seg_it.increment(seg_ec)) {
-                    const auto& seg = *seg_it;
-                    std::error_code file_ec;
-                    if (!seg.is_regular_file(file_ec)) {
-                        continue;
-                    }
-                    // Same wal_ prefix as wal_worker_t::discover_segments/wal_reader_t, else a stray file could
-                    // poison the allocator.
-                    const auto seg_name = seg.path().filename().string();
-                    if (seg_name.size() < 4 || seg_name.compare(0, 4, "wal_") != 0) {
-                        continue;
-                    }
-                    has_wal_segment = true;
-
-                    wal_page_reader_t reader(resource_, seg.path());
+                for (const auto& seg_path : segments.value()) {
+                    wal_page_reader_t reader(resource_, seg_path);
                     if (!reader.is_open()) {
                         // This scan sets global_id_; an unread segment's ids get reissued, so the refusal
                         // latches every write/commit/truncate below.
@@ -152,7 +140,7 @@ namespace services::wal {
                         error(log_,
                               "manager_wal_replicate: segment '{}' could not be read at startup , the WAL "
                               "REFUSES every write until it can be: {}",
-                              seg.path().filename().string(),
+                              seg_path.filename().string(),
                               recovery_error_.what);
                         break;
                     }
@@ -163,9 +151,6 @@ namespace services::wal {
                     if (scan.highest_page_end_lsn > max_recovered_id) {
                         max_recovered_id = scan.highest_page_end_lsn;
                     }
-                }
-                if (seg_ec) {
-                    refuse_listing(entry.path(), seg_ec);
                 }
                 if (recovery_error_.contains_error()) {
                     break;
@@ -180,9 +165,6 @@ namespace services::wal {
                 }
 
                 get_or_create_worker(db_oid);
-            }
-            if (root_ec) {
-                refuse_listing(config_.path, root_ec);
             }
             global_id_.store(max_recovered_id, std::memory_order_relaxed);
         }
@@ -461,30 +443,26 @@ namespace services::wal {
     std::uintmax_t manager_wal_replicate_t::total_wal_bytes() const noexcept {
         if (config_.path.empty())
             return 0;
+        // A measure for the auto-checkpoint threshold: what cannot be listed or sized adds nothing.
         std::uintmax_t total = 0;
-        std::error_code ec;
-        for (const auto& db_entry : std::filesystem::directory_iterator(config_.path, ec)) {
-            if (ec || !db_entry.is_directory(ec)) {
-                ec.clear();
+        auto listed = core::filesystem::list_dir(resource_, config_.path);
+        if (listed.has_error()) {
+            return total;
+        }
+        for (const auto& db_entry : listed.value()) {
+            if (db_entry.kind != std::filesystem::file_type::directory) {
                 continue;
             }
-            for (const auto& seg : std::filesystem::directory_iterator(db_entry.path(), ec)) {
-                if (ec) {
-                    ec.clear();
-                    continue;
+            auto segments = find_wal_segments(resource_, db_entry.path, "wal_");
+            if (segments.has_error()) {
+                continue;
+            }
+            for (const auto& seg_path : segments.value()) {
+                std::error_code ec;
+                const auto size = std::filesystem::file_size(seg_path, ec);
+                if (!ec) {
+                    total += size;
                 }
-                if (!seg.is_regular_file(ec)) {
-                    ec.clear();
-                    continue;
-                }
-                const auto seg_name = seg.path().filename().string();
-                if (seg_name.size() < 4 || seg_name.compare(0, 4, "wal_") != 0) {
-                    continue;
-                }
-                auto sz = std::filesystem::file_size(seg.path(), ec);
-                if (!ec)
-                    total += sz;
-                ec.clear();
             }
         }
         return total;

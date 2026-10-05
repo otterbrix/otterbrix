@@ -69,7 +69,9 @@ namespace {
                                                                           log_,
                                                                           manager_wal_->address(),
                                                                           manager_disk_->address(),
-                                                                          manager_index_->address())) {
+                                                                          manager_index_->address(),
+                                                                          configuration::config_execution{},
+                                                                          components::planner::primitives_t{})) {
             manager_wal_->set_manager_dispatcher_sync(manager_dispatcher_->address());
             manager_disk_->set_manager_wal_sync(manager_wal_->address());
             manager_index_->set_manager_dispatcher_sync(manager_dispatcher_->address());

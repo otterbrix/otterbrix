@@ -683,8 +683,8 @@ namespace {
         {planner::optimizer_stage::after_simplify, &push_whole_modify},
     };
 
-    services::engine::primitives_t host_primitives() {
-        return services::engine::primitives_t{host_rules, {&need_remote_columns, &decide_remote_storages}};
+    components::planner::primitives_t host_primitives() {
+        return components::planner::primitives_t{host_rules, {&need_remote_columns, &decide_remote_storages}};
     }
 
     components::cursor::cursor_t_ptr

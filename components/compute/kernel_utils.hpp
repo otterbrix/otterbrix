@@ -15,7 +15,7 @@ namespace components::compute {
 
     class exec_context_t {
     public:
-        explicit exec_context_t(std::pmr::memory_resource* resource, function_registry_t* registry = nullptr);
+        explicit exec_context_t(std::pmr::memory_resource* resource);
 
         exec_context_t(const exec_context_t&) = default;
         exec_context_t(exec_context_t&& other) = default;
@@ -23,11 +23,9 @@ namespace components::compute {
         exec_context_t& operator=(exec_context_t&& other) = default;
 
         std::pmr::memory_resource* resource() const;
-        function_registry_t* func_registry() const;
 
     private:
         std::pmr::memory_resource* resource_;
-        function_registry_t* func_registry_;
     };
 
     // No default_exec_context(): a defaulted `ctx` backed by get_default_resource() (banned)

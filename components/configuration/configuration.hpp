@@ -62,9 +62,8 @@ namespace configuration {
         // single post-pump flush, unbounded accumulator.
         // A rollout gate — the executor guards `threshold != 0`.
         uint64_t dml_flush_row_threshold{0};
-        static constexpr std::size_t default_executor_pool_size = 4;
         // 0 is refused at startup: the dispatcher routes every statement to one of these executors.
-        std::size_t executor_pool_size{default_executor_pool_size};
+        std::size_t executor_pool_size{4};
         pump_intervals_t pump{};
     };
 

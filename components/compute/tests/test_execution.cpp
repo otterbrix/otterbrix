@@ -360,7 +360,7 @@ TEST_CASE("components::compute::expand::generate_series") {
     const auto* expand = dynamic_cast<const expand_kernel*>(&kres.value().get());
     REQUIRE(expand != nullptr);
 
-    exec_context_t exec_ctx(&resource, reg);
+    exec_context_t exec_ctx(&resource);
     kernel_context kctx(exec_ctx, *expand);
     std::pmr::vector<data_chunk_t> outputs(&resource);
     REQUIRE_FALSE(expand->execute(kctx, args, outputs).contains_error());
@@ -465,7 +465,7 @@ namespace {
         function_registry_t registry{&resource};
         // Explicit, because function::execute has no defaulted context: without one the calls
         // below would run on the process-global default resource.
-        exec_context_t ctx{&resource, &registry};
+        exec_context_t ctx{&resource};
 
         // The full builtin set, not register_string_functions alone: the registration helpers
         // are ordered stages of register_default_functions, and calling one alone now poisons

@@ -130,7 +130,9 @@ struct admin_fixture : actor_zeta::actor::actor_mixin<admin_fixture> {
                                                                       log_,
                                                                       manager_wal_->address(),
                                                                       manager_disk_->address(),
-                                                                      components::pipeline::no_mailbox())) {
+                                                                      components::pipeline::no_mailbox(),
+                                                                      configuration::config_execution{},
+                                                                      components::planner::primitives_t{})) {
         manager_wal_->set_manager_dispatcher_sync(manager_dispatcher_->address());
         manager_disk_->set_manager_wal_sync(manager_wal_->address());
         REQUIRE_FALSE(manager_disk_->bootstrap_system_tables_sync().contains_error());

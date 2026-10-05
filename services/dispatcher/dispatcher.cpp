@@ -97,23 +97,18 @@ namespace services::dispatcher {
                                                actor_zeta::address_t wal_address,
                                                actor_zeta::address_t disk_address,
                                                actor_zeta::address_t index_address,
-                                               uint64_t dml_flush_row_threshold,
-                                               std::span<const components::planner::optimizer_rule_t> optimizer_rules,
-                                               components::planner::name_resolution_hook_t name_resolution,
-                                               std::size_t executor_pool_size,
-                                               configuration::pump_intervals_t pump)
+                                               const configuration::config_execution& execution,
+                                               components::planner::primitives_t primitives)
         : actor_zeta::actor::actor_mixin<manager_dispatcher_t>()
         , resource_(resource_ptr)
         , scheduler_(scheduler)
         , log_(log.clone())
-        , optimizer_rules_(optimizer_rules.begin(), optimizer_rules.end(), resource_ptr)
-        , name_resolution_(name_resolution)
         , executors_(resource_ptr)
         , executor_addresses_(resource_ptr)
         , wal_address_(std::move(wal_address))
         , disk_address_(std::move(disk_address))
         , index_address_(std::move(index_address))
-        , pump_(pump)
+        , pump_(execution.pump)
         , txn_manager_(resource_ptr)
         , cast_registry_(resource_ptr)
         , function_registry_(resource_ptr)
@@ -123,23 +118,24 @@ namespace services::dispatcher {
         components::casts::register_default_casts(cast_registry_);
         components::compute::register_default_functions(function_registry_);
 
-        assert(executor_pool_size != 0 && "the engine factory refuses a zero executor pool before spawning");
-        executors_.reserve(executor_pool_size);
-        executor_addresses_.reserve(executor_pool_size);
-        for (std::size_t i = 0; i < executor_pool_size; ++i) {
+        assert(execution.executor_pool_size != 0 && "the engine factory refuses a zero executor pool before spawning");
+        executors_.reserve(execution.executor_pool_size);
+        executor_addresses_.reserve(execution.executor_pool_size);
+        for (std::size_t i = 0; i < execution.executor_pool_size; ++i) {
             auto exec = actor_zeta::spawn<collection::executor::executor_t>(resource(),
                                                                             address(),
                                                                             wal_address_,
                                                                             disk_address_,
                                                                             index_address_,
                                                                             log_.clone(),
-                                                                            dml_flush_row_threshold,
-                                                                            optimizer_rules_,
-                                                                            name_resolution_);
+                                                                            execution,
+                                                                            primitives);
             executor_addresses_.push_back(exec->address());
             executors_.push_back(std::move(exec));
         }
-        trace(log_, "manager_dispatcher_t: spawned {} executors with WAL/Disk/Index addresses", executor_pool_size);
+        trace(log_,
+              "manager_dispatcher_t: spawned {} executors with WAL/Disk/Index addresses",
+              execution.executor_pool_size);
 
         loop_thread_ = std::thread([this] {
             auto& in_flight = in_flight_;

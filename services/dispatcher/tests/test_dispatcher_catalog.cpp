@@ -72,7 +72,9 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
                                                                       log_,
                                                                       manager_wal_->address(),
                                                                       manager_disk_->address(),
-                                                                      components::pipeline::no_mailbox())) {
+                                                                      components::pipeline::no_mailbox(),
+                                                                      configuration::config_execution{},
+                                                                      components::planner::primitives_t{})) {
         manager_wal_->set_manager_dispatcher_sync(manager_dispatcher_->address());
         manager_disk_->set_manager_wal_sync(manager_wal_->address());
 

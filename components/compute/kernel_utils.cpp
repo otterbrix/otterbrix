@@ -15,13 +15,10 @@ namespace components::compute {
         });
     }
 
-    exec_context_t::exec_context_t(std::pmr::memory_resource* resource, function_registry_t* registry)
-        : resource_(resource)
-        , func_registry_(registry) {
+    exec_context_t::exec_context_t(std::pmr::memory_resource* resource)
+        : resource_(resource) {
         assert(resource);
     }
 
     std::pmr::memory_resource* exec_context_t::resource() const { return resource_; }
-
-    function_registry_t* exec_context_t::func_registry() const { return func_registry_; }
 } // namespace components::compute

@@ -86,4 +86,10 @@ namespace components::planner {
         name_resolution_decide_fn decide = &no_storages;
     };
 
+    // Read once by spawn_engine: every executor copies the rules, so the host's array need not outlive the call.
+    struct primitives_t final {
+        std::span<const optimizer_rule_t> optimizer_rules{};
+        name_resolution_hook_t name_resolution{};
+    };
+
 } // namespace components::planner

@@ -5,6 +5,7 @@
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/settings.hpp>
 #include <components/compute/function.hpp>
+#include <components/configuration/configuration.hpp>
 #include <components/context/pg_catalog_swap.hpp>
 #include <components/context/subplan_runner.hpp>
 #include <components/logical_plan/execution_plan.hpp>
@@ -153,9 +154,8 @@ namespace services::collection::executor {
                    actor_zeta::address_t disk_address,
                    actor_zeta::address_t index_address,
                    log_t&& log,
-                   uint64_t dml_flush_row_threshold = 0,
-                   std::span<const components::planner::optimizer_rule_t> optimizer_rules = {},
-                   components::planner::name_resolution_hook_t name_resolution = {});
+                   const configuration::config_execution& execution,
+                   components::planner::primitives_t primitives);
         ~executor_t() = default;
 
         // INTERNAL: called only from execute_plan_full via co_await, never through the mailbox. captured_subplans

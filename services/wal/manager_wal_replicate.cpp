@@ -613,19 +613,20 @@ namespace services::wal {
         if (!auto_checkpoint_in_flight_) {
             co_return;
         }
+        assert(!round_end_waiter_ && "stop_auto_checkpoint is called once, by engine shutdown");
         actor_zeta::promise<void> ended(resource());
         auto round_ended = ended.get_future();
-        round_end_waiters_.push_back(std::move(ended));
+        round_end_waiter_.emplace(std::move(ended));
         co_await std::move(round_ended);
     }
 
     void manager_wal_replicate_t::end_auto_checkpoint_round() noexcept {
         rebase_auto_checkpoint_window();
         auto_checkpoint_in_flight_ = false;
-        for (auto& waiter : round_end_waiters_) {
-            waiter.set_value();
+        if (round_end_waiter_) {
+            round_end_waiter_->set_value();
+            round_end_waiter_.reset();
         }
-        round_end_waiters_.clear();
 #ifdef DEV_MODE
         g_auto_checkpoint_rounds.fetch_add(1, std::memory_order_relaxed);
 #endif

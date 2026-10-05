@@ -25,12 +25,6 @@ namespace services::engine {
         actor_zeta::scheduler_raw disk;
     };
 
-    // Read once by spawn_engine: the dispatcher copies the rules, so the host's array need not outlive the call.
-    struct primitives_t final {
-        std::span<const components::planner::optimizer_rule_t> optimizer_rules{};
-        components::planner::name_resolution_hook_t name_resolution{};
-    };
-
     // flock(LOCK_EX | LOCK_NB) on <directory>/.lock, held for the lifetime of the object. Bound to
     // the open file, so a second engine on the same directory is refused within one process too.
     class directory_lock_t final {
@@ -71,7 +65,7 @@ namespace services::engine {
                                   schedulers_t schedulers,
                                   const configuration::config& config,
                                   log_t& log,
-                                  primitives_t primitives);
+                                  components::planner::primitives_t primitives);
 
     // Catalog, WAL replay, oid/commit clocks, tombstones and indexes; the pools are not running yet.
     [[nodiscard]] core::result_wrapper_t<bootstrapped_engine_t> bootstrap(spawned_engine_t spawned);
@@ -94,7 +88,7 @@ namespace services::engine {
                                              schedulers_t,
                                              const configuration::config&,
                                              log_t&,
-                                             primitives_t);
+                                             components::planner::primitives_t);
     };
 
     class spawned_engine_t final {
@@ -111,7 +105,7 @@ namespace services::engine {
                                              schedulers_t,
                                              const configuration::config&,
                                              log_t&,
-                                             primitives_t);
+                                             components::planner::primitives_t);
         friend core::result_wrapper_t<bootstrapped_engine_t> bootstrap(spawned_engine_t);
     };
 

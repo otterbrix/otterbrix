@@ -337,8 +337,8 @@ namespace {
         return answers;
     }
 
-    services::engine::primitives_t remote_host(std::span<const planner::optimizer_rule_t> rules = {}) {
-        return services::engine::primitives_t{rules, {&planner::no_name_reads, &remote_decide}};
+    components::planner::primitives_t remote_host(std::span<const planner::optimizer_rule_t> rules = {}) {
+        return components::planner::primitives_t{rules, {&planner::no_name_reads, &remote_decide}};
     }
 
     // A hung executor must fail the run, not wedge it: the dispatcher wait has no deadline of its own.

@@ -188,9 +188,8 @@ namespace services::collection::executor {
                            actor_zeta::address_t disk_address,
                            actor_zeta::address_t index_address,
                            log_t&& log,
-                           uint64_t dml_flush_row_threshold,
-                           std::span<const components::planner::optimizer_rule_t> optimizer_rules,
-                           components::planner::name_resolution_hook_t name_resolution)
+                           const configuration::config_execution& execution,
+                           components::planner::primitives_t primitives)
         : actor_zeta::basic_actor<executor_t>{resource}
         , parent_address_(std::move(parent_address))
         , wal_address_(std::move(wal_address))
@@ -199,9 +198,9 @@ namespace services::collection::executor {
         , log_(log)
         , function_registry_(resource)
         , cast_registry_(resource)
-        , optimizer_rules_(optimizer_rules.begin(), optimizer_rules.end(), resource)
-        , name_resolution_(name_resolution)
-        , dml_flush_row_threshold_(dml_flush_row_threshold)
+        , optimizer_rules_(primitives.optimizer_rules.begin(), primitives.optimizer_rules.end(), resource)
+        , name_resolution_(primitives.name_resolution)
+        , dml_flush_row_threshold_(execution.dml_flush_row_threshold)
         , explain_renderers_(resource) {
         register_default_functions(function_registry_);
         components::casts::register_default_casts(cast_registry_);
@@ -1548,10 +1547,9 @@ namespace services::collection::executor {
                                                                           std::size_t count)
                 -> executor_t::unique_future<core::result_wrapper_t<std::vector<components::catalog::oid_t>>> {
                 auto node = components::logical_plan::make_node_allocate_oids(resource(), count);
-                components::compute::function_registry_t local_fn_registry{resource()};
                 services::context_storage_t cstor{resource(), log_.clone(), context_storage.execution_context};
                 auto planned = services::planner::create_plan(cstor,
-                                                              local_fn_registry,
+                                                              function_registry_,
                                                               node,
                                                               components::logical_plan::limit_t::unlimit(),
                                                               /*params=*/nullptr);
@@ -1565,7 +1563,7 @@ namespace services::collection::executor {
                 components::pipeline::context_t pctx{session,
                                                      actor_zeta::address_t::empty_address(),
                                                      actor_zeta::address_t::empty_address(),
-                                                     &local_fn_registry,
+                                                     &function_registry_,
                                                      local_params,
                                                      disk_address_,
                                                      index_address_,

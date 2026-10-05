@@ -78,7 +78,7 @@ namespace {
 TEST_CASE("integration::cpp::host_optimizer_stages::each_stage_sees_its_shape") {
     auto config = test_create_config(integration_fixture_path("test_host_optimizer_stages/base"));
     test_clear_directory(config);
-    test_spaces space(config, services::engine::primitives_t{rules, {}});
+    test_spaces space(config, components::planner::primitives_t{rules, {}});
     auto* dispatcher = space.dispatcher();
     run_ok(dispatcher, "CREATE DATABASE sdb;");
     run_ok(dispatcher, "CREATE TABLE sdb.a (k BIGINT, v BIGINT);");

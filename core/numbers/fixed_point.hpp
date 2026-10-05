@@ -40,7 +40,9 @@ namespace core::numbers {
                  typename std::enable_if_t<(std::is_same_v<int32_t, T> && is_supported_representation_type<Rep>())>* =
                      nullptr>
         inline Rep ipow(T exponent) {
-            assertion_exception_msg(exponent >= 0, "integer exponentiation with negative exponent is not possible.");
+            assertion_log_msg(nullptr,
+                              exponent >= 0,
+                              "integer exponentiation with negative exponent is not possible.");
             if (exponent == 0) {
                 return static_cast<Rep>(1);
             }
@@ -264,8 +266,9 @@ namespace core::numbers {
         auto const scale = std::min(lhs._scale, rhs._scale);
         auto const sum = lhs.rescaled(scale)._value + rhs.rescaled(scale)._value;
 
-        assertion_exception_msg(!addition_overflow<Rep1>(lhs.rescaled(scale)._value, rhs.rescaled(scale)._value),
-                                "fixed_point overflow");
+        assertion_log_msg(nullptr,
+                          !addition_overflow<Rep1>(lhs.rescaled(scale)._value, rhs.rescaled(scale)._value),
+                          "fixed_point overflow");
         return fixed_point<Rep1, Rad1>{scaled_integer<Rep1>{sum, scale}};
     }
 
@@ -274,21 +277,22 @@ namespace core::numbers {
         auto const scale = std::min(lhs._scale, rhs._scale);
         auto const diff = lhs.rescaled(scale)._value - rhs.rescaled(scale)._value;
 
-        assertion_exception_msg(!subtraction_overflow<Rep1>(lhs.rescaled(scale)._value, rhs.rescaled(scale)._value),
-                                "fixed_point overflow");
+        assertion_log_msg(nullptr,
+                          !subtraction_overflow<Rep1>(lhs.rescaled(scale)._value, rhs.rescaled(scale)._value),
+                          "fixed_point overflow");
         return fixed_point<Rep1, Rad1>{scaled_integer<Rep1>{diff, scale}};
     }
 
     template<typename Rep1, Radix Rad1>
     inline fixed_point<Rep1, Rad1> operator*(fixed_point<Rep1, Rad1> const& lhs, fixed_point<Rep1, Rad1> const& rhs) {
-        assertion_exception_msg(!multiplication_overflow<Rep1>(lhs._value, rhs._value), "fixed_point overflow");
+        assertion_log_msg(nullptr, !multiplication_overflow<Rep1>(lhs._value, rhs._value), "fixed_point overflow");
         return fixed_point<Rep1, Rad1>{
             scaled_integer<Rep1>(lhs._value * rhs._value, scale_type{lhs._scale + rhs._scale})};
     }
 
     template<typename Rep1, Radix Rad1>
     inline fixed_point<Rep1, Rad1> operator/(fixed_point<Rep1, Rad1> const& lhs, fixed_point<Rep1, Rad1> const& rhs) {
-        assertion_exception_msg(!division_overflow<Rep1>(lhs._value, rhs._value), "fixed_point overflow");
+        assertion_log_msg(nullptr, !division_overflow<Rep1>(lhs._value, rhs._value), "fixed_point overflow");
         return fixed_point<Rep1, Rad1>{
             scaled_integer<Rep1>(lhs._value / rhs._value, scale_type{lhs._scale - rhs._scale})};
     }

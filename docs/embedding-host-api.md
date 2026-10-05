@@ -1,6 +1,6 @@
 # Embedding host API: customization points
 
-An embedding host (OtterStax) plugs into otterbrix at `spawn_engine`. otterbrix knows nothing about remote
+An embedding host (OtterStax) plugs into otterbrix at `open_engine`. otterbrix knows nothing about remote
 servers: the host keeps its servers, schemas and credentials in ordinary engine tables, resolves the names the
 catalog does not know, and supplies the operators that read and write its backends. otterbrix validates, plans,
 joins and runs everything else.
@@ -31,7 +31,7 @@ SQL -> transformer -> catalog resolve -> [name resolution: need -> host reads ->
 
 ## Threads, actors and lifetimes (all points)
 
-- The dispatcher copies what `spawn_engine` receives into every executor. Executors run on the `exec` pool, so a
+- The dispatcher copies what `open_engine` receives into every executor. Executors run on the `exec` pool, so a
   hook is called from several threads at once, one call per statement. A hook must be reentrant; state it shares
   across calls is the host's to synchronize.
 - Hooks and host operators run inside an executor actor. They never block: a backend round trip is a
@@ -64,7 +64,7 @@ namespace components::planner {
                                                          const optimizer_rule_context_t&);
     struct optimizer_rule_t { optimizer_stage stage; optimizer_rule_fn apply; };
 }
-// services::engine::primitives_t::optimizer_rules — a span, copied by spawn_engine.
+// services::engine::primitives_t::optimizer_rules — a span, copied by open_engine.
 ```
 
 - **When:** once per statement, inside `optimize()`, after the built-in rules the stage is named after. Within one

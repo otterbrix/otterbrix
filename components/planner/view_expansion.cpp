@@ -368,7 +368,7 @@ namespace components::planner {
         return wrapper;
     }
 
-    core::result_wrapper_t<logical_plan::execution_plan_t>
+    core::result_wrapper_t<refresh_matview_plan_t>
     refresh_matview_plan(std::pmr::memory_resource* resource,
                          const logical_plan::resolved_table_metadata_t& matview,
                          const core::dbname_t& dbname) {
@@ -396,8 +396,7 @@ namespace components::planner {
                                                               &plan.catalog_resolves,
                                                               target,
                                                               sql::transform::constraint_resolve_kind::outgoing);
-        plan.stored_bodies.push_back({reference, matview});
-        return plan;
+        return refresh_matview_plan_t{std::move(plan), std::move(reference)};
     }
 
     void renumber_body_parameters(std::pmr::memory_resource* resource,

@@ -82,9 +82,14 @@ namespace components::planner {
 
     // REFRESH MATERIALIZED VIEW (PostgreSQL 18 matview.c runs the stored query; Trino 483 analyzes an INSERT into the
     // storage table with the parsed body as its source): INSERT INTO dbname.matview <stored body>, the body's names
-    // pinned to what CREATE bound and the body spliced into a reference of its own, listed in stored_bodies for the
-    // read's check. The matview is the write target only; nothing reads it.
-    core::result_wrapper_t<logical_plan::execution_plan_t>
+    // pinned to what CREATE bound and the body spliced into `reference`, which the read checks against the matview as
+    // it checks an expanded view. The matview is the write target only; nothing reads it.
+    struct refresh_matview_plan_t {
+        logical_plan::execution_plan_t plan;
+        logical_plan::node_ptr reference;
+    };
+
+    core::result_wrapper_t<refresh_matview_plan_t>
     refresh_matview_plan(std::pmr::memory_resource* resource,
                          const logical_plan::resolved_table_metadata_t& matview,
                          const core::dbname_t& dbname);

@@ -147,9 +147,6 @@ impl fmt::Debug for Database {
 }
 
 fn cursor_or_error<'db>(ptr: otterbrix_sys::cursor_ptr) -> Result<Cursor<'db>> {
-    if ptr.is_null() {
-        return Err(Error::NullPointer);
-    }
     if unsafe { otterbrix_sys::cursor_is_error(ptr) } {
         let err = unsafe { otterbrix_sys::cursor_get_error(ptr) };
         let message = unsafe { string_from_c(err.message) };
@@ -233,9 +230,7 @@ impl Database {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Query`] if the engine reports a query error and
-    /// [`Error::NullPointer`] if the engine returns a null cursor pointer
-    /// (an internal failure).
+    /// Returns [`Error::Query`] if the engine reports a query error.
     pub fn execute(&self, sql: &str) -> Result<Cursor<'_>> {
         let ptr = unsafe { otterbrix_sys::execute_sql(self.ptr, make_sv(sql)) };
         cursor_or_error(ptr)

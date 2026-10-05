@@ -54,8 +54,8 @@
 //! follows:
 //!
 //! - [`otterbrix::Error::Query`] → [`DbErr::Exec`](sea_orm::DbErr::Exec);
-//! - [`otterbrix::Error::NullPointer`], [`otterbrix::Error::Open`] and
-//!   [`otterbrix::Error::InvalidPath`] → [`DbErr::Conn`](sea_orm::DbErr::Conn);
+//! - [`otterbrix::Error::Open`] and [`otterbrix::Error::InvalidPath`] →
+//!   [`DbErr::Conn`](sea_orm::DbErr::Conn);
 //! - [`otterbrix::Error::TypeMismatch`] → [`DbErr::Type`](sea_orm::DbErr::Type).
 //!
 //! The original `Display` text of the underlying [`otterbrix::Error`] is

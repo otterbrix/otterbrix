@@ -25,8 +25,7 @@ use sqlx_core::HashMap;
 /// Maps an [`otterbrix::Error`] to the corresponding [`sqlx_core::error::Error`].
 ///
 /// Engine query errors are wrapped in [`OtterbrixDbError`] and surface as
-/// `Error::Database`; structural failures (`NullPointer`, `TypeMismatch`)
-/// become `Error::Protocol`; invalid paths and a refused start become `Error::Configuration`.
+/// `Error::Database`; a `TypeMismatch` becomes `Error::Protocol`; invalid paths and a refused start become `Error::Configuration`.
 /// The original `Display` text is preserved in every variant.
 pub(crate) fn map_otterbrix_error(err: otterbrix::Error) -> Error {
     let msg = err.to_string();
@@ -34,7 +33,6 @@ pub(crate) fn map_otterbrix_error(err: otterbrix::Error) -> Error {
         otterbrix::Error::Query { code, message } => {
             Error::Database(Box::new(OtterbrixDbError { code, message }))
         }
-        otterbrix::Error::NullPointer => Error::Protocol(msg),
         otterbrix::Error::Open { .. } => Error::Configuration(msg.into()),
         otterbrix::Error::InvalidPath(_) => Error::Configuration(msg.into()),
         otterbrix::Error::TypeMismatch { .. } => Error::Protocol(msg),
@@ -294,12 +292,6 @@ mod error_mapping_tests {
             }
             other => panic!("expected Error::Database, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn null_pointer_becomes_protocol_error() {
-        let err = map_otterbrix_error(ObError::NullPointer);
-        assert!(matches!(err, Error::Protocol(_)), "got {err:?}");
     }
 
     #[test]

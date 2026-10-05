@@ -4,7 +4,7 @@ use std::fmt;
 ///
 /// Error variants are categorised by **origin**:
 ///
-/// - [`Error::NullPointer`], [`Error::Query`] and [`Error::Open`] originate in the C++ engine
+/// - [`Error::Query`] and [`Error::Open`] originate in the C++ engine
 ///   (the `otterbrix core ...` prefix in the [`Display`](fmt::Display) text);
 /// - [`Error::InvalidPath`] and [`Error::TypeMismatch`] originate in this
 ///   Rust wrapper (the plain `otterbrix ...` prefix).
@@ -13,13 +13,6 @@ use std::fmt;
 /// like any other Rust error type.
 #[derive(Debug, Clone)]
 pub enum Error {
-    /// The C++ engine returned a null pointer where a value was expected.
-    ///
-    /// Usually indicates an internal engine failure (allocation failure,
-    /// invariant violation, or unexpected state). The message in
-    /// [`Display`](fmt::Display) is `otterbrix core returned null pointer`.
-    NullPointer,
-
     /// SQL execution failed inside the C++ engine.
     ///
     /// `code` is the engine's internal error code (non-zero), `message` is the
@@ -69,7 +62,6 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::NullPointer => write!(f, "otterbrix core returned null pointer"),
             Error::Query { code, message } => {
                 write!(f, "otterbrix core query error (code {code}): {message}")
             }

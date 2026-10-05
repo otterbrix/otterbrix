@@ -5,13 +5,7 @@ namespace Duckstax.Otterbrix
 
     public class CursorWrapper : IDisposable
     {
-        const string libotterbrix = "otterbrix";
-
-        [StructLayout(LayoutKind.Sequential)]
-        private struct TransferErrorMessage {
-            public int type;
-            public IntPtr what;
-        }
+        const string libotterbrix = OtterbrixWrapper.libotterbrix;
 
         [DllImport(libotterbrix, EntryPoint="cursor_size", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
         private static extern int CursorSize(CursorHandle cursor);
@@ -60,13 +54,7 @@ namespace Duckstax.Otterbrix
         public bool IsSuccess() { return CursorIsSuccess(cursor); }
         public bool IsError() { return CursorIsError(cursor); }
 
-        public ErrorMessage GetError() {
-            TransferErrorMessage transfer = CursorGetError(cursor);
-            ErrorMessage message = new ErrorMessage();
-            message.type = (ErrorCode)transfer.type;
-            message.what = OtterbrixWrapper.TakeString(transfer.what) ?? "";
-            return message;
-        }
+        public ErrorMessage GetError() { return CursorGetError(cursor).Take(); }
 
         public string ColumnName(int columnIndex) {
             return OtterbrixWrapper.TakeString(CursorColumnName(cursor, columnIndex)) ?? "";
@@ -75,7 +63,6 @@ namespace Duckstax.Otterbrix
         public ValueWrapper GetValue(int rowIndex, int columnIndex) {
             ValueHandle value = CursorGetValue(cursor, rowIndex, columnIndex);
             if (value.IsInvalid) {
-                value.Dispose();
                 ThrowIfRowOutOfRange(rowIndex);
                 throw new ArgumentOutOfRangeException(nameof(columnIndex), columnIndex,
                     "column " + columnIndex + " is out of range: the cursor has " + ColumnCount() + " columns");
@@ -86,7 +73,6 @@ namespace Duckstax.Otterbrix
         public ValueWrapper GetValue(int rowIndex, string columnName) {
             ValueHandle value = CursorGetValueByName(cursor, rowIndex, new StringPasser(ref columnName));
             if (value.IsInvalid) {
-                value.Dispose();
                 ThrowIfRowOutOfRange(rowIndex);
                 throw new ArgumentException("column \"" + columnName + "\" does not exist", nameof(columnName));
             }
@@ -105,7 +91,7 @@ namespace Duckstax.Otterbrix
     }
 
     internal sealed class CursorHandle : SafeHandle {
-        [DllImport("otterbrix", EntryPoint="release_cursor", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
+        [DllImport(OtterbrixWrapper.libotterbrix, EntryPoint="release_cursor", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
         private static extern void ReleaseCursor(IntPtr cursor);
 
         public CursorHandle() : base(IntPtr.Zero, true) {}

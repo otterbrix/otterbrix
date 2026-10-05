@@ -7,25 +7,7 @@
 #include <string>
 #include <vector>
 
-#include <integration/cpp/base_spaces.hpp>
 #include <integration/cpp/otterbrix.hpp>
-
-// Thin subclass to expose the protected constructor
-class bench_spaces final : public otterbrix::base_otterbrix_t {
-public:
-    explicit bench_spaces(const configuration::config& config)
-        : otterbrix::base_otterbrix_t(open_or_exit(config)) {}
-
-private:
-    static host_ptr open_or_exit(const configuration::config& config) {
-        auto host = open(config);
-        if (host.has_error()) {
-            std::cerr << "otterbrix refused to start: " << host.error().what << '\n';
-            std::exit(EXIT_FAILURE);
-        }
-        return std::move(host.value());
-    }
-};
 
 #ifndef JSONBENCH_DATA_FILE
 #define JSONBENCH_DATA_FILE "file_0001_filtered.json"
@@ -233,8 +215,8 @@ int main() {
     auto cfg      = configuration::config::create_config("/tmp/jsonbench_otterbrix");
     cfg.log.level = log_t::level::warn; // suppress trace/info noise
 
-    bench_spaces space(cfg);
-    auto* dispatcher = space.dispatcher();
+    auto space = otterbrix::make_otterbrix_or_exit(cfg);
+    auto* dispatcher = space->dispatcher();
 
     // ---- Create DB and table ------------------------------------------------
     {

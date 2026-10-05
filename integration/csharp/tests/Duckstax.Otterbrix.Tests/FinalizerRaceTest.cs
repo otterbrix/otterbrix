@@ -10,11 +10,7 @@ public class FinalizerRaceTest
     // Bites only where the JIT may end a wrapper's life inside its own native call: `dotnet test -c Release`.
     [Test]
     public void AWrapperIsNotFinalizedUnderItsOwnNativeCall() {
-        string path = System.Environment.CurrentDirectory + "/AWrapperIsNotFinalizedUnderItsOwnNativeCall";
-        if (Directory.Exists(path)) {
-            Directory.Delete(path, true);
-        }
-        using OtterbrixWrapper otterbrix = new OtterbrixWrapper(Config.CreateConfig(path));
+        using OtterbrixWrapper otterbrix = TestDirectory.OpenFresh("AWrapperIsNotFinalizedUnderItsOwnNativeCall");
         string text = new string('x', 1000);
         string query = "SELECT " + string.Join(", ", Enumerable.Range(0, Columns).Select(i => "'" + text + "' AS c" + i)) + ";";
         string last = "c" + (Columns - 1);

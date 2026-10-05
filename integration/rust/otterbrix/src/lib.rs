@@ -74,7 +74,7 @@
 //! [`Error`] are categorised by origin so callers can distinguish C++ engine
 //! errors from wrapper-side validation errors:
 //!
-//! - [`Error::Query`] / [`Error::NullPointer`] / [`Error::Open`] — produced by the engine; the
+//! - [`Error::Engine`] — produced by the engine; the
 //!   `Display` text starts with `otterbrix core ...`;
 //! - [`Error::InvalidPath`] / [`Error::TypeMismatch`] — produced by the
 //!   wrapper; the `Display` text starts with `otterbrix ...`.

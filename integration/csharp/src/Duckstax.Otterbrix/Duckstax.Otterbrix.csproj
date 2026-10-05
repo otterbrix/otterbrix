@@ -7,11 +7,17 @@
         <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
         <!-- where the c_otterbrix target of a CMake preset build puts the C API library -->
         <OtterbrixNativeDir Condition="'$(OtterbrixNativeDir)' == ''">$(MSBuildThisFileDirectory)../../../../build/release/integration/c/</OtterbrixNativeDir>
+        <OtterbrixNativeLibrary Condition="$([MSBuild]::IsOSPlatform('Linux'))">libotterbrix.so</OtterbrixNativeLibrary>
+        <OtterbrixNativeLibrary Condition="$([MSBuild]::IsOSPlatform('OSX'))">libotterbrix.dylib</OtterbrixNativeLibrary>
+        <OtterbrixNativeLibrary Condition="$([MSBuild]::IsOSPlatform('Windows'))">otterbrix.dll</OtterbrixNativeLibrary>
     </PropertyGroup>
 
     <ItemGroup>
-        <Content Include="$(OtterbrixNativeDir)libotterbrix.so" Condition="Exists('$(OtterbrixNativeDir)libotterbrix.so')" Link="libotterbrix.so" CopyToOutputDirectory="PreserveNewest" />
-        <Content Include="$(OtterbrixNativeDir)libotterbrix.dylib" Condition="Exists('$(OtterbrixNativeDir)libotterbrix.dylib')" Link="libotterbrix.dylib" CopyToOutputDirectory="PreserveNewest" />
-        <Content Include="$(OtterbrixNativeDir)otterbrix.dll" Condition="Exists('$(OtterbrixNativeDir)otterbrix.dll')" Link="otterbrix.dll" CopyToOutputDirectory="PreserveNewest" />
+        <Content Include="$(OtterbrixNativeDir)$(OtterbrixNativeLibrary)" Link="$(OtterbrixNativeLibrary)" CopyToOutputDirectory="PreserveNewest" />
     </ItemGroup>
+
+    <Target Name="RequireOtterbrixNativeLibrary" BeforeTargets="BeforeBuild">
+        <Error Condition="!Exists('$(OtterbrixNativeDir)$(OtterbrixNativeLibrary)')"
+               Text="$(OtterbrixNativeDir)$(OtterbrixNativeLibrary) does not exist: build the c_otterbrix target first, or point OtterbrixNativeDir at the directory holding the library" />
+    </Target>
 </Project>

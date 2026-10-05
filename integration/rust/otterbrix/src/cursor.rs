@@ -75,6 +75,12 @@ impl<'db> Cursor<'db> {
         }
     }
 
+    /// DB-API rowcount: the rows an `INSERT` / `UPDATE` / `DELETE` wrote, else
+    /// the rows of the result set.
+    pub fn row_count(&self) -> u64 {
+        self.affected_rows().unwrap_or(self.size().max(0) as u64)
+    }
+
     /// Number of columns in the result set.
     pub fn column_count(&self) -> i32 {
         unsafe { otterbrix_sys::cursor_column_count(self.ptr) }

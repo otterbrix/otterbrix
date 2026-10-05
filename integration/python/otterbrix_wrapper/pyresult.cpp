@@ -2,6 +2,7 @@
 
 #include <pyconnection/pyconnection.hpp>
 #include <util/convert_value.hpp>
+#include <util/util.hpp>
 #include <vector>
 
 using namespace components;
@@ -132,10 +133,7 @@ namespace otterbrix {
         if (!result) {
             return -1;
         }
-        if (result->is_write()) {
-            return static_cast<int64_t>(result->affected_rows());
-        }
-        return static_cast<int64_t>(result->size());
+        return util::rowcount_of(*result);
     }
 
     void py_result_t::close() { result = nullptr; }

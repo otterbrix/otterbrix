@@ -147,9 +147,6 @@ impl fmt::Debug for Database {
 }
 
 fn cursor_or_error<'db>(ptr: otterbrix_sys::cursor_ptr) -> Result<Cursor<'db>> {
-    if ptr.is_null() {
-        return Err(Error::NullPointer);
-    }
     if unsafe { otterbrix_sys::cursor_is_error(ptr) } {
         let err = unsafe { otterbrix_sys::cursor_get_error(ptr) };
         let message = unsafe { string_from_c(err.message) };
@@ -159,7 +156,7 @@ fn cursor_or_error<'db>(ptr: otterbrix_sys::cursor_ptr) -> Result<Cursor<'db>> {
             message
         };
         unsafe { otterbrix_sys::release_cursor(ptr) };
-        return Err(Error::Query {
+        return Err(Error::Engine {
             code: err.code,
             message,
         });
@@ -185,7 +182,7 @@ impl Database {
     /// # Errors
     ///
     /// - [`Error::InvalidPath`] — at least one path in `config` is not valid UTF-8.
-    /// - [`Error::Open`] — the engine refused to start, e.g. another engine already owns
+    /// - [`Error::Engine`] — the engine refused to start, e.g. another engine already owns
     ///   `main_path`; carries the engine's code and reason.
     ///
     /// # Examples
@@ -217,7 +214,7 @@ impl Database {
         let ptr = unsafe { otterbrix_sys::otterbrix_create(cfg, &mut refusal) };
         if ptr.is_null() {
             let message = unsafe { string_from_c(refusal.message) };
-            return Err(Error::Open {
+            return Err(Error::Engine {
                 code: refusal.code,
                 message,
             });
@@ -233,9 +230,7 @@ impl Database {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Query`] if the engine reports a query error and
-    /// [`Error::NullPointer`] if the engine returns a null cursor pointer
-    /// (an internal failure).
+    /// Returns [`Error::Engine`] if the engine reports a query error.
     pub fn execute(&self, sql: &str) -> Result<Cursor<'_>> {
         let ptr = unsafe { otterbrix_sys::execute_sql(self.ptr, make_sv(sql)) };
         cursor_or_error(ptr)

@@ -5,7 +5,7 @@ namespace Duckstax.Otterbrix
 
     public class ValueWrapper : IDisposable
     {
-        const string libotterbrix = "otterbrix";
+        const string libotterbrix = OtterbrixWrapper.libotterbrix;
 
         [DllImport(libotterbrix, EntryPoint="value_is_null", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
         [return: MarshalAs(UnmanagedType.I1)]
@@ -70,7 +70,7 @@ namespace Duckstax.Otterbrix
     }
 
     internal sealed class ValueHandle : SafeHandle {
-        [DllImport("otterbrix", EntryPoint="release_value", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
+        [DllImport(OtterbrixWrapper.libotterbrix, EntryPoint="release_value", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
         private static extern void ReleaseValue(IntPtr value);
 
         public ValueHandle() : base(IntPtr.Zero, true) {}

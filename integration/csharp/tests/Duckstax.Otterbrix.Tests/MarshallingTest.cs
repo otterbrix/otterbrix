@@ -12,8 +12,7 @@ public class MarshallingTest
             .Where(method => method.GetCustomAttribute<DllImportAttribute>() != null);
     }
 
-    private static bool IsOneByte(ParameterInfo parameter) {
-        MarshalAsAttribute? marshalAs = parameter.GetCustomAttribute<MarshalAsAttribute>();
+    private static bool IsOneByte(MarshalAsAttribute? marshalAs) {
         return marshalAs != null && marshalAs.Value == UnmanagedType.I1;
     }
 
@@ -25,7 +24,7 @@ public class MarshallingTest
                 .Where(parameter => parameter.ParameterType == typeof(bool) ||
                                     parameter.ParameterType == typeof(bool).MakeByRefType());
             foreach (ParameterInfo parameter in bools) {
-                if (!IsOneByte(parameter)) {
+                if (!IsOneByte(parameter.GetCustomAttribute<MarshalAsAttribute>())) {
                     wide.Add(method.DeclaringType!.Name + "." + method.Name + " " +
                              (parameter.Position < 0 ? "return" : parameter.Name));
                 }
@@ -45,8 +44,7 @@ public class MarshallingTest
         List<string> wide = new List<string>();
         foreach (Type type in structs) {
             foreach (FieldInfo field in type.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)) {
-                MarshalAsAttribute? marshalAs = field.GetCustomAttribute<MarshalAsAttribute>();
-                if (field.FieldType == typeof(bool) && (marshalAs == null || marshalAs.Value != UnmanagedType.I1)) {
+                if (field.FieldType == typeof(bool) && !IsOneByte(field.GetCustomAttribute<MarshalAsAttribute>())) {
                     wide.Add(type.Name + "." + field.Name);
                 }
             }

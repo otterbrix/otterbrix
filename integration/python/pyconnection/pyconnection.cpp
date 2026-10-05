@@ -118,15 +118,8 @@ namespace otterbrix {
         // make_space does not wipe the directory, so a second connect finds it already there (normal, not a
         // failure); any other failure is raised.
         auto session = otterbrix::session_id_t();
-        auto cursor = space->dispatcher()->execute_sql(session, "CREATE DATABASE IF NOT EXISTS tmp;");
-        if (!cursor) {
-            throw std::runtime_error("connect: creating the scratch database 'tmp' returned no cursor");
-        }
-        if (cursor->is_error()) {
-            const auto& err = cursor->get_error();
-            throw std::runtime_error("connect: creating the scratch database 'tmp' failed: " +
-                                     std::string(err.what.begin(), err.what.end()));
-        }
+        raise_if_error("connect: creating the scratch database 'tmp'",
+                       space->dispatcher()->execute_sql(session, "CREATE DATABASE IF NOT EXISTS tmp;"));
     }
 
     py_connection_t::py_connection_t(const py_connection_t& other)

@@ -27,11 +27,11 @@ fn query_error_carries_code_and_message() {
         .execute("SELECT * FROM db.nonexistent;")
         .expect_err("query against missing table must error");
     match err {
-        Error::Query { code, message } => {
+        Error::Engine { code, message } => {
             assert_ne!(code, 0, "expected non-zero error code, got {code}");
             assert!(!message.is_empty(), "expected non-empty error message");
         }
-        other => panic!("expected Error::Query, got {other}"),
+        other => panic!("expected Error::Engine, got {other}"),
     }
 }
 

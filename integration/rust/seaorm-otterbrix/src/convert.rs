@@ -23,16 +23,13 @@ const POSITIONAL_KEY_WIDTH: usize = 8;
 
 /// Maps an [`otterbrix::Error`] to the corresponding SeaORM [`DbErr`] variant.
 ///
-/// Engine-level errors (`Query`, `NullPointer`) become `DbErr::Exec` /
-/// `DbErr::Conn`, type-mismatch errors become `DbErr::Type`, invalid paths and
-/// a refused start become `DbErr::Conn`. The `Display` text of the original error is
+/// An engine error becomes `DbErr::Exec`, type-mismatch errors become `DbErr::Type`,
+/// invalid paths become `DbErr::Conn`. The `Display` text of the original error is
 /// preserved verbatim inside the wrapping variant.
 pub(crate) fn map_otterbrix_error(err: ObError) -> DbErr {
     let msg = err.to_string();
     match err {
-        ObError::Query { .. } => DbErr::Exec(RuntimeErr::Internal(msg)),
-        ObError::NullPointer => DbErr::Conn(RuntimeErr::Internal(msg)),
-        ObError::Open { .. } => DbErr::Conn(RuntimeErr::Internal(msg)),
+        ObError::Engine { .. } => DbErr::Exec(RuntimeErr::Internal(msg)),
         ObError::InvalidPath(_) => DbErr::Conn(RuntimeErr::Internal(msg)),
         ObError::TypeMismatch { .. } => DbErr::Type(msg),
     }
@@ -286,7 +283,7 @@ mod error_mapping_tests {
 
     #[test]
     fn query_error_becomes_exec_with_code_and_message() {
-        let mapped = map_otterbrix_error(ObError::Query {
+        let mapped = map_otterbrix_error(ObError::Engine {
             code: 7,
             message: "syntax".into(),
         });
@@ -297,17 +294,6 @@ mod error_mapping_tests {
                 assert!(s.contains("syntax"), "expected message in {s:?}");
             }
             other => panic!("expected DbErr::Exec, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn null_pointer_becomes_conn_error() {
-        match map_otterbrix_error(ObError::NullPointer) {
-            DbErr::Conn(inner) => {
-                let s = format!("{inner:?}");
-                assert!(s.contains("null pointer"), "got {s:?}");
-            }
-            other => panic!("expected DbErr::Conn, got {other:?}"),
         }
     }
 

@@ -17,6 +17,9 @@ namespace {
     constexpr int32_t LT_DOUBLE = 24;
     constexpr int32_t LT_STRING_LITERAL = 35;
 
+    // core::error_code_t::invalid_parameter, mirrored like the logical types above.
+    constexpr int32_t EC_INVALID_PARAMETER = 22;
+
     string_view_t sv(const std::string& s) { return string_view_t{s.data(), s.size()}; }
 
     // Mirrors otterbrix-sys/tests/smoke.rs; path strings are members so they outlive config_t's use here.
@@ -217,6 +220,43 @@ TEST_CASE("c-api: cursor_affected_rows reports the rows a write changed", "[c-ap
     CHECK_FALSE(cursor_affected_rows(select, &rows));
     CHECK(rows == 99);
     release_cursor(select);
+}
+
+namespace {
+    void require_parameter_refusal(otterbrix_ptr db, const sql_param_t& param, const std::string& reason) {
+        const std::string query = "SELECT $1;";
+        cursor_ptr cur = execute_sql_params(db, sv(query), &param, 1);
+        REQUIRE(cur != nullptr);
+        REQUIRE(cursor_is_error(cur));
+        error_message refusal = cursor_get_error(cur);
+        CHECK(refusal.code == EC_INVALID_PARAMETER);
+        REQUIRE(refusal.message != nullptr);
+        CHECK(std::string(refusal.message) == reason);
+        otterbrix_free_string(refusal.message);
+        release_cursor(cur);
+    }
+} // namespace
+
+TEST_CASE("c-api: execute_sql_params answers an error cursor for an index below 1", "[c-api][params]") {
+    test_db_t t("params_index");
+    REQUIRE(t.ptr != nullptr);
+
+    sql_param_t param{};
+    param.index = 0;
+    param.kind = SQL_PARAM_INT64;
+    param.int64_value = 1;
+    require_parameter_refusal(t.ptr, param, "sql_param_t: index must be >= 1 (e.g. $1 -> 1)");
+}
+
+TEST_CASE("c-api: execute_sql_params answers an error cursor for an unknown parameter kind", "[c-api][params]") {
+    test_db_t t("params_kind");
+    REQUIRE(t.ptr != nullptr);
+
+    sql_param_t param{};
+    param.index = 1;
+    // the first value past SQL_PARAM_STRING still lies in the enumeration's range, so the cast is defined
+    param.kind = static_cast<sql_param_kind_t>(SQL_PARAM_STRING + 1);
+    require_parameter_refusal(t.ptr, param, "sql_param_t: unknown kind");
 }
 
 // Mirrors cursor.rs column_logical_type_returns_none_for_negative_index, ..._out_of_bounds_index,

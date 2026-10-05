@@ -572,11 +572,7 @@ namespace services::collection::executor {
             if (proc_chunks.has_error()) {
                 co_return core::error_on(resource(), proc_chunks.error());
             }
-            co_return pin_view_functions(resource(),
-                                         *view,
-                                         proc_rows_of(resource(), proc_chunks.value()),
-                                         function_registry_,
-                                         body);
+            co_return pin_view_functions(resource(), *view, proc_chunks.value(), function_registry_, body);
         };
 
         auto collect_resolve_nodes = [](const components::logical_plan::catalog_resolves_t& resolves,
@@ -698,19 +694,13 @@ namespace services::collection::executor {
                 }
                 for (std::size_t i = 0; i < refs.size(); ++i) {
                     auto& ref = refs[i];
-                    auto body = components::planner::expand_view_body(resource(), core::body_sql_t{views[i].view_sql});
-                    if (body.error.contains_error()) {
-                        trace(log_, "executor::execute_plan_full: view expansion failed: {}", body.error.what);
-                        co_return execute_result_t{make_cursor(resource(), std::move(body.error))};
+                    auto bound = components::planner::bind_view_body(resource(), views[i]);
+                    if (bound.has_error()) {
+                        trace(log_, "executor::execute_plan_full: view expansion failed: {}", bound.error().what);
+                        co_return execute_result_t{make_cursor(resource(), bound.error())};
                     }
-                    if (!body.resolves) {
-                        body.resolves.emplace();
-                    }
-                    services::dispatcher::register_plan_targets(resource(), body.plan.get(), &*body.resolves);
-                    if (auto err = components::planner::pin_view_body_names(resource(), *body.resolves, views[i]);
-                        err.contains_error()) {
-                        co_return execute_result_t{make_cursor(resource(), std::move(err))};
-                    }
+                    auto& body = bound.value();
+                    services::dispatcher::register_plan_targets(resource(), body.plan.get(), &body.resolves);
                     if (auto err = co_await pin_functions(this, &views[i], body.plan.get()); err.contains_error()) {
                         co_return execute_result_t{make_cursor(resource(), std::move(err))};
                     }
@@ -725,7 +715,7 @@ namespace services::collection::executor {
                     }
                     if (auto err = components::planner::merge_view_body_resolves(resource(),
                                                                                  plan.catalog_resolves,
-                                                                                 *body.resolves);
+                                                                                 body.resolves);
                         err.contains_error()) {
                         co_return execute_result_t{make_cursor(resource(), std::move(err))};
                     }

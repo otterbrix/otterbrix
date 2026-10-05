@@ -1,6 +1,7 @@
 #include "operator_register_udf.hpp"
 
 #include "catalog_util.hpp"
+#include "operator_dynamic_cascade_delete.hpp"
 #include "single_oid_round.hpp"
 
 #include <components/base/collection_full_name.hpp>
@@ -172,24 +173,12 @@ namespace components::operators {
             const std::int64_t prouid = uids.empty() ? std::int64_t{0} : static_cast<std::int64_t>(uids.front());
 
             if (!rewritten.empty()) {
-                std::pmr::vector<std::size_t> pg_proc_specs(resource_);
-                auto specs = stage_function_row_deletes(resource_, ctx, rewritten, pg_proc_specs);
-                auto [_d, df] =
-                    actor_zeta::otterbrix::send(ctx->disk_address,
-                                                &services::disk::manager_disk_t::delete_pg_catalog_rows_many,
-                                                exec_ctx,
-                                                std::move(specs));
-                auto deleted_r = co_await std::move(df);
-                if (deleted_r.has_error()) {
-                    set_error(deleted_r.error());
-                    mark_failed();
-                    co_return;
-                }
-                if (auto ec = confirm_function_deletes(resource_,
-                                                       deleted_r.value(),
-                                                       pg_proc_specs,
-                                                       "register_udf",
-                                                       func_name);
+                if (auto ec = co_await drop_function_rows(resource_,
+                                                          ctx,
+                                                          rewritten,
+                                                          function_rows_drop_t::keep_dependents,
+                                                          catalog::drop_behavior_t::restrict_,
+                                                          func_name);
                     ec.contains_error()) {
                     set_error(std::move(ec));
                     mark_failed();

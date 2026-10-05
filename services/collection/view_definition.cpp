@@ -2,6 +2,7 @@
 
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/helpers.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/expressions/udf_references.hpp>
 #include <components/physical_plan/operators/catalog_util.hpp>
@@ -203,8 +204,8 @@ namespace services::collection {
                                           const components::compute::function_registry_t& registry,
                                           std::span<const components::compute::function_pin_t> uses,
                                           std::span<const services::disk::resolve_function_result_t> rows) {
-        auto bindings = view.bindings();
-        auto dependencies = view.dependencies();
+        auto& bindings = view.bindings();
+        auto& dependencies = view.dependencies();
         for (const auto& use : uses) {
             const auto* function = registry.get_function(use.uid);
             if (function == nullptr) {
@@ -236,8 +237,6 @@ namespace services::collection {
             bindings.push_back(std::move(binding));
             add_dependency(dependencies, catalog::well_known_oid::pg_proc_table, row->oid);
         }
-        view.set_bindings(std::move(bindings));
-        view.set_dependencies(std::move(dependencies));
         return core::error_t::no_error();
     }
 
@@ -253,11 +252,20 @@ namespace services::collection {
         return out;
     }
 
-    core::error_t pin_view_functions(std::pmr::memory_resource* resource,
-                                     const components::logical_plan::resolved_table_metadata_t& view,
-                                     std::span<const services::disk::resolve_function_result_t> rows,
-                                     const components::compute::function_registry_t& registry,
-                                     node_t* body) {
+    core::error_t
+    pin_view_functions(std::pmr::memory_resource* resource,
+                       const components::logical_plan::resolved_table_metadata_t& view,
+                       const std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>>& proc_chunks,
+                       const components::compute::function_registry_t& registry,
+                       node_t* body) {
+        std::pmr::vector<services::disk::resolve_function_result_t> rows{resource};
+        for (const auto& chunks : proc_chunks) {
+            for (const auto& chunk : chunks) {
+                for (std::uint64_t i = 0; i < chunk.size(); ++i) {
+                    rows.push_back(catalog::decode_pg_proc_row(chunk, i));
+                }
+            }
+        }
         struct named_pin_t {
             std::string name;
             components::compute::function_pin_t pin;
@@ -324,36 +332,6 @@ namespace services::collection {
         };
         for_each_call(body, stamp);
         return core::error_t::no_error();
-    }
-
-    std::pmr::vector<services::disk::resolve_function_result_t>
-    proc_rows_of(std::pmr::memory_resource* resource,
-                 const std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>>& per_key) {
-        std::pmr::vector<services::disk::resolve_function_result_t> out{resource};
-        for (const auto& chunks : per_key) {
-            for (const auto& chunk : chunks) {
-                for (std::uint64_t i = 0; i < chunk.size(); ++i) {
-                    services::disk::resolve_function_result_t r;
-                    r.found = true;
-                    r.oid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
-                    r.name = std::string{chunk.get_value<std::string_view>(1, i)};
-                    if (!chunk.is_null(3, i)) {
-                        r.signature.pronargs = chunk.get_value<std::int32_t>(3, i);
-                    }
-                    if (!chunk.is_null(4, i)) {
-                        r.prouid = chunk.get_value<std::uint64_t>(4, i);
-                    }
-                    if (!chunk.is_null(5, i)) {
-                        r.signature.proargmatchers = std::string{chunk.get_value<std::string_view>(5, i)};
-                    }
-                    if (!chunk.is_null(6, i)) {
-                        r.signature.prorettype = std::string{chunk.get_value<std::string_view>(6, i)};
-                    }
-                    out.push_back(std::move(r));
-                }
-            }
-        }
-        return out;
     }
 
     core::error_t describe_view_body(std::pmr::memory_resource* resource,

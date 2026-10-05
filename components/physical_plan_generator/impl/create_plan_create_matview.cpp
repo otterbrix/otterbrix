@@ -6,15 +6,13 @@
 
 namespace services::planner::impl {
 
-    plan_result_t
-    create_plan_create_matview(const context_storage_t& context,
-                               [[maybe_unused]] const components::compute::function_registry_t& function_registry,
-                               const components::logical_plan::node_ptr& node,
-                               [[maybe_unused]] const components::logical_plan::storage_parameters* params) {
+    plan_result_t create_plan_create_matview(const context_storage_t& context,
+                                             const components::logical_plan::node_ptr& node) {
         using namespace components::logical_plan;
         auto* cm = static_cast<node_create_matview_t*>(node.get());
+        auto columns = cm->take_columns();
         auto writes_vec = cm->take_catalog_writes();
-        if (cm->columns().empty() || writes_vec.empty()) {
+        if (columns.empty() || writes_vec.empty()) {
             return plan_refusal(context.resource, "materialized view has no columns or no catalog rows to write");
         }
         std::vector<components::operators::operator_create_matview_t::catalog_write_t> writes;
@@ -28,8 +26,7 @@ namespace services::planner::impl {
                                                                  context.log.clone(),
                                                                  cm->matview_oid(),
                                                                  cm->namespace_oid(),
-                                                                 std::vector<components::table::column_definition_t>(
-                                                                     cm->columns()),
+                                                                 std::move(columns),
                                                                  std::move(writes)));
     }
 

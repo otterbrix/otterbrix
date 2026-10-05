@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <memory>
 #include <memory_resource>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -110,6 +111,49 @@ namespace components::catalog {
             return *def;
         }
 
+        // One pg_attribute row. Strings are owned here: set_str's string_view must stay live past the fill.
+        struct attribute_row_t {
+            oid_t attoid{INVALID_OID};
+            oid_t atttypid{INVALID_OID};
+            std::string name;
+            std::int32_t attnum{0};
+            bool not_null{false};
+            bool has_default{false};
+            bool is_dropped{false};
+            std::string typspec;
+            std::string defspec;
+            std::int64_t added_at_commit_id{0};
+            std::int64_t dropped_at_commit_id{0};
+        };
+
+        // The pg_attribute rows of one relation.
+        vector::data_chunk_t make_pg_attribute_rows(std::pmr::memory_resource* resource,
+                                                    oid_t table_oid,
+                                                    std::span<const attribute_row_t> rows) {
+            const auto& def = system_table(pg_attribute_oid);
+            return make_pg_rows(resource,
+                                def.columns,
+                                rows.size(),
+                                [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
+                                    for (std::size_t i = 0; i < rows.size(); ++i) {
+                                        const auto& a = rows[i];
+                                        set_oid(c, 0, i, a.attoid);
+                                        set_oid(c, 1, i, table_oid);
+                                        set_str(c, 2, i, a.name, r);
+                                        set_oid(c, 3, i, a.atttypid);
+                                        set_i32(c, 4, i, a.attnum);
+                                        set_bool(c, 5, i, a.not_null);
+                                        set_bool(c, 6, i, a.has_default);
+                                        set_bool(c, 7, i, a.is_dropped);
+                                        set_str(c, 8, i, a.typspec, r);
+                                        set_str(c, 9, i, a.defspec, r);
+                                        // Written explicitly, not left to vector_t's zero-init.
+                                        set_i64(c, 10, i, a.added_at_commit_id);
+                                        set_i64(c, 11, i, a.dropped_at_commit_id);
+                                    }
+                                });
+        }
+
     } // anonymous namespace
 
     std::vector<catalog_write_t>
@@ -142,24 +186,13 @@ namespace components::catalog {
             result.push_back(make_write(pg_class_oid, std::move(chunk)));
         }
 
-        // Pre-computed: set_str's string_view argument must stay live at the call, past the lambda below.
-        struct attr_t {
-            oid_t attoid;
-            oid_t atttypid;
-            std::string name;
-            std::int32_t attnum;
-            bool not_null;
-            bool has_default;
-            std::string typspec;
-            std::string defspec;
-        };
-        std::vector<attr_t> attrs;
+        std::vector<attribute_row_t> attrs;
         attrs.reserve(columns.size());
         {
             std::int32_t attnum = 0;
             for (auto& col : columns) {
                 ++attnum;
-                attr_t a;
+                attribute_row_t a;
                 a.attoid = oid_batch.allocate();
                 // set_attoid is immutable-after-assignment, and a column is minted exactly once.
                 col.set_attoid(static_cast<std::uint32_t>(a.attoid));
@@ -183,31 +216,7 @@ namespace components::catalog {
         }
 
         if (!attrs.empty()) {
-            {
-                const auto& def = system_table(pg_attribute_oid);
-                auto chunk = make_pg_rows(resource,
-                                          def.columns,
-                                          attrs.size(),
-                                          [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
-                                              for (std::size_t i = 0; i < attrs.size(); ++i) {
-                                                  const auto& a = attrs[i];
-                                                  set_oid(c, 0, i, a.attoid);
-                                                  set_oid(c, 1, i, table_oid);
-                                                  set_str(c, 2, i, a.name, r);
-                                                  set_oid(c, 3, i, a.atttypid);
-                                                  set_i32(c, 4, i, a.attnum);
-                                                  set_bool(c, 5, i, a.not_null);
-                                                  set_bool(c, 6, i, a.has_default);
-                                                  set_bool(c, 7, i, false); // attisdropped
-                                                  set_str(c, 8, i, a.typspec, r);
-                                                  set_str(c, 9, i, a.defspec, r);
-                                                  // Written explicitly, not left to vector_t's zero-init.
-                                                  set_i64(c, 10, i, 0); // added_at_commit_id
-                                                  set_i64(c, 11, i, 0); // dropped_at_commit_id
-                                              }
-                                          });
-                result.push_back(make_write(pg_attribute_oid, std::move(chunk)));
-            }
+            result.push_back(make_write(pg_attribute_oid, make_pg_attribute_rows(resource, table_oid, attrs)));
         }
 
         {
@@ -354,42 +363,19 @@ namespace components::catalog {
         const std::string relkind_str(1, relkind);
 
         if (!columns.empty()) {
-            struct attr_t {
-                oid_t attoid;
-                oid_t atttypid;
-                std::string typspec;
-            };
-            std::vector<attr_t> attrs;
+            std::vector<attribute_row_t> attrs;
             attrs.reserve(columns.size());
             for (auto& col : columns) {
-                attr_t a;
+                attribute_row_t a;
                 a.attoid = oid_batch.allocate();
                 col.set_attoid(static_cast<std::uint32_t>(a.attoid));
                 a.atttypid = (col.atttypid() != INVALID_OID) ? col.atttypid() : builtin_type_to_oid(col.type().type());
+                a.name = col.name();
+                a.attnum = static_cast<std::int32_t>(attrs.size() + 1);
                 a.typspec = encode_type_spec(col.type());
                 attrs.push_back(std::move(a));
             }
-            const auto& def = system_table(pg_attribute_oid);
-            auto chunk = make_pg_rows(resource,
-                                      def.columns,
-                                      attrs.size(),
-                                      [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
-                                          for (std::size_t i = 0; i < attrs.size(); ++i) {
-                                              set_oid(c, 0, i, attrs[i].attoid);
-                                              set_oid(c, 1, i, view_oid);
-                                              set_str(c, 2, i, columns[i].name(), r);
-                                              set_oid(c, 3, i, attrs[i].atttypid);
-                                              set_i32(c, 4, i, static_cast<std::int32_t>(i + 1));
-                                              set_bool(c, 5, i, false);
-                                              set_bool(c, 6, i, false);
-                                              set_bool(c, 7, i, false);
-                                              set_str(c, 8, i, attrs[i].typspec, r);
-                                              set_str(c, 9, i, std::string{}, r);
-                                              set_i64(c, 10, i, 0);
-                                              set_i64(c, 11, i, 0);
-                                          }
-                                      });
-            result.push_back(make_write(pg_attribute_oid, std::move(chunk)));
+            result.push_back(make_write(pg_attribute_oid, make_pg_attribute_rows(resource, view_oid, attrs)));
         }
 
         {
@@ -832,21 +818,18 @@ namespace components::catalog {
                                                 const std::string& defspec,
                                                 std::int64_t added_at_commit_id,
                                                 std::int64_t dropped_at_commit_id) {
-        const auto& def = system_table(pg_attribute_oid);
-        return make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
-            set_oid(c, 0, 0, attoid);
-            set_oid(c, 1, 0, table_oid);
-            set_str(c, 2, 0, name, r);
-            set_oid(c, 3, 0, atttypid);
-            set_i32(c, 4, 0, attnum);
-            set_bool(c, 5, 0, not_null);
-            set_bool(c, 6, 0, has_default);
-            set_bool(c, 7, 0, is_dropped);
-            set_str(c, 8, 0, typspec, r);
-            set_str(c, 9, 0, defspec, r);
-            set_i64(c, 10, 0, added_at_commit_id);
-            set_i64(c, 11, 0, dropped_at_commit_id);
-        });
+        const attribute_row_t row{attoid,
+                                  atttypid,
+                                  name,
+                                  attnum,
+                                  not_null,
+                                  has_default,
+                                  is_dropped,
+                                  typspec,
+                                  defspec,
+                                  added_at_commit_id,
+                                  dropped_at_commit_id};
+        return make_pg_attribute_rows(resource, table_oid, std::span<const attribute_row_t>{&row, 1});
     }
 
     vector::data_chunk_t build_pg_index_row(std::pmr::memory_resource* resource,

@@ -306,16 +306,6 @@ namespace components::planner {
             const bool replacing = cv->replaced_oid() != catalog::INVALID_OID;
             const catalog::oid_t view_oid = replacing ? cv->replaced_oid() : oid_batch.allocate();
             const catalog::oid_t rule_oid = oid_batch.allocate();
-
-            auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));
-            if (replacing) {
-                using namespace catalog::well_known_oid;
-                seq->append_child(logical_plan::make_node_catalog_delete(r, pg_attribute_table, std::int64_t{1}, view_oid));
-                seq->append_child(logical_plan::make_node_catalog_delete(r, pg_depend_table, std::int64_t{1}, view_oid));
-                seq->append_child(logical_plan::make_node_catalog_delete(r, pg_rewrite_table, std::int64_t{2}, view_oid));
-                seq->append_child(
-                    logical_plan::make_node_catalog_delete(r, pg_rewrite_ref_table, std::int64_t{0}, view_oid));
-            }
             const char relkind = cv->materialized() ? catalog::relkind::materialized_view : catalog::relkind::view;
             std::vector<catalog::catalog_write_t> writes;
             if (!replacing) {
@@ -341,8 +331,17 @@ namespace components::planner {
                                                               core::matviewname_t{cv->viewname().t},
                                                               ns_oid,
                                                               view_oid,
-                                                              {cv->columns().begin(), cv->columns().end()},
+                                                              std::move(cv->columns()),
                                                               std::move(writes));
+            }
+            auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));
+            if (replacing) {
+                using namespace catalog::well_known_oid;
+                seq->append_child(logical_plan::make_node_catalog_delete(r, pg_attribute_table, std::int64_t{1}, view_oid));
+                seq->append_child(logical_plan::make_node_catalog_delete(r, pg_depend_table, std::int64_t{1}, view_oid));
+                seq->append_child(logical_plan::make_node_catalog_delete(r, pg_rewrite_table, std::int64_t{2}, view_oid));
+                seq->append_child(
+                    logical_plan::make_node_catalog_delete(r, pg_rewrite_ref_table, std::int64_t{0}, view_oid));
             }
             for (auto& w : writes) {
                 seq->append_child(make_catalog_write(r, w.table_oid, std::move(w.row)));
@@ -638,9 +637,6 @@ namespace components::planner {
                     return rewrite_create_view(r, node, oid_batch);
                 case node_type::create_macro_t:
                     return rewrite_create_macro(r, node, oid_batch);
-                case node_type::refresh_matview_t:
-                    // The executor runs REFRESH as statements of its own; it never reaches here.
-                    return node;
                 case node_type::create_constraint_t:
                     return rewrite_create_constraint(r, node, oid_batch);
                 case node_type::create_type_t:

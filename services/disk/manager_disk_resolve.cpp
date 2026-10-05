@@ -1,5 +1,7 @@
 #include "manager_disk_impl.hpp"
 
+#include <components/catalog/helpers.hpp>
+
 namespace services::disk {
 
     using namespace core::filesystem;
@@ -93,21 +95,7 @@ namespace services::disk {
             for (uint64_t i = 0; i < chunk.size(); ++i) {
                 if (!str_equals(chunk.value(1, i), name))
                     continue;
-                resolve_function_result_t r(resource());
-                r.found = true;
-                r.name = name;
-                r.oid = static_cast<components::catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
-                if (!chunk.is_null(2, i))
-                    r.namespace_oid = static_cast<components::catalog::oid_t>(chunk.get_value<std::uint32_t>(2, i));
-                if (!chunk.is_null(3, i))
-                    r.signature.pronargs = chunk.get_value<std::int32_t>(3, i);
-                if (!chunk.is_null(4, i))
-                    r.prouid = chunk.get_value<std::uint64_t>(4, i);
-                if (!chunk.is_null(5, i))
-                    r.signature.proargmatchers = std::string(chunk.get_value<std::string_view>(5, i));
-                if (!chunk.is_null(6, i))
-                    r.signature.prorettype = std::string(chunk.get_value<std::string_view>(6, i));
-                out.push_back(std::move(r));
+                out.push_back(components::catalog::decode_pg_proc_row(chunk, i));
             }
         }
         co_return out;

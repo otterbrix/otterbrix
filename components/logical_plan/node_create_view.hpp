@@ -1,16 +1,17 @@
 #pragma once
 
 #include "node.hpp"
-#include "node_catalog_resolve.hpp"
 #include <components/base/identifier_types.hpp>
 
 #include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/view_binding.hpp>
 #include <components/table/column_definition.hpp>
 
 #include <memory_resource>
 
 namespace components::logical_plan {
 
+    using components::catalog::view_binding_t;
     using components::catalog::view_dependency_t;
 
     // CREATE VIEW v AS <body>: the body is child[0] and runs the canonical path (resolve, expansion of the views it
@@ -47,9 +48,11 @@ namespace components::logical_plan {
         const std::pmr::vector<table::column_definition_t>& columns() const noexcept { return columns_; }
         void set_columns(std::pmr::vector<table::column_definition_t> columns) { columns_ = std::move(columns); }
 
+        std::pmr::vector<view_binding_t>& bindings() noexcept { return bindings_; }
         const std::pmr::vector<view_binding_t>& bindings() const noexcept { return bindings_; }
         void set_bindings(std::pmr::vector<view_binding_t> bindings) { bindings_ = std::move(bindings); }
 
+        std::pmr::vector<view_dependency_t>& dependencies() noexcept { return dependencies_; }
         const std::pmr::vector<view_dependency_t>& dependencies() const noexcept { return dependencies_; }
         void set_dependencies(std::pmr::vector<view_dependency_t> dependencies) {
             dependencies_ = std::move(dependencies);

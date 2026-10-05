@@ -177,7 +177,7 @@ namespace services::planner {
                 case node_type::vacuum_t:
                     return impl::create_plan_vacuum(context, node);
                 case node_type::create_matview_t:
-                    return impl::create_plan_create_matview(context, function_registry, node, params);
+                    return impl::create_plan_create_matview(context, node);
                 case node_type::unregister_udf_t:
                     return impl::create_plan_unregister_udf(context, node);
                 case node_type::transaction_t: {

@@ -13,7 +13,7 @@ namespace components::operators {
                                                          log_t log,
                                                          components::catalog::oid_t mv_oid,
                                                          components::catalog::oid_t namespace_oid,
-                                                         std::vector<table::column_definition_t> columns,
+                                                         std::pmr::vector<table::column_definition_t> columns,
                                                          std::vector<catalog_write_t> catalog_writes)
         : read_write_operator_t(resource, std::move(log), operator_type::create_collection)
         , mv_oid_(mv_oid)
@@ -32,7 +32,9 @@ namespace components::operators {
                                                       ctx->session,
                                                       mv_oid_,
                                                       namespace_oid_,
-                                                      std::move(columns_),
+                                                      std::vector<table::column_definition_t>(
+                                                          std::make_move_iterator(columns_.begin()),
+                                                          std::make_move_iterator(columns_.end())),
                                                       /*is_computed=*/false);
             co_await std::move(f);
         }

@@ -7,6 +7,7 @@
 #include <components/catalog/catalog_write.hpp>
 #include <components/table/column_definition.hpp>
 
+#include <memory_resource>
 #include <vector>
 
 namespace components::logical_plan {
@@ -19,12 +20,12 @@ namespace components::logical_plan {
                               core::matviewname_t matviewname,
                               components::catalog::oid_t namespace_oid,
                               components::catalog::oid_t matview_oid,
-                              std::vector<table::column_definition_t> columns,
+                              std::pmr::vector<table::column_definition_t> columns,
                               std::vector<components::catalog::catalog_write_t> catalog_writes);
 
         components::catalog::oid_t namespace_oid() const noexcept { return namespace_oid_; }
         components::catalog::oid_t matview_oid() const noexcept { return matview_oid_; }
-        const std::vector<table::column_definition_t>& columns() const noexcept { return columns_; }
+        std::pmr::vector<table::column_definition_t> take_columns() { return std::move(columns_); }
         std::vector<components::catalog::catalog_write_t> take_catalog_writes() { return std::move(catalog_writes_); }
 
     private:
@@ -34,7 +35,7 @@ namespace components::logical_plan {
         core::matviewname_t matviewname_;
         components::catalog::oid_t namespace_oid_;
         components::catalog::oid_t matview_oid_;
-        std::vector<table::column_definition_t> columns_;
+        std::pmr::vector<table::column_definition_t> columns_;
         std::vector<components::catalog::catalog_write_t> catalog_writes_;
     };
 
@@ -44,7 +45,7 @@ namespace components::logical_plan {
                                                      core::matviewname_t matviewname,
                                                      components::catalog::oid_t namespace_oid,
                                                      components::catalog::oid_t matview_oid,
-                                                     std::vector<table::column_definition_t> columns,
+                                                     std::pmr::vector<table::column_definition_t> columns,
                                                      std::vector<components::catalog::catalog_write_t> catalog_writes);
 
 } // namespace components::logical_plan

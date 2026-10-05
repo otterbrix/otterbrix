@@ -112,20 +112,16 @@ namespace components::operators {
                 }
             }
             found = found || !rows.empty();
-            for (const auto oid : rows) {
-                auto dropped = co_await drop_with_dependents(resource_,
-                                                             ctx,
-                                                             components::catalog::well_known_oid::pg_proc_table,
-                                                             oid,
-                                                             behavior_,
-                                                             qualified_name_t{core::relname_t{function_name_}},
-                                                             components::catalog::relkind::regular,
-                                                             core::columnname_t{});
-                if (dropped.contains_error()) {
-                    set_error(dropped);
-                    mark_failed();
-                    co_return;
-                }
+            if (auto dropped = co_await drop_function_rows(resource_,
+                                                           ctx,
+                                                           rows,
+                                                           function_rows_drop_t::with_dependents,
+                                                           behavior_,
+                                                           function_name_);
+                dropped.contains_error()) {
+                set_error(dropped);
+                mark_failed();
+                co_return;
             }
         }
         if (!found) {

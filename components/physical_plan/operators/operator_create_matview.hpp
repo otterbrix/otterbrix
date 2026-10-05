@@ -4,6 +4,8 @@
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/table/column_definition.hpp>
 #include <components/vector/data_chunk.hpp>
+#include <iterator>
+#include <memory_resource>
 #include <vector>
 
 namespace components::operators {
@@ -22,7 +24,7 @@ namespace components::operators {
                                   log_t log,
                                   components::catalog::oid_t mv_oid,
                                   components::catalog::oid_t namespace_oid,
-                                  std::vector<table::column_definition_t> columns,
+                                  std::pmr::vector<table::column_definition_t> columns,
                                   std::vector<catalog_write_t> catalog_writes);
 
         // Sourceless SINK leaf (no left-chain data source): the executor admits it
@@ -36,7 +38,7 @@ namespace components::operators {
     private:
         components::catalog::oid_t mv_oid_;
         components::catalog::oid_t namespace_oid_;
-        std::vector<table::column_definition_t> columns_;
+        std::pmr::vector<table::column_definition_t> columns_;
         std::vector<catalog_write_t> catalog_writes_;
     };
 

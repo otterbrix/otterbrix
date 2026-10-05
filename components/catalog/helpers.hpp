@@ -1,7 +1,9 @@
 #pragma once
 
 #include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/results/resolve_result.hpp>
 #include <components/types/logical_value.hpp>
+#include <components/vector/data_chunk.hpp>
 
 #include <cstdint>
 #include <string>
@@ -128,7 +130,12 @@ namespace components::catalog {
         constexpr std::uint64_t pronamespace = 2;
         constexpr std::uint64_t pronargs = 3;
         constexpr std::uint64_t prouid = 4;
+        constexpr std::uint64_t proargmatchers = 5;
+        constexpr std::uint64_t prorettype = 6;
     } // namespace pg_proc_col
+
+    // One pg_proc row of a chunk read with every column.
+    services::disk::resolve_function_result_t decode_pg_proc_row(const vector::data_chunk_t& chunk, std::uint64_t row);
     namespace pg_sequence_col {
         constexpr std::uint64_t seqrelid = 0;
         constexpr std::uint64_t seqstart = 1;

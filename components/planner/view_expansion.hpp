@@ -11,7 +11,6 @@
 #include <core/result_wrapper.hpp>
 
 #include <memory_resource>
-#include <optional>
 #include <string>
 #include <string_view>
 
@@ -32,14 +31,17 @@ namespace components::planner {
         logical_plan::node_ptr plan;
         logical_plan::parameter_node_ptr params;
         // The body's own catalog lookups; the caller must merge these and run another resolve round.
-        std::optional<logical_plan::catalog_resolves_t> resolves;
-        // Set when re-parse / re-transform failed; `plan` is then null.
-        core::error_t error{core::error_t::no_error()};
+        logical_plan::catalog_resolves_t resolves;
     };
 
     // Each reference gets its own body -- filter pushdown appends a match child into it, so two
     // references cannot share a subtree (same policy as CTE inlining in optimizer.cpp).
-    view_body_t expand_view_body(std::pmr::memory_resource* resource, const core::body_sql_t& view_sql);
+    core::result_wrapper_t<view_body_t> expand_view_body(std::pmr::memory_resource* resource,
+                                                         const core::body_sql_t& view_sql);
+
+    // A stored body as CREATE bound it: parsed, and every table name pinned to its pg_rewrite_ref row.
+    core::result_wrapper_t<view_body_t> bind_view_body(std::pmr::memory_resource* resource,
+                                                       const logical_plan::resolved_table_metadata_t& view);
 
     // Spliced at position 0 (appending would silently disable filter pushdown, which reads
     // children()[0] as the source). Refuses a correlated (LATERAL) `body`: node_join_t::correlations()

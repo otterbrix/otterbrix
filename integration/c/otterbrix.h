@@ -29,13 +29,6 @@ typedef struct config_t {
     string_view_t main_path;
 } config_t;
 
-typedef enum state_t
-{
-    init,
-    created,
-    destroyed
-} state_t;
-
 typedef void* otterbrix_ptr;
 typedef void* cursor_ptr;
 typedef void* value_ptr;

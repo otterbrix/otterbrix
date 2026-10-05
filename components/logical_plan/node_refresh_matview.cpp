@@ -4,9 +4,8 @@
 
 namespace components::logical_plan {
 
-    node_refresh_matview_t::node_refresh_matview_t(std::pmr::memory_resource* resource, bool concurrent, bool with_data)
+    node_refresh_matview_t::node_refresh_matview_t(std::pmr::memory_resource* resource, bool with_data)
         : node_t(resource, node_type::refresh_matview_t)
-        , concurrent_(concurrent)
         , with_data_(with_data) {}
 
     hash_t node_refresh_matview_t::hash_impl() const { return 0; }
@@ -18,8 +17,8 @@ namespace components::logical_plan {
     }
 
     node_refresh_matview_ptr
-    make_node_refresh_matview(std::pmr::memory_resource* resource, bool concurrent, bool with_data) {
-        return {new node_refresh_matview_t{resource, concurrent, with_data}};
+    make_node_refresh_matview(std::pmr::memory_resource* resource, bool with_data) {
+        return {new node_refresh_matview_t{resource, with_data}};
     }
 
 } // namespace components::logical_plan

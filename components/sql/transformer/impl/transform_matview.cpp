@@ -56,8 +56,13 @@ namespace components::sql::transform {
             return core::error_t(core::error_code_t::sql_parse_error,
                                  std::pmr::string{"REFRESH MATERIALIZED VIEW missing relation", resource_});
         }
+        if (rs.concurrent) {
+            return core::error_t(
+                core::error_code_t::unimplemented_yet,
+                std::pmr::string{"REFRESH MATERIALIZED VIEW CONCURRENTLY is not supported", resource_});
+        }
         auto qn = rangevar_to_qualified_name(rs.relation);
-        auto node = logical_plan::make_node_refresh_matview(resource_, rs.concurrent, !rs.skipData);
+        auto node = logical_plan::make_node_refresh_matview(resource_, !rs.skipData);
         // The matview's identity stays ON the node: enrich binds it to a resolved
         // entry by name, whose metadata carries view_sql (Phase A.A2 reads
         // pg_rewrite.ev_action for relkind='m').

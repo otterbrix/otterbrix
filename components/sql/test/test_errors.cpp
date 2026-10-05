@@ -233,6 +233,25 @@ TEST_CASE("components::sql::errors") {
     TEST_TRANSFORMER_ERROR("SELECT * FROM d.t WHERE 5 ? 'a';", R"_(unsupported base operand for jsonb operator)_");
 }
 
+// CONCURRENTLY was parsed and then ignored: the refresh ran as a plain one under the caller's name.
+TEST_CASE("components::sql::errors::refresh_concurrently_is_refused") {
+    auto resource = core::pmr::otterbrix_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
+    const char* query = "REFRESH MATERIALIZED VIEW CONCURRENTLY d.mv;";
+    auto stmt = linitial(raw_parser(&arena_resource, query));
+    transform::transformer transformer(&resource, query);
+    auto result = transformer.transform(transform::pg_cell_to_node_cast(stmt));
+    REQUIRE(result.get_error().contains_error());
+    CHECK(result.get_error().type == core::error_code_t::unimplemented_yet);
+    CHECK(std::string_view{result.get_error().what} == "REFRESH MATERIALIZED VIEW CONCURRENTLY is not supported");
+
+    const char* plain = "REFRESH MATERIALIZED VIEW d.mv;";
+    auto plain_stmt = linitial(raw_parser(&arena_resource, plain));
+    transform::transformer plain_transformer(&resource, plain);
+    REQUIRE_FALSE(
+        plain_transformer.transform(transform::pg_cell_to_node_cast(plain_stmt)).get_error().contains_error());
+}
+
 // WITH (storage = ...) is gone; every value must fail loudly, not be silently accepted.
 TEST_CASE("components::sql::errors::create_table_storage_option_removed") {
     auto resource = core::pmr::otterbrix_resource();

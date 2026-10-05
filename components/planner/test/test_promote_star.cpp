@@ -161,7 +161,7 @@ namespace {
     node_ptr cross_chain(std::pmr::memory_resource* res, const std::vector<node_ptr>& leaves) {
         node_ptr acc = leaves.front();
         for (size_t i = 1; i < leaves.size(); ++i) {
-            auto j = make_node_join(res, core::dbname_t{}, core::relname_t{}, join_type::cross);
+            auto j = make_node_join(res, join_type::cross);
             j->append_child(acc);
             j->append_child(leaves[i]);
             j->append_expression(make_compare_expression(res, compare_type::all_true));
@@ -336,13 +336,13 @@ TEST_CASE("optimizer::promote_star::fact_last_star_reordered_fact_first") {
     profit_arith->append_param(bare_key(res, "lo_supplycost"));
     sum_profit->append_param(std::move(profit_arith));
     group_exprs.emplace_back(expression_ptr(sum_profit));
-    auto group = make_node_group(res, core::dbname_t{}, core::relname_t{}, group_exprs);
+    auto group = make_node_group(res, group_exprs);
 
     // ORDER BY d_year, c_nation  (resolved against the GROUP OUTPUT schema)
     std::vector<expression_ptr> sort_exprs;
     sort_exprs.emplace_back(make_sort_expression(res, bare_key(res, "d_year"), sort_order::asc));
     sort_exprs.emplace_back(make_sort_expression(res, bare_key(res, "c_nation"), sort_order::asc));
-    auto sort = make_node_sort(res, core::dbname_t{}, core::relname_t{}, sort_exprs);
+    auto sort = make_node_sort(res, sort_exprs);
 
     auto agg = make_node_aggregate(res, qualified_name_t{});
     agg->append_child(source);
@@ -554,10 +554,10 @@ TEST_CASE("optimizer::promote_star::no_group_computed_order_by_remapped") {
     computed_sort->append_param(bare_key(res, "lo_supplycost"));
     std::vector<expression_ptr> sort_exprs;
     sort_exprs.emplace_back(expression_ptr(computed_sort));
-    auto sort = make_node_sort(res, core::dbname_t{}, core::relname_t{}, sort_exprs);
+    auto sort = make_node_sort(res, sort_exprs);
 
     // A minimal projection so the (no-group) aggregate has a SELECT list.
-    auto select = make_node_select(res, core::dbname_t{}, core::relname_t{});
+    auto select = make_node_select(res);
     select->append_expression(make_scalar_expression(res, scalar_type::get_field, bare_key(res, "lo_orderkey")));
 
     auto agg = make_node_aggregate(res, qualified_name_t{});
@@ -616,7 +616,7 @@ TEST_CASE("optimizer::promote_star::no_group_select_case_condition_remapped") {
     case_expr->append_param(expression_ptr(cond)); // condition
     case_expr->append_param(p_then);               // result
     case_expr->append_param(p_else);               // default (ELSE)
-    auto select = make_node_select(res, core::dbname_t{}, core::relname_t{});
+    auto select = make_node_select(res);
     select->append_expression(expression_ptr(case_expr));
 
     auto agg = make_node_aggregate(res, qualified_name_t{});

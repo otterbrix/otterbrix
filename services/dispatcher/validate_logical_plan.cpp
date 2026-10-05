@@ -756,7 +756,9 @@ namespace services::dispatcher {
                                            std::pmr::string{"collection does not exist", resource});
                     return false;
                 }
-                insert_target_relkind = tbl->relkind;
+                if (node->type() == node_type::insert_t) {
+                    insert_target_relkind = tbl->relkind;
+                }
             }
             if (node->type() == node_type::data_t) {
                 auto* data_node = reinterpret_cast<node_data_t*>(node);

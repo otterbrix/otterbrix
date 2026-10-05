@@ -17,7 +17,7 @@ namespace components::sql::transform {
         // path below — otherwise an empty source would wrongly delete all rows.
         if (!node.whereClause && (!node.usingClause || node.usingClause->lst.empty())) {
             auto qn = rangevar_to_qualified_name(node.relation);
-            VALUE_OR_RETURN(auto del_limit, build_dml_limit(node.limitCount, qn.database, qn.collection, plan));
+            VALUE_OR_RETURN(auto del_limit, build_dml_limit(node.limitCount, plan));
             auto del = logical_plan::make_node_delete(
                 resource_,
                 logical_plan::make_node_match(resource_,
@@ -65,8 +65,7 @@ namespace components::sql::transform {
         } else {
             where_expr = make_compare_expression(resource_, compare_type::all_true);
         }
-        VALUE_OR_RETURN(auto del_limit,
-                        build_dml_limit(node.limitCount, names.left_name.database, names.left_name.collection, plan));
+        VALUE_OR_RETURN(auto del_limit, build_dml_limit(node.limitCount, plan));
         auto del = logical_plan::make_node_delete(
             resource_,
             logical_plan::make_node_match(resource_,

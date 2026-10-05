@@ -25,12 +25,9 @@ namespace services::planner::impl {
     plan_result_t create_plan_sort(const context_storage_t& context,
                                    const components::logical_plan::node_ptr& node,
                                    components::logical_plan::limit_t limit) {
-        auto table_oid = node->table_oid();
-        bool known = context.has_table_oid(table_oid);
-        auto plan_resource = known ? context.resource : node->resource();
+        auto* plan_resource = context.resource;
         auto sort =
-            known ? boost::intrusive_ptr(new components::operators::operator_sort_t(plan_resource, context.log.clone()))
-                  : boost::intrusive_ptr(new components::operators::operator_sort_t(node->resource(), log_t{}));
+            boost::intrusive_ptr(new components::operators::operator_sort_t(plan_resource, context.log.clone()));
 
         for (const auto& expr : node->expressions()) {
             if (expr->group() != components::expressions::expression_group::sort) {

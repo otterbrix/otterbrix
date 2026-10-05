@@ -217,8 +217,6 @@ namespace components::planner::optimizer {
             if (!is_bare_table_source(pushed)) {
                 return;
             }
-            auto* pushed_agg = static_cast<lp::node_aggregate_t*>(pushed.get());
-
             const size_t join_key_local = pushed_left ? join->left_col() : join->right_col();
             if (join_key_local >= pushed->output_types().size()) {
                 return; // defensive: unexpected stamp
@@ -237,8 +235,7 @@ namespace components::planner::optimizer {
             }
 
             // Partial output layout: [group keys, join key (if new), aggregates].
-            auto partial_group =
-                lp::make_node_group(resource, pushed_agg->target().database, pushed_agg->target().collection);
+            auto partial_group = lp::make_node_group(resource);
             std::vector<size_t> key_partial_pos(keys.size());
             size_t next_pos = 0;
             bool join_key_covered = false;

@@ -418,8 +418,7 @@ TEST_CASE("optimizer::no_fold_group_node") {
 
     std::vector<expression_ptr> expressions;
     expressions.emplace_back(std::move(scalar));
-    auto group_node =
-        make_node_group(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, expressions);
+    auto group_node = make_node_group(&resource, expressions);
 
     components::planner::optimize(&resource, group_node, params.get());
 
@@ -668,8 +667,7 @@ TEST_CASE("optimizer::aggregate_match_folds_group_not") {
     scalar->append_param(id3);
     std::vector<expression_ptr> group_exprs;
     group_exprs.emplace_back(std::move(scalar));
-    aggregate->append_child(
-        make_node_group(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, group_exprs));
+    aggregate->append_child(make_node_group(&resource, group_exprs));
 
     components::planner::optimize(&resource, aggregate, params.get());
 
@@ -1011,8 +1009,7 @@ TEST_CASE("optimizer::pushdown_aggregate::join_child_is_skipped") {
     auto resource = core::pmr::otterbrix_resource();
     auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
     auto agg = make_agg(&resource, group);
-    agg->append_child(
-        make_node_join(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, join_type::inner));
+    agg->append_child(make_node_join(&resource, join_type::inner));
     REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
 }
 
@@ -1073,7 +1070,7 @@ TEST_CASE("optimizer::pushdown_aggregate::non_mergeable_kind_is_skipped") {
     auto agg_expr = make_aggregate_expression(&resource, "stddev", key(&resource, "s"));
     agg_expr->append_param(key(&resource, "v"));
     exprs.push_back(expression_ptr(agg_expr));
-    auto group = make_node_group(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, exprs);
+    auto group = make_node_group(&resource, exprs);
     auto agg = make_agg(&resource, group);
     REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
 }
@@ -1086,7 +1083,7 @@ TEST_CASE("optimizer::pushdown_aggregate::mergeable_capability_gates_stamp") {
         sum->append_param(key(&resource, "v"));
         sum->set_mergeable(true);
         exprs.push_back(expression_ptr(sum));
-        auto group = make_node_group(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, exprs);
+        auto group = make_node_group(&resource, exprs);
         auto agg = make_agg(&resource, group);
         REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == true);
     }
@@ -1097,7 +1094,7 @@ TEST_CASE("optimizer::pushdown_aggregate::mergeable_capability_gates_stamp") {
         sum->set_mergeable(true);
         sum->set_distinct(true);
         exprs.push_back(expression_ptr(sum));
-        auto group = make_node_group(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, exprs);
+        auto group = make_node_group(&resource, exprs);
         auto agg = make_agg(&resource, group);
         REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
     }
@@ -1113,7 +1110,7 @@ TEST_CASE("optimizer::pushdown_aggregate::udf_reference_is_skipped") {
     udf->add_function_uid(components::compute::DEFAULT_FUNCTIONS.size());
     sum->append_param(expression_ptr(udf));
     exprs.push_back(expression_ptr(sum));
-    auto group = make_node_group(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, exprs);
+    auto group = make_node_group(&resource, exprs);
     auto agg = make_agg(&resource, group);
     REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
 }
@@ -1140,8 +1137,7 @@ TEST_CASE("optimizer::promote_cross_join::comma_join_becomes_inner_hash") {
     auto scan_a = make_promote_scan(&resource, {"ak", "ap"});
     auto scan_b = make_promote_scan(&resource, {"bk"});
 
-    auto join =
-        make_node_join(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, join_type::cross);
+    auto join = make_node_join(&resource, join_type::cross);
     join->append_child(scan_a);
     join->append_child(scan_b);
     join->append_expression(make_compare_expression(&resource, compare_type::all_true));
@@ -1164,8 +1160,7 @@ TEST_CASE("optimizer::promote_cross_join::comma_join_becomes_inner_hash") {
     sum_expr->append_param(key(&resource, "ap"));
     std::vector<expression_ptr> group_exprs;
     group_exprs.emplace_back(expression_ptr(sum_expr));
-    outer->append_child(
-        make_node_group(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, group_exprs));
+    outer->append_child(make_node_group(&resource, group_exprs));
 
     auto validated =
         services::dispatcher::validate_schema(test_validation_context(&resource), outer.get(), params->parameters());
@@ -1290,7 +1285,7 @@ namespace {
 TEST_CASE("optimizer::column_pruning::plain_select_projects_single_column") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto sel = make_node_select(&resource, pdb(), prel());
+    auto sel = make_node_select(&resource);
     sel->append_expression(proj_get_field(&resource, "a", 0));
     auto agg = make_select_agg(&resource, oid_t{9100}, sel);
 
@@ -1302,7 +1297,7 @@ TEST_CASE("optimizer::column_pruning::plain_select_projects_single_column") {
 TEST_CASE("optimizer::column_pruning::plain_select_two_columns") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto sel = make_node_select(&resource, pdb(), prel());
+    auto sel = make_node_select(&resource);
     sel->append_expression(proj_get_field(&resource, "a", 0));
     sel->append_expression(proj_get_field(&resource, "c", 2));
     auto agg = make_select_agg(&resource, oid_t{9101}, sel);
@@ -1316,7 +1311,7 @@ TEST_CASE("optimizer::column_pruning::where_column_included_even_if_not_selected
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
     auto pid = params->add_parameter(int64_t(5));
-    auto sel = make_node_select(&resource, pdb(), prel());
+    auto sel = make_node_select(&resource);
     sel->append_expression(proj_get_field(&resource, "a", 0));
     auto match =
         make_node_match(&resource,
@@ -1335,7 +1330,7 @@ TEST_CASE("optimizer::column_pruning::where_column_included_even_if_not_selected
 TEST_CASE("optimizer::column_pruning::select_star_disables_projection") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto sel = make_node_select(&resource, pdb(), prel());
+    auto sel = make_node_select(&resource);
     sel->append_expression(expression_ptr(make_scalar_expression(&resource, scalar_type::star_expand, key{&resource})));
     auto agg = make_select_agg(&resource, oid_t{9103}, sel);
 
@@ -1370,10 +1365,10 @@ TEST_CASE("optimizer::column_pruning::group_by_projects_key_and_agg_arg") {
     auto sum = make_aggregate_expression(&resource, "sum", key(&resource, "sum_x"));
     sum->append_param(pruned_key(&resource, "x", 2));
     group_exprs.push_back(expression_ptr(sum));
-    auto group = make_node_group(&resource, pdb(), prel(), group_exprs);
+    auto group = make_node_group(&resource, group_exprs);
 
     // The group's $select carries output indices, not storage indices; the rule must ignore it.
-    auto sel = make_node_select(&resource, pdb(), prel());
+    auto sel = make_node_select(&resource);
     sel->append_expression(proj_get_field(&resource, "k", 0));
     sel->append_expression(proj_get_field(&resource, "sum_x", 1));
 
@@ -1398,7 +1393,7 @@ TEST_CASE("optimizer::column_pruning::inner_join_splits_columns_per_side") {
     auto agg_t2 = make_node_aggregate(&resource, qualified_name_t{pdb(), prel()});
     agg_t2->set_table_oid(oid2);
 
-    auto join = make_node_join(&resource, pdb(), prel(), join_type::inner);
+    auto join = make_node_join(&resource, join_type::inner);
     join->append_child(agg_t1);
     join->append_child(agg_t2);
     join->append_expression(make_compare_expression(&resource,
@@ -1406,7 +1401,7 @@ TEST_CASE("optimizer::column_pruning::inner_join_splits_columns_per_side") {
                                                     pruned_key(&resource, "k", 1, side_t::left),
                                                     pruned_key(&resource, "k", 0, side_t::right)));
 
-    auto sel = make_node_select(&resource, pdb(), prel());
+    auto sel = make_node_select(&resource);
     sel->append_expression(proj_get_field(&resource, "a", 0));
 
     auto parent = make_node_aggregate(&resource, qualified_name_t{pdb(), prel()});
@@ -1594,7 +1589,7 @@ TEST_CASE("optimizer::pushdown_filter::join_shared_column_name_buckets_by_side")
 
     auto left = join_scan(&resource, {"id", "k"});
     auto right = join_scan(&resource, {"id", "k"});
-    auto join = make_node_join(&resource, pdb(), prel(), join_type::inner);
+    auto join = make_node_join(&resource, join_type::inner);
     join->append_child(left);
     join->append_child(right);
     join->append_expression(make_compare_expression(&resource,
@@ -1633,7 +1628,7 @@ TEST_CASE("optimizer::pushdown_filter::left_join_null_padded_side_filter_stays_r
 
     auto left = join_scan(&resource, {"id", "k"});
     auto right = join_scan(&resource, {"id", "k"});
-    auto join = make_node_join(&resource, pdb(), prel(), join_type::left);
+    auto join = make_node_join(&resource, join_type::left);
     join->append_child(left);
     join->append_child(right);
     join->append_expression(make_compare_expression(&resource,
@@ -1687,7 +1682,7 @@ TEST_CASE("optimizer::pushdown_filter::inner_join_transitive_equi_propagation") 
 
     auto left = join_scan(&resource, {"a", "k"});
     auto right = join_scan(&resource, {"b", "k2"});
-    auto join = make_node_join(&resource, pdb(), prel(), join_type::inner);
+    auto join = make_node_join(&resource, join_type::inner);
     join->append_child(left);
     join->append_child(right);
     join->append_expression(make_compare_expression(&resource,
@@ -1740,7 +1735,7 @@ TEST_CASE("optimizer::pushdown_filter::inner_join_transitive_range_propagation")
 
     auto left = join_scan(&resource, {"a", "k"});
     auto right = join_scan(&resource, {"b", "k2"});
-    auto join = make_node_join(&resource, pdb(), prel(), join_type::inner);
+    auto join = make_node_join(&resource, join_type::inner);
     join->append_child(left);
     join->append_child(right);
     join->append_expression(make_compare_expression(&resource,
@@ -1780,7 +1775,7 @@ TEST_CASE("optimizer::pushdown_filter::left_join_no_transitive_propagation") {
 
     auto left = join_scan(&resource, {"a", "k"});
     auto right = join_scan(&resource, {"b", "k2"});
-    auto join = make_node_join(&resource, pdb(), prel(), join_type::left);
+    auto join = make_node_join(&resource, join_type::left);
     join->append_child(left);
     join->append_child(right);
     join->append_expression(make_compare_expression(&resource,
@@ -1850,7 +1845,7 @@ namespace {
             cnt->append_param(key(r, "v"));
             exprs.push_back(expression_ptr(cnt));
         }
-        return make_node_group(r, core::dbname_t{database_name}, core::relname_t{collection_name}, exprs);
+        return make_node_group(r, exprs);
     }
 
     node_aggregate_ptr
@@ -1899,7 +1894,7 @@ TEST_CASE("optimizer::drop_redundant_distinct::plain_trap_group_not_subset") {
 
 TEST_CASE("optimizer::drop_redundant_distinct::no_group_by_untouched") {
     auto resource = core::pmr::otterbrix_resource();
-    auto select = make_node_select(&resource, core::dbname_t{database_name}, core::relname_t{collection_name});
+    auto select = make_node_select(&resource);
     select->append_expression(drd_proj_col(&resource, "a", 0));
     REQUIRE(drd_is_distinct_after(&resource, drd_agg(&resource, node_group_ptr{}, select)));
 }
@@ -1966,7 +1961,7 @@ namespace { namespace eag {
                                      size_t agg_arg_path = 2) {
         auto a = leaf(r, "a", components::catalog::oid_t{100}, {"g", "k", "x"});
         auto b = leaf(r, "b", components::catalog::oid_t{200}, {"k"});
-        auto join = make_node_join(r, core::dbname_t{}, core::relname_t{}, join_type::inner);
+        auto join = make_node_join(r, join_type::inner);
         join->append_child(a);
         join->append_child(b);
         join->append_expression(make_compare_expression(r,
@@ -1983,7 +1978,7 @@ namespace { namespace eag {
         std::vector<expression_ptr> gxs;
         gxs.emplace_back(gexpr);
         gxs.emplace_back(expression_ptr(aexpr));
-        auto group = make_node_group(r, core::dbname_t{}, core::relname_t{}, gxs);
+        auto group = make_node_group(r, gxs);
         auto outer = make_node_aggregate(r, qualified_name_t{});
         outer->append_child(join);
         outer->append_child(group);

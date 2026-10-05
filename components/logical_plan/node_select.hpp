@@ -1,19 +1,15 @@
 #pragma once
 
 #include "node.hpp"
-#include <components/base/identifier_types.hpp>
 
 namespace components::logical_plan {
 
     // Explicit projection node introduced by main's PR #479. Sits as a child
-    // of node_aggregate_t and holds the SELECT-clause column expressions.
-    // Adapted to our HEAD's strong-typed identifiers (core::dbname_t /
-    // core::relname_t) and our node_t base ctor (resource, type) — no
-    // collection_full_name_t parameter, since the aggregate parent already
-    // carries the table identity.
+    // of node_aggregate_t and holds the SELECT-clause column expressions; the
+    // aggregate parent carries the table identity.
     class node_select_t final : public node_t {
     public:
-        explicit node_select_t(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname);
+        explicit node_select_t(std::pmr::memory_resource* resource);
 
         // Number of hidden aggregate expressions appended at the tail of expressions_
         // (used for HAVING internal aggregates when there is no GROUP BY).
@@ -27,7 +23,6 @@ namespace components::logical_plan {
 
     using node_select_ptr = boost::intrusive_ptr<node_select_t>;
 
-    node_select_ptr
-    make_node_select(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname);
+    node_select_ptr make_node_select(std::pmr::memory_resource* resource);
 
 } // namespace components::logical_plan

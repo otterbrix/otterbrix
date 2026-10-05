@@ -154,10 +154,7 @@ TEST_CASE("physical_plan_generator::unresolved_source::delete_over_an_unresolved
         lp::make_node_match(&h.arena,
                             qualified_name_t{core::dbname_t{std::string{"edb"}}, core::relname_t{std::string{"ghost"}}},
                             expr::make_compare_expression(&h.arena, expr::compare_type::all_true));
-    auto limit = lp::make_node_limit(&h.arena,
-                                     core::dbname_t{std::string{}},
-                                     core::relname_t{std::string{}},
-                                     lp::limit_t::unlimit());
+    auto limit = lp::make_node_limit(&h.arena, lp::limit_t::unlimit());
     auto del = lp::make_node_delete(&h.arena, match, limit);
     del->set_target(qualified_name_t{core::dbname_t{std::string{"edb"}}, core::relname_t{std::string{"ghost"}}});
 
@@ -177,10 +174,7 @@ TEST_CASE("physical_plan_generator::unresolved_source::delete_with_an_unlowerabl
         lp::make_node_match(&h.arena,
                             qualified_name_t{core::dbname_t{std::string{"edb"}}, core::relname_t{std::string{"ghost"}}},
                             nullptr);
-    auto limit = lp::make_node_limit(&h.arena,
-                                     core::dbname_t{std::string{}},
-                                     core::relname_t{std::string{}},
-                                     lp::limit_t::unlimit());
+    auto limit = lp::make_node_limit(&h.arena, lp::limit_t::unlimit());
     auto del = lp::make_node_delete(&h.arena, match, limit);
     del->set_target(qualified_name_t{core::dbname_t{std::string{"edb"}}, core::relname_t{std::string{"ghost"}}});
 
@@ -199,10 +193,7 @@ TEST_CASE("physical_plan_generator::unresolved_source::delete_with_an_unlowerabl
         lp::make_node_match(&h.arena,
                             qualified_name_t{core::dbname_t{std::string{"edb"}}, core::relname_t{std::string{"t"}}},
                             expr::make_compare_expression(&h.arena, expr::compare_type::all_true));
-    auto limit = lp::make_node_limit(&h.arena,
-                                     core::dbname_t{std::string{}},
-                                     core::relname_t{std::string{}},
-                                     lp::limit_t::unlimit());
+    auto limit = lp::make_node_limit(&h.arena, lp::limit_t::unlimit());
     auto del = lp::make_node_delete(&h.arena, match, limit);
     del->set_table_oid(known_oid);
     del->append_child(lp::make_node_drop(&h.arena, lp::drop_target_kind::collection));
@@ -221,10 +212,7 @@ TEST_CASE("physical_plan_generator::unresolved_source::update_over_an_unresolved
         lp::make_node_match(&h.arena,
                             qualified_name_t{core::dbname_t{std::string{"edb"}}, core::relname_t{std::string{"ghost"}}},
                             expr::make_compare_expression(&h.arena, expr::compare_type::all_true));
-    auto limit = lp::make_node_limit(&h.arena,
-                                     core::dbname_t{std::string{}},
-                                     core::relname_t{std::string{}},
-                                     lp::limit_t::unlimit());
+    auto limit = lp::make_node_limit(&h.arena, lp::limit_t::unlimit());
     std::pmr::vector<expr::expression_ptr> updates{&h.arena};
     auto upd = lp::make_node_update(&h.arena, match, limit, updates);
 

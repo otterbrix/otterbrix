@@ -89,17 +89,12 @@ namespace components::sql::transform {
         // SELECT path). Shared by the simple-select, the UNION tail-clause, the top-level VALUES, and
         // the DML (DELETE/UPDATE) LIMIT lowering — hence a raw (limitCount, limitOffset) pair rather
         // than a SelectStmt&.
-        core::result_wrapper_t<logical_plan::node_ptr> build_limit_node(Node* limit_count,
-                                                                        Node* limit_offset,
-                                                                        const core::dbname_t& db,
-                                                                        const core::relname_t& rel,
-                                                                        logical_plan::execution_plan_t* plan);
+        core::result_wrapper_t<logical_plan::node_ptr>
+        build_limit_node(Node* limit_count, Node* limit_offset, logical_plan::execution_plan_t* plan);
         // Build the node_limit child for a DELETE/UPDATE ... [LIMIT n]. Returns an unlimited
         // limit node when limit_count is null; otherwise validates the count exactly like a
         // SELECT limit (integer / bound parameter). DML has NO OFFSET (grammar-enforced).
         core::result_wrapper_t<logical_plan::node_limit_ptr> build_dml_limit(Node* limit_count,
-                                                                             const core::dbname_t& db,
-                                                                             const core::relname_t& rel,
                                                                              logical_plan::execution_plan_t* plan);
         // Register a statement's WITH (CTE) definitions into cte_queries_ / recursive_cte_queries_ so the
         // body can reference them. Shared by SELECT (simple + UNION) and DML (DELETE/UPDATE/INSERT). A

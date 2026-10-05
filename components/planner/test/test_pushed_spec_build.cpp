@@ -59,13 +59,13 @@ namespace {
                       expression_ptr having,
                       std::pmr::vector<types::complex_logical_type> out_types,
                       bool agg_distinct = false) {
-        auto group = make_node_group(r, dbn(), reln(), group_exprs);
+        auto group = make_node_group(r, group_exprs);
         group->set_pushdown(true);
         group->set_table_oid(components::catalog::oid_t{123});
         auto agg =
             planner_test::make_agg(r, group, components::catalog::oid_t{123}, std::move(out_types), agg_distinct);
         if (having != nullptr) {
-            agg->append_child(make_node_having(r, dbn(), reln(), having));
+            agg->append_child(make_node_having(r, having));
         }
         return agg;
     }

@@ -32,11 +32,8 @@ namespace components::logical_plan {
         return limit_ + offset_;
     }
 
-    node_limit_t::node_limit_t(std::pmr::memory_resource* resource,
-                               core::dbname_t dbname,
-                               core::relname_t relname,
-                               const limit_t& limit)
-        : node_t(resource, node_type::limit_t, qualified_name_t{std::move(dbname), std::move(relname)})
+    node_limit_t::node_limit_t(std::pmr::memory_resource* resource, const limit_t& limit)
+        : node_t(resource, node_type::limit_t)
         , limit_(limit) {}
 
     const limit_t& node_limit_t::limit() const { return limit_; }
@@ -52,11 +49,8 @@ namespace components::logical_plan {
         return stream.str();
     }
 
-    node_limit_ptr make_node_limit(std::pmr::memory_resource* resource,
-                                   core::dbname_t dbname,
-                                   core::relname_t relname,
-                                   const limit_t& limit) {
-        return {new node_limit_t{resource, std::move(dbname), std::move(relname), limit}};
+    node_limit_ptr make_node_limit(std::pmr::memory_resource* resource, const limit_t& limit) {
+        return {new node_limit_t{resource, limit}};
     }
 
 } // namespace components::logical_plan

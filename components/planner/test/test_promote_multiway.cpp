@@ -108,12 +108,12 @@ TEST_CASE("optimizer::promote_cross_join::multiway_three_table") {
     auto b = make_scan(res, "b_k", "b_v");
     auto c = make_scan(res, "c_k", "c_v");
 
-    auto inner_cross = make_node_join(res, core::dbname_t{}, core::relname_t{}, join_type::cross);
+    auto inner_cross = make_node_join(res, join_type::cross);
     inner_cross->append_child(a);
     inner_cross->append_child(b);
     inner_cross->append_expression(expressions::make_compare_expression(res, compare_type::all_true));
 
-    auto outer_cross = make_node_join(res, core::dbname_t{}, core::relname_t{}, join_type::cross);
+    auto outer_cross = make_node_join(res, join_type::cross);
     outer_cross->append_child(inner_cross);
     outer_cross->append_child(c);
     outer_cross->append_expression(expressions::make_compare_expression(res, compare_type::all_true));

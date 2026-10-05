@@ -1,13 +1,12 @@
 #pragma once
 
 #include "node.hpp"
-#include <components/base/identifier_types.hpp>
 
 namespace components::logical_plan {
 
     class node_having_t final : public node_t {
     public:
-        explicit node_having_t(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname);
+        explicit node_having_t(std::pmr::memory_resource* resource);
 
     private:
         hash_t hash_impl() const override;
@@ -16,9 +15,6 @@ namespace components::logical_plan {
 
     using node_having_ptr = boost::intrusive_ptr<node_having_t>;
 
-    node_having_ptr make_node_having(std::pmr::memory_resource* resource,
-                                     core::dbname_t dbname,
-                                     core::relname_t relname,
-                                     const expressions::expression_ptr& expr);
+    node_having_ptr make_node_having(std::pmr::memory_resource* resource, const expressions::expression_ptr& expr);
 
 } // namespace components::logical_plan

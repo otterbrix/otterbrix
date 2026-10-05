@@ -50,7 +50,7 @@ namespace {
 
         auto left = ascan(plan_arena, {"a", "k"});
         auto right = ascan(plan_arena, {"b", "k2"});
-        auto join = make_node_join(plan_arena, adb(), arel(), jt);
+        auto join = make_node_join(plan_arena, jt);
         join->append_child(left);
         join->append_child(right);
         join->append_expression(make_compare_expression(plan_arena,

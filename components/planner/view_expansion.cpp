@@ -357,7 +357,7 @@ namespace components::planner {
         }
         auto wrapper = logical_plan::make_node_aggregate(resource, qualified_name_t{});
         wrapper->append_child(std::move(body));
-        auto select = logical_plan::make_node_select(resource, core::dbname_t{}, core::relname_t{});
+        auto select = logical_plan::make_node_select(resource);
         for (const auto& column : view.columns) {
             select->append_expression(expressions::make_scalar_expression(resource,
                                                                           expressions::scalar_type::get_field,

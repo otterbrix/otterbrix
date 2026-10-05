@@ -272,11 +272,11 @@ namespace components::sql::transform {
             }
 
             auto prev = node_join;
-            node_join = logical_plan::make_node_join(resource, core::dbname_t{}, core::relname_t{}, j_type);
+            node_join = logical_plan::make_node_join(resource, j_type);
             node_join->append_child(prev);
         } else {
             assert(!node_join);
-            node_join = logical_plan::make_node_join(resource, core::dbname_t{}, core::relname_t{}, j_type);
+            node_join = logical_plan::make_node_join(resource, j_type);
             VALUE_OR_RETURN(
                 auto left,
                 transform_from_element(join->larg, names.left_name, names.left_alias, names, node_join, plan));
@@ -403,11 +403,8 @@ namespace components::sql::transform {
         return core::error_t::no_error();
     }
 
-    core::result_wrapper_t<logical_plan::node_ptr> transformer::build_limit_node(Node* limit_count,
-                                                                                 Node* limit_offset,
-                                                                                 const core::dbname_t& db,
-                                                                                 const core::relname_t& rel,
-                                                                                 logical_plan::execution_plan_t* plan) {
+    core::result_wrapper_t<logical_plan::node_ptr>
+    transformer::build_limit_node(Node* limit_count, Node* limit_offset, logical_plan::execution_plan_t* plan) {
         if (!limit_count && !limit_offset) {
             return nullptr;
         }
@@ -499,8 +496,7 @@ namespace components::sql::transform {
             }
         }
 
-        auto limit_node =
-            logical_plan::make_node_limit(resource_, db, rel, logical_plan::limit_t(limit_val, offset_val));
+        auto limit_node = logical_plan::make_node_limit(resource_, logical_plan::limit_t(limit_val, offset_val));
         if (limit_param || offset_param) {
             deferred_limits_.push_back(deferred_limit_t{limit_node.get(), limit_param, offset_param});
         }
@@ -508,14 +504,11 @@ namespace components::sql::transform {
     }
 
     core::result_wrapper_t<logical_plan::node_limit_ptr>
-    transformer::build_dml_limit(Node* limit_count,
-                                 const core::dbname_t& db,
-                                 const core::relname_t& rel,
-                                 logical_plan::execution_plan_t* plan) {
+    transformer::build_dml_limit(Node* limit_count, logical_plan::execution_plan_t* plan) {
         if (!limit_count) {
-            return logical_plan::make_node_limit(resource_, db, rel, logical_plan::limit_t::unlimit());
+            return logical_plan::make_node_limit(resource_, logical_plan::limit_t::unlimit());
         }
-        VALUE_OR_RETURN(auto built, build_limit_node(limit_count, nullptr, db, rel, plan));
+        VALUE_OR_RETURN(auto built, build_limit_node(limit_count, nullptr, plan));
         if (!built) {
             return logical_plan::node_limit_ptr{nullptr};
         }
@@ -637,12 +630,9 @@ namespace components::sql::transform {
                                                                  is_desc ? sort_order::desc : sort_order::asc,
                                                                  map_sortby_nulls(sortby->sortby_nulls)));
                 }
-                agg->append_child(
-                    logical_plan::make_node_sort(resource_, core::dbname_t{}, core::relname_t{}, sort_exprs));
+                agg->append_child(logical_plan::make_node_sort(resource_, sort_exprs));
             }
-            VALUE_OR_RETURN(
-                auto limit_node,
-                build_limit_node(node.limitCount, node.limitOffset, core::dbname_t{}, core::relname_t{}, plan));
+            VALUE_OR_RETURN(auto limit_node, build_limit_node(node.limitCount, node.limitOffset, plan));
             if (limit_node) {
                 agg->append_child(std::move(limit_node));
             }
@@ -705,17 +695,15 @@ namespace components::sql::transform {
             }
             auto values_agg = logical_plan::make_node_aggregate(resource_, qualified_name_t{});
             values_agg->append_child(std::move(raw));
-            VALUE_OR_RETURN(
-                auto limit_node,
-                build_limit_node(node.limitCount, node.limitOffset, core::dbname_t{}, core::relname_t{}, plan));
+            VALUE_OR_RETURN(auto limit_node, build_limit_node(node.limitCount, node.limitOffset, plan));
             if (limit_node) {
                 values_agg->append_child(std::move(limit_node));
             }
             return values_agg;
         }
 
-        auto group = logical_plan::make_node_group(resource_, agg->target().database, agg->target().collection);
-        auto select_node = logical_plan::make_node_select(resource_, agg->target().database, agg->target().collection);
+        auto group = logical_plan::make_node_group(resource_);
+        auto select_node = logical_plan::make_node_select(resource_);
 
         // Star expressions are skipped; an empty select_node means passthrough (SELECT *).
         bool has_non_star = false;
@@ -1107,8 +1095,7 @@ namespace components::sql::transform {
                 }
             }
             if (exists_sub && exists_sub->subselect && nodeTag(exists_sub->subselect) == T_SelectStmt) {
-                auto join =
-                    logical_plan::make_node_join(resource_, core::dbname_t{}, core::relname_t{}, semi_anti_type);
+                auto join = logical_plan::make_node_join(resource_, semi_anti_type);
                 join->set_lateral(true);
                 join->append_child(agg);
 
@@ -1281,10 +1268,7 @@ namespace components::sql::transform {
         if (!group->expressions().empty() || having_expr) {
             agg->append_child(group);
             if (having_expr) {
-                agg->append_child(logical_plan::make_node_having(resource_,
-                                                                 agg->target().database,
-                                                                 agg->target().collection,
-                                                                 having_expr));
+                agg->append_child(logical_plan::make_node_having(resource_, having_expr));
             }
         }
 
@@ -1373,8 +1357,7 @@ namespace components::sql::transform {
                 }
                 sort_exprs.emplace_back(make_sort_expression(resource_, operand, order, null_ord));
             }
-            agg->append_child(
-                logical_plan::make_node_sort(resource_, agg->target().database, agg->target().collection, sort_exprs));
+            agg->append_child(logical_plan::make_node_sort(resource_, sort_exprs));
         }
 
         if (having_expr && !has_group_by) {
@@ -1423,12 +1406,7 @@ namespace components::sql::transform {
             agg->append_child(select_node);
         }
 
-        VALUE_OR_RETURN(auto limit_node,
-                        build_limit_node(node.limitCount,
-                                         node.limitOffset,
-                                         agg->target().database,
-                                         agg->target().collection,
-                                         plan));
+        VALUE_OR_RETURN(auto limit_node, build_limit_node(node.limitCount, node.limitOffset, plan));
         if (limit_node) {
             agg->append_child(std::move(limit_node));
         }

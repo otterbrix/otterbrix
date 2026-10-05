@@ -36,7 +36,7 @@ namespace planner_test {
         agg->set_table_oid(table_oid);
         agg->append_child(group);
         if (having != nullptr) {
-            agg->append_child(components::logical_plan::make_node_having(r, dbn(), reln(), having));
+            agg->append_child(components::logical_plan::make_node_having(r, having));
         }
         return agg;
     }
@@ -82,7 +82,7 @@ namespace planner_test {
         cnt->set_mergeable(true);
         cnt->append_param(key(r, "v"));
         exprs.push_back(expression_ptr(cnt));
-        return components::logical_plan::make_node_group(r, dbn(), reln(), exprs);
+        return components::logical_plan::make_node_group(r, exprs);
     }
 
 } // namespace planner_test

@@ -178,13 +178,10 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                 expressions::make_sort_expression(dispatcher->resource(),
                                                   key(dispatcher->resource(), "count_bool"),
                                                   expressions::sort_order::asc)};
-            aggregate->append_child(logical_plan::make_node_sort(dispatcher->resource(),
-                                                                 core::dbname_t{},
-                                                                 core::relname_t{},
-                                                                 std::move(sort)));
+            aggregate->append_child(logical_plan::make_node_sort(dispatcher->resource(), std::move(sort)));
         }
 
-        auto group = logical_plan::make_node_group(dispatcher->resource(), core::dbname_t{}, core::relname_t{});
+        auto group = logical_plan::make_node_group(dispatcher->resource());
 
         group->append_expression(make_scalar_expression(dispatcher->resource(),
                                                         expressions::scalar_type::group_field,
@@ -288,7 +285,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                 compare_type::gt,
                                                 key{dispatcher->resource(), "count", side_t::left},
                                                 id_par{1})),
-                    logical_plan::make_node_limit(dispatcher->resource(), {}, {}, logical_plan::limit_t::unlimit())));
+                    logical_plan::make_node_limit(dispatcher->resource(), logical_plan::limit_t::unlimit())));
             auto params = logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, types::logical_value_t(dispatcher->resource(), 90));
             auto cur =
@@ -343,7 +340,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             logical_plan::make_node_match(dispatcher->resource(),
                                           qualified_name_t{table_database_name, table_other_collection_name},
                                           std::move(expr)),
-            logical_plan::make_node_limit(dispatcher->resource(), {}, {}, logical_plan::limit_t::unlimit()));
+            logical_plan::make_node_limit(dispatcher->resource(), logical_plan::limit_t::unlimit()));
         del_inner->append_child(logical_plan::make_node_raw_data(dispatcher->resource(), std::move(using_data)));
         auto del = WRAP_DML_TARGET(table_database_name, table_other_collection_name, del_inner);
         {
@@ -390,14 +387,13 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                                    expressions::scalar_type::constant,
                                                                    expressions::key_t{dispatcher->resource(), "count"});
             update_expr->append_param(id_par{2});
-            auto upd = WRAP_DML_TARGET(
-                table_database_name,
-                table_collection_name,
-                make_node_update(
-                    dispatcher->resource(),
-                    match,
-                    logical_plan::make_node_limit(dispatcher->resource(), {}, {}, logical_plan::limit_t::unlimit()),
-                    {update_expr}));
+            auto upd = WRAP_DML_TARGET(table_database_name,
+                                       table_collection_name,
+                                       make_node_update(dispatcher->resource(),
+                                                        match,
+                                                        logical_plan::make_node_limit(dispatcher->resource(),
+                                                                                      logical_plan::limit_t::unlimit()),
+                                                        {update_expr}));
             auto params = logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, types::logical_value_t(dispatcher->resource(), 20));
             params->add_parameter(id_par{2}, types::logical_value_t(dispatcher->resource(), 1000));
@@ -466,14 +462,13 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                                    expressions::scalar_type::constant,
                                                                    key{std::move(path)});
             update_expr->append_param(id_par{2});
-            auto upd = WRAP_DML_TARGET(
-                table_database_name,
-                table_collection_name,
-                make_node_update(
-                    dispatcher->resource(),
-                    match,
-                    logical_plan::make_node_limit(dispatcher->resource(), {}, {}, logical_plan::limit_t::unlimit()),
-                    {update_expr}));
+            auto upd = WRAP_DML_TARGET(table_database_name,
+                                       table_collection_name,
+                                       make_node_update(dispatcher->resource(),
+                                                        match,
+                                                        logical_plan::make_node_limit(dispatcher->resource(),
+                                                                                      logical_plan::limit_t::unlimit()),
+                                                        {update_expr}));
             auto params = logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, types::logical_value_t(dispatcher->resource(), 1000));
             params->add_parameter(id_par{2}, types::logical_value_t(dispatcher->resource(), uint64_t{9999}));
@@ -542,7 +537,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                 logical_plan::make_node_match(dispatcher->resource(),
                                               qualified_name_t{table_database_name, table_other_collection_name},
                                               std::move(expr)),
-                logical_plan::make_node_limit(dispatcher->resource(), {}, {}, logical_plan::limit_t::unlimit()),
+                logical_plan::make_node_limit(dispatcher->resource(), logical_plan::limit_t::unlimit()),
                 {std::move(update_expr)},
                 false);
             update_inner->append_child(logical_plan::make_node_raw_data(dispatcher->resource(), std::move(data)));
@@ -581,10 +576,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                         compare_type::eq,
                                         key{dispatcher->resource(), "count", side_t::left},
                                         id_par{1}));
-            auto limit = logical_plan::make_node_limit(dispatcher->resource(),
-                                                       table_database_name,
-                                                       table_collection_name,
-                                                       logical_plan::limit_t(1));
+            auto limit = logical_plan::make_node_limit(dispatcher->resource(), logical_plan::limit_t(1));
             auto del = WRAP_DML_TARGET(table_database_name,
                                        table_collection_name,
                                        logical_plan::make_node_delete(dispatcher->resource(), match, limit));
@@ -610,10 +602,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                         compare_type::eq,
                                         key{dispatcher->resource(), "count", side_t::left},
                                         id_par{1}));
-            auto limit = logical_plan::make_node_limit(dispatcher->resource(),
-                                                       table_database_name,
-                                                       table_collection_name,
-                                                       logical_plan::limit_t(5));
+            auto limit = logical_plan::make_node_limit(dispatcher->resource(), logical_plan::limit_t(5));
             auto del = WRAP_DML_TARGET(table_database_name,
                                        table_collection_name,
                                        logical_plan::make_node_delete(dispatcher->resource(), match, limit));
@@ -643,10 +632,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                                    expressions::scalar_type::constant,
                                                                    expressions::key_t{dispatcher->resource(), "count"});
             update_expr->append_param(id_par{2});
-            auto limit = logical_plan::make_node_limit(dispatcher->resource(),
-                                                       table_database_name,
-                                                       table_collection_name,
-                                                       logical_plan::limit_t(1));
+            auto limit = logical_plan::make_node_limit(dispatcher->resource(), logical_plan::limit_t(1));
             auto upd =
                 WRAP_DML_TARGET(table_database_name,
                                 table_collection_name,
@@ -678,10 +664,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                                    expressions::scalar_type::constant,
                                                                    expressions::key_t{dispatcher->resource(), "count"});
             update_expr->append_param(id_par{2});
-            auto limit = logical_plan::make_node_limit(dispatcher->resource(),
-                                                       table_database_name,
-                                                       table_collection_name,
-                                                       logical_plan::limit_t(5));
+            auto limit = logical_plan::make_node_limit(dispatcher->resource(), logical_plan::limit_t(5));
             auto upd =
                 WRAP_DML_TARGET(table_database_name,
                                 table_collection_name,
@@ -735,10 +718,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
         INFO("right is raw data");
         {
             auto session = otterbrix::session_id_t();
-            auto join = logical_plan::make_node_join(dispatcher->resource(),
-                                                     core::dbname_t{},
-                                                     core::relname_t{},
-                                                     logical_plan::join_type::inner);
+            auto join = logical_plan::make_node_join(dispatcher->resource(), logical_plan::join_type::inner);
             join->append_child(
                 logical_plan::make_node_aggregate(dispatcher->resource(),
                                                   qualified_name_t{table_database_name, table_collection_left}));
@@ -766,10 +746,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
         INFO("left is raw data");
         {
             auto session = otterbrix::session_id_t();
-            auto join = logical_plan::make_node_join(dispatcher->resource(),
-                                                     core::dbname_t{},
-                                                     core::relname_t{},
-                                                     logical_plan::join_type::inner);
+            auto join = logical_plan::make_node_join(dispatcher->resource(), logical_plan::join_type::inner);
             join->append_child(logical_plan::make_node_raw_data(dispatcher->resource(), chunk_left));
             join->append_child(
                 logical_plan::make_node_aggregate(dispatcher->resource(),
@@ -797,10 +774,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
         INFO("both are raw data");
         {
             auto session = otterbrix::session_id_t();
-            auto join = logical_plan::make_node_join(dispatcher->resource(),
-                                                     core::dbname_t{},
-                                                     core::relname_t{},
-                                                     logical_plan::join_type::inner);
+            auto join = logical_plan::make_node_join(dispatcher->resource(), logical_plan::join_type::inner);
             join->append_child(logical_plan::make_node_raw_data(dispatcher->resource(), chunk_left));
             join->append_child(logical_plan::make_node_raw_data(dispatcher->resource(), chunk_right));
             {
@@ -828,10 +802,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             auto session = otterbrix::session_id_t();
             auto params = logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(core::parameter_id_t(1), types::logical_value_t(dispatcher->resource(), int64_t{75}));
-            auto join = logical_plan::make_node_join(dispatcher->resource(),
-                                                     core::dbname_t{},
-                                                     core::relname_t{},
-                                                     logical_plan::join_type::inner);
+            auto join = logical_plan::make_node_join(dispatcher->resource(), logical_plan::join_type::inner);
             join->append_child(logical_plan::make_node_raw_data(dispatcher->resource(), chunk_left));
             join->append_child(logical_plan::make_node_raw_data(dispatcher->resource(), chunk_right));
             {
@@ -874,14 +845,10 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                         expressions::make_sort_expression(dispatcher->resource(),
                                                           key(dispatcher->resource(), "avg"),
                                                           expressions::sort_order::desc)};
-                    aggregate->append_child(logical_plan::make_node_sort(dispatcher->resource(),
-                                                                         core::dbname_t{},
-                                                                         core::relname_t{},
-                                                                         std::move(sort)));
+                    aggregate->append_child(logical_plan::make_node_sort(dispatcher->resource(), std::move(sort)));
                 }
                 {
-                    auto group =
-                        logical_plan::make_node_group(dispatcher->resource(), core::dbname_t{}, core::relname_t{});
+                    auto group = logical_plan::make_node_group(dispatcher->resource());
 
                     group->append_expression(make_scalar_expression(dispatcher->resource(),
                                                                     expressions::scalar_type::group_field,
@@ -938,10 +905,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                       types::logical_value_t(dispatcher->resource(), int64_t{75}));
             }
             {
-                auto join = logical_plan::make_node_join(dispatcher->resource(),
-                                                         core::dbname_t{},
-                                                         core::relname_t{},
-                                                         logical_plan::join_type::inner);
+                auto join = logical_plan::make_node_join(dispatcher->resource(), logical_plan::join_type::inner);
                 join->append_child(logical_plan::make_node_raw_data(dispatcher->resource(), chunk_left));
                 join->append_child(logical_plan::make_node_raw_data(dispatcher->resource(), chunk_right));
                 {

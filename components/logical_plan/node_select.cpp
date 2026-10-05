@@ -4,8 +4,8 @@
 
 namespace components::logical_plan {
 
-    node_select_t::node_select_t(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname)
-        : node_t(resource, node_type::select_t, qualified_name_t{std::move(dbname), std::move(relname)}) {}
+    node_select_t::node_select_t(std::pmr::memory_resource* resource)
+        : node_t(resource, node_type::select_t) {}
 
     hash_t node_select_t::hash_impl() const { return 0; }
 
@@ -25,9 +25,6 @@ namespace components::logical_plan {
         return stream.str();
     }
 
-    node_select_ptr
-    make_node_select(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname) {
-        return {new node_select_t(resource, std::move(dbname), std::move(relname))};
-    }
+    node_select_ptr make_node_select(std::pmr::memory_resource* resource) { return {new node_select_t(resource)}; }
 
 } // namespace components::logical_plan

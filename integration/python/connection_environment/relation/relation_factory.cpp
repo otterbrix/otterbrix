@@ -314,8 +314,7 @@ namespace otterbrix {
                 throw std::runtime_error("Implementation Error. Undefined expression type for sort relation");
             }
         }
-        auto sort =
-            make_node_sort(space->dispatcher()->resource(), core::dbname_t{}, core::relname_t{}, std::move(sort_exprs));
+        auto sort = make_node_sort(space->dispatcher()->resource(), std::move(sort_exprs));
 
         auto node = make_aggregate_node(relation.node, nullptr, nullptr, sort, nullptr);
         return {node, passthrough_schema(space->dispatcher()->resource(), relation.columns)};
@@ -355,8 +354,7 @@ namespace otterbrix {
         std::vector<expressions::expression_ptr> fields = std::move(keys);
         fields.reserve(fields.size() + outputs.size());
         fields.insert(fields.end(), outputs.begin(), outputs.end());
-        auto group =
-            make_node_group(space->dispatcher()->resource(), core::dbname_t{}, core::relname_t{}, std::move(fields));
+        auto group = make_node_group(space->dispatcher()->resource(), std::move(fields));
 
         auto schema = group_schema(space->dispatcher()->resource(), group, relation.columns);
         auto node = make_aggregate_node(relation.node, group, nullptr, nullptr, nullptr);
@@ -366,7 +364,7 @@ namespace otterbrix {
     built_relation_t relation_factory_t::select_relation(const built_relation_t& relation,
                                                          const std::vector<expression_wrapper_t>& exprs) {
         auto* resource = space->dispatcher()->resource();
-        auto select = make_node_select(resource, core::dbname_t{}, core::relname_t{});
+        auto select = make_node_select(resource);
         for (const auto& expr : exprs) {
             expressions::expression_ptr scalar;
             if (expr.is_expression()) {
@@ -412,7 +410,7 @@ namespace otterbrix {
             }
         }
 
-        auto join_node = make_node_join(resource, core::dbname_t{}, core::relname_t{}, type);
+        auto join_node = make_node_join(resource, type);
         join_node->append_child(relation.node);
         join_node->append_child(other.node);
         if (!exprs.empty()) {
@@ -433,8 +431,7 @@ namespace otterbrix {
     }
 
     built_relation_t relation_factory_t::limit_relation(const built_relation_t& relation, int64_t count) {
-        auto limit_node =
-            make_node_limit(space->dispatcher()->resource(), core::dbname_t{}, core::relname_t{}, limit_t(count));
+        auto limit_node = make_node_limit(space->dispatcher()->resource(), limit_t(count));
         auto node = make_aggregate_node(relation.node, nullptr, nullptr, nullptr, nullptr, limit_node);
         return {node, passthrough_schema(space->dispatcher()->resource(), relation.columns)};
     }

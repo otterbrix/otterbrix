@@ -52,7 +52,7 @@ TEST_CASE("integration::cpp::update_upsert::an_upsert_plan_is_refused_not_quietl
     auto upd = logical_plan::make_node_update(
         dispatcher->resource(),
         match,
-        logical_plan::make_node_limit(dispatcher->resource(), {}, {}, logical_plan::limit_t::unlimit()),
+        logical_plan::make_node_limit(dispatcher->resource(), logical_plan::limit_t::unlimit()),
         {update_expr},
         /*upsert=*/true);
     upd->set_target(qualified_name_t{core::dbname_t{"upsdb"}, core::relname_t{"t"}});

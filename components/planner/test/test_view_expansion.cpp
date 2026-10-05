@@ -137,8 +137,7 @@ TEST_CASE("planner::view_expansion::a correlated join in the body is refused") {
     // renumbered against the outer plan's — a silent collision. Refuse instead.
     auto ref = make_view_ref("db", "v");
     auto body = logical_plan::make_node_aggregate(res(), qualified_name_t{core::dbname_t{"db"}, core::relname_t{"t"}});
-    auto join =
-        logical_plan::make_node_join(res(), core::dbname_t{"db"}, core::relname_t{"t"}, logical_plan::join_type::inner);
+    auto join = logical_plan::make_node_join(res(), logical_plan::join_type::inner);
     join->set_lateral(true);
     join->add_correlation(core::parameter_id_t{0}, expressions::key_t{res(), "col_a"});
     body->append_child(join);

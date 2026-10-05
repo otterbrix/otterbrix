@@ -236,10 +236,8 @@ namespace services::planner::impl {
             // case this is. No default arm: a new match_source value must get a case here or the build stops.
             switch (static_cast<const components::logical_plan::node_match_t*>(node.get())->source()) {
                 case components::logical_plan::match_source::none:
-                    // Emits a synthetic 1-row placeholder batch (transfer_scan::source_next), so it needs a
-                    // valid resource — the node's own, as create_plan_aggregate's no-table fallback also
-                    // does — not nullptr.
-                    return boost::intrusive_ptr(new components::operators::transfer_scan(node->resource(),
+                    // Emits a synthetic 1-row placeholder batch (transfer_scan::source_next).
+                    return boost::intrusive_ptr(new components::operators::transfer_scan(context.resource,
                                                                                          node->table_oid(),
                                                                                          limit,
                                                                                          std::move(effective_cols)));

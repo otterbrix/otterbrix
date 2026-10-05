@@ -4,8 +4,8 @@
 
 namespace components::logical_plan {
 
-    node_sort_t::node_sort_t(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname)
-        : node_t(resource, node_type::sort_t, qualified_name_t{std::move(dbname), std::move(relname)}) {}
+    node_sort_t::node_sort_t(std::pmr::memory_resource* resource)
+        : node_t(resource, node_type::sort_t) {}
 
     hash_t node_sort_t::hash_impl() const { return 0; }
 
@@ -26,19 +26,15 @@ namespace components::logical_plan {
     }
 
     node_sort_ptr make_node_sort(std::pmr::memory_resource* resource,
-                                 core::dbname_t dbname,
-                                 core::relname_t relname,
                                  const std::vector<expressions::expression_ptr>& expressions) {
-        auto node = new node_sort_t{resource, std::move(dbname), std::move(relname)};
+        auto node = new node_sort_t{resource};
         node->append_expressions(expressions);
         return node;
     }
 
     node_sort_ptr make_node_sort(std::pmr::memory_resource* resource,
-                                 core::dbname_t dbname,
-                                 core::relname_t relname,
                                  const std::pmr::vector<expressions::expression_ptr>& expressions) {
-        auto node = new node_sort_t{resource, std::move(dbname), std::move(relname)};
+        auto node = new node_sort_t{resource};
         node->append_expressions(expressions);
         return node;
     }

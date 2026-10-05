@@ -413,8 +413,6 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
                                                                   key{dispatcher->resource(), "count", side_t::left},
                                                                   id_par{1})),
                     components::logical_plan::make_node_limit(dispatcher->resource(),
-                                                              {},
-                                                              {},
                                                               components::logical_plan::limit_t::unlimit())));
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, logical_value_t(dispatcher->resource(), 90));
@@ -452,8 +450,6 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
                     dispatcher->resource(),
                     match,
                     components::logical_plan::make_node_limit(dispatcher->resource(),
-                                                              {},
-                                                              {},
                                                               components::logical_plan::limit_t::unlimit()),
                     {update_expr}));
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());

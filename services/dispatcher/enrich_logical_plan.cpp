@@ -351,11 +351,6 @@ namespace services::catalog_resolve {
                 }
                 case node_type::aggregate_t:
                 case node_type::match_t:
-                case node_type::group_t:
-                case node_type::sort_t:
-                case node_type::join_t:
-                case node_type::limit_t:
-                case node_type::having_t:
                 case node_type::insert_t:
                 case node_type::update_t:
                 case node_type::delete_t:
@@ -373,9 +368,9 @@ namespace services::catalog_resolve {
             }
         }
 
-        // A clause node (match, group, sort, ...) of a FROM aggregate or of a write is built with its (dbname,
-        // relname) only; it names that table, so it takes its schema slot. A write whose target the host bound names
-        // no catalog table, and neither do its clause nodes.
+        // A match of a FROM aggregate or of a write is built with its (dbname, relname) only; it names that table, so
+        // it takes its schema slot. A write whose target the host bound names no catalog table, and neither does its
+        // match.
         struct names_scope_t {
             std::string_view dbname{};
             std::string_view schema{};

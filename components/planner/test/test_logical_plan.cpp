@@ -90,8 +90,7 @@ TEST_CASE("components::planner::group") {
         agg_expr = make_aggregate_expression(&resource, "avg", key(&resource, "avg_quantity"));
         agg_expr->append_param(key(&resource, "quantity"));
         expressions.emplace_back(std::move(agg_expr));
-        auto node_group =
-            make_node_group(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, expressions);
+        auto node_group = make_node_group(&resource, expressions);
         REQUIRE(
             node_group->to_string() ==
             R"_($group: {count: "date", total: {$sum: {$multiply: ["price", "quantity"]}}, avg_quantity: {$avg: "quantity"}})_");
@@ -105,8 +104,7 @@ TEST_CASE("components::planner::group") {
         scalar_expr->append_param(core::parameter_id_t(1));
         scalar_expr->append_param(key(&resource, "count"));
         expressions.emplace_back(std::move(scalar_expr));
-        auto node_group =
-            make_node_group(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, expressions);
+        auto node_group = make_node_group(&resource, expressions);
         REQUIRE(node_group->to_string() == R"_($group: {count: "date", count_4: {$multiply: [#1, "count"]}})_");
     }
 }
@@ -116,16 +114,14 @@ TEST_CASE("components::planner::sort") {
     {
         std::vector<expression_ptr> expressions;
         expressions.emplace_back(new sort_expression_t{&resource, key(&resource, "key"), sort_order::asc});
-        auto node_sort =
-            make_node_sort(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, expressions);
+        auto node_sort = make_node_sort(&resource, expressions);
         REQUIRE(node_sort->to_string() == R"_($sort: {key: 1})_");
     }
     {
         std::vector<expression_ptr> expressions;
         expressions.emplace_back(new sort_expression_t{&resource, key(&resource, "key1"), sort_order::asc});
         expressions.emplace_back(new sort_expression_t{&resource, key(&resource, "key2"), sort_order::desc});
-        auto node_sort =
-            make_node_sort(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, expressions);
+        auto node_sort = make_node_sort(&resource, expressions);
         REQUIRE(node_sort->to_string() == R"_($sort: {key1: 1, key2: -1})_");
     }
 }
@@ -153,15 +149,13 @@ TEST_CASE("components::planner::aggregate") {
         scalar_expr->append_param(core::parameter_id_t(1));
         scalar_expr->append_param(key(&resource, "count"));
         expressions.emplace_back(std::move(scalar_expr));
-        aggregate->append_child(
-            make_node_group(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, expressions));
+        aggregate->append_child(make_node_group(&resource, expressions));
     }
     {
         std::vector<expression_ptr> expressions;
         expressions.emplace_back(new sort_expression_t{&resource, key(&resource, "name"), sort_order::asc});
         expressions.emplace_back(new sort_expression_t{&resource, key(&resource, "count"), sort_order::desc});
-        aggregate->append_child(
-            make_node_sort(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, expressions));
+        aggregate->append_child(make_node_sort(&resource, expressions));
     }
 
     components::planner::planner_t planner;
@@ -192,14 +186,11 @@ TEST_CASE("components::planner::aggregate_having") {
         auto agg_expr = make_aggregate_expression(&resource, "sum", key(&resource, "sum_x"));
         agg_expr->append_param(key(&resource, "x"));
         expressions.emplace_back(std::move(agg_expr));
-        aggregate->append_child(
-            make_node_group(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, expressions));
+        aggregate->append_child(make_node_group(&resource, expressions));
     }
 
     // $having: SUM(x) > #1  (compare carried at expressions()[0], mirroring node_match)
     aggregate->append_child(make_node_having(&resource,
-                                             core::dbname_t{database_name},
-                                             core::relname_t{collection_name},
                                              make_compare_expression(&resource,
                                                                      compare_type::gt,
                                                                      key(&resource, "sum_x", side_t::left),
@@ -209,8 +200,7 @@ TEST_CASE("components::planner::aggregate_having") {
     {
         std::vector<expression_ptr> expressions;
         expressions.emplace_back(new sort_expression_t{&resource, key(&resource, "k"), sort_order::asc});
-        aggregate->append_child(
-            make_node_sort(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, expressions));
+        aggregate->append_child(make_node_sort(&resource, expressions));
     }
 
     components::planner::planner_t planner;
@@ -259,20 +249,17 @@ TEST_CASE("components::planner::limit") {
     auto resource = core::pmr::otterbrix_resource();
     {
         auto limit = limit_t::limit_one();
-        auto node_limit =
-            make_node_limit(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, limit);
+        auto node_limit = make_node_limit(&resource, limit);
         REQUIRE(node_limit->to_string() == R"_($limit: 1)_");
     }
     {
         auto limit = limit_t::unlimit();
-        auto node_limit =
-            make_node_limit(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, limit);
+        auto node_limit = make_node_limit(&resource, limit);
         REQUIRE(node_limit->to_string() == R"_($limit: -1)_");
     }
     {
         auto limit = limit_t(5);
-        auto node_limit =
-            make_node_limit(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, limit);
+        auto node_limit = make_node_limit(&resource, limit);
         REQUIRE(node_limit->to_string() == R"_($limit: 5)_");
     }
 }
@@ -287,13 +274,13 @@ TEST_CASE("components::planner::delete") {
                                                          core::parameter_id_t(1)));
     components::logical_plan::storage_parameters parameters{&resource};
     {
-        auto node = make_node_delete(&resource, match, make_node_limit(&resource, {}, {}, limit_t::unlimit()));
+        auto node = make_node_delete(&resource, match, make_node_limit(&resource, limit_t::unlimit()));
         components::planner::planner_t planner;
         auto node_delete = planner.create_plan(&resource, node);
         REQUIRE(node_delete->to_string() == R"_($delete: <oid:0> {$match: {"key": {$eq: #1}}, $limit: -1})_");
     }
     {
-        auto node = make_node_delete(&resource, match, make_node_limit(&resource, {}, {}, limit_t::limit_one()));
+        auto node = make_node_delete(&resource, match, make_node_limit(&resource, limit_t::limit_one()));
         components::planner::planner_t planner;
         auto node_delete = planner.create_plan(&resource, node);
         REQUIRE(node_delete->to_string() == R"_($delete: <oid:0> {$match: {"key": {$eq: #1}}, $limit: 1})_");
@@ -318,7 +305,7 @@ TEST_CASE("components::planner::update") {
     {
         auto node = make_node_update(&resource,
                                      match,
-                                     make_node_limit(&resource, {}, {}, limit_t::unlimit()),
+                                     make_node_limit(&resource, limit_t::unlimit()),
                                      {update},
                                      /*upsert=*/true);
         components::planner::planner_t planner;
@@ -329,7 +316,7 @@ TEST_CASE("components::planner::update") {
     {
         auto node = make_node_update(&resource,
                                      match,
-                                     make_node_limit(&resource, {}, {}, limit_t::limit_one()),
+                                     make_node_limit(&resource, limit_t::limit_one()),
                                      {update},
                                      /*upsert=*/false);
         components::planner::planner_t planner;

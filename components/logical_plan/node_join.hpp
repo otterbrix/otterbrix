@@ -1,7 +1,6 @@
 #pragma once
 
 #include "node.hpp"
-#include <components/base/identifier_types.hpp>
 
 #include <components/expressions/key.hpp>
 
@@ -35,10 +34,7 @@ namespace components::logical_plan {
             hash
         };
 
-        explicit node_join_t(std::pmr::memory_resource* resource,
-                             core::dbname_t dbname,
-                             core::relname_t relname,
-                             join_type type);
+        explicit node_join_t(std::pmr::memory_resource* resource, join_type type);
 
         join_type type() const;
 
@@ -73,7 +69,6 @@ namespace components::logical_plan {
 
     using node_join_ptr = boost::intrusive_ptr<node_join_t>;
 
-    node_join_ptr
-    make_node_join(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname, join_type type);
+    node_join_ptr make_node_join(std::pmr::memory_resource* resource, join_type type);
 
 } // namespace components::logical_plan

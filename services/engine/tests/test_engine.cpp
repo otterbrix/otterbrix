@@ -207,8 +207,7 @@ TEST_CASE("services::engine::log::a_log_directory_that_cannot_be_written_answers
     }
     const auto root = test_root("log_refusal");
     std::filesystem::permissions(root, std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec);
-    core::pmr::otterbrix_resource resource;
-    auto refused = make_log("refused", root / "log", &resource);
+    auto refused = make_log("refused", root / "log");
     std::filesystem::permissions(root, std::filesystem::perms::owner_all);
     REQUIRE(refused.has_error());
     INFO("refusal: " << refused.error().what.c_str());

@@ -25,7 +25,7 @@ namespace otterbrix {
     core::result_wrapper_t<base_otterbrix_t::host_ptr>
     base_otterbrix_t::open(const configuration::config& config, components::planner::primitives_t primitives) {
         host_ptr host{new host_t()};
-        auto log = make_log("otterbrix", config.log.path, std::pmr::new_delete_resource());
+        auto log = make_log("otterbrix", config.log.path);
         if (log.has_error()) {
             return log.error();
         }

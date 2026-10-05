@@ -25,6 +25,7 @@
 #include <core/pmr.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 #include <services/wal/wal_page.hpp>
+#include <services/wal/wal_page_reader.hpp>
 #include <components/log/test_log.hpp>
 
 // ONE PAGE, ONE READ: deciding a segment's fate from TWO reads of the same page (verify, then a
@@ -272,6 +273,44 @@ TEST_CASE("wal::truncate::a_failed_header_reread_does_not_unlink_a_live_segment"
          "checkpoint 1 and must survive");
     REQUIRE(std::filesystem::exists(first_segment));
     REQUIRE_FALSE(truncate_error.contains_error());
+}
+
+// A data page that cannot be read is not the end of the segment: the records on it and after it may be
+// committed transactions, so the read is refused instead of answered as a shorter journal.
+TEST_CASE("wal::read::an_unreadable_data_page_refuses_the_segment") {
+    second_read_fault_scope_t fault;
+    wal_env_t env(base_path() / "unreadable_page");
+
+    for (uint64_t i = 0; i < 3; ++i) {
+        auto fut = env.send_insert(/*txn_id=*/200 + i, /*rows=*/10, i * 10);
+        auto result = await_ready(fut);
+        REQUIRE_FALSE(result.has_error());
+    }
+    {
+        auto fut = env.send_commit(/*txn_id=*/202);
+        auto result = await_ready(fut);
+        REQUIRE_FALSE(result.has_error());
+    }
+
+    const auto segment = env.db_dir() / segment_name(0);
+    REQUIRE(std::filesystem::file_size(segment) > PAGE_SIZE);
+    {
+        wal_page_reader_t reader(&env.resource_, segment);
+        auto records = reader.read_all_records(services::wal::id_t{0});
+        REQUIRE_FALSE(records.has_error());
+        REQUIRE_FALSE(records.value().empty());
+    }
+
+    fault.target_offset = PAGE_SIZE; // the first data page
+    fault.fail_from_nth = 1;
+    fault.marker = segment_name(0);
+    wal_page_reader_t reader(&env.resource_, segment);
+    auto records = reader.read_all_records(services::wal::id_t{0});
+    fault.marker.clear();
+
+    INFO("reads that hit the first data page: " << fault.reads_at_offset);
+    REQUIRE(records.has_error());
+    CHECK(records.error().type == core::error_code_t::io_error);
 }
 
 // Insert payload built on the fixture's own arena (see make_insert_batch above); the batch is

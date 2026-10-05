@@ -163,8 +163,16 @@ namespace services::wal {
         alignas(4096) char page_buf[PAGE_SIZE];
 
         for (size_t pi = 1; pi <= count; ++pi) {
+            // Every page below page_count() lies inside the file: a failed read is an I/O error, and the
+            // records on and after this page are not a shorter journal.
             if (!read_page(pi, page_buf)) {
-                break; // read error -- stop
+                std::pmr::string message{resource_};
+                message.append("wal segment ");
+                message.append(path_.string());
+                message.append(", data page ");
+                message.append(std::to_string(pi));
+                message.append(" could not be read");
+                return core::error_t(core::error_code_t::io_error, std::move(message));
             }
             wal_page_header_t hdr;
             std::memcpy(&hdr, page_buf, PAGE_HEADER_SIZE);

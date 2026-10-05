@@ -14,15 +14,11 @@ namespace otterbrix {
 
     wrapper_dispatcher_t::wrapper_dispatcher_t(std::pmr::memory_resource* resource,
                                                actor_zeta::address_t manager_dispatcher,
-                                               actor_zeta::scheduler_raw scheduler,
                                                log_t& log)
         : actor_zeta::actor::actor_mixin<wrapper_dispatcher_t>()
         , resource_(resource)
         , manager_dispatcher_(std::move(manager_dispatcher))
-        , scheduler_(scheduler)
-        , log_(log.clone()) {
-        (void) scheduler_;
-    }
+        , log_(log.clone()) {}
 
     wrapper_dispatcher_t::~wrapper_dispatcher_t() { trace(log_, "delete wrapper_dispatcher_t"); }
 
@@ -40,17 +36,6 @@ namespace otterbrix {
         return {false, res};
     }
 
-    void wrapper_dispatcher_t::wait_future_void(unique_future<void>& future) {
-        while (!future.is_ready()) {
-            std::unique_lock<std::mutex> lock(event_loop_mutex_);
-            if (!future.is_ready()) {
-                // See wait_future in the header for the 100µs poll rationale.
-                event_loop_cv_.wait_for(lock, std::chrono::microseconds(100));
-            }
-        }
-        std::move(future).take_ready();
-    }
-
     auto wrapper_dispatcher_t::register_udf(const session_id_t& session, components::compute::function_ptr function)
         -> core::error_t {
         trace(log_,
@@ -61,7 +46,7 @@ namespace otterbrix {
                                                        &services::dispatcher::manager_dispatcher_t::register_udf,
                                                        session,
                                                        std::move(function));
-        return wait_future(future);
+        return actor_zeta::otterbrix::wait_ready(future);
     }
 
     auto wrapper_dispatcher_t::set_explain_renderer(uint32_t id, services::collection::explain_render_fn fn)
@@ -73,7 +58,7 @@ namespace otterbrix {
                                         &services::dispatcher::manager_dispatcher_t::set_explain_renderer,
                                         id,
                                         fn);
-        return wait_future(future);
+        return actor_zeta::otterbrix::wait_ready(future);
     }
 
     auto wrapper_dispatcher_t::unregister_udf(const session_id_t& session,
@@ -90,7 +75,7 @@ namespace otterbrix {
                                                        function_name,
                                                        inputs,
                                                        behavior);
-        return wait_future(future);
+        return actor_zeta::otterbrix::wait_ready(future);
     }
 
     auto wrapper_dispatcher_t::register_cast(const session_id_t& session,
@@ -104,7 +89,7 @@ namespace otterbrix {
                                                        source,
                                                        target,
                                                        entry);
-        return wait_future(future);
+        return actor_zeta::otterbrix::wait_ready(future);
     }
 
     auto wrapper_dispatcher_t::unregister_cast(const session_id_t& session,
@@ -116,7 +101,7 @@ namespace otterbrix {
                                                        session,
                                                        source,
                                                        target);
-        return wait_future(future);
+        return actor_zeta::otterbrix::wait_ready(future);
     }
 
     auto wrapper_dispatcher_t::execute_plan(const session_id_t& session,
@@ -277,7 +262,7 @@ namespace otterbrix {
                                                        session,
                                                        std::move(plan));
 
-        return wait_future(future);
+        return actor_zeta::otterbrix::wait_ready(future);
     }
 
     cursor_t_ptr wrapper_dispatcher_t::send_failed_plan(const session_id_t& session, core::error_t error) {
@@ -285,7 +270,7 @@ namespace otterbrix {
                                                        &services::dispatcher::manager_dispatcher_t::refuse_statement,
                                                        session,
                                                        std::move(error));
-        return wait_future(future);
+        return actor_zeta::otterbrix::wait_ready(future);
     }
 
 } // namespace otterbrix

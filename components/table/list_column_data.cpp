@@ -181,18 +181,14 @@ namespace components::table {
             return base; // out_of_memory: no exceptions across actors
         }
 
-        column_append_state validity_append_state;
-
-        validity_append_state.pbm = state.pbm;
+        column_append_state validity_append_state{state.pbm};
         auto v = validity.initialize_append(validity_append_state);
         if (v.has_error()) {
             return v;
         }
         state.child_appends.push_back(std::move(validity_append_state));
 
-        column_append_state child_append_state;
-
-        child_append_state.pbm = state.pbm;
+        column_append_state child_append_state{state.pbm};
         auto child = child_column->initialize_append(child_append_state);
         if (child.has_error()) {
             return child;

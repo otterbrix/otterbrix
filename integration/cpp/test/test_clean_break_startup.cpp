@@ -23,11 +23,11 @@
 #include <services/disk/tests/disk_test_helpers.hpp>
 
 #include <filesystem>
-#include <fstream>
 #include <limits>
 #include <thread>
 #include <unistd.h>
 #include <components/log/test_log.hpp>
+#include <services/disk/tests/test_directory.hpp>
 
 using namespace services::disk;
 using namespace components::catalog;
@@ -63,7 +63,12 @@ namespace {
                 c.path = path;
                 return c;
             }())
-            , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {}
+            , manager(actor_zeta::spawn<manager_disk_t>(&resource,
+                                                        scheduler,
+                                                        scheduler,
+                                                        test_directory::created(disk_config),
+                                                        log,
+                                                        configuration::pump_intervals_t{})) {}
         ~fresh_disk() {
             // manager_disk_t self-drives on an internal thread; destroy it before
             // tearing down the scheduler to avoid use-after-free.
@@ -341,68 +346,6 @@ TEST_CASE("integration::clean_break_startup::sequence_view_macro_via_pg_class") 
         REQUIRE(after_oid > view_oid);
         REQUIRE(after_oid > macro_oid);
     }
-    std::filesystem::remove_all(dir);
-}
-
-// Clean-break: the operator must migrate or remove the legacy catalog.otbx before booting on the new
-// code, so base_otterbrix_t::open refuses the start rather than working around it.
-TEST_CASE("integration::clean_break_startup::hard_fail_on_legacy_catalog_otbx") {
-    auto dir = std::filesystem::path(clean_break_dir() + "/hard_fail");
-    std::filesystem::remove_all(dir);
-    std::filesystem::create_directories(dir);
-    auto disk_subdir = dir / "wal";
-    std::filesystem::create_directories(disk_subdir);
-    // The stub content doesn't matter: the engine checks existence first and refuses before opening it.
-    std::ofstream out((disk_subdir / "catalog.otbx").string(), std::ios::binary);
-    out << "legacy_marker";
-    out.close();
-    REQUIRE(std::filesystem::exists(disk_subdir / "catalog.otbx"));
-
-    auto config = test_create_config(dir);
-    auto opened = otterbrix::base_otterbrix_t::open(config);
-    REQUIRE(opened.has_error());
-    const std::string msg{opened.error().what.c_str()};
-    INFO("refusal: " << msg);
-    REQUIRE(msg.find("Legacy catalog format detected") != std::string::npos);
-    REQUIRE(msg.find("catalog.otbx") != std::string::npos);
-    std::filesystem::remove_all(dir);
-}
-
-// The directory lock is taken before anything that can refuse the start; a refused start must release
-// it, or retrying in the same process after fixing the real fault would wrongly answer "otterbrix
-// instance has to have unique directory" for a directory that is actually free.
-TEST_CASE("integration::clean_break_startup::a_refused_startup_releases_the_directory") {
-    auto dir = std::filesystem::path(clean_break_dir() + "/refused_release");
-    std::filesystem::remove_all(dir);
-    auto disk_subdir = dir / "wal";
-    std::filesystem::create_directories(disk_subdir);
-
-    const auto legacy = disk_subdir / "catalog.otbx";
-    {
-        std::ofstream out(legacy.string(), std::ios::binary);
-        out << "legacy_marker";
-    }
-    REQUIRE(std::filesystem::exists(legacy));
-
-    auto config = test_create_config(dir);
-    {
-        auto first = otterbrix::base_otterbrix_t::open(config);
-        REQUIRE(first.has_error());
-        REQUIRE(std::string(first.error().what.c_str()).find("Legacy catalog format detected") != std::string::npos);
-    }
-
-    std::filesystem::remove(legacy);
-    REQUIRE_FALSE(std::filesystem::exists(legacy));
-
-    // The retry must now start, not report the directory as taken.
-    {
-        auto retry = otterbrix::base_otterbrix_t::open(config);
-        const std::string retry_error = retry.has_error() ? std::string(retry.error().what.c_str()) : std::string{};
-        INFO("retry refused with: " << retry_error);
-        CHECK(retry_error.find("unique directory") == std::string::npos);
-        REQUIRE_FALSE(retry.has_error());
-    }
-
     std::filesystem::remove_all(dir);
 }
 

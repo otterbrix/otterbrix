@@ -30,6 +30,7 @@
 #include <thread>
 #include <unistd.h>
 #include <components/log/test_log.hpp>
+#include <services/disk/tests/test_directory.hpp>
 
 // append_pg_catalog_row calls write_physical_insert before the storage append — WAL-then-storage.
 
@@ -69,14 +70,20 @@ namespace {
                 c.path = dir;
                 return c;
             }())
-            , disk(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log))
+            , disk(actor_zeta::spawn<manager_disk_t>(&resource,
+                                                     scheduler,
+                                                     scheduler,
+                                                     test_directory::created(disk_config),
+                                                     log,
+                                                     configuration::pump_intervals_t{}))
             , wal(actor_zeta::spawn<services::wal::manager_wal_replicate_t>(
                   &resource,
                   scheduler,
                   wal_config,
                   log,
                   wire_wal ? disk->address() : components::pipeline::no_mailbox(),
-                  components::pipeline::no_mailbox())) {
+                  components::pipeline::no_mailbox(),
+                                                                            configuration::pump_intervals_t{})) {
             std::filesystem::create_directories(dir);
             if (wire_wal) {
                 disk->set_manager_wal_sync(wal->address());
@@ -116,7 +123,7 @@ namespace {
         c.path = dir;
         core::pmr::otterbrix_resource reader_resource;
         services::wal::wal_reader_t reader(&reader_resource, c, log);
-        auto records_result = reader.read_committed_records(services::wal::id_t{0});
+        auto records_result = reader.read_committed_records();
         REQUIRE_FALSE(records_result.has_error());
         auto& records = records_result.value();
         std::size_t n = 0;
@@ -134,7 +141,7 @@ namespace {
         c.path = dir;
         core::pmr::otterbrix_resource reader_resource;
         services::wal::wal_reader_t reader(&reader_resource, c, log);
-        auto records_result = reader.read_committed_records(services::wal::id_t{0});
+        auto records_result = reader.read_committed_records();
         REQUIRE_FALSE(records_result.has_error());
         auto& records = records_result.value();
         std::size_t n = 0;
@@ -156,7 +163,7 @@ namespace {
         c.path = dir;
         core::pmr::otterbrix_resource reader_resource;
         services::wal::wal_reader_t reader(&reader_resource, c, log);
-        auto records_result = reader.read_committed_records(services::wal::id_t{0});
+        auto records_result = reader.read_committed_records();
         REQUIRE_FALSE(records_result.has_error());
         auto& records = records_result.value();
         std::vector<phys_rec_t> seq;
@@ -344,7 +351,7 @@ TEST_CASE("services::disk::wal_catalog::all_records_under_pg_catalog_database") 
     c.path = dir;
     core::pmr::otterbrix_resource reader_resource;
     services::wal::wal_reader_t reader(&reader_resource, c, log);
-    auto records_result = reader.read_committed_records(services::wal::id_t{0});
+    auto records_result = reader.read_committed_records();
     REQUIRE_FALSE(records_result.has_error());
     auto& records = records_result.value();
     bool seen_any = false;
@@ -517,7 +524,7 @@ namespace {
         c.path = dir;
         core::pmr::otterbrix_resource reader_resource;
         services::wal::wal_reader_t reader(&reader_resource, c, log);
-        auto records_result = reader.read_committed_records(services::wal::id_t{0});
+        auto records_result = reader.read_committed_records();
         REQUIRE_FALSE(records_result.has_error());
         std::size_t n = 0;
         for (auto& r : records_result.value()) {
@@ -622,7 +629,7 @@ TEST_CASE("services::disk::wal_catalog::a_growth_append_journals_the_add_column_
         c.path = dir;
         core::pmr::otterbrix_resource reader_resource;
         services::wal::wal_reader_t reader(&reader_resource, c, log);
-        auto records_result = reader.read_committed_records(services::wal::id_t{0});
+        auto records_result = reader.read_committed_records();
         REQUIRE_FALSE(records_result.has_error());
         int add_col_idx = -1;
         int growth_insert_idx = -1;
@@ -719,7 +726,7 @@ TEST_CASE("services::disk::wal_catalog::the_backfill_stamp_survives_a_kill_throu
     wal_c.path = dir;
     auto reader_log = make_test_log("python", "/tmp/docker_logs/");
     services::wal::wal_reader_t reader(&reader_resource, wal_c, reader_log);
-    auto records_result = reader.read_committed_records(services::wal::id_t{0});
+    auto records_result = reader.read_committed_records();
     REQUIRE_FALSE(records_result.has_error());
     auto& records = records_result.value();
 

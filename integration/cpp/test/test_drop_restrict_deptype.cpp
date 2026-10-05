@@ -38,16 +38,6 @@ namespace {
 
     namespace catalog = components::catalog;
 
-    // manager_disk_ is protected on the base; this opens it for the forged-edge
-    // case below, whose pg_depend shape no SQL statement can produce.
-    class restrict_spaces_t final : public otterbrix::base_otterbrix_t {
-    public:
-        explicit restrict_spaces_t(const configuration::config& config)
-            : otterbrix::base_otterbrix_t(test_open_engine(config)) {}
-
-        actor_zeta::address_t disk_address() const noexcept { return engine().disk_address(); }
-    };
-
     // Disk actor runs on its own scheduler; poll rather than block-wait.
     template<typename Future>
     void spin_until_ready(Future& fut) {
@@ -59,14 +49,14 @@ namespace {
 
     template<typename Key>
     core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>
-    catalog_chunks_with(restrict_spaces_t& space, catalog::oid_t table_oid, std::uint64_t key_col, Key key) {
+    catalog_chunks_with(otterbrix::otterbrix_t& space, catalog::oid_t table_oid, std::uint64_t key_col, Key key) {
         auto* resource = space.dispatcher()->resource();
         components::table::transaction_data td{0, 0};
         td.snapshot_horizon = std::numeric_limits<uint64_t>::max();
         components::execution_context_t exec_ctx{otterbrix::session_id_t{}, td, {}};
         std::pmr::vector<std::uint64_t> key_cols(resource);
         key_cols.emplace_back(key_col);
-        auto [_, fut] = actor_zeta::otterbrix::send(space.disk_address(),
+        auto [_, fut] = actor_zeta::otterbrix::send(space.engine().disk_address(),
                                                     &services::disk::manager_disk_t::read_chunks_by_key,
                                                     exec_ctx,
                                                     table_oid,
@@ -77,7 +67,7 @@ namespace {
         return std::move(fut).take_ready();
     }
 
-    catalog::oid_t table_oid_named(restrict_spaces_t& space, const std::string& name) {
+    catalog::oid_t table_oid_named(otterbrix::otterbrix_t& space, const std::string& name) {
         auto batches = catalog_chunks_with(space,
                                            catalog::well_known_oid::pg_class_table,
                                            catalog::pg_class_col::relname,
@@ -95,7 +85,7 @@ namespace {
 
     // Mirrors operator_alter_column_drop.cpp's own resolution: pg_attribute
     // keyed on attrelid, matched by attname.
-    catalog::oid_t attoid_of(restrict_spaces_t& space, catalog::oid_t table_oid, const std::string& column) {
+    catalog::oid_t attoid_of(otterbrix::otterbrix_t& space, catalog::oid_t table_oid, const std::string& column) {
         auto batches = catalog_chunks_with(space,
                                            catalog::well_known_oid::pg_attribute_table,
                                            catalog::pg_attribute_col::attrelid,
@@ -119,7 +109,7 @@ namespace {
 
     // No writer in this engine emits the (classid, deptype) combination the
     // case below needs, so it is forged directly through the disk manager.
-    void forge_depend_edge(restrict_spaces_t& space,
+    void forge_depend_edge(otterbrix::otterbrix_t& space,
                            catalog::oid_t classid,
                            catalog::oid_t objid,
                            catalog::oid_t refclassid,
@@ -130,7 +120,7 @@ namespace {
         td.snapshot_horizon = std::numeric_limits<uint64_t>::max();
         components::execution_context_t exec_ctx{otterbrix::session_id_t{}, td, {}};
         auto row = catalog::build_pg_depend_row(resource, classid, objid, refclassid, refobjid, deptype);
-        auto [_, fut] = actor_zeta::otterbrix::send(space.disk_address(),
+        auto [_, fut] = actor_zeta::otterbrix::send(space.engine().disk_address(),
                                                     &services::disk::manager_disk_t::append_pg_catalog_row,
                                                     exec_ctx,
                                                     catalog::well_known_oid::pg_depend_table,
@@ -269,7 +259,7 @@ TEST_CASE("integration::cpp::drop_restrict::column_referenced_by_a_foreign_key_i
 TEST_CASE("integration::cpp::drop_restrict::a_non_constraint_blocking_edge_refuses_the_column_drop") {
     auto config = make_test_config(fixture_path("foreign_blocker"));
     config.log.level = log_t::level::off;
-    restrict_spaces_t space(config);
+    otterbrix::otterbrix_t space(test_open_engine(config));
     auto* d = space.dispatcher();
 
     run_ok(d, "CREATE DATABASE dr;");
@@ -334,7 +324,7 @@ TEST_CASE("integration::cpp::drop_restrict::table_referenced_by_a_foreign_key_is
 TEST_CASE("integration::cpp::drop_restrict::a_normal_dependent_behind_an_owned_index_refuses_the_table_drop") {
     auto config = make_test_config(fixture_path("behind_auto_chain"));
     config.log.level = log_t::level::off;
-    restrict_spaces_t space(config);
+    otterbrix::otterbrix_t space(test_open_engine(config));
     auto* d = space.dispatcher();
 
     run_ok(d, "CREATE DATABASE dr;");

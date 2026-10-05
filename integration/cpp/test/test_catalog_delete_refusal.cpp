@@ -49,27 +49,19 @@ namespace {
         }
     };
 
-    class delete_refusal_spaces_t final : public otterbrix::base_otterbrix_t {
-    public:
-        explicit delete_refusal_spaces_t(const configuration::config& config)
-            : otterbrix::base_otterbrix_t(test_open_engine(config)) {}
-
-        actor_zeta::address_t disk_address() const noexcept { return engine().disk_address(); }
-    };
-
     // "the read refused" — distinct from every honest row count, including zero.
     constexpr std::size_t kReadRefused = static_cast<std::size_t>(-1);
 
     // Reads the catalog as a snapshot that sees every COMMITTED row.
     template<typename Key>
     core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>
-    catalog_chunks_with(delete_refusal_spaces_t& space, catalog::oid_t table_oid, std::uint64_t key_col, Key key) {
+    catalog_chunks_with(otterbrix::otterbrix_t& space, catalog::oid_t table_oid, std::uint64_t key_col, Key key) {
         auto* resource = space.dispatcher()->resource();
         auto td = table::transaction_data::committed();
         execution_context_t exec_ctx{otterbrix::session_id_t{}, td, {}};
         std::pmr::vector<std::uint64_t> key_cols(resource);
         key_cols.emplace_back(key_col);
-        auto [_, fut] = actor_zeta::otterbrix::send(space.disk_address(),
+        auto [_, fut] = actor_zeta::otterbrix::send(space.engine().disk_address(),
                                                     &services::disk::manager_disk_t::read_chunks_by_key,
                                                     exec_ctx,
                                                     table_oid,
@@ -85,7 +77,7 @@ namespace {
 
     template<typename Key>
     std::size_t
-    catalog_rows_with(delete_refusal_spaces_t& space, catalog::oid_t table_oid, std::uint64_t key_col, Key key) {
+    catalog_rows_with(otterbrix::otterbrix_t& space, catalog::oid_t table_oid, std::uint64_t key_col, Key key) {
         auto batches = catalog_chunks_with(space, table_oid, key_col, key);
         if (batches.has_error()) {
             return kReadRefused;
@@ -97,14 +89,14 @@ namespace {
         return rows;
     }
 
-    std::size_t pg_class_rows_named(delete_refusal_spaces_t& space, const std::string& name) {
+    std::size_t pg_class_rows_named(otterbrix::otterbrix_t& space, const std::string& name) {
         return catalog_rows_with(space,
                                  catalog::well_known_oid::pg_class_table,
                                  catalog::pg_class_col::relname,
                                  std::string_view{name});
     }
 
-    catalog::oid_t table_oid_named(delete_refusal_spaces_t& space, const std::string& name) {
+    catalog::oid_t table_oid_named(otterbrix::otterbrix_t& space, const std::string& name) {
         auto batches = catalog_chunks_with(space,
                                            catalog::well_known_oid::pg_class_table,
                                            catalog::pg_class_col::relname,
@@ -129,7 +121,7 @@ namespace {
     };
 
     column_rows_t
-    pg_attribute_rows_for(delete_refusal_spaces_t& space, catalog::oid_t table_oid, std::string_view attname) {
+    pg_attribute_rows_for(otterbrix::otterbrix_t& space, catalog::oid_t table_oid, std::string_view attname) {
         auto batches = catalog_chunks_with(space,
                                            catalog::well_known_oid::pg_attribute_table,
                                            catalog::pg_attribute_col::attrelid,
@@ -191,7 +183,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::drop_table_fails_when_
     wal_fault_scope_t fault;
     fault.faulty_marker = "wal_"; // WAL segment files only; the .otbx files stay untouched
 
-    delete_refusal_spaces_t space(config);
+    otterbrix::otterbrix_t space(test_open_engine(config));
     auto* dispatcher = space.dispatcher();
     seed_wide_table(dispatcher);
 
@@ -225,7 +217,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::a_healthy_drop_table_s
     auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
-    delete_refusal_spaces_t space(config);
+    otterbrix::otterbrix_t space(test_open_engine(config));
     auto* dispatcher = space.dispatcher();
     seed_wide_table(dispatcher);
     CHECK(pg_class_rows_named(space, kTableName) == 1);
@@ -244,7 +236,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::a_column_added_and_dro
     auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
-    delete_refusal_spaces_t space(config);
+    otterbrix::otterbrix_t space(test_open_engine(config));
     auto* dispatcher = space.dispatcher();
     const std::string table = "add_drop_t";
     seed_plain_table(dispatcher, table);
@@ -279,7 +271,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::a_column_added_and_dro
     auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
-    delete_refusal_spaces_t space(config);
+    otterbrix::otterbrix_t space(test_open_engine(config));
     auto* dispatcher = space.dispatcher();
     const std::string table = "add_drop_ac_t";
     seed_plain_table(dispatcher, table);
@@ -301,7 +293,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_in_transaction_add_
     auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
-    delete_refusal_spaces_t space(config);
+    otterbrix::otterbrix_t space(test_open_engine(config));
     auto* dispatcher = space.dispatcher();
     const std::string table = "added_at_t";
     seed_plain_table(dispatcher, table);
@@ -325,7 +317,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_autocommit_add_colu
     auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
-    delete_refusal_spaces_t space(config);
+    otterbrix::otterbrix_t space(test_open_engine(config));
     auto* dispatcher = space.dispatcher();
     const std::string table = "added_at_auto_t";
     seed_plain_table(dispatcher, table);
@@ -349,7 +341,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::two_added_columns_each
     auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
-    delete_refusal_spaces_t space(config);
+    otterbrix::otterbrix_t space(test_open_engine(config));
     auto* dispatcher = space.dispatcher();
     const std::string table = "added_at_twice_t";
     seed_plain_table(dispatcher, table);
@@ -395,7 +387,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::a_dropped_columns_tomb
     auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
-    delete_refusal_spaces_t space(config);
+    otterbrix::otterbrix_t space(test_open_engine(config));
     auto* dispatcher = space.dispatcher();
     const std::string table = "dropped_at_t";
     seed_plain_table(dispatcher, table);
@@ -429,7 +421,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_added_columns_commi
 
     INFO("phase 1: ALTER ... ADD COLUMN; the scope exit checkpoints");
     {
-        delete_refusal_spaces_t space(config);
+        otterbrix::otterbrix_t space(test_open_engine(config));
         auto* dispatcher = space.dispatcher();
         seed_plain_table(dispatcher, table);
 
@@ -445,7 +437,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_added_columns_commi
 
     INFO("phase 2: reopen the same directory — the stamp has to come back off the disk");
     {
-        delete_refusal_spaces_t space(config);
+        otterbrix::otterbrix_t space(test_open_engine(config));
         auto* dispatcher = space.dispatcher();
 
         const auto rows = pg_attribute_rows_for(space, table_oid, "c");
@@ -466,7 +458,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_added_columns_commi
 
     INFO("phase 3: a second restart, so the row written after the first one is covered too");
     {
-        delete_refusal_spaces_t space(config);
+        otterbrix::otterbrix_t space(test_open_engine(config));
         auto* dispatcher = space.dispatcher();
 
         const auto rows = pg_attribute_rows_for(space, table_oid, "c");
@@ -488,7 +480,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_in_transaction_rena
     auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
-    delete_refusal_spaces_t space(config);
+    otterbrix::otterbrix_t space(test_open_engine(config));
     auto* dispatcher = space.dispatcher();
     const std::string table = "rename_t";
     seed_plain_table(dispatcher, table);
@@ -517,7 +509,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_in_transaction_crea
     auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
-    delete_refusal_spaces_t space(config);
+    otterbrix::otterbrix_t space(test_open_engine(config));
     auto* dispatcher = space.dispatcher();
     const std::string table = "indexed_t";
     seed_plain_table(dispatcher, table);

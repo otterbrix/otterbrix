@@ -78,12 +78,7 @@ namespace components::table {
 
         auto extended = parent.row_groups_->add_column(new_column);
         if (extended.has_error()) {
-            // A constructor can't return, so the backfill refusal latches: the parent stays root and
-            // shares its collection read-only.
-            construction_error_ = extended.error();
-            column_definitions_.pop_back();
-            this->row_groups_ = parent.row_groups_;
-            is_root_ = false;
+            latch_construction_error(parent, extended.error());
             return;
         }
         this->row_groups_ = std::move(extended.value());
@@ -111,20 +106,19 @@ namespace components::table {
 
         auto reduced = parent.row_groups_->remove_column(removed_column);
         if (reduced.has_error()) {
-            // Same latch as the add_column constructor: the parent stays root, this table shares its
-            // collection read-only and still lists every column.
-            construction_error_ = reduced.error();
-            column_definitions_.clear();
-            for (auto& column_def : parent.column_definitions_) {
-                column_definitions_.emplace_back(column_def);
-            }
-            this->row_groups_ = parent.row_groups_;
-            is_root_ = false;
+            latch_construction_error(parent, reduced.error());
             return;
         }
         this->row_groups_ = std::move(reduced.value());
 
         parent.is_root_ = false;
+    }
+
+    void data_table_t::latch_construction_error(const data_table_t& parent, const core::error_t& error) {
+        construction_error_ = error;
+        column_definitions_ = parent.column_definitions_;
+        row_groups_ = parent.row_groups_;
+        is_root_ = false;
     }
 
     [[nodiscard]] std::pmr::vector<types::complex_logical_type> data_table_t::copy_types() const {
@@ -605,7 +599,7 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> data_table_t::checkpoint(storage::metadata_writer_t& writer) {
-        storage::partial_block_manager_t partial_block_manager(row_groups_->block_manager());
+        auto partial_block_manager = storage::partial_block_manager_t::for_checkpoint(row_groups_->block_manager());
 
         auto row_group_pointers_res = row_groups_->checkpoint(partial_block_manager);
         if (row_group_pointers_res.has_error()) {

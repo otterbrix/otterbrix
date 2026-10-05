@@ -22,6 +22,7 @@
 #include <thread>
 #include <unistd.h>
 #include <components/log/test_log.hpp>
+#include <services/disk/tests/test_directory.hpp>
 
 // storage_fetch_next_batch mints a cursor in active_scans_ and erases it only along the drain
 // paths, so a source that stops early (error mid-pump, satisfied LIMIT, dropped sub-plan) leaves
@@ -60,7 +61,12 @@ namespace {
                 c.path = cursor_dir();
                 return c;
             }())
-            , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {
+            , manager(actor_zeta::spawn<manager_disk_t>(&resource,
+                                                        scheduler,
+                                                        scheduler,
+                                                        test_directory::created(disk_config),
+                                                        log,
+                                                        configuration::pump_intervals_t{})) {
             cleanup();
             std::filesystem::create_directories(cursor_dir());
             REQUIRE_FALSE(manager->bootstrap_system_tables_sync().contains_error());

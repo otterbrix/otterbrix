@@ -22,6 +22,7 @@
 #include <thread>
 #include <unistd.h>
 #include <components/log/test_log.hpp>
+#include <services/disk/tests/test_directory.hpp>
 
 // checkpoint_all's WAL floor is min(prev_checkpoint_wal_id) over every entry the agents own, so a deferred
 // entry's unchanged prev pins the floor below its unpersisted records (see test_checkpoint_dirty.cpp).
@@ -52,7 +53,12 @@ namespace {
                 c.path = path;
                 return c;
             }())
-            , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {}
+            , manager(actor_zeta::spawn<manager_disk_t>(&resource,
+                                                        scheduler,
+                                                        scheduler,
+                                                        test_directory::created(disk_config),
+                                                        log,
+                                                        configuration::pump_intervals_t{})) {}
         ~fresh_disk() {
             // Manager first: its dtor joins the loop thread, which may still enqueue onto the scheduler.
             manager.reset();

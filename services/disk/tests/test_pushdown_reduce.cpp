@@ -24,6 +24,7 @@
 #include <map>
 #include <vector>
 #include <components/log/test_log.hpp>
+#include <services/disk/tests/test_directory.hpp>
 
 using namespace services::disk;
 using namespace pushdown_reduce_test;
@@ -365,7 +366,12 @@ TEST_CASE("pushdown_reduce: a manager with no agents refuses instead of folding 
     std::filesystem::create_directories(cfg.path);
     {
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager(
-            actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, cfg, log));
+            actor_zeta::spawn<manager_disk_t>(&resource,
+                                              scheduler,
+                                              scheduler,
+                                              test_directory::created(cfg),
+                                              log,
+                                              configuration::pump_intervals_t{}));
         auto [_, future] = actor_zeta::otterbrix::send(manager->address(),
                                                        &manager_disk_t::storage_reduce,
                                                        session_id_t{},

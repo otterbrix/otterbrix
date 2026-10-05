@@ -1194,7 +1194,13 @@ namespace components::table {
             }
 
             const auto allocation = pbm.get_block_allocation(record_size);
-            pbm.write_to_block(allocation.block_id, allocation.offset_in_block, payload, record_size);
+            if (auto written = pbm.write_to_block(allocation.block_id,
+                                                  allocation.offset_in_block,
+                                                  payload,
+                                                  record_size);
+                written.contains_error()) {
+                return written;
+            }
             impl::write_string_marker(marker, allocation.block_id, static_cast<int64_t>(allocation.offset_in_block));
             if (std::find(out_blocks.begin(), out_blocks.end(), allocation.block_id) == out_blocks.end()) {
                 out_blocks.push_back(allocation.block_id);

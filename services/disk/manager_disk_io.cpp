@@ -1,5 +1,7 @@
 #include "manager_disk_impl.hpp"
 
+#include <core/file/list_dir.hpp>
+
 namespace services::disk {
 
     using namespace core::filesystem;
@@ -462,9 +464,14 @@ namespace services::disk {
         const auto base = otbx_path.filename().string();
         const std::string wal_id_name = base + ".wal_id";
         const std::string wal_id_tmp_name = wal_id_name + ".tmp";
-        std::error_code ec;
-        for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
-            const auto name = entry.path().filename().string();
+        auto listed = core::filesystem::list_dir(resource, dir);
+        if (listed.has_error()) {
+            return core::error_t(core::error_code_t::io_error,
+                                 std::pmr::string{"verify_otbx_sidecars: " + std::string(listed.error().what.c_str()),
+                                                  resource});
+        }
+        for (const auto& entry : listed.value()) {
+            const auto name = entry.path.filename().string();
             if (name == base || name == wal_id_name || name == wal_id_tmp_name) {
                 continue;
             }
@@ -476,14 +483,9 @@ namespace services::disk {
                                          "the two-slot root inside the .otbx and writes only the .wal_id sidecar; "
                                          "a leftover backup or quarantine file from an earlier build makes the "
                                          "on-disk state ambiguous. Nothing was modified — remove or archive '" +
-                                         entry.path().string() + "' and reopen.",
+                                         entry.path.string() + "' and reopen.",
                                      resource});
             }
-        }
-        if (ec) {
-            return core::error_t(
-                core::error_code_t::io_error,
-                std::pmr::string{"verify_otbx_sidecars: cannot list " + dir.string() + ": " + ec.message(), resource});
         }
         return core::error_t::no_error();
     }

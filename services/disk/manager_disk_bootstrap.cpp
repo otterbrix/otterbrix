@@ -1,5 +1,8 @@
 #include "manager_disk_impl.hpp"
 
+#include <core/file/list_dir.hpp>
+
+#include <cassert>
 #include <charconv>
 #include <stdexcept>
 
@@ -579,25 +582,31 @@ namespace services::disk {
         if (config_.path.empty()) {
             return core::error_t::no_error();
         }
-        const auto listing_refused = [this](const std::filesystem::path& dir, const std::error_code& ec) {
+        const auto listing_refused = [this](const core::error_t& why) {
             return core::error_t(core::error_code_t::io_error,
-                                 std::pmr::string{"load_user_table_storages_sync: the directory " + dir.string() +
-                                                      " could not be listed, so the tables under it cannot be "
-                                                      "loaded: " + ec.message(),
+                                 std::pmr::string{"load_user_table_storages_sync: the tables under " +
+                                                      config_.path.string() + " cannot be loaded: " +
+                                                      std::string(why.what.c_str()),
                                                   resource()});
         };
         std::error_code ec;
         if (!std::filesystem::exists(config_.path, ec)) {
-            return ec ? listing_refused(config_.path, ec) : core::error_t::no_error();
+            if (ec) {
+                return listing_refused(core::error_t(
+                    core::error_code_t::io_error,
+                    std::pmr::string{"the directory could not be examined: " + ec.message(), resource()}));
+            }
+            return core::error_t::no_error();
         }
         // Layout: ${config_.path}/${database_oid}/${table_oid}/table.otbx; system tables are already loaded here.
-        std::filesystem::directory_iterator db_it(config_.path, ec);
-        for (const std::filesystem::directory_iterator end; !ec && db_it != end; db_it.increment(ec)) {
-            const auto& db_entry = *db_it;
-            std::error_code kind_ec;
-            if (!db_entry.is_directory(kind_ec))
+        auto databases = core::filesystem::list_dir(resource(), config_.path);
+        if (databases.has_error()) {
+            return listing_refused(databases.error());
+        }
+        for (const auto& db_entry : databases.value()) {
+            if (db_entry.kind != std::filesystem::file_type::directory)
                 continue;
-            const auto db_name = db_entry.path().filename().string();
+            const auto db_name = db_entry.path.filename().string();
             std::uint64_t db_oid_raw = 0;
             {
                 auto [ptr, parse_ec] = std::from_chars(db_name.data(), db_name.data() + db_name.size(), db_oid_raw);
@@ -605,14 +614,14 @@ namespace services::disk {
                     continue; // non-numeric (e.g. wal segment dirs at the same level)
             }
             const auto db_oid = static_cast<catalog::oid_t>(db_oid_raw);
-            std::error_code tbl_ec;
-            std::filesystem::directory_iterator tbl_it(db_entry.path(), tbl_ec);
-            for (const std::filesystem::directory_iterator tbl_end; !tbl_ec && tbl_it != tbl_end;
-                 tbl_it.increment(tbl_ec)) {
-                const auto& tbl_entry = *tbl_it;
-                if (!tbl_entry.is_directory(kind_ec))
+            auto tables = core::filesystem::list_dir(resource(), db_entry.path);
+            if (tables.has_error()) {
+                return listing_refused(tables.error());
+            }
+            for (const auto& tbl_entry : tables.value()) {
+                if (tbl_entry.kind != std::filesystem::file_type::directory)
                     continue;
-                const auto tbl_name = tbl_entry.path().filename().string();
+                const auto tbl_name = tbl_entry.path.filename().string();
                 std::uint64_t tbl_oid_raw = 0;
                 {
                     auto [ptr, parse_ec] =
@@ -625,11 +634,15 @@ namespace services::disk {
                     continue;
                 if (has_storage(tbl_oid))
                     continue;
-                auto otbx = tbl_entry.path() / "table.otbx";
+                auto otbx = tbl_entry.path / "table.otbx";
                 std::error_code exists_ec;
                 if (!std::filesystem::exists(otbx, exists_ec)) {
                     if (exists_ec) {
-                        return listing_refused(tbl_entry.path(), exists_ec);
+                        return listing_refused(core::error_t(
+                            core::error_code_t::io_error,
+                            std::pmr::string{"the file " + otbx.string() + " could not be examined: " +
+                                                 exists_ec.message(),
+                                             resource()}));
                     }
                     continue;
                 }
@@ -637,20 +650,16 @@ namespace services::disk {
                       "manager_disk_t::load_user_table_storages_sync : oid={} db_oid={}",
                       static_cast<unsigned>(tbl_oid),
                       static_cast<unsigned>(db_oid));
-                // A never-checkpointed .otbx whose rows are still in the WAL is deferred here, not an error.
+                // A never-checkpointed .otbx whose rows are still in the WAL is deferred there, not an error;
+                // any other refusal stops the start of the whole database.
                 if (auto err = load_storage_disk_sync(tbl_oid, db_oid, otbx, {}); err.contains_error()) {
-                    warn(log_,
-                         "load_user_table_storages_sync: failed for oid={} : {}",
-                         static_cast<unsigned>(tbl_oid),
-                         err.what.c_str());
+                    error(log_,
+                          "load_user_table_storages_sync: oid={} did not load, the start is refused: {}",
+                          static_cast<unsigned>(tbl_oid),
+                          err.what.c_str());
+                    return err;
                 }
             }
-            if (tbl_ec) {
-                return listing_refused(db_entry.path(), tbl_ec);
-            }
-        }
-        if (ec) {
-            return listing_refused(config_.path, ec);
         }
         return core::error_t::no_error();
     }
@@ -765,7 +774,16 @@ namespace services::disk {
             // Recreates a table whose .otbx was LOST (unfsynced dir entry after a crash) — not one PRESENT but
             // refused by the loader, which is still every byte the operator has; creating over it destroys that.
             std::error_code file_ec;
-            if (std::filesystem::exists(otbx, file_ec) && !file_ec) {
+            const bool present = std::filesystem::exists(otbx, file_ec);
+            if (file_ec) {
+                return core::error_t(core::error_code_t::io_error,
+                                     std::pmr::string{"rehydrate_missing_user_storages_sync: the file " +
+                                                          otbx.string() + " of alive table oid=" +
+                                                          std::to_string(static_cast<unsigned>(oid)) +
+                                                          " could not be examined: " + file_ec.message(),
+                                                      resource()});
+            }
+            if (present) {
                 // The CREATE-time root is the on-disk signature of a never-checkpointed file, whatever its size.
                 auto young = components::table::storage::single_file_block_manager_t::file_is_never_checkpointed(
                     otbx.string(),
@@ -806,7 +824,17 @@ namespace services::disk {
                   static_cast<unsigned>(oid),
                   static_cast<unsigned>(ns_oid),
                   defs.size());
-            std::filesystem::create_directories(otbx.parent_path());
+            std::error_code dir_ec;
+            std::filesystem::create_directories(otbx.parent_path(), dir_ec);
+            if (dir_ec) {
+                error(log_,
+                      "manager_disk_t::rehydrate_missing_user_storages_sync: could not create the directory of the "
+                      "lost .otbx of alive table oid={} : {}",
+                      static_cast<unsigned>(oid),
+                      dir_ec.message());
+                ++unclosed;
+                continue;
+            }
             if (auto err = create_storage_disk_sync(oid, ns_oid, std::move(defs), otbx, /*is_computed=*/false);
                 err.contains_error()) {
                 error(log_,
@@ -824,9 +852,9 @@ namespace services::disk {
     // (several columns pack per 256 KiB block), so a column must leave via table_storage_t::drop_column before
     // its blocks are armed. Compared by attoid, never name: a RENAME's catalog half is durable at the WAL commit
     // marker, its storage half only at the table's next checkpoint.
-    void manager_disk_t::reconcile_storage_with_catalog_sync() {
+    core::error_t manager_disk_t::reconcile_storage_with_catalog_sync() {
         if (agents_.empty() || agents_[0] == nullptr) {
-            return;
+            return core::error_t::no_error();
         }
         auto live_oids = scan_live_table_oids_sync();
         std::unordered_set<catalog::oid_t> wanted;
@@ -841,7 +869,7 @@ namespace services::disk {
             }
         }
         if (ordered.empty()) {
-            return;
+            return core::error_t::no_error();
         }
 
         auto cols_by_relid = collect_catalog_columns_sync(wanted);
@@ -851,7 +879,7 @@ namespace services::disk {
                   "{} loaded user table(s) — refusing to treat that as a drop; blocks released by a "
                   "pre-crash ALTER stay leaked until the catalog reads again",
                   ordered.size());
-            return;
+            return core::error_t::no_error();
         }
 
         for (auto oid : ordered) {
@@ -993,15 +1021,17 @@ namespace services::disk {
 
             for (const auto& attname : to_drop) {
                 auto dropped = owned->drop_column(attname, resource());
-                if (dropped.has_error() || !dropped.value()) {
+                if (dropped.has_error()) {
                     error(log_,
                           "manager_disk_t::reconcile_storage_with_catalog_sync: oid={} column '{}' is in the "
-                          "storage schema but drop_column refused it ({}) — its blocks stay leaked",
+                          "storage schema but drop_column refused it, the start is refused: {}",
                           static_cast<unsigned>(oid),
                           attname,
-                          dropped.has_error() ? dropped.error().what.c_str() : "not found");
-                    continue;
+                          dropped.error().what.c_str());
+                    return dropped.error();
                 }
+                // The name was read from this storage's own columns a moment ago.
+                assert(dropped.value() && "a storage column named by the storage itself is found");
                 trace(log_,
                       "manager_disk_t::reconcile_storage_with_catalog_sync: oid={} re-armed the release of "
                       "column '{}' dropped before the crash",
@@ -1009,6 +1039,7 @@ namespace services::disk {
                       attname);
             }
         }
+        return core::error_t::no_error();
     }
 
     std::unordered_map<components::catalog::oid_t, std::vector<components::table::column_definition_t>>
@@ -1627,12 +1658,7 @@ namespace services::disk {
             return std::string{};
         }
         const collection_storage_entry_t* entry = agents_[0]->storage_entry_sync(settings_oid);
-        if (entry == nullptr) {
-            return core::error_t(core::error_code_t::other_error,
-                                 std::pmr::string{"read_setting_sync: pg_settings is not loaded — called before "
-                                                  "bootstrap_system_tables_sync, refusing to answer 'setting absent'",
-                                                  resource_});
-        }
+        assert(entry != nullptr && "read_setting_sync runs after bootstrap_system_tables_sync loaded pg_settings");
         auto& table = const_cast<collection_storage_entry_t*>(entry)->table_storage.table();
         if (table.column_count() < 2) {
             return core::error_t(core::error_code_t::data_corruption,

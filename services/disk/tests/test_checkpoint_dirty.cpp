@@ -26,6 +26,7 @@
 #include <unistd.h>
 #include <vector>
 #include <components/log/test_log.hpp>
+#include <services/disk/tests/test_directory.hpp>
 
 // Without the gate an empty round took 205.7 ms against 124.4 ms for one that wrote: doing
 // nothing cost more than doing everything. With it, 15.4 ms against 151.5 (100 tables x 100
@@ -54,7 +55,12 @@ namespace {
                 c.path = path;
                 return c;
             }())
-            , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {}
+            , manager(actor_zeta::spawn<manager_disk_t>(&resource,
+                                                        scheduler,
+                                                        scheduler,
+                                                        test_directory::created(disk_config),
+                                                        log,
+                                                        configuration::pump_intervals_t{})) {}
         ~fresh_disk() {
             // Destroy the manager first: its dtor joins the loop thread, which may still enqueue onto the scheduler.
             manager.reset();

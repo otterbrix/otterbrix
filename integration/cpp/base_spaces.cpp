@@ -25,7 +25,7 @@ namespace otterbrix {
     core::result_wrapper_t<base_otterbrix_t::host_ptr>
     base_otterbrix_t::open(const configuration::config& config, components::planner::primitives_t primitives) {
         host_ptr host{new host_t()};
-        auto log = make_log("otterbrix", config.log.path, std::pmr::new_delete_resource());
+        auto log = make_log("otterbrix", config.log.path);
         if (log.has_error()) {
             return log.error();
         }
@@ -33,28 +33,19 @@ namespace otterbrix {
         host->log.set_level(config.log.level);
         trace(host->log, "base_otterbrix_t::open");
 
-        auto prepared = services::engine::prepare_engine(&host->resource, config, host->log);
-        if (prepared.has_error()) {
-            return core::error_on(std::pmr::new_delete_resource(), prepared.error());
+        auto engine = services::engine::open_engine(&host->resource,
+                                                    services::engine::schedulers_t{host->scheduler_general.get(),
+                                                                                   host->scheduler_exec.get(),
+                                                                                   host->scheduler_disk.get()},
+                                                    config,
+                                                    host->log,
+                                                    primitives);
+        if (engine.has_error()) {
+            return core::error_on(std::pmr::new_delete_resource(), engine.error());
         }
-        auto spawned = services::engine::spawn_engine(
-            std::move(prepared.value()),
-            &host->resource,
-            services::engine::schedulers_t{host->scheduler_general.get(),
-                                           host->scheduler_exec.get(),
-                                           host->scheduler_disk.get()},
-            config,
-            host->log,
-            primitives);
-        auto bootstrapped = services::engine::bootstrap(std::move(spawned));
-        if (bootstrapped.has_error()) {
-            return core::error_on(std::pmr::new_delete_resource(), bootstrapped.error());
-        }
-        host->engine.emplace(services::engine::start(std::move(bootstrapped.value())));
-        host->wrapper = actor_zeta::spawn<wrapper_dispatcher_t>(&host->resource,
-                                                                host->engine->dispatcher_address(),
-                                                                host->scheduler_exec.get(),
-                                                                host->log);
+        host->engine.emplace(std::move(engine.value()));
+        host->wrapper =
+            actor_zeta::spawn<wrapper_dispatcher_t>(&host->resource, host->engine->dispatcher_address(), host->log);
         trace(host->log, "base_otterbrix_t::open complete");
         return host;
     }

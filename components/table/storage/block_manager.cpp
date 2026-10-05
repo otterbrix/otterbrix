@@ -81,6 +81,23 @@ namespace components::table::storage {
 
     core::result_wrapper_t<bool> block_manager_t::truncate() { return true; }
 
+    core::error_t block_manager_t::write_range_impl(file_buffer_t& block,
+                                                    uint64_t block_id,
+                                                    uint64_t /*offset*/,
+                                                    uint64_t /*length*/) {
+        if (auto written = write(block, block_id); written.has_error()) {
+            return written.error();
+        }
+        return core::error_t::no_error();
+    }
+
+    core::error_t block_manager_t::write_prefix_impl(file_buffer_t& block, uint64_t block_id, uint64_t /*length*/) {
+        if (auto written = write(block, block_id); written.has_error()) {
+            return written.error();
+        }
+        return core::error_t::no_error();
+    }
+
     bool block_manager_t::registry_alive(uint64_t id) {
         auto entry = blocks_.find(id);
         return entry != blocks_.end() && !entry->second.expired();

@@ -32,6 +32,7 @@
 
 #include "index_fixture_path.hpp"
 #include <components/log/test_log.hpp>
+#include <services/disk/tests/test_directory.hpp>
 
 using components::expressions::compare_type;
 using components::session::session_id_t;
@@ -132,10 +133,11 @@ TEST_CASE("services::index::a committed delete reaches the store only once the h
     auto manager = actor_zeta::spawn<manager_index_t>(&resource,
                                                       scheduler.get(),
                                                       log,
-                                                      path,
+                                                      test_directory::created(path),
                                                       /*bitcask_flush_threshold=*/1000,
                                                       /*bitcask_segment_record_limit=*/100,
-                                                      /*btree_flush_threshold=*/1000);
+                                                      /*btree_flush_threshold=*/1000,
+                                                      configuration::pump_intervals_t{});
 
     manager->bootstrap_engine_sync(kTableOid);
     REQUIRE_FALSE(manager
@@ -220,10 +222,11 @@ TEST_CASE("services::index::tearing an index down drops the erases it was still 
     auto manager = actor_zeta::spawn<manager_index_t>(&resource,
                                                       scheduler.get(),
                                                       log,
-                                                      path,
+                                                      test_directory::created(path),
                                                       /*bitcask_flush_threshold=*/1000,
                                                       /*bitcask_segment_record_limit=*/100,
-                                                      /*btree_flush_threshold=*/1000);
+                                                      /*btree_flush_threshold=*/1000,
+                                                      configuration::pump_intervals_t{});
 
     manager->bootstrap_engine_sync(kTableOid);
     REQUIRE_FALSE(manager

@@ -20,6 +20,7 @@
 #include <thread>
 #include <unistd.h>
 #include <components/log/test_log.hpp>
+#include <services/disk/tests/test_directory.hpp>
 
 // The write path matches an incoming column by name (plus the bare enum on a computed table), so
 // DECIMAL(12,4) could land in a DECIMAL(10,2) column: a SIGABRT in debug, a silent x100 misread under NDEBUG.
@@ -55,7 +56,12 @@ namespace {
                 c.path = dec_dir();
                 return c;
             }())
-            , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {
+            , manager(actor_zeta::spawn<manager_disk_t>(&resource,
+                                                        scheduler,
+                                                        scheduler,
+                                                        test_directory::created(disk_config),
+                                                        log,
+                                                        configuration::pump_intervals_t{})) {
             cleanup();
             std::filesystem::create_directories(dec_dir());
             REQUIRE_FALSE(manager->bootstrap_system_tables_sync().contains_error());

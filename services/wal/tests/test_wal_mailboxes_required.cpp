@@ -38,7 +38,8 @@ TEST_CASE("services::wal::manager_wal_replicate_t::a WAL manager cannot be built
                                   configuration::config_wal,
                                   log_t&,
                                   address_t,
-                                  address_t>);
+                                  address_t,
+                                  configuration::pump_intervals_t>);
     CHECK_FALSE(has_bootstrap_sync<manager_wal_replicate_t>);
     CHECK(has_dispatcher_setter<manager_wal_replicate_t>);
 }

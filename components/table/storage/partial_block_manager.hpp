@@ -25,7 +25,7 @@ namespace components::table::storage {
         // Invariant: every offset handed out is 8-byte aligned (enforced in get_block_allocation) —
         // offsets are dereferenced after restart with typed pointers up to uint64_t wide.
         static constexpr double FULL_THRESHOLD = 0.8;
-        // Tails kept open after a flush (reuse_tails only): one for the row-group-sized fixed
+        // Tails kept open after a flush (for_appends only): one for the row-group-sized fixed
         // segments, one for the string segments, so neither evicts the other every row group.
         // Unbounded, an 8-text-column table reached 120 open tails (30 MiB of buffers); 2 costs
         // +2% file on that table and nothing on single-text-column ones.
@@ -33,28 +33,28 @@ namespace components::table::storage {
         // An open tail below this is dropped at flush: no segment of the write-through fits it.
         static constexpr uint64_t MIN_REUSABLE_TAIL = 4096;
 
-        // reuse_tails: a partial block survives flush_partial_blocks() and keeps taking segments
-        // across later rounds (each flush writes only what was appended). Legal only while no
-        // durable root names the block -- the owner must seal() before a checkpoint can reference
-        // a block written through here.
-        explicit partial_block_manager_t(block_manager_t& block_manager,
-                                         double full_threshold = FULL_THRESHOLD,
-                                         bool reuse_tails = false);
+        // A partial block survives flush_partial_blocks() and keeps taking segments across later
+        // rounds (each flush writes only what was appended). Legal only while no durable root names
+        // the block -- the owner must seal() before a checkpoint can reference a block written here.
+        static partial_block_manager_t for_appends(block_manager_t& block_manager);
+        // Every flush writes its blocks whole and forgets them.
+        static partial_block_manager_t for_checkpoint(block_manager_t& block_manager);
 
         partial_block_allocation_t get_block_allocation(uint64_t segment_size);
 
         void register_partial_block(uint64_t block_id, uint32_t used_size);
 
-        // Write segment data into a managed block buffer (does NOT write to disk yet)
-        void write_to_block(uint64_t block_id, uint32_t offset, const void* data, uint64_t size);
+        // Write segment data into a managed block buffer (does NOT write to disk yet). A resident copy
+        // of a grown tail that cannot be pinned is an error: that copy would keep serving zeros.
+        [[nodiscard]] core::error_t write_to_block(uint64_t block_id, uint32_t offset, const void* data, uint64_t size);
 
-        // Flush all managed block buffers to disk, then clear (reuse_tails: keep the open tails).
+        // Flush all managed block buffers to disk, then clear (for_appends: keep the open tails).
         // Returns io_error on failure: every column segment reaches the file through here, so a
         // `void` would leave a failed data-block write invisible up to a committed header.
         [[nodiscard]] core::result_wrapper_t<bool> flush_partial_blocks();
 
         // Flushes, then forgets every open tail: the next allocation starts a fresh block.
-        [[nodiscard]] core::result_wrapper_t<bool> seal();
+        [[nodiscard]] core::error_t seal();
 
 #ifdef DEV_MODE
         // Fault seam: the next seal() in the process answers io_error without flushing. One-shot and
@@ -64,21 +64,37 @@ namespace components::table::storage {
 #endif
 
     private:
+        enum class tails_t : uint8_t
+        {
+            kept,
+            dropped
+        };
+
         struct partial_block_t {
             uint64_t block_id;
             uint32_t used_bytes;
             uint64_t block_capacity;
             uint32_t flushed_bytes; // bytes of this image already on disk under block_id
+
+            // Where the next segment goes: every offset is 8-byte aligned.
+            uint64_t next_offset() const;
+            uint64_t free_space() const;
         };
 
-        [[nodiscard]] core::result_wrapper_t<bool> flush_tail(partial_block_t& pb, block_t& block);
+        struct block_buffer_t {
+            std::unique_ptr<block_t> block;
+            bool tail; // a shared partial block, not a dedicated one
+        };
+
+        partial_block_manager_t(block_manager_t& block_manager, tails_t tails);
+
+        [[nodiscard]] core::error_t flush_tail(partial_block_t& pb, block_t& block);
         void keep_reusable_tails();
 
         block_manager_t& block_manager_;
-        double full_threshold_;
-        bool reuse_tails_;
+        tails_t tails_;
         std::vector<partial_block_t> partial_blocks_;
-        std::unordered_map<uint64_t, std::unique_ptr<block_t>> block_buffers_;
+        std::unordered_map<uint64_t, block_buffer_t> block_buffers_;
     };
 
 } // namespace components::table::storage

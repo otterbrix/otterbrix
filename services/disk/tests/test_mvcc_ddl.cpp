@@ -22,6 +22,7 @@
 #include <thread>
 #include <unistd.h>
 #include <components/log/test_log.hpp>
+#include <services/disk/tests/test_directory.hpp>
 
 // committed_version_operator (row_version_manager.cpp): INSERT is always visible, DELETE stays
 // visible while delete_id is uncommitted or newer than min_start_time. System-table scans use
@@ -56,7 +57,12 @@ namespace {
                 c.path = mvcc_dir();
                 return c;
             }())
-            , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {
+            , manager(actor_zeta::spawn<manager_disk_t>(&resource,
+                                                        scheduler,
+                                                        scheduler,
+                                                        test_directory::created(disk_config),
+                                                        log,
+                                                        configuration::pump_intervals_t{})) {
             cleanup();
             std::filesystem::create_directories(mvcc_dir());
             REQUIRE_FALSE(manager->bootstrap_system_tables_sync().contains_error());

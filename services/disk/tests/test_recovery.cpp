@@ -23,6 +23,7 @@
 #include <thread>
 #include <unistd.h>
 #include <components/log/test_log.hpp>
+#include <services/disk/tests/test_directory.hpp>
 
 using namespace services::disk;
 using namespace components::catalog;
@@ -57,13 +58,19 @@ namespace {
                 c.path = dir;
                 return c;
             }())
-            , disk(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log))
+            , disk(actor_zeta::spawn<manager_disk_t>(&resource,
+                                                     scheduler,
+                                                     scheduler,
+                                                     test_directory::created(disk_config),
+                                                     log,
+                                                     configuration::pump_intervals_t{}))
             , wal(actor_zeta::spawn<services::wal::manager_wal_replicate_t>(&resource,
                                                                             scheduler,
                                                                             wal_config,
                                                                             log,
                                                                             disk->address(),
-                                                                            components::pipeline::no_mailbox())) {
+                                                                            components::pipeline::no_mailbox(),
+                                                                            configuration::pump_intervals_t{})) {
             std::filesystem::create_directories(dir);
             disk->set_manager_wal_sync(wal->address());
             if (bootstrap) {

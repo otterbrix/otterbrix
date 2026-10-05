@@ -25,17 +25,7 @@ namespace core::detail {
 #endif
 
 } // namespace core::detail
-/*
-#define assertion_failed_msg(expr, msg)                    \
-    do {                                                   \
-        if (core::detail::enable_assert && !(expr)) {      \
-            core::detail::failed(#expr, __FILE__,          \
-                                 __LINE__, __func__, msg); \
-        }                                                  \
-    } while (0)
 
-#define assertion_failed(expr) assertion_failed_msg(expr, std::string_view{})
-*/
 // Invalid states only (e.g. a pointer that cannot be null) — not a replacement for core::error_t.
 #define assertion_log_msg(log_ptr, condition, message)                                                                 \
     do {                                                                                                               \
@@ -47,7 +37,3 @@ namespace core::detail {
             }                                                                                                          \
         }                                                                                                              \
     } while (0)
-
-#define assertion_exception_msg(condition, message) assertion_log_msg(nullptr, condition, message)
-
-#define assertion_exception(condition) assertion_log_msg(nullptr, condition, std::string_view{})

@@ -98,7 +98,8 @@ struct test_wal_worker {
                                                               config_,
                                                               log_,
                                                               components::pipeline::no_mailbox(),
-                                                              components::pipeline::no_mailbox())) {
+                                                              components::pipeline::no_mailbox(),
+                                                              configuration::pump_intervals_t{})) {
         std::filesystem::remove_all(path_);
         std::filesystem::create_directories(path_);
         scheduler_->start();
@@ -333,7 +334,8 @@ TEST_CASE("wal_worker::corruption_stop") {
                                                                   config,
                                                                   log,
                                                                   components::pipeline::no_mailbox(),
-                                                                  components::pipeline::no_mailbox());
+                                                                  components::pipeline::no_mailbox(),
+                                                                  configuration::pump_intervals_t{});
         scheduler->start();
 
         for (int i = 0; i < 5; ++i) {
@@ -396,7 +398,8 @@ TEST_CASE("wal_worker::corruption_stop") {
                                                               config,
                                                               log,
                                                               components::pipeline::no_mailbox(),
-                                                              components::pipeline::no_mailbox());
+                                                              components::pipeline::no_mailbox(),
+                                                              configuration::pump_intervals_t{});
     scheduler->start();
 
     auto [needs_sched, fut_records] = actor_zeta::otterbrix::send(manager->address(),
@@ -437,7 +440,8 @@ TEST_CASE("wal_worker::crc_chain_startup") {
                                                                   config,
                                                                   log,
                                                                   components::pipeline::no_mailbox(),
-                                                                  components::pipeline::no_mailbox());
+                                                                  components::pipeline::no_mailbox(),
+                                                                  configuration::pump_intervals_t{});
         scheduler->start();
 
         {
@@ -486,7 +490,8 @@ TEST_CASE("wal_worker::crc_chain_startup") {
                                                                   config,
                                                                   log,
                                                                   components::pipeline::no_mailbox(),
-                                                                  components::pipeline::no_mailbox());
+                                                                  components::pipeline::no_mailbox(),
+                                                                  configuration::pump_intervals_t{});
         scheduler->start();
 
         auto [ns1, fut_records] = actor_zeta::otterbrix::send(manager->address(),
@@ -533,7 +538,8 @@ TEST_CASE("wal_worker::segment_rotation") {
                                                               config,
                                                               log,
                                                               components::pipeline::no_mailbox(),
-                                                              components::pipeline::no_mailbox());
+                                                              components::pipeline::no_mailbox(),
+                                                              configuration::pump_intervals_t{});
     scheduler->start();
 
     actor_zeta::unique_future<core::result_wrapper_t<services::wal::id_t>> last_fut;
@@ -625,7 +631,8 @@ TEST_CASE("wal_worker::fsync_full_mode") {
                                                               config,
                                                               log,
                                                               components::pipeline::no_mailbox(),
-                                                              components::pipeline::no_mailbox());
+                                                              components::pipeline::no_mailbox(),
+                                                              configuration::pump_intervals_t{});
     scheduler->start();
 
     {
@@ -684,7 +691,8 @@ TEST_CASE("wal_worker::fsync_off_mode") {
                                                               config,
                                                               log,
                                                               components::pipeline::no_mailbox(),
-                                                              components::pipeline::no_mailbox());
+                                                              components::pipeline::no_mailbox(),
+                                                              configuration::pump_intervals_t{});
     scheduler->start();
 
     {

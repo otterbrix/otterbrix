@@ -18,7 +18,6 @@ namespace otterbrix {
 
     using otterbrix_ptr = boost::intrusive_ptr<otterbrix_t>;
 
-    [[nodiscard]] auto make_otterbrix() -> core::result_wrapper_t<otterbrix_ptr>;
-    [[nodiscard]] auto make_otterbrix(configuration::config) -> core::result_wrapper_t<otterbrix_ptr>;
+    [[nodiscard]] auto make_otterbrix(const configuration::config& config) -> core::result_wrapper_t<otterbrix_ptr>;
     auto execute_sql(const otterbrix_ptr& otterbrix, const std::string& query) -> components::cursor::cursor_t_ptr;
 } // namespace otterbrix

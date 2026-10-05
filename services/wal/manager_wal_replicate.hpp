@@ -69,7 +69,7 @@ namespace services::wal {
                                 log_t& log,
                                 actor_zeta::address_t disk_address,
                                 actor_zeta::address_t index_address,
-                                configuration::pump_intervals_t pump = {});
+                                configuration::pump_intervals_t pump);
         ~manager_wal_replicate_t();
         // Joins the loop thread and keeps its suspended coroutines: a neighbour's loop must not
         // resume against them while they are torn down. Idempotent; the destructor calls it too.

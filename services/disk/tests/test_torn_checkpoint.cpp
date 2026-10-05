@@ -29,6 +29,7 @@
 
 #include "../../../components/table/test/fault_injection_file.hpp"
 #include <components/log/test_log.hpp>
+#include <services/disk/tests/test_directory.hpp>
 
 // Every crash here goes through the real T3 fault seam driving table_storage_t's production
 // checkpoint, and recovery is judged by reading the data back against a named root, never just
@@ -119,7 +120,12 @@ namespace {
                 c.path = path;
                 return c;
             }())
-            , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {}
+            , manager(actor_zeta::spawn<manager_disk_t>(&resource,
+                                                        scheduler,
+                                                        scheduler,
+                                                        test_directory::created(disk_config),
+                                                        log,
+                                                        configuration::pump_intervals_t{})) {}
         ~torn_manager_t() {
             manager.reset();
             scheduler->stop();

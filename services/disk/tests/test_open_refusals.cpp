@@ -30,6 +30,7 @@
 #include <unistd.h>
 #include <vector>
 #include <components/log/test_log.hpp>
+#include <services/disk/tests/test_directory.hpp>
 
 // The open path must not let a real failure collapse into the value a legitimate empty state also
 // produces (a zero wal id, a '\0' relkind, a `false` create, a `0` append).
@@ -68,7 +69,12 @@ namespace {
                 c.path = base;
                 return c;
             }())
-            , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {}
+            , manager(actor_zeta::spawn<manager_disk_t>(&resource,
+                                                        scheduler,
+                                                        scheduler,
+                                                        test_directory::created(disk_config),
+                                                        log,
+                                                        configuration::pump_intervals_t{})) {}
 
         ~open_fixture() {
             // Destroy the manager first — its dtor joins the loop thread, which may still enqueue onto the scheduler.
@@ -537,7 +543,8 @@ TEST_CASE("services::disk::open::an_unreadable_system_table_sidecar_is_not_a_bri
     cleanup_refusal_dir();
 }
 
-TEST_CASE("services::disk::open::rehydrate_does_not_create_over_a_file_that_did_not_load") {
+// One table file that does not load stops the start of the whole database; the file is left as it was.
+TEST_CASE("services::disk::open::a_table_file_that_does_not_load_refuses_the_start") {
     cleanup_refusal_dir();
     auto base = std::filesystem::path(refusal_dir());
     std::filesystem::create_directories(base);
@@ -574,16 +581,59 @@ TEST_CASE("services::disk::open::rehydrate_does_not_create_over_a_file_that_did_
 
     open_fixture fx(base);
     REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
-    REQUIRE_FALSE(fx.manager->load_user_table_storages_sync().contains_error());
-    REQUIRE_FALSE(fx.manager->has_storage(table_oid));
-
-    auto unclosed = fx.manager->rehydrate_missing_user_storages_sync();
-    REQUIRE_FALSE(unclosed.has_error());
-    INFO("a table whose file is present and did not load must be counted, not rebuilt over");
-    CHECK(unclosed.value() == 1);
+    auto loaded = fx.manager->load_user_table_storages_sync();
+    INFO("refusal: " << loaded.what.c_str());
+    REQUIRE(loaded.contains_error());
+    CHECK(loaded.type == core::error_code_t::data_corruption);
     CHECK_FALSE(fx.manager->has_storage(table_oid));
     CHECK(std::filesystem::exists(otbx));
     CHECK(std::filesystem::file_size(otbx) == size_before);
+
+    cleanup_refusal_dir();
+}
+
+// A table directory that cannot be examined is not a table whose file was lost: rehydrate refuses
+// instead of recreating the file over whatever the directory holds.
+TEST_CASE("services::disk::open::rehydrate_refuses_a_table_directory_it_cannot_examine") {
+    if (::geteuid() == 0) {
+        SKIP("root examines a mode-000 directory anyway");
+    }
+    cleanup_refusal_dir();
+    auto base = std::filesystem::path(refusal_dir());
+    std::filesystem::create_directories(base);
+
+    catalog::oid_t table_oid = catalog::INVALID_OID;
+    catalog::oid_t ns_oid = catalog::INVALID_OID;
+    {
+        open_fixture fx(base);
+        REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
+        ns_oid = test_create_namespace(fx, "ns_blocked");
+        std::vector<components::table::column_definition_t> cols;
+        cols.emplace_back("value", components::types::complex_logical_type{components::types::logical_type::BIGINT});
+        table_oid = test_create_table(fx, ns_oid, "t_blocked", cols);
+        fx.invoke(&manager_disk_t::create_storage_disk,
+                  session_id_t{},
+                  table_oid,
+                  ns_oid,
+                  cols,
+                  /*is_computed=*/false);
+        append_rows(fx, table_oid, 5);
+        fx.checkpoint(services::wal::id_t{70});
+    }
+
+    const auto table_dir = otbx_at(base, ns_oid, table_oid).parent_path();
+    open_fixture fx(base);
+    REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
+    REQUIRE_FALSE(fx.manager->has_storage(table_oid));
+
+    std::filesystem::permissions(table_dir, std::filesystem::perms::none);
+    auto rehydrated = fx.manager->rehydrate_missing_user_storages_sync();
+    std::filesystem::permissions(table_dir, std::filesystem::perms::owner_all);
+
+    INFO("rehydrate answered " << (rehydrated.has_error() ? rehydrated.error().what.c_str() : "a count"));
+    REQUIRE(rehydrated.has_error());
+    CHECK(rehydrated.error().type == core::error_code_t::io_error);
+    CHECK_FALSE(fx.manager->has_storage(table_oid));
 
     cleanup_refusal_dir();
 }
@@ -1119,7 +1169,8 @@ TEST_CASE("services::disk::open::a_refused_journal_record_cancels_the_backfill_p
                                                                       wal_config,
                                                                       fx.log,
                                                                       components::pipeline::no_mailbox(),
-                                                                      components::pipeline::no_mailbox());
+                                                                      components::pipeline::no_mailbox(),
+                                                                      configuration::pump_intervals_t{});
         fx.manager->set_manager_wal_sync(wal_manager->address());
 
         REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
@@ -1146,7 +1197,8 @@ TEST_CASE("services::disk::open::a_refused_journal_record_cancels_the_backfill_p
                                                                       wal_config,
                                                                       fx.log,
                                                                       components::pipeline::no_mailbox(),
-                                                                      components::pipeline::no_mailbox());
+                                                                      components::pipeline::no_mailbox(),
+                                                                      configuration::pump_intervals_t{});
         fx.manager->set_manager_wal_sync(wal_manager->address());
 
         REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());

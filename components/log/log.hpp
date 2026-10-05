@@ -125,8 +125,7 @@ auto trace(log_t& log, const S& format_str) -> void {
 }
 
 // A logger owned by its caller: nothing is registered with spdlog, so two engines in one process
-// never share one. Writes to stdout and to <directory>/<name>-<seconds>.txt. A directory that cannot
-// be created or a file that cannot be opened is answered as an error on `resource`, never thrown.
-[[nodiscard]] auto make_log(std::string_view name,
-                            const std::filesystem::path& directory,
-                            std::pmr::memory_resource* resource) -> core::result_wrapper_t<log_t>;
+// never share one. Writes to stdout and to <directory>/<name>-<seconds>.txt. A file that cannot be
+// opened is answered as an io_error whose message lives on new_delete_resource, never thrown.
+[[nodiscard]] auto make_log(std::string_view name, const std::filesystem::path& directory)
+    -> core::result_wrapper_t<log_t>;

@@ -35,6 +35,7 @@
 
 #include "index_fixture_path.hpp"
 #include <components/log/test_log.hpp>
+#include <services/disk/tests/test_directory.hpp>
 
 using components::expressions::compare_type;
 using components::session::session_id_t;
@@ -137,7 +138,14 @@ TEST_CASE("services::index::manager::bootstrap refuses a duplicate keys+type pai
     const auto path = fresh_index_root("index_manager_bootstrap_duplicate");
 
     auto scheduler = std::make_unique<actor_zeta::shared_work>(1, 100);
-    auto manager = actor_zeta::spawn<manager_index_t>(&resource, scheduler.get(), log, path, 1000, 100, 1000);
+    auto manager = actor_zeta::spawn<manager_index_t>(&resource,
+                                                      scheduler.get(),
+                                                      log,
+                                                      test_directory::created(path),
+                                                      1000,
+                                                      100,
+                                                      1000,
+                                                      configuration::pump_intervals_t{});
 
     manager->bootstrap_engine_sync(kTableOid);
     REQUIRE_FALSE(manager
@@ -167,7 +175,14 @@ TEST_CASE("services::index::manager::a multi-column key set is refused, not narr
     const auto path = fresh_index_root("index_manager_multi_column_refusal");
 
     auto scheduler = std::make_unique<actor_zeta::shared_work>(1, 100);
-    auto manager = actor_zeta::spawn<manager_index_t>(&resource, scheduler.get(), log, path, 1000, 100, 1000);
+    auto manager = actor_zeta::spawn<manager_index_t>(&resource,
+                                                      scheduler.get(),
+                                                      log,
+                                                      test_directory::created(path),
+                                                      1000,
+                                                      100,
+                                                      1000,
+                                                      configuration::pump_intervals_t{});
 
     manager->bootstrap_engine_sync(kTableOid);
 
@@ -202,7 +217,14 @@ TEST_CASE("services::index::manager::a catchup record the registry cannot place 
     const auto path = fresh_index_root("index_manager_catchup_lost_record");
 
     auto scheduler = std::make_unique<actor_zeta::shared_work>(1, 100);
-    auto manager = actor_zeta::spawn<manager_index_t>(&resource, scheduler.get(), log, path, 1000, 100, 1000);
+    auto manager = actor_zeta::spawn<manager_index_t>(&resource,
+                                                      scheduler.get(),
+                                                      log,
+                                                      test_directory::created(path),
+                                                      1000,
+                                                      100,
+                                                      1000,
+                                                      configuration::pump_intervals_t{});
 
     const auto session = session_id_t::generate_uid();
     const uint64_t build_txn = TRANSACTION_ID_START + 31;
@@ -257,7 +279,14 @@ TEST_CASE("services::index::manager::a staging record naming an unregistered ind
     const auto path = fresh_index_root("index_manager_unaddressed_staging");
 
     auto scheduler = std::make_unique<actor_zeta::shared_work>(1, 100);
-    auto manager = actor_zeta::spawn<manager_index_t>(&resource, scheduler.get(), log, path, 1000, 100, 1000);
+    auto manager = actor_zeta::spawn<manager_index_t>(&resource,
+                                                      scheduler.get(),
+                                                      log,
+                                                      test_directory::created(path),
+                                                      1000,
+                                                      100,
+                                                      1000,
+                                                      configuration::pump_intervals_t{});
 
     manager->bootstrap_engine_sync(kTableOid);
     REQUIRE_FALSE(manager
@@ -320,7 +349,14 @@ TEST_CASE("services::index::manager::a catchup staging the agent refused fails t
     const auto path = fresh_index_root("index_manager_catchup_refused_staging");
 
     auto scheduler = std::make_unique<actor_zeta::shared_work>(1, 100);
-    auto manager = actor_zeta::spawn<manager_index_t>(&resource, scheduler.get(), log, path, 1000, 100, 1000);
+    auto manager = actor_zeta::spawn<manager_index_t>(&resource,
+                                                      scheduler.get(),
+                                                      log,
+                                                      test_directory::created(path),
+                                                      1000,
+                                                      100,
+                                                      1000,
+                                                      configuration::pump_intervals_t{});
 
     manager->bootstrap_engine_sync(kTableOid);
     REQUIRE_FALSE(manager
@@ -386,7 +422,14 @@ TEST_CASE("services::index::manager::a refused deferred erase is re-queued, not 
     const auto path = fresh_index_root("index_manager_deferred_erase_requeue");
 
     auto scheduler = std::make_unique<actor_zeta::shared_work>(1, 100);
-    auto manager = actor_zeta::spawn<manager_index_t>(&resource, scheduler.get(), log, path, 1000, 100, 1000);
+    auto manager = actor_zeta::spawn<manager_index_t>(&resource,
+                                                      scheduler.get(),
+                                                      log,
+                                                      test_directory::created(path),
+                                                      1000,
+                                                      100,
+                                                      1000,
+                                                      configuration::pump_intervals_t{});
 
     manager->bootstrap_engine_sync(kTableOid);
     REQUIRE_FALSE(manager

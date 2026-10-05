@@ -67,13 +67,6 @@ namespace components::table::storage {
     };
     static_assert(sizeof(database_header_t) == SECTOR_SIZE, "database_header_t must be SECTOR_SIZE");
 
-    // The header create_new_database() writes: the only root a file carries before its first checkpoint. The file
-    // size is not part of the signature (write-through fills data blocks under this header).
-    constexpr bool header_is_create_time(const database_header_t& h) {
-        return h.iteration == 0 && h.meta_block == INVALID_INDEX && h.free_list == INVALID_INDEX &&
-               h.block_count == 0;
-    }
-
     class single_file_block_manager_t : public block_manager_t {
     public:
         // Reads the newest CRC-valid root without opening the table (no WRITE_LOCK) and answers whether it names no
@@ -108,10 +101,6 @@ namespace components::table::storage {
         [[nodiscard]] core::result_wrapper_t<bool>
         read_blocks(file_buffer_t& buffer, uint64_t start_block, uint64_t block_count) override;
         [[nodiscard]] core::result_wrapper_t<bool> write(file_buffer_t& block, uint64_t block_id) override;
-        [[nodiscard]] core::result_wrapper_t<bool>
-        write_range(file_buffer_t& block, uint64_t block_id, uint64_t offset, uint64_t length) override;
-        [[nodiscard]] core::result_wrapper_t<bool>
-        write_prefix(file_buffer_t& block, uint64_t block_id, uint64_t length) override;
 
         void adopt_durable_root_data_blocks(const std::pmr::vector<uint64_t>& block_ids) override;
         [[nodiscard]] core::result_wrapper_t<uint64_t>
@@ -175,6 +164,10 @@ namespace components::table::storage {
 #endif
 
     private:
+        core::error_t
+        write_range_impl(file_buffer_t& block, uint64_t block_id, uint64_t offset, uint64_t length) override;
+        core::error_t write_prefix_impl(file_buffer_t& block, uint64_t block_id, uint64_t length) override;
+
         uint64_t block_location(uint64_t block_id) const;
         [[nodiscard]] core::result_wrapper_t<bool> checksum_and_write(file_buffer_t& buffer, uint64_t block_id);
         bool verify_checksum(file_buffer_t& buffer);

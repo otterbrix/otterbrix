@@ -20,6 +20,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <map>
+#include <optional>
 #include <set>
 #include <sys/file.h>
 #include <system_error>
@@ -32,16 +33,82 @@
 
 namespace services::engine {
 
+    namespace {
+        core::error_t startup_error(std::pmr::memory_resource* resource, core::error_code_t code, const std::string& what) {
+            return core::error_t(code, std::pmr::string{what.data(), what.size(), resource});
+        }
+    } // namespace
+
     namespace detail {
 
+        // flock(LOCK_EX | LOCK_NB) on <directory>/.lock, held for the lifetime of the object. Bound to
+        // the open file, so a second engine on the same directory is refused within one process too.
+        class directory_lock_t final {
+        public:
+            [[nodiscard]] static core::result_wrapper_t<directory_lock_t>
+            acquire(std::pmr::memory_resource* resource, const std::filesystem::path& directory);
+
+            directory_lock_t(directory_lock_t&& other) noexcept
+                : fd_(std::exchange(other.fd_, -1)) {}
+            directory_lock_t& operator=(directory_lock_t&&) = delete;
+            directory_lock_t(const directory_lock_t&) = delete;
+            directory_lock_t& operator=(const directory_lock_t&) = delete;
+            ~directory_lock_t() {
+                if (fd_ >= 0) {
+                    ::close(fd_);
+                }
+            }
+
+        private:
+            explicit directory_lock_t(int fd) noexcept
+                : fd_(fd) {}
+            int fd_{-1};
+        };
+
+        core::result_wrapper_t<directory_lock_t> directory_lock_t::acquire(std::pmr::memory_resource* resource,
+                                                                           const std::filesystem::path& directory) {
+            if (directory.empty()) {
+                return startup_error(resource,
+                                     core::error_code_t::invalid_parameter,
+                                     "engine startup REFUSED , config.main_path is empty: there is no directory to own");
+            }
+            std::error_code ec;
+            std::filesystem::create_directories(directory, ec);
+            if (ec) {
+                return startup_error(resource,
+                                     core::error_code_t::io_error,
+                                     "engine startup REFUSED , the directory " + directory.string() +
+                                         " could not be created: " + ec.message());
+            }
+            const auto lock_path = directory / ".lock";
+            const int fd = ::open(lock_path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+            if (fd < 0) {
+                return startup_error(resource,
+                                     core::error_code_t::io_error,
+                                     "engine startup REFUSED , the lock file " + lock_path.string() +
+                                         " could not be opened: " + std::strerror(errno));
+            }
+            if (::flock(fd, LOCK_EX | LOCK_NB) != 0) {
+                const int flock_errno = errno;
+                ::close(fd);
+                if (flock_errno == EWOULDBLOCK) {
+                    return startup_error(resource,
+                                         core::error_code_t::already_exists,
+                                         "engine startup REFUSED , another engine already owns " + directory.string() +
+                                             ": otterbrix instance has to have unique directory");
+                }
+                return startup_error(resource,
+                                     core::error_code_t::io_error,
+                                     "engine startup REFUSED , the lock file " + lock_path.string() +
+                                         " could not be locked: " + std::strerror(flock_errno));
+            }
+            return directory_lock_t{fd};
+        }
+
         struct engine_parts_t final {
-            engine_parts_t(std::pmr::memory_resource* resource,
-                           log_t& log,
-                           const configuration::config& config,
-                           directory_lock_t lock)
+            engine_parts_t(std::pmr::memory_resource* resource, log_t& log, directory_lock_t lock)
                 : resource(resource)
                 , log(log.clone())
-                , config(config)
                 , lock(std::move(lock))
                 , dispatcher(nullptr, actor_zeta::pmr::deleter_t(resource))
                 , disk(nullptr, actor_zeta::pmr::deleter_t(resource))
@@ -69,7 +136,6 @@ namespace services::engine {
 
             std::pmr::memory_resource* resource;
             log_t log;
-            configuration::config config;
             // Declared before the managers: released only after every one of them is gone.
             directory_lock_t lock;
             std::vector<wal::record_t> wal_records;
@@ -82,103 +148,21 @@ namespace services::engine {
             std::unique_ptr<index::manager_index_t, actor_zeta::pmr::deleter_t> index;
         };
 
-        void engine_parts_deleter_t::operator()(engine_parts_t* parts) const noexcept { delete parts; }
-
     } // namespace detail
 
     using detail::engine_parts_t;
 
+    engine_t::engine_t(std::unique_ptr<engine_parts_t> parts) noexcept
+        : parts_(std::move(parts)) {}
+
+    engine_t::engine_t(engine_t&& other) noexcept = default;
+
     namespace {
-        core::error_t startup_error(std::pmr::memory_resource* resource, core::error_code_t code, const std::string& what) {
-            return core::error_t(code, std::pmr::string{what.data(), what.size(), resource});
-        }
 
-        template<typename T>
-        T wait_ready(actor_zeta::unique_future<T>& future) {
-            while (!future.is_ready()) {
-                std::this_thread::sleep_for(std::chrono::microseconds(100));
-            }
-            return std::move(future).take_ready();
-        }
-    } // namespace
-
-    directory_lock_t::directory_lock_t(int fd) noexcept
-        : fd_(fd) {}
-
-    directory_lock_t::directory_lock_t(directory_lock_t&& other) noexcept
-        : fd_(std::exchange(other.fd_, -1)) {}
-
-    directory_lock_t& directory_lock_t::operator=(directory_lock_t&& other) noexcept {
-        if (this != &other) {
-            if (fd_ >= 0) {
-                ::close(fd_);
-            }
-            fd_ = std::exchange(other.fd_, -1);
-        }
-        return *this;
-    }
-
-    directory_lock_t::~directory_lock_t() {
-        if (fd_ >= 0) {
-            ::close(fd_);
-        }
-    }
-
-    core::result_wrapper_t<directory_lock_t> directory_lock_t::acquire(std::pmr::memory_resource* resource,
-                                                                       const std::filesystem::path& directory) {
-        if (directory.empty()) {
-            return startup_error(resource,
-                                 core::error_code_t::invalid_parameter,
-                                 "engine startup REFUSED , config.main_path is empty: there is no directory to own");
-        }
-        std::error_code ec;
-        std::filesystem::create_directories(directory, ec);
-        if (ec) {
-            return startup_error(resource,
-                                 core::error_code_t::io_error,
-                                 "engine startup REFUSED , the directory " + directory.string() +
-                                     " could not be created: " + ec.message());
-        }
-        const auto lock_path = directory / ".lock";
-        const int fd = ::open(lock_path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
-        if (fd < 0) {
-            return startup_error(resource,
-                                 core::error_code_t::io_error,
-                                 "engine startup REFUSED , the lock file " + lock_path.string() +
-                                     " could not be opened: " + std::strerror(errno));
-        }
-        if (::flock(fd, LOCK_EX | LOCK_NB) != 0) {
-            const int flock_errno = errno;
-            ::close(fd);
-            if (flock_errno == EWOULDBLOCK) {
-                return startup_error(resource,
-                                     core::error_code_t::already_exists,
-                                     "engine startup REFUSED , another engine already owns " + directory.string() +
-                                         ": otterbrix instance has to have unique directory");
-            }
-            return startup_error(resource,
-                                 core::error_code_t::io_error,
-                                 "engine startup REFUSED , the lock file " + lock_path.string() +
-                                     " could not be locked: " + std::strerror(flock_errno));
-        }
-        return directory_lock_t{fd};
-    }
-
-    prepared_engine_t::prepared_engine_t(detail::engine_parts_ptr parts) noexcept
-        : parts_(std::move(parts)) {}
-
-    spawned_engine_t::spawned_engine_t(detail::engine_parts_ptr parts) noexcept
-        : parts_(std::move(parts)) {}
-
-    bootstrapped_engine_t::bootstrapped_engine_t(detail::engine_parts_ptr parts) noexcept
-        : parts_(std::move(parts)) {}
-
-    engine_t::engine_t(detail::engine_parts_ptr parts) noexcept
-        : parts_(std::move(parts)) {}
-
-    core::result_wrapper_t<prepared_engine_t>
-    prepare_engine(std::pmr::memory_resource* resource, const configuration::config& config, log_t& log) {
-        trace(log, "engine::prepare_engine");
+    // Validates the configuration, takes the directory lock and reads the WAL; spawns nothing.
+    core::result_wrapper_t<std::unique_ptr<engine_parts_t>>
+    prepare_parts(std::pmr::memory_resource* resource, const configuration::config& config, log_t& log) {
+        trace(log, "engine::prepare");
         if (config.execution.executor_pool_size == 0) {
             return startup_error(resource,
                                  core::error_code_t::invalid_parameter,
@@ -205,24 +189,24 @@ namespace services::engine {
                                  "record between checkpoints and has nowhere to write");
         }
 
-        VALUE_OR_RETURN(auto lock, directory_lock_t::acquire(resource, config.main_path));
+        VALUE_OR_RETURN(auto lock, detail::directory_lock_t::acquire(resource, config.main_path));
 
+        // The managers only assert their directory: a directory that cannot be created stops the start here.
         if (!config.disk.path.empty()) {
-            const auto legacy_catalog_otbx = config.disk.path / "catalog.otbx";
-            std::error_code exists_ec;
-            if (std::filesystem::exists(legacy_catalog_otbx, exists_ec)) {
+            std::error_code ec;
+            std::filesystem::create_directories(config.disk.path, ec);
+            if (ec) {
                 return startup_error(resource,
-                                     core::error_code_t::invalid_parameter,
-                                     "Legacy catalog format detected at " + legacy_catalog_otbx.string() +
-                                         ". Remove the file and restart — pg_catalog is the source of truth.");
+                                     core::error_code_t::io_error,
+                                     "engine startup REFUSED , the table directory " + config.disk.path.string() +
+                                         " could not be created: " + ec.message());
             }
         }
 
-        detail::engine_parts_ptr parts{new engine_parts_t(resource, log, config, std::move(lock))};
+        auto parts = std::make_unique<engine_parts_t>(resource, log, std::move(lock));
 
-        services::wal::id_t last_wal_id{0};
         services::wal::wal_reader_t wal_reader(resource, config.wal, parts->log);
-        auto wal_records_result = wal_reader.read_committed_records(last_wal_id, &parts->commit_ids);
+        auto wal_records_result = wal_reader.read_committed_records(&parts->commit_ids);
         // Refuses rather than allocating IDs below what's already on disk; writes/deletes nothing.
         if (wal_records_result.has_error()) {
             error(parts->log,
@@ -234,32 +218,28 @@ namespace services::engine {
                                      std::string(wal_records_result.error().what.c_str()));
         }
         parts->wal_records = std::move(wal_records_result.value());
-        trace(parts->log, "engine::prepare_engine - {} WAL records", parts->wal_records.size());
-        return prepared_engine_t{std::move(parts)};
+        trace(parts->log, "engine::prepare - {} WAL records", parts->wal_records.size());
+        return parts;
     }
 
-    spawned_engine_t spawn_engine(prepared_engine_t prepared,
-                                  std::pmr::memory_resource* resource,
-                                  schedulers_t schedulers,
-                                  const configuration::config& config,
-                                  log_t& log,
-                                  components::planner::primitives_t primitives) {
-        auto parts = std::move(prepared.parts_);
-        assert(parts != nullptr && parts->resource == resource);
-        parts->schedulers = schedulers;
-        parts->log = log.clone();
-        auto& own_log = parts->log;
+    void spawn_managers(engine_parts_t& parts,
+                        schedulers_t schedulers,
+                        const configuration::config& config,
+                        components::planner::primitives_t primitives) {
+        auto* resource = parts.resource;
+        parts.schedulers = schedulers;
+        auto& own_log = parts.log;
 
         // The dispatcher's own address — born last — is wired back into each manager below, post-construction.
         trace(own_log, "engine::spawn manager_disk");
-        parts->disk = actor_zeta::spawn<services::disk::manager_disk_t>(resource,
+        parts.disk = actor_zeta::spawn<services::disk::manager_disk_t>(resource,
                                                                          schedulers.general,
                                                                          schedulers.disk,
                                                                          config.disk,
                                                                          own_log,
                                                                          config.execution.pump);
         trace(own_log, "engine::spawn manager_index");
-        parts->index = actor_zeta::spawn<services::index::manager_index_t>(resource,
+        parts.index = actor_zeta::spawn<services::index::manager_index_t>(resource,
                                                                            schedulers.general,
                                                                            own_log,
                                                                            config.disk.path,
@@ -268,33 +248,30 @@ namespace services::engine {
                                                                            config.disk.btree_flush_threshold,
                                                                            config.execution.pump);
         trace(own_log, "engine::spawn manager_wal");
-        parts->wal = actor_zeta::spawn<services::wal::manager_wal_replicate_t>(resource,
+        parts.wal = actor_zeta::spawn<services::wal::manager_wal_replicate_t>(resource,
                                                                                schedulers.general,
                                                                                config.wal,
                                                                                own_log,
-                                                                               parts->disk->address(),
-                                                                               parts->index->address(),
+                                                                               parts.disk->address(),
+                                                                               parts.index->address(),
                                                                                config.execution.pump);
         trace(own_log, "engine::spawn manager_dispatcher");
-        parts->dispatcher =
+        parts.dispatcher =
             actor_zeta::spawn<services::dispatcher::manager_dispatcher_t>(resource,
                                                                           schedulers.exec,
                                                                           own_log,
-                                                                          parts->wal->address(),
-                                                                          parts->disk->address(),
-                                                                          parts->index->address(),
+                                                                          parts.wal->address(),
+                                                                          parts.disk->address(),
+                                                                          parts.index->address(),
                                                                           config.execution,
                                                                           primitives);
 
         // Dispatcher address published into every manager: disk/index for the GC-ack path
         // (disk -> dispatcher -> wal truncate), wal for the auto-checkpoint watermark.
-        parts->disk->set_manager_dispatcher_sync(parts->dispatcher->address());
-        parts->index->set_manager_dispatcher_sync(parts->dispatcher->address());
-        parts->wal->set_manager_dispatcher_sync(parts->dispatcher->address());
-        return spawned_engine_t{std::move(parts)};
+        parts.disk->set_manager_dispatcher_sync(parts.dispatcher->address());
+        parts.index->set_manager_dispatcher_sync(parts.dispatcher->address());
+        parts.wal->set_manager_dispatcher_sync(parts.dispatcher->address());
     }
-
-    namespace {
 
     core::error_t bootstrap_indexes(engine_parts_t& parts) {
         auto& log = parts.log;
@@ -325,7 +302,7 @@ namespace services::engine {
             if (rebuild_is_owed(row.table_oid, row.oid)) {
                 // Wiring it would silently answer with whatever row slid into the stale id.
                 error(log,
-                      "bootstrap_indexes_sync: pg_index row (indexrelid={}, indrelid={}) was left naming "
+                      "engine::bootstrap_indexes: pg_index row (indexrelid={}, indrelid={}) was left naming "
                       "PRE-COMPACT row ids by a checkpoint that did not finish its index rebuild — the index is "
                       "NOT wired, queries on the table fall back to full scans; DROP INDEX and re-issue CREATE "
                       "INDEX to rebuild it",
@@ -336,7 +313,7 @@ namespace services::engine {
             }
             if (row.ready_since == 0) {
                 error(log,
-                      "bootstrap_indexes_sync: pg_index row (indexrelid={}, indrelid={}) has an uncommitted "
+                      "engine::bootstrap_indexes: pg_index row (indexrelid={}, indrelid={}) has an uncommitted "
                       "backfill (indisvalid=false) — the index is NOT wired, queries on the table fall back "
                       "to full scans; re-issue CREATE INDEX (or DROP INDEX the leftover)",
                       static_cast<unsigned>(row.oid),
@@ -355,7 +332,7 @@ namespace services::engine {
             if (wire_error.contains_error()) {
                 // Skipped rather than aborting: a full scan costs less than the engine failing to start.
                 error(log,
-                      "bootstrap_indexes_sync: index_oid={} left unregistered: {}",
+                      "engine::bootstrap_indexes: index_oid={} left unregistered: {}",
                       static_cast<unsigned>(row.oid),
                       wire_error.what);
                 ++indexes_skipped_unopenable;
@@ -371,7 +348,7 @@ namespace services::engine {
 
         // No index is rebuilt here: repair needs a mailbox round trip the schedulers aren't running for yet.
         trace(log,
-              "spaces::PHASE 4 bootstrap_indexes_sync: {} engines, {} indexes wired "
+              "engine::bootstrap_indexes: {} engines, {} indexes wired "
               "({} skipped: unfinished build; {} skipped: unopenable storage; {} skipped: rebuild owed after a "
               "compaction), {} dropped tombstones restored",
               live_tables.size(),
@@ -381,6 +358,83 @@ namespace services::engine {
               indexes_skipped_unrebuilt,
               dropped.size());
         return core::error_t::no_error();
+    }
+
+    enum class replay_storage_t : std::uint8_t
+    {
+        existed,
+        created,
+        refused
+    };
+
+    // A row-carrying record needs its table's storage: loaded from its file, or synthesised from the
+    // record's own column types when the file was never written. Refused is logged here.
+    replay_storage_t ensure_replay_storage(services::disk::manager_disk_t& disk,
+                                           log_t& log,
+                                           components::catalog::oid_t table_oid,
+                                           components::catalog::oid_t ns_oid,
+                                           const services::wal::record_t& record) {
+        if (disk.has_storage(table_oid)) {
+            return replay_storage_t::existed;
+        }
+        // A failed load isn't an absent file: don't overwrite committed rows.
+        if (auto load_err = disk.load_storage_for_wal_replay_sync(table_oid, ns_oid); load_err.contains_error()) {
+            error(log,
+                  "engine::replay: table oid={} has a file that did not load ({}) — records for this table are NOT "
+                  "replayed, and no storage is created over it",
+                  static_cast<unsigned>(table_oid),
+                  load_err.what);
+            return replay_storage_t::refused;
+        }
+        if (disk.has_storage(table_oid)) {
+            return replay_storage_t::existed;
+        }
+        if (ns_oid == components::catalog::INVALID_OID) {
+            error(log,
+                  "engine::replay: table oid={} has no pg_class.relnamespace; cannot place its .otbx and refusing to "
+                  "guess — records for this table are NOT replayed",
+                  static_cast<unsigned>(table_oid));
+            return replay_storage_t::refused;
+        }
+        auto types = record.physical_data.front().types();
+        std::vector<components::table::column_definition_t> cols;
+        cols.reserve(types.size());
+        for (const auto& t : types) {
+            cols.emplace_back(t.has_alias() ? t.alias() : std::string{}, t);
+        }
+        auto otbx = disk.path_db() / std::to_string(static_cast<unsigned>(ns_oid)) /
+                    std::to_string(static_cast<unsigned>(table_oid)) / "table.otbx";
+        std::error_code dir_ec;
+        std::filesystem::create_directories(otbx.parent_path(), dir_ec);
+        if (dir_ec) {
+            error(log,
+                  "engine::replay: table oid={} has no directory for its .otbx ({}) — records for this table are NOT "
+                  "replayed",
+                  static_cast<unsigned>(table_oid),
+                  dir_ec.message());
+            return replay_storage_t::refused;
+        }
+        // An unreadable relkind is refused, never defaulted to 'r'.
+        auto relkind_r = disk.relkind_for_oid_sync(table_oid);
+        if (relkind_r.has_error()) {
+            error(log,
+                  "engine::replay: table oid={} has no readable relkind ({}) — refusing to synthesise a storage whose "
+                  "kind is a guess; records for this table are NOT replayed",
+                  static_cast<unsigned>(table_oid),
+                  relkind_r.error().what);
+            return replay_storage_t::refused;
+        }
+        const bool synth_computed = relkind_r.value() == components::catalog::relkind::computed;
+        if (auto synth_err = disk.create_storage_disk_sync(table_oid, ns_oid, std::move(cols), otbx, synth_computed);
+            synth_err.contains_error()) {
+            error(log,
+                  "engine::replay: table oid={} could not be synthesised ({}) — records for this table are NOT "
+                  "replayed",
+                  static_cast<unsigned>(table_oid),
+                  synth_err.what);
+            return replay_storage_t::refused;
+        }
+        return replay_storage_t::created;
     }
 
     core::error_t bootstrap_parts(engine_parts_t& parts) {
@@ -394,12 +448,12 @@ namespace services::engine {
         auto rehydrated = disk.rehydrate_missing_user_storages_sync();
         if (rehydrated.has_error()) {
             error(log,
-                  "spaces::open: the rehydrate walk did not run, so no catalog/storage divergence was "
+                  "engine::bootstrap: the rehydrate walk did not run, so no catalog/storage divergence was "
                   "examined: {}",
                   rehydrated.error().what);
         } else if (rehydrated.value() > 0) {
             error(log,
-                  "spaces::open: {} alive catalog table(s) came up with no storage behind them",
+                  "engine::bootstrap: {} alive catalog table(s) came up with no storage behind them",
                   rehydrated.value());
         }
 
@@ -419,35 +473,31 @@ namespace services::engine {
                 }
                 return it->second;
             };
-            // An unreadable checkpoint floor is not treated as 0, or records would re-apply checkpointed rows.
-            std::unordered_map<components::catalog::oid_t, services::wal::id_t> cp_cache;
-            std::unordered_set<components::catalog::oid_t> cp_unreadable;
-            auto cp_for = [&](components::catalog::oid_t oid) -> services::wal::id_t {
-                if (cp_unreadable.count(oid) != 0) {
-                    return services::wal::id_t{0};
-                }
+            // An unreadable checkpoint floor is not treated as 0, or records would re-apply checkpointed rows:
+            // it answers nullopt, logged once and cached.
+            std::unordered_map<components::catalog::oid_t, std::optional<services::wal::id_t>> cp_cache;
+            auto cp_for = [&](components::catalog::oid_t oid) -> std::optional<services::wal::id_t> {
                 auto [it, inserted] = cp_cache.try_emplace(oid);
-                if (inserted) {
-                    // No namespace + no storage: table created since the last checkpoint, so 0 is correct.
-                    const auto ns_oid = ns_for(oid);
-                    if (ns_oid == components::catalog::INVALID_OID && !disk.has_storage(oid)) {
-                        it->second = services::wal::id_t{0};
-                        return it->second;
-                    }
-                    auto probed = disk.peek_checkpoint_wal_id_from_disk(oid, ns_oid);
-                    if (probed.has_error()) {
-                        error(log,
-                              "spaces::replay: table oid={} has no readable checkpoint floor ({}) — its records are "
-                              "NOT replayed, because replaying them could re-apply rows the checkpointed file "
-                              "already holds",
-                              static_cast<unsigned>(oid),
-                              probed.error().what);
-                        cp_unreadable.insert(oid);
-                        cp_cache.erase(oid);
-                        return services::wal::id_t{0};
-                    }
-                    it->second = probed.value();
+                if (!inserted) {
+                    return it->second;
                 }
+                // No namespace + no storage: table created since the last checkpoint, so 0 is correct.
+                const auto ns_oid = ns_for(oid);
+                if (ns_oid == components::catalog::INVALID_OID && !disk.has_storage(oid)) {
+                    it->second = services::wal::id_t{0};
+                    return it->second;
+                }
+                auto probed = disk.peek_checkpoint_wal_id_from_disk(oid, ns_oid);
+                if (probed.has_error()) {
+                    error(log,
+                          "engine::replay: table oid={} has no readable checkpoint floor ({}) — its records are "
+                          "NOT replayed, because replaying them could re-apply rows the checkpointed file "
+                          "already holds",
+                          static_cast<unsigned>(oid),
+                          probed.error().what);
+                    return it->second;
+                }
+                it->second = probed.value();
                 return it->second;
             };
             for (auto& record : parts.wal_records) {
@@ -456,11 +506,11 @@ namespace services::engine {
                 if (record.table_oid == components::catalog::INVALID_OID) {
                     continue;
                 }
-                auto cp_id = cp_for(record.table_oid);
-                if (cp_unreadable.count(record.table_oid) != 0) {
+                const auto cp_id = cp_for(record.table_oid);
+                if (!cp_id.has_value()) {
                     continue;
                 }
-                if (cp_id > services::wal::id_t{0} && record.id <= cp_id) {
+                if (*cp_id > services::wal::id_t{0} && record.id <= *cp_id) {
                     continue;
                 }
                 if (record.table_oid < components::catalog::FIRST_USER_OID) {
@@ -479,7 +529,7 @@ namespace services::engine {
                 auto commit_delete_group =
                     [&disk, &log](components::catalog::oid_t oid, std::uint64_t txn_id, std::uint64_t commit_id) {
                         if (auto err = disk.commit_all_deletes_sync(oid, txn_id, commit_id); err.contains_error()) {
-                            error(log, "spaces::replay: {}", err.what);
+                            error(log, "engine::replay: {}", err.what);
                         }
                     };
                 auto flush_delete_commit =
@@ -497,72 +547,9 @@ namespace services::engine {
                     switch (r->record_type) {
                         case services::wal::wal_record_type::PHYSICAL_INSERT:
                             if (!r->physical_data.empty()) {
-                                if (!disk.has_storage(table_oid)) {
-                                    // A failed load isn't an absent file: don't overwrite committed rows.
-                                    if (auto load_err = disk.load_storage_for_wal_replay_sync(table_oid, ns_oid);
-                                        load_err.contains_error()) {
-                                        error(log,
-                                              "spaces::replay: table oid={} has a file that did not load ({}) — "
-                                              "records for this table are NOT replayed, and no storage is "
-                                              "created over it",
-                                              static_cast<unsigned>(table_oid),
-                                              load_err.what);
-                                        return;
-                                    }
-                                    if (!disk.has_storage(table_oid)) {
-                                        if (ns_oid == components::catalog::INVALID_OID) {
-                                            error(log,
-                                                  "spaces::replay: table oid={} has no pg_class.relnamespace; "
-                                                  "cannot place its .otbx and refusing to guess — records for "
-                                                  "this table are NOT replayed",
-                                                  static_cast<unsigned>(table_oid));
-                                            return;
-                                        }
-                                        auto types = r->physical_data.front().types();
-                                        std::vector<components::table::column_definition_t> cols;
-                                        cols.reserve(types.size());
-                                        for (const auto& t : types) {
-                                            cols.emplace_back(t.has_alias() ? t.alias() : std::string{}, t);
-                                        }
-                                        auto otbx = disk.path_db() / std::to_string(static_cast<unsigned>(ns_oid)) /
-                                                    std::to_string(static_cast<unsigned>(table_oid)) / "table.otbx";
-                                        std::error_code dir_ec;
-                                        std::filesystem::create_directories(otbx.parent_path(), dir_ec);
-                                        if (dir_ec) {
-                                            error(log,
-                                                  "spaces::replay: table oid={} has no directory for its .otbx ({}) "
-                                                  "— records for this table are NOT replayed",
-                                                  static_cast<unsigned>(table_oid),
-                                                  dir_ec.message());
-                                            return;
-                                        }
-                                        // An unreadable relkind is refused, never defaulted to 'r'.
-                                        auto relkind_r = disk.relkind_for_oid_sync(table_oid);
-                                        if (relkind_r.has_error()) {
-                                            error(log,
-                                                  "spaces::replay: table oid={} has no readable relkind ({}) — "
-                                                  "refusing to synthesise a storage whose kind is a guess; "
-                                                  "records for this table are NOT replayed",
-                                                  static_cast<unsigned>(table_oid),
-                                                  relkind_r.error().what);
-                                            return;
-                                        }
-                                        const bool synth_computed =
-                                            relkind_r.value() == components::catalog::relkind::computed;
-                                        if (auto synth_err = disk.create_storage_disk_sync(table_oid,
-                                                                                           ns_oid,
-                                                                                           std::move(cols),
-                                                                                           otbx,
-                                                                                           synth_computed);
-                                            synth_err.contains_error()) {
-                                            error(log,
-                                                  "spaces::replay: table oid={} could not be synthesised ({}) — "
-                                                  "records for this table are NOT replayed",
-                                                  static_cast<unsigned>(table_oid),
-                                                  synth_err.what);
-                                            return;
-                                        }
-                                    }
+                                if (ensure_replay_storage(disk, log, table_oid, ns_oid, *r) ==
+                                    replay_storage_t::refused) {
+                                    return;
                                 }
                                 for (auto& chunk : r->physical_data) {
                                     const auto chunk_count = static_cast<uint64_t>(chunk.size());
@@ -572,7 +559,7 @@ namespace services::engine {
                                                          components::table::transaction_data{r->transaction_id, 0});
                                     if (append_r.has_error()) {
                                         error(log,
-                                              "spaces::replay: {} committed row(s) for table oid={} were not "
+                                              "engine::replay: {} committed row(s) for table oid={} were not "
                                               "restored: {}",
                                               chunk.size(),
                                               static_cast<unsigned>(table_oid),
@@ -588,7 +575,7 @@ namespace services::engine {
                                                                                  chunk_count);
                                         committed.contains_error()) {
                                         error(log,
-                                              "spaces::replay: {} row(s) for table oid={} were restored but "
+                                              "engine::replay: {} row(s) for table oid={} were restored but "
                                               "their commit stamp was not applied: {}",
                                               chunk_count,
                                               static_cast<unsigned>(table_oid),
@@ -600,75 +587,17 @@ namespace services::engine {
                         case services::wal::wal_record_type::PHYSICAL_ADD_COLUMN:
                             // Applies before the dependent PHYSICAL_INSERT (higher wal_id, replays after).
                             if (!r->physical_data.empty()) {
-                                if (!disk.has_storage(table_oid)) {
-                                    if (auto load_err = disk.load_storage_for_wal_replay_sync(table_oid, ns_oid);
-                                        load_err.contains_error()) {
-                                        error(log,
-                                              "spaces::replay: table oid={} has a file that did not load ({}) — "
-                                              "records for this table are NOT replayed, and no storage is "
-                                              "created over it",
-                                              static_cast<unsigned>(table_oid),
-                                              load_err.what);
-                                        return;
-                                    }
-                                    if (!disk.has_storage(table_oid)) {
-                                        if (ns_oid == components::catalog::INVALID_OID) {
-                                            error(log,
-                                                  "spaces::replay: table oid={} has no pg_class.relnamespace; "
-                                                  "cannot place its .otbx and refusing to guess — records for "
-                                                  "this table are NOT replayed",
-                                                  static_cast<unsigned>(table_oid));
-                                            return;
-                                        }
-                                        auto types = r->physical_data.front().types();
-                                        std::vector<components::table::column_definition_t> cols;
-                                        cols.reserve(types.size());
-                                        for (const auto& t : types) {
-                                            cols.emplace_back(t.has_alias() ? t.alias() : std::string{}, t);
-                                        }
-                                        auto otbx = disk.path_db() / std::to_string(static_cast<unsigned>(ns_oid)) /
-                                                    std::to_string(static_cast<unsigned>(table_oid)) / "table.otbx";
-                                        std::error_code dir_ec;
-                                        std::filesystem::create_directories(otbx.parent_path(), dir_ec);
-                                        if (dir_ec) {
-                                            error(log,
-                                                  "spaces::replay: table oid={} has no directory for its .otbx ({}) "
-                                                  "— records for this table are NOT replayed",
-                                                  static_cast<unsigned>(table_oid),
-                                                  dir_ec.message());
-                                            return;
-                                        }
-                                        auto relkind_r = disk.relkind_for_oid_sync(table_oid);
-                                        if (relkind_r.has_error()) {
-                                            error(log,
-                                                  "spaces::replay: table oid={} has no readable relkind ({}) — "
-                                                  "refusing to synthesise a storage whose kind is a guess; "
-                                                  "records for this table are NOT replayed",
-                                                  static_cast<unsigned>(table_oid),
-                                                  relkind_r.error().what);
-                                            return;
-                                        }
-                                        const bool synth_computed =
-                                            relkind_r.value() == components::catalog::relkind::computed;
-                                        if (auto synth_err = disk.create_storage_disk_sync(table_oid,
-                                                                                           ns_oid,
-                                                                                           std::move(cols),
-                                                                                           otbx,
-                                                                                           synth_computed);
-                                            synth_err.contains_error()) {
-                                            error(log,
-                                                  "spaces::replay: table oid={} could not be synthesised ({}) — "
-                                                  "records for this table are NOT replayed",
-                                                  static_cast<unsigned>(table_oid),
-                                                  synth_err.what);
-                                            return;
-                                        }
-                                        break;
-                                    }
+                                const auto storage = ensure_replay_storage(disk, log, table_oid, ns_oid, *r);
+                                if (storage == replay_storage_t::refused) {
+                                    return;
+                                }
+                                // A storage synthesised from this record already has the added column.
+                                if (storage == replay_storage_t::created) {
+                                    break;
                                 }
                                 if (auto add_err = disk.direct_add_column_sync(table_oid, r->physical_data.front());
                                     add_err.contains_error()) {
-                                    error(log, "spaces::replay: {}", add_err.what);
+                                    error(log, "engine::replay: {}", add_err.what);
                                 }
                             }
                             break;
@@ -677,7 +606,7 @@ namespace services::engine {
                             if (!disk.has_storage(table_oid)) {
                                 if (auto load_err = disk.load_storage_for_wal_replay_sync(table_oid, ns_oid);
                                     load_err.contains_error()) {
-                                    error(log, "spaces::replay: {}", load_err.what);
+                                    error(log, "engine::replay: {}", load_err.what);
                                 }
                             }
                             flush_delete_commit(table_oid, r->transaction_id, r->commit_id);
@@ -687,7 +616,7 @@ namespace services::engine {
                                                      r->physical_row_count,
                                                      components::table::transaction_data{r->transaction_id, 0});
                                 del_err.contains_error()) {
-                                error(log, "spaces::replay: {}", del_err.what);
+                                error(log, "engine::replay: {}", del_err.what);
                                 break;
                             }
                             if (r->transaction_id != 0) {
@@ -700,7 +629,7 @@ namespace services::engine {
                                 if (!disk.has_storage(table_oid)) {
                                     if (auto load_err = disk.load_storage_for_wal_replay_sync(table_oid, ns_oid);
                                         load_err.contains_error()) {
-                                        error(log, "spaces::replay: {}", load_err.what);
+                                        error(log, "engine::replay: {}", load_err.what);
                                     }
                                 }
                                 // A torn record can name fewer ids than rows; truncate rather than misread.
@@ -712,7 +641,7 @@ namespace services::engine {
                                     const std::size_t take = std::min(n, have);
                                     if (take < n) {
                                         error(log,
-                                              "spaces::replay: PHYSICAL_UPDATE for table oid={} carries {} "
+                                              "engine::replay: PHYSICAL_UPDATE for table oid={} carries {} "
                                               "row(s) in a chunk but only {} row id(s) for them; {} committed "
                                               "row update(s) are NOT replayed",
                                               static_cast<unsigned>(table_oid),
@@ -739,7 +668,7 @@ namespace services::engine {
                                                          chunk,
                                                          components::table::transaction_data{r->transaction_id, 0});
                                     if (upd_r.has_error()) {
-                                        error(log, "spaces::replay: {}", upd_r.error().what);
+                                        error(log, "engine::replay: {}", upd_r.error().what);
                                         continue;
                                     }
                                     if (r->transaction_id == 0) {
@@ -750,7 +679,7 @@ namespace services::engine {
                                     if (auto committed =
                                             disk.commit_append_sync(table_oid, r->commit_id, upd.start_row, upd.count);
                                         committed.contains_error()) {
-                                        error(log, "spaces::replay: {}", committed.what);
+                                        error(log, "engine::replay: {}", committed.what);
                                     }
                                 }
                             }
@@ -776,7 +705,7 @@ namespace services::engine {
             for (auto it = user_by_oid.begin(); it != user_by_oid.end();) {
                 if (alive_user_oids.count(it->first) == 0) {
                     trace(log,
-                          "spaces::skipping {} WAL records for dropped user oid {}",
+                          "engine::replay: skipping {} WAL records for dropped user oid {}",
                           it->second.size(),
                           static_cast<unsigned>(it->first));
                     it = user_by_oid.erase(it);
@@ -795,7 +724,7 @@ namespace services::engine {
             for (auto& [oid, records] : user_by_oid) physical_count += records.size();
             if (physical_count > 0) {
                 trace(log,
-                      "spaces::replayed {} physical WAL records across {} tables",
+                      "engine::replay: replayed {} physical WAL records across {} tables",
                       physical_count,
                       system_by_oid.size() + user_by_oid.size());
             }
@@ -805,7 +734,7 @@ namespace services::engine {
 
         // Re-derives a column drop a crash discarded; must run before bootstrap_indexes_sync opens
         // index stores against this schema.
-        disk.reconcile_storage_with_catalog_sync();
+        RETURN_IF_ERROR(disk.reconcile_storage_with_catalog_sync());
 
         disk.restore_oid_generator_sync();
 
@@ -844,7 +773,7 @@ namespace services::engine {
             // on_horizon_advanced can't be called inline (not yet running); arm flags for the first commit.
             parts.dispatcher->set_disk_has_dropped_sync(true);
             parts.dispatcher->set_index_has_dropped_sync(true);
-            trace(log, "spaces::PHASE 2c rebuilt {} dropped storage/index entries from pg_class", dropped_oids.size());
+            trace(log, "engine::bootstrap: rebuilt {} dropped storage/index entries from pg_class", dropped_oids.size());
         }
 
         // Travels by value — legal only during this single-threaded bootstrap window.
@@ -853,9 +782,14 @@ namespace services::engine {
 
     } // namespace
 
-    core::result_wrapper_t<bootstrapped_engine_t> bootstrap(spawned_engine_t spawned) {
-        auto parts = std::move(spawned.parts_);
-        assert(parts != nullptr);
+    core::result_wrapper_t<engine_t> open_engine(std::pmr::memory_resource* resource,
+                                                 schedulers_t schedulers,
+                                                 const configuration::config& config,
+                                                 log_t& log,
+                                                 components::planner::primitives_t primitives) {
+        VALUE_OR_RETURN(auto parts, prepare_parts(resource, config, log));
+        spawn_managers(*parts, schedulers, config, primitives);
+        // Catalog, WAL replay, oid/commit clocks, tombstones and indexes; the pools are not running yet.
         if (auto err = bootstrap_parts(*parts); err.contains_error()) {
             error(parts->log, "engine::bootstrap REFUSED: {}", err.what);
             return err;
@@ -863,12 +797,6 @@ namespace services::engine {
         // Only replay needs them; the running engine never reads the journal back.
         parts->wal_records.clear();
         parts->commit_ids.clear();
-        return bootstrapped_engine_t{std::move(parts)};
-    }
-
-    engine_t start(bootstrapped_engine_t bootstrapped) {
-        auto parts = std::move(bootstrapped.parts_);
-        assert(parts != nullptr);
         parts->schedulers.exec->start();
         parts->schedulers.general->start();
         parts->schedulers.disk->start();
@@ -880,8 +808,6 @@ namespace services::engine {
 
     actor_zeta::actor::address_t engine_t::dispatcher_address() const noexcept { return parts_->dispatcher->address(); }
     actor_zeta::actor::address_t engine_t::disk_address() const noexcept { return parts_->disk->address(); }
-    actor_zeta::actor::address_t engine_t::index_address() const noexcept { return parts_->index->address(); }
-    actor_zeta::actor::address_t engine_t::wal_address() const noexcept { return parts_->wal->address(); }
 
     void engine_t::shutdown() noexcept {
         if (parts_ == nullptr) {
@@ -895,12 +821,12 @@ namespace services::engine {
         auto [_close, closed] =
             actor_zeta::otterbrix::send(parts_->dispatcher->address(),
                                         &services::dispatcher::manager_dispatcher_t::begin_shutdown);
-        wait_ready(closed);
+        actor_zeta::otterbrix::wait_ready(closed);
 
         auto [_quiet, quiet] = actor_zeta::otterbrix::send(parts_->wal->address(),
                                                            &services::wal::manager_wal_replicate_t::stop_auto_checkpoint,
                                                            session);
-        wait_ready(quiet);
+        actor_zeta::otterbrix::wait_ready(quiet);
 
         auto checkpoint_node = components::logical_plan::make_node_checkpoint(resource);
         auto [_cp, checkpointed] = actor_zeta::otterbrix::send(
@@ -911,7 +837,7 @@ namespace services::engine {
                                                        checkpoint_node,
                                                        components::logical_plan::make_parameter_node(resource)});
         // No caller can be answered from here, so a failed checkpoint is logged.
-        auto cursor = wait_ready(checkpointed);
+        auto cursor = actor_zeta::otterbrix::wait_ready(checkpointed);
         if (!cursor) {
             error(log,
                   "engine::shutdown , the shutdown checkpoint answered NO cursor , whether the journal was folded "

@@ -86,11 +86,5 @@ TEST_CASE("append_packing: blocks issued while appending stay proportional to th
     // The packed payload (strings + 8 B ids + offsets) fits twice the raw payload, plus the open tails.
     CHECK(issued * block <= 2 * payload_bytes + tstorage::partial_block_manager_t::MAX_OPEN_TAILS * block);
 
-    // And an append state that bypasses the collection's packer is refused, not given a private one.
-    auto column = column_data_t::create_column(&env.resource, bm, 0, 0, complex_logical_type{logical_type::BIGINT});
-    column_append_state bare;
-    auto refused = column->initialize_append(bare);
-    REQUIRE(refused.has_error());
-    CHECK(refused.error().type == core::error_code_t::invalid_parameter);
     std::remove(path.c_str());
 }

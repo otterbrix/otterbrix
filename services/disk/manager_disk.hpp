@@ -274,7 +274,7 @@ namespace services::disk {
                        actor_zeta::scheduler_raw scheduler_disk,
                        configuration::config_disk config,
                        log_t& log,
-                       configuration::pump_intervals_t pump = {});
+                       configuration::pump_intervals_t pump);
         ~manager_disk_t();
         // Joins the loop thread and keeps its suspended coroutines: a neighbour's loop must not
         // resume against them while they are torn down. Idempotent; the destructor calls it too.
@@ -317,7 +317,7 @@ namespace services::disk {
         // Rebuilds the .otbx for tables load_user_table_storages_sync couldn't load; returns divergences not closed.
         [[nodiscard]] core::result_wrapper_t<std::size_t> rehydrate_missing_user_storages_sync();
         // Re-derives a column drop whose release a crash discarded; runs after both user-table walks and WAL replay.
-        void reconcile_storage_with_catalog_sync();
+        [[nodiscard]] core::error_t reconcile_storage_with_catalog_sync();
         std::unordered_set<components::catalog::oid_t> alive_user_oids_sync() const;
         // '\0' means "no such row" only — an unreadable pg_class travels the error wrapper instead, or
         // a DOCUMENT table's dynamic schema would silently vanish.
@@ -668,7 +668,6 @@ namespace services::disk {
 
         unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
         scan_table(components::catalog::oid_t table_oid,
-                   std::unique_ptr<components::table::pushed_filter_t> filter,
                    std::vector<std::size_t> projected_cols,
                    components::table::transaction_data txn = components::table::transaction_data::committed());
 

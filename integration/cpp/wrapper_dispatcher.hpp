@@ -1,9 +1,7 @@
 #pragma once
 
 #include <atomic>
-#include <condition_variable>
 #include <functional>
-#include <mutex>
 #include <utility>
 #include <vector>
 
@@ -40,10 +38,7 @@ namespace otterbrix {
         using dispatch_traits = actor_zeta::dispatch_traits<>;
 
         /// blocking method
-        wrapper_dispatcher_t(std::pmr::memory_resource*,
-                             actor_zeta::address_t manager_dispatcher,
-                             actor_zeta::scheduler_raw scheduler,
-                             log_t& log);
+        wrapper_dispatcher_t(std::pmr::memory_resource*, actor_zeta::address_t manager_dispatcher, log_t& log);
         ~wrapper_dispatcher_t();
 
         std::pmr::memory_resource* resource() const noexcept { return resource_; }
@@ -90,36 +85,14 @@ namespace otterbrix {
     private:
         std::pmr::memory_resource* resource_;
         actor_zeta::address_t manager_dispatcher_;
-        actor_zeta::scheduler_raw scheduler_;
         log_t log_;
         components::sql::parser::parser_extension_registry_t parser_extensions_;
         std::atomic_int i = 0;
-
-        std::mutex event_loop_mutex_;
-        std::condition_variable event_loop_cv_;
-
-        template<typename T>
-        T wait_future(unique_future<T>& future);
-        void wait_future_void(unique_future<void>& future);
 
         auto send_plan(const session_id_t& session, components::logical_plan::execution_plan_t node)
             -> components::cursor::cursor_t_ptr;
         // Invalid query still have to go through regular transaction path
         auto send_failed_plan(const session_id_t& session, core::error_t error) -> components::cursor::cursor_t_ptr;
     };
-
-    template<typename T>
-    T wrapper_dispatcher_t::wait_future(unique_future<T>& future) {
-        while (!future.is_ready()) {
-            std::unique_lock<std::mutex> lock(event_loop_mutex_);
-            if (!future.is_ready()) {
-                // 100µs poll: event-loop managers return from enqueue instantly
-                // and never notify event_loop_cv_, so the tick bounds per-query
-                // handoff latency.
-                event_loop_cv_.wait_for(lock, std::chrono::microseconds(100));
-            }
-        }
-        return std::move(future).take_ready();
-    }
 
 } // namespace otterbrix

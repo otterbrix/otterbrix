@@ -401,9 +401,11 @@ namespace services::disk {
 
         void drop_storage_one_local(components::catalog::oid_t oid);
 
-        // The agent's own filter: built on its resource, against its own function registry.
+        // The agent's own filter: built on its resource, against its own function registry, for the
+        // column types of the storage it filters. No pushed filter builds none.
         core::result_wrapper_t<std::unique_ptr<components::table::table_filter_t>>
-        build_filter_(components::catalog::oid_t table_oid, const components::table::pushed_filter_t* filter);
+        build_filter_(const components::table::pushed_filter_t* filter,
+                      const std::pmr::vector<components::types::complex_logical_type>& types);
 
         void mark_storage_dropped_one_local(components::catalog::oid_t table_oid, uint64_t dropped_at_commit_id);
 

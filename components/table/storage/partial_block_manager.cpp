@@ -10,32 +10,43 @@
 
 namespace components::table::storage {
 
-    partial_block_manager_t::partial_block_manager_t(block_manager_t& block_manager,
-                                                     double full_threshold,
-                                                     bool reuse_tails)
+    partial_block_manager_t::partial_block_manager_t(block_manager_t& block_manager, tails_t tails)
         : block_manager_(block_manager)
-        , full_threshold_(full_threshold)
-        , reuse_tails_(reuse_tails) {}
+        , tails_(tails) {}
+
+    partial_block_manager_t partial_block_manager_t::for_appends(block_manager_t& block_manager) {
+        return partial_block_manager_t{block_manager, tails_t::kept};
+    }
+
+    partial_block_manager_t partial_block_manager_t::for_checkpoint(block_manager_t& block_manager) {
+        return partial_block_manager_t{block_manager, tails_t::dropped};
+    }
+
+    // Place every segment at an 8-byte-aligned offset: the offset is dereferenced after reload as
+    // uint64_t*/int32_t*/T*, and byte-granular packing made those reads misaligned UB (caught by
+    // -fsanitize=alignment). Padding bytes stay zeroed (write_to_block memsets fresh buffers).
+    uint64_t partial_block_manager_t::partial_block_t::next_offset() const { return align_value<uint64_t>(used_bytes); }
+
+    uint64_t partial_block_manager_t::partial_block_t::free_space() const {
+        const uint64_t offset = next_offset();
+        return offset < block_capacity ? block_capacity - offset : 0;
+    }
 
     partial_block_allocation_t partial_block_manager_t::get_block_allocation(uint64_t segment_size) {
         auto block_alloc_size = block_manager_.block_size();
 
         // if segment is large enough (> threshold of block), give it a dedicated block
-        if (segment_size > static_cast<uint64_t>(static_cast<double>(block_alloc_size) * full_threshold_)) {
+        if (segment_size > static_cast<uint64_t>(static_cast<double>(block_alloc_size) * FULL_THRESHOLD)) {
             uint64_t block_id = block_manager_.free_block_id();
             return {block_id, 0, segment_size};
         }
 
         // try to fit into an existing partial block
         for (auto& pb : partial_blocks_) {
-            // Place every segment at an 8-byte-aligned offset: the offset is dereferenced after
-            // reload as uint64_t*/int32_t*/T*, and byte-granular packing made those reads
-            // misaligned UB (caught by -fsanitize=alignment). Padding bytes stay zeroed
-            // (write_to_block memsets fresh buffers).
-            uint64_t aligned_offset = align_value<uint64_t>(pb.used_bytes);
-            if (aligned_offset + segment_size <= pb.block_capacity) {
-                pb.used_bytes = static_cast<uint32_t>(aligned_offset + segment_size);
-                return {pb.block_id, static_cast<uint32_t>(aligned_offset), segment_size};
+            if (segment_size <= pb.free_space()) {
+                const uint64_t offset = pb.next_offset();
+                pb.used_bytes = static_cast<uint32_t>(offset + segment_size);
+                return {pb.block_id, static_cast<uint32_t>(offset), segment_size};
             }
         }
 
@@ -64,65 +75,72 @@ namespace components::table::storage {
         partial_blocks_.push_back(pb);
     }
 
-    void partial_block_manager_t::write_to_block(uint64_t block_id, uint32_t offset, const void* data, uint64_t size) {
+    core::error_t
+    partial_block_manager_t::write_to_block(uint64_t block_id, uint32_t offset, const void* data, uint64_t size) {
         auto it = block_buffers_.find(block_id);
         if (it == block_buffers_.end()) {
             auto block = std::make_unique<block_t>(block_manager_.buffer_manager.resource(),
                                                    block_id,
                                                    static_cast<uint64_t>(block_manager_.block_size()));
             std::memset(block->buffer(), 0, static_cast<size_t>(block_manager_.block_size()));
-            it = block_buffers_.emplace(block_id, std::move(block)).first;
+            const bool tail =
+                std::any_of(partial_blocks_.begin(), partial_blocks_.end(), [block_id](const partial_block_t& pb) {
+                    return pb.block_id == block_id;
+                });
+            it = block_buffers_.emplace(block_id, block_buffer_t{std::move(block), tail}).first;
         }
-        std::memcpy(it->second->buffer() + offset, data, size);
+        std::memcpy(it->second.block->buffer() + offset, data, size);
 
         // A grown tail's block may already be resident (a reader pinned an earlier segment of it):
         // that copy would otherwise keep serving zeros where this segment now lives. The range is
         // past every byte a reader can hold, so the patch races nothing.
-        if (reuse_tails_ && block_manager_.registry_alive(block_id)) {
+        if (tails_ == tails_t::kept && block_manager_.registry_alive(block_id)) {
             auto handle = block_manager_.register_block(block_id);
             if (handle->state() == block_state::LOADED) {
                 auto pinned = block_manager_.buffer_manager.pin(handle);
-                if (!pinned.has_error()) {
-                    std::memcpy(pinned.value().ptr() + offset, data, size);
+                if (pinned.has_error()) {
+                    return pinned.error();
                 }
+                std::memcpy(pinned.value().ptr() + offset, data, size);
             }
         }
+        return core::error_t::no_error();
     }
 
     // Every byte of a tail reaches the disk once: the first flush writes the used prefix, each
     // later one the range appended since (plus the checksum slot both times).
-    core::result_wrapper_t<bool> partial_block_manager_t::flush_tail(partial_block_t& pb, block_t& block) {
+    core::error_t partial_block_manager_t::flush_tail(partial_block_t& pb, block_t& block) {
         const uint64_t from = align_value<uint64_t>(pb.flushed_bytes);
         auto written = pb.flushed_bytes == 0
                            ? block_manager_.write_prefix(block, pb.block_id, pb.used_bytes)
                            : block_manager_.write_range(block, pb.block_id, from, pb.used_bytes - from);
-        if (written.has_error()) {
+        if (written.contains_error()) {
             return written;
         }
         pb.flushed_bytes = pb.used_bytes;
-        return true;
+        return core::error_t::no_error();
     }
 
     void partial_block_manager_t::keep_reusable_tails() {
         std::vector<partial_block_t> kept;
         for (const auto& pb : partial_blocks_) {
-            const uint64_t free_space = pb.block_capacity - align_value<uint64_t>(pb.used_bytes);
-            if (free_space >= MIN_REUSABLE_TAIL && block_buffers_.count(pb.block_id) != 0) {
+            if (pb.free_space() >= MIN_REUSABLE_TAIL && block_buffers_.count(pb.block_id) != 0) {
                 kept.push_back(pb);
             }
         }
         // Over the limit, the tails with the least room go first.
         if (kept.size() > MAX_OPEN_TAILS) {
             std::stable_sort(kept.begin(), kept.end(), [](const partial_block_t& a, const partial_block_t& b) {
-                return (a.block_capacity - a.used_bytes) > (b.block_capacity - b.used_bytes);
+                return a.free_space() > b.free_space();
             });
             kept.resize(MAX_OPEN_TAILS);
         }
         for (auto it = block_buffers_.begin(); it != block_buffers_.end();) {
             const uint64_t id = it->first;
-            const bool keep = std::any_of(kept.begin(), kept.end(), [id](const partial_block_t& pb) {
-                return pb.block_id == id;
-            });
+            const bool keep =
+                it->second.tail && std::any_of(kept.begin(), kept.end(), [id](const partial_block_t& pb) {
+                    return pb.block_id == id;
+                });
             it = keep ? std::next(it) : block_buffers_.erase(it);
         }
         partial_blocks_ = std::move(kept);
@@ -133,9 +151,9 @@ namespace components::table::storage {
         // since their segments are already re-pointed at these block ids (the round is over
         // either way).
         core::result_wrapper_t<bool> result = true;
-        if (!reuse_tails_) {
-            for (auto& [block_id, block] : block_buffers_) {
-                auto written = block_manager_.write(*block, block_id);
+        if (tails_ == tails_t::dropped) {
+            for (auto& [block_id, buffer] : block_buffers_) {
+                auto written = block_manager_.write(*buffer.block, block_id);
                 if (written.has_error()) {
                     result = written.error();
                     break;
@@ -150,24 +168,20 @@ namespace components::table::storage {
             if (it == block_buffers_.end() || pb.flushed_bytes == pb.used_bytes) {
                 continue; // nothing appended since the last flush
             }
-            auto flushed = flush_tail(pb, *it->second);
-            if (flushed.has_error()) {
-                result = flushed.error();
+            if (auto flushed = flush_tail(pb, *it->second.block); flushed.contains_error()) {
+                result = flushed;
                 break;
             }
         }
         // Dedicated blocks never enter partial_blocks_; they are written here, once.
-        for (auto& [block_id, block] : block_buffers_) {
+        for (auto& [block_id, buffer] : block_buffers_) {
             if (result.has_error()) {
                 break;
             }
-            const bool is_tail = std::any_of(partial_blocks_.begin(),
-                                             partial_blocks_.end(),
-                                             [block_id](const partial_block_t& pb) { return pb.block_id == block_id; });
-            if (is_tail) {
+            if (buffer.tail) {
                 continue;
             }
-            auto written = block_manager_.write(*block, block_id);
+            auto written = block_manager_.write(*buffer.block, block_id);
             if (written.has_error()) {
                 result = written.error();
                 break;
@@ -190,7 +204,7 @@ namespace components::table::storage {
     void partial_block_manager_t::dev_refuse_next_seal() { dev_refuse_next_seal_.store(true); }
 #endif
 
-    core::result_wrapper_t<bool> partial_block_manager_t::seal() {
+    core::error_t partial_block_manager_t::seal() {
 #ifdef DEV_MODE
         if (dev_refuse_next_seal_.exchange(false)) {
             return core::error_t(core::error_code_t::io_error,
@@ -201,7 +215,10 @@ namespace components::table::storage {
         auto flushed = flush_partial_blocks();
         block_buffers_.clear();
         partial_blocks_.clear();
-        return flushed;
+        if (flushed.has_error()) {
+            return flushed.error();
+        }
+        return core::error_t::no_error();
     }
 
 } // namespace components::table::storage

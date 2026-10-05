@@ -75,24 +75,6 @@ namespace services::planner {
     }
 
     namespace {
-        plan_result_t lower_extension(const context_storage_t& context,
-                                      const components::compute::function_registry_t& function_registry,
-                                      const components::logical_plan::node_ptr& node,
-                                      const components::logical_plan::storage_parameters* params) {
-            const auto& ext = static_cast<const components::logical_plan::node_extension_t&>(*node);
-            VALUE_OR_RETURN(auto op, ext.operator_fn()(context, function_registry, ext));
-            if (op && !node->children().empty()) {
-                VALUE_OR_RETURN(auto child,
-                                create_plan(context,
-                                            function_registry,
-                                            node->children().front(),
-                                            components::logical_plan::limit_t::unlimit(),
-                                            params));
-                op->set_children(std::move(child));
-            }
-            return op;
-        }
-
         plan_result_t lower(const context_storage_t& context,
                             const components::compute::function_registry_t& function_registry,
                             const components::logical_plan::node_ptr& node,
@@ -212,8 +194,20 @@ namespace services::planner {
                     return impl::create_plan_allocate_oids(context, node);
                 case node_type::function_t:
                     return impl::create_plan_function(context, node);
-                case node_type::extension_t:
-                    return lower_extension(context, function_registry, node, params);
+                case node_type::extension_t: {
+                    const auto& ext = static_cast<const components::logical_plan::node_extension_t&>(*node);
+                    VALUE_OR_RETURN(auto op, ext.operator_fn()(context, function_registry, ext));
+                    if (op && !node->children().empty()) {
+                        VALUE_OR_RETURN(auto child,
+                                        create_plan(context,
+                                                    function_registry,
+                                                    node->children().front(),
+                                                    components::logical_plan::limit_t::unlimit(),
+                                                    params));
+                        op->set_children(std::move(child));
+                    }
+                    return op;
+                }
                 default:
                     break;
             }

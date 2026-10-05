@@ -8,6 +8,7 @@
 
 #include <components/casts/default_casts.hpp>
 #include <components/catalog/catalog_codes.hpp>
+#include <components/catalog/helpers.hpp>
 #include <components/context/execution_context.hpp>
 #include <components/planner/planner.hpp>
 #include <services/disk/manager_disk.hpp>
@@ -559,7 +560,7 @@ namespace services::collection::executor {
                 co_return core::error_t::no_error();
             }
             std::pmr::vector<std::uint64_t> key_columns{resource()};
-            key_columns.push_back(0);
+            key_columns.push_back(components::catalog::pg_proc_col::oid);
             auto [_rp, rpf] =
                 actor_zeta::otterbrix::send(disk_address_,
                                             &services::disk::manager_disk_t::read_chunks_by_keys,
@@ -890,19 +891,15 @@ namespace services::collection::executor {
                 }
                 break;
             case node_type::create_collection_t: {
-                if (auto* cc = static_cast<const node_create_collection_t*>(plan.sub_queries.back().get());
-                    cc != nullptr) {
-                    if (auto dup =
-                            services::dispatcher::check_column_names_unique(resource(), cc->column_definitions());
-                        dup.contains_error()) {
-                        error = make_cursor(resource(), std::move(dup));
-                        break;
-                    }
+                auto* n = static_cast<node_create_collection_t*>(plan.sub_queries.back().get());
+                if (auto dup = services::dispatcher::check_column_names_unique(resource(), n->column_definitions());
+                    dup.contains_error()) {
+                    error = make_cursor(resource(), std::move(dup));
+                    break;
                 }
                 if (!services::dispatcher::check_collection_exists(resource(), &plan.catalog_resolves, id)
                          .contains_error()) {
-                    auto* cc = static_cast<const node_create_collection_t*>(plan.sub_queries.back().get());
-                    if (cc && cc->if_not_exists()) {
+                    if (n->if_not_exists()) {
                         error = make_cursor(resource());
                     } else {
                         error = make_cursor(resource(),
@@ -912,7 +909,6 @@ namespace services::collection::executor {
                 } else {
                     const std::string target_db{id.database()};
                     const auto str_path = services::catalog_resolve::build_type_search_path_str(target_db);
-                    auto* n = static_cast<node_create_collection_t*>(plan.sub_queries.back().get());
                     for (auto& col_def : n->column_definitions()) {
                         if (col_def.type().type() == logical_type::UNKNOWN) {
                             if (col_def.type().type_name().empty()) {
@@ -1116,25 +1112,18 @@ namespace services::collection::executor {
                         break;
                     }
                     case drop_target_kind::index: {
-                        auto vt_err = services::dispatcher::validate_types(resource(),
-                                                                           &plan.catalog_resolves,
-                                                                           plan.sub_queries.back().get(),
-                                                                           context_storage.execution_context);
-                        if (vt_err.contains_error()) {
-                            error = make_cursor(resource(), vt_err);
-                        } else {
-                            services::dispatcher::validation::validation_context_t validation_context{
-                                resource(),
-                                &plan.catalog_resolves,
-                                cast_registry_,
-                                function_registry_,
-                                context_storage.execution_context};
-                            auto schema_res = services::dispatcher::validate_schema(validation_context,
-                                                                                    plan.sub_queries.back().get(),
-                                                                                    plan.parameters->parameters());
-                            if (schema_res.has_error()) {
-                                error = make_cursor(resource(), schema_res.error());
-                            }
+                        // The index's own pg_class row, as resolve found it by name.
+                        const auto& index_name = drop_node->index_name().t;
+                        if (!plan.catalog_resolves.table_md(id.database(), std::string_view(index_name))) {
+                            std::pmr::string msg{"DROP INDEX: index ", resource()};
+                            msg.append(id.database());
+                            msg.append(".");
+                            msg.append(id.table_name());
+                            msg.append(".");
+                            msg.append(index_name);
+                            msg.append(" does not exist");
+                            error = refuse_missing_target(
+                                core::error_t{core::error_code_t::index_not_exists, std::move(msg)});
                         }
                         break;
                     }
@@ -1241,8 +1230,8 @@ namespace services::collection::executor {
                 break;
             }
             case node_type::alter_table_t: {
-                const auto* alter_node =
-                    static_cast<const components::logical_plan::node_alter_table_t*>(plan.sub_queries.back().get());
+                auto* alter_node =
+                    static_cast<components::logical_plan::node_alter_table_t*>(plan.sub_queries.back().get());
                 if (components::catalog::is_catalog_table(alter_node->table_oid())) {
                     // System catalog shape is fixed at bootstrap; altering it desyncs positional column readers.
                     error =
@@ -1251,9 +1240,7 @@ namespace services::collection::executor {
                                                   std::pmr::string{"cannot alter a system catalog table", resource()}});
                     break;
                 }
-                auto& subcommands =
-                    static_cast<components::logical_plan::node_alter_table_t*>(plan.sub_queries.back().get())
-                        ->subcommands();
+                auto& subcommands = alter_node->subcommands();
                 // A subcommand written with IF EXISTS whose column / constraint is missing is skipped alone
                 // (PostgreSQL: a notice); the others still apply. Checked against what resolve found, before any
                 // operator runs, so the operators keep refusing a missing target.
@@ -1441,8 +1428,9 @@ namespace services::collection::executor {
                             validate_params.parameters = bound_params.parameters;
                             overridden = true;
                         }
-                        validate_params.parameters.find(m.id)->second =
-                            components::types::logical_value_t(resource(), plan.sub_queries[i]->output_types().front());
+                        validate_params.parameters.insert_or_assign(
+                            m.id,
+                            components::types::logical_value_t(resource(), plan.sub_queries[i]->output_types().front()));
                     }
                     services::dispatcher::validation::validation_context_t validation_context{
                         resource(),
@@ -1725,10 +1713,7 @@ namespace services::collection::executor {
                                                          std::move(allocated_oids),
                                                          need);
                 if (rewritten.has_error()) {
-                    // DROP INDEX learns that its target is missing only here.
-                    const bool target_missing = rewritten.error().type == core::error_code_t::index_not_exists;
-                    co_return execute_result_t{target_missing ? refuse_missing_target(rewritten.error())
-                                                              : make_cursor(resource(), rewritten.error())};
+                    co_return execute_result_t{make_cursor(resource(), rewritten.error())};
                 }
                 plan.sub_queries.back() = std::move(rewritten.value());
 
@@ -2577,6 +2562,25 @@ namespace services::collection::executor {
         co_return core::result_wrapper_t<ops::chunks_vector_t>(std::move(out));
     }
 
+    components::pipeline::context_t executor_t::make_pipeline_context_(components::session::session_id_t session,
+                                                                       const plan_t& plan_data,
+                                                                       components::table::transaction_data txn,
+                                                                       uint64_t lowest_active_start_time) {
+        components::pipeline::context_t context{session,
+                                                address(),
+                                                parent_address_,
+                                                &function_registry_,
+                                                *plan_data.parameters,
+                                                disk_address_,
+                                                index_address_,
+                                                wal_address_};
+        context.txn = txn;
+        context.execution_context = plan_data.context_storage_.execution_context;
+        context.lowest_active_start_time = lowest_active_start_time;
+        context.runner = this;
+        return context;
+    }
+
     executor_t::unique_future<sub_plan_result_t>
     executor_t::execute_sub_plan_(components::session::session_id_t session,
                                   plan_t plan_data,
@@ -2587,18 +2591,7 @@ namespace services::collection::executor {
 
         opened_sources_t opened{resource()};
         {
-            components::pipeline::context_t open_context{session,
-                                                         address(),
-                                                         parent_address_,
-                                                         &function_registry_,
-                                                         *plan_data.parameters,
-                                                         disk_address_,
-                                                         index_address_,
-                                                         wal_address_};
-            open_context.txn = txn;
-            open_context.execution_context = plan_data.context_storage_.execution_context;
-            open_context.lowest_active_start_time = lowest_active_start_time;
-            open_context.runner = this;
+            auto open_context = make_pipeline_context_(session, plan_data, txn, lowest_active_start_time);
             open_sources_(plan_data.root.get(), &open_context, opened);
         }
 
@@ -2613,18 +2606,7 @@ namespace services::collection::executor {
                 break;
             }
 
-            components::pipeline::context_t pipeline_context{session,
-                                                             address(),
-                                                             parent_address_,
-                                                             &function_registry_,
-                                                             *plan_data.parameters,
-                                                             disk_address_,
-                                                             index_address_,
-                                                             wal_address_};
-            pipeline_context.txn = txn;
-            pipeline_context.execution_context = plan_data.context_storage_.execution_context;
-            pipeline_context.lowest_active_start_time = lowest_active_start_time;
-            pipeline_context.runner = this;
+            auto pipeline_context = make_pipeline_context_(session, plan_data, txn, lowest_active_start_time);
             pipeline_context.analyze = plan_data.analyze;
 
             plan->prepare();

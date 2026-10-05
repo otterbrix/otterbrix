@@ -31,8 +31,7 @@ namespace {
 
     struct value_storage_t {
         otterbrix::otterbrix_ptr engine;
-        logical_value_t value{std::pmr::null_memory_resource(),
-                              components::types::complex_logical_type{components::types::logical_type::NA}};
+        logical_value_t value;
     };
 
     configuration::config create_config() { return configuration::config::default_config(); }
@@ -264,10 +263,10 @@ extern "C" value_ptr cursor_get_value(cursor_ptr ptr, int32_t row_index, int32_t
     }
 
     try {
-        auto value_storage = std::make_unique<value_storage_t>();
-        value_storage->engine = storage->engine;
         // value() spans the result batch — it locates the chunk owning the global row.
-        value_storage->value = cursor.value(static_cast<uint64_t>(column_index), static_cast<uint64_t>(row_index));
+        std::unique_ptr<value_storage_t> value_storage{new value_storage_t{
+            storage->engine,
+            cursor.value(static_cast<uint64_t>(column_index), static_cast<uint64_t>(row_index))}};
         return reinterpret_cast<value_ptr>(value_storage.release());
     } catch (const std::bad_alloc&) {
         out_of_memory();

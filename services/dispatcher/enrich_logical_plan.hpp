@@ -53,13 +53,18 @@ namespace services::catalog_resolve {
     std::pmr::vector<qualified_name_t> unresolved_tables(std::pmr::memory_resource* resource,
                                                          const components::logical_plan::catalog_resolves_t& resolves);
 
+    // The host's answers, one per name of unresolved_tables and in its order: a storage binds its entry, its
+    // declared columns becoming the table's metadata (relkind 'f'), as the catalog's would for a local table.
+    void bind_storages(components::logical_plan::catalog_resolves_t& resolves,
+                       std::span<components::planner::table_storage_answer_t> answers);
+
     std::size_t entry_count(const components::logical_plan::catalog_resolves_t& resolves);
 
     // A view body name pinned to a relation the catalog no longer holds: the view is stale.
     core::error_t refuse_stale_pins(std::pmr::memory_resource* resource,
                                     const components::logical_plan::catalog_resolves_t& resolves);
 
-    // A view body name the host resolved at CREATE VIEW and did not resolve now: the view is stale.
+    // A view body name the host resolved at CREATE VIEW and gave no storage now: the view is stale.
     core::error_t refuse_stale_host_names(std::pmr::memory_resource* resource,
                                           const components::logical_plan::catalog_resolves_t& resolves);
 

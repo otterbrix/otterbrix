@@ -758,8 +758,9 @@ namespace services::collection::executor {
             co_return execute_result_t{make_cursor(resource(), std::move(stale))};
         }
         // The host resolves what the catalog did not: its reads run here, in this statement's snapshot, and it
-        // rewrites the tree before validation. A statement whose names all resolved never reaches the host. A view
-        // body is a query too, at CREATE VIEW as on every read.
+        // answers each name with an external storage or leaves it unresolved; the tree stays as written. A
+        // statement whose names all resolved never reaches the host. A view body is a query too, at CREATE VIEW as
+        // on every read.
         const bool host_resolves_names = !needs_ddl_txn || original_type == node_type::create_view_t;
         if (host_names == host_names_t::resolve && host_resolves_names && plan.sub_queries.back()) {
             auto unresolved = services::catalog_resolve::unresolved_tables(resource(), plan.catalog_resolves);
@@ -778,27 +779,20 @@ namespace services::collection::executor {
                     }
                     read_results.push_back(std::move(read_result.cursor->chunks()));
                 }
-                auto rewritten =
-                    name_resolution_.decide(resource(), std::move(plan.sub_queries.back()), unresolved, read_results);
-                if (rewritten.has_error()) {
-                    co_return execute_result_t{make_cursor(resource(), rewritten.error())};
+                auto answers = name_resolution_.decide(resource(), unresolved, read_results, !plan.commits_when_done);
+                if (answers.has_error()) {
+                    co_return execute_result_t{make_cursor(resource(), answers.error())};
                 }
-                plan.sub_queries.back() = std::move(rewritten.value());
-                services::catalog_resolve::supersede_unnamed_entries(resource(),
-                                                                     plan.catalog_resolves,
-                                                                     plan.sub_queries.back().get());
-                const auto entries_before = services::catalog_resolve::entry_count(plan.catalog_resolves);
-                services::dispatcher::register_plan_targets(resource(),
-                                                            plan.sub_queries.back().get(),
-                                                            &plan.catalog_resolves);
-                if (services::catalog_resolve::entry_count(plan.catalog_resolves) != entries_before) {
-                    std::pmr::vector<components::logical_plan::node_ptr> resolve_nodes{resource()};
-                    collect_resolve_nodes(plan.catalog_resolves, resolve_nodes);
-                    auto host_pass_result = co_await run_resolve_subplan(this, std::move(resolve_nodes));
-                    if (host_pass_result.cursor->is_error()) {
-                        co_return execute_result_t{std::move(host_pass_result.cursor)};
-                    }
+                if (answers.value().size() != unresolved.size()) {
+                    std::pmr::string msg{"the name resolution hook answered ", resource()};
+                    msg += std::to_string(answers.value().size());
+                    msg += " names for ";
+                    msg += std::to_string(unresolved.size());
+                    msg += " unresolved ones";
+                    co_return execute_result_t{
+                        make_cursor(resource(), core::error_t{core::error_code_t::invalid_parameter, std::move(msg)})};
                 }
+                services::catalog_resolve::bind_storages(plan.catalog_resolves, answers.value());
             }
         }
         if (auto stale = services::catalog_resolve::refuse_stale_host_names(resource(), plan.catalog_resolves);

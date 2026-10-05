@@ -72,7 +72,7 @@ namespace components::planner {
     // Merges a pinned body's lookups into the statement's; the same name bound two different ways is refused.
     core::error_t merge_view_body_resolves(std::pmr::memory_resource* resource,
                                            logical_plan::catalog_resolves_t& dest,
-                                           const logical_plan::catalog_resolves_t& body_resolves);
+                                           logical_plan::catalog_resolves_t& body_resolves);
 
     // A body with a star reads the columns its tables have now; the view keeps the columns it was created with
     // (PostgreSQL 18 expands the star at CREATE VIEW).

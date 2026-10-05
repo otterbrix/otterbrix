@@ -45,6 +45,7 @@
 #include <services/index/manager_index.hpp>
 
 #include <algorithm>
+#include <cassert>
 #include <limits>
 #include <queue>
 #include <string>
@@ -825,6 +826,39 @@ namespace services::catalog_resolve {
         return names;
     }
 
+    void bind_storages(catalog_resolves_t& resolves,
+                       std::span<components::planner::table_storage_answer_t> answers) {
+        if (!resolves.tables) {
+            return;
+        }
+        std::size_t next = 0;
+        for (auto& entry : resolves.tables->entries()) {
+            if (entry.superseded || entry.table_md.has_value()) {
+                continue;
+            }
+            assert(next < answers.size());
+            auto& answer = answers[next++];
+            if (!answer.storage) {
+                continue;
+            }
+            components::logical_plan::resolved_table_metadata_t table;
+            table.relkind = components::catalog::relkind::foreign_table;
+            table.name = entry.relname;
+            table.columns.reserve(answer.columns.size());
+            for (std::size_t i = 0; i < answer.columns.size(); ++i) {
+                components::logical_plan::resolved_column_metadata_t column;
+                column.attname = answer.columns[i].alias();
+                column.type = answer.columns[i];
+                column.attnum = static_cast<std::int32_t>(i + 1);
+                column.chunk_position = static_cast<std::int32_t>(i);
+                table.columns.push_back(std::move(column));
+            }
+            table.storage = answer.storage.get();
+            entry.table_md = std::move(table);
+            entry.storage = std::move(answer.storage);
+        }
+    }
+
     std::size_t entry_count(const catalog_resolves_t& resolves) {
         std::size_t count = 0;
         for (const auto* slot :
@@ -841,11 +875,12 @@ namespace services::catalog_resolve {
             return core::error_t::no_error();
         }
         for (const auto& entry : resolves.tables->entries()) {
-            if (entry.pinned_oid != components::catalog::INVALID_OID && !entry.table_md.has_value()) {
+            if (entry.pin.kind == components::logical_plan::view_pin_t::kind_t::relation &&
+                !entry.table_md.has_value()) {
                 return components::planner::view_stale_error(resource,
-                                                             entry.bound_by.t,
+                                                             entry.pin.view.t,
                                                              "the relation its body was bound to (\"" + entry.relname +
-                                                                 "\", oid " + std::to_string(entry.pinned_oid) +
+                                                                 "\", oid " + std::to_string(entry.pin.oid) +
                                                                  ") no longer exists");
             }
         }
@@ -857,9 +892,9 @@ namespace services::catalog_resolve {
             return core::error_t::no_error();
         }
         for (const auto& entry : resolves.tables->entries()) {
-            if (entry.host_bound && !entry.superseded) {
+            if (entry.pin.kind == components::logical_plan::view_pin_t::kind_t::storage && !entry.storage) {
                 return components::planner::view_stale_error(resource,
-                                                             entry.bound_by.t,
+                                                             entry.pin.view.t,
                                                              "the host no longer resolves \"" + entry.relname +
                                                                  "\" named by its body");
             }

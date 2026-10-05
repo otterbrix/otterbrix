@@ -11,6 +11,7 @@ namespace components::catalog {
         inline constexpr char composite_type = 'c';
         inline constexpr char computed = 'g'; // otterbrix extension
         inline constexpr char macro = 'F';    // pg_rewrite-backed (function-like)
+        inline constexpr char foreign_table = 'f'; // external storage, never in pg_class (PostgreSQL-canonical)
     }                                         // namespace relkind
 
     // pg_index.indtype (otterbrix extension): a row whose value is outside this alphabet is catalog corruption and must

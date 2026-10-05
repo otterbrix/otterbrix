@@ -290,19 +290,21 @@ namespace components::planner {
                                             "\", which was not bound when the view was created");
             }
             if (binding->refkind == logical_plan::view_refkind::relation) {
-                entry.pinned_oid = binding->refobjid;
+                entry.pin.kind = logical_plan::view_pin_t::kind_t::relation;
+                entry.pin.oid = binding->refobjid;
             } else {
-                entry.host_bound = true;
+                entry.pin.kind = logical_plan::view_pin_t::kind_t::storage;
             }
-            entry.bound_by = view.name;
+            entry.pin.view = core::viewname_t{view.name};
         }
         return core::error_t::no_error();
     }
 
     core::error_t merge_view_body_resolves(std::pmr::memory_resource* resource,
                                            logical_plan::catalog_resolves_t& dest,
-                                           const logical_plan::catalog_resolves_t& body_resolves) {
+                                           logical_plan::catalog_resolves_t& body_resolves) {
         using logical_plan::resolve_kind;
+        using pin_kind = logical_plan::view_pin_t::kind_t;
         for (const auto& [kind, slot] : {std::pair{resolve_kind::database, &body_resolves.database},
                                          std::pair{resolve_kind::namespace_, &body_resolves.namespaces},
                                          std::pair{resolve_kind::table, &body_resolves.tables},
@@ -312,37 +314,36 @@ namespace components::planner {
                 continue;
             }
             auto& target = dest.ensure(resource, kind);
-            for (const auto& entry : (*slot)->entries()) {
+            for (auto& entry : (*slot)->entries()) {
+                const auto pin = entry.pin;
+                const auto written = written_name(entry);
                 const auto before = target.entries().size();
-                const auto index = target.add(entry);
+                const auto index = target.add(std::move(entry));
                 if (index == before || kind != resolve_kind::table) {
                     continue;
                 }
                 auto& existing = target.entries()[index];
                 const bool resolved_elsewhere =
-                    existing.table_md.has_value() && existing.table_md->table_oid != entry.pinned_oid;
-                const bool pinned_elsewhere =
-                    existing.pinned_oid != catalog::INVALID_OID && existing.pinned_oid != entry.pinned_oid;
-                if (entry.pinned_oid != catalog::INVALID_OID) {
-                    if (existing.host_bound || resolved_elsewhere || pinned_elsewhere) {
+                    existing.table_md.has_value() && existing.table_md->table_oid != pin.oid;
+                const bool pinned_elsewhere = existing.pin.kind == pin_kind::relation && existing.pin.oid != pin.oid;
+                if (pin.kind == pin_kind::relation) {
+                    if (existing.pin.kind == pin_kind::storage || resolved_elsewhere || pinned_elsewhere) {
                         return view_stale_error(resource,
-                                                entry.bound_by.t,
-                                                "\"" + written_name(entry) +
+                                                pin.view.t,
+                                                "\"" + written +
                                                     "\" in this statement no longer names the relation it was bound "
                                                     "to (oid " +
-                                                    std::to_string(entry.pinned_oid) + ")");
+                                                    std::to_string(pin.oid) + ")");
                     }
-                    existing.pinned_oid = entry.pinned_oid;
-                    existing.bound_by = entry.bound_by;
-                } else if (entry.host_bound) {
-                    if (existing.table_md.has_value() || existing.pinned_oid != catalog::INVALID_OID) {
+                    existing.pin = pin;
+                } else if (pin.kind == pin_kind::storage) {
+                    if (existing.table_md.has_value() || existing.pin.kind == pin_kind::relation) {
                         return view_stale_error(resource,
-                                                entry.bound_by.t,
-                                                "\"" + written_name(entry) +
+                                                pin.view.t,
+                                                "\"" + written +
                                                     "\" was resolved by the host and now names a catalog relation");
                     }
-                    existing.host_bound = true;
-                    existing.bound_by = entry.bound_by;
+                    existing.pin = pin;
                 }
             }
         }

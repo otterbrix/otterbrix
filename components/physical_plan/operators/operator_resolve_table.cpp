@@ -97,11 +97,11 @@ namespace components::operators {
                 continue;
             }
 
-            if (entry.host_bound) {
+            if (entry.pin.kind == components::logical_plan::view_pin_t::kind_t::storage) {
                 continue;
             }
             // A pinned view body name is read by oid: no namespace, no name, no candidates.
-            catalog::oid_t table_oid = entry.pinned_oid;
+            catalog::oid_t table_oid = entry.pin.oid;
             if (table_oid == catalog::INVALID_OID) {
                 auto input_namespace_oid = catalog::INVALID_OID;
                 if (entry.namespace_of != components::logical_plan::resolve_entry_t::no_target) {

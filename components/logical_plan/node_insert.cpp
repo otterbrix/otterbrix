@@ -11,7 +11,7 @@ namespace components::logical_plan {
                                                  const insert_column_bindings_t& bindings,
                                                  const insert_fill_list_t& fill) {
         size_t width = bindings.size() + fill.size();
-        std::pmr::vector<uint64_t> source_of(width, width, resource);
+        std::pmr::vector<size_t> source_of(width, width, resource);
         for (size_t column = 0; column < width; column++) {
             size_t target =
                 column < bindings.size() ? bindings[column].target_index : fill[column - bindings.size()].target_index;

@@ -52,8 +52,7 @@ namespace {
     }
 
     template<planner::optimizer_stage Stage>
-    logical_plan::node_ptr
-    record(std::pmr::memory_resource*, logical_plan::node_ptr node, const planner::optimizer_rule_context_t&) {
+    logical_plan::node_ptr record(std::pmr::memory_resource*, logical_plan::node_ptr node) {
         shape_t shape;
         collect(node, shape);
         seen()[Stage] = shape;

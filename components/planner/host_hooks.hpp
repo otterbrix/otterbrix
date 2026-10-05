@@ -27,15 +27,9 @@ namespace components::planner {
         last                      // prune_columns
     };
 
-    struct optimizer_rule_context_t {
-        const logical_plan::catalog_resolves_t* resolves;
-        const logical_plan::parameter_node_t* parameters;
-        bool can_push_to_agent;
-    };
-
-    using optimizer_rule_fn = logical_plan::node_ptr (*)(std::pmr::memory_resource*,
-                                                         logical_plan::node_ptr,
-                                                         const optimizer_rule_context_t&);
+    // A rule recognizes the tables it serves by the owner tag of their storage (a read node's table_metadata()), and
+    // reads a parameter's value at run time from the operator's context, so it gets the tree only.
+    using optimizer_rule_fn = logical_plan::node_ptr (*)(std::pmr::memory_resource*, logical_plan::node_ptr);
 
     // Within one stage the rules run in registration order.
     struct optimizer_rule_t {

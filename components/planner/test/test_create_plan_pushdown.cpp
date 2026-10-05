@@ -116,17 +116,6 @@ namespace {
 
 } // namespace
 
-// A host node without an operator function is refused when it is made, so physgen never meets one.
-TEST_CASE("create_plan: a host node without an operator function is refused") {
-    core::pmr::otterbrix_resource resource;
-    auto ext = make_node_extension(&resource,
-                                   "host_source",
-                                   std::pmr::vector<components::types::complex_logical_type>{&resource},
-                                   nullptr);
-    REQUIRE(ext.has_error());
-    REQUIRE(ext.error().type == core::error_code_t::create_physical_plan_error);
-}
-
 // A stamp that reaches physgen over an explicit source child (a later optimizer pass swapped the
 // implicit table scan for a host extension leaf) must not read the owning table on disk instead.
 TEST_CASE("create_plan: pushdown stamp over an extension source child does not lower to pushed_reduce_scan") {
@@ -136,12 +125,10 @@ TEST_CASE("create_plan: pushdown stamp over an extension source child does not l
     components::compute::function_registry_t registry(&resource);
 
     auto node = build_agg(&resource, /*pushdown=*/true);
-    auto ext = make_node_extension(&resource,
-                                   "host_source",
-                                   std::pmr::vector<components::types::complex_logical_type>{&resource},
-                                   &host_source_operator);
-    REQUIRE_FALSE(ext.has_error());
-    node->append_child(ext.value());
+    node->append_child(node_ptr{new node_extension_t(&resource,
+                                                     "host_source",
+                                                     std::pmr::vector<components::types::complex_logical_type>{&resource},
+                                                     &host_source_operator)});
     auto plan_planned =
         services::planner::create_plan(context, registry, node, components::logical_plan::limit_t::unlimit(), nullptr);
     REQUIRE_FALSE(plan_planned.has_error());

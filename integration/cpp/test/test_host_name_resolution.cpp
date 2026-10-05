@@ -616,11 +616,9 @@ namespace {
         return true;
     }
 
-    logical_plan::node_ptr push_whole_modify(std::pmr::memory_resource* resource,
-                                             logical_plan::node_ptr node,
-                                             const planner::optimizer_rule_context_t& context) {
+    logical_plan::node_ptr push_whole_modify(std::pmr::memory_resource* resource, logical_plan::node_ptr node) {
         for (auto& child : node->children()) {
-            child = push_whole_modify(resource, child, context);
+            child = push_whole_modify(resource, child);
         }
         if (node->type() != logical_plan::node_type::update_t && node->type() != logical_plan::node_type::delete_t) {
             return node;
@@ -634,16 +632,13 @@ namespace {
         if (!one_remote_statement(*node, spec)) {
             return node;
         }
-        auto remote = logical_plan::make_node_extension(
-            resource,
-            storage->name(),
-            std::pmr::vector<types::complex_logical_type>{resource},
-            &make_remote_modify,
-            logical_plan::extension_payload_ptr{new remote_modify_payload_t{std::move(spec)}});
-        if (remote.has_error()) {
-            return node;
-        }
-        return remote.value();
+        return logical_plan::node_ptr{
+            new logical_plan::node_extension_t(resource,
+                                               storage->name(),
+                                               std::pmr::vector<types::complex_logical_type>{resource},
+                                               &make_remote_modify,
+                                               logical_plan::extension_payload_ptr{
+                                                   new remote_modify_payload_t{std::move(spec)}})};
     }
 
     constexpr planner::optimizer_rule_t host_rules[] = {

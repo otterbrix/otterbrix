@@ -29,6 +29,7 @@
 #include <unistd.h>
 #include <vector>
 #include <components/log/test_log.hpp>
+#include <services/disk/tests/test_directory.hpp>
 
 namespace pushdown_reduce_test {
 
@@ -60,7 +61,7 @@ namespace pushdown_reduce_test {
             , manager(actor_zeta::spawn<services::disk::manager_disk_t>(&resource,
                                                                         scheduler,
                                                                         scheduler,
-                                                                        disk_config,
+                                                                        test_directory::created(disk_config),
                                                                         log)) {
             cleanup();
             std::filesystem::create_directories(reduce_dir());

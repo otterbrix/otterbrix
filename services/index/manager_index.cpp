@@ -3,6 +3,7 @@
 
 #include <actor-zeta/spawn.hpp>
 #include <algorithm>
+#include <cassert>
 #include <components/vector/data_chunk.hpp>
 #include <core/executor.hpp>
 #include <core/file/local_file_system.hpp>
@@ -285,16 +286,11 @@ namespace services::index {
         (void) bitcask_flush_threshold_;
         (void) bitcask_segment_record_limit_;
         (void) btree_flush_threshold_;
-        if (!path_db_.empty()) {
+        // The engine factory creates the directory before it spawns the managers.
+        assert(path_db_.empty() || [this] {
             std::error_code ec;
-            std::filesystem::create_directories(path_db_, ec);
-            if (ec) {
-                error(log_,
-                      "manager_index: the index directory {} could not be created: {}",
-                      path_db_.string(),
-                      ec.message());
-            }
-        }
+            return std::filesystem::is_directory(path_db_, ec);
+        }());
 
         loop_thread_ = std::thread([this] {
             // pmr::list for iterator stability: behavior_t is move-only, and a resume can re-suspend in place.

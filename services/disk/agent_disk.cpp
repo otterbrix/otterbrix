@@ -84,11 +84,11 @@ namespace services::disk {
               role == agent_role_t::CATALOG ? "CATALOG" : "USER_POOL",
               pool_idx);
         components::compute::register_default_functions(function_registry_);
-        std::error_code ec;
-        std::filesystem::create_directories(path_, ec);
-        if (ec) {
-            error(log_, "agent_disk::create: directory {} could not be created: {}", path_.string(), ec.message());
-        }
+        // The engine factory creates the directory before it spawns the managers.
+        assert([this] {
+            std::error_code ec;
+            return std::filesystem::is_directory(path_, ec);
+        }());
     }
 
     agent_disk_t::~agent_disk_t() { trace(log_, "delete agent_disk_t"); }

@@ -198,6 +198,18 @@ namespace services::engine {
 
         VALUE_OR_RETURN(auto lock, detail::directory_lock_t::acquire(resource, config.main_path));
 
+        // The managers only assert their directory: a directory that cannot be created stops the start here.
+        if (!config.disk.path.empty()) {
+            std::error_code ec;
+            std::filesystem::create_directories(config.disk.path, ec);
+            if (ec) {
+                return startup_error(resource,
+                                     core::error_code_t::io_error,
+                                     "engine startup REFUSED , the table directory " + config.disk.path.string() +
+                                         " could not be created: " + ec.message());
+            }
+        }
+
         if (!config.disk.path.empty()) {
             const auto legacy_catalog_otbx = config.disk.path / "catalog.otbx";
             std::error_code exists_ec;

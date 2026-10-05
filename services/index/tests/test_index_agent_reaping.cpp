@@ -26,6 +26,7 @@
 
 #include "index_fixture_path.hpp"
 #include <components/log/test_log.hpp>
+#include <services/disk/tests/test_directory.hpp>
 
 using components::session::session_id_t;
 using services::index::live_index_agents;
@@ -89,7 +90,7 @@ TEST_CASE("services::index::on_horizon_advanced frees the agents of a reclaimed 
     auto manager = actor_zeta::spawn<manager_index_t>(&resource,
                                                       scheduler.get(),
                                                       log,
-                                                      path,
+                                                      test_directory::created(path),
                                                       /*bitcask_flush_threshold=*/1000,
                                                       /*bitcask_segment_record_limit=*/100,
                                                       /*btree_flush_threshold=*/1000);
@@ -139,7 +140,7 @@ TEST_CASE("services::index::unregister_collection frees the agents of the table 
     auto manager = actor_zeta::spawn<manager_index_t>(&resource,
                                                       scheduler.get(),
                                                       log,
-                                                      path,
+                                                      test_directory::created(path),
                                                       /*bitcask_flush_threshold=*/1000,
                                                       /*bitcask_segment_record_limit=*/100,
                                                       /*btree_flush_threshold=*/1000);

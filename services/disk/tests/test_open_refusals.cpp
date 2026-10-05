@@ -30,6 +30,7 @@
 #include <unistd.h>
 #include <vector>
 #include <components/log/test_log.hpp>
+#include <services/disk/tests/test_directory.hpp>
 
 // The open path must not let a real failure collapse into the value a legitimate empty state also
 // produces (a zero wal id, a '\0' relkind, a `false` create, a `0` append).
@@ -68,7 +69,11 @@ namespace {
                 c.path = base;
                 return c;
             }())
-            , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {}
+            , manager(actor_zeta::spawn<manager_disk_t>(&resource,
+                                                        scheduler,
+                                                        scheduler,
+                                                        test_directory::created(disk_config),
+                                                        log)) {}
 
         ~open_fixture() {
             // Destroy the manager first — its dtor joins the loop thread, which may still enqueue onto the scheduler.

@@ -28,6 +28,7 @@
 #include <thread>
 #include <unistd.h>
 #include <components/log/test_log.hpp>
+#include <services/disk/tests/test_directory.hpp>
 
 using namespace services::disk;
 using namespace components::catalog;
@@ -63,7 +64,11 @@ namespace {
                 c.path = path;
                 return c;
             }())
-            , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {}
+            , manager(actor_zeta::spawn<manager_disk_t>(&resource,
+                                                        scheduler,
+                                                        scheduler,
+                                                        test_directory::created(disk_config),
+                                                        log)) {}
         ~fresh_disk() {
             // manager_disk_t self-drives on an internal thread; destroy it before
             // tearing down the scheduler to avoid use-after-free.

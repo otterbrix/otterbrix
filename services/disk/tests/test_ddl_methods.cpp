@@ -26,6 +26,7 @@
 #include <thread>
 #include <unistd.h>
 #include <components/log/test_log.hpp>
+#include <services/disk/tests/test_directory.hpp>
 
 using namespace services::disk;
 using namespace disk_test_helpers;
@@ -89,7 +90,11 @@ namespace {
                 c.path = ddl_dir();
                 return c;
             }())
-            , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {
+            , manager(actor_zeta::spawn<manager_disk_t>(&resource,
+                                                        scheduler,
+                                                        scheduler,
+                                                        test_directory::created(disk_config),
+                                                        log)) {
             cleanup();
             std::filesystem::create_directories(ddl_dir());
             REQUIRE_FALSE(manager->bootstrap_system_tables_sync().contains_error());

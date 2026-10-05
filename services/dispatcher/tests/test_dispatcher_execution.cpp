@@ -37,6 +37,7 @@
 #include <services/index/manager_index.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 #include <components/log/test_log.hpp>
+#include <services/disk/tests/test_directory.hpp>
 
 // dispatcher_dir() carries ::getpid() so parallel ctest shards never share a disk directory.
 
@@ -111,11 +112,15 @@ struct dispatcher_fixture : actor_zeta::actor::actor_mixin<dispatcher_fixture> {
         , log_(make_test_log("python", "/tmp/docker_logs/"))
         , scheduler_(new core::non_thread_scheduler::scheduler_test_t(1, 1))
         , disk_config_(disk_path)
-        , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource, scheduler_, scheduler_, disk_config_, log_))
+        , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource,
+                                                          scheduler_,
+                                                          scheduler_,
+                                                          test_directory::created(disk_config_),
+                                                          log_))
         , manager_index_(actor_zeta::spawn<services::index::manager_index_t>(resource,
                                                                              scheduler_,
                                                                              log_,
-                                                                             disk_config_.path,
+                                                                             test_directory::created(disk_config_.path),
                                                                              disk_config_.bitcask_flush_threshold,
                                                                              disk_config_.bitcask_segment_record_limit,
                                                                              disk_config_.btree_flush_threshold))

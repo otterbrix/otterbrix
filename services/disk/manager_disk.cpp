@@ -402,15 +402,11 @@ namespace services::disk {
         , pump_(pump) {
         trace(log_, "manager_disk start");
         if (!config_.path.empty()) {
-            std::error_code ec;
-            std::filesystem::create_directories(config_.path, ec);
-            if (ec) {
-                error(log_,
-                      "manager_disk: the table directory {} could not be created ({}); pg_catalog bootstrap "
-                      "refuses the start",
-                      config_.path.string(),
-                      ec.message());
-            }
+            // The engine factory creates the directory before it spawns the managers.
+            assert([this] {
+                std::error_code ec;
+                return std::filesystem::is_directory(config_.path, ec);
+            }());
             create_agent(config.agent);
         }
         // This thread owns all message processing; senders only push into inbox_ and wake it.

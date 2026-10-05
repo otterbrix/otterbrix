@@ -22,6 +22,7 @@
 #include <thread>
 #include <unistd.h>
 #include <components/log/test_log.hpp>
+#include <services/disk/tests/test_directory.hpp>
 
 using namespace services::disk;
 namespace catalog = components::catalog;
@@ -52,7 +53,11 @@ namespace {
                 c.path = err_dir();
                 return c;
             }())
-            , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {
+            , manager(actor_zeta::spawn<manager_disk_t>(&resource,
+                                                        scheduler,
+                                                        scheduler,
+                                                        test_directory::created(disk_config),
+                                                        log)) {
             cleanup();
             std::filesystem::create_directories(err_dir());
             REQUIRE_FALSE(manager->bootstrap_system_tables_sync().contains_error());
@@ -613,7 +618,7 @@ TEST_CASE("services::disk::error::a_manager_with_no_agents_refuses_instead_of_an
     std::filesystem::create_directories(cfg.path);
     {
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager(
-            actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, cfg, log));
+            actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, test_directory::created(cfg), log));
 
         auto call = [&](auto fn, auto&&... args) {
             auto [_, future] = actor_zeta::otterbrix::send(manager->address(), fn, std::move(args)...);

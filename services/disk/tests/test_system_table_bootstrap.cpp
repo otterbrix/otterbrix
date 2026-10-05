@@ -22,6 +22,7 @@
 #include <unistd.h>
 #include <vector>
 #include <components/log/test_log.hpp>
+#include <services/disk/tests/test_directory.hpp>
 
 using namespace services::disk;
 using namespace components::catalog;
@@ -59,7 +60,11 @@ namespace {
                 c.path = path;
                 return c;
             }())
-            , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {}
+            , manager(actor_zeta::spawn<manager_disk_t>(&resource,
+                                                        scheduler,
+                                                        scheduler,
+                                                        test_directory::created(disk_config),
+                                                        log)) {}
 
         ~disk_only_fixture() {
             // Destroy the manager first: its dtor joins the loop thread, which may still enqueue onto the scheduler.
@@ -221,7 +226,7 @@ TEST_CASE("services::disk::sysboot::no_path_is_safe_noop") {
     auto* scheduler = new core::non_thread_scheduler::scheduler_test_t(1, 1);
     configuration::config_disk c;
     c.path.clear(); // truly empty — config_disk default is current_path()/wal
-    auto m = actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, c, log);
+    auto m = actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, test_directory::created(c), log);
 
     REQUIRE_FALSE(m->bootstrap_system_tables_sync().contains_error());
     REQUIRE_FALSE(m->bootstrap_system_tables_sync().contains_error());

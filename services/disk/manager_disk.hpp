@@ -668,7 +668,6 @@ namespace services::disk {
 
         unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
         scan_table(components::catalog::oid_t table_oid,
-                   std::unique_ptr<components::table::pushed_filter_t> filter,
                    std::vector<std::size_t> projected_cols,
                    components::table::transaction_data txn = components::table::transaction_data::committed());
 

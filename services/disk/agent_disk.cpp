@@ -1013,28 +1013,31 @@ namespace services::disk {
                                      int64_t limit,
                                      std::vector<size_t> projected_cols,
                                      components::table::transaction_data txn) {
-        auto built = build_filter_(table_oid, filter.get());
-        if (built.has_error()) {
-            co_return built.error();
+        std::unique_ptr<components::table::table_filter_t> built_filter;
+        if (filter != nullptr) {
+            auto it = storages_.find(table_oid);
+            if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
+                co_return core::error_t{
+                    core::error_code_t::missing_table,
+                    std::pmr::string{"scan filter: storage is not owned by this agent", resource()}};
+            }
+            auto built = build_filter_(filter.get(), it->second->storage->types());
+            if (built.has_error()) {
+                co_return built.error();
+            }
+            built_filter = std::move(built.value());
         }
         const std::vector<size_t>* projected_ptr = projected_cols.empty() ? nullptr : &projected_cols;
-        co_return scan_local(table_oid, built.value().get(), limit, projected_ptr, txn);
+        co_return scan_local(table_oid, built_filter.get(), limit, projected_ptr, txn);
     }
 
     core::result_wrapper_t<std::unique_ptr<components::table::table_filter_t>>
-    agent_disk_t::build_filter_(components::catalog::oid_t table_oid, const components::table::pushed_filter_t* filter) {
+    agent_disk_t::build_filter_(const components::table::pushed_filter_t* filter,
+                                const std::pmr::vector<components::types::complex_logical_type>& types) {
         if (filter == nullptr) {
             return std::unique_ptr<components::table::table_filter_t>{};
         }
-        auto it = storages_.find(table_oid);
-        if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
-            return core::error_t{core::error_code_t::missing_table,
-                                 std::pmr::string{"scan filter: storage is not owned by this agent", resource()}};
-        }
-        return components::table::build_table_filter(resource(),
-                                                     function_registry_,
-                                                     *filter,
-                                                     it->second->storage->types());
+        return components::table::build_table_filter(resource(), function_registry_, *filter, types);
     }
 
     template<typename PerBatch>
@@ -1172,7 +1175,7 @@ namespace services::disk {
                 what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
                 co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
             }
-            auto built = build_filter_(table_oid, filter.get());
+            auto built = build_filter_(filter.get(), it->second->storage->types());
             if (built.has_error()) {
                 co_return built.error();
             }
@@ -1423,7 +1426,7 @@ namespace services::disk {
             what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
             co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
         }
-        auto built = build_filter_(table_oid, filter.get());
+        auto built = build_filter_(filter.get(), it->second->storage->types());
         if (built.has_error()) {
             co_return built.error();
         }

@@ -27,6 +27,15 @@
 // NO base class and NO std::function (R14).
 namespace components::operators::dml_detail {
 
+    // The scan's id of `row`: a dictionary-sliced batch keeps it in its first column's indexing, any other batch in
+    // row_ids. A batch without columns (a table whose last column was dropped) has only row_ids.
+    inline int64_t row_id_of(const vector::data_chunk_t& chunk, uint64_t row) {
+        if (!chunk.data.empty() && chunk.data.front().get_vector_type() == vector::vector_type::DICTIONARY) {
+            return static_cast<int64_t>(chunk.data.front().indexing().get_index(row));
+        }
+        return chunk.row_ids.data<int64_t>()[row];
+    }
+
     // Normalized result of one operator storage op, handed to record_flush().
     struct flush_outcome_t {
         core::error_t error{core::error_t::no_error()};

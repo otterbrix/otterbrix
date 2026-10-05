@@ -35,7 +35,7 @@ namespace {
     };
     using chunks_by_name_t = std::unordered_map<std::string, pairs_spec_t>;
 
-    // The simulated backend for the next statement, keyed by database.name.
+    // The simulated backend for the next statement, keyed by the uid slot of uid.database.schema.name.
     chunks_by_name_t& current_chunks() {
         static chunks_by_name_t chunks;
         return chunks;
@@ -110,7 +110,7 @@ namespace {
         std::pmr::vector<planner::table_storage_answer_t> answers{res};
         for (const auto& name : unresolved) {
             planner::table_storage_answer_t answer{std::pmr::vector<types::complex_logical_type>{res}};
-            auto it = current_chunks().find(name.database.t + "." + name.collection.t);
+            auto it = current_chunks().find(name.unique_identifier.t);
             if (it != current_chunks().end()) {
                 answer.columns.emplace_back(types::logical_type::BIGINT, it->second.col_a);
                 answer.columns.emplace_back(types::logical_type::BIGINT, it->second.col_b);
@@ -135,16 +135,16 @@ TEST_CASE("integration::cpp::test_raw_join") {
     test_spaces space(config, services::engine::primitives_t{{}, {&planner::no_name_reads, &pairs_decide}});
     auto dispatcher = space.dispatcher();
 
-    INFO("triple JOIN");
+    INFO("triple JOIN, 4-part qualifiers");
     {
         chunks_by_name_t chunks;
-        chunks.emplace("remote.l", pairs_spec_t{"key", "name", {{1, 11}, {2, 22}, {3, 33}}});
-        chunks.emplace("remote.m", pairs_spec_t{"key", "linker", {{1, 100}, {2, 200}, {99, 999}}});
-        chunks.emplace("remote.e", pairs_spec_t{"linker", "extra", {{100, 7}, {500, 8}}});
+        chunks.emplace("uid_l", pairs_spec_t{"key", "name", {{1, 11}, {2, 22}, {3, 33}}});
+        chunks.emplace("uid_m", pairs_spec_t{"key", "linker", {{1, 100}, {2, 200}, {99, 999}}});
+        chunks.emplace("uid_e", pairs_spec_t{"linker", "extra", {{100, 7}, {500, 8}}});
 
-        const std::string sql = "SELECT * FROM remote.l l "
-                                "INNER JOIN remote.m m ON l.key = m.key "
-                                "INNER JOIN remote.e e ON m.linker = e.linker;";
+        const std::string sql = "SELECT * FROM uid_l.db.sch.tbl_l l "
+                                "INNER JOIN uid_m.db.sch.tbl_m m ON l.key = m.key "
+                                "INNER JOIN uid_e.db.sch.tbl_e e ON m.linker = e.linker;";
 
         auto cur = run_with_externals(dispatcher, sql, chunks);
         REQUIRE(cur->is_success());
@@ -155,13 +155,13 @@ TEST_CASE("integration::cpp::test_raw_join") {
     INFO("triple JOIN, predicate reaches across — second JOIN refs first table alias");
     {
         chunks_by_name_t chunks;
-        chunks.emplace("remote.a", pairs_spec_t{"key", "tag", {{10, 1}, {20, 2}, {30, 3}}});
-        chunks.emplace("remote.b", pairs_spec_t{"key", "linker", {{10, 100}, {20, 200}, {30, 300}}});
-        chunks.emplace("remote.c", pairs_spec_t{"key", "extra", {{10, 7}, {30, 9}}});
+        chunks.emplace("uid_a", pairs_spec_t{"key", "tag", {{10, 1}, {20, 2}, {30, 3}}});
+        chunks.emplace("uid_b", pairs_spec_t{"key", "linker", {{10, 100}, {20, 200}, {30, 300}}});
+        chunks.emplace("uid_c", pairs_spec_t{"key", "extra", {{10, 7}, {30, 9}}});
 
-        const std::string sql = "SELECT * FROM remote.a a "
-                                "INNER JOIN remote.b b ON a.key = b.key "
-                                "INNER JOIN remote.c c ON a.key = c.key;";
+        const std::string sql = "SELECT * FROM uid_a.db.sch.a a "
+                                "INNER JOIN uid_b.db.sch.b b ON a.key = b.key "
+                                "INNER JOIN uid_c.db.sch.c c ON a.key = c.key;";
 
         auto cur = run_with_externals(dispatcher, sql, chunks);
         REQUIRE(cur->is_success());
@@ -172,15 +172,15 @@ TEST_CASE("integration::cpp::test_raw_join") {
     INFO("quadruple JOIN");
     {
         chunks_by_name_t chunks;
-        chunks.emplace("remote.a", pairs_spec_t{"key", "name", {{1, 11}, {2, 22}, {3, 33}}});
-        chunks.emplace("remote.b", pairs_spec_t{"key", "linker", {{1, 100}, {2, 200}, {3, 300}}});
-        chunks.emplace("remote.c", pairs_spec_t{"linker", "tail", {{100, 555}, {200, 777}, {300, 999}}});
-        chunks.emplace("remote.d", pairs_spec_t{"key", "extra", {{1, 7}, {3, 9}}});
+        chunks.emplace("uid_a", pairs_spec_t{"key", "name", {{1, 11}, {2, 22}, {3, 33}}});
+        chunks.emplace("uid_b", pairs_spec_t{"key", "linker", {{1, 100}, {2, 200}, {3, 300}}});
+        chunks.emplace("uid_c", pairs_spec_t{"linker", "tail", {{100, 555}, {200, 777}, {300, 999}}});
+        chunks.emplace("uid_d", pairs_spec_t{"key", "extra", {{1, 7}, {3, 9}}});
 
-        const std::string sql = "SELECT * FROM remote.a a "
-                                "INNER JOIN remote.b b ON a.key = b.key "
-                                "INNER JOIN remote.c c ON b.linker = c.linker "
-                                "INNER JOIN remote.d d ON a.key = d.key;";
+        const std::string sql = "SELECT * FROM uid_a.db.sch.a a "
+                                "INNER JOIN uid_b.db.sch.b b ON a.key = b.key "
+                                "INNER JOIN uid_c.db.sch.c c ON b.linker = c.linker "
+                                "INNER JOIN uid_d.db.sch.d d ON a.key = d.key;";
 
         auto cur = run_with_externals(dispatcher, sql, chunks);
         REQUIRE(cur->is_success());

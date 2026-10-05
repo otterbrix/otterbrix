@@ -92,8 +92,16 @@ namespace {
         return c;
     }
 
-    std::string qualified(std::string_view db, std::string_view schema, std::string_view rel) {
-        std::string out{db};
+    // The whole written name: uid.database.schema.name, empty slots left out.
+    std::string qualified(const qualified_name_t& name) {
+        std::string out;
+        if (!name.unique_identifier.t.empty()) {
+            out += name.unique_identifier.t;
+            out += '.';
+        }
+        out += name.database.t;
+        const std::string_view schema = name.schema.t;
+        const std::string_view rel = name.collection.t;
         if (!schema.empty()) {
             out += '.';
             out += schema;
@@ -140,6 +148,11 @@ namespace {
         std::pmr::vector<types::complex_logical_type> columns_;
         std::vector<std::size_t> positions_;
     };
+
+    // The table's name on its server: m2.shop.orders lives there as shop.orders.
+    std::string remote_name(const remote_storage_t& storage) {
+        return storage.name().substr(storage.name().find('.') + 1);
+    }
 
     class remote_source_t final : public operators::read_only_operator_t {
     public:
@@ -198,8 +211,7 @@ namespace {
         }
         std::pmr::vector<std::pmr::string> explain_details_impl() const override {
             std::pmr::vector<std::pmr::string> details{resource()};
-            const auto& name = storage_->name();
-            details.emplace_back("Remote SQL: SELECT * FROM " + name.substr(name.find('.') + 1));
+            details.emplace_back("Remote SQL: SELECT * FROM " + remote_name(*storage_));
             return details;
         }
 
@@ -274,6 +286,16 @@ namespace {
         }
 
     private:
+        std::pmr::string explain_label_impl() const override {
+            return std::pmr::string{"Foreign Insert on " + storage_->name(), resource()};
+        }
+        std::pmr::vector<std::pmr::string> explain_details_impl() const override {
+            std::pmr::vector<std::pmr::string> details{resource()};
+            details.emplace_back("Remote SQL: INSERT INTO " + remote_name(*storage_) + " VALUES ($1, $2)");
+            details.emplace_back("Batch Size: 1");
+            return details;
+        }
+
         std::string types_;
         rows_t rows_;
     };
@@ -307,6 +329,16 @@ namespace {
         }
 
     private:
+        std::pmr::string explain_label_impl() const override {
+            return std::pmr::string{"Foreign Update on " + storage_->name(), resource()};
+        }
+        std::pmr::vector<std::pmr::string> explain_details_impl() const override {
+            std::pmr::vector<std::pmr::string> details{resource()};
+            details.emplace_back("Remote SQL: UPDATE " + remote_name(*storage_) +
+                                 " SET id = $1, amount = $2 WHERE ctid = $3");
+            return details;
+        }
+
         std::vector<std::pair<std::size_t, std::vector<int64_t>>> changed_;
     };
 
@@ -340,6 +372,15 @@ namespace {
         }
 
     private:
+        std::pmr::string explain_label_impl() const override {
+            return std::pmr::string{"Foreign Delete on " + storage_->name(), resource()};
+        }
+        std::pmr::vector<std::pmr::string> explain_details_impl() const override {
+            std::pmr::vector<std::pmr::string> details{resource()};
+            details.emplace_back("Remote SQL: DELETE FROM " + remote_name(*storage_) + " WHERE ctid = $1");
+            return details;
+        }
+
         std::vector<std::size_t> positions_;
     };
 
@@ -386,7 +427,7 @@ namespace {
         counters().need.fetch_add(1);
         std::pmr::vector<logical_plan::execution_plan_t> reads{resource};
         for (const auto& name : unresolved) {
-            asked_names().push_back(qualified(name.database.t, name.schema.t, name.collection.t));
+            asked_names().push_back(qualified(name));
             auto agg = logical_plan::make_node_aggregate(
                 resource,
                 qualified_name_t{core::dbname_t{"otterstax"}, core::relname_t{"remote_columns"}});
@@ -402,7 +443,7 @@ namespace {
             auto params = logical_plan::make_parameter_node(resource);
             params->add_parameter(
                 core::parameter_id_t{1},
-                types::logical_value_t(resource, qualified(name.database.t, name.schema.t, name.collection.t)));
+                types::logical_value_t(resource, qualified(name)));
             reads.emplace_back(resource, std::move(agg), std::move(params));
         }
         counters().reads.fetch_add(static_cast<int>(reads.size()));
@@ -452,7 +493,7 @@ namespace {
                 }
                 answer.storage = core::pmr::make_polymorphic_unique<remote_storage_t>(
                     resource,
-                    qualified(unresolved[i].database.t, unresolved[i].schema.t, unresolved[i].collection.t),
+                    qualified(unresolved[i]),
                     std::pmr::vector<types::complex_logical_type>(answer.columns, resource));
             }
             answers.push_back(std::move(answer));
@@ -1157,6 +1198,39 @@ TEST_CASE("integration::cpp::host_names::explain_prints_the_storage_scan_label_a
                                                 "          Remote SQL: SELECT * FROM shop.orders",
                                                 "    ->  Seq Scan on c"});
     }
+    SECTION("a write into the storage table: the storage sink's line, not the engine's") {
+        CHECK(explain_lines(dispatcher, "EXPLAIN INSERT INTO m2.shop.orders (id, amount) VALUES (4, 400);") ==
+              std::vector<std::string>{"Foreign Insert on m2.shop.orders",
+                                       "  Remote SQL: INSERT INTO shop.orders VALUES ($1, $2)",
+                                       "  Batch Size: 1",
+                                       "  ->  Values Scan"});
+        // RETURNING keeps both off the host's one-statement rule: the batch path's sinks say their lines, and the
+        // storage's scan feeds them.
+        struct write_line_t {
+            const char* sql;
+            const char* label;
+            const char* remote_sql;
+        };
+        const write_line_t writes[] = {
+            {"EXPLAIN UPDATE m2.shop.orders SET amount = 1 WHERE id = 1 RETURNING id;",
+             "Foreign Update on m2.shop.orders",
+             "  Remote SQL: UPDATE shop.orders SET id = $1, amount = $2 WHERE ctid = $3"},
+            {"EXPLAIN DELETE FROM m2.shop.orders WHERE id = 1 RETURNING id;",
+             "Foreign Delete on m2.shop.orders",
+             "  Remote SQL: DELETE FROM shop.orders WHERE ctid = $1"},
+        };
+        for (const auto& write : writes) {
+            INFO(write.sql);
+            auto lines = explain_lines(dispatcher, write.sql);
+            REQUIRE(lines.size() >= 3);
+            CHECK(lines[0] == write.label);
+            CHECK(lines[1] == write.remote_sql);
+            CHECK(std::any_of(lines.begin(), lines.end(), [](const std::string& line) {
+                return line.find("->  Foreign Scan on m2.shop.orders") != std::string::npos;
+            }));
+        }
+        CHECK(backend()["m2.shop.orders"] == rows_t{{1, 100}, {2, 200}, {3, 300}});
+    }
 }
 
 // What one remote statement cannot say runs as otterbrix's own UPDATE / DELETE: the storage's scan numbers the
@@ -1272,4 +1346,44 @@ TEST_CASE("integration::cpp::host_names::a_storage_write_error_reaches_the_curso
               "server m2: new row violates check constraint \"amount_positive\"");
     }
     CHECK(backend()["m2.shop.orders"].size() == 3);
+}
+
+// The host gets the whole written name, the uid slot included: u1.m2.shop.orders and m2.shop.orders are two names.
+TEST_CASE("integration::cpp::host_names::a_uid_name_reaches_the_host_whole") {
+    HOST_TEST_BOILERPLATE("test_host_names/uid_name")
+    REQUIRE(run(dispatcher,
+                "INSERT INTO otterstax.remote_columns (tbl, col, type, ord) VALUES "
+                "('u1.m2.shop.orders', 'id', 'BIGINT', 1), ('u1.m2.shop.orders', 'amount', 'BIGINT', 2);")
+                ->is_success());
+    backend()["u1.m2.shop.orders"] = {{7, 700}};
+
+    auto found = run(dispatcher, "SELECT id, amount FROM u1.m2.shop.orders;");
+    INFO(error_of(found));
+    REQUIRE(found->is_success());
+    CHECK(sorted_int_rows(found) == rows_t{{7, 700}});
+    CHECK(asked_names() == std::vector<std::string>{"u1.m2.shop.orders"});
+
+    asked_names().clear();
+    auto other = run(dispatcher, "SELECT * FROM m2.shop.orders;");
+    REQUIRE(other->is_error());
+    CHECK(std::string{other->get_error().what}.find("does not exist") != std::string::npos);
+    CHECK(asked_names() == std::vector<std::string>{"m2.shop.orders"});
+}
+
+// Rows of a storage table without columns reach the delete sink by their numbers: LIMIT keeps the statement off
+// the host's one-statement rule. (UPDATE has no column to set on such a table.)
+TEST_CASE("integration::cpp::host_names::delete_rows_without_columns_by_row_number") {
+    HOST_TEST_BOILERPLATE("test_host_names/delete_no_columns")
+    REQUIRE(run(dispatcher,
+                "INSERT INTO otterstax.remote_columns (tbl, col, type, ord) VALUES "
+                "('m2.shop.marks', '', 'NONE', 1);")
+                ->is_success());
+    backend()["m2.shop.marks"] = {{}, {}, {}};
+
+    auto deleted = run(dispatcher, "DELETE FROM m2.shop.marks LIMIT 2;");
+    INFO(error_of(deleted));
+    REQUIRE(deleted->is_success());
+    CHECK(deleted->affected_rows() == std::optional<std::uint64_t>{2});
+    CHECK(write_log() == std::vector<std::string>{"delete m2.shop.marks rows 2"});
+    CHECK(backend()["m2.shop.marks"].size() == 1);
 }

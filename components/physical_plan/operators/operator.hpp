@@ -241,6 +241,10 @@ namespace components::operators {
         [[nodiscard]] std::pmr::vector<std::pmr::string> explain_details() const { return explain_details_impl(); }
 
     protected:
+        // The engine's name for type(), e.g. "Seq Scan", "Hash Join", "Extension Scan": what explain_label() says
+        // unless an override says more.
+        [[nodiscard]] std::pmr::string type_label() const;
+
         void explain_begin(const explain_sink& s, catalog::oid_t oid) const {
             const auto label = explain_label();
             const auto details = explain_details();
@@ -265,7 +269,7 @@ namespace components::operators {
 
         virtual std::optional<uint64_t> affected_rows_impl() const noexcept { return std::nullopt; }
 
-        // The engine's name for type(), e.g. "Seq Scan", "Hash Join", "Extension Scan".
+        // type_label() unless overridden.
         virtual std::pmr::string explain_label_impl() const;
         virtual std::pmr::vector<std::pmr::string> explain_details_impl() const {
             return std::pmr::vector<std::pmr::string>{resource_};

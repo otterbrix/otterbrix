@@ -163,9 +163,11 @@ namespace components::operators {
                     catalog::dependency_t d;
                     d.classid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
                     d.objid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
-                    const auto dv =
-                        chunk.is_null(4, i) ? std::string_view{"n"} : chunk.get_value<std::string_view>(4, i);
-                    d.deptype = dv.empty() ? 'n' : dv[0];
+                    auto deptype = catalog::deptype_of(chunk, i);
+                    if (deptype.has_error()) {
+                        co_return core::error_on(resource, deptype.error());
+                    }
+                    d.deptype = deptype.value();
                     deps.push_back(d);
                     stack.push_back(encode_key(d.classid, d.objid));
                 }

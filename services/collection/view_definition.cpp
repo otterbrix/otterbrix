@@ -11,7 +11,6 @@
 
 #include <algorithm>
 #include <cassert>
-#include <cctype>
 
 namespace services::collection {
 
@@ -144,9 +143,7 @@ namespace services::collection {
         for (std::size_t i = 0; i < types.size(); ++i) {
             const auto& stored = view.columns[i];
             const std::string name = types[i].has_alias() ? types[i].alias() : std::string{};
-            if (!std::equal(name.begin(), name.end(), stored.attname.begin(), stored.attname.end(), [](char l, char r) {
-                    return std::tolower(static_cast<unsigned char>(l)) == std::tolower(static_cast<unsigned char>(r));
-                })) {
+            if (name != stored.attname) {
                 return stale("its column " + std::to_string(i + 1) + " is now \"" + name + "\", it was created as \"" +
                              stored.attname + "\"");
             }

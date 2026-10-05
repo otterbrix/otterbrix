@@ -1549,7 +1549,8 @@ namespace services::collection::executor {
                 }
                 if (plan.catalog_resolves.tables) {
                     for (const auto& entry : plan.catalog_resolves.tables->entries()) {
-                        if (entry.table_md.has_value()) {
+                        // A storage table has no oid to key it by; its scan comes from the storage.
+                        if (entry.table_md.has_value() && !entry.storage) {
                             context_storage.table_metadata[entry.table_md->table_oid] = &entry.table_md.value();
                         }
                     }

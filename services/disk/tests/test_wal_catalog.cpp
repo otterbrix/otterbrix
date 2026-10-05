@@ -25,6 +25,7 @@
 #include "catalog_probe.hpp"
 #include "disk_test_helpers.hpp"
 
+#include <chrono>
 #include <filesystem>
 #include <limits>
 #include <thread>
@@ -92,7 +93,8 @@ namespace {
         template<typename Fn, typename... Args>
         auto invoke(Fn fn, Args&&... args) {
             auto [_, future] = actor_zeta::otterbrix::send(disk->address(), fn, std::forward<Args>(args)...);
-            for (int i = 0; i < 100000 && !future.is_ready(); ++i) {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+            while (!future.is_ready() && std::chrono::steady_clock::now() < deadline) {
                 scheduler->run(1000);
                 std::this_thread::yield();
             }
@@ -596,7 +598,8 @@ TEST_CASE("services::disk::wal_catalog::a_growth_append_journals_the_add_column_
                                                         services::wal::wal_sync_mode::NORMAL,
                                                         catalog::well_known_oid::main_database,
                                                         std::uint64_t{1000});
-            for (int i = 0; i < 400000 && !cf.is_ready(); ++i) {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+            while (!cf.is_ready() && std::chrono::steady_clock::now() < deadline) {
                 fx.scheduler->run(1);
                 std::this_thread::yield();
             }

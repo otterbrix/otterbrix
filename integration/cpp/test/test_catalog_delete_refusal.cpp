@@ -10,6 +10,7 @@
 #include <services/disk/manager_disk.hpp>
 #include <services/wal/wal_page.hpp>
 
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <limits>
@@ -78,7 +79,8 @@ namespace {
                                                     std::move(key_cols),
                                                     components::operators::make_key_chunk(resource, key),
                                                     std::pmr::vector<std::uint64_t>{resource});
-        for (int i = 0; i < 2000000 && !fut.is_ready(); ++i) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+        while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
             std::this_thread::yield();
         }
         REQUIRE(fut.is_ready());

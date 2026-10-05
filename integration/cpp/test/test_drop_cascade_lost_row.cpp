@@ -12,6 +12,7 @@
 
 #include <unistd.h>
 
+#include <chrono>
 #include <limits>
 #include <string>
 #include <thread>
@@ -53,7 +54,8 @@ namespace {
                                                     std::move(key_cols),
                                                     components::operators::make_key_chunk(resource, key),
                                                     std::pmr::vector<std::uint64_t>{resource});
-        for (int i = 0; i < 2000000 && !fut.is_ready(); ++i) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+        while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
             std::this_thread::yield();
         }
         REQUIRE(fut.is_ready());
@@ -125,7 +127,8 @@ namespace {
                                                     exec_ctx,
                                                     catalog::well_known_oid::pg_depend_table,
                                                     std::move(row));
-        for (int i = 0; i < 2000000 && !fut.is_ready(); ++i) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+        while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
             std::this_thread::yield();
         }
         REQUIRE(fut.is_ready());

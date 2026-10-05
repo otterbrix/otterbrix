@@ -18,6 +18,7 @@
 #include <services/disk/manager_disk.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 
+#include <chrono>
 #include <filesystem>
 #include <limits>
 #include <thread>
@@ -80,7 +81,8 @@ namespace {
         template<typename Fn, typename... Args>
         auto invoke(Fn fn, Args&&... args) {
             auto [_, future] = actor_zeta::otterbrix::send(disk->address(), fn, std::forward<Args>(args)...);
-            for (int i = 0; i < 100000 && !future.is_ready(); ++i) {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+            while (!future.is_ready() && std::chrono::steady_clock::now() < deadline) {
                 scheduler->run(1000);
                 std::this_thread::yield();
             }

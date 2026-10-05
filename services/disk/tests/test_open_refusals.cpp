@@ -22,6 +22,7 @@
 
 #include "disk_test_helpers.hpp"
 
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -79,7 +80,8 @@ namespace {
         template<typename Fn, typename... Args>
         auto invoke(Fn fn, Args&&... args) {
             auto [_, future] = actor_zeta::otterbrix::send(manager->address(), fn, std::forward<Args>(args)...);
-            for (int i = 0; i < 100000 && !future.is_ready(); ++i) {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+            while (!future.is_ready() && std::chrono::steady_clock::now() < deadline) {
                 scheduler->run(1000);
                 std::this_thread::yield();
             }
@@ -99,7 +101,8 @@ namespace {
                                                        session_id_t{},
                                                        wal_id,
                                                        std::numeric_limits<uint64_t>::max());
-            for (int i = 0; i < 100000 && !cf.is_ready(); ++i) {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+            while (!cf.is_ready() && std::chrono::steady_clock::now() < deadline) {
                 scheduler->run(1000);
                 std::this_thread::yield();
             }

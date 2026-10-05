@@ -22,6 +22,7 @@
 #include <services/disk/tests/catalog_probe.hpp>
 #include <services/disk/tests/disk_test_helpers.hpp>
 
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -40,7 +41,8 @@ namespace {
     // the (thread-safe) child scheduler with a bounded poll before extracting the value with take_ready().
     template<typename Fut>
     void poll_ready(core::non_thread_scheduler::scheduler_test_t* scheduler, Fut& fut) {
-        for (int i = 0; i < 100000 && !fut.is_ready(); ++i) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+        while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
             scheduler->run(1000);
             std::this_thread::yield();
         }

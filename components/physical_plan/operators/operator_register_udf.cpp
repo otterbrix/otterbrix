@@ -74,12 +74,12 @@ namespace components::operators {
             }
             for (std::size_t i = 0; i < signatures.size(); ++i) {
                 const auto existing = std::find_if(matches.begin(), matches.end(), [&](const auto& m) {
-                    return m.proargmatchers == signatures[i].proargmatchers;
+                    return m.signature.proargmatchers == signatures[i].proargmatchers;
                 });
                 if (existing == matches.end()) {
                     continue;
                 }
-                if (existing->prorettype != signatures[i].prorettype) {
+                if (existing->signature != signatures[i]) {
                     set_error(core::error_t{core::error_code_t::already_exists,
                                             std::pmr::string{"register_udf: cannot change return type of existing "
                                                              "function \"" +

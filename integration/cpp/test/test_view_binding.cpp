@@ -184,15 +184,16 @@ namespace {
                                                          std::move(specs));
         spin_until_ready(deleted);
         REQUIRE_FALSE(std::move(deleted).take_ready().has_error());
-        auto writes = catalog::build_create_function_writes(
-            resource,
-            "twice",
-            catalog::well_known_oid::pg_catalog_namespace,
-            oid,
-            1,
-            0,
-            catalog::encode_proargmatchers({components::compute::parameter_type::exact(input)}),
-            catalog::encode_prorettype({components::compute::output_type::fixed(output)}));
+        const components::compute::parameter_type inputs[] = {components::compute::parameter_type::exact(input)};
+        const components::compute::output_type outputs[] = {components::compute::output_type::fixed(output)};
+        auto writes = catalog::build_create_function_writes(resource,
+                                                            "twice",
+                                                            catalog::well_known_oid::pg_catalog_namespace,
+                                                            oid,
+                                                            1,
+                                                            0,
+                                                            catalog::encode_proargmatchers(inputs),
+                                                            catalog::encode_prorettype(outputs));
         auto [_a, appended] = actor_zeta::otterbrix::send(space.disk_address(),
                                                           &services::disk::manager_disk_t::append_pg_catalog_row,
                                                           ctx,
@@ -835,7 +836,7 @@ TEST_CASE("integration::cpp::view_binding::a_function_of_two_signatures_has_two_
     REQUIRE(rows.size() == 2);
     CHECK(rows[0].oid != rows[1].oid);
     CHECK(rows[0].prouid == rows[1].prouid);
-    CHECK(rows[0].proargmatchers != rows[1].proargmatchers);
+    CHECK(rows[0].signature.proargmatchers != rows[1].signature.proargmatchers);
 }
 
 // After a restart a function of another input signature is a new overload; the view over the old one stays, and does
@@ -934,9 +935,10 @@ TEST_CASE("integration::cpp::view_binding::a_view_depends_on_the_overload_it_cal
     run_ok(d, "CREATE VIEW vb.v AS SELECT twice(a) AS t2 FROM vb.t;");
     const auto v = std::to_string(oid_of(d, "v"));
     const auto rows = proc_rows(space, "twice");
-    const auto bigint_row = std::find_if(rows.begin(), rows.end(), [](const auto& r) {
-        return r.proargmatchers ==
-               catalog::encode_proargmatchers({components::compute::parameter_type::exact(logical_type::BIGINT)});
+    const components::compute::parameter_type bigint[] = {
+        components::compute::parameter_type::exact(logical_type::BIGINT)};
+    const auto bigint_row = std::find_if(rows.begin(), rows.end(), [&bigint](const auto& r) {
+        return r.signature.proargmatchers == catalog::encode_proargmatchers(bigint);
     });
     REQUIRE(bigint_row != rows.end());
     auto pinned = run_ok(d,

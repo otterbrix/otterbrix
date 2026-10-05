@@ -276,8 +276,8 @@ namespace components::planner {
         for (auto& entry : body_resolves.tables->entries()) {
             const auto binding =
                 std::find_if(view.view_bindings.begin(), view.view_bindings.end(), [&entry](const auto& b) {
-                    return (b.refkind == logical_plan::view_refkind::relation ||
-                            b.refkind == logical_plan::view_refkind::host_name) &&
+                    return (b.refkind == components::catalog::view_refkind::relation ||
+                            b.refkind == components::catalog::view_refkind::host_name) &&
                            b.dbname.t == entry.dbname && b.schema.t == entry.schema && b.relname.t == entry.relname;
                 });
             if (binding == view.view_bindings.end()) {
@@ -286,7 +286,7 @@ namespace components::planner {
                                         "its body names \"" + written_name(entry) +
                                             "\", which was not bound when the view was created");
             }
-            if (binding->refkind == logical_plan::view_refkind::relation) {
+            if (binding->refkind == components::catalog::view_refkind::relation) {
                 entry.pin.kind = logical_plan::view_pin_t::kind_t::relation;
                 entry.pin.oid = binding->refobjid;
             } else {

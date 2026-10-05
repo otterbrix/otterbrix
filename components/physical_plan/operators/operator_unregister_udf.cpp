@@ -85,16 +85,17 @@ namespace components::operators {
                 co_return;
             }
             const auto live_rows = live != nullptr ? proc_signatures(resource_, *live)
-                                                   : std::pmr::vector<proc_signature_t>{resource_};
+                                                   : std::pmr::vector<components::catalog::proc_signature_t>{resource_};
             std::pmr::vector<components::catalog::oid_t> rows{resource_};
             for (const auto& m : matches_r.value()) {
                 bool drop = false;
                 if (live != nullptr) {
                     drop = std::any_of(live_rows.begin(), live_rows.end(), [&m](const auto& row) {
-                        return row.proargmatchers == m.proargmatchers;
+                        return row == m.signature;
                     });
                 } else {
-                    auto parameters = components::catalog::decode_proargmatchers(resource_, m.proargmatchers);
+                    auto parameters =
+                        components::catalog::decode_proargmatchers(resource_, m.signature.proargmatchers);
                     if (parameters.has_error()) {
                         set_error(parameters.error());
                         mark_failed();

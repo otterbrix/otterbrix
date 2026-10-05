@@ -435,13 +435,15 @@ namespace components::catalog {
                                       [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
                                           for (std::size_t i = 0; i < bindings.size(); ++i) {
                                               const auto& b = bindings[i];
+                                              const auto refkind = static_cast<char>(b.refkind);
                                               set_oid(c, 0, i, view_oid);
-                                              set_str(c, 1, i, std::string(1, b.refkind), r);
+                                              set_str(c, 1, i, std::string_view{&refkind, 1}, r);
                                               set_str(c, 2, i, b.dbname.t, r);
                                               set_str(c, 3, i, b.schema.t, r);
                                               set_str(c, 4, i, b.relname.t, r);
                                               set_oid(c, 5, i, b.refobjid);
-                                              set_str(c, 6, i, b.refspec, r);
+                                              set_str(c, 6, i, b.proargmatchers, r);
+                                              set_str(c, 7, i, b.prorettype, r);
                                           }
                                       });
             result.push_back(make_write(pg_rewrite_ref_oid, std::move(chunk)));

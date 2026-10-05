@@ -154,7 +154,8 @@ namespace components::catalog {
         }
 
         // A view's body names, as written, and what each was bound to at CREATE VIEW: 'r' a relation by oid,
-        // 'h' a name the host resolved.
+        // 'h' a name the host resolved, 'f' a function by pg_proc oid with the signature of that row
+        // (proargmatchers, prorettype: set on 'f' rows only).
         std::vector<column_definition_t> pg_rewrite_ref_columns() {
             std::vector<column_definition_t> c;
             c.emplace_back("ev_class", oid_col(), /*not_null*/ true);
@@ -163,7 +164,8 @@ namespace components::catalog {
             c.emplace_back("schema", str_col(), false);
             c.emplace_back("relname", str_col(), true);
             c.emplace_back("refobjid", oid_col(), false);
-            c.emplace_back("refspec", str_col(), false);
+            c.emplace_back("proargmatchers", str_col(), false);
+            c.emplace_back("prorettype", str_col(), false);
             return c;
         }
 
@@ -905,7 +907,7 @@ namespace components::catalog {
         return parsed;
     }
 
-    std::string encode_proargmatchers(const std::vector<components::compute::parameter_type>& parameters) {
+    std::string encode_proargmatchers(std::span<const components::compute::parameter_type> parameters) {
         std::string out;
         for (size_t i = 0; i < parameters.size(); ++i) {
             if (i > 0)
@@ -992,7 +994,7 @@ namespace components::catalog {
         return out;
     }
 
-    std::string encode_prorettype(const std::vector<components::compute::output_type>& outputs) {
+    std::string encode_prorettype(std::span<const components::compute::output_type> outputs) {
         using K = components::compute::output_type::kind_t;
         std::string out;
         for (size_t i = 0; i < outputs.size(); ++i) {

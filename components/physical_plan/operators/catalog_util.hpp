@@ -1,6 +1,7 @@
 #pragma once
 
 #include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/proc_signature.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/compute/function.hpp>
 #include <components/context/context.hpp>
@@ -15,26 +16,15 @@
 
 namespace components::operators {
 
-    // A kernel signature as its pg_proc row stores it (PostgreSQL 18: one row per signature).
-    struct proc_signature_t {
-        std::int32_t pronargs{0};
-        std::string proargmatchers;
-        std::string prorettype;
-    };
-
     // One per kernel signature of the function; a function without one still gets a row, with an empty signature.
-    inline std::pmr::vector<proc_signature_t> proc_signatures(std::pmr::memory_resource* resource,
-                                                              const components::compute::function& function) {
-        std::pmr::vector<proc_signature_t> out{resource};
+    inline std::pmr::vector<catalog::proc_signature_t> proc_signatures(std::pmr::memory_resource* resource,
+                                                                       const components::compute::function& function) {
+        std::pmr::vector<catalog::proc_signature_t> out{resource};
         for (const auto& signature : function.get_signatures()) {
-            proc_signature_t row;
+            catalog::proc_signature_t row;
             row.pronargs = static_cast<std::int32_t>(signature.input_types.size());
-            row.proargmatchers = catalog::encode_proargmatchers(
-                std::vector<components::compute::parameter_type>(signature.input_types.begin(),
-                                                                 signature.input_types.end()));
-            row.prorettype = catalog::encode_prorettype(
-                std::vector<components::compute::output_type>(signature.output_types.begin(),
-                                                              signature.output_types.end()));
+            row.proargmatchers = catalog::encode_proargmatchers(signature.input_types);
+            row.prorettype = catalog::encode_prorettype(signature.output_types);
             out.push_back(std::move(row));
         }
         if (out.empty()) {

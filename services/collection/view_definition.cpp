@@ -117,13 +117,6 @@ namespace services::collection {
             return std::string{name} + "(" + describe_matchers(resource, proargmatchers) + ")";
         }
 
-        // refspec of an 'f' row: the pg_proc proargmatchers and prorettype of the signature it was bound to.
-        constexpr char function_spec_separator = ';';
-
-        std::string function_spec(const std::string& proargmatchers, const std::string& prorettype) {
-            return proargmatchers + function_spec_separator + prorettype;
-        }
-
     } // namespace
 
     core::error_t check_expanded_view(std::pmr::memory_resource* resource,
@@ -223,7 +216,7 @@ namespace services::collection {
             }
             const auto& signature = signatures[use.signature];
             const auto row = std::find_if(rows.begin(), rows.end(), [&](const auto& r) {
-                return r.name == function->name() && r.proargmatchers == signature.proargmatchers;
+                return r.name == function->name() && r.signature == signature;
             });
             if (row == rows.end()) {
                 return core::error_t{core::error_code_t::unrecognized_function,
@@ -238,7 +231,8 @@ namespace services::collection {
             binding.refkind = catalog::view_refkind::function;
             binding.relname = function->name();
             binding.refobjid = row->oid;
-            binding.refspec = function_spec(signature.proargmatchers, signature.prorettype);
+            binding.proargmatchers = signature.proargmatchers;
+            binding.prorettype = signature.prorettype;
             bindings.push_back(std::move(binding));
             add_dependency(dependencies, catalog::well_known_oid::pg_proc_table, row->oid);
         }
@@ -273,11 +267,7 @@ namespace services::collection {
             if (binding.refkind != catalog::view_refkind::function) {
                 continue;
             }
-            const auto separator = binding.refspec.find(function_spec_separator);
-            const std::string proargmatchers = binding.refspec.substr(0, separator);
-            const std::string prorettype =
-                separator == std::string::npos ? std::string{} : binding.refspec.substr(separator + 1);
-            const std::string pinned = describe_function(resource, binding.relname.t, proargmatchers);
+            const std::string pinned = describe_function(resource, binding.relname.t, binding.proargmatchers);
             const auto row = std::find_if(rows.begin(), rows.end(), [&binding](const auto& r) {
                 return r.oid == binding.refobjid;
             });
@@ -286,13 +276,13 @@ namespace services::collection {
             if (row == rows.end()) {
                 return components::planner::view_stale_error(resource, view.name, created_over + " no longer exists");
             }
-            if (row->name != binding.relname.t || row->proargmatchers != proargmatchers) {
+            if (row->name != binding.relname.t || row->signature.proargmatchers != binding.proargmatchers) {
                 return components::planner::view_stale_error(
                     resource,
                     view.name,
-                    created_over + " is now " + describe_function(resource, row->name, row->proargmatchers));
+                    created_over + " is now " + describe_function(resource, row->name, row->signature.proargmatchers));
             }
-            if (row->prorettype != prorettype) {
+            if (row->signature.prorettype != binding.prorettype) {
                 return components::planner::view_stale_error(resource,
                                                              view.name,
                                                              created_over + " returns another type now");
@@ -305,8 +295,7 @@ namespace services::collection {
                 }
                 const auto signatures = components::operators::proc_signatures(resource, *function);
                 for (std::size_t index = 0; index < signatures.size() && !found; ++index) {
-                    if (signatures[index].proargmatchers == proargmatchers &&
-                        signatures[index].prorettype == prorettype) {
+                    if (signatures[index] == row->signature) {
                         pins.push_back({binding.relname.t, {uid, index}});
                         found = true;
                     }
@@ -348,14 +337,17 @@ namespace services::collection {
                     r.found = true;
                     r.oid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
                     r.name = std::string{chunk.get_value<std::string_view>(1, i)};
+                    if (!chunk.is_null(3, i)) {
+                        r.signature.pronargs = chunk.get_value<std::int32_t>(3, i);
+                    }
                     if (!chunk.is_null(4, i)) {
                         r.prouid = chunk.get_value<std::uint64_t>(4, i);
                     }
                     if (!chunk.is_null(5, i)) {
-                        r.proargmatchers = std::string{chunk.get_value<std::string_view>(5, i)};
+                        r.signature.proargmatchers = std::string{chunk.get_value<std::string_view>(5, i)};
                     }
                     if (!chunk.is_null(6, i)) {
-                        r.prorettype = std::string{chunk.get_value<std::string_view>(6, i)};
+                        r.signature.prorettype = std::string{chunk.get_value<std::string_view>(6, i)};
                     }
                     out.push_back(std::move(r));
                 }
@@ -371,9 +363,6 @@ namespace services::collection {
                                      std::size_t own_tables,
                                      std::size_t own_types,
                                      const dispatcher::validation::column_uses_t& uses) {
-        using components::logical_plan::view_refkind::host_name;
-        using components::logical_plan::view_refkind::relation;
-
         std::pmr::vector<components::table::column_definition_t> columns{resource};
         columns.reserve(output.size());
         for (std::size_t i = 0; i < output.size(); ++i) {
@@ -408,10 +397,10 @@ namespace services::collection {
                 binding.schema = entry.schema;
                 binding.relname = entry.relname;
                 if (entry.storage) {
-                    binding.refkind = host_name;
+                    binding.refkind = catalog::view_refkind::host_name;
                 } else if (entry.table_md.has_value() && entry.table_md->table_oid != view.replaced_oid()) {
                     // The view OR REPLACE names is a lookup of the statement, not of the body.
-                    binding.refkind = relation;
+                    binding.refkind = catalog::view_refkind::relation;
                     binding.refobjid = entry.table_md->table_oid;
                     bound_tables.push_back(binding.refobjid);
                     if (user_object(binding.refobjid)) {

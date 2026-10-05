@@ -25,7 +25,7 @@ TEST_CASE("catalog::proargmatchers::exact_and_variable_matchers_round_trip") {
 
     auto decoded = decode_proargmatchers(&resource, encoded);
     REQUIRE_FALSE(decoded.has_error());
-    REQUIRE(encode_proargmatchers({decoded.value().begin(), decoded.value().end()}) == encoded);
+    REQUIRE(encode_proargmatchers(decoded.value()) == encoded);
 
     const components::compute::kernel_signature_t stored(components::compute::function_type_t::vector,
                                                          std::move(decoded.value()),

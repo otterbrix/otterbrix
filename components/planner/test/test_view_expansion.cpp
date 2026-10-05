@@ -184,12 +184,11 @@ namespace {
     logical_plan::resolved_table_metadata_t view_bound_to_t() {
         logical_plan::resolved_table_metadata_t view;
         view.name = "v";
-        view.view_bindings.push_back({logical_plan::view_refkind::relation,
+        view.view_bindings.push_back({components::catalog::view_refkind::relation,
                                       core::dbname_t{"db"},
                                       core::schema_t{},
                                       core::relname_t{"t"},
-                                      16500,
-                                      ""});
+                                      16500});
         return view;
     }
 
@@ -241,12 +240,11 @@ TEST_CASE("planner::view_expansion::refresh is an insert into the matview over i
     matview.table_oid = 4243;
     matview.relkind = components::catalog::relkind::materialized_view;
     matview.view_sql = "SELECT a FROM db.t";
-    matview.view_bindings.push_back({logical_plan::view_refkind::relation,
+    matview.view_bindings.push_back({components::catalog::view_refkind::relation,
                                      core::dbname_t{"db"},
                                      core::schema_t{},
                                      core::relname_t{"t"},
-                                     16500,
-                                     ""});
+                                     16500});
 
     auto refresh = refresh_matview_plan(res(), matview, core::dbname_t{"db"});
     REQUIRE_FALSE(refresh.has_error());

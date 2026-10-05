@@ -112,7 +112,8 @@ namespace components::catalog {
         constexpr std::uint64_t schema = 3;
         constexpr std::uint64_t relname = 4;
         constexpr std::uint64_t refobjid = 5;
-        constexpr std::uint64_t refspec = 6;
+        constexpr std::uint64_t proargmatchers = 6;
+        constexpr std::uint64_t prorettype = 7;
     } // namespace pg_rewrite_ref_col
     namespace pg_depend_col {
         constexpr std::uint64_t classid = 0;

@@ -355,13 +355,10 @@ namespace components::operators {
                                                       : std::string{chunk.get_value<std::string_view>(column, row)};
                 };
                 for (const auto& chunk : rr_batches_r.value()) {
-                    if (chunk.column_count() <= col::refspec) {
-                        continue;
-                    }
                     for (std::uint64_t i = 0; i < chunk.size(); ++i) {
                         components::logical_plan::view_binding_t binding;
-                        const auto kind = text(chunk, col::refkind, i);
-                        binding.refkind = kind.empty() ? components::logical_plan::view_refkind::relation : kind[0];
+                        binding.refkind =
+                            static_cast<catalog::view_refkind>(chunk.get_value<std::string_view>(col::refkind, i)[0]);
                         binding.dbname = text(chunk, col::dbname, i);
                         binding.schema = text(chunk, col::schema, i);
                         binding.relname = text(chunk, col::relname, i);
@@ -369,7 +366,8 @@ namespace components::operators {
                                                ? catalog::INVALID_OID
                                                : static_cast<catalog::oid_t>(
                                                      chunk.get_value<std::uint32_t>(col::refobjid, i));
-                        binding.refspec = text(chunk, col::refspec, i);
+                        binding.proargmatchers = text(chunk, col::proargmatchers, i);
+                        binding.prorettype = text(chunk, col::prorettype, i);
                         view_bindings.push_back(std::move(binding));
                     }
                 }

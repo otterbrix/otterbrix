@@ -2,6 +2,7 @@ project(physical_plan)
 
 
 set(${PROJECT_NAME}_SOURCES
+        table_storage.cpp
         operators/operator.cpp
         operators/operator_data.cpp
         operators/operator_write_data.cpp

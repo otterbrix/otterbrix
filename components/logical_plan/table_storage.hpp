@@ -36,20 +36,15 @@ namespace components::logical_plan {
         // The tag of whoever made the storage: an optimizer rule recognizes its own tables by it.
         const void* owner() const noexcept { return owner_; }
 
+        // Defined with the operators (components/physical_plan/table_storage.cpp): the result owns an operator.
         // A source: open, then source_next; the rows carry their numbers in row_ids.
-        storage_operator_t make_scan(const services::context_storage_t& context) { return make_scan_impl(context); }
+        storage_operator_t make_scan(const services::context_storage_t& context);
         // A sink of full rows in the declared column order, already cast; push, then await_async_and_resume.
-        storage_operator_t make_insert(const services::context_storage_t& context) {
-            return make_insert_impl(context);
-        }
+        storage_operator_t make_insert(const services::context_storage_t& context);
         // A sink of rows with their new values; row_ids name the rows to change.
-        storage_operator_t make_update(const services::context_storage_t& context) {
-            return make_update_impl(context);
-        }
+        storage_operator_t make_update(const services::context_storage_t& context);
         // A sink of rows to delete; row_ids name them.
-        storage_operator_t make_delete(const services::context_storage_t& context) {
-            return make_delete_impl(context);
-        }
+        storage_operator_t make_delete(const services::context_storage_t& context);
 
     protected:
         explicit table_storage_t(const void* owner) noexcept

@@ -35,6 +35,13 @@ namespace components::operators {
         // Stamped by enrich; false skips the index mirror. Defaults to true for unstamped plans.
         void set_table_has_indexes(bool value) noexcept { table_has_indexes_ = value; }
 
+        // A table with external storage: the full rows, in the declared column order, go to the storage's insert
+        // sink instead of the disk, the WAL and the index.
+        void set_storage_sink(operator_ptr sink, std::pmr::vector<types::complex_logical_type> columns) {
+            storage_sink_ = std::move(sink);
+            storage_columns_ = std::move(columns);
+        }
+
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
         [[nodiscard]] core::error_t
@@ -66,6 +73,8 @@ namespace components::operators {
         logical_plan::insert_column_bindings_t column_bindings_{resource_};
         logical_plan::insert_fill_list_t fill_list_{resource_};
         bool table_has_indexes_{true};
+        operator_ptr storage_sink_;
+        std::pmr::vector<types::complex_logical_type> storage_columns_{resource_};
     };
 
 } // namespace components::operators

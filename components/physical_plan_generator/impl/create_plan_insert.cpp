@@ -1,6 +1,7 @@
 #include "create_plan_insert.hpp"
 
 #include "create_plan_select.hpp"
+#include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/node_insert.hpp>
 #include <components/physical_plan/operators/operator_insert.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
@@ -42,6 +43,16 @@ namespace services::planner::impl {
                                                                column.value});
         }
         plan->set_fill_list(std::move(fill));
+        if (const auto* table = node->table_metadata(); table != nullptr && table->storage != nullptr) {
+            VALUE_OR_RETURN(auto sink,
+                            storage_operator(context.resource, table->name, table->storage->make_insert(context)));
+            std::pmr::vector<components::types::complex_logical_type> columns(context.resource);
+            columns.reserve(table->columns.size());
+            for (const auto& column : table->columns) {
+                columns.push_back(column.type);
+            }
+            plan->set_storage_sink(std::move(sink), std::move(columns));
+        }
         VALUE_OR_RETURN(auto child,
                         create_plan(context,
                                     function_registry,

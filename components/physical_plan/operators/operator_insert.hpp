@@ -65,19 +65,11 @@ namespace components::operators {
             return storage_sink_ ? storage_sink_->explain_details() : std::pmr::vector<std::pmr::string>{resource_};
         }
 
-        std::optional<uint64_t> affected_rows_impl() const noexcept override {
-            if (components::catalog::is_catalog_table(table_oid_)) {
-                return std::nullopt;
-            }
-            return affected_rows_;
-        }
-
         catalog::oid_t table_oid_;
         std::pmr::vector<projected_column_t> returning_;
         std::unique_ptr<execution_dag::execution_dag_t> returning_graph_;
         // Accumulate the RETURNING rows and the appended-row count until the final drive.
         chunks_vector_t returning_accum_{resource_};
-        uint64_t affected_rows_{0};
         logical_plan::insert_column_bindings_t column_bindings_{resource_};
         logical_plan::insert_fill_list_t fill_list_{resource_};
         bool table_has_indexes_{true};

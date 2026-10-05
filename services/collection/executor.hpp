@@ -94,6 +94,8 @@ namespace services::collection::executor {
         std::optional<explain_plan_node> captured_explain_ir{};
         std::optional<std::pair<components::types::complex_logical_type, components::types::complex_logical_type>>
             resolved_cast{};
+        // written() of the plan root; the cursor reports it only for an INSERT / UPDATE / DELETE.
+        uint64_t written{0};
     };
 
     using function_result_t = core::result_wrapper_t<components::compute::function_uid>;
@@ -133,6 +135,7 @@ namespace services::collection::executor {
         uint64_t commit_id{0};
         components::catalog::setting_id applied_setting{};
         std::string applied_setting_value;
+        uint64_t written{0};
     };
 
     // Implements subplan_runner_t: an operator inside this executor's coroutine drives a child sub-plan via

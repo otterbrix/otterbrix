@@ -70,13 +70,6 @@ namespace components::operators {
             return storage_sink_ ? storage_sink_->explain_details() : std::pmr::vector<std::pmr::string>{resource_};
         }
 
-        std::optional<uint64_t> affected_rows_impl() const noexcept override {
-            if (components::catalog::is_catalog_table(table_oid_)) {
-                return std::nullopt;
-            }
-            return affected_rows_;
-        }
-
         // Matches expression_ over one scan chunk, staging matched rows/ids for RETURNING and the index mirror.
         core::error_t consume_batch_(pipeline::context_t* ctx, const vector::data_chunk_t& chunk);
         // Same staging as consume_batch_, but as a semi-join probe against the materialized RIGHT (USING) side.
@@ -99,7 +92,6 @@ namespace components::operators {
         std::pmr::vector<int64_t> index_old_row_ids_{resource_};
         bool simple_init_done_{false};
         // delete_marker_recorded_ guards ctx->dml_deletes so repeated mid-flushes push it only once.
-        uint64_t affected_rows_{0};
         bool delete_marker_recorded_{false};
         // matched_total_ persists across mid-pump flushes, since modified_ clears on every flush.
         std::int64_t affected_bound_{-1};

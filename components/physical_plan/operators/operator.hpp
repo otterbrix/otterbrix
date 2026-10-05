@@ -181,9 +181,8 @@ namespace components::operators {
         // Catalog-mode DML returns 0 too: its single-shot path must not be mid-flushed.
         [[nodiscard]] virtual uint64_t buffered_rows() const noexcept { return 0; }
 
-        // The rows a write changed, read by the executor from the plan root once the plan ran; std::nullopt for
-        // an operator that writes no rows of a user table.
-        [[nodiscard]] std::optional<uint64_t> affected_rows() const noexcept { return affected_rows_impl(); }
+        // The rows a write changed; the executor reads it from the plan root of an INSERT / UPDATE / DELETE.
+        [[nodiscard]] uint64_t written() const noexcept { return written_; }
 
         // Covers per-run streaming state reset_for_reuse() doesn't reach (a source's cursor, a
         // sink's built accumulator); the recursive-CTE driver calls both on every node per pass.
@@ -263,11 +262,10 @@ namespace components::operators {
         operator_data_ptr output_{nullptr};
         operator_write_data_ptr modified_{nullptr};
         operator_data_ptr constraint_input_{nullptr};
+        uint64_t written_ = 0;
 
     private:
         virtual actor_zeta::unique_future<core::error_t> open_impl(pipeline::context_t* ctx);
-
-        virtual std::optional<uint64_t> affected_rows_impl() const noexcept { return std::nullopt; }
 
         // type_label() unless overridden.
         virtual std::pmr::string explain_label_impl() const;

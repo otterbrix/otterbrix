@@ -2,7 +2,6 @@
 // transformInsertRow): the values fill the table's columns in order; fewer values leave the rest to their DEFAULT
 // (or NULL); more values are refused; every VALUES row has the same length.
 
-#define CATCH_CONFIG_ENABLE_OPTIONAL_STRINGMAKER
 #include "integration_fixture_path.hpp"
 #include "test_config.hpp"
 
@@ -74,7 +73,7 @@ namespace {
 TEST_CASE("integration::cpp::insert_positional_values::every_column_in_order") {
     fixture_t db("test_insert_positional_values/every_column");
     auto inserted = db.ok("INSERT INTO d.t VALUES (1, 'x', 3, 4), (2, 'y', 5, 6);");
-    CHECK(inserted->affected_rows() == std::optional<std::uint64_t>{2});
+    CHECK(inserted->affected_rows() == 2);
     CHECK(db.rows() == std::vector<std::string>{"1,x,3,4", "2,y,5,6"});
 }
 

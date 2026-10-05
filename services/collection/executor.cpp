@@ -348,6 +348,7 @@ namespace services::collection::executor {
         out.applied_setting = result.applied_setting;
         out.applied_setting_value = std::move(result.applied_setting_value);
         out.captured_explain_ir = std::move(captured_ir);
+        out.written = result.written;
         co_return std::move(out);
     }
 
@@ -1866,6 +1867,11 @@ namespace services::collection::executor {
                                                  resolve_txn,
                                                  session_ctx.lowest_active_start_time,
                                                  std::move(captured_subplans));
+        // The type before optimize(): a host rule may have replaced the UPDATE / DELETE node with its own.
+        if (needs_dml_txn && plan.explain == components::logical_plan::explain_type::none &&
+            exec_result.cursor->is_success()) {
+            exec_result.cursor->set_written(exec_result.written);
+        }
 
         auto revert_failed_txn = [this, session, resolve_txn, &session_ctx](
                                      [[maybe_unused]] executor_t* self,
@@ -2823,9 +2829,7 @@ namespace services::collection::executor {
                 lift_dml_ranges();
                 break;
             }
-            if (const auto written = plan->affected_rows()) {
-                cursor->set_affected_rows(*written);
-            }
+            result_tracking.written = plan->written();
 
             if (pipeline_context.has_pending_disk_futures()) {
                 auto disk_futures = pipeline_context.take_pending_disk_futures();

@@ -274,11 +274,10 @@ extern "C" int32_t cursor_size(cursor_ptr ptr) {
 
 extern "C" bool cursor_affected_rows(cursor_ptr ptr, uint64_t* rows) {
     auto storage = convert_cursor(ptr);
-    const auto written = storage->cursor->affected_rows();
-    if (!written) {
+    if (!storage->cursor->is_write()) {
         return false;
     }
-    *rows = *written;
+    *rows = storage->cursor->affected_rows();
     return true;
 }
 

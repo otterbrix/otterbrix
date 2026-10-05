@@ -217,18 +217,18 @@ namespace {
                        log_t log,
                        std::vector<std::pair<int64_t, int64_t>>* written)
             : operators::read_write_operator_t(resource, std::move(log), operators::operator_type::extension)
-            , written_(written) {}
+            , received_(written) {}
 
         [[nodiscard]] core::error_t
         push(components::pipeline::context_t*, vector::data_chunk_t&& input, operators::chunks_vector_t&) override {
             for (size_t i = 0; i < input.size(); ++i) {
-                written_->emplace_back(input.value(0, i).value<int64_t>(), input.value(1, i).value<int64_t>());
+                received_->emplace_back(input.value(0, i).value<int64_t>(), input.value(1, i).value<int64_t>());
             }
             return core::error_t::no_error();
         }
 
     private:
-        std::vector<std::pair<int64_t, int64_t>>* written_;
+        std::vector<std::pair<int64_t, int64_t>>* received_;
     };
 
     // One table of the simulated backend: its rows and how its server answers.

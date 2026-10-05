@@ -38,6 +38,9 @@ namespace components::operators {
         // strict-serialization fix, deferred until a benchmark shows the race matters.
 
         // The bottom-up async-finalize drive runs left_ (insert).await first, so its RETURNING rows are ready.
+        if (left_) {
+            written_ = left_->written();
+        }
         if (left_ && left_->output()) {
             output_ = left_->output();
         }

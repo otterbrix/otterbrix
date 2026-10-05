@@ -74,6 +74,20 @@ namespace Duckstax.Otterbrix
         public string what;
     }
 
+    // The C error_message: the caller owns `what` and frees it through Take.
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct TransferErrorMessage {
+        public int type;
+        public IntPtr what;
+
+        public ErrorMessage Take() {
+            ErrorMessage error = new ErrorMessage();
+            error.type = (ErrorCode)type;
+            error.what = OtterbrixWrapper.TakeString(what) ?? "";
+            return error;
+        }
+    }
+
     // Thrown by the OtterbrixWrapper constructor when the engine refuses to start.
     public class OtterbrixStartupException : Exception {
         public OtterbrixStartupException(ErrorMessage error)
@@ -123,7 +137,7 @@ namespace Duckstax.Otterbrix
 
     // TODO: Add connection support
     public class OtterbrixWrapper : IDisposable {
-        const string libotterbrix = "otterbrix";
+        internal const string libotterbrix = "otterbrix";
 
         [StructLayout(LayoutKind.Sequential)]
         private struct TransferConfig {
@@ -148,12 +162,6 @@ namespace Duckstax.Otterbrix
         private static extern EngineHandle
         OtterbrixCreate(TransferConfig config, out TransferErrorMessage error);
 
-        [StructLayout(LayoutKind.Sequential)]
-        private struct TransferErrorMessage {
-            public int type;
-            public IntPtr what;
-        }
-
         [DllImport(libotterbrix,
                    EntryPoint = "otterbrix_free_string",
                    ExactSpelling = false,
@@ -175,10 +183,7 @@ namespace Duckstax.Otterbrix
         public OtterbrixWrapper(Config config) {
             otterbrix = OtterbrixCreate(new TransferConfig(ref config), out TransferErrorMessage refusal);
             if (otterbrix.IsInvalid) {
-                ErrorMessage error = new ErrorMessage();
-                error.type = (ErrorCode)refusal.type;
-                error.what = TakeString(refusal.what) ?? "";
-                throw new OtterbrixStartupException(error);
+                throw new OtterbrixStartupException(refusal.Take());
             }
         }
 
@@ -192,7 +197,7 @@ namespace Duckstax.Otterbrix
     }
 
     internal sealed class EngineHandle : SafeHandle {
-        [DllImport("otterbrix", EntryPoint="otterbrix_destroy", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
+        [DllImport(OtterbrixWrapper.libotterbrix, EntryPoint="otterbrix_destroy", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
         private static extern void OtterbrixDestroy(IntPtr otterbrix);
 
         public EngineHandle() : base(IntPtr.Zero, true) {}

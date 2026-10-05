@@ -4,17 +4,9 @@ using Duckstax.Otterbrix;
 
 public class Tests
 {
-    private static OtterbrixWrapper Open(string name) {
-        string path = System.Environment.CurrentDirectory + "/" + name;
-        if (Directory.Exists(path)) {
-            Directory.Delete(path, true);
-        }
-        return new OtterbrixWrapper(Config.CreateConfig(path));
-    }
-
     [Test]
     public void StringsComeBackFromTheEngine() {
-        using OtterbrixWrapper otterbrix = Open("StringsComeBackFromTheEngine");
+        using OtterbrixWrapper otterbrix = TestDirectory.OpenFresh("StringsComeBackFromTheEngine");
         {
             using CursorWrapper cursor = otterbrix.Execute("CREATE DATABASE db;");
             Assert.IsTrue(cursor.IsSuccess());
@@ -43,7 +35,7 @@ public class Tests
 
     [Test]
     public void NonAsciiTextRoundTrips() {
-        using OtterbrixWrapper otterbrix = Open("NonAsciiTextRoundTrips");
+        using OtterbrixWrapper otterbrix = TestDirectory.OpenFresh("NonAsciiTextRoundTrips");
         {
             using CursorWrapper cursor = otterbrix.Execute("SELECT 'Привет' AS greeting, 7 AS \"число\";");
             Assert.IsTrue(cursor.IsSuccess(), cursor.GetError().what);
@@ -59,7 +51,7 @@ public class Tests
 
     [Test]
     public void WritesReportAffectedRows() {
-        using OtterbrixWrapper otterbrix = Open("WritesReportAffectedRows");
+        using OtterbrixWrapper otterbrix = TestDirectory.OpenFresh("WritesReportAffectedRows");
         {
             using CursorWrapper cursor = otterbrix.Execute("CREATE DATABASE db;");
             Assert.IsTrue(cursor.IsSuccess());
@@ -96,7 +88,7 @@ public class Tests
 
     [Test]
     public void Base() {
-        using OtterbrixWrapper otterbrix = Open("Base");
+        using OtterbrixWrapper otterbrix = TestDirectory.OpenFresh("Base");
         {
             using (CursorWrapper created = otterbrix.Execute("CREATE DATABASE testdatabase;")) Assert.IsTrue(created.IsSuccess());
             using (CursorWrapper created = otterbrix.Execute("CREATE TABLE testdatabase.testcollection();")) Assert.IsTrue(created.IsSuccess());
@@ -224,7 +216,7 @@ public class Tests
 
     [Test]
     public void GroupBy() {
-        using OtterbrixWrapper otterbrix = Open("GroupBy");
+        using OtterbrixWrapper otterbrix = TestDirectory.OpenFresh("GroupBy");
         {
             using (CursorWrapper created = otterbrix.Execute("CREATE DATABASE testdatabase;")) Assert.IsTrue(created.IsSuccess());
             using (CursorWrapper created = otterbrix.Execute("CREATE TABLE testdatabase.testcollection();")) Assert.IsTrue(created.IsSuccess());
@@ -290,7 +282,7 @@ public class Tests
 
     [Test]
     public void InvalidQueries() {
-        using OtterbrixWrapper otterbrix = Open("InvalidQueries");
+        using OtterbrixWrapper otterbrix = TestDirectory.OpenFresh("InvalidQueries");
         {
             using CursorWrapper database = otterbrix.Execute("CREATE DATABASE testdatabase;");
             Assert.IsTrue(database.IsSuccess());
@@ -326,7 +318,7 @@ public class Tests
         const string collectionName1 = "testcollection_1";
         const string collectionName2 = "testcollection_2";
 
-        using OtterbrixWrapper otterbrix = Open("TestJoin");
+        using OtterbrixWrapper otterbrix = TestDirectory.OpenFresh("TestJoin");
         {
             using (CursorWrapper created = otterbrix.Execute("CREATE DATABASE " + databaseName + ";")) Assert.IsTrue(created.IsSuccess());
             using (CursorWrapper created = otterbrix.Execute("CREATE TABLE " + databaseName + "." + collectionName1 + "();")) Assert.IsTrue(created.IsSuccess());

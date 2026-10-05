@@ -5,14 +5,6 @@ using Duckstax.Otterbrix;
 
 public class LifetimeTest
 {
-    private static string Directory(string name) {
-        string path = System.Environment.CurrentDirectory + "/" + name;
-        if (System.IO.Directory.Exists(path)) {
-            System.IO.Directory.Delete(path, true);
-        }
-        return path;
-    }
-
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static CursorWrapper SelectFromAnEngineNobodyHolds(string path) {
         OtterbrixWrapper otterbrix = new OtterbrixWrapper(Config.CreateConfig(path));
@@ -24,7 +16,7 @@ public class LifetimeTest
 
     [Test]
     public void ACursorOutlivesItsFinalizedEngine() {
-        string path = Directory("ACursorOutlivesItsFinalizedEngine");
+        string path = TestDirectory.Fresh("ACursorOutlivesItsFinalizedEngine");
         using (CursorWrapper cursor = SelectFromAnEngineNobodyHolds(path)) {
             GC.Collect();
             GC.WaitForPendingFinalizers();
@@ -42,7 +34,7 @@ public class LifetimeTest
 
     [Test]
     public void ACursorOutlivesItsDisposedEngine() {
-        string path = Directory("ACursorOutlivesItsDisposedEngine");
+        string path = TestDirectory.Fresh("ACursorOutlivesItsDisposedEngine");
         OtterbrixWrapper otterbrix = new OtterbrixWrapper(Config.CreateConfig(path));
         using (CursorWrapper cursor = otterbrix.Execute("SELECT 'kept' AS name;")) {
             otterbrix.Dispose();

@@ -102,10 +102,7 @@ namespace components::sql::transform {
         // Catalog-resolve for the UPDATE target table, with the outgoing
         // constraint gather so enrich reads FKs stamped by
         // operator_resolve_constraint_t.
-        register_catalog_resolve_write_target(resource_,
-                                              &catalog_resolves_,
-                                              names.left_name,
-                                              constraint_resolve_kind::outgoing);
+        register_write_target(names.left_name, constraint_resolve_kind::outgoing);
         return upd;
     }
 } // namespace components::sql::transform

@@ -82,10 +82,8 @@ namespace components::sql::transform {
         // Two targets, same as DROP INDEX (transform_table.cpp): the table and the new
         // index name. A miss on the second is the normal case (name free); a hit stamps
         // name_conflict_oid so the planner refuses the taken name.
-        std::vector<std::pair<std::string, std::string>> targets;
-        targets.emplace_back(dbname_for_resolve, relname_for_resolve);
-        targets.emplace_back(dbname_for_resolve, std::string(node.idxname));
-        register_catalog_resolve_tables(resource_, &catalog_resolves_, targets);
+        register_table(dbname_for_resolve, relname_for_resolve, constraint_resolve_kind::none);
+        register_table(dbname_for_resolve, std::string(node.idxname), constraint_resolve_kind::none);
         return create_index;
     }
 } // namespace components::sql::transform

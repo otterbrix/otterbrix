@@ -1477,14 +1477,9 @@ namespace components::sql::transform {
                 }
             }
             if (constraint->pktable) {
-                if (constraint->pktable->catalogname) {
-                    tc.ref_database = constraint->pktable->catalogname;
-                } else if (constraint->pktable->schemaname) {
-                    tc.ref_database = constraint->pktable->schemaname;
-                }
-                if (constraint->pktable->relname) {
-                    tc.ref_collection = constraint->pktable->relname;
-                }
+                const auto referenced = referenced_table_as_written(constraint->pktable);
+                tc.ref_database = referenced.database.t;
+                tc.ref_collection = referenced.collection.t;
             }
             // PostgreSQL stores ' '/'\0' for unspecified MATCH/action; normalize so downstream never sees it.
             if (constraint->fk_matchtype == 'f' || constraint->fk_matchtype == 'p' || constraint->fk_matchtype == 's') {
@@ -1841,7 +1836,7 @@ namespace components::sql::transform {
 
     void register_catalog_resolve_types(std::pmr::memory_resource* resource,
                                         logical_plan::catalog_resolves_t* resolves,
-                                        const std::vector<std::string>& type_names) {
+                                        std::span<const std::string> type_names) {
         if (type_names.empty()) {
             return;
         }
@@ -1913,23 +1908,10 @@ namespace components::sql::transform {
     }
 
     namespace {
-        void register_table_entry(std::pmr::memory_resource* resource,
-                                  logical_plan::catalog_resolves_t* resolves,
-                                  const std::string& dbname,
-                                  const std::string& schema,
-                                  const std::string& relname,
-                                  constraint_resolve_kind with_constraints) {
-            register_catalog_resolve_namespace(resource, resolves, dbname);
-            if (relname.empty()) {
-                return;
-            }
-            logical_plan::resolve_entry_t table_entry;
-            table_entry.dbname = dbname;
-            table_entry.schema = schema;
-            table_entry.relname = relname;
-            const auto table_index =
-                resolves->ensure(resource, logical_plan::resolve_kind::table).add(std::move(table_entry));
-
+        void register_constraint_entry(std::pmr::memory_resource* resource,
+                                       logical_plan::catalog_resolves_t* resolves,
+                                       std::size_t table_index,
+                                       constraint_resolve_kind with_constraints) {
             if (with_constraints == constraint_resolve_kind::none) {
                 return;
             }
@@ -1940,6 +1922,26 @@ namespace components::sql::transform {
                                              : logical_plan::resolve_direction::outgoing;
             constraint_entry.names_only = (with_constraints == constraint_resolve_kind::names_only);
             resolves->ensure(resource, logical_plan::resolve_kind::constraint).add(std::move(constraint_entry));
+        }
+
+        std::size_t register_table_entry(std::pmr::memory_resource* resource,
+                                         logical_plan::catalog_resolves_t* resolves,
+                                         const std::string& dbname,
+                                         const std::string& schema,
+                                         const std::string& relname,
+                                         constraint_resolve_kind with_constraints) {
+            register_catalog_resolve_namespace(resource, resolves, dbname);
+            if (relname.empty()) {
+                return logical_plan::resolve_entry_t::no_target;
+            }
+            logical_plan::resolve_entry_t table_entry;
+            table_entry.dbname = dbname;
+            table_entry.schema = schema;
+            table_entry.relname = relname;
+            const auto table_index =
+                resolves->ensure(resource, logical_plan::resolve_kind::table).add(std::move(table_entry));
+            register_constraint_entry(resource, resolves, table_index, with_constraints);
+            return table_index;
         }
     } // namespace
 
@@ -1963,37 +1965,18 @@ namespace components::sql::transform {
                              with_constraints);
     }
 
-    void register_catalog_resolve_written_table(std::pmr::memory_resource* resource,
-                                                logical_plan::catalog_resolves_t* resolves,
-                                                const logical_plan::node_aggregate_t& from) {
-        register_catalog_resolve_write_target(resource, resolves, from.target(), constraint_resolve_kind::none);
-    }
-
     void register_catalog_resolve_table_in_owner_database(std::pmr::memory_resource* resource,
                                                           logical_plan::catalog_resolves_t* resolves,
                                                           const std::string& owner_db,
                                                           const std::string& owner_rel,
                                                           const std::string& relname,
                                                           constraint_resolve_kind with_constraints) {
-        register_catalog_resolve_namespace(resource, resolves, owner_db);
-        auto& tables = resolves->ensure(resource, logical_plan::resolve_kind::table);
-        logical_plan::resolve_entry_t owner;
-        owner.dbname = owner_db;
-        owner.relname = owner_rel;
         logical_plan::resolve_entry_t target;
         target.relname = relname;
-        target.namespace_of = tables.add(std::move(owner));
-        const auto target_index = tables.add(std::move(target));
-        if (with_constraints == constraint_resolve_kind::none) {
-            return;
-        }
-        logical_plan::resolve_entry_t constraint_entry;
-        constraint_entry.target = target_index;
-        constraint_entry.direction = (with_constraints == constraint_resolve_kind::referencing)
-                                         ? logical_plan::resolve_direction::referencing
-                                         : logical_plan::resolve_direction::outgoing;
-        constraint_entry.names_only = (with_constraints == constraint_resolve_kind::names_only);
-        resolves->ensure(resource, logical_plan::resolve_kind::constraint).add(std::move(constraint_entry));
+        target.namespace_of =
+            register_table_entry(resource, resolves, owner_db, std::string{}, owner_rel, constraint_resolve_kind::none);
+        const auto target_index = resolves->ensure(resource, logical_plan::resolve_kind::table).add(std::move(target));
+        register_constraint_entry(resource, resolves, target_index, with_constraints);
     }
 
     void register_catalog_resolve_tables(std::pmr::memory_resource* resource,

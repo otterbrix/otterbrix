@@ -9,12 +9,6 @@
 
 namespace components::sql::transform {
     namespace {
-        // At the SELECT top-level we know the read dependency is the FROM-clause
-        // table. transform_select returns a node_aggregate_t (single-table FROM)
-        // or one whose first child is a join_t — same shape, so pulling
-        // dbname/relname off the root aggregate is sufficient for the primary
-        // table. TODO: emit one resolve per joined table (depth walk over the
-        // SELECT plan).
         // --- SORT ELIMINATION for a provably-unobservable sub-query ORDER BY ---------------
         //
         // A flattened sub-query root IS its consumer node (catalog lookups live on the
@@ -85,9 +79,6 @@ namespace components::sql::transform {
 
         auto root = transform(node, &plan);
         plan.catalog_resolves = std::move(catalog_resolves_);
-        plan.if_exists = std::exchange(if_exists_, false);
-        plan.if_exists_subcommands.assign(if_exists_subcommands_.begin(), if_exists_subcommands_.end());
-        if_exists_subcommands_.clear();
         if (root.has_error()) {
             return {resource_, core::error_t(root.error())};
         }
@@ -117,7 +108,7 @@ namespace components::sql::transform {
         switch (node.type) {
             case T_CreatedbStmt: {
                 auto& n = pg_cast<CreatedbStmt>(node);
-                const std::string dbname = n.dbname ? std::string(n.dbname) : std::string{};
+                const std::string dbname = construct(n.dbname);
                 auto created = transform_create_database(n);
                 if (created.has_error()) {
                     log_node = created.error();
@@ -125,21 +116,21 @@ namespace components::sql::transform {
                 }
                 // Resolve the namespace name so a later patch can use the
                 // resolve node to detect duplicates through the pipeline.
-                register_catalog_resolve_namespace(resource_, &catalog_resolves_, dbname);
+                register_namespace(dbname);
                 log_node = std::move(created.value());
                 break;
             }
             case T_DropdbStmt: {
                 auto& n = pg_cast<DropdbStmt>(node);
-                const std::string dbname = n.dbname ? std::string(n.dbname) : std::string{};
-                auto dropped = transform_drop_database(n);
+                const std::string dbname = construct(n.dbname);
+                auto dropped = transform_drop_database(n, plan);
                 if (dropped.has_error()) {
                     log_node = dropped.error();
                     break;
                 }
                 auto drop_node = std::move(dropped.value());
                 drop_node->set_target(qualified_name_t{core::dbname_t{dbname}, core::relname_t{}});
-                register_catalog_resolve_namespace(resource_, &catalog_resolves_, dbname);
+                register_namespace(dbname);
                 log_node = std::move(drop_node);
                 break;
             }
@@ -148,7 +139,7 @@ namespace components::sql::transform {
                 log_node = transform_create_table(pg_cast<CreateStmt>(node));
                 break;
             case T_DropStmt:
-                log_node = transform_drop(pg_cast<DropStmt>(node));
+                log_node = transform_drop(pg_cast<DropStmt>(node), plan);
                 // TODO: DROP TABLE/INDEX/etc need per-removeType resolve wrap
                 // (resolve_table or resolve_namespace). Out of scope for the
                 // minimal hookup — transform_drop has 6 branches.
@@ -172,9 +163,9 @@ namespace components::sql::transform {
                 // additional resolves.
                 if (selected->type() == logical_plan::node_type::aggregate_t) {
                     const auto* agg = static_cast<const logical_plan::node_aggregate_t*>(selected.get());
-                    register_catalog_resolve_written_table(resource_, &catalog_resolves_, *agg);
+                    register_written_table(*agg);
                 }
-                register_catalog_resolve_types(resource_, &catalog_resolves_, cast_type_names_);
+                register_types(cast_type_names_);
                 log_node = std::move(selected);
                 break;
             }
@@ -237,7 +228,7 @@ namespace components::sql::transform {
                 log_node = transform_alter_table(pg_cast<AlterTableStmt>(node), plan);
                 break;
             case T_RenameStmt:
-                log_node = transform_rename(pg_cast<RenameStmt>(node));
+                log_node = transform_rename(pg_cast<RenameStmt>(node), plan);
                 break;
             case T_TransactionStmt:
                 log_node = transform_transaction(pg_cast<TransactionStmt>(node));

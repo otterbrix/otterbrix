@@ -155,7 +155,7 @@ namespace components::sql::transform {
                                                       std::move(params),
                                                       core::body_sql_t{std::move(body_sql)});
         const std::string db_for_resolve = set_target(*m, qn, target_slots::database);
-        register_catalog_resolve_namespace(resource_, &catalog_resolves_, db_for_resolve);
+        register_namespace(db_for_resolve);
         return m;
     }
 } // namespace components::sql::transform

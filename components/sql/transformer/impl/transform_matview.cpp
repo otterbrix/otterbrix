@@ -39,32 +39,15 @@ namespace components::sql::transform {
                                                   resource_});
         }
 
-        // The body is bound as a view's is (transform_create_view): stored verbatim, run through the canonical path.
-        VALUE_OR_RETURN(
-            auto body_sql,
-            view_body_text(resource_, raw_sql_, cs.query_location, cs.query_end_location, "CREATE MATERIALIZED VIEW"));
-        const auto sub_queries_before = plan->sub_queries.size();
-        VALUE_OR_RETURN(auto body, transform_select(pg_cast<SelectStmt>(*cs.query), plan));
-        if (!body) {
-            return core::error_t(core::error_code_t::sql_parse_error,
-                                 std::pmr::string{"materialized view body lowered to an empty plan", resource_});
-        }
-        if (plan->sub_queries.size() != sub_queries_before) {
-            return core::error_t(
-                core::error_code_t::sql_parse_error,
-                std::pmr::string{"a materialized view body containing a sub-query is not supported yet", resource_});
-        }
-
-        auto target_qn = rangevar_to_qualified_name(cs.into->rel);
-        auto matview = logical_plan::make_node_create_view(resource_,
-                                                           core::viewname_t{target_qn.collection.t},
-                                                           core::query_sql_t{std::move(body_sql)},
-                                                           true,
-                                                           false);
-        matview->append_child(std::move(body));
-        const std::string db_for_resolve = set_target(*matview, target_qn, target_slots::database);
-        register_catalog_resolve_namespace(resource_, &catalog_resolves_, db_for_resolve);
-        register_catalog_resolve_types(resource_, &catalog_resolves_, cast_type_names_);
+        VALUE_OR_RETURN(auto matview,
+                        create_view_node(pg_cast<SelectStmt>(*cs.query),
+                                         cs.query_location,
+                                         cs.query_end_location,
+                                         cs.into->rel,
+                                         true,
+                                         false,
+                                         plan));
+        register_types(cast_type_names_);
         return matview;
     }
 
@@ -79,7 +62,7 @@ namespace components::sql::transform {
         // entry by name, whose metadata carries view_sql (Phase A.A2 reads
         // pg_rewrite.ev_action for relkind='m').
         set_target(*node, qn, target_slots::relation);
-        register_catalog_resolve_table(resource_, &catalog_resolves_, qn.database.t, qn.collection.t);
+        register_table(qn.database.t, qn.collection.t, constraint_resolve_kind::none);
         return node;
     }
 } // namespace components::sql::transform

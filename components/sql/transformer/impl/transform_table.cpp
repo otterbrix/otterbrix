@@ -8,7 +8,8 @@
 #include <components/sql/transformer/utils.hpp>
 #include <components/types/user_type_walk.hpp>
 
-#include <set>
+#include <algorithm>
+#include <span>
 #include <vector>
 
 using namespace components::types;
@@ -49,7 +50,7 @@ namespace components::sql::transform {
         register_referenced_tables(&catalog_resolves_, *coldefs);
 
         auto qn = rangevar_to_qualified_name(node.relation);
-        const std::string dbname = database_for(qn, namespace_policy::default_public);
+        const std::string& dbname = database_for(qn, namespace_policy::default_public).t;
 
         // Column-level (`code bigint UNIQUE`) and table-level (`UNIQUE (code)`) constraints
         // land in one list, column-level first in declaration order; downstream treats them identically.
@@ -128,16 +129,12 @@ namespace components::sql::transform {
                         !tc.ref_collection.empty() && tc.ref_collection == qn.collection.t && ref_db == dbname;
                     cstr->set_self_reference(self_ref);
                     if (!self_ref && !tc.ref_collection.empty()) {
-                        register_catalog_resolve_table(resource_, &catalog_resolves_, ref_db, tc.ref_collection);
                         // Omitted column list binds to the parent's PRIMARY KEY (its
                         // pg_constraint rows) — same constraint gather as the ALTER path.
-                        if (tc.ref_columns.empty()) {
-                            register_catalog_resolve_table(resource_,
-                                                           &catalog_resolves_,
-                                                           ref_db,
-                                                           tc.ref_collection,
-                                                           constraint_resolve_kind::outgoing);
-                        }
+                        register_table(ref_db,
+                                       tc.ref_collection,
+                                       tc.ref_columns.empty() ? constraint_resolve_kind::outgoing
+                                                              : constraint_resolve_kind::none);
                     }
                 }
                 created->append_child(logical_plan::node_ptr{std::move(cstr)});
@@ -146,25 +143,27 @@ namespace components::sql::transform {
         // Collect every UDT type_name referenced by the column defs
         // (including nested STRUCT children) so Pass 1's resolve_type
         // operator can stamp pg_type metadata into the plan-tree idx.
-        std::set<std::string> udt_names;
+        std::vector<std::string> udt_names;
         // Re-read col_defs from the constructed node (we moved it above).
         for (const auto& col : cn->column_definitions()) {
-            components::types::walk_user_type_refs(col.type(), [&](std::string_view nm) { udt_names.emplace(nm); });
+            components::types::walk_user_type_refs(col.type(),
+                                                   [&](std::string_view nm) { udt_names.emplace_back(nm); });
         }
+        std::sort(udt_names.begin(), udt_names.end());
+        udt_names.erase(std::unique(udt_names.begin(), udt_names.end()), udt_names.end());
         // The target namespace stays ON the node: enrich binds it to a resolved
         // namespace entry by name and stamps namespace_oid() from there.
-        register_catalog_resolve_namespace(resource_, &catalog_resolves_, set_target(*cn, qn, target_slots::relation));
+        register_namespace(set_target(*cn, qn, target_slots::relation));
         // Probe the "public" namespace by default (resolve_one_type's first hit).
         // pg_catalog builtins are not in udt_names since walk_user_type_refs only
         // emits STRUCT/ENUM/UNKNOWN; pg_catalog scalars resolve via resolve_builtin
         // earlier.
-        register_catalog_resolve_types(resource_,
-                                       &catalog_resolves_,
-                                       std::vector<std::string>(udt_names.begin(), udt_names.end()));
+        register_types(udt_names);
         return created;
     }
 
-    core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_drop(DropStmt& node) {
+    core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_drop(DropStmt& node,
+                                                                               logical_plan::execution_plan_t* plan) {
         // Every arm below reads only `node.objects->lst.front()`; `DROP TABLE a, b, c` would otherwise
         // silently drop just `a` and report success. One node_drop_t names one object, so refuse
         // instead and name the objects that would have been skipped.
@@ -208,25 +207,19 @@ namespace components::sql::transform {
             msg += "); only one object per DROP is supported — nothing was dropped";
             return core::error_t(core::error_code_t::unimplemented_yet, std::move(msg));
         }
+        plan->if_exists = node.missing_ok;
         auto wrap_one = [&](const qualified_name_t& written, logical_plan::node_ptr n) {
             auto* drop = static_cast<logical_plan::node_drop_t*>(n.get());
             set_target(*drop, written, target_slots::relation);
-            if_exists_ = node.missing_ok;
             // One drop_behavior_of choke-point for all six DROP arms (bare = restrict_, PostgreSQL parity).
             drop->set_behavior(drop_behavior_of(node.behavior));
-            register_catalog_resolve_table(resource_, &catalog_resolves_, written.database.t, written.collection.t);
+            register_table(written.database.t, written.collection.t, constraint_resolve_kind::none);
             return n;
         };
         // The catalog holds a relname and a relnamespace, so the arms below plan at most those two (and
         // an index name). A table spelled with uid or schema is recorded for enrich to refuse, the same
         // way a CREATE is — see set_target.
         switch (node.removeType) {
-            case OBJECT_TABLE: {
-                VALUE_OR_RETURN(auto written,
-                                qualified_name_of(resource_, *reinterpret_cast<List*>(node.objects->lst.front().data)));
-                auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::collection);
-                return wrap_one(written, std::move(n));
-            }
             case OBJECT_INDEX: {
                 auto drop_name = reinterpret_cast<List*>(node.objects->lst.front().data)->lst;
                 if (drop_name.empty()) {
@@ -240,16 +233,11 @@ namespace components::sql::transform {
                     auto* drop = static_cast<logical_plan::node_drop_t*>(n.get());
                     set_target(*drop, written, target_slots::relation);
                     drop->set_index_name(core::indexname_t{index_name});
-                    // Same wiring as wrap_one; rewrite_drop_index reads this when the index name
-                    // doesn't resolve.
-                    if_exists_ = node.missing_ok;
                     // Not read yet (rewrite_drop_index builds its own delete sequence, not the
                     // dynamic cascade), but this is the only place it could be set.
                     drop->set_behavior(drop_behavior_of(node.behavior));
-                    std::vector<std::pair<std::string, std::string>> targets;
-                    targets.emplace_back(written.database.t, written.collection.t);
-                    targets.emplace_back(written.database.t, index_name);
-                    register_catalog_resolve_tables(resource_, &catalog_resolves_, targets);
+                    register_table(written.database.t, written.collection.t, constraint_resolve_kind::none);
+                    register_table(written.database.t, index_name, constraint_resolve_kind::none);
                     return n;
                 };
                 //when casting to enum -1 is used to account for obligated index name
@@ -297,50 +285,46 @@ namespace components::sql::transform {
                                              std::pmr::string{"incorrect drop: arguments size", resource_});
                 }
             }
-            case OBJECT_TYPE: {
-                VALUE_OR_RETURN(auto written,
-                                qualified_name_of(resource_, *reinterpret_cast<List*>(node.objects->lst.front().data)));
-                auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::type);
-                // The dropped type's name stays ON the node (in relname_, the
-                // node's single target-name slot) so enrich binds it to the
-                // resolved type entry and stamps type_oid from there.
-                const std::string type_db = set_target(*n, written, target_slots::relation);
-                // The one arm that does not build through wrap_one.
-                if_exists_ = node.missing_ok;
-                // Unlike DROP INDEX, this arm does reach the dynamic cascade
-                // (planner's rewrite_drop routes drop_target_kind::type there).
-                n->set_behavior(drop_behavior_of(node.behavior));
-                register_catalog_resolve_namespace(resource_, &catalog_resolves_, type_db);
-                register_catalog_resolve_types(resource_, &catalog_resolves_, {written.collection.t});
-                return n;
-            }
-            case OBJECT_SEQUENCE: {
-                VALUE_OR_RETURN(auto written,
-                                qualified_name_of(resource_, *reinterpret_cast<List*>(node.objects->lst.front().data)));
-                auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::sequence);
-                return wrap_one(written, std::move(n));
-            }
-            case OBJECT_VIEW: {
-                VALUE_OR_RETURN(auto written,
-                                qualified_name_of(resource_, *reinterpret_cast<List*>(node.objects->lst.front().data)));
-                auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::view);
-                return wrap_one(written, std::move(n));
-            }
-            case OBJECT_MATVIEW: {
-                VALUE_OR_RETURN(auto written,
-                                qualified_name_of(resource_, *reinterpret_cast<List*>(node.objects->lst.front().data)));
-                auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::materialized_view);
-                return wrap_one(written, std::move(n));
-            }
-            case OBJECT_FUNCTION: {
-                VALUE_OR_RETURN(auto written,
-                                qualified_name_of(resource_, *reinterpret_cast<List*>(node.objects->lst.front().data)));
-                auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::macro);
-                return wrap_one(written, std::move(n));
-            }
+            default:
+                break;
+        }
+        auto kind = logical_plan::drop_target_kind::collection;
+        switch (node.removeType) {
+            case OBJECT_TABLE:
+                break;
+            case OBJECT_TYPE:
+                kind = logical_plan::drop_target_kind::type;
+                break;
+            case OBJECT_SEQUENCE:
+                kind = logical_plan::drop_target_kind::sequence;
+                break;
+            case OBJECT_VIEW:
+                kind = logical_plan::drop_target_kind::view;
+                break;
+            case OBJECT_MATVIEW:
+                kind = logical_plan::drop_target_kind::materialized_view;
+                break;
+            case OBJECT_FUNCTION:
+                kind = logical_plan::drop_target_kind::macro;
+                break;
             default:
                 return core::error_t(core::error_code_t::sql_parse_error,
                                      std::pmr::string{"Unsupported removeType", resource_});
         }
+        VALUE_OR_RETURN(auto written,
+                        qualified_name_of(resource_, *reinterpret_cast<List*>(node.objects->lst.front().data)));
+        auto n = logical_plan::make_node_drop(resource_, kind);
+        if (kind != logical_plan::drop_target_kind::type) {
+            return wrap_one(written, std::move(n));
+        }
+        // The dropped type's name stays ON the node (in the target's relname slot)
+        // so enrich binds it to the resolved type entry and stamps type_oid from there.
+        const std::string type_db = set_target(*n, written, target_slots::relation);
+        // Unlike DROP INDEX, this arm does reach the dynamic cascade
+        // (planner's rewrite_drop routes drop_target_kind::type there).
+        n->set_behavior(drop_behavior_of(node.behavior));
+        register_namespace(type_db);
+        register_types(std::span<const std::string>{&written.collection.t, 1});
+        return n;
     }
 } // namespace components::sql::transform

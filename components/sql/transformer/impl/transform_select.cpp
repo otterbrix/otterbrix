@@ -1142,7 +1142,7 @@ namespace components::sql::transform {
                     plan->sub_query_results.push_back({&vector::compact_to_bool_value, param_exists});
                     if (body && body->type() == logical_plan::node_type::aggregate_t) {
                         const auto* body_agg = static_cast<const logical_plan::node_aggregate_t*>(body.get());
-                        register_catalog_resolve_written_table(resource_, &catalog_resolves_, *body_agg);
+                        register_written_table(*body_agg);
                     }
                     plan->sub_queries.emplace_back(std::move(body));
                     auto exists_eq = make_compare_expression(resource_, compare_type::eq, param_true, param_exists);

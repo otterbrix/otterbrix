@@ -316,7 +316,7 @@ namespace components::planner {
                     logical_plan::make_node_catalog_delete(r, pg_rewrite_ref_table, std::int64_t{0}, view_oid));
             }
             auto writes = catalog::build_create_view_writes(r,
-                                                            std::string(cv->viewname()),
+                                                            cv->viewname().t,
                                                             ns_oid,
                                                             view_oid,
                                                             rule_oid,

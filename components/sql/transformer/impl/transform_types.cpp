@@ -4,28 +4,27 @@
 #include <components/sql/transformer/transformer.hpp>
 #include <components/types/user_type_walk.hpp>
 
-#include <set>
+#include <algorithm>
 #include <string>
+#include <vector>
 
 namespace components::sql::transform {
 
     namespace {
-        // Register the new type's own name (for collision detection — the resolve
-        // stamps a result iff pg_type already has the name) plus every nested UDT
-        // referenced by struct fields. check_type_exists / probe_type_in_path read
+        // The new type's own name (for collision detection — the resolve stamps a result iff pg_type already has
+        // the name) plus every nested UDT referenced by struct fields. check_type_exists / probe_type_in_path read
         // those stamps back.
-        void register_create_type_resolves(std::pmr::memory_resource* resource,
-                                           logical_plan::catalog_resolves_t* resolves,
-                                           const types::complex_logical_type& type) {
-            std::set<std::string> names;
-            names.emplace(type.type_name());
+        std::vector<std::string> type_names_of(const types::complex_logical_type& type) {
+            std::vector<std::string> names;
+            names.emplace_back(type.type_name());
             if (type.type() == types::logical_type::STRUCT) {
                 for (const auto& field : type.child_types()) {
-                    types::walk_user_type_refs(field, [&](std::string_view nm) { names.emplace(nm); });
+                    types::walk_user_type_refs(field, [&](std::string_view nm) { names.emplace_back(nm); });
                 }
             }
-            register_catalog_resolve_namespace(resource, resolves, "public");
-            register_catalog_resolve_types(resource, resolves, std::vector<std::string>(names.begin(), names.end()));
+            std::sort(names.begin(), names.end());
+            names.erase(std::unique(names.begin(), names.end()), names.end());
+            return names;
         }
     } // namespace
 
@@ -37,7 +36,8 @@ namespace components::sql::transform {
         auto created = logical_plan::make_node_create_type(resource_, std::move(type_copy));
         // A type always lands in "public"; a name that spells uid or schema goes to enrich to refuse.
         set_target(*created, written, target_slots::database);
-        register_create_type_resolves(resource_, &catalog_resolves_, type);
+        register_namespace("public");
+        register_types(type_names_of(type));
         return created;
     }
 
@@ -58,7 +58,8 @@ namespace components::sql::transform {
         auto type_copy = type;
         auto created = logical_plan::make_node_create_type(resource_, std::move(type_copy));
         set_target(*created, written, target_slots::database);
-        register_create_type_resolves(resource_, &catalog_resolves_, type);
+        register_namespace("public");
+        register_types(type_names_of(type));
         return created;
     }
 

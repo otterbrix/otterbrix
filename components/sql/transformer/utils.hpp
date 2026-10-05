@@ -7,8 +7,8 @@
 #include <components/expressions/forward.hpp>
 #include <components/expressions/key.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
-#include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/node_alter_table.hpp>
+#include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/node_drop.hpp>
 #include <components/logical_plan/node_join.hpp>
 #include <components/sql/parser/nodes/parsenodes.h>
@@ -16,6 +16,7 @@
 #include <components/table/column_definition.hpp>
 #include <components/table/constraint.hpp>
 #include <components/types/types.hpp>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -147,16 +148,17 @@ namespace components::sql::transform {
         }
     }
 
-    inline std::string database_for(const qualified_name_t& written, namespace_policy policy) {
+    inline const core::dbname_t& database_for(const qualified_name_t& written, namespace_policy policy) {
+        static const core::dbname_t public_database{"public"};
         switch (policy) {
             case namespace_policy::default_public:
-                return written.database.t.empty() ? std::string{"public"} : written.database.t;
+                return written.database.t.empty() ? public_database : written.database;
             case namespace_policy::public_only:
-                return "public";
+                return public_database;
             case namespace_policy::as_written:
                 break;
         }
-        return written.database.t;
+        return written.database;
     }
 
     inline const std::string& visible_name(const qualified_name_t& name, const std::string& alias) noexcept {
@@ -428,13 +430,6 @@ namespace components::sql::transform {
     logical_plan::node_ptr
     name_catalog_target(const core::dbname_t& dbname, const core::relname_t& relname, logical_plan::node_ptr node);
 
-    // with_constraints gathers INSERT/UPDATE's outgoing or DELETE's referencing constraints.
-    // A FROM table as written: database.schema.name keeps its schema slot (to be refused); the uid form keeps its
-    // meaning database.name.
-    void register_catalog_resolve_written_table(std::pmr::memory_resource* resource,
-                                                logical_plan::catalog_resolves_t* resolves,
-                                                const logical_plan::node_aggregate_t& from);
-
     // An unqualified REFERENCES target of the table (owner_db, owner_rel): looked up in the database the owner is
     // found in, after the owner.
     void register_catalog_resolve_table_in_owner_database(std::pmr::memory_resource* resource,
@@ -450,8 +445,9 @@ namespace components::sql::transform {
                                         const std::string& relname,
                                         constraint_resolve_kind with_constraints = constraint_resolve_kind::none);
 
-    // The target of an INSERT / UPDATE / DELETE, schema slot included: a name the catalog does not know reaches
-    // the host whole.
+    // The target of an INSERT / UPDATE / DELETE or a FROM table, schema slot included: a name the catalog does not
+    // know reaches the host whole. with_constraints gathers INSERT/UPDATE's outgoing or DELETE's referencing
+    // constraints.
     void register_catalog_resolve_write_target(std::pmr::memory_resource* resource,
                                                logical_plan::catalog_resolves_t* resolves,
                                                const qualified_name_t& written,
@@ -459,7 +455,7 @@ namespace components::sql::transform {
 
     void register_catalog_resolve_types(std::pmr::memory_resource* resource,
                                         logical_plan::catalog_resolves_t* resolves,
-                                        const std::vector<std::string>& type_names);
+                                        std::span<const std::string> type_names);
 
     core::result_wrapper_t<function_qualified_name_t> called_function(std::pmr::memory_resource* resource,
                                                                       const List* funcname);

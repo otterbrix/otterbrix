@@ -827,13 +827,13 @@ namespace services::disk {
             std::error_code dir_ec;
             std::filesystem::create_directories(otbx.parent_path(), dir_ec);
             if (dir_ec) {
-                error(log_,
-                      "manager_disk_t::rehydrate_missing_user_storages_sync: could not create the directory of the "
-                      "lost .otbx of alive table oid={} : {}",
-                      static_cast<unsigned>(oid),
-                      dir_ec.message());
-                ++unclosed;
-                continue;
+                return core::error_t(core::error_code_t::io_error,
+                                     std::pmr::string{"rehydrate_missing_user_storages_sync: the directory of the "
+                                                      "lost .otbx of alive table oid=" +
+                                                          std::to_string(static_cast<unsigned>(oid)) + " (" +
+                                                          otbx.parent_path().string() +
+                                                          ") could not be created: " + dir_ec.message(),
+                                                      resource()});
             }
             if (auto err = create_storage_disk_sync(oid, ns_oid, std::move(defs), otbx, /*is_computed=*/false);
                 err.contains_error()) {

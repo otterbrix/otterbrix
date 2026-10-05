@@ -512,9 +512,9 @@ TEST_CASE("integration::cpp::hash_join::filtered_side_swap_requires_size_evidenc
                                                  compare_type::gt,
                                                  expressions::param_storage{make_key(res, "bv", side_t::left, 1)},
                                                  expressions::param_storage{make_key(res, "bk", side_t::left, 0)});
-        auto wrapper = logical_plan::make_node_aggregate(res, core::dbname_t{}, core::relname_t{});
+        auto wrapper = logical_plan::make_node_aggregate(res, qualified_name_t{});
         wrapper->append_child(big_table);
-        wrapper->append_child(logical_plan::make_node_match(res, core::dbname_t{}, core::relname_t{}, where));
+        wrapper->append_child(logical_plan::make_node_match(res, qualified_name_t{}, where));
 
         auto tiny = logical_plan::make_node_raw_data(res, build_named_chunk(res, "rk", "rv", 2));
         tiny->set_table_oid(tiny_oid);

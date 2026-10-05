@@ -27,13 +27,15 @@ namespace components::operators {
                                                                log_t log,
                                                                catalog::oid_t table_oid,
                                                                std::string column_name,
-                                                               std::string relation_label,
+                                                               qualified_name_t relation,
+                                                               char relkind,
                                                                catalog::oid_t attoid,
                                                                catalog::drop_behavior_t behavior)
         : read_write_operator_t(resource, std::move(log), operator_type::alter_column_drop)
         , table_oid_(table_oid)
         , column_name_(std::move(column_name))
-        , relation_label_(std::move(relation_label))
+        , relation_(std::move(relation))
+        , relkind_(relkind)
         , attoid_(attoid)
         , behavior_(behavior) {}
 
@@ -276,12 +278,15 @@ namespace components::operators {
         // What depends on the column goes the way any DROP takes its dependents: RESTRICT refuses a normal one
         // anywhere in the closure, CASCADE drops each whole (an index with its pg_index row, a view with its
         // pg_rewrite rows). The column itself is tombstoned below.
-        if (auto dropped = co_await drop_with_dependents(resource_,
-                                                         ctx,
-                                                         pg_attr_oid,
-                                                         attoid,
-                                                         behavior_,
-                                                         "column " + column_name_ + " of " + relation_label_);
+        if (auto dropped = co_await drop_with_dependents(
+                resource_,
+                ctx,
+                pg_attr_oid,
+                attoid,
+                behavior_,
+                "column " + column_name_ + " of " +
+                    (relkind_ == catalog::relkind::materialized_view ? "materialized view " : "table ") +
+                    relation_.to_string());
             dropped.contains_error()) {
             set_error(dropped);
             co_return;

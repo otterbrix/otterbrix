@@ -6,6 +6,10 @@
 
 namespace components::logical_plan {
 
+    std::string_view catalog_schema(const qualified_name_t& written) noexcept {
+        return written.unique_identifier.t.empty() ? std::string_view{written.schema.t} : std::string_view{};
+    }
+
     bool resolve_entry_t::operator==(const resolve_entry_t& other) const noexcept {
         return dbname == other.dbname && relname == other.relname && type_name == other.type_name &&
                schema == other.schema && namespace_of == other.namespace_of &&
@@ -157,6 +161,10 @@ namespace components::logical_plan {
         }
         const auto index = tables->find(dbname, schema, relname);
         return index == resolve_entry_t::no_target ? nullptr : &tables->entries()[index];
+    }
+
+    const resolve_entry_t* catalog_resolves_t::table_entry(const qualified_name_t& written) const noexcept {
+        return table_entry(written.database.t, catalog_schema(written), written.collection.t);
     }
 
     const resolve_entry_t* catalog_resolves_t::type_entry(std::string_view dbname,

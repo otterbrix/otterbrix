@@ -156,7 +156,7 @@ namespace components::planner {
 
         node_ptr rewrite_create_database(std::pmr::memory_resource* r, node_ptr node, catalog::oid_batch_t& oid_batch) {
             auto* cd = static_cast<logical_plan::node_create_database_t*>(node.get());
-            const std::string ns_name(cd->dbname());
+            const std::string ns_name(cd->target().database);
             const catalog::oid_t ns_oid = oid_batch.allocate();
 
             auto writes = catalog::build_create_namespace_writes(r, ns_name, ns_oid);
@@ -178,7 +178,7 @@ namespace components::planner {
             const catalog::oid_t table_oid = oid_batch.peek();
             auto writes = catalog::build_create_table_writes(r,
                                                              std::string{},
-                                                             cc->relname(),
+                                                             cc->target().collection.t,
                                                              cc->column_definitions(),
                                                              ns_oid,
                                                              oid_batch,
@@ -330,7 +330,7 @@ namespace components::planner {
                                                                                : catalog::relkind::view);
             if (cv->materialized()) {
                 // The heap and the catalog rows go in one operator, which undoes the heap if a row is refused.
-                auto mv = logical_plan::make_node_create_matview(r, core::matviewname_t{cv->viewname()});
+                auto mv = logical_plan::make_node_create_matview(r, core::matviewname_t{cv->viewname().t});
                 mv->set_namespace_oid(ns_oid);
                 mv->set_matview_oid(view_oid);
                 mv->set_columns({cv->columns().begin(), cv->columns().end()});
@@ -428,9 +428,9 @@ namespace components::planner {
                 msg.append("CREATE INDEX ");
                 msg.append(ci->name());
                 msg.append(": table ");
-                msg.append(ci->dbname());
+                msg.append(ci->target().database.t);
                 msg.append(".");
-                msg.append(ci->relname());
+                msg.append(ci->target().collection.t);
                 msg.append(" does not exist");
                 return core::error_t{core::error_code_t::table_not_exists, std::move(msg)};
             }
@@ -439,7 +439,7 @@ namespace components::planner {
             if (ci->name_conflict_oid() != catalog::INVALID_OID) {
                 std::pmr::string msg{r};
                 msg.append("CREATE INDEX: relation ");
-                msg.append(ci->dbname());
+                msg.append(ci->target().database.t);
                 msg.append(".");
                 msg.append(ci->name());
                 msg.append(" already exists (oid ");
@@ -479,11 +479,11 @@ namespace components::planner {
             if (index_oid == catalog::INVALID_OID) {
                 std::pmr::string msg{r};
                 msg.append("DROP INDEX: index ");
-                msg.append(di->dbname());
+                msg.append(di->target().database.t);
                 msg.append(".");
-                msg.append(di->relname());
+                msg.append(di->target().collection.t);
                 msg.append(".");
-                msg.append(di->index_name());
+                msg.append(di->index_name().t);
                 msg.append(" does not exist");
                 return core::error_t{core::error_code_t::index_not_exists, std::move(msg)};
             }
@@ -509,19 +509,19 @@ namespace components::planner {
             const auto relation = [d, &classid, &seed_objid](const char* kind) {
                 classid = catalog::well_known_oid::pg_class_table;
                 seed_objid = d->table_oid();
-                return std::string{kind} + (d->dbname().empty() ? d->relname() : d->dbname() + "." + d->relname());
+                return std::string{kind} + d->target().to_string();
             };
             std::string target;
             switch (d->kind()) {
                 case logical_plan::drop_target_kind::database:
                     classid = catalog::well_known_oid::pg_namespace_table;
                     seed_objid = d->namespace_oid();
-                    target = "database " + d->dbname();
+                    target = "database " + d->target().database.t;
                     break;
                 case logical_plan::drop_target_kind::type:
                     classid = catalog::well_known_oid::pg_type_table;
                     seed_objid = d->type_oid();
-                    target = "type " + d->relname();
+                    target = "type " + d->target().collection.t;
                     break;
                 case logical_plan::drop_target_kind::collection:
                     target = relation("table ");
@@ -589,10 +589,8 @@ namespace components::planner {
                         drop->set_computed(true);
                     } else {
                         drop->set_behavior(sub.behavior);
-                        drop->set_relation_label(
-                            (alter->relkind() == catalog::relkind::materialized_view ? "materialized view "
-                                                                                     : "table ") +
-                            (alter->dbname().empty() ? alter->relname() : alter->dbname() + "." + alter->relname()));
+                        drop->set_target(alter->target());
+                        drop->set_relkind(alter->relkind());
                     }
                     seq->append_child(drop);
                 } else if (sub.kind == logical_plan::alter_table_kind::drop_constraint) {

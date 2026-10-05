@@ -58,29 +58,11 @@ inline void test_clear_directory(const configuration::config& config) {
 inline components::logical_plan::node_ptr test_dml_target(components::logical_plan::node_ptr node,
                                                           const core::dbname_t& database,
                                                           const core::relname_t& collection) {
-    using namespace components::logical_plan;
-    switch (node->type()) {
-        case node_type::insert_t: {
-            auto* n = static_cast<node_insert_t*>(node.get());
-            n->set_dbname(database.t);
-            n->set_relname(collection.t);
-            break;
-        }
-        case node_type::update_t: {
-            auto* n = static_cast<node_update_t*>(node.get());
-            n->set_dbname(database.t);
-            n->set_relname(collection.t);
-            break;
-        }
-        case node_type::delete_t: {
-            auto* n = static_cast<node_delete_t*>(node.get());
-            n->set_dbname(database.t);
-            n->set_relname(collection.t);
-            break;
-        }
-        default:
-            // Everything else (aggregate/match/...) already carries its own names.
-            break;
+    using components::logical_plan::node_type;
+    // Everything else (aggregate/match/...) already carries its own names.
+    if (node->type() == node_type::insert_t || node->type() == node_type::update_t ||
+        node->type() == node_type::delete_t) {
+        node->set_target(qualified_name_t{database, collection});
     }
     return node;
 }
@@ -98,7 +80,7 @@ test_create_collection(otterbrix::wrapper_dispatcher_t* dispatcher,
                                                                       collection,
                                                                       std::move(column_definitions),
                                                                       std::move(constraints));
-    node->set_dbname(database.t);
+    node->set_target(qualified_name_t{database, collection});
     components::logical_plan::execution_plan_t plan{resource,
                                                     node,
                                                     components::logical_plan::make_parameter_node(resource)};

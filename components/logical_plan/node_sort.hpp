@@ -12,9 +12,6 @@ namespace components::logical_plan {
     public:
         explicit node_sort_t(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname);
 
-        const std::string& relname() const noexcept { return relname_; }
-        const std::string& dbname() const noexcept { return dbname_; }
-
         // Optimizer annotation set by the pushdown_limit rule: a pure COUNT read-cap
         // (offset always 0) this FULL sort may truncate its OUTPUT to, so the
         // authoritative operator_limit above can still window [offset, offset+limit).
@@ -25,8 +22,6 @@ namespace components::logical_plan {
         const limit_t& read_cap() const noexcept { return read_cap_; }
 
     private:
-        std::string dbname_;
-        std::string relname_;
         limit_t read_cap_{};
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;

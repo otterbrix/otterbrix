@@ -36,9 +36,7 @@ namespace components::logical_plan {
                                core::dbname_t dbname,
                                core::relname_t relname,
                                const limit_t& limit)
-        : node_t(resource, node_type::limit_t)
-        , dbname_(std::move(static_cast<std::string&>(dbname)))
-        , relname_(std::move(static_cast<std::string&>(relname)))
+        : node_t(resource, node_type::limit_t, qualified_name_t{std::move(dbname), std::move(relname)})
         , limit_(limit) {}
 
     const limit_t& node_limit_t::limit() const { return limit_; }

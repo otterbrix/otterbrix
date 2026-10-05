@@ -15,17 +15,12 @@ namespace components::logical_plan {
     public:
         explicit node_select_t(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname);
 
-        const core::dbname_t& dbname() const noexcept { return dbname_; }
-        const core::relname_t& relname() const noexcept { return relname_; }
-
         // Number of hidden aggregate expressions appended at the tail of expressions_
         // (used for HAVING internal aggregates when there is no GROUP BY).
         // Visible SELECT column count = expressions_.size() - internal_aggregate_count.
         size_t internal_aggregate_count{0};
 
     private:
-        core::dbname_t dbname_;
-        core::relname_t relname_;
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
     };

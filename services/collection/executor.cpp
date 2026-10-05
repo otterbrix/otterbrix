@@ -615,10 +615,11 @@ namespace services::collection::executor {
         if (original_type == node_type::refresh_matview_t) {
             const auto* refresh =
                 static_cast<const components::logical_plan::node_refresh_matview_t*>(plan.sub_queries.back().get());
-            const auto* matview = plan.catalog_resolves.table_md(refresh->dbname(), refresh->matviewname());
+            const auto& matview_name = refresh->target();
+            const auto* matview = plan.catalog_resolves.table_md(matview_name.database.t, matview_name.collection.t);
             if (matview == nullptr || matview->relkind != components::catalog::relkind::materialized_view) {
                 std::pmr::string msg{"\"", resource()};
-                msg.append(refresh->matviewname());
+                msg.append(matview_name.collection.t);
                 msg.append(matview == nullptr ? "\" does not exist" : "\" is not a materialized view");
                 co_return execute_result_t{make_cursor(
                     resource(),
@@ -637,10 +638,10 @@ namespace services::collection::executor {
                 return out + "\"";
             };
             {
-                auto parsed = components::planner::parse_statement(
-                    resource(),
-                    "DELETE FROM " + quoted(refresh->dbname()) + "." + quoted(refresh->matviewname()) + ";",
-                    "materialized view refresh");
+                auto parsed = components::planner::parse_statement(resource(),
+                                                                   "DELETE FROM " + quoted(matview_name.database.t) +
+                                                                       "." + quoted(matview_name.collection.t) + ";",
+                                                                   "materialized view refresh");
                 if (parsed.has_error()) {
                     co_return execute_result_t{make_cursor(resource(), parsed.error())};
                 }
@@ -652,7 +653,7 @@ namespace services::collection::executor {
                 }
             }
             if (refresh->with_data()) {
-                auto refill = components::planner::refresh_matview_plan(resource(), *matview, refresh->dbname());
+                auto refill = components::planner::refresh_matview_plan(resource(), *matview, matview_name.database);
                 if (refill.has_error()) {
                     co_return execute_result_t{make_cursor(resource(), refill.error())};
                 }
@@ -706,7 +707,7 @@ namespace services::collection::executor {
                 }
                 for (std::size_t i = 0; i < refs.size(); ++i) {
                     auto& ref = refs[i];
-                    auto body = components::planner::expand_view_body(resource(), views[i].view_sql);
+                    auto body = components::planner::expand_view_body(resource(), core::body_sql_t{views[i].view_sql});
                     if (body.error.contains_error()) {
                         trace(log_, "executor::execute_plan_full: view expansion failed: {}", body.error.what);
                         co_return execute_result_t{make_cursor(resource(), std::move(body.error))};
@@ -869,92 +870,7 @@ namespace services::collection::executor {
             co_return ok;
         }
 
-        auto build_id_cfn = [](const components::logical_plan::node_t* n) -> qualified_name_t {
-            using components::logical_plan::node_alter_table_t;
-            using components::logical_plan::node_create_database_t;
-            using components::logical_plan::node_create_index_t;
-            using components::logical_plan::node_create_macro_t;
-            using components::logical_plan::node_create_sequence_t;
-            using components::logical_plan::node_create_view_t;
-            using components::logical_plan::node_delete_t;
-            using components::logical_plan::node_insert_t;
-            using components::logical_plan::node_update_t;
-            if (!n)
-                return {};
-            switch (n->type()) {
-                case node_type::aggregate_t: {
-                    auto* d = static_cast<const node_aggregate_t*>(n);
-                    return qualified_name_t{core::dbname_t{d->dbname()}, core::relname_t{d->relname()}};
-                }
-                case node_type::alter_column_t:
-                    return {};
-                case node_type::alter_table_t: {
-                    auto* d = static_cast<const node_alter_table_t*>(n);
-                    return qualified_name_t{core::dbname_t{d->dbname()}, core::relname_t{d->relname()}};
-                }
-                case node_type::create_collection_t: {
-                    auto* d = static_cast<const node_create_collection_t*>(n);
-                    return qualified_name_t{core::dbname_t{d->dbname()},
-                                            core::relname_t{static_cast<const std::string&>(d->relname())}};
-                }
-                case node_type::create_constraint_t: {
-                    auto* d = static_cast<const node_create_constraint_t*>(n);
-                    return qualified_name_t{core::dbname_t{d->dbname()}, core::relname_t{d->relname()}};
-                }
-                case node_type::create_database_t: {
-                    auto* d = static_cast<const node_create_database_t*>(n);
-                    return qualified_name_t{core::dbname_t{d->dbname()}, core::relname_t{}};
-                }
-                case node_type::create_index_t: {
-                    auto* d = static_cast<const node_create_index_t*>(n);
-                    return qualified_name_t{core::dbname_t{d->dbname()}, core::relname_t{d->relname()}};
-                }
-                case node_type::create_macro_t: {
-                    auto* d = static_cast<const node_create_macro_t*>(n);
-                    return qualified_name_t{core::dbname_t{d->dbname()}, core::relname_t{d->macroname()}};
-                }
-                case node_type::create_sequence_t: {
-                    auto* d = static_cast<const node_create_sequence_t*>(n);
-                    return qualified_name_t{core::dbname_t{d->dbname()}, core::relname_t{d->seqname()}};
-                }
-                case node_type::create_view_t: {
-                    auto* d = static_cast<const node_create_view_t*>(n);
-                    return qualified_name_t{core::dbname_t{d->dbname()}, core::relname_t{d->viewname()}};
-                }
-                case node_type::delete_t: {
-                    auto* d = static_cast<const node_delete_t*>(n);
-                    return qualified_name_t{core::dbname_t{d->dbname()}, core::relname_t{d->relname()}};
-                }
-                case node_type::insert_t: {
-                    auto* d = static_cast<const node_insert_t*>(n);
-                    return qualified_name_t{core::dbname_t{d->dbname()}, core::relname_t{d->relname()}};
-                }
-                case node_type::update_t: {
-                    auto* d = static_cast<const node_update_t*>(n);
-                    return qualified_name_t{core::dbname_t{d->dbname()}, core::relname_t{d->relname()}};
-                }
-                case node_type::drop_t: {
-                    using components::logical_plan::drop_target_kind;
-                    using components::logical_plan::node_drop_t;
-                    auto* d = static_cast<const node_drop_t*>(n);
-                    if (d->kind() == drop_target_kind::type) {
-                        return {};
-                    }
-                    if (d->kind() == drop_target_kind::database) {
-                        return qualified_name_t{core::dbname_t{d->dbname()}, core::relname_t{}};
-                    }
-                    return qualified_name_t{core::dbname_t{d->dbname()}, core::relname_t{d->relname()}};
-                }
-                case node_type::match_t: {
-                    auto* d = static_cast<const node_match_t*>(n);
-                    return qualified_name_t{core::dbname_t{d->dbname()}, core::relname_t{d->relname()}};
-                }
-                default:
-                    return {};
-            }
-        };
-
-        table_id id(resource(), build_id_cfn(plan.sub_queries.back().get()));
+        table_id id(resource(), plan.sub_queries.back() ? plan.sub_queries.back()->target() : qualified_name_t{});
         cursor_t_ptr error;
         // The statement's IF EXISTS turns "its target does not exist" — reported only through this — into an
         // empty success; every other refusal stays one.
@@ -1189,7 +1105,7 @@ namespace services::collection::executor {
                         }
                         break;
                     case drop_target_kind::type: {
-                        const std::string& type_name = drop_node->relname();
+                        const std::string& type_name = drop_node->target().collection.t;
                         const std::string default_path[] = {"public", "pg_catalog"};
                         std::span<const std::string> str_path(default_path);
                         if (auto err = services::dispatcher::check_type_exists(resource(),
@@ -1305,7 +1221,8 @@ namespace services::collection::executor {
                     break;
                 }
                 const auto* existing =
-                    view->replace() ? plan.catalog_resolves.table_md(view->dbname(), view->viewname()) : nullptr;
+                    view->replace() ? plan.catalog_resolves.table_md(view->target().database.t, view->viewname().t)
+                                    : nullptr;
                 if (existing != nullptr) {
                     view->set_replaced_oid(existing->table_oid);
                 }
@@ -1934,11 +1851,11 @@ namespace services::collection::executor {
 
             std::pmr::string msg{resource()};
             msg.append("ALTER TABLE: relation \"");
-            if (!alter_node->dbname().empty()) {
-                msg.append(alter_node->dbname().data(), alter_node->dbname().size());
+            if (!alter_node->target().database.t.empty()) {
+                msg.append(alter_node->target().database.t.data(), alter_node->target().database.t.size());
                 msg.push_back('.');
             }
-            msg.append(alter_node->relname().data(), alter_node->relname().size());
+            msg.append(alter_node->target().collection.t.data(), alter_node->target().collection.t.size());
             msg.append("\" does not exist");
             co_return execute_result_t{
                 refuse_missing_target(core::error_t{core::error_code_t::table_not_exists, std::move(msg)})};
@@ -2275,10 +2192,10 @@ namespace services::collection::executor {
 
     executor_t::unique_future<bool>
     executor_t::unregister_udf(components::session::session_id_t session,
-                               std::string name,
+                               core::function_name_t name,
                                std::pmr::vector<components::types::complex_logical_type> inputs) {
-        trace(log_, "executor::unregister_udf, session: {}, {}", session.data(), name);
-        co_return function_registry_.remove_function_by_signature(name, inputs);
+        trace(log_, "executor::unregister_udf, session: {}, {}", session.data(), name.t);
+        co_return function_registry_.remove_function_by_signature(name.t, inputs);
     }
 
     executor_t::unique_future<bool> executor_t::unregister_udf_uid(components::session::session_id_t session,

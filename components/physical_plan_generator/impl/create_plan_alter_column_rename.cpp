@@ -12,8 +12,8 @@ namespace services::planner::impl {
                                                                                               context.log.clone(),
                                                                                               n->table_oid(),
                                                                                               n->attoid(),
-                                                                                              n->old_name(),
-                                                                                              n->new_name()));
+                                                                                              n->old_name().t,
+                                                                                              n->new_name().t));
     }
 
 } // namespace services::planner::impl

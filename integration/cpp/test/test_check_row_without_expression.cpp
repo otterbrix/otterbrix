@@ -52,14 +52,13 @@ namespace {
                                                                              std::move(cols),
                                                                              {},
                                                                              false);
-        static_cast<components::logical_plan::node_create_collection_t*>(created.get())->set_dbname(db);
+        created->set_target(qualified_name_t{core::dbname_t{db}, core::relname_t{rel}});
 
-        auto cstr =
-            components::logical_plan::make_node_create_constraint(resource,
-                                                                  db,
-                                                                  rel,
-                                                                  core::constraint_name_t{con_name},
-                                                                  components::logical_plan::constraint_kind::check);
+        auto cstr = components::logical_plan::make_node_create_constraint(
+            resource,
+            qualified_name_t{core::dbname_t{db}, core::relname_t{rel}},
+            core::constraint_name_t{con_name},
+            components::logical_plan::constraint_kind::check);
         cstr->set_inline_with_table(true);
         if (!expr.empty()) {
             cstr->set_check_expression_sql(expr);

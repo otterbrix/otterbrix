@@ -396,24 +396,24 @@ namespace components::sql::transform {
         // Moved onto execution_plan_t::if_exists_subcommands.
         std::vector<std::size_t> if_exists_subcommands_;
 
-        template<class Node>
-        std::string set_target(Node& node, const qualified_name_t& written) {
-            const logical_plan::node_t& base = node;
-            std::string dbname = database_for(written, policy_of(base));
-            node.set_dbname(dbname);
-            if constexpr (requires { node.set_relname(written.collection.t); }) {
-                node.set_relname(written.collection.t);
+        // A slot of `written` the node does not keep is recorded as an external target, which enrich refuses.
+        std::string set_target(logical_plan::node_t& node, const qualified_name_t& written, target_slots slots) {
+            qualified_name_t target{core::dbname_t{database_for(written, policy_of(node))}, core::relname_t{}};
+            if (slots != target_slots::database) {
+                target.collection = written.collection;
             }
-            constexpr bool keeps_schema = requires { node.set_schema(written.schema.t); };
-            if constexpr (keeps_schema) {
-                node.set_schema(written.schema.t);
+            const bool keeps_schema = slots == target_slots::relation_with_schema;
+            if (keeps_schema) {
+                target.schema = written.schema;
             }
             const bool leads_elsewhere = !written.unique_identifier.t.empty() ||
                                          (!keeps_schema && !written.schema.t.empty()) ||
-                                         (!written.database.t.empty() && written.database.t != dbname);
+                                         (!written.database.t.empty() && written.database != target.database);
             if (leads_elsewhere) {
-                catalog_resolves_.external_targets.push_back(logical_plan::external_target_t{written, base.type()});
+                catalog_resolves_.external_targets.push_back(logical_plan::external_target_t{written, node.type()});
             }
+            std::string dbname = target.database.t;
+            node.set_target(std::move(target));
             return dbname;
         }
 

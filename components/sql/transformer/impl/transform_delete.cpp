@@ -21,13 +21,12 @@ namespace components::sql::transform {
             auto del = logical_plan::make_node_delete(
                 resource_,
                 logical_plan::make_node_match(resource_,
-                                              qn.database,
-                                              qn.collection,
+                                              qualified_name_t{qn.database, qn.collection},
                                               make_compare_expression(resource_, compare_type::all_true)),
                 del_limit);
             // The target identity stays ON the node: enrich binds it to a resolved
             // entry by name and stamps table_oid() + table_metadata() from there.
-            set_target(*del, qn);
+            set_target(*del, qn, target_slots::relation_with_schema);
             if (node.returningList) {
                 name_collection_t rnames;
                 rnames.left_name = qn;
@@ -70,11 +69,13 @@ namespace components::sql::transform {
                         build_dml_limit(node.limitCount, names.left_name.database, names.left_name.collection, plan));
         auto del = logical_plan::make_node_delete(
             resource_,
-            logical_plan::make_node_match(resource_, names.left_name.database, names.left_name.collection, where_expr),
+            logical_plan::make_node_match(resource_,
+                                          qualified_name_t{names.left_name.database, names.left_name.collection},
+                                          where_expr),
             del_limit);
         // The target identity stays ON the node: enrich binds it to a resolved
         // entry by name and stamps table_oid() + table_metadata() from there.
-        set_target(*del, names.left_name);
+        set_target(*del, names.left_name, target_slots::relation_with_schema);
         // The USING source is a child sub-plan (the RIGHT side of the delete join);
         // its scans self-resolve by name, so no table_oid_from splice is needed.
         if (source_child) {

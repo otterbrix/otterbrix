@@ -121,7 +121,9 @@ namespace services::planner::impl {
         // anyway builds a sink with no table behind it, which the streaming executor
         // admits as a sourceless sink — a DELETE that removes nothing and reports SUCCESS.
         if (!context.has_table_oid(table_oid)) {
-            return unresolved_table_refusal(context.resource, node_delete->dbname(), node_delete->relname());
+            return unresolved_table_refusal(context.resource,
+                                            node_delete->target().database.t,
+                                            node_delete->target().collection.t);
         }
         if (!node_source) {
             auto plan = boost::intrusive_ptr(new components::operators::operator_delete(context.resource,

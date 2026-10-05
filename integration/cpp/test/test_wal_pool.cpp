@@ -57,17 +57,17 @@ static const core::relname_t collection_name_2{"testcollection2"};
 #define CHECK_FIND_WAL(DB, COLL, KEY, COMPARE, VALUE, COUNT)                                                           \
     do {                                                                                                               \
         auto session = otterbrix::session_id_t();                                                                      \
-        auto plan = components::logical_plan::make_node_aggregate(dispatcher->resource(),                              \
-                                                                  core::dbname_t{DB},                                  \
-                                                                  core::relname_t{COLL});                              \
+        auto plan = components::logical_plan::make_node_aggregate(                                                     \
+            dispatcher->resource(),                                                                                    \
+            qualified_name_t{core::dbname_t{DB}, core::relname_t{COLL}});                                              \
         auto expr = components::expressions::make_compare_expression(dispatcher->resource(),                           \
                                                                      COMPARE,                                          \
                                                                      key{dispatcher->resource(), KEY, side_t::left},   \
                                                                      id_par{1});                                       \
-        plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(),                           \
-                                                                     core::dbname_t{DB},                               \
-                                                                     core::relname_t{COLL},                            \
-                                                                     std::move(expr)));                                \
+        plan->append_child(                                                                                            \
+            components::logical_plan::make_node_match(dispatcher->resource(),                                          \
+                                                      qualified_name_t{core::dbname_t{DB}, core::relname_t{COLL}},     \
+                                                      std::move(expr)));                                               \
         auto params = components::logical_plan::make_parameter_node(dispatcher->resource());                           \
         params->add_parameter(id_par{1}, VALUE);                                                                       \
         auto c = dispatcher->execute_plan(                                                                             \

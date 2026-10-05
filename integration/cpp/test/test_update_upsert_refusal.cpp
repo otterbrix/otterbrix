@@ -40,8 +40,7 @@ TEST_CASE("integration::cpp::update_upsert::an_upsert_plan_is_refused_not_quietl
     auto session = otterbrix::session_id_t();
     auto match = logical_plan::make_node_match(
         dispatcher->resource(),
-        core::dbname_t{"upsdb"},
-        core::relname_t{"t"},
+        qualified_name_t{core::dbname_t{"upsdb"}, core::relname_t{"t"}},
         expressions::make_compare_expression(dispatcher->resource(),
                                              compare_type::eq,
                                              key{dispatcher->resource(), "id", side_t::left},
@@ -56,8 +55,7 @@ TEST_CASE("integration::cpp::update_upsert::an_upsert_plan_is_refused_not_quietl
         logical_plan::make_node_limit(dispatcher->resource(), {}, {}, logical_plan::limit_t::unlimit()),
         {update_expr},
         /*upsert=*/true);
-    upd->set_dbname("upsdb");
-    upd->set_relname("t");
+    upd->set_target(qualified_name_t{core::dbname_t{"upsdb"}, core::relname_t{"t"}});
 
     auto params = logical_plan::make_parameter_node(dispatcher->resource());
     params->add_parameter(id_par{1}, types::logical_value_t(dispatcher->resource(), int64_t(999)));

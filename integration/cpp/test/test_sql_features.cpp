@@ -671,17 +671,18 @@ TEST_CASE("integration::cpp::test_sql_features::regex_invalid_pattern_disk_error
     {
         auto* resource = dispatcher->resource();
         auto session = otterbrix::session_id_t();
-        auto plan =
-            components::logical_plan::make_node_aggregate(resource, core::dbname_t{"regexdb"}, core::relname_t{"t"});
+        auto plan = components::logical_plan::make_node_aggregate(
+            resource,
+            qualified_name_t{core::dbname_t{"regexdb"}, core::relname_t{"t"}});
         auto expr = components::expressions::make_compare_expression(
             resource,
             components::expressions::compare_type::regex,
             components::expressions::key_t{resource, "s", components::expressions::side_t::left},
             core::parameter_id_t{1});
-        plan->append_child(components::logical_plan::make_node_match(resource,
-                                                                     core::dbname_t{"regexdb"},
-                                                                     core::relname_t{"t"},
-                                                                     std::move(expr)));
+        plan->append_child(
+            components::logical_plan::make_node_match(resource,
+                                                      qualified_name_t{core::dbname_t{"regexdb"}, core::relname_t{"t"}},
+                                                      std::move(expr)));
         auto params = components::logical_plan::make_parameter_node(resource);
         params->add_parameter(core::parameter_id_t{1}, components::types::logical_value_t(resource, "(a)\\1"));
         auto cur =

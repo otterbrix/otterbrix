@@ -6,7 +6,7 @@ namespace components::logical_plan {
 
     node_create_matview_t::node_create_matview_t(std::pmr::memory_resource* resource, core::matviewname_t matviewname)
         : node_t(resource, node_type::create_matview_t)
-        , matviewname_(std::move(static_cast<std::string&>(matviewname))) {}
+        , matviewname_(std::move(matviewname)) {}
 
     hash_t node_create_matview_t::hash_impl() const { return 0; }
 

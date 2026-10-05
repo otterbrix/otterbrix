@@ -291,7 +291,7 @@ namespace components::sql::transform {
         if_exists_ = node.missing_ok;
         // The altered table's identity stays ON the node: enrich binds it to a
         // resolved entry by name and stamps table_oid() + relkind from there.
-        const std::string db_for_resolve = set_target(*n, qn);
+        const std::string db_for_resolve = set_target(*n, qn, target_slots::relation);
         register_catalog_resolve_table(resource_, &catalog_resolves_, db_for_resolve, rel_for_resolve);
         return n;
     }
@@ -344,7 +344,7 @@ namespace components::sql::transform {
                 if (node.relkind == OBJECT_TYPE) {
                     alter->set_relkind(components::catalog::relkind::composite_type);
                 }
-                target_db = set_target(*alter, qn);
+                target_db = set_target(*alter, qn, target_slots::relation);
             }
             register_catalog_resolve_table(resource_, &catalog_resolves_, target_db, rel);
             return n;
@@ -443,13 +443,12 @@ namespace components::sql::transform {
                             ref_db = db;
                         }
                         std::string ref_rel = constr->pktable->relname ? constr->pktable->relname : "";
-                        auto fk_node =
-                            logical_plan::make_node_create_constraint(resource_,
-                                                                      db,
-                                                                      rel,
-                                                                      core::constraint_name_t{std::move(con_name)},
-                                                                      logical_plan::constraint_kind::foreign_key,
-                                                                      ref_db);
+                        auto fk_node = logical_plan::make_node_create_constraint(
+                            resource_,
+                            qualified_name_t{qn.database, qn.collection},
+                            core::constraint_name_t{std::move(con_name)},
+                            logical_plan::constraint_kind::foreign_key,
+                            qualified_name_t{core::dbname_t{ref_db}, core::relname_t{ref_rel}});
                         if (constr->fk_attrs) {
                             std::vector<std::string> fk_cols;
                             fk_cols.reserve(constr->fk_attrs->lst.size());
@@ -476,7 +475,7 @@ namespace components::sql::transform {
                                                                                                                 : 'a');
                         // FK requires BOTH the constrained table and the
                         // referenced table to be resolved at Pass 1 time.
-                        const std::string fk_ref_db = fk_node->ref_dbname();
+                        const std::string fk_ref_db = fk_node->ref().database.t;
                         std::string effective_ref_db;
                         std::vector<std::pair<std::string, std::string>> targets;
                         targets.emplace_back(db, rel);
@@ -484,9 +483,6 @@ namespace components::sql::transform {
                             effective_ref_db = fk_ref_db.empty() ? db : fk_ref_db;
                             targets.emplace_back(effective_ref_db, ref_rel);
                         }
-                        // Both identities stay ON the node — enrich looks each up by
-                        // name, so neither depends on registration order.
-                        fk_node->set_ref_relname(ref_rel);
                         // Omitted referenced column list binds to the parent's PRIMARY KEY;
                         // ask for that table's constraint gather too (enrich reads pk_columns
                         // off the resolved entry).
@@ -534,8 +530,7 @@ namespace components::sql::transform {
                         std::string con_name = constr->conname ? constr->conname : "";
                         auto check_node =
                             logical_plan::make_node_create_constraint(resource_,
-                                                                      db,
-                                                                      rel,
+                                                                      qualified_name_t{qn.database, qn.collection},
                                                                       core::constraint_name_t{std::move(con_name)},
                                                                       logical_plan::constraint_kind::check);
                         check_node->set_check_expression(std::move(expr));
@@ -554,8 +549,7 @@ namespace components::sql::transform {
                                               : logical_plan::constraint_kind::unique;
                         auto uq_node =
                             logical_plan::make_node_create_constraint(resource_,
-                                                                      db,
-                                                                      rel,
+                                                                      qualified_name_t{qn.database, qn.collection},
                                                                       core::constraint_name_t{std::move(con_name)},
                                                                       kind);
                         if (constr->keys) {

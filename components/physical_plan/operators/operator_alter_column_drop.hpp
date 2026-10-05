@@ -1,5 +1,6 @@
 #pragma once
 
+#include <components/base/collection_full_name.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/results/ddl_result.hpp>
 #include <components/physical_plan/operators/operator.hpp>
@@ -16,7 +17,8 @@ namespace components::operators {
                                      log_t log,
                                      components::catalog::oid_t table_oid,
                                      std::string column_name,
-                                     std::string relation_label,
+                                     qualified_name_t relation,
+                                     char relkind,
                                      components::catalog::oid_t attoid,
                                      components::catalog::drop_behavior_t behavior);
 
@@ -30,7 +32,8 @@ namespace components::operators {
         // No namespace_oid_: the column resolves by (attrelid=table_oid_, attname), and table_oid is already
         // unique across namespaces, so a stored namespace oid would be dead state nobody reads.
         std::string column_name_;
-        std::string relation_label_;
+        qualified_name_t relation_;
+        char relkind_;
         components::catalog::oid_t attoid_;
         components::catalog::drop_behavior_t behavior_;
     };

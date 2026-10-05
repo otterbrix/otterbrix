@@ -156,7 +156,7 @@ namespace components::sql::transform {
                                                            max_value);
         // The target namespace stays ON the node so enrich's create_sequence_t case
         // can bind it by name and stamp ns_oid.
-        const std::string db_for_resolve = set_target(*seq, qn);
+        const std::string db_for_resolve = set_target(*seq, qn, target_slots::database);
         register_catalog_resolve_namespace(resource_, &catalog_resolves_, db_for_resolve);
         return seq;
     }

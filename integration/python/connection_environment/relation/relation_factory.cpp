@@ -257,7 +257,7 @@ namespace otterbrix {
         }
 
         auto* resource = space->dispatcher()->resource();
-        auto aggregator = make_node_aggregate(resource, core::dbname_t{"tmp"}, core::relname_t{name});
+        auto aggregator = make_node_aggregate(resource, qualified_name_t{core::dbname_t{"tmp"}, core::relname_t{name}});
         aggregator->append_child(from);
         if (group) {
             aggregator->append_child(group);
@@ -283,7 +283,7 @@ namespace otterbrix {
         node_match_ptr match_node;
         if (condition.is_expression()) {
             if (condition.expression()->group() == expressions::expression_group::compare) {
-                match_node = make_node_match(resource, core::dbname_t{}, core::relname_t{}, condition.expression());
+                match_node = make_node_match(resource, qualified_name_t{}, condition.expression());
             } else {
                 throw std::runtime_error("Implementation Error. Undefined expression for filter");
             }

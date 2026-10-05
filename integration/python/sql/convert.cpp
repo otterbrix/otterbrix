@@ -256,7 +256,10 @@ components::logical_plan::node_group_ptr parse_group(std::pmr::memory_resource* 
         expressions.emplace_back(
             parse_group_expr(resource, py::str(it).cast<std::string>(), condition[it], aggregate, params));
     }
-    return components::logical_plan::make_node_group(resource, aggregate->dbname(), aggregate->relname(), expressions);
+    return components::logical_plan::make_node_group(resource,
+                                                     aggregate->target().database,
+                                                     aggregate->target().collection,
+                                                     expressions);
 }
 
 components::logical_plan::node_sort_ptr parse_sort(std::pmr::memory_resource* resource, const py::handle& condition) {
@@ -312,8 +315,7 @@ auto to_statement(std::pmr::memory_resource* resource,
                 case operator_type::match: {
                     aggregate->append_child(components::logical_plan::make_node_match(
                         resource,
-                        aggregate->dbname(),
-                        aggregate->relname(),
+                        qualified_name_t{aggregate->target().database, aggregate->target().collection},
                         parse_find_condition_(resource, obj[key], aggregate, params)));
                     break;
                 }

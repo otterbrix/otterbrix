@@ -9,12 +9,7 @@ namespace components::logical_plan {
     public:
         explicit node_having_t(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname);
 
-        const std::string& relname() const noexcept { return relname_; }
-        const std::string& dbname() const noexcept { return dbname_; }
-
     private:
-        std::string dbname_;
-        std::string relname_;
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
     };

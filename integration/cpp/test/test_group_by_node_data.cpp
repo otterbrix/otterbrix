@@ -96,7 +96,7 @@ namespace {
             walk.pop_front();
             for (auto& child : n->children()) {
                 if (child && child->type() == logical_plan::node_type::aggregate_t) {
-                    const auto& rel = static_cast<const logical_plan::node_aggregate_t&>(*child).relname().t;
+                    const auto& rel = static_cast<const logical_plan::node_aggregate_t&>(*child).target().collection.t;
                     if (rel == "campaigns") {
                         child =
                             logical_plan::make_node_raw_data(resource,

@@ -325,96 +325,49 @@ namespace services::catalog_resolve {
 
         target_names_t target_names_of(const components::logical_plan::node_t* node) {
             using namespace components::logical_plan;
+            const auto& target = node->target();
+            target_names_t names{.dbname = target.database.t,
+                                 .relname = target.collection.t,
+                                 .schema = catalog_schema(target)};
             switch (node->type()) {
-                case node_type::aggregate_t: {
-                    const auto* d = static_cast<const node_aggregate_t*>(node);
-                    return {.dbname = d->dbname().t,
-                            .relname = d->relname().t,
-                            .schema = d->uid().t.empty() ? std::string_view{d->schema()} : std::string_view{}};
-                }
-                case node_type::match_t: {
-                    const auto* d = static_cast<const node_match_t*>(node);
-                    return {d->dbname(), d->relname(), {}};
-                }
-                case node_type::group_t: {
-                    const auto* d = static_cast<const node_group_t*>(node);
-                    return {d->dbname(), d->relname(), {}};
-                }
-                case node_type::sort_t: {
-                    const auto* d = static_cast<const node_sort_t*>(node);
-                    return {d->dbname(), d->relname(), {}};
-                }
-                case node_type::join_t: {
-                    const auto* d = static_cast<const node_join_t*>(node);
-                    return {d->dbname(), d->relname(), {}};
-                }
-                case node_type::limit_t: {
-                    const auto* d = static_cast<const node_limit_t*>(node);
-                    return {d->dbname(), d->relname(), {}};
-                }
-                case node_type::having_t: {
-                    const auto* d = static_cast<const node_having_t*>(node);
-                    return {d->dbname(), d->relname(), {}};
-                }
-                case node_type::insert_t: {
-                    const auto* d = static_cast<const node_insert_t*>(node);
-                    return {.dbname = d->dbname(), .relname = d->relname(), .schema = d->schema()};
-                }
-                case node_type::update_t: {
-                    const auto* d = static_cast<const node_update_t*>(node);
-                    return {.dbname = d->dbname(), .relname = d->relname(), .schema = d->schema()};
-                }
-                case node_type::delete_t: {
-                    const auto* d = static_cast<const node_delete_t*>(node);
-                    return {.dbname = d->dbname(), .relname = d->relname(), .schema = d->schema()};
-                }
                 case node_type::drop_t: {
                     const auto* d = static_cast<const node_drop_t*>(node);
                     if (d->kind() == drop_target_kind::type) {
-                        return {d->dbname(), {}, {}, {}, d->relname()};
+                        names.type_name = names.relname;
+                        names.relname = {};
+                    } else {
+                        names.secondary_relname = d->index_name().t;
                     }
-                    return {d->dbname(), d->relname(), d->index_name()};
+                    return names;
                 }
-                case node_type::create_database_t: {
-                    const auto* d = static_cast<const node_create_database_t*>(node);
-                    return {d->dbname(), {}, {}};
-                }
-                case node_type::create_collection_t: {
-                    const auto* d = static_cast<const node_create_collection_t*>(node);
-                    return {d->dbname(), d->relname(), {}};
-                }
-                case node_type::create_sequence_t: {
-                    const auto* d = static_cast<const node_create_sequence_t*>(node);
-                    return {d->dbname(), {}, {}};
-                }
-                case node_type::create_view_t: {
-                    const auto* d = static_cast<const node_create_view_t*>(node);
-                    return {d->dbname(), {}, {}};
-                }
-                case node_type::create_macro_t: {
-                    const auto* d = static_cast<const node_create_macro_t*>(node);
-                    return {d->dbname(), {}, {}};
-                }
-                case node_type::create_type_t: {
-                    const auto* d = static_cast<const node_create_type_t*>(node);
-                    return {d->dbname(), {}, {}};
-                }
-                case node_type::create_index_t: {
-                    const auto* d = static_cast<const node_create_index_t*>(node);
-                    return {d->dbname(), d->relname(), d->name()};
-                }
-                case node_type::alter_table_t: {
-                    const auto* d = static_cast<const node_alter_table_t*>(node);
-                    return {d->dbname(), d->relname(), {}};
-                }
+                case node_type::create_index_t:
+                    names.secondary_relname = static_cast<const node_create_index_t*>(node)->indexname().t;
+                    return names;
                 case node_type::create_constraint_t: {
-                    const auto* d = static_cast<const node_create_constraint_t*>(node);
-                    return {d->dbname(), d->relname(), d->ref_relname(), {}, {}, d->ref_dbname()};
+                    const auto& ref = static_cast<const node_create_constraint_t*>(node)->ref();
+                    names.secondary_relname = ref.collection.t;
+                    names.secondary_dbname = ref.database.t;
+                    return names;
                 }
-                case node_type::refresh_matview_t: {
-                    const auto* d = static_cast<const node_refresh_matview_t*>(node);
-                    return {d->dbname(), d->matviewname(), {}};
-                }
+                case node_type::aggregate_t:
+                case node_type::match_t:
+                case node_type::group_t:
+                case node_type::sort_t:
+                case node_type::join_t:
+                case node_type::limit_t:
+                case node_type::having_t:
+                case node_type::insert_t:
+                case node_type::update_t:
+                case node_type::delete_t:
+                case node_type::create_database_t:
+                case node_type::create_collection_t:
+                case node_type::create_sequence_t:
+                case node_type::create_view_t:
+                case node_type::create_macro_t:
+                case node_type::create_type_t:
+                case node_type::alter_table_t:
+                case node_type::refresh_matview_t:
+                    return names;
                 default:
                     return {};
             }
@@ -895,7 +848,7 @@ namespace services::catalog_resolve {
         for (const auto& entry : resolves.tables->entries()) {
             if (entry.pinned_oid != components::catalog::INVALID_OID && !entry.table_md.has_value()) {
                 return components::planner::view_stale_error(resource,
-                                                             entry.bound_by,
+                                                             entry.bound_by.t,
                                                              "the relation its body was bound to (\"" + entry.relname +
                                                                  "\", oid " + std::to_string(entry.pinned_oid) +
                                                                  ") no longer exists");
@@ -911,7 +864,7 @@ namespace services::catalog_resolve {
         for (const auto& entry : resolves.tables->entries()) {
             if (entry.host_bound && !entry.superseded) {
                 return components::planner::view_stale_error(resource,
-                                                             entry.bound_by,
+                                                             entry.bound_by.t,
                                                              "the host no longer resolves \"" + entry.relname +
                                                                  "\" named by its body");
             }
@@ -998,9 +951,9 @@ namespace services::dispatcher { namespace {
         using components::logical_plan::constraint_kind;
         auto describe_constraint = [&]() {
             std::string out;
-            if (!node->name().empty()) {
+            if (!node->name().t.empty()) {
                 out = "constraint \"";
-                out += node->name();
+                out += node->name().t;
                 out += "\"";
                 return out;
             }
@@ -1020,7 +973,7 @@ namespace services::dispatcher { namespace {
         if (local == nullptr) {
             std::string msg = describe_constraint();
             msg += ": table \"";
-            msg += node->relname();
+            msg += node->target().collection.t;
             msg += "\" carries no resolved metadata";
             return core::error_t(core::error_code_t::invalid_constraint, std::pmr::string{std::move(msg), resource});
         }
@@ -1059,11 +1012,7 @@ namespace services::dispatcher { namespace {
         if (referenced == nullptr) {
             std::string msg = describe_constraint();
             msg += ": referenced relation \"";
-            if (!node->ref_dbname().empty()) {
-                msg += node->ref_dbname();
-                msg += ".";
-            }
-            msg += node->ref_relname();
+            msg += node->ref().to_string();
             msg += "\" does not exist";
             return core::error_t(core::error_code_t::invalid_constraint, std::pmr::string{std::move(msg), resource});
         }
@@ -1277,7 +1226,7 @@ namespace services::dispatcher { namespace {
                                          resource});
                 }
                 constraint_table_view_t local;
-                local.name = node->relname();
+                local.name = node->target().collection.t;
                 local.attoids_minted = false;
                 local.columns.reserve(node->column_definitions().size());
                 for (const auto& col : node->column_definitions()) {
@@ -1424,7 +1373,7 @@ namespace services::dispatcher { namespace {
                             msg.append("constraint \"");
                             msg.append(sub.constraint_name.data(), sub.constraint_name.size());
                             msg.append("\" of relation \"");
-                            msg.append(node->relname().data(), node->relname().size());
+                            msg.append(node->target().collection.t);
                             msg.append("\" does not exist");
                             co_return core::error_t(core::error_code_t::invalid_constraint, std::move(msg));
                         }

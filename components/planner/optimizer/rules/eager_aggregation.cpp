@@ -237,7 +237,8 @@ namespace components::planner::optimizer {
             }
 
             // Partial output layout: [group keys, join key (if new), aggregates].
-            auto partial_group = lp::make_node_group(resource, pushed_agg->dbname(), pushed_agg->relname());
+            auto partial_group =
+                lp::make_node_group(resource, pushed_agg->target().database, pushed_agg->target().collection);
             std::vector<size_t> key_partial_pos(keys.size());
             size_t next_pos = 0;
             bool join_key_covered = false;

@@ -242,7 +242,7 @@ TEST_CASE("integration::cpp::star_join_e2e::optimized_plan_all_hash_no_cross") {
     p_or->append_child(eq_key_param(res, "p_mfgr", p_m1));
     p_or->append_child(eq_key_param(res, "p_mfgr", p_m2));
     where->append_child(p_or);
-    auto match = make_node_match(res, core::dbname_t{}, core::relname_t{}, where);
+    auto match = make_node_match(res, qualified_name_t{}, where);
 
     std::vector<expression_ptr> group_exprs;
     group_exprs.emplace_back(make_scalar_expression(res, scalar_type::group_field, bare_key(res, "d_year")));
@@ -268,7 +268,7 @@ TEST_CASE("integration::cpp::star_join_e2e::optimized_plan_all_hash_no_cross") {
     select->append_expression(make_scalar_expression(res, scalar_type::get_field, bare_key(res, "c_nation")));
     select->append_expression(make_scalar_expression(res, scalar_type::get_field, bare_key(res, "profit")));
 
-    auto agg = make_node_aggregate(res, core::dbname_t{}, core::relname_t{});
+    auto agg = make_node_aggregate(res, qualified_name_t{});
     agg->append_child(source);
     agg->append_child(match);
     agg->append_child(group);

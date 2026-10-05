@@ -36,7 +36,7 @@ namespace components::sql::transform {
         auto type_copy = type;
         auto created = logical_plan::make_node_create_type(resource_, std::move(type_copy));
         // A type always lands in "public"; a name that spells uid or schema goes to enrich to refuse.
-        set_target(*created, written);
+        set_target(*created, written, target_slots::database);
         register_create_type_resolves(resource_, &catalog_resolves_, type);
         return created;
     }
@@ -57,7 +57,7 @@ namespace components::sql::transform {
         auto type = types::complex_logical_type::create_enum(written.collection.t, std::move(values));
         auto type_copy = type;
         auto created = logical_plan::make_node_create_type(resource_, std::move(type_copy));
-        set_target(*created, written);
+        set_target(*created, written, target_slots::database);
         register_create_type_resolves(resource_, &catalog_resolves_, type);
         return created;
     }

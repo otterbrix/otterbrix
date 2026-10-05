@@ -20,24 +20,17 @@ namespace components::logical_plan {
 
     struct resolved_table_metadata_t;
 
-    // The polymorphic free helper `cfn_of(node_t*)` was removed.
-    // Generic walkers that operated on `node_t*` and need the cfn either
-    // (a) inline a per-call type switch when truly needed (see
-    // validate_logical_plan.cpp::local_node_cfn for the canonical example), or
-    // (b) prefer `node->table_oid()` for routing in resolved-stage code.
-
     class node_t : public boost::intrusive_ref_counter<node_t> {
     public:
         node_t(std::pmr::memory_resource* resource, node_type type);
+        node_t(std::pmr::memory_resource* resource, node_type type, qualified_name_t target);
         virtual ~node_t() = default;
 
         node_type type() const;
-        // Each derived node that needs a user-typed name at the parser/SQL
-        // boundary owns a role-named string field (relname_, dbname_,
-        // viewname_, ...) and exposes it via role-named accessors (relname(),
-        // dbname(), ...). For routing in resolved-stage code (planner,
-        // dispatcher, executor, operators after enrich), always use
-        // `table_oid()` from the base class.
+        // As written; empty when the node names no table. Resolved-stage code routes by table_oid().
+        const qualified_name_t& target() const noexcept { return target_; }
+        void set_target(qualified_name_t target) { target_ = std::move(target); }
+
         const std::string& result_alias() const;
         const std::pmr::vector<node_ptr>& children() const;
         std::pmr::vector<node_ptr>& children();
@@ -102,6 +95,7 @@ namespace components::logical_plan {
 
     protected:
         const node_type type_;
+        qualified_name_t target_;
         std::string result_alias_;
         std::pmr::vector<node_ptr> children_;
         std::pmr::vector<expression_ptr> expressions_;

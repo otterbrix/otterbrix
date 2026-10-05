@@ -33,7 +33,7 @@ namespace {
     }
 
     node_aggregate_ptr ascan(std::pmr::memory_resource* r, std::initializer_list<const char*> cols) {
-        auto agg = make_node_aggregate(r, adb(), arel());
+        auto agg = make_node_aggregate(r, qualified_name_t{adb(), arel()});
         std::pmr::vector<components::types::complex_logical_type> out(r);
         for (const char* c : cols) {
             out.emplace_back(components::types::logical_type::BIGINT, c);
@@ -63,9 +63,9 @@ namespace {
                 ? make_compare_expression(plan_arena, compare_type::eq, akey(plan_arena, "k", 1, side_t::left), p5)
                 : make_compare_expression(plan_arena, compare_type::eq, akey(plan_arena, "a", 0, side_t::left), p5);
 
-        auto outer = make_node_aggregate(plan_arena, adb(), arel());
+        auto outer = make_node_aggregate(plan_arena, qualified_name_t{adb(), arel()});
         outer->append_child(join);
-        outer->append_child(make_node_match(plan_arena, adb(), arel(), where));
+        outer->append_child(make_node_match(plan_arena, qualified_name_t{adb(), arel()}, where));
 
         size_t measured = 0;
         {

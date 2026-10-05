@@ -163,8 +163,7 @@ namespace {
         auto* resource = d->resource();
         auto node =
             components::logical_plan::make_node_drop(resource, components::logical_plan::drop_target_kind::collection);
-        node->set_dbname(database);
-        node->set_relname(relname);
+        node->set_target(qualified_name_t{core::dbname_t{database}, core::relname_t{relname}});
         node->set_behavior(components::catalog::drop_behavior_t::restrict_);
         components::logical_plan::execution_plan_t plan{resource,
                                                         node,
@@ -186,8 +185,7 @@ namespace {
         std::vector<components::logical_plan::alter_table_subcommand_t> subs;
         subs.push_back(std::move(sub));
         auto node = components::logical_plan::make_node_alter_table_multi(resource, std::move(subs));
-        node->set_dbname(database);
-        node->set_relname(relname);
+        node->set_target(qualified_name_t{core::dbname_t{database}, core::relname_t{relname}});
         components::logical_plan::execution_plan_t plan{resource,
                                                         components::logical_plan::node_ptr{node},
                                                         components::logical_plan::make_parameter_node(resource)};

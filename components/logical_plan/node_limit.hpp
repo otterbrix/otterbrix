@@ -40,12 +40,7 @@ namespace components::logical_plan {
         const limit_t& limit() const;
         void set_limit(const limit_t& limit) { limit_ = limit; }
 
-        const std::string& relname() const noexcept { return relname_; }
-        const std::string& dbname() const noexcept { return dbname_; }
-
     private:
-        std::string dbname_;
-        std::string relname_;
         limit_t limit_;
 
         hash_t hash_impl() const override;

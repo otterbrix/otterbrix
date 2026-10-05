@@ -138,7 +138,7 @@ namespace components::sql::transform {
                     break;
                 }
                 auto drop_node = std::move(dropped.value());
-                static_cast<logical_plan::node_drop_t*>(drop_node.get())->set_dbname(dbname);
+                drop_node->set_target(qualified_name_t{core::dbname_t{dbname}, core::relname_t{}});
                 register_catalog_resolve_namespace(resource_, &catalog_resolves_, dbname);
                 log_node = std::move(drop_node);
                 break;

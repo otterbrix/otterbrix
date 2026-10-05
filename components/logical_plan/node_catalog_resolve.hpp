@@ -102,7 +102,7 @@ namespace components::logical_plan {
         // A view body name the host resolved at CREATE VIEW: the catalog never answers it.
         bool host_bound{false};
         // The view whose body carries the pin, for the stale refusal.
-        std::string bound_by;
+        core::viewname_t bound_by;
 
         components::catalog::oid_t namespace_oid{components::catalog::INVALID_OID};
         components::catalog::oid_t database_oid{components::catalog::INVALID_OID};
@@ -123,6 +123,9 @@ namespace components::logical_plan {
 
         bool operator==(const resolve_entry_t& other) const noexcept;
     };
+
+    // The schema slot a written table name is looked up by: the uid form keeps its meaning database.name.
+    std::string_view catalog_schema(const qualified_name_t& written) noexcept;
 
     // One per resolve kind for the whole execution plan.
     class node_catalog_resolve_t final : public node_t {
@@ -180,6 +183,7 @@ namespace components::logical_plan {
         [[nodiscard]] const resolve_entry_t* table_entry(std::string_view dbname,
                                                          std::string_view schema,
                                                          std::string_view relname) const noexcept;
+        [[nodiscard]] const resolve_entry_t* table_entry(const qualified_name_t& written) const noexcept;
         [[nodiscard]] const resolve_entry_t* type_entry(std::string_view dbname,
                                                         std::string_view type_name) const noexcept;
 

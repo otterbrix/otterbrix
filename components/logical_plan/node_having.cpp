@@ -5,9 +5,7 @@
 namespace components::logical_plan {
 
     node_having_t::node_having_t(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname)
-        : node_t(resource, node_type::having_t)
-        , dbname_(std::move(static_cast<std::string&>(dbname)))
-        , relname_(std::move(static_cast<std::string&>(relname))) {}
+        : node_t(resource, node_type::having_t, qualified_name_t{std::move(dbname), std::move(relname)}) {}
 
     hash_t node_having_t::hash_impl() const { return 0; }
 

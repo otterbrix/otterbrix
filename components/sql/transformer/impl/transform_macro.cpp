@@ -154,7 +154,7 @@ namespace components::sql::transform {
                                                       core::macroname_t{qn.collection.t},
                                                       std::move(params),
                                                       core::body_sql_t{std::move(body_sql)});
-        const std::string db_for_resolve = set_target(*m, qn);
+        const std::string db_for_resolve = set_target(*m, qn, target_slots::database);
         register_catalog_resolve_namespace(resource_, &catalog_resolves_, db_for_resolve);
         return m;
     }

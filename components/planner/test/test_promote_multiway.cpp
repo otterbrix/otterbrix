@@ -123,9 +123,9 @@ TEST_CASE("optimizer::promote_cross_join::multiway_three_table") {
     where->append_child(make_cmp(res, compare_type::eq, "a_k", "b_k"));  // straddles the inner join
     where->append_child(make_cmp(res, compare_type::eq, "b_v", "c_k"));  // straddles the outer join
     where->append_child(make_cmp(res, compare_type::ne, "a_id", "b_v")); // residual (non-join filter)
-    auto match = make_node_match(res, core::dbname_t{}, core::relname_t{}, where);
+    auto match = make_node_match(res, qualified_name_t{}, where);
 
-    auto agg = make_node_aggregate(res, core::dbname_t{}, core::relname_t{});
+    auto agg = make_node_aggregate(res, qualified_name_t{});
     agg->append_child(outer_cross);
     agg->append_child(match);
 

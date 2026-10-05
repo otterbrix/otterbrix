@@ -2,7 +2,6 @@
 
 #include "node.hpp"
 #include "node_limit.hpp"
-#include <components/base/identifier_types.hpp>
 
 namespace components::logical_plan {
 
@@ -18,11 +17,11 @@ namespace components::logical_plan {
 
     class node_match_t final : public node_t {
     public:
-        explicit node_match_t(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname);
+        node_match_t(std::pmr::memory_resource* resource, qualified_name_t target);
 
-        const std::string& relname() const noexcept { return relname_; }
-        const std::string& dbname() const noexcept { return dbname_; }
-        match_source source() const noexcept { return relname_.empty() ? match_source::none : match_source::table; }
+        match_source source() const noexcept {
+            return target_.collection.t.empty() ? match_source::none : match_source::table;
+        }
 
         // Optimizer annotation set by the pushdown_limit rule: a pure COUNT read-cap
         // (offset always 0) capping this WHERE scan's POST-filter output at
@@ -35,8 +34,6 @@ namespace components::logical_plan {
         const limit_t& read_cap() const noexcept { return read_cap_; }
 
     private:
-        std::string dbname_;
-        std::string relname_;
         limit_t read_cap_{};
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
@@ -45,8 +42,7 @@ namespace components::logical_plan {
     using node_match_ptr = boost::intrusive_ptr<node_match_t>;
 
     node_match_ptr make_node_match(std::pmr::memory_resource* resource,
-                                   core::dbname_t dbname,
-                                   core::relname_t relname,
+                                   qualified_name_t target,
                                    const expressions::expression_ptr& match);
 
 } // namespace components::logical_plan

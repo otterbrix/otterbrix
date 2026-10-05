@@ -30,9 +30,7 @@ namespace components::logical_plan {
                              core::dbname_t dbname,
                              core::relname_t relname,
                              join_type type)
-        : node_t(resource, node_type::join_t)
-        , dbname_(std::move(static_cast<std::string&>(dbname)))
-        , relname_(std::move(static_cast<std::string&>(relname)))
+        : node_t(resource, node_type::join_t, qualified_name_t{std::move(dbname), std::move(relname)})
         , type_(type) {}
 
     join_type node_join_t::type() const { return type_; }

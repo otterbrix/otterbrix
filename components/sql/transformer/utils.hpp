@@ -104,6 +104,14 @@ namespace components::sql::transform {
         return core::error_t{core::error_code_t::sql_parse_error, std::move(msg)};
     }
 
+    // What a node keeps of the name it was written with.
+    enum class target_slots
+    {
+        database,
+        relation,
+        relation_with_schema
+    };
+
     enum class namespace_policy
     {
         as_written,     // DML, ALTER, DROP: the database as written

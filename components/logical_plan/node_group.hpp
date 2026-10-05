@@ -9,9 +9,6 @@ namespace components::logical_plan {
     public:
         explicit node_group_t(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname);
 
-        const std::string& relname() const noexcept { return relname_; }
-        const std::string& dbname() const noexcept { return dbname_; }
-
         // Optimizer annotation: this aggregate sub-plan targets a SINGLE owning
         // agent and every aggregate is fragment-mergeable, so the reduce can be
         // pushed to that agent instead of the coordinator. Stamped by the
@@ -43,8 +40,6 @@ namespace components::logical_plan {
         size_t visible_select_count{0};
 
     private:
-        std::string dbname_;
-        std::string relname_;
         // See set_pushdown()/pushdown() above. Default false = coordinator-side
         // reduce. Intentionally NOT folded into hash_impl().
         bool pushdown_{false};

@@ -352,24 +352,24 @@ namespace {
         }
         if (node->type() == logical_plan::node_type::aggregate_t) {
             const auto* agg = static_cast<const logical_plan::node_aggregate_t*>(node.get());
-            const auto& uid_s = static_cast<const std::string&>(agg->uid());
+            const auto& uid_s = agg->target().unique_identifier.t;
             if (!uid_s.empty()) {
                 auto it = externals.find(uid_s);
                 if (it != externals.end()) {
                     auto ext = make_extension(res, uid_s, it->second);
-                    ext->set_result_alias(agg->result_alias().empty() ? static_cast<const std::string&>(agg->relname())
-                                                                      : agg->result_alias());
+                    ext->set_result_alias(agg->result_alias().empty()
+                                              ? static_cast<const std::string&>(agg->target().collection)
+                                              : agg->result_alias());
                     if (node->children().empty()) {
                         node = ext;
                     } else {
                         // The extension replaces only the implicit scan: rebuild as an identity aggregate
                         // whose data child is the extension leaf, keeping the uid aggregate's own stages.
-                        auto wrapper = named_wrapper ? logical_plan::make_node_aggregate(res,
-                                                                                         core::dbname_t{kExtDb},
-                                                                                         core::relname_t{uid_s})
-                                                     : logical_plan::make_node_aggregate(res,
-                                                                                         core::dbname_t{},
-                                                                                         core::relname_t{});
+                        auto wrapper = named_wrapper
+                                           ? logical_plan::make_node_aggregate(
+                                                 res,
+                                                 qualified_name_t{core::dbname_t{kExtDb}, core::relname_t{uid_s}})
+                                           : logical_plan::make_node_aggregate(res, qualified_name_t{});
                         wrapper->set_result_alias(node->result_alias());
                         wrapper->append_child(ext);
                         for (auto& child : node->children()) {
@@ -497,8 +497,8 @@ namespace {
             return node;
         }
         const auto* agg = static_cast<const logical_plan::node_aggregate_t*>(node.get());
-        const auto& db = static_cast<const std::string&>(agg->dbname());
-        const auto& rel = static_cast<const std::string&>(agg->relname());
+        const auto& db = static_cast<const std::string&>(agg->target().database);
+        const auto& rel = static_cast<const std::string&>(agg->target().collection);
         auto it = host_state().externals.find(rel);
         if (db != kExtDb || it == host_state().externals.end()) {
             return node;

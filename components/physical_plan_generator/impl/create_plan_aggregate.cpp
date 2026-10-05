@@ -428,9 +428,10 @@ namespace services::planner::impl {
                         break;
                     case components::logical_plan::match_source::table:
                         if (!context.has_table_oid(node->table_oid())) {
-                            return unresolved_table_refusal(context.resource,
-                                                            static_cast<const std::string&>(agg_node->dbname()),
-                                                            static_cast<const std::string&>(agg_node->relname()));
+                            return unresolved_table_refusal(
+                                context.resource,
+                                static_cast<const std::string&>(agg_node->target().database),
+                                static_cast<const std::string&>(agg_node->target().collection));
                         }
                         break;
                 }

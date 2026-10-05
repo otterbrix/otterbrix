@@ -105,19 +105,18 @@ namespace components::sql::transform {
                                          resource_});
                 }
                 const std::string ref_db = tc.ref_database.empty() ? dbname : tc.ref_database;
-                auto cstr = logical_plan::make_node_create_constraint(resource_,
-                                                                      dbname,
-                                                                      qn.collection.t,
-                                                                      core::constraint_name_t{tc.name},
-                                                                      kind,
-                                                                      ref_db);
+                auto cstr = logical_plan::make_node_create_constraint(
+                    resource_,
+                    qualified_name_t{core::dbname_t{dbname}, qn.collection},
+                    core::constraint_name_t{tc.name},
+                    kind,
+                    qualified_name_t{core::dbname_t{ref_db}, core::relname_t{tc.ref_collection}});
                 cstr->set_inline_with_table(true);
                 cstr->set_local_col_names(tc.columns);
                 if (kind == logical_plan::constraint_kind::check) {
                     cstr->set_check_expression_sql(tc.check_expression);
                 }
                 if (kind == logical_plan::constraint_kind::foreign_key) {
-                    cstr->set_ref_relname(tc.ref_collection);
                     cstr->set_ref_col_names(tc.ref_columns);
                     cstr->set_match_type(tc.fk_matchtype);
                     cstr->set_del_action(tc.fk_del_action);
@@ -154,7 +153,7 @@ namespace components::sql::transform {
         }
         // The target namespace stays ON the node: enrich binds it to a resolved
         // namespace entry by name and stamps namespace_oid() from there.
-        register_catalog_resolve_namespace(resource_, &catalog_resolves_, set_target(*cn, qn));
+        register_catalog_resolve_namespace(resource_, &catalog_resolves_, set_target(*cn, qn, target_slots::relation));
         // Probe the "public" namespace by default (resolve_one_type's first hit).
         // pg_catalog builtins are not in udt_names since walk_user_type_refs only
         // emits STRUCT/ENUM/UNKNOWN; pg_catalog scalars resolve via resolve_builtin
@@ -211,7 +210,7 @@ namespace components::sql::transform {
         }
         auto wrap_one = [&](const qualified_name_t& written, logical_plan::node_ptr n) {
             auto* drop = static_cast<logical_plan::node_drop_t*>(n.get());
-            set_target(*drop, written);
+            set_target(*drop, written, target_slots::relation);
             if_exists_ = node.missing_ok;
             // One drop_behavior_of choke-point for all six DROP arms (bare = restrict_, PostgreSQL parity).
             drop->set_behavior(drop_behavior_of(node.behavior));
@@ -239,8 +238,8 @@ namespace components::sql::transform {
                                       const std::string& index_name,
                                       logical_plan::node_ptr n) {
                     auto* drop = static_cast<logical_plan::node_drop_t*>(n.get());
-                    set_target(*drop, written);
-                    drop->set_index_name(index_name);
+                    set_target(*drop, written, target_slots::relation);
+                    drop->set_index_name(core::indexname_t{index_name});
                     // Same wiring as wrap_one; rewrite_drop_index reads this when the index name
                     // doesn't resolve.
                     if_exists_ = node.missing_ok;
@@ -305,7 +304,7 @@ namespace components::sql::transform {
                 // The dropped type's name stays ON the node (in relname_, the
                 // node's single target-name slot) so enrich binds it to the
                 // resolved type entry and stamps type_oid from there.
-                const std::string type_db = set_target(*n, written);
+                const std::string type_db = set_target(*n, written, target_slots::relation);
                 // The one arm that does not build through wrap_one.
                 if_exists_ = node.missing_ok;
                 // Unlike DROP INDEX, this arm does reach the dynamic cascade

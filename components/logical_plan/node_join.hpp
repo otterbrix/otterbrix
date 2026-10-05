@@ -50,9 +50,6 @@ namespace components::logical_plan {
         // and switches algo() to hash. Called by rewrite_hash_joins.
         void set_equi_columns(std::size_t left, std::size_t right) noexcept;
 
-        const std::string& relname() const noexcept { return relname_; }
-        const std::string& dbname() const noexcept { return dbname_; }
-
         using correlation_t = std::pair<core::parameter_id_t, expressions::key_t>;
 
         bool is_lateral() const noexcept { return lateral_; }
@@ -63,8 +60,6 @@ namespace components::logical_plan {
         }
 
     private:
-        std::string dbname_;
-        std::string relname_;
         join_type type_;
         join_algo algo_{join_algo::nested};
         std::size_t left_col_{0};

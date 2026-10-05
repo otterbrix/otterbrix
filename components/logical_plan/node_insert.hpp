@@ -52,16 +52,6 @@ namespace components::logical_plan {
     public:
         explicit node_insert_t(std::pmr::memory_resource* resource);
 
-        // The insert target, as written. Kept on the node so enrich binds it to a
-        // resolved entry by name rather than inferring it from a child.
-        const std::string& dbname() const noexcept { return dbname_; }
-        void set_dbname(std::string dbname) { dbname_ = std::move(dbname); }
-        const std::string& relname() const noexcept { return relname_; }
-        void set_relname(std::string relname) { relname_ = std::move(relname); }
-        // The schema slot of database.schema.name; only a host relation can live there.
-        const std::string& schema() const noexcept { return schema_; }
-        void set_schema(std::string schema) { schema_ = std::move(schema); }
-
         const host_write_target_ptr& host_target() const noexcept { return host_target_; }
         void set_host_target(host_write_target_ptr target) { host_target_ = std::move(target); }
 
@@ -129,9 +119,6 @@ namespace components::logical_plan {
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
-        std::string dbname_;
-        std::string relname_;
-        std::string schema_;
         host_write_target_ptr host_target_;
         std::pmr::vector<expressions::key_t> key_translation_;
         std::pmr::vector<expressions::expression_ptr> returning_;

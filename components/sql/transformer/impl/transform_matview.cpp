@@ -61,7 +61,7 @@ namespace components::sql::transform {
                                                            core::query_sql_t{std::move(body_sql)});
         matview->set_materialized(true);
         matview->append_child(std::move(body));
-        const std::string db_for_resolve = set_target(*matview, target_qn);
+        const std::string db_for_resolve = set_target(*matview, target_qn, target_slots::database);
         register_catalog_resolve_namespace(resource_, &catalog_resolves_, db_for_resolve);
         register_catalog_resolve_types(resource_, &catalog_resolves_, cast_type_names_);
         return matview;
@@ -73,14 +73,11 @@ namespace components::sql::transform {
                                  std::pmr::string{"REFRESH MATERIALIZED VIEW missing relation", resource_});
         }
         auto qn = rangevar_to_qualified_name(rs.relation);
-        auto node = logical_plan::make_node_refresh_matview(resource_,
-                                                            core::matviewname_t{qn.collection.t},
-                                                            rs.concurrent,
-                                                            !rs.skipData);
+        auto node = logical_plan::make_node_refresh_matview(resource_, rs.concurrent, !rs.skipData);
         // The matview's identity stays ON the node: enrich binds it to a resolved
         // entry by name, whose metadata carries view_sql (Phase A.A2 reads
         // pg_rewrite.ev_action for relkind='m').
-        set_target(*node, qn);
+        set_target(*node, qn, target_slots::relation);
         register_catalog_resolve_table(resource_, &catalog_resolves_, qn.database.t, qn.collection.t);
         return node;
     }

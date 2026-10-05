@@ -322,7 +322,7 @@ TEST_CASE("optimizer::promote_star::fact_last_star_reordered_fact_first") {
     p_or->append_child(eq_key_param(res, "p_mfgr", p_mfgr1));
     p_or->append_child(eq_key_param(res, "p_mfgr", p_mfgr2));
     where->append_child(p_or);
-    auto match = make_node_match(res, core::dbname_t{}, core::relname_t{}, where);
+    auto match = make_node_match(res, qualified_name_t{}, where);
 
     // GROUP BY d_year, c_nation ; SELECT d_year, c_nation, SUM(lo_revenue - lo_supplycost) AS profit
     std::vector<expression_ptr> group_exprs;
@@ -344,7 +344,7 @@ TEST_CASE("optimizer::promote_star::fact_last_star_reordered_fact_first") {
     sort_exprs.emplace_back(make_sort_expression(res, bare_key(res, "c_nation"), sort_order::asc));
     auto sort = make_node_sort(res, core::dbname_t{}, core::relname_t{}, sort_exprs);
 
-    auto agg = make_node_aggregate(res, core::dbname_t{}, core::relname_t{});
+    auto agg = make_node_aggregate(res, qualified_name_t{});
     agg->append_child(source);
     agg->append_child(match);
     agg->append_child(group);
@@ -489,9 +489,9 @@ TEST_CASE("optimizer::promote_star::three_table_chain_not_reordered") {
     where->append_child(eq_keys(res, "a_k", "b_k")); // straddles the inner join
     where->append_child(eq_keys(res, "b_v", "c_k")); // straddles the outer join
     where->append_child(cmp_keys(res, compare_type::ne, "a_id", "b_v"));
-    auto match = make_node_match(res, core::dbname_t{}, core::relname_t{}, where);
+    auto match = make_node_match(res, qualified_name_t{}, where);
 
-    auto agg = make_node_aggregate(res, core::dbname_t{}, core::relname_t{});
+    auto agg = make_node_aggregate(res, qualified_name_t{});
     agg->append_child(source);
     agg->append_child(match);
 
@@ -543,7 +543,7 @@ TEST_CASE("optimizer::promote_star::no_group_computed_order_by_remapped") {
 
     auto where = make_compare_union_expression(res, compare_type::union_and);
     append_star_equis(res, where);
-    auto match = make_node_match(res, core::dbname_t{}, core::relname_t{}, where);
+    auto match = make_node_match(res, qualified_name_t{}, where);
 
     // ORDER BY (lo_revenue - lo_supplycost) DESC — encoded exactly as the SQL
     // transformer does: a subtract scalar, direction in the OWN key's path()[0].
@@ -560,7 +560,7 @@ TEST_CASE("optimizer::promote_star::no_group_computed_order_by_remapped") {
     auto select = make_node_select(res, core::dbname_t{}, core::relname_t{});
     select->append_expression(make_scalar_expression(res, scalar_type::get_field, bare_key(res, "lo_orderkey")));
 
-    auto agg = make_node_aggregate(res, core::dbname_t{}, core::relname_t{});
+    auto agg = make_node_aggregate(res, qualified_name_t{});
     agg->append_child(source);
     agg->append_child(match);
     agg->append_child(sort);
@@ -608,7 +608,7 @@ TEST_CASE("optimizer::promote_star::no_group_select_case_condition_remapped") {
 
     auto where = make_compare_union_expression(res, compare_type::union_and);
     append_star_equis(res, where);
-    auto match = make_node_match(res, core::dbname_t{}, core::relname_t{}, where);
+    auto match = make_node_match(res, qualified_name_t{}, where);
 
     // SELECT CASE WHEN lo_revenue > ? THEN ? ELSE ? END AS flag
     auto cond = cmp_key_param(res, compare_type::gt, "lo_revenue", p_hi);
@@ -619,7 +619,7 @@ TEST_CASE("optimizer::promote_star::no_group_select_case_condition_remapped") {
     auto select = make_node_select(res, core::dbname_t{}, core::relname_t{});
     select->append_expression(expression_ptr(case_expr));
 
-    auto agg = make_node_aggregate(res, core::dbname_t{}, core::relname_t{});
+    auto agg = make_node_aggregate(res, qualified_name_t{});
     agg->append_child(source);
     agg->append_child(match);
     agg->append_child(select);
@@ -657,10 +657,10 @@ TEST_CASE("optimizer::promote_star::select_star_bails_to_canonical") {
 
     auto where = make_compare_union_expression(res, compare_type::union_and);
     append_star_equis(res, where);
-    auto match = make_node_match(res, core::dbname_t{}, core::relname_t{}, where);
+    auto match = make_node_match(res, qualified_name_t{}, where);
 
     // No node_select / no node_group at all => pure SELECT * (merged order leaks).
-    auto agg = make_node_aggregate(res, core::dbname_t{}, core::relname_t{});
+    auto agg = make_node_aggregate(res, qualified_name_t{});
     agg->append_child(source);
     agg->append_child(match);
 
@@ -709,9 +709,9 @@ TEST_CASE("optimizer::promote_star::snowflake_bails_to_partial_promotion") {
     where->append_child(eq_keys(res, "f_d1", "d1_k")); // fact <-> d1
     where->append_child(eq_keys(res, "f_d3", "d3_k")); // fact <-> d3
     where->append_child(eq_keys(res, "d2_r", "d3_r")); // d2 <-> d3 (snowflake edge)
-    auto match = make_node_match(res, core::dbname_t{}, core::relname_t{}, where);
+    auto match = make_node_match(res, qualified_name_t{}, where);
 
-    auto agg = make_node_aggregate(res, core::dbname_t{}, core::relname_t{});
+    auto agg = make_node_aggregate(res, qualified_name_t{});
     agg->append_child(source);
     agg->append_child(match);
 
@@ -755,9 +755,9 @@ TEST_CASE("optimizer::promote_star::composite_key_bails_to_partial_promotion") {
     where->append_child(eq_keys(res, "f_a", "d1_a"));  // fact <-> d1  (composite, key 1)
     where->append_child(eq_keys(res, "f_b", "d1_b"));  // fact <-> d1  (composite, key 2)
     where->append_child(eq_keys(res, "f_d2", "d2_k")); // fact <-> d2
-    auto match = make_node_match(res, core::dbname_t{}, core::relname_t{}, where);
+    auto match = make_node_match(res, qualified_name_t{}, where);
 
-    auto agg = make_node_aggregate(res, core::dbname_t{}, core::relname_t{});
+    auto agg = make_node_aggregate(res, qualified_name_t{});
     agg->append_child(source);
     agg->append_child(match);
 

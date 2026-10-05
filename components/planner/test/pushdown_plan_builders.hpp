@@ -32,7 +32,7 @@ namespace planner_test {
              const components::logical_plan::node_group_ptr& group,
              components::catalog::oid_t table_oid,
              components::expressions::expression_ptr having = nullptr) {
-        auto agg = components::logical_plan::make_node_aggregate(r, dbn(), reln());
+        auto agg = components::logical_plan::make_node_aggregate(r, qualified_name_t{dbn(), reln()});
         agg->set_table_oid(table_oid);
         agg->append_child(group);
         if (having != nullptr) {
@@ -49,7 +49,7 @@ namespace planner_test {
              components::catalog::oid_t table_oid,
              std::pmr::vector<components::types::complex_logical_type> out_types,
              bool agg_distinct) {
-        auto agg = components::logical_plan::make_node_aggregate(r, dbn(), reln());
+        auto agg = components::logical_plan::make_node_aggregate(r, qualified_name_t{dbn(), reln()});
         agg->set_table_oid(table_oid);
         agg->set_distinct(agg_distinct);
         if (!out_types.empty()) {

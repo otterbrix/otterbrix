@@ -1833,47 +1833,8 @@ namespace components::sql::transform {
 
     logical_plan::node_ptr
     name_catalog_target(const core::dbname_t& dbname, const core::relname_t& relname, logical_plan::node_ptr node) {
-        if (!node) {
-            return node;
-        }
-        switch (node->type()) {
-            case logical_plan::node_type::insert_t: {
-                auto* n = static_cast<logical_plan::node_insert_t*>(node.get());
-                n->set_dbname(dbname.t);
-                n->set_relname(relname.t);
-                break;
-            }
-            case logical_plan::node_type::update_t: {
-                auto* n = static_cast<logical_plan::node_update_t*>(node.get());
-                n->set_dbname(dbname.t);
-                n->set_relname(relname.t);
-                break;
-            }
-            case logical_plan::node_type::delete_t: {
-                auto* n = static_cast<logical_plan::node_delete_t*>(node.get());
-                n->set_dbname(dbname.t);
-                n->set_relname(relname.t);
-                break;
-            }
-            case logical_plan::node_type::drop_t: {
-                auto* n = static_cast<logical_plan::node_drop_t*>(node.get());
-                n->set_dbname(dbname.t);
-                n->set_relname(relname.t);
-                break;
-            }
-            case logical_plan::node_type::create_collection_t: {
-                auto* n = static_cast<logical_plan::node_create_collection_t*>(node.get());
-                n->set_dbname(dbname.t);
-                break;
-            }
-            case logical_plan::node_type::create_index_t: {
-                auto* n = static_cast<logical_plan::node_create_index_t*>(node.get());
-                n->set_dbname(dbname.t);
-                n->set_relname(relname.t);
-                break;
-            }
-            default:
-                break;
+        if (node) {
+            node->set_target(qualified_name_t{dbname, relname});
         }
         return node;
     }
@@ -1997,7 +1958,7 @@ namespace components::sql::transform {
         register_table_entry(resource,
                              resolves,
                              written.database.t,
-                             written.unique_identifier.t.empty() ? written.schema.t : std::string{},
+                             std::string{logical_plan::catalog_schema(written)},
                              written.collection.t,
                              with_constraints);
     }
@@ -2005,19 +1966,7 @@ namespace components::sql::transform {
     void register_catalog_resolve_written_table(std::pmr::memory_resource* resource,
                                                 logical_plan::catalog_resolves_t* resolves,
                                                 const logical_plan::node_aggregate_t& from) {
-        const auto& dbname = static_cast<const std::string&>(from.dbname());
-        const auto& relname = static_cast<const std::string&>(from.relname());
-        register_catalog_resolve_namespace(resource, resolves, dbname);
-        if (relname.empty()) {
-            return;
-        }
-        logical_plan::resolve_entry_t entry;
-        entry.dbname = dbname;
-        if (static_cast<const std::string&>(from.uid()).empty()) {
-            entry.schema = from.schema();
-        }
-        entry.relname = relname;
-        resolves->ensure(resource, logical_plan::resolve_kind::table).add(std::move(entry));
+        register_catalog_resolve_write_target(resource, resolves, from.target(), constraint_resolve_kind::none);
     }
 
     void register_catalog_resolve_table_in_owner_database(std::pmr::memory_resource* resource,

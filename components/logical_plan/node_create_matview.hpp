@@ -17,7 +17,7 @@ namespace components::logical_plan {
     public:
         node_create_matview_t(std::pmr::memory_resource* resource, core::matviewname_t matviewname);
 
-        const std::string& matviewname() const noexcept { return matviewname_; }
+        const core::matviewname_t& matviewname() const noexcept { return matviewname_; }
 
         components::catalog::oid_t namespace_oid() const noexcept { return namespace_oid_; }
         void set_namespace_oid(components::catalog::oid_t oid) noexcept { namespace_oid_ = oid; }
@@ -35,7 +35,7 @@ namespace components::logical_plan {
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
-        std::string matviewname_;
+        core::matviewname_t matviewname_;
         components::catalog::oid_t namespace_oid_{components::catalog::INVALID_OID};
         components::catalog::oid_t matview_oid_{components::catalog::INVALID_OID};
         std::vector<table::column_definition_t> columns_;

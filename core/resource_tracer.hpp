@@ -19,24 +19,9 @@ public:
     resource_tracer_t(const resource_tracer_t&) = delete;
     resource_tracer_t& operator=(const resource_tracer_t&) = delete;
 
-    ~resource_tracer_t() override {
-        const size_t live = live_allocations();
-        const size_t leaked = leaked_bytes();
-        if (live != 0 || leaked != 0) {
-            std::cerr << "[resource_tracer] LEAK: " << live << " allocation(s), " << leaked
-                      << " byte(s) not deallocated" << std::endl;
-            std::lock_guard<std::mutex> lock(mutex_);
-            for (const auto& [address, info] : live_) {
-                std::cerr << "[resource_tracer]   leaked " << info.bytes << " byte(s) at "
-                          << reinterpret_cast<void*>(address) << " (alignment " << info.alignment << ")" << std::endl;
-                // Reclaim the still-live block so LSan/ASAN sees no leak at process
-                // exit — mirrors synchronized_pool_resource::release() (a13 behaviour).
-                // The [resource_tracer] report above preserves the diagnostic.
-                upstream_->deallocate(reinterpret_cast<void*>(address), info.bytes, info.alignment);
-            }
-            live_.clear();
-        }
-    }
+    // Still-live blocks are left to LeakSanitizer, which reports each one with the stack that
+    // allocated it; freeing them here would hide the leak.
+    ~resource_tracer_t() override { live_.clear(); }
 
     std::pmr::memory_resource* upstream_resource() const noexcept { return upstream_; }
 

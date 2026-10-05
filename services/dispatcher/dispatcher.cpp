@@ -579,9 +579,24 @@ namespace services::dispatcher {
             co_await unwind_udf_fanout_(session, std::move(registered));
             co_return core::error_on(resource(), planned.error());
         }
-        auto op = std::move(planned.value());
-        op->set_as_root();
+        if (auto op_error = co_await run_catalog_op_(session, std::move(planned.value()), "register_udf");
+            op_error.contains_error()) {
+            co_await unwind_udf_fanout_(session, std::move(registered));
+            co_return op_error;
+        }
+        if (auto added = function_registry_.add_function_with_uid(uid, std::move(master_copy)); added.has_error()) {
+            error(log_, "dispatcher_t::register_udf: the master registry refused: {}", added.error().what);
+            co_await unwind_udf_fanout_(session, std::move(registered));
+            co_return added.error();
+        }
+        co_return core::error_t::no_error();
+    }
 
+    manager_dispatcher_t::unique_future<core::error_t>
+    manager_dispatcher_t::run_catalog_op_(components::session::session_id_t session,
+                                          components::operators::operator_ptr op,
+                                          std::string_view what) {
+        op->set_as_root();
         components::logical_plan::storage_parameters params(resource());
         components::pipeline::context_t pctx{session,
                                              actor_zeta::address_t::empty_address(),
@@ -592,7 +607,6 @@ namespace services::dispatcher {
                                              index_address_,
                                              wal_address_};
         pctx.txn = components::table::transaction_data::committed();
-
         op->prepare();
         co_await op->await_async_and_resume(&pctx);
         if (pctx.has_pending_disk_futures()) {
@@ -601,24 +615,9 @@ namespace services::dispatcher {
                 co_await std::move(f);
             }
         }
-
-        auto* ru = static_cast<components::operators::operator_register_udf_t*>(op.get());
         if (op->has_error()) {
-            error(log_, "dispatcher_t::register_udf: {}", op->get_error().what);
-            co_await unwind_udf_fanout_(session, std::move(registered));
+            error(log_, "dispatcher_t::{}: {}", what, op->get_error().what);
             co_return op->get_error();
-        }
-        if (!ru->success()) {
-            co_await unwind_udf_fanout_(session, std::move(registered));
-            co_return core::error_t{core::error_code_t::other_error,
-                                    std::pmr::string{"register_udf: the operator reported failure without naming a "
-                                                     "reason",
-                                                     resource()}};
-        }
-        if (auto added = function_registry_.add_function_with_uid(uid, std::move(master_copy)); added.has_error()) {
-            error(log_, "dispatcher_t::register_udf: the master registry refused: {}", added.error().what);
-            co_await unwind_udf_fanout_(session, std::move(registered));
-            co_return added.error();
         }
         co_return core::error_t::no_error();
     }
@@ -692,24 +691,9 @@ namespace services::dispatcher {
 
         // Catalog first: every executor holds a copy of the master, so the master answers for them, and
         // nothing is dropped from any registry until the pg_proc purge below has succeeded.
-        bool registered = false;
-        bool builtin = false;
-        for (const auto uid : function_registry_.find_functions(function_name)) {
-            const auto* candidate = function_registry_.get_function(uid);
-            if (candidate == nullptr) {
-                continue;
-            }
-            for (const auto& signature : candidate->get_signatures()) {
-                if (signature.matches_inputs(inputs)) {
-                    registered = true;
-                    builtin = components::compute::is_builtin(uid);
-                    break;
-                }
-            }
-            if (registered) {
-                break;
-            }
-        }
+        const auto overload = function_registry_.find_overload(function_name, inputs);
+        const bool registered = overload != components::compute::invalid_function_uid;
+        const bool builtin = registered && components::compute::is_builtin(overload);
         // Every registry copy holds the builtins, the disk agents' included, and a filter pushed to disk runs them.
         if (builtin) {
             core::error_t refused{core::error_code_t::invalid_parameter,
@@ -719,10 +703,6 @@ namespace services::dispatcher {
             error(log_, "dispatcher_t::unregister_udf: {}", refused.what);
             co_return refused;
         }
-        const std::string name_for_master = function_name;
-        const std::pmr::vector<components::types::complex_logical_type> inputs_for_master{inputs.begin(),
-                                                                                           inputs.end(),
-                                                                                           resource()};
         auto plan = boost::intrusive_ptr(
             new components::logical_plan::node_unregister_udf_t(resource(),
                                                                 core::function_name_t{std::move(function_name)},
@@ -738,46 +718,15 @@ namespace services::dispatcher {
         if (planned.has_error()) {
             co_return core::error_on(resource(), planned.error());
         }
-        auto op = std::move(planned.value());
-        op->set_as_root();
-
-        components::logical_plan::storage_parameters params(resource());
-        components::pipeline::context_t pctx{session,
-                                             actor_zeta::address_t::empty_address(),
-                                             actor_zeta::address_t::empty_address(),
-                                             &function_registry_,
-                                             params,
-                                             disk_address_,
-                                             index_address_,
-                                             wal_address_};
-        pctx.txn = components::table::transaction_data::committed();
-
-        op->prepare();
-        co_await op->await_async_and_resume(&pctx);
-        if (pctx.has_pending_disk_futures()) {
-            auto futures = pctx.take_pending_disk_futures();
-            for (auto& f : futures) {
-                co_await std::move(f);
-            }
-        }
-
-        auto* uu = static_cast<components::operators::operator_unregister_udf_t*>(op.get());
-        if (op->has_error()) {
-            error(log_, "dispatcher_t::unregister_udf: {}", op->get_error().what);
-            co_return op->get_error();
-        }
-        if (!uu->success()) {
-            co_return core::error_t{core::error_code_t::other_error,
-                                    std::pmr::string{"unregister_udf: the operator reported failure without naming a "
-                                                     "reason",
-                                                     resource()}};
+        if (auto op_error = co_await run_catalog_op_(session, std::move(planned.value()), "unregister_udf");
+            op_error.contains_error()) {
+            co_return op_error;
         }
         // The rows of a function no process holds were all there was to drop.
         if (!registered) {
             co_return core::error_t::no_error();
         }
-        [[maybe_unused]] const bool master_dropped =
-            function_registry_.remove_function_by_signature(name_for_master, inputs_for_master);
+        [[maybe_unused]] const bool master_dropped = function_registry_.remove_function(overload);
         assert(master_dropped && "the overload checked above left the master registry");
 
         std::pmr::vector<actor_zeta::unique_future<bool>> ack_futures(resource());
@@ -787,10 +736,8 @@ namespace services::dispatcher {
                 executor_addresses_[i],
                 &collection::executor::executor_t::unregister_udf,
                 session,
-                core::function_name_t{name_for_master},
-                std::pmr::vector<components::types::complex_logical_type>{inputs_for_master.begin(),
-                                                                          inputs_for_master.end(),
-                                                                          resource()});
+                core::function_name_t{plan->function_name()},
+                std::pmr::vector<components::types::complex_logical_type>(plan->inputs(), resource()));
             if (needs_sched && executors_[i]) {
                 scheduler_->enqueue(executors_[i].get());
             }
@@ -804,7 +751,7 @@ namespace services::dispatcher {
                       "dispatcher_t::unregister_udf: executor {} of {} held no copy of '{}' although the master did",
                       i,
                       ack_futures.size(),
-                      name_for_master);
+                      plan->function_name());
                 assert(dropped && "an executor's registry diverged from the master");
             }
         }
@@ -932,36 +879,9 @@ namespace services::dispatcher {
         if (planned.has_error()) {
             co_return core::error_on(resource(), planned.error());
         }
-        auto op = std::move(planned.value());
-        op->set_as_root();
-        components::logical_plan::storage_parameters params(resource());
-        components::pipeline::context_t pctx{session,
-                                             actor_zeta::address_t::empty_address(),
-                                             actor_zeta::address_t::empty_address(),
-                                             &function_registry_,
-                                             params,
-                                             disk_address_,
-                                             index_address_,
-                                             wal_address_};
-        pctx.txn = components::table::transaction_data::committed();
-        op->prepare();
-        co_await op->await_async_and_resume(&pctx);
-        if (pctx.has_pending_disk_futures()) {
-            auto futures = pctx.take_pending_disk_futures();
-            for (auto& f : futures) {
-                co_await std::move(f);
-            }
-        }
-        auto* rc = static_cast<components::operators::operator_register_cast_t*>(op.get());
-        if (op->has_error()) {
-            error(log_, "dispatcher_t::register_cast: {}", op->get_error().what);
-            co_return op->get_error();
-        }
-        if (!rc->success()) {
-            co_return core::error_t{core::error_code_t::other_error,
-                                    std::pmr::string{"register_cast: the operator reported failure without naming a "
-                                                     "reason",
-                                                     resource()}};
+        if (auto op_error = co_await run_catalog_op_(session, std::move(planned.value()), "register_cast");
+            op_error.contains_error()) {
+            co_return op_error;
         }
         co_return core::error_t::no_error();
     }
@@ -1062,36 +982,9 @@ namespace services::dispatcher {
         if (planned.has_error()) {
             co_return core::error_on(resource(), planned.error());
         }
-        auto op = std::move(planned.value());
-        op->set_as_root();
-        components::logical_plan::storage_parameters params(resource());
-        components::pipeline::context_t pctx{session,
-                                             actor_zeta::address_t::empty_address(),
-                                             actor_zeta::address_t::empty_address(),
-                                             &function_registry_,
-                                             params,
-                                             disk_address_,
-                                             index_address_,
-                                             wal_address_};
-        pctx.txn = components::table::transaction_data::committed();
-        op->prepare();
-        co_await op->await_async_and_resume(&pctx);
-        if (pctx.has_pending_disk_futures()) {
-            auto futures = pctx.take_pending_disk_futures();
-            for (auto& f : futures) {
-                co_await std::move(f);
-            }
-        }
-        auto* uc = static_cast<components::operators::operator_unregister_cast_t*>(op.get());
-        if (op->has_error()) {
-            error(log_, "dispatcher_t::unregister_cast: {}", op->get_error().what);
-            co_return op->get_error();
-        }
-        if (!uc->success()) {
-            co_return core::error_t{core::error_code_t::other_error,
-                                    std::pmr::string{"unregister_cast: the operator reported failure without naming a "
-                                                     "reason",
-                                                     resource()}};
+        if (auto op_error = co_await run_catalog_op_(session, std::move(planned.value()), "unregister_cast");
+            op_error.contains_error()) {
+            co_return op_error;
         }
         co_return core::error_t::no_error();
     }

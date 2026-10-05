@@ -21,9 +21,6 @@ namespace components::operators {
                                 components::compute::function_ptr function,
                                 executor_uids_t executor_uids);
 
-        // True iff EVERY executor registered AND the pg_proc/pg_depend rows were appended.
-        bool success() const noexcept { return success_; }
-
         // Sourceless SINK leaf: all work runs in the single await_async_and_resume the dispatcher drives directly.
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
@@ -32,7 +29,6 @@ namespace components::operators {
 
         components::compute::function_ptr function_;
         executor_uids_t executor_uids_;
-        bool success_{false};
     };
 
 } // namespace components::operators

@@ -166,6 +166,12 @@ namespace services::dispatcher {
         unwind_udf_fanout_(components::session::session_id_t session,
                            std::pmr::vector<std::pair<std::size_t, components::compute::function_uid>> registered);
 
+        // Runs a catalog write operator (UDF / cast register and unregister) to completion in the committed snapshot;
+        // its error, logged under `what`, is the answer.
+        unique_future<core::error_t> run_catalog_op_(components::session::session_id_t session,
+                                                     components::operators::operator_ptr op,
+                                                     std::string_view what);
+
         void try_trigger_cleanup_if_horizon_advanced() noexcept;
 
         std::size_t next_executor_index() noexcept;

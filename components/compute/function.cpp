@@ -378,17 +378,23 @@ namespace components::compute {
     bool
     function_registry_t::remove_function_by_signature(const std::string& name,
                                                       const std::pmr::vector<types::complex_logical_type>& inputs) {
-        for (auto it = functions_.begin(); it != functions_.end(); ++it) {
-            if (!it->second || it->second->name() != name)
+        const auto uid = find_overload(name, inputs);
+        return uid != invalid_function_uid && functions_.erase(uid) == 1;
+    }
+
+    function_uid function_registry_t::find_overload(std::string_view name,
+                                                    const std::pmr::vector<types::complex_logical_type>& inputs) const {
+        for (const auto& [uid, func] : functions_) {
+            if (!func || func->name() != name) {
                 continue;
-            for (auto& sig : it->second->get_signatures()) {
+            }
+            for (const auto& sig : func->get_signatures()) {
                 if (sig.matches_inputs(inputs)) {
-                    functions_.erase(it);
-                    return true;
+                    return uid;
                 }
             }
         }
-        return false;
+        return invalid_function_uid;
     }
 
     std::vector<std::pair<std::string, function_uid>> function_registry_t::get_functions() const {

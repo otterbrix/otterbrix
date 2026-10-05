@@ -152,7 +152,6 @@ namespace components::logical_plan {
 
         // Appends `entry` unless an equivalent request is already present
         std::size_t add(resolve_entry_t entry);
-        std::size_t find(std::string_view dbname, std::string_view name) const noexcept;
         std::size_t find(std::string_view uid,
                          std::string_view dbname,
                          std::string_view schema,
@@ -193,12 +192,6 @@ namespace components::logical_plan {
 
         // Entry naming this target, or nullptr; an empty name never matches, so nothing is bound.
         [[nodiscard]] const resolve_entry_t* namespace_entry(std::string_view dbname) const noexcept;
-        [[nodiscard]] const resolve_entry_t* table_entry(std::string_view dbname,
-                                                         std::string_view relname) const noexcept;
-        [[nodiscard]] const resolve_entry_t* table_entry(std::string_view uid,
-                                                         std::string_view dbname,
-                                                         std::string_view schema,
-                                                         std::string_view relname) const noexcept;
         [[nodiscard]] const resolve_entry_t* table_entry(const qualified_name_t& written) const noexcept;
         [[nodiscard]] const resolve_entry_t* type_entry(std::string_view dbname,
                                                         std::string_view type_name) const noexcept;

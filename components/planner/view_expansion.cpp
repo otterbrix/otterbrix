@@ -191,7 +191,7 @@ namespace components::planner {
             q.pop();
             const auto& target = n->target();
             if (writes_a_table(n) && !target.collection.t.empty()) {
-                const auto* entry = resolves.table_entry(target.database.t, target.collection.t);
+                const auto* entry = resolves.table_entry(target);
                 if (entry != nullptr && entry->table_md.has_value() &&
                     entry->table_md->relkind == components::catalog::relkind::view) {
                     return schema_error(n->resource(),
@@ -360,9 +360,10 @@ namespace components::planner {
         wrapper->append_child(std::move(body));
         auto select = logical_plan::make_node_select(resource);
         for (const auto& column : view.columns) {
-            select->append_expression(expressions::make_scalar_expression(resource,
-                                                                          expressions::scalar_type::get_field,
-                                                                          expressions::key_t{resource, column.attname}));
+            select->append_expression(
+                expressions::make_scalar_expression(resource,
+                                                    expressions::scalar_type::get_field,
+                                                    expressions::key_t{resource, column.attname}));
         }
         wrapper->append_child(std::move(select));
         return wrapper;

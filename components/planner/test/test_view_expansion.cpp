@@ -264,9 +264,11 @@ TEST_CASE("planner::view_expansion::refresh is an insert into the matview over i
     CHECK(static_cast<const logical_plan::node_aggregate_t*>(body)->target().collection.t == "t");
 
     INFO("the body's name is pinned; mv is only the write target, never read");
-    const auto* t = plan.catalog_resolves.table_entry(std::string_view{}, std::string_view{"db"}, std::string_view{}, "t");
+    const auto* t = plan.catalog_resolves.table_entry(
+        qualified_name_t{core::dbname_t{std::string{"db"}}, core::relname_t{std::string{"t"}}});
     REQUIRE(t != nullptr);
     CHECK(t->pin.oid == 16500);
-    CHECK(plan.catalog_resolves.table_entry(std::string_view{}, std::string_view{"db"}, std::string_view{}, "mv") != nullptr);
+    CHECK(plan.catalog_resolves.table_entry(
+              qualified_name_t{core::dbname_t{std::string{"db"}}, core::relname_t{std::string{"mv"}}}) != nullptr);
     CHECK(collect_view_references(res(), plan.catalog_resolves, plan.sub_queries.back().get()).empty());
 }

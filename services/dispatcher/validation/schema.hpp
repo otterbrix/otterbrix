@@ -29,9 +29,8 @@ namespace services::dispatcher::validation {
         // Set when this column is a bare NULL literal (a scalar constant whose value is NULL, whose type was
         // defaulted to text). Lets a UNION reconcile the column to the other branch's type (PostgreSQL).
         bool from_null_literal = false;
-        // A catalog table's own column, when the validation collects the columns the plan reads (CREATE VIEW):
-        // find_types records it into `uses` whenever a key resolves to it.
-        column_uses_t* uses = nullptr;
+        // A catalog table's own column; INVALID_OID for any other. find_types records it into the collector it is
+        // given (CREATE VIEW) whenever a key resolves to the column.
         column_use_t origin{};
     };
 
@@ -60,9 +59,12 @@ namespace services::dispatcher::validation {
     named_schema merge_schemas(std::pmr::memory_resource* resource, named_schema lhs, named_schema rhs);
 
     // Resolve `key` against `schema`, returning every column it addresses ('*' and
-    // 'table.*' expand to many). Stores the resolved path back into the key.
-    [[nodiscard]] core::result_wrapper_t<type_paths>
-    find_types(std::pmr::memory_resource* resource, components::expressions::key_t& key, const named_schema& schema);
+    // 'table.*' expand to many). Stores the resolved path back into the key. `uses`, when not null, collects the catalog
+    // column of each addressed top-level column (CREATE VIEW's dependencies).
+    [[nodiscard]] core::result_wrapper_t<type_paths> find_types(std::pmr::memory_resource* resource,
+                                                                components::expressions::key_t& key,
+                                                                const named_schema& schema,
+                                                                column_uses_t* uses);
 
     // Two-sided form for JOIN / UPDATE..FROM / DELETE..USING contexts. Resolves against the
     // side the key already names, otherwise tries both and stores the side that matched.
@@ -70,6 +72,7 @@ namespace services::dispatcher::validation {
     [[nodiscard]] core::result_wrapper_t<type_paths> validate_key(std::pmr::memory_resource* resource,
                                                                   components::expressions::key_t& key,
                                                                   const named_schema* schema_left,
-                                                                  const named_schema* schema_right = nullptr);
+                                                                  const named_schema* schema_right,
+                                                                  column_uses_t* uses);
 
 } // namespace services::dispatcher::validation

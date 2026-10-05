@@ -165,7 +165,8 @@ namespace services::dispatcher::validation {
             }
 
             complex_logical_type column(components::expressions::key_t& key, bool inside_aggregate) {
-                auto resolved = validate_key(context_.resource, key, &context_.schema, context_.schema_right);
+                auto resolved =
+                    validate_key(context_.resource, key, &context_.schema, context_.schema_right, context_.column_uses);
                 if (resolved.has_error()) {
                     // error_on, not a plain copy: error_t's copy constructor leaves the message on
                     // the default resource, and this resolver's own refusals (fail() above) are

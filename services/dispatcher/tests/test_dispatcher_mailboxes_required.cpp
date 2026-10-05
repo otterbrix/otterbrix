@@ -13,6 +13,8 @@ namespace {
     using address_t = actor_zeta::address_t;
     using resource_t = std::pmr::memory_resource*;
     using scheduler_t = actor_zeta::scheduler_raw;
+    using execution_t = const configuration::config_execution&;
+    using primitives_t = components::planner::primitives_t;
 
 } // namespace
 
@@ -23,14 +25,33 @@ namespace {
 // naming it (components::pipeline::no_mailbox()).
 TEST_CASE("services::dispatcher::manager_dispatcher_t::a dispatcher cannot be built without naming its mailboxes") {
     CHECK_FALSE(std::is_constructible_v<manager_dispatcher_t, resource_t, scheduler_t, log_t&>);
-    CHECK(
+    // The execution config and the host primitives have no defaults either.
+    CHECK_FALSE(
         std::
             is_constructible_v<manager_dispatcher_t, resource_t, scheduler_t, log_t&, address_t, address_t, address_t>);
+    CHECK(std::is_constructible_v<manager_dispatcher_t,
+                                  resource_t,
+                                  scheduler_t,
+                                  log_t&,
+                                  address_t,
+                                  address_t,
+                                  address_t,
+                                  execution_t,
+                                  primitives_t>);
 }
 
 // The executor already demands its four addresses at construction; pin that an address-less
 // constructor never comes back.
 TEST_CASE("services::collection::executor_t::an executor cannot be built without naming its mailboxes") {
     CHECK_FALSE(std::is_constructible_v<executor_t, resource_t, log_t&&>);
-    CHECK(std::is_constructible_v<executor_t, resource_t, address_t, address_t, address_t, address_t, log_t&&>);
+    CHECK_FALSE(std::is_constructible_v<executor_t, resource_t, address_t, address_t, address_t, address_t, log_t&&>);
+    CHECK(std::is_constructible_v<executor_t,
+                                  resource_t,
+                                  address_t,
+                                  address_t,
+                                  address_t,
+                                  address_t,
+                                  log_t&&,
+                                  execution_t,
+                                  primitives_t>);
 }

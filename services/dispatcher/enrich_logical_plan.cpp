@@ -38,8 +38,8 @@
 #include <components/logical_plan/node_refresh_matview.hpp>
 #include <components/logical_plan/node_sort.hpp>
 #include <components/logical_plan/node_update.hpp>
-#include <components/sql/parser/parser.h>
 #include <components/planner/view_expansion.hpp>
+#include <components/sql/parser/parser.h>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <services/index/manager_index.hpp>
@@ -324,6 +324,14 @@ namespace services::catalog_resolve {
             std::string_view schema{};
         };
 
+        qualified_name_t
+        written_name(std::string_view uid, std::string_view dbname, std::string_view schema, std::string_view relname) {
+            return qualified_name_t{core::uid_t{std::string{uid}},
+                                    core::dbname_t{std::string{dbname}},
+                                    core::schema_t{std::string{schema}},
+                                    core::relname_t{std::string{relname}}};
+        }
+
         target_names_t target_names_of(const components::logical_plan::node_t* node) {
             using namespace components::logical_plan;
             const auto& target = node->target();
@@ -411,10 +419,13 @@ namespace services::catalog_resolve {
             {
                 const entry_view_t rn{
                     resolves.namespace_entry(names.namespace_dbname.empty() ? names.dbname : names.namespace_dbname)};
-                const entry_view_t rt{resolves.table_entry(names.uid, names.dbname, names.schema, names.relname)};
-                const entry_view_t rt_index{
-                    resolves.table_entry(names.secondary_dbname.empty() ? names.dbname : names.secondary_dbname,
-                                         names.secondary_relname)};
+                const entry_view_t rt{
+                    resolves.table_entry(written_name(names.uid, names.dbname, names.schema, names.relname))};
+                const entry_view_t rt_index{resolves.table_entry(
+                    written_name({},
+                                 names.secondary_dbname.empty() ? names.dbname : names.secondary_dbname,
+                                 {},
+                                 names.secondary_relname))};
                 const entry_view_t ry{resolves.type_entry(names.dbname, names.type_name)};
                 // Pasted whole, except relkind='v': a view's oid would make create_plan_match_ scan the empty heap.
                 const bool targets_a_view =
@@ -598,9 +609,8 @@ namespace services::catalog_resolve {
 
     namespace {
         // `role` is what the name is in its statement, e.g. "REFERENCES target".
-        core::error_t refuse_segments(std::pmr::memory_resource* resource,
-                                      std::string_view role,
-                                      const qualified_name_t& written) {
+        core::error_t
+        refuse_segments(std::pmr::memory_resource* resource, std::string_view role, const qualified_name_t& written) {
             std::pmr::string msg{role, resource};
             msg += " \"";
             msg += written.to_string();
@@ -694,8 +704,7 @@ namespace services::catalog_resolve {
         return names;
     }
 
-    void bind_storages(catalog_resolves_t& resolves,
-                       std::span<components::planner::table_storage_answer_t> answers) {
+    void bind_storages(catalog_resolves_t& resolves, std::span<components::planner::table_storage_answer_t> answers) {
         if (!resolves.tables) {
             return;
         }
@@ -1258,7 +1267,7 @@ namespace services::dispatcher {
 
         // TODO: remove after federation & search path work
         core::error_t refuse_external_targets(std::pmr::memory_resource* resource,
-                                             const components::logical_plan::catalog_resolves_t& resolves) {
+                                              const components::logical_plan::catalog_resolves_t& resolves) {
             if (resolves.external_targets.empty()) {
                 return core::error_t::no_error();
             }

@@ -79,16 +79,12 @@ namespace services::dispatcher {
             }
         }
 
-        // A catalog table's own column; carries its origin when the validation collects the columns it reads.
-        type_from_t catalog_column(const validation::validation_context_t& context,
-                                   std::string alias,
+        // A catalog table's own column, with its origin.
+        type_from_t catalog_column(std::string alias,
                                    const resolved_table_metadata_t& table,
                                    const resolved_column_metadata_t& column) {
             type_from_t out{std::move(alias), column.type};
-            if (context.column_uses != nullptr) {
-                out.uses = context.column_uses;
-                out.origin = column_use_t{table.table_oid, column.attoid};
-            }
+            out.origin = column_use_t{table.table_oid, column.attoid};
             return out;
         }
 
@@ -114,7 +110,8 @@ namespace services::dispatcher {
                                                                      context.cast_registry,
                                                                      context.function_registry,
                                                                      context.execution_context,
-                                                                     check_expr_allowed_functions()};
+                                                                     check_expr_allowed_functions(),
+                                                                     context.column_uses};
             for (auto& [name, predicate] : node->check_predicates()) {
                 if (auto error = validation::resolve_expression(predicate, predicate_context); error.contains_error()) {
                     return error;
@@ -231,6 +228,7 @@ namespace services::dispatcher {
                                                                       context.function_registry,
                                                                       context.execution_context,
                                                                       allowed_function_types,
+                                                                      context.column_uses,
                                                                       schema_right};
             expression_ptr expression{expr};
             if (auto error = validation::resolve_expression(expression, expression_context); error.contains_error()) {
@@ -241,15 +239,18 @@ namespace services::dispatcher {
             return result;
         }
 
-        [[nodiscard]] core::result_wrapper_t<type_paths>
-        resolve_key_path(std::pmr::memory_resource* resource, param_storage& param, const named_schema& schema);
+        [[nodiscard]] core::result_wrapper_t<type_paths> resolve_key_path(std::pmr::memory_resource* resource,
+                                                                          param_storage& param,
+                                                                          const named_schema& schema,
+                                                                          column_uses_t* uses);
 
         [[nodiscard]] core::result_wrapper_t<type_paths>
         resolve_key_paths_in_group(std::pmr::memory_resource* resource,
                                    std::pmr::vector<param_storage>& params,
-                                   const named_schema& schema) {
+                                   const named_schema& schema,
+                                   column_uses_t* uses) {
             for (auto& param : params) {
-                auto res = resolve_key_path(resource, param, schema);
+                auto res = resolve_key_path(resource, param, schema, uses);
                 if (res.has_error()) {
                     return res;
                 }
@@ -257,15 +258,17 @@ namespace services::dispatcher {
             return type_paths{resource};
         }
 
-        [[nodiscard]] core::result_wrapper_t<type_paths>
-        resolve_key_path(std::pmr::memory_resource* resource, param_storage& param, const named_schema& schema) {
+        [[nodiscard]] core::result_wrapper_t<type_paths> resolve_key_path(std::pmr::memory_resource* resource,
+                                                                          param_storage& param,
+                                                                          const named_schema& schema,
+                                                                          column_uses_t* uses) {
             if (std::holds_alternative<components::expressions::key_t>(param)) {
                 auto& key = std::get<components::expressions::key_t>(param);
                 if (key.storage().empty()) {
                     return core::error_t(core::error_code_t::schema_error,
                                          std::pmr::string{"key has empty storage: " + key.as_string(), resource});
                 }
-                return find_types(resource, key, schema);
+                return find_types(resource, key, schema, uses);
             } else if (std::holds_alternative<expression_ptr>(param)) {
                 auto& sub = std::get<expression_ptr>(param);
                 if (!sub) {
@@ -274,7 +277,7 @@ namespace services::dispatcher {
                 }
                 if (sub->group() == expression_group::scalar) {
                     auto* scalar = static_cast<scalar_expression_t*>(sub.get());
-                    auto res = resolve_key_paths_in_group(resource, scalar->params(), schema);
+                    auto res = resolve_key_paths_in_group(resource, scalar->params(), schema, uses);
                     if (res.has_error()) {
                         return res;
                     }
@@ -283,17 +286,17 @@ namespace services::dispatcher {
                     if (cmp->is_union()) {
                         for (auto& child : cmp->children()) {
                             param_storage child_param{child};
-                            auto res = resolve_key_path(resource, child_param, schema);
+                            auto res = resolve_key_path(resource, child_param, schema, uses);
                             if (res.has_error()) {
                                 return res;
                             }
                         }
                     } else {
-                        auto res = resolve_key_path(resource, cmp->left(), schema);
+                        auto res = resolve_key_path(resource, cmp->left(), schema, uses);
                         if (res.has_error()) {
                             return res;
                         }
-                        res = resolve_key_path(resource, cmp->right(), schema);
+                        res = resolve_key_path(resource, cmp->right(), schema, uses);
                         if (res.has_error()) {
                             return res;
                         }
@@ -324,6 +327,7 @@ namespace services::dispatcher {
                                                                       context.function_registry,
                                                                       context.execution_context,
                                                                       allowed_functions,
+                                                                      context.column_uses,
                                                                       schema_right};
             expression_ptr expression{scalar_expr};
             return validation::resolve_expression(expression, expression_context, saw_reduction);
@@ -343,6 +347,7 @@ namespace services::dispatcher {
                 context.function_registry,
                 context.execution_context,
                 components::compute::create_mask(components::compute::function_type_t::vector),
+                context.column_uses,
                 schema_right};
             expression_ptr expression{expr};
             if (auto error = validation::resolve_expression(expression, expression_context); error.contains_error()) {
@@ -367,15 +372,14 @@ namespace services::dispatcher {
                     const auto& table_alias =
                         node->result_alias().empty() ? node->target().collection.t : node->result_alias();
                     for (const auto& column : tbl->columns) {
-                        result.emplace_back(catalog_column(context, table_alias, *tbl, column));
+                        result.emplace_back(catalog_column(table_alias, *tbl, column));
                     }
                     return result;
                 }
                 if (tbl && tbl->relkind == 'g') {
                     named_schema result(resource);
                     for (const auto& column : tbl->columns) {
-                        result.emplace_back(catalog_column(context,
-                                                           node->result_alias().empty() ? node->target().collection.t
+                        result.emplace_back(catalog_column(node->result_alias().empty() ? node->target().collection.t
                                                                                         : node->result_alias(),
                                                            *tbl,
                                                            column));
@@ -402,6 +406,7 @@ namespace services::dispatcher {
                         context.function_registry,
                         context.execution_context,
                         components::compute::create_mask(components::compute::function_type_t::vector),
+                        context.column_uses,
                         schema_right};
                     predicate_context.required_type = components::types::complex_logical_type{logical_type::BOOLEAN};
                     if (auto error = validation::resolve_expression(node->expressions()[0], predicate_context);
@@ -427,7 +432,10 @@ namespace services::dispatcher {
                 if (expr->group() == expression_group::sort) {
                     auto* sort_expr = static_cast<sort_expression_t*>(expr.get());
                     if (components::expressions::is_key(sort_expr->operand())) {
-                        auto res = find_types(resource, components::expressions::as_key(sort_expr->operand()), schema);
+                        auto res = find_types(resource,
+                                              components::expressions::as_key(sort_expr->operand()),
+                                              schema,
+                                              context.column_uses);
                         if (res.has_error()) {
                             return res.convert_error<named_schema>();
                         }
@@ -440,7 +448,8 @@ namespace services::dispatcher {
                         context.cast_registry,
                         context.function_registry,
                         context.execution_context,
-                        components::compute::create_mask(components::compute::function_type_t::vector)};
+                        components::compute::create_mask(components::compute::function_type_t::vector),
+                        context.column_uses};
                     auto& operand = std::get<components::expressions::expression_ptr>(sort_expr->operand());
                     if (auto error = validation::resolve_expression(operand, expression_context);
                         error.contains_error()) {
@@ -484,6 +493,7 @@ namespace services::dispatcher {
                         context.function_registry,
                         context.execution_context,
                         components::compute::create_mask(components::compute::function_type_t::vector),
+                        context.column_uses,
                         schema_right};
                     if (auto error = validation::resolve_expression(exprs[idx], expression_context);
                         error.contains_error()) {
@@ -499,7 +509,7 @@ namespace services::dispatcher {
                                         ? scalar_expr->key()
                                         : std::get<components::expressions::key_t>(scalar_expr->params().front());
                         if (key.path().empty()) {
-                            auto res = validate_key(resource, key, schema_left, schema_right);
+                            auto res = validate_key(resource, key, schema_left, schema_right, context.column_uses);
                             if (res.has_error()) {
                                 return res.error();
                             }
@@ -514,12 +524,12 @@ namespace services::dispatcher {
                             break;
                         }
                         side_t side = side_t::left;
-                        auto field = find_types(resource, star_key, *schema_left);
+                        auto field = find_types(resource, star_key, *schema_left, context.column_uses);
                         if (field.has_error()) {
                             if (schema_right == nullptr) {
                                 return field.error();
                             }
-                            field = find_types(resource, star_key, *schema_right);
+                            field = find_types(resource, star_key, *schema_right, context.column_uses);
                             if (field.has_error()) {
                                 return field.error();
                             }
@@ -645,25 +655,14 @@ namespace services::dispatcher {
                              std::pmr::string{"type: \'" + alias + "\' is not registered in catalog", resource});
     }
 
-    core::error_t convert_column_defaults(std::pmr::memory_resource* resource,
-                                          const components::casts::cast_registry_t* cast_registry,
-                                          const components::graph_execution_context& execution_context,
-                                          std::vector<components::table::column_definition_t>& columns) {
-        // Shared with ALTER TABLE ADD COLUMN (services/collection/executor.cpp).
-        const auto gate_persistable = [&](const components::table::column_definition_t& column) {
-            std::string encoded;
-            return components::catalog::encode_default_spec(resource, column.default_value(), encoded);
-        };
-        for (auto& column : columns) {
-            if (!column.has_default_value()) {
-                continue;
-            }
-            if (column.default_value().type() == column.type()) {
-                if (auto ec = gate_persistable(column); ec.contains_error()) {
-                    return ec;
-                }
-                continue;
-            }
+    core::error_t convert_column_default(std::pmr::memory_resource* resource,
+                                         const components::casts::cast_registry_t* cast_registry,
+                                         const components::graph_execution_context& execution_context,
+                                         components::table::column_definition_t& column) {
+        if (!column.has_default_value()) {
+            return core::error_t::no_error();
+        }
+        if (column.default_value().type() != column.type()) {
             const auto& written = column.default_value();
             auto conversion =
                 cast_registry->resolve(written.type(), column.type(), components::casts::cast_type::assignment);
@@ -680,11 +679,9 @@ namespace services::dispatcher {
                 return error;
             }
             column.set_default_value(converted.value(0));
-            if (auto ec = gate_persistable(column); ec.contains_error()) {
-                return ec;
-            }
         }
-        return core::error_t::no_error();
+        std::string encoded;
+        return components::catalog::encode_default_spec(resource, column.default_value(), encoded);
     }
 
     core::error_t gate_persistable_type(std::pmr::memory_resource* resource,
@@ -888,7 +885,7 @@ namespace services::dispatcher {
                     if (tbl) {
                         relkind_computed = (tbl->relkind == 'g');
                         for (const auto& column : tbl->columns) {
-                            table_schema.emplace_back(catalog_column(context, visible_alias, *tbl, column));
+                            table_schema.emplace_back(catalog_column(visible_alias, *tbl, column));
                         }
                     } else {
                         if (!agg_dbname_s.empty() &&
@@ -946,7 +943,8 @@ namespace services::dispatcher {
                             context.function_registry,
                             context.execution_context,
                             components::compute::create_mask(components::compute::function_type_t::vector,
-                                                             components::compute::function_type_t::aggregate)};
+                                                             components::compute::function_type_t::aggregate),
+                            context.column_uses};
                         for (auto& expr : node_group->expressions()) {
                             if (expr->group() == expression_group::aggregate) {
                                 reduces = true;
@@ -1007,7 +1005,7 @@ namespace services::dispatcher {
                                                                   resource});
                         }
                         for (auto& on_key : aggregate_node->distinct_on_keys()) {
-                            auto r = validation::find_types(resource, on_key, incoming_schema);
+                            auto r = validation::find_types(resource, on_key, incoming_schema, context.column_uses);
                             if (r.has_error()) {
                                 return r.convert_error<named_schema>();
                             }
@@ -1084,7 +1082,7 @@ namespace services::dispatcher {
                                 continue;
                             }
                             components::expressions::key_t k_copy(k_ref);
-                            auto field = validation::find_types(resource, k_copy, incoming_schema);
+                            auto field = validation::find_types(resource, k_copy, incoming_schema, context.column_uses);
                             if (field.has_error()) {
                                 return field.convert_error<named_schema>();
                             }
@@ -1204,7 +1202,11 @@ namespace services::dispatcher {
                                         ? scalar_expr->key()
                                         : std::get<components::expressions::key_t>(scalar_expr->params().front());
                                 if (key.path().empty()) {
-                                    auto validated_key = validation::validate_key(resource, key, &incoming_schema);
+                                    auto validated_key = validation::validate_key(resource,
+                                                                                  key,
+                                                                                  &incoming_schema,
+                                                                                  nullptr,
+                                                                                  context.column_uses);
                                     if (validated_key.has_error()) {
                                         return validated_key.convert_error<named_schema>();
                                     }
@@ -1233,7 +1235,8 @@ namespace services::dispatcher {
                                 if (scalar_expr->type() != scalar_type::constant) {
                                     auto res = impl::resolve_key_paths_in_group(resource,
                                                                                 scalar_expr->params(),
-                                                                                incoming_schema);
+                                                                                incoming_schema,
+                                                                                context.column_uses);
                                     if (res.has_error()) {
                                         return res.convert_error<named_schema>();
                                     }
@@ -1335,9 +1338,11 @@ namespace services::dispatcher {
                         return result_schema;
                     }
                     // No projection: every incoming column is read (a bare `SELECT *`).
-                    for (const auto& column : incoming_schema) {
-                        if (column.uses != nullptr) {
-                            column.uses->push_back(column.origin);
+                    if (context.column_uses != nullptr) {
+                        for (const auto& column : incoming_schema) {
+                            if (column.origin.table_oid != components::catalog::INVALID_OID) {
+                                context.column_uses->push_back(column.origin);
+                            }
                         }
                     }
                     return incoming_schema;
@@ -1362,7 +1367,7 @@ namespace services::dispatcher {
                         }
                         // Copy before find_types (mutates via set_path) and erase (invalidates it).
                         components::expressions::key_t k_copy(k_ref);
-                        auto field = validation::find_types(resource, k_copy, incoming_schema);
+                        auto field = validation::find_types(resource, k_copy, incoming_schema, context.column_uses);
                         if (field.has_error()) {
                             return field.convert_error<named_schema>();
                         }
@@ -1419,7 +1424,11 @@ namespace services::dispatcher {
                         // Reading a grouping key yields one value per group.
                         key.cardinality = cardinality_t::group;
                         if (scalar_expr->params().empty()) {
-                            auto res = validation::validate_key(resource, scalar_expr->key(), &incoming_schema);
+                            auto res = validation::validate_key(resource,
+                                                                scalar_expr->key(),
+                                                                &incoming_schema,
+                                                                nullptr,
+                                                                context.column_uses);
                             if (res.has_error()) {
                                 return res.convert_error<named_schema>();
                             }
@@ -1436,7 +1445,8 @@ namespace services::dispatcher {
                             context.cast_registry,
                             context.function_registry,
                             context.execution_context,
-                            components::compute::create_mask(components::compute::function_type_t::vector)};
+                            components::compute::create_mask(components::compute::function_type_t::vector),
+                            context.column_uses};
                         auto& operand = std::get<expression_ptr>(scalar_expr->params().front());
                         if (auto error = validation::resolve_expression(operand, key_context); error.contains_error()) {
                             return error;
@@ -1467,6 +1477,7 @@ namespace services::dispatcher {
                             context.function_registry,
                             context.execution_context,
                             components::compute::create_mask(components::compute::function_type_t::vector),
+                            context.column_uses,
                             nullptr,
                             keys};
                         expression_ptr expression{scalar_expr};
@@ -1492,6 +1503,7 @@ namespace services::dispatcher {
                         components::compute::create_mask(components::compute::function_type_t::vector,
                                                          components::compute::function_type_t::aggregate,
                                                          components::compute::function_type_t::expand),
+                        context.column_uses,
                         nullptr,
                         &group_keys};
                     for (auto& expr : node_group->expressions()) {
@@ -1531,7 +1543,11 @@ namespace services::dispatcher {
                                     scalar_expr->params().empty()
                                         ? scalar_expr->key()
                                         : std::get<components::expressions::key_t>(scalar_expr->params().front());
-                                auto res = validation::validate_key(resource, key, &grouping_schema);
+                                auto res = validation::validate_key(resource,
+                                                                    key,
+                                                                    &grouping_schema,
+                                                                    nullptr,
+                                                                    context.column_uses);
                                 if (res.has_error()) {
                                     return res.convert_error<named_schema>();
                                 }
@@ -1557,7 +1573,11 @@ namespace services::dispatcher {
                             } else if (scalar_expr->type() == scalar_type::group_field) {
                                 if (scalar_expr->params().empty()) {
                                     auto& key = scalar_expr->key();
-                                    auto res = validation::validate_key(resource, key, &incoming_schema);
+                                    auto res = validation::validate_key(resource,
+                                                                        key,
+                                                                        &incoming_schema,
+                                                                        nullptr,
+                                                                        context.column_uses);
                                     if (res.has_error()) {
                                         return res.convert_error<named_schema>();
                                     }
@@ -1584,8 +1604,10 @@ namespace services::dispatcher {
                                 result.emplace_back(type_from_t{node->result_alias(), constant_type});
                                 key_schema.emplace_back(result.back());
                             } else if (is_case_or_arithmetic(scalar_expr->type())) {
-                                auto res =
-                                    impl::resolve_key_paths_in_group(resource, scalar_expr->params(), grouping_schema);
+                                auto res = impl::resolve_key_paths_in_group(resource,
+                                                                            scalar_expr->params(),
+                                                                            grouping_schema,
+                                                                            context.column_uses);
                                 if (res.has_error()) {
                                     post_agg_indices.push_back(i);
                                 } else {
@@ -1608,7 +1630,8 @@ namespace services::dispatcher {
                                 context.cast_registry,
                                 context.function_registry,
                                 context.execution_context,
-                                components::compute::create_mask(components::compute::function_type_t::aggregate)};
+                                components::compute::create_mask(components::compute::function_type_t::aggregate),
+                                context.column_uses};
                             if (auto error = validation::resolve_expression(expr, aggregate_context);
                                 error.contains_error()) {
                                 return error;
@@ -1634,7 +1657,10 @@ namespace services::dispatcher {
                         auto& expr = node_group->expressions()[pa_idx];
                         auto* scalar_expr = reinterpret_cast<scalar_expression_t*>(expr.get());
 
-                        auto res2 = impl::resolve_key_paths_in_group(resource, scalar_expr->params(), post_agg_schema);
+                        auto res2 = impl::resolve_key_paths_in_group(resource,
+                                                                     scalar_expr->params(),
+                                                                     post_agg_schema,
+                                                                     context.column_uses);
                         if (res2.has_error()) {
                             return res2.convert_error<named_schema>();
                         }
@@ -1660,7 +1686,11 @@ namespace services::dispatcher {
                                         ? scalar_expr->key()
                                         : std::get<components::expressions::key_t>(scalar_expr->params().front());
                                 if (key.path().empty()) {
-                                    auto res = validation::validate_key(resource, key, &key_schema);
+                                    auto res = validation::validate_key(resource,
+                                                                        key,
+                                                                        &key_schema,
+                                                                        nullptr,
+                                                                        context.column_uses);
                                     if (res.has_error()) {
                                         if (agg_cursor >= agg_result_positions.size()) {
                                             return res.convert_error<named_schema>();
@@ -1670,7 +1700,10 @@ namespace services::dispatcher {
                                 }
                             } else if (scalar_expr->type() != scalar_type::constant &&
                                        scalar_expr->type() != scalar_type::star_expand) {
-                                auto res = impl::resolve_key_paths_in_group(resource, scalar_expr->params(), result);
+                                auto res = impl::resolve_key_paths_in_group(resource,
+                                                                            scalar_expr->params(),
+                                                                            result,
+                                                                            context.column_uses);
                                 if (res.has_error()) {
                                     return res.convert_error<named_schema>();
                                 }
@@ -1708,11 +1741,11 @@ namespace services::dispatcher {
                             continue;
                         }
                         auto& skey = components::expressions::as_key(sort_expr->operand());
-                        auto field_in_result = validation::find_types(resource, skey, result);
+                        auto field_in_result = validation::find_types(resource, skey, result, context.column_uses);
                         if (!field_in_result.has_error() && !field_in_result.value().empty()) {
                             continue;
                         }
-                        auto field = validation::find_types(resource, skey, incoming_schema);
+                        auto field = validation::find_types(resource, skey, incoming_schema, context.column_uses);
                         if (!field.has_error() && !field.value().empty()) {
                             auto hidden_expr = make_scalar_expression(resource, scalar_type::get_field, skey);
                             node_group->append_expression(hidden_expr);
@@ -1726,7 +1759,7 @@ namespace services::dispatcher {
                 }
                 if (!aggregate_node->distinct_on_keys().empty()) {
                     for (auto& on_key : aggregate_node->distinct_on_keys()) {
-                        auto r = validation::find_types(resource, on_key, result);
+                        auto r = validation::find_types(resource, on_key, result, context.column_uses);
                         if (r.has_error()) {
                             return r.convert_error<named_schema>();
                         }
@@ -2018,7 +2051,8 @@ namespace services::dispatcher {
                             std::pmr::string{"INSERT has more target columns than expressions", resource});
                     }
                     for (auto& key : insert_node->key_translation()) {
-                        auto key_res = validation::validate_key(resource, key, &table_schema);
+                        auto key_res =
+                            validation::validate_key(resource, key, &table_schema, nullptr, context.column_uses);
                         if (key_res.has_error()) {
                             return key_res.convert_error<named_schema>();
                         }
@@ -2218,7 +2252,8 @@ namespace services::dispatcher {
                 if (node->type() == node_type::update_t) {
                     auto* node_update = reinterpret_cast<node_update_t*>(node);
                     for (auto& expr : node_update->updates()) {
-                        auto target_res = validation::find_types(resource, expr->key(), table_schema);
+                        auto target_res =
+                            validation::find_types(resource, expr->key(), table_schema, context.column_uses);
                         if (target_res.has_error()) {
                             return target_res.convert_error<named_schema>();
                         }
@@ -2233,6 +2268,7 @@ namespace services::dispatcher {
                             context.function_registry,
                             context.execution_context,
                             components::compute::create_mask(components::compute::function_type_t::vector),
+                            context.column_uses,
                             source_schema};
                         if (auto error = validation::resolve_expression(expr, assignment_context);
                             error.contains_error()) {
@@ -2313,7 +2349,7 @@ namespace services::dispatcher {
                 // The encoders below have no error channel (abort in Debug, wrong rows under NDEBUG).
                 const bool ordered_index = idx_node->type() != components::logical_plan::index_type::hashed;
                 for (auto& key : keys) {
-                    auto key_res = validation::validate_key(resource, key, &table_schema);
+                    auto key_res = validation::validate_key(resource, key, &table_schema, nullptr, context.column_uses);
                     if (key_res.has_error()) {
                         return key_res.convert_error<named_schema>();
                     }
@@ -2359,7 +2395,8 @@ namespace services::dispatcher {
                                                                     context.cast_registry,
                                                                     context.function_registry,
                                                                     context.execution_context,
-                                                                    check_expr_allowed_functions()};
+                                                                    check_expr_allowed_functions(),
+                                                                    context.column_uses};
                 constraint_context.required_type = components::types::complex_logical_type{logical_type::BOOLEAN};
                 bool saw_reduction = false;
                 if (auto error = validation::resolve_expression(expression, constraint_context, &saw_reduction);

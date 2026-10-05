@@ -7,9 +7,9 @@
 namespace components::logical_plan {
 
     bool resolve_entry_t::operator==(const resolve_entry_t& other) const noexcept {
-        return dbname == other.dbname && relname == other.relname && type_name == other.type_name &&
-               uid == other.uid && schema == other.schema && namespace_of == other.namespace_of &&
-               direction == other.direction && target == other.target && names_only == other.names_only;
+        return dbname == other.dbname && relname == other.relname && type_name == other.type_name && uid == other.uid &&
+               schema == other.schema && namespace_of == other.namespace_of && direction == other.direction &&
+               target == other.target && names_only == other.names_only;
     }
 
     node_catalog_resolve_t::node_catalog_resolve_t(std::pmr::memory_resource* resource, resolve_kind kind)
@@ -34,19 +34,6 @@ namespace components::logical_plan {
         for (std::size_t index = 0; index < entries_.size(); index++) {
             const auto& entry = entries_[index];
             if (entry.uid == uid && entry.dbname == dbname && entry.schema == schema && entry.relname == name) {
-                return index;
-            }
-        }
-        return resolve_entry_t::no_target;
-    }
-
-    std::size_t node_catalog_resolve_t::find(std::string_view dbname, std::string_view name) const noexcept {
-        for (std::size_t index = 0; index < entries_.size(); index++) {
-            const auto& entry = entries_[index];
-            if (entry.dbname != dbname) {
-                continue;
-            }
-            if (kind_ == resolve_kind::type ? entry.type_name == name : entry.relname == name) {
                 return index;
             }
         }
@@ -145,24 +132,13 @@ namespace components::logical_plan {
         return nullptr;
     }
 
-    const resolve_entry_t* catalog_resolves_t::table_entry(std::string_view dbname,
-                                                           std::string_view relname) const noexcept {
-        return table_entry(std::string_view{}, dbname, std::string_view{}, relname);
-    }
-
-    const resolve_entry_t* catalog_resolves_t::table_entry(std::string_view uid,
-                                                           std::string_view dbname,
-                                                           std::string_view schema,
-                                                           std::string_view relname) const noexcept {
-        if (!tables || relname.empty()) {
+    const resolve_entry_t* catalog_resolves_t::table_entry(const qualified_name_t& written) const noexcept {
+        if (!tables || written.collection.t.empty()) {
             return nullptr;
         }
-        const auto index = tables->find(uid, dbname, schema, relname);
+        const auto index =
+            tables->find(written.unique_identifier.t, written.database.t, written.schema.t, written.collection.t);
         return index == resolve_entry_t::no_target ? nullptr : &tables->entries()[index];
-    }
-
-    const resolve_entry_t* catalog_resolves_t::table_entry(const qualified_name_t& written) const noexcept {
-        return table_entry(written.unique_identifier.t, written.database.t, written.schema.t, written.collection.t);
     }
 
     const resolve_entry_t* catalog_resolves_t::type_entry(std::string_view dbname,
@@ -170,8 +146,12 @@ namespace components::logical_plan {
         if (!types || type_name.empty()) {
             return nullptr;
         }
-        const auto index = types->find(dbname, type_name);
-        return index == resolve_entry_t::no_target ? nullptr : &types->entries()[index];
+        for (const auto& entry : types->entries()) {
+            if (entry.dbname == dbname && entry.type_name == type_name) {
+                return &entry;
+            }
+        }
+        return nullptr;
     }
 
     components::catalog::oid_t catalog_resolves_t::namespace_oid(std::string_view dbname) const noexcept {
@@ -181,8 +161,15 @@ namespace components::logical_plan {
 
     const resolved_table_metadata_t* catalog_resolves_t::table_md(std::string_view dbname,
                                                                   std::string_view relname) const noexcept {
-        const auto* entry = table_entry(dbname, relname);
-        return (entry && entry->table_md.has_value()) ? &entry->table_md.value() : nullptr;
+        if (!tables || relname.empty()) {
+            return nullptr;
+        }
+        const auto index = tables->find(std::string_view{}, dbname, std::string_view{}, relname);
+        if (index == resolve_entry_t::no_target) {
+            return nullptr;
+        }
+        const auto& entry = tables->entries()[index];
+        return entry.table_md.has_value() ? &entry.table_md.value() : nullptr;
     }
 
     const resolved_table_metadata_t* catalog_resolves_t::table_md(components::catalog::oid_t table_oid) const noexcept {

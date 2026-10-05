@@ -522,7 +522,7 @@ TEST_CASE("services::dispatcher::alter_add_column_default_is_coerced_like_create
         REQUIRE(cur->size() == 1);
         const auto v = cur->value(0, 0);
         REQUIRE_FALSE(v.is_null());
-        // INTEGER, not the BIGINT the literal started as: convert_column_defaults ran.
+        // INTEGER, not the BIGINT the literal started as: convert_column_default ran.
         CHECK(v.type().type() == logical_type::INTEGER);
         CHECK(v.value<int32_t>() == 7);
     }

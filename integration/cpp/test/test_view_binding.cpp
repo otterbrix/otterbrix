@@ -220,6 +220,28 @@ namespace {
                        catalog::encode_prorettype(outputs));
     }
 
+    // No statement writes a pg_depend row without a deptype; this does, to see a DROP refuse the corrupt catalog.
+    void forge_depend_row_without_deptype(view_space_t& space, catalog::oid_t objid, catalog::oid_t refobjid) {
+        auto* resource = space.dispatcher()->resource();
+        components::table::transaction_data td{0, 0};
+        td.snapshot_horizon = std::numeric_limits<uint64_t>::max();
+        components::execution_context_t ctx{otterbrix::session_id_t{}, td, {}};
+        auto row = catalog::build_pg_depend_row(resource,
+                                                catalog::well_known_oid::pg_class_table,
+                                                objid,
+                                                catalog::well_known_oid::pg_class_table,
+                                                refobjid,
+                                                'n');
+        row.data[4].validity().set_invalid(0);
+        auto [_a, appended] = actor_zeta::otterbrix::send(space.disk_address(),
+                                                          &services::disk::manager_disk_t::append_pg_catalog_row,
+                                                          ctx,
+                                                          catalog::well_known_oid::pg_depend_table,
+                                                          std::move(row));
+        spin_until_ready(appended);
+        REQUIRE_FALSE(std::move(appended).take_ready().has_error());
+    }
+
     bool depends_on(otterbrix::wrapper_dispatcher_t* d, catalog::oid_t objid, catalog::oid_t refobjid) {
         return run_ok(d,
                       "SELECT refobjid FROM pg_catalog.pg_depend WHERE objid = " + std::to_string(objid) +
@@ -1080,4 +1102,20 @@ TEST_CASE("integration::cpp::view_binding::a_function_signature_outside_its_gram
     REQUIRE(read->is_error());
     CHECK(read->get_error().type == core::error_code_t::data_corruption);
     CHECK(error_text(read) == "pg_proc.proargmatchers \"garbage\" is outside its grammar");
+}
+
+// A dependency without a deptype is a corrupt catalog: DROP ... CASCADE cannot tell what the edge means and
+// refuses, instead of reading it as a normal one.
+TEST_CASE("integration::cpp::view_binding::drop_cascade_over_a_dependency_without_deptype_is_corruption") {
+    view_space_t space(config_for("depend_without_deptype"));
+    auto* d = space.dispatcher();
+    seed(d);
+    run_ok(d, "CREATE VIEW vb.v AS SELECT a FROM vb.t;");
+    forge_depend_row_without_deptype(space, oid_of(d, "v"), oid_of(d, "t"));
+
+    auto dropped = exec(d, "DROP TABLE vb.t CASCADE;");
+    INFO("error: " << error_text(dropped));
+    REQUIRE(dropped->is_error());
+    CHECK(dropped->get_error().type == core::error_code_t::data_corruption);
+    CHECK(run_ok(d, "SELECT relname FROM pg_catalog.pg_class WHERE relname = 't';")->size() == 1);
 }

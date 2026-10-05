@@ -4,6 +4,7 @@
 #include <components/catalog/results/resolve_result.hpp>
 #include <components/types/logical_value.hpp>
 #include <components/vector/data_chunk.hpp>
+#include <core/result_wrapper.hpp>
 
 #include <cstdint>
 #include <string>
@@ -124,6 +125,10 @@ namespace components::catalog {
         constexpr std::uint64_t refobjid = 3;
         constexpr std::uint64_t deptype = 4;
     } // namespace pg_depend_col
+
+    // pg_depend.deptype of a row read with every column. Every edge is written with one; NULL or empty text is a
+    // corrupt catalog (data_corruption), never read as a normal edge. The message lives on the chunk's resource.
+    core::result_wrapper_t<char> deptype_of(const vector::data_chunk_t& chunk, std::uint64_t row);
     namespace pg_proc_col {
         constexpr std::uint64_t oid = 0;
         constexpr std::uint64_t proname = 1;

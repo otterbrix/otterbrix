@@ -74,4 +74,23 @@ namespace components::catalog {
         return r;
     }
 
+    core::result_wrapper_t<char> deptype_of(const vector::data_chunk_t& chunk, std::uint64_t row) {
+        if (!chunk.is_null(pg_depend_col::deptype, row)) {
+            const auto text = chunk.get_value<std::string_view>(pg_depend_col::deptype, row);
+            if (!text.empty()) {
+                return text.front();
+            }
+        }
+        const auto oid_at = [&chunk, row](std::uint64_t column) {
+            return chunk.is_null(column, row) ? std::string{"?"}
+                                              : std::to_string(chunk.get_value<std::uint32_t>(column, row));
+        };
+        return core::error_t{core::error_code_t::data_corruption,
+                             std::pmr::string{"the pg_depend row " + oid_at(pg_depend_col::classid) + "/" +
+                                                  oid_at(pg_depend_col::objid) + " -> " +
+                                                  oid_at(pg_depend_col::refclassid) + "/" +
+                                                  oid_at(pg_depend_col::refobjid) + " has no deptype",
+                                              chunk.resource()}};
+    }
+
 } // namespace components::catalog

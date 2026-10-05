@@ -181,24 +181,15 @@ namespace components::operators {
                     continue;
                 const auto dep_cls = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
                 const auto dep_oid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
-                const bool deptype_null = chunk.is_null(catalog::pg_depend_col::deptype, i);
-                const auto deptype_cell = deptype_null
-                                              ? std::string_view{}
-                                              : chunk.get_value<std::string_view>(catalog::pg_depend_col::deptype, i);
 
                 if (dep_cls != catalog::well_known_oid::pg_constraint_table)
                     continue;
-                if (deptype_null) {
-                    std::string msg = "alter_column_drop: a pg_depend row for constraint oid ";
-                    msg += std::to_string(dep_oid);
-                    msg += " has no readable deptype — whether it blocks dropping column \"";
-                    msg += column_name_.t;
-                    msg += "\" cannot be determined";
-                    set_error(
-                        core::error_t{core::error_code_t::schema_error, std::pmr::string{std::move(msg), resource_}});
+                auto deptype = catalog::deptype_of(chunk, i);
+                if (deptype.has_error()) {
+                    set_error(core::error_on(resource_, deptype.error()));
                     co_return;
                 }
-                if (!deptype_cell.empty() && deptype_cell[0] == 'n')
+                if (deptype.value() == catalog::deptype::normal)
                     blocking.push_back(dep_oid);
             }
         }

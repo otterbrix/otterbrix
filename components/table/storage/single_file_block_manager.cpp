@@ -37,6 +37,43 @@ namespace components::table::storage {
         constexpr uint64_t header_slot_offset(uint64_t iteration) {
             return (iteration % 2 == 1) ? SECTOR_SIZE : (2 * SECTOR_SIZE);
         }
+
+        // The header create_new_database() writes: the only root a file carries before its first checkpoint.
+        // The file size is not part of the signature (write-through fills data blocks under this header).
+        constexpr bool header_is_create_time(const database_header_t& h) {
+            return h.iteration == 0 && h.meta_block == INVALID_INDEX && h.free_list == INVALID_INDEX &&
+                   h.block_count == 0;
+        }
+
+        // Both database header slots as read back; the active root is the CRC-valid one with the higher iteration.
+        struct header_slots_t {
+            database_header_t slot1{};
+            database_header_t slot2{};
+            bool slot1_read = false;
+            bool slot2_read = false;
+
+            bool slot1_valid() const { return slot1_read && slot1.checksum_ok(); }
+            bool slot2_valid() const { return slot2_read && slot2.checksum_ok(); }
+
+            // nullptr when neither slot is usable: the caller names that refusal itself.
+            const database_header_t* active() const {
+                const bool valid1 = slot1_valid();
+                const bool valid2 = slot2_valid();
+                if (!valid1 && !valid2) {
+                    return nullptr;
+                }
+                return (valid1 && (!valid2 || slot1.iteration >= slot2.iteration)) ? &slot1 : &slot2;
+            }
+        };
+
+        // read_at(destination, size, offset) -> bool reads one positional range of the file.
+        template<typename ReadAt>
+        header_slots_t read_header_slots(ReadAt&& read_at) {
+            header_slots_t slots;
+            slots.slot1_read = read_at(&slots.slot1, sizeof(slots.slot1), SECTOR_SIZE);
+            slots.slot2_read = read_at(&slots.slot2, sizeof(slots.slot2), 2 * SECTOR_SIZE);
+            return slots;
+        }
     } // namespace
 
     single_file_block_manager_t::single_file_block_manager_t(buffer_manager_t& buffer_manager,
@@ -60,28 +97,25 @@ namespace components::table::storage {
                                                             std::pmr::memory_resource* resource) {
         std::ifstream f(path, std::ios::binary);
         main_header_t main_header;
-        database_header_t slot1{};
-        database_header_t slot2{};
         if (!f || !f.read(reinterpret_cast<char*>(&main_header), sizeof(main_header)) || !main_header.magic_ok()) {
             return core::error_t(core::error_code_t::data_corruption,
                                  std::pmr::string{"Cannot read the main header of " + path +
                                                       " (missing, short, or bad magic); it is not a database file",
                                                   resource});
         }
-        const bool slot1_valid = f.seekg(static_cast<std::streamoff>(SECTOR_SIZE)) &&
-                                 f.read(reinterpret_cast<char*>(&slot1), sizeof(slot1)) && slot1.checksum_ok();
-        f.clear();
-        const bool slot2_valid = f.seekg(static_cast<std::streamoff>(2 * SECTOR_SIZE)) &&
-                                 f.read(reinterpret_cast<char*>(&slot2), sizeof(slot2)) && slot2.checksum_ok();
-        if (!slot1_valid && !slot2_valid) {
+        const auto slots = read_header_slots([&f](void* destination, uint64_t size, uint64_t offset) {
+            f.clear();
+            return static_cast<bool>(f.seekg(static_cast<std::streamoff>(offset)) &&
+                                     f.read(static_cast<char*>(destination), static_cast<std::streamsize>(size)));
+        });
+        const auto* active = slots.active();
+        if (active == nullptr) {
             return core::error_t(core::error_code_t::data_corruption,
                                  std::pmr::string{"No recoverable root in " + path +
                                                       ": neither database header slot is usable",
                                                   resource});
         }
-        const database_header_t& active =
-            (slot1_valid && (!slot2_valid || slot1.iteration >= slot2.iteration)) ? slot1 : slot2;
-        return active.meta_block == INVALID_INDEX;
+        return active->meta_block == INVALID_INDEX;
     }
 
 #ifdef DEV_MODE
@@ -205,14 +239,11 @@ namespace components::table::storage {
         }
 
         // Branched, never asserted — an abort here would make the database permanently unopenable.
-        database_header_t header1{};
-        database_header_t header2{};
-        const bool header1_read = handle_->read(&header1, sizeof(header1), SECTOR_SIZE);
-        const bool header2_read = handle_->read(&header2, sizeof(header2), 2 * SECTOR_SIZE);
-        const bool header1_valid = header1_read && header1.checksum_ok();
-        const bool header2_valid = header2_read && header2.checksum_ok();
-
-        if (!header1_valid && !header2_valid) {
+        const auto slots = read_header_slots([this](void* destination, uint64_t size, uint64_t offset) {
+            return handle_->read(destination, size, offset);
+        });
+        const auto* active_slot = slots.active();
+        if (active_slot == nullptr) {
             auto describe_slot = [](const char* name, bool read_ok, const database_header_t& h) -> std::string {
                 if (!read_ok) {
                     return std::string(name) + ": unreadable (positional read failed)";
@@ -231,14 +262,13 @@ namespace components::table::storage {
             return core::error_t(core::error_code_t::data_corruption,
                                  std::pmr::string{"No recoverable root in " + path_ +
                                                       ": neither database header slot is usable. " +
-                                                      describe_slot("slot 1", header1_read, header1) + "; " +
-                                                      describe_slot("slot 2", header2_read, header2) +
+                                                      describe_slot("slot 1", slots.slot1_read, slots.slot1) + "; " +
+                                                      describe_slot("slot 2", slots.slot2_read, slots.slot2) +
                                                       ". The file is left byte-identical for offline inspection.",
                                                   buffer_manager.resource()});
         }
 
-        const database_header_t& active =
-            (header1_valid && (!header2_valid || header1.iteration >= header2.iteration)) ? header1 : header2;
+        const database_header_t& active = *active_slot;
 
         // The file size says nothing here: write-through fills data blocks before any root exists, so a
         // never-checkpointed file is any size >= BLOCK_START. The CREATE-time header itself is the signature.
@@ -686,12 +716,11 @@ namespace components::table::storage {
                                  (write_ok ? "write ok" : "write failed") + ", " +
                                  (sync_ok ? "fsync ok" : "fsync failed") + ")";
 
-        database_header_t slot1{};
-        database_header_t slot2{};
-        const bool slot1_valid = handle_->read(&slot1, sizeof(slot1), SECTOR_SIZE) && slot1.checksum_ok();
-        const bool slot2_valid = handle_->read(&slot2, sizeof(slot2), 2 * SECTOR_SIZE) && slot2.checksum_ok();
-
-        if (!slot1_valid && !slot2_valid) {
+        const auto slots = read_header_slots([this](void* destination, uint64_t size, uint64_t offset) {
+            return handle_->read(destination, size, offset);
+        });
+        const auto* active_slot = slots.active();
+        if (active_slot == nullptr) {
             durable_root_indeterminate_ = true;
             return latch_durability_error(core::error_t(
                 core::error_code_t::data_corruption,
@@ -700,8 +729,7 @@ namespace components::table::storage {
                                  buffer_manager.resource()}));
         }
 
-        const database_header_t& active =
-            (slot1_valid && (!slot2_valid || slot1.iteration >= slot2.iteration)) ? slot1 : slot2;
+        const database_header_t& active = *active_slot;
 
         if (active.iteration == next_iteration && sync_ok) {
             iteration_ = next_iteration;

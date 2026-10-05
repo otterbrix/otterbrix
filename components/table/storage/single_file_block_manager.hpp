@@ -67,13 +67,6 @@ namespace components::table::storage {
     };
     static_assert(sizeof(database_header_t) == SECTOR_SIZE, "database_header_t must be SECTOR_SIZE");
 
-    // The header create_new_database() writes: the only root a file carries before its first checkpoint. The file
-    // size is not part of the signature (write-through fills data blocks under this header).
-    constexpr bool header_is_create_time(const database_header_t& h) {
-        return h.iteration == 0 && h.meta_block == INVALID_INDEX && h.free_list == INVALID_INDEX &&
-               h.block_count == 0;
-    }
-
     class single_file_block_manager_t : public block_manager_t {
     public:
         // Reads the newest CRC-valid root without opening the table (no WRITE_LOCK) and answers whether it names no

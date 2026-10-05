@@ -489,7 +489,52 @@ namespace components::operators {
         // Driven once per mid-pump buffer-full and once at the final drive; only the final call emits output.
         const bool is_final = ctx->dml_flush_is_final;
 
-        if (output_ && output_->size() > 0) {
+        if (storage_sink_) {
+            if (output_ && output_->size() > 0) {
+                chunks_vector_t ignored{resource_};
+                auto& chunks = output_->chunks();
+                for (std::size_t i = 0; i < chunks.size(); ++i) {
+                    auto& out_chunk = chunks[i];
+                    if (out_chunk.size() == 0) {
+                        continue;
+                    }
+                    if (!returning_.empty()) {
+                        data_chunk_t* right_batch =
+                            i < returning_from_chunks_.size() ? &returning_from_chunks_[i] : nullptr;
+                        auto proj = evaluate_projection(resource_,
+                                                        *ctx->function_registry,
+                                                        returning_,
+                                                        &out_chunk,
+                                                        ctx->parameters,
+                                                        ctx->execution_context,
+                                                        &returning_graph_,
+                                                        right_batch);
+                        if (proj.has_error()) {
+                            set_error(proj.error());
+                            mark_failed();
+                            co_return;
+                        }
+                        returning_accum_.emplace_back(std::move(proj.value()));
+                    }
+                    const uint64_t rows = out_chunk.size();
+                    if (auto error = storage_sink_->push(ctx, std::move(out_chunk), ignored); error.contains_error()) {
+                        set_error(error);
+                        mark_failed();
+                        co_return;
+                    }
+                    affected_rows_ += rows;
+                }
+                chunks.clear();
+                index_old_chunks_.clear();
+                returning_from_chunks_.clear();
+                co_await storage_sink_->await_async_and_resume(ctx);
+                if (storage_sink_->has_error()) {
+                    set_error(storage_sink_->get_error());
+                    mark_failed();
+                    co_return;
+                }
+            }
+        } else if (output_ && output_->size() > 0) {
             components::execution_context_t exec_ctx{ctx->session,
                                                      ctx->txn,
                                                      ctx->execution_context.timezone_offset,
@@ -684,17 +729,23 @@ namespace components::operators {
         } else {
             if (returning_accum_.empty()) {
                 // Nothing matched, but we still have to return correct columns
-                auto [_rt, rtf] = actor_zeta::otterbrix::send(ctx->disk_address,
-                                                              &services::disk::manager_disk_t::storage_types,
-                                                              ctx->session,
-                                                              table_oid_);
-                auto returning_types = co_await std::move(rtf);
-                if (returning_types.has_error()) {
-                    set_error(returning_types.error());
-                    mark_failed();
-                    co_return;
+                std::pmr::vector<types::complex_logical_type> columns{resource_};
+                if (storage_sink_) {
+                    columns = storage_columns_;
+                } else {
+                    auto [_rt, rtf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                                  &services::disk::manager_disk_t::storage_types,
+                                                                  ctx->session,
+                                                                  table_oid_);
+                    auto returning_types = co_await std::move(rtf);
+                    if (returning_types.has_error()) {
+                        set_error(returning_types.error());
+                        mark_failed();
+                        co_return;
+                    }
+                    columns = std::move(returning_types.value());
                 }
-                vector::data_chunk_t empty(resource_, returning_types.value(), 0);
+                vector::data_chunk_t empty(resource_, columns, 0);
                 empty.set_cardinality(0);
                 auto proj = evaluate_projection(resource_,
                                                 *ctx->function_registry,

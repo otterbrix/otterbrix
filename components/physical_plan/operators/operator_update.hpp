@@ -47,6 +47,13 @@ namespace components::operators {
         // behave as before, because guessing "no index" leaves a stale index behind.
         void set_table_has_indexes(bool value) noexcept { table_has_indexes_ = value; }
 
+        // A table with external storage: the changed rows, numbered by its scan in row_ids, go to the storage's update
+        // sink instead of the disk, the WAL, the index and the MVCC marker.
+        void set_storage_sink(operator_ptr sink, std::pmr::vector<types::complex_logical_type> columns) {
+            storage_sink_ = std::move(sink);
+            storage_columns_ = std::move(columns);
+        }
+
         // STREAMING DML (STEP 3b). Both UPDATE shapes are SINKs on the LEFT (target)
         // scan input:
         //   - SIMPLE predicate-scan UPDATE (no FROM): push() folds each scan batch
@@ -140,6 +147,8 @@ namespace components::operators {
         // per flush, so a flush-derived count would miss already-flushed matches.
         std::int64_t affected_bound_{-1};
         uint64_t matched_total_{0};
+        operator_ptr storage_sink_;
+        std::pmr::vector<types::complex_logical_type> storage_columns_{resource_};
     };
 
 } // namespace components::operators

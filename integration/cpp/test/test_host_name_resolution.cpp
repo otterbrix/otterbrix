@@ -470,13 +470,9 @@ namespace {
                 return parameter_in(compare.right(), out);
             }
             case expressions::expression_group::scalar: {
+                // A value, not a computation over a column: `amount + 1` has two operands.
                 const auto& scalar = static_cast<const expressions::scalar_expression_t&>(*expression);
-                for (const auto& param : scalar.params()) {
-                    if (parameter_in(param, out)) {
-                        return true;
-                    }
-                }
-                return false;
+                return scalar.params().size() == 1 && parameter_in(scalar.params().front(), out);
             }
             case expressions::expression_group::cast:
                 return parameter_in(static_cast<const expressions::cast_expression_t&>(*expression).child(), out);
@@ -1166,4 +1162,119 @@ TEST_CASE("integration::cpp::host_names::explain_prints_the_storage_scan_label_a
                                                 "          Remote SQL: SELECT * FROM shop.orders",
                                                 "    ->  Seq Scan on c"});
     }
+}
+
+// What one remote statement cannot say runs as otterbrix's own UPDATE / DELETE: the storage's scan numbers the
+// rows, otterbrix does the FROM / USING semi-join, the WHERE and RETURNING, and the numbers come back to the
+// storage's update or delete sink.
+TEST_CASE("integration::cpp::host_names::update_and_delete_by_row_number") {
+    HOST_TEST_BOILERPLATE("test_host_names/by_row_number")
+    REQUIRE(run(dispatcher, declare_orders)->is_success());
+    REQUIRE(run(dispatcher, "CREATE DATABASE loc;")->is_success());
+    REQUIRE(run(dispatcher, "CREATE TABLE loc.t (id BIGINT, amount BIGINT);")->is_success());
+    REQUIRE(run(dispatcher, "INSERT INTO loc.t (id, amount) VALUES (1, 111), (3, 333), (9, 999);")->is_success());
+
+    SECTION("UPDATE ... FROM a local table") {
+        auto updated = run(dispatcher,
+                           "UPDATE m2.shop.orders SET amount = t.amount FROM loc.t AS t "
+                           "WHERE m2.shop.orders.id = t.id;");
+        INFO(error_of(updated));
+        REQUIRE(updated->is_success());
+        CHECK(updated->affected_rows() == std::optional<std::uint64_t>{2});
+        CHECK(write_log() == std::vector<std::string>{"update m2.shop.orders rows 2"});
+        CHECK(backend()["m2.shop.orders"] == rows_t{{1, 111}, {2, 200}, {3, 333}});
+    }
+    SECTION("DELETE ... USING a local table") {
+        auto deleted = run(dispatcher, "DELETE FROM m2.shop.orders USING loc.t AS t WHERE m2.shop.orders.id = t.id;");
+        INFO(error_of(deleted));
+        REQUIRE(deleted->is_success());
+        CHECK(deleted->affected_rows() == std::optional<std::uint64_t>{2});
+        CHECK(write_log() == std::vector<std::string>{"delete m2.shop.orders rows 2"});
+        CHECK(backend()["m2.shop.orders"] == rows_t{{2, 200}});
+    }
+    SECTION("UPDATE ... RETURNING") {
+        auto returned =
+            run(dispatcher, "UPDATE m2.shop.orders SET amount = amount + 1 WHERE id >= 2 RETURNING id, amount;");
+        INFO(error_of(returned));
+        REQUIRE(returned->is_success());
+        CHECK(sorted_int_rows(returned) == rows_t{{2, 201}, {3, 301}});
+        CHECK(write_log() == std::vector<std::string>{"update m2.shop.orders rows 2"});
+        CHECK(backend()["m2.shop.orders"] == rows_t{{1, 100}, {2, 201}, {3, 301}});
+    }
+    SECTION("DELETE ... RETURNING, nothing matched: the columns are still typed") {
+        auto returned = run(dispatcher, "DELETE FROM m2.shop.orders WHERE id = 3 RETURNING amount;");
+        INFO(error_of(returned));
+        REQUIRE(returned->is_success());
+        CHECK(sorted_int_rows(returned) == rows_t{{300}});
+        auto none = run(dispatcher, "DELETE FROM m2.shop.orders WHERE id = 42 RETURNING amount;");
+        INFO(error_of(none));
+        REQUIRE(none->is_success());
+        CHECK(none->size() == 0);
+        CHECK(backend()["m2.shop.orders"] == rows_t{{1, 100}, {2, 200}});
+    }
+}
+
+// A storage that cannot change a row by its number refuses make_update / make_delete: what the host's rule did not
+// take as one statement is refused with the storage's own error, and nothing reaches the backend.
+TEST_CASE("integration::cpp::host_names::a_storage_without_row_numbers_refuses_the_batch_path") {
+    HOST_TEST_BOILERPLATE("test_host_names/no_row_numbers")
+    REQUIRE(run(dispatcher, declare_orders)->is_success());
+    REQUIRE(run(dispatcher, "CREATE DATABASE loc;")->is_success());
+    REQUIRE(run(dispatcher, "CREATE TABLE loc.t (id BIGINT, amount BIGINT);")->is_success());
+    no_row_numbers().insert("m2.shop.orders");
+    for (const char* sql :
+         {"UPDATE m2.shop.orders SET amount = t.amount FROM loc.t AS t WHERE m2.shop.orders.id = t.id;",
+          "DELETE FROM m2.shop.orders WHERE id = 1 RETURNING id;"}) {
+        INFO(sql);
+        auto refused = run(dispatcher, sql);
+        REQUIRE(refused->is_error());
+        CHECK(refused->get_error().type == core::error_code_t::unimplemented_yet);
+        CHECK(std::string{refused->get_error().what} ==
+              "storage \"m2.shop.orders\" cannot change a row by its number");
+    }
+    CHECK(write_log().empty());
+
+    auto simple = run(dispatcher, "UPDATE m2.shop.orders SET amount = 1 WHERE id = 1;");
+    INFO(error_of(simple));
+    REQUIRE(simple->is_success());
+    CHECK(write_log() == std::vector<std::string>{"update m2.shop.orders where column 0 set column 1"});
+}
+
+// No refusal inside BEGIN ... COMMIT: the storage learns the statement is in an explicit transaction and decides
+// itself (a ROLLBACK does not undo what it wrote, #663).
+TEST_CASE("integration::cpp::host_names::a_storage_learns_of_an_explicit_transaction") {
+    HOST_TEST_BOILERPLATE("test_host_names/write_txn")
+    REQUIRE(run(dispatcher, declare_orders)->is_success());
+    auto session = otterbrix::session_id_t();
+    REQUIRE(run(dispatcher, session, "BEGIN;")->is_success());
+    explicit_transactions().clear();
+    auto inside = run(dispatcher, session, "INSERT INTO m2.shop.orders (id, amount) VALUES (4, 400);");
+    INFO(error_of(inside));
+    REQUIRE(inside->is_success());
+    REQUIRE(run(dispatcher, session, "COMMIT;")->is_success());
+    CHECK(explicit_transactions() == std::vector<bool>{true});
+
+    explicit_transactions().clear();
+    REQUIRE(run(dispatcher, session, "INSERT INTO m2.shop.orders (id, amount) VALUES (5, 500);")->is_success());
+    CHECK(explicit_transactions() == std::vector<bool>{false});
+    CHECK(backend()["m2.shop.orders"].size() == 5);
+}
+
+// The backend's refusal (a NOT NULL or CHECK it enforces, an unreachable server) reaches the cursor unchanged, on
+// the batch path and through the host's one-statement rule alike.
+TEST_CASE("integration::cpp::host_names::a_storage_write_error_reaches_the_cursor") {
+    HOST_TEST_BOILERPLATE("test_host_names/write_error")
+    REQUIRE(run(dispatcher, declare_orders)->is_success());
+    unreachable()["m2.shop.orders"] = "server m2: new row violates check constraint \"amount_positive\"";
+    for (const char* sql : {"INSERT INTO m2.shop.orders (id, amount) VALUES (4, -1);",
+                            "UPDATE m2.shop.orders SET amount = -1 WHERE id = 1;",
+                            "DELETE FROM m2.shop.orders WHERE id = 1;"}) {
+        INFO(sql);
+        auto cursor = run(dispatcher, sql);
+        REQUIRE(cursor->is_error());
+        CHECK(cursor->get_error().type == core::error_code_t::connection_closed);
+        CHECK(std::string{cursor->get_error().what} ==
+              "server m2: new row violates check constraint \"amount_positive\"");
+    }
+    CHECK(backend()["m2.shop.orders"].size() == 3);
 }

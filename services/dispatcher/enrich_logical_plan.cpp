@@ -370,13 +370,11 @@ namespace services::catalog_resolve {
         }
 
         // A match of a FROM aggregate or of a write is built with its (dbname, relname) only; it names that table, so
-        // it takes its schema slot. A write whose target the host bound names no catalog table, and neither does its
-        // match.
+        // it takes its schema slot.
         struct names_scope_t {
             std::string_view dbname{};
             std::string_view schema{};
             std::string_view relname{};
-            bool host_bound{false};
         };
 
         bool opens_scope(const components::logical_plan::node_t* node) {
@@ -393,15 +391,9 @@ namespace services::catalog_resolve {
         }
 
         target_names_t scoped_names(const components::logical_plan::node_t* node, const names_scope_t& scope) {
-            if (components::logical_plan::host_write_target(*node) != nullptr) {
-                return {};
-            }
             auto names = target_names_of(node);
             if (!opens_scope(node) && names.schema.empty() && names.dbname == scope.dbname &&
                 names.relname == scope.relname) {
-                if (scope.host_bound) {
-                    return {};
-                }
                 names.schema = scope.schema;
             }
             return names;
@@ -415,10 +407,7 @@ namespace services::catalog_resolve {
             if (names.relname.empty()) {
                 return scope;
             }
-            return names_scope_t{names.dbname,
-                                 names.schema,
-                                 names.relname,
-                                 components::logical_plan::host_write_target(*node) != nullptr};
+            return names_scope_t{names.dbname, names.schema, names.relname};
         }
     } // namespace
 
@@ -688,73 +677,6 @@ namespace services::catalog_resolve {
             msg += "\" names a uid or schema segment, which this catalog has no place for: a relation lives in a "
                    "database — write it as [database.]name; nothing was changed";
             return core::error_t{core::error_code_t::invalid_parameter, std::move(msg)};
-        }
-        return core::error_t::no_error();
-    }
-
-    namespace {
-        template<class Write>
-        bool has_a_source(const Write& write) {
-            using components::logical_plan::node_type;
-            return std::any_of(write.children().begin(), write.children().end(), [](const auto& child) {
-                return child->type() != node_type::match_t && child->type() != node_type::limit_t;
-            });
-        }
-
-        core::error_t host_write_refusal(std::pmr::memory_resource* resource,
-                                         std::string_view before,
-                                         std::string_view relation,
-                                         std::string_view after) {
-            std::pmr::string msg{before, resource};
-            msg += " host relation \"";
-            msg += relation;
-            msg += "\" ";
-            msg += after;
-            return core::error_t{core::error_code_t::invalid_parameter, std::move(msg)};
-        }
-    } // namespace
-
-    core::error_t refuse_host_write_shapes(std::pmr::memory_resource* resource,
-                                           const components::logical_plan::node_t* root,
-                                           bool ends_its_transaction) {
-        using namespace components::logical_plan;
-        const auto* target = root ? host_write_target(*root) : nullptr;
-        if (target == nullptr) {
-            return core::error_t::no_error();
-        }
-        const auto& relation = target->relation().name();
-        if (!ends_its_transaction) {
-            return host_write_refusal(resource,
-                                      "writes to",
-                                      relation,
-                                      "are allowed only outside an explicit transaction (#663)");
-        }
-        bool returns = false;
-        switch (root->type()) {
-            case node_type::insert_t:
-                returns = !static_cast<const node_insert_t*>(root)->returning().empty();
-                break;
-            case node_type::update_t: {
-                const auto* update = static_cast<const node_update_t*>(root);
-                if (has_a_source(*update)) {
-                    return host_write_refusal(resource, "UPDATE of", relation, "with FROM is not supported");
-                }
-                returns = !update->returning().empty();
-                break;
-            }
-            case node_type::delete_t: {
-                const auto* remove = static_cast<const node_delete_t*>(root);
-                if (has_a_source(*remove)) {
-                    return host_write_refusal(resource, "DELETE from", relation, "with USING is not supported");
-                }
-                returns = !remove->returning().empty();
-                break;
-            }
-            default:
-                break;
-        }
-        if (returns) {
-            return host_write_refusal(resource, "RETURNING from a write into", relation, "is not supported");
         }
         return core::error_t::no_error();
     }

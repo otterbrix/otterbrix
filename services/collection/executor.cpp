@@ -799,12 +799,6 @@ namespace services::collection::executor {
             stale.contains_error()) {
             co_return execute_result_t{make_cursor(resource(), std::move(stale))};
         }
-        if (auto write = services::catalog_resolve::refuse_host_write_shapes(resource(),
-                                                                             plan.sub_queries.back().get(),
-                                                                             plan.commits_when_done);
-            write.contains_error()) {
-            co_return execute_result_t{make_cursor(resource(), std::move(write))};
-        }
         if (auto segment = services::catalog_resolve::refuse_referenced_segments(resource(), plan.catalog_resolves);
             segment.contains_error()) {
             co_return execute_result_t{make_cursor(resource(), std::move(segment))};

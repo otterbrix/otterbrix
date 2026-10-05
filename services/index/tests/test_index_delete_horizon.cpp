@@ -136,7 +136,8 @@ TEST_CASE("services::index::a committed delete reaches the store only once the h
                                                       test_directory::created(path),
                                                       /*bitcask_flush_threshold=*/1000,
                                                       /*bitcask_segment_record_limit=*/100,
-                                                      /*btree_flush_threshold=*/1000);
+                                                      /*btree_flush_threshold=*/1000,
+                                                      configuration::pump_intervals_t{});
 
     manager->bootstrap_engine_sync(kTableOid);
     REQUIRE_FALSE(manager
@@ -224,7 +225,8 @@ TEST_CASE("services::index::tearing an index down drops the erases it was still 
                                                       test_directory::created(path),
                                                       /*bitcask_flush_threshold=*/1000,
                                                       /*bitcask_segment_record_limit=*/100,
-                                                      /*btree_flush_threshold=*/1000);
+                                                      /*btree_flush_threshold=*/1000,
+                                                      configuration::pump_intervals_t{});
 
     manager->bootstrap_engine_sync(kTableOid);
     REQUIRE_FALSE(manager

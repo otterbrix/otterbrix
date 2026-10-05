@@ -60,7 +60,8 @@ namespace {
                                                         scheduler,
                                                         scheduler,
                                                         test_directory::created(disk_config),
-                                                        log)) {
+                                                        log,
+                                                        configuration::pump_intervals_t{})) {
             std::filesystem::remove_all(vacuum_dir());
             std::filesystem::create_directories(vacuum_dir());
             REQUIRE_FALSE(manager->bootstrap_system_tables_sync().contains_error());

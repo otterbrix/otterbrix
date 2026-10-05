@@ -27,7 +27,7 @@ namespace services::wal {
     }
 
     core::result_wrapper_t<std::vector<record_t>>
-    wal_reader_t::read_committed_records(id_t after_wal_id, std::set<std::uint64_t>* committed_out) {
+    wal_reader_t::read_committed_records(std::set<std::uint64_t>* committed_out) {
         std::vector<record_t> merged;
 
         std::error_code ec;
@@ -59,7 +59,7 @@ namespace services::wal {
             }
             trace(log_, "wal_reader::read_committed_records , scanning database '{}'", db_name);
 
-            auto db_records = read_database_segments(entry.path(), after_wal_id, committed_out);
+            auto db_records = read_database_segments(entry.path(), committed_out);
             if (db_records.has_error()) {
                 return db_records.error();
             }
@@ -78,9 +78,7 @@ namespace services::wal {
     }
 
     core::result_wrapper_t<std::vector<record_t>>
-    wal_reader_t::read_database_segments(const std::filesystem::path& db_dir,
-                                         id_t after_wal_id,
-                                         std::set<std::uint64_t>* committed_out) {
+    wal_reader_t::read_database_segments(const std::filesystem::path& db_dir, std::set<std::uint64_t>* committed_out) {
         std::vector<std::filesystem::path> segments;
 
         std::error_code ec;
@@ -139,7 +137,7 @@ namespace services::wal {
                      scan.first_broken_page);
             }
 
-            auto seg_records = reader.read_all_records(after_wal_id);
+            auto seg_records = reader.read_all_records(id_t{0});
             if (seg_records.has_error()) {
                 return seg_records.error();
             }

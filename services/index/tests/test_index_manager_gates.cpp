@@ -144,7 +144,8 @@ TEST_CASE("services::index::manager::bootstrap refuses a duplicate keys+type pai
                                                       test_directory::created(path),
                                                       1000,
                                                       100,
-                                                      1000);
+                                                      1000,
+                                                      configuration::pump_intervals_t{});
 
     manager->bootstrap_engine_sync(kTableOid);
     REQUIRE_FALSE(manager
@@ -180,7 +181,8 @@ TEST_CASE("services::index::manager::a multi-column key set is refused, not narr
                                                       test_directory::created(path),
                                                       1000,
                                                       100,
-                                                      1000);
+                                                      1000,
+                                                      configuration::pump_intervals_t{});
 
     manager->bootstrap_engine_sync(kTableOid);
 
@@ -221,7 +223,8 @@ TEST_CASE("services::index::manager::a catchup record the registry cannot place 
                                                       test_directory::created(path),
                                                       1000,
                                                       100,
-                                                      1000);
+                                                      1000,
+                                                      configuration::pump_intervals_t{});
 
     const auto session = session_id_t::generate_uid();
     const uint64_t build_txn = TRANSACTION_ID_START + 31;
@@ -282,7 +285,8 @@ TEST_CASE("services::index::manager::a staging record naming an unregistered ind
                                                       test_directory::created(path),
                                                       1000,
                                                       100,
-                                                      1000);
+                                                      1000,
+                                                      configuration::pump_intervals_t{});
 
     manager->bootstrap_engine_sync(kTableOid);
     REQUIRE_FALSE(manager
@@ -351,7 +355,8 @@ TEST_CASE("services::index::manager::a catchup staging the agent refused fails t
                                                       test_directory::created(path),
                                                       1000,
                                                       100,
-                                                      1000);
+                                                      1000,
+                                                      configuration::pump_intervals_t{});
 
     manager->bootstrap_engine_sync(kTableOid);
     REQUIRE_FALSE(manager
@@ -423,7 +428,8 @@ TEST_CASE("services::index::manager::a refused deferred erase is re-queued, not 
                                                       test_directory::created(path),
                                                       1000,
                                                       100,
-                                                      1000);
+                                                      1000,
+                                                      configuration::pump_intervals_t{});
 
     manager->bootstrap_engine_sync(kTableOid);
     REQUIRE_FALSE(manager

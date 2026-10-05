@@ -118,7 +118,8 @@ namespace {
                                                                   config_,
                                                                   log_,
                                                                   components::pipeline::no_mailbox(),
-                                                                  components::pipeline::no_mailbox())) {
+                                                                  components::pipeline::no_mailbox(),
+                                                                  configuration::pump_intervals_t{})) {
             scheduler_->start();
         }
 
@@ -276,7 +277,7 @@ TEST_CASE("wal::refusal::startup_replay_refuses_a_segment_that_will_not_open") {
 
     {
         wal_reader_t reader(&resource, config, log);
-        auto records = reader.read_committed_records(services::wal::id_t{0});
+        auto records = reader.read_committed_records();
         REQUIRE_FALSE(records.has_error());
         REQUIRE_FALSE(records.value().empty());
     }
@@ -286,7 +287,7 @@ TEST_CASE("wal::refusal::startup_replay_refuses_a_segment_that_will_not_open") {
         fault.refuse_open_marker = segment_name(0);
 
         wal_reader_t reader(&resource, config, log);
-        auto records = reader.read_committed_records(services::wal::id_t{0});
+        auto records = reader.read_committed_records();
 
         INFO("replay that cannot read a segment must refuse, not answer 'there was nothing'");
         REQUIRE(records.has_error());

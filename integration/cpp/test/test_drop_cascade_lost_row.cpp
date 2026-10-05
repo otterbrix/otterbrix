@@ -26,25 +26,17 @@ namespace {
 
     namespace catalog = components::catalog;
 
-    class lost_row_spaces_t final : public otterbrix::base_otterbrix_t {
-    public:
-        explicit lost_row_spaces_t(const configuration::config& config)
-            : otterbrix::base_otterbrix_t(test_open_engine(config)) {}
-
-        actor_zeta::address_t disk_address() const noexcept { return engine().disk_address(); }
-    };
-
     // snapshot_horizon = max reads every committed row, not the calling transaction's view.
     template<typename Key>
     core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>
-    catalog_chunks_with(lost_row_spaces_t& space, catalog::oid_t table_oid, std::uint64_t key_col, Key key) {
+    catalog_chunks_with(otterbrix::otterbrix_t& space, catalog::oid_t table_oid, std::uint64_t key_col, Key key) {
         auto* resource = space.dispatcher()->resource();
         components::table::transaction_data td{0, 0};
         td.snapshot_horizon = std::numeric_limits<uint64_t>::max();
         components::execution_context_t exec_ctx{otterbrix::session_id_t{}, td, {}};
         std::pmr::vector<std::uint64_t> key_cols(resource);
         key_cols.emplace_back(key_col);
-        auto [_, fut] = actor_zeta::otterbrix::send(space.disk_address(),
+        auto [_, fut] = actor_zeta::otterbrix::send(space.engine().disk_address(),
                                                     &services::disk::manager_disk_t::read_chunks_by_key,
                                                     exec_ctx,
                                                     table_oid,
@@ -59,7 +51,8 @@ namespace {
     }
 
     template<typename Key>
-    std::size_t catalog_rows_with(lost_row_spaces_t& space, catalog::oid_t table_oid, std::uint64_t key_col, Key key) {
+    std::size_t
+    catalog_rows_with(otterbrix::otterbrix_t& space, catalog::oid_t table_oid, std::uint64_t key_col, Key key) {
         auto batches = catalog_chunks_with(space, table_oid, key_col, key);
         REQUIRE_FALSE(batches.has_error());
         std::size_t rows = 0;
@@ -69,7 +62,7 @@ namespace {
         return rows;
     }
 
-    catalog::oid_t table_oid_named(lost_row_spaces_t& space, const std::string& name) {
+    catalog::oid_t table_oid_named(otterbrix::otterbrix_t& space, const std::string& name) {
         auto batches = catalog_chunks_with(space,
                                            catalog::well_known_oid::pg_class_table,
                                            catalog::pg_class_col::relname,
@@ -86,7 +79,7 @@ namespace {
     }
 
     // The PK row carries no confrelid, so this key selects the FK alone.
-    catalog::oid_t fk_oid_referencing(lost_row_spaces_t& space, catalog::oid_t parent_oid) {
+    catalog::oid_t fk_oid_referencing(otterbrix::otterbrix_t& space, catalog::oid_t parent_oid) {
         auto batches = catalog_chunks_with(space,
                                            catalog::well_known_oid::pg_constraint_table,
                                            catalog::pg_constraint_col::confrelid,
@@ -108,7 +101,7 @@ namespace {
 
     // Forges the edge instead of deleting a real row: a td{0,0} delete would leave a ghost the
     // DROP's own scan still marks, failing through the commit-drain replay instead of the path under test.
-    void forge_depend_edge(lost_row_spaces_t& space,
+    void forge_depend_edge(otterbrix::otterbrix_t& space,
                            catalog::oid_t classid,
                            catalog::oid_t objid,
                            catalog::oid_t refclassid,
@@ -118,7 +111,7 @@ namespace {
         td.snapshot_horizon = std::numeric_limits<uint64_t>::max();
         components::execution_context_t exec_ctx{otterbrix::session_id_t{}, td, {}};
         auto row = catalog::build_pg_depend_row(resource, classid, objid, refclassid, refobjid, /*deptype=*/'n');
-        auto [_, fut] = actor_zeta::otterbrix::send(space.disk_address(),
+        auto [_, fut] = actor_zeta::otterbrix::send(space.engine().disk_address(),
                                                     &services::disk::manager_disk_t::append_pg_catalog_row,
                                                     exec_ctx,
                                                     catalog::well_known_oid::pg_depend_table,
@@ -139,7 +132,7 @@ namespace {
 
 TEST_CASE("integration::cpp::drop_cascade_lost_row::planned_step_without_a_catalog_row_refuses") {
     auto config = make_test_config(fixture_path("lost"));
-    lost_row_spaces_t space(config);
+    otterbrix::otterbrix_t space(test_open_engine(config));
     auto* d = space.dispatcher();
 
     REQUIRE(exec(d, "CREATE DATABASE lost;")->is_success());
@@ -179,7 +172,7 @@ TEST_CASE("integration::cpp::drop_cascade_lost_row::planned_step_without_a_catal
 
 TEST_CASE("integration::cpp::drop_cascade_lost_row::diamond_dependent_is_judged_once") {
     auto config = make_test_config(fixture_path("diamond"));
-    lost_row_spaces_t space(config);
+    otterbrix::otterbrix_t space(test_open_engine(config));
     auto* d = space.dispatcher();
 
     REQUIRE(exec(d, "CREATE DATABASE dia;")->is_success());

@@ -73,7 +73,8 @@ namespace {
                                                         scheduler,
                                                         scheduler,
                                                         test_directory::created(disk_config),
-                                                        log)) {}
+                                                        log,
+                                                        configuration::pump_intervals_t{})) {}
 
         ~open_fixture() {
             // Destroy the manager first — its dtor joins the loop thread, which may still enqueue onto the scheduler.
@@ -1124,7 +1125,8 @@ TEST_CASE("services::disk::open::a_refused_journal_record_cancels_the_backfill_p
                                                                       wal_config,
                                                                       fx.log,
                                                                       components::pipeline::no_mailbox(),
-                                                                      components::pipeline::no_mailbox());
+                                                                      components::pipeline::no_mailbox(),
+                                                                      configuration::pump_intervals_t{});
         fx.manager->set_manager_wal_sync(wal_manager->address());
 
         REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
@@ -1151,7 +1153,8 @@ TEST_CASE("services::disk::open::a_refused_journal_record_cancels_the_backfill_p
                                                                       wal_config,
                                                                       fx.log,
                                                                       components::pipeline::no_mailbox(),
-                                                                      components::pipeline::no_mailbox());
+                                                                      components::pipeline::no_mailbox(),
+                                                                      configuration::pump_intervals_t{});
         fx.manager->set_manager_wal_sync(wal_manager->address());
 
         REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());

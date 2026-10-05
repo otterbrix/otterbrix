@@ -37,14 +37,6 @@ namespace services::engine {
         core::error_t startup_error(std::pmr::memory_resource* resource, core::error_code_t code, const std::string& what) {
             return core::error_t(code, std::pmr::string{what.data(), what.size(), resource});
         }
-
-        template<typename T>
-        T wait_ready(actor_zeta::unique_future<T>& future) {
-            while (!future.is_ready()) {
-                std::this_thread::sleep_for(std::chrono::microseconds(100));
-            }
-            return std::move(future).take_ready();
-        }
     } // namespace
 
     namespace detail {
@@ -213,9 +205,8 @@ namespace services::engine {
 
         auto parts = std::make_unique<engine_parts_t>(resource, log, std::move(lock));
 
-        services::wal::id_t last_wal_id{0};
         services::wal::wal_reader_t wal_reader(resource, config.wal, parts->log);
-        auto wal_records_result = wal_reader.read_committed_records(last_wal_id, &parts->commit_ids);
+        auto wal_records_result = wal_reader.read_committed_records(&parts->commit_ids);
         // Refuses rather than allocating IDs below what's already on disk; writes/deletes nothing.
         if (wal_records_result.has_error()) {
             error(parts->log,
@@ -817,8 +808,6 @@ namespace services::engine {
 
     actor_zeta::actor::address_t engine_t::dispatcher_address() const noexcept { return parts_->dispatcher->address(); }
     actor_zeta::actor::address_t engine_t::disk_address() const noexcept { return parts_->disk->address(); }
-    actor_zeta::actor::address_t engine_t::index_address() const noexcept { return parts_->index->address(); }
-    actor_zeta::actor::address_t engine_t::wal_address() const noexcept { return parts_->wal->address(); }
 
     void engine_t::shutdown() noexcept {
         if (parts_ == nullptr) {
@@ -832,12 +821,12 @@ namespace services::engine {
         auto [_close, closed] =
             actor_zeta::otterbrix::send(parts_->dispatcher->address(),
                                         &services::dispatcher::manager_dispatcher_t::begin_shutdown);
-        wait_ready(closed);
+        actor_zeta::otterbrix::wait_ready(closed);
 
         auto [_quiet, quiet] = actor_zeta::otterbrix::send(parts_->wal->address(),
                                                            &services::wal::manager_wal_replicate_t::stop_auto_checkpoint,
                                                            session);
-        wait_ready(quiet);
+        actor_zeta::otterbrix::wait_ready(quiet);
 
         auto checkpoint_node = components::logical_plan::make_node_checkpoint(resource);
         auto [_cp, checkpointed] = actor_zeta::otterbrix::send(
@@ -848,7 +837,7 @@ namespace services::engine {
                                                        checkpoint_node,
                                                        components::logical_plan::make_parameter_node(resource)});
         // No caller can be answered from here, so a failed checkpoint is logged.
-        auto cursor = wait_ready(checkpointed);
+        auto cursor = actor_zeta::otterbrix::wait_ready(checkpointed);
         if (!cursor) {
             error(log,
                   "engine::shutdown , the shutdown checkpoint answered NO cursor , whether the journal was folded "

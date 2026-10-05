@@ -67,7 +67,8 @@ namespace {
                                                         scheduler,
                                                         scheduler,
                                                         test_directory::created(disk_config),
-                                                        log)) {}
+                                                        log,
+                                                        configuration::pump_intervals_t{})) {}
         ~fresh_disk() {
             // manager_disk_t self-drives on an internal thread; destroy it before
             // tearing down the scheduler to avoid use-after-free.

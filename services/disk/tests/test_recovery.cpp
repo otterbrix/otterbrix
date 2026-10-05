@@ -62,13 +62,15 @@ namespace {
                                                      scheduler,
                                                      scheduler,
                                                      test_directory::created(disk_config),
-                                                     log))
+                                                     log,
+                                                     configuration::pump_intervals_t{}))
             , wal(actor_zeta::spawn<services::wal::manager_wal_replicate_t>(&resource,
                                                                             scheduler,
                                                                             wal_config,
                                                                             log,
                                                                             disk->address(),
-                                                                            components::pipeline::no_mailbox())) {
+                                                                            components::pipeline::no_mailbox(),
+                                                                            configuration::pump_intervals_t{})) {
             std::filesystem::create_directories(dir);
             disk->set_manager_wal_sync(wal->address());
             if (bootstrap) {

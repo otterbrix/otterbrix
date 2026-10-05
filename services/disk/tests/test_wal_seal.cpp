@@ -57,7 +57,8 @@ namespace {
                                                         scheduler,
                                                         scheduler,
                                                         test_directory::created(disk_config),
-                                                        log)) {}
+                                                        log,
+                                                        configuration::pump_intervals_t{})) {}
         ~fresh_disk() {
             // Manager first: its dtor joins the loop thread, which may still enqueue onto the scheduler.
             manager.reset();

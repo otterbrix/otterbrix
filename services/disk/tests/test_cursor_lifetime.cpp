@@ -65,7 +65,8 @@ namespace {
                                                         scheduler,
                                                         scheduler,
                                                         test_directory::created(disk_config),
-                                                        log)) {
+                                                        log,
+                                                        configuration::pump_intervals_t{})) {
             cleanup();
             std::filesystem::create_directories(cursor_dir());
             REQUIRE_FALSE(manager->bootstrap_system_tables_sync().contains_error());

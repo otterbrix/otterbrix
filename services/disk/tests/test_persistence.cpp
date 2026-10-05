@@ -63,7 +63,8 @@ namespace {
                                                         scheduler,
                                                         scheduler,
                                                         test_directory::created(disk_config),
-                                                        log)) {}
+                                                        log,
+                                                        configuration::pump_intervals_t{})) {}
         ~fresh_disk() {
             // Destroy the manager before the scheduler: its dtor joins the loop thread, which may
             // still enqueue children onto the scheduler.

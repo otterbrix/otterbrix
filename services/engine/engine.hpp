@@ -39,8 +39,6 @@ namespace services::engine {
 
         actor_zeta::actor::address_t dispatcher_address() const noexcept;
         actor_zeta::actor::address_t disk_address() const noexcept;
-        actor_zeta::actor::address_t index_address() const noexcept;
-        actor_zeta::actor::address_t wal_address() const noexcept;
 
     private:
         void shutdown() noexcept;

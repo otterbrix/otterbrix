@@ -148,14 +148,16 @@ struct oid_round_fixture : actor_zeta::actor::actor_mixin<oid_round_fixture> {
                                                           scheduler_,
                                                           scheduler_,
                                                           test_directory::created(disk_config_),
-                                                          log_))
+                                                          log_,
+                                                          configuration::pump_intervals_t{}))
         , wal_config_(disk_path)
         , manager_wal_(actor_zeta::spawn<manager_wal_replicate_t>(resource,
                                                                   scheduler_,
                                                                   wal_config_,
                                                                   log_,
                                                                   manager_disk_->address(),
-                                                                  components::pipeline::no_mailbox()))
+                                                                  components::pipeline::no_mailbox(),
+                                                                  configuration::pump_intervals_t{}))
         , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(resource,
                                                                       scheduler_,
                                                                       log_,

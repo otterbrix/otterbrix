@@ -274,7 +274,7 @@ namespace services::disk {
                        actor_zeta::scheduler_raw scheduler_disk,
                        configuration::config_disk config,
                        log_t& log,
-                       configuration::pump_intervals_t pump = {});
+                       configuration::pump_intervals_t pump);
         ~manager_disk_t();
         // Joins the loop thread and keeps its suspended coroutines: a neighbour's loop must not
         // resume against them while they are torn down. Idempotent; the destructor calls it too.

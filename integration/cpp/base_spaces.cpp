@@ -44,10 +44,8 @@ namespace otterbrix {
             return core::error_on(std::pmr::new_delete_resource(), engine.error());
         }
         host->engine.emplace(std::move(engine.value()));
-        host->wrapper = actor_zeta::spawn<wrapper_dispatcher_t>(&host->resource,
-                                                                host->engine->dispatcher_address(),
-                                                                host->scheduler_exec.get(),
-                                                                host->log);
+        host->wrapper =
+            actor_zeta::spawn<wrapper_dispatcher_t>(&host->resource, host->engine->dispatcher_address(), host->log);
         trace(host->log, "base_otterbrix_t::open complete");
         return host;
     }

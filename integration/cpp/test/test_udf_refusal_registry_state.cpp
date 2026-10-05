@@ -108,15 +108,6 @@ namespace {
         std::string marker_;
     };
 
-    // Exposes the disk manager, unlike test_spaces, so pg_proc content can be read back directly.
-    class udf_refusal_spaces_t final : public otterbrix::base_otterbrix_t {
-    public:
-        explicit udf_refusal_spaces_t(const configuration::config& config)
-            : otterbrix::base_otterbrix_t(test_open_engine(config)) {}
-
-        actor_zeta::address_t disk_address() const noexcept { return engine().disk_address(); }
-    };
-
     core::error_t probe_exec_unary(compute::kernel_context&, const vector::data_chunk_t& in, vector::vector_t& out) {
         const auto* source = in.data[0].data<int64_t>();
         auto* destination = out.data<int64_t>();
@@ -141,11 +132,11 @@ namespace {
     // "the read refused" — distinct from every honest row count, including zero.
     constexpr std::size_t kReadRefused = static_cast<std::size_t>(-1);
 
-    std::size_t pg_proc_rows_named(udf_refusal_spaces_t& space, const std::string& name) {
+    std::size_t pg_proc_rows_named(otterbrix::otterbrix_t& space, const std::string& name) {
         table::transaction_data td{0, 0};
         td.snapshot_horizon = std::numeric_limits<uint64_t>::max();
         execution_context_t exec_ctx{otterbrix::session_id_t{}, td, {}};
-        auto [_, fut] = actor_zeta::otterbrix::send(space.disk_address(),
+        auto [_, fut] = actor_zeta::otterbrix::send(space.engine().disk_address(),
                                                     &services::disk::manager_disk_t::resolve_function_by_name,
                                                     exec_ctx,
                                                     name);
@@ -176,7 +167,7 @@ TEST_CASE("integration::cpp::test_udf_refusal_registry_state::register_udf_leave
     config.log.level = log_t::level::off;
 
     {
-        udf_refusal_spaces_t space(config);
+        otterbrix::otterbrix_t space(test_open_engine(config));
         auto* dispatcher = space.dispatcher();
         REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE ns_probe;")->is_success());
     }
@@ -194,7 +185,7 @@ TEST_CASE("integration::cpp::test_udf_refusal_registry_state::register_udf_leave
     std::vector<uint64_t> reads;
     {
         recording_scope_t recorder(reads, marker);
-        udf_refusal_spaces_t probe(probe_config);
+        otterbrix::otterbrix_t probe(test_open_engine(probe_config));
         REQUIRE(pg_proc_rows_named(probe, kFuncName) == 0);
     }
     REQUIRE_FALSE(reads.empty());
@@ -214,7 +205,7 @@ TEST_CASE("integration::cpp::test_udf_refusal_registry_state::register_udf_leave
     one_table_fault_scope_t fault(plan, marker);
 
     {
-        udf_refusal_spaces_t space(config);
+        otterbrix::otterbrix_t space(test_open_engine(config));
         auto* dispatcher = space.dispatcher();
         INFO("poisoned pg_namespace block offset " << data_block);
         REQUIRE(plan.reads_failed > 0);
@@ -237,7 +228,7 @@ TEST_CASE("integration::cpp::test_udf_refusal_registry_state::register_udf_leave
     // retry is rejected as already-registered (a separate defect in services/dispatcher + services/collection).
     plan.fail_reads_at_location = std::numeric_limits<uint64_t>::max();
     {
-        udf_refusal_spaces_t restarted(config);
+        otterbrix::otterbrix_t restarted(test_open_engine(config));
         auto* dispatcher = restarted.dispatcher();
         auto retry = dispatcher->register_udf(otterbrix::session_id_t(), make_probe_unary(dispatcher->resource()));
         INFO("retry after the fault was cleared: " << retry.what.c_str());
@@ -254,7 +245,7 @@ TEST_CASE("integration::cpp::test_udf_refusal_registry_state::a_healthy_registra
     auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
-    udf_refusal_spaces_t space(config);
+    otterbrix::otterbrix_t space(test_open_engine(config));
     auto* dispatcher = space.dispatcher();
     REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE ns_probe;")->is_success());
 
@@ -271,7 +262,7 @@ TEST_CASE("integration::cpp::test_udf_refusal_registry_state::a_registration_lef
     config.log.level = log_t::level::off;
 
     {
-        udf_refusal_spaces_t space(config);
+        otterbrix::otterbrix_t space(test_open_engine(config));
         auto* dispatcher = space.dispatcher();
         REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE d;")->is_success());
         REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE d.t (id BIGINT);")->is_success());
@@ -281,7 +272,7 @@ TEST_CASE("integration::cpp::test_udf_refusal_registry_state::a_registration_lef
         REQUIRE(pg_proc_rows_named(space, kFuncName) == 1);
     }
 
-    udf_refusal_spaces_t restarted(config);
+    otterbrix::otterbrix_t restarted(test_open_engine(config));
     auto* dispatcher = restarted.dispatcher();
     REQUIRE_FALSE(engine_serves(dispatcher, kFuncName));
     REQUIRE(pg_proc_rows_named(restarted, kFuncName) == 1);
@@ -305,9 +296,9 @@ TEST_CASE("integration::cpp::test_udf_refusal_registry_state::a_seeded_builtin_r
     auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
-    { udf_refusal_spaces_t space(config); }
+    { otterbrix::otterbrix_t space(test_open_engine(config)); }
 
-    udf_refusal_spaces_t restarted(config);
+    otterbrix::otterbrix_t restarted(test_open_engine(config));
     auto* dispatcher = restarted.dispatcher();
     REQUIRE(pg_proc_rows_named(restarted, "count") == 1);
 
@@ -326,13 +317,13 @@ TEST_CASE("integration::cpp::test_udf_refusal_registry_state::a_leftover_is_unre
     config.log.level = log_t::level::off;
 
     {
-        udf_refusal_spaces_t space(config);
+        otterbrix::otterbrix_t space(test_open_engine(config));
         auto* dispatcher = space.dispatcher();
         REQUIRE_FALSE(dispatcher->register_udf(otterbrix::session_id_t(), make_probe_unary(dispatcher->resource()))
                           .contains_error());
     }
 
-    udf_refusal_spaces_t restarted(config);
+    otterbrix::otterbrix_t restarted(test_open_engine(config));
     auto* dispatcher = restarted.dispatcher();
     auto dropped = dispatcher->unregister_udf(otterbrix::session_id_t(), kFuncName, {types::logical_type::BIGINT});
     INFO("unregister_udf of a leftover: " << dropped.what.c_str());
@@ -349,7 +340,7 @@ TEST_CASE("integration::cpp::test_udf_refusal_registry_state::a_refused_unregist
     auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
-    udf_refusal_spaces_t space(config);
+    otterbrix::otterbrix_t space(test_open_engine(config));
     auto* dispatcher = space.dispatcher();
     REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE d;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE d.t (id BIGINT);")->is_success());

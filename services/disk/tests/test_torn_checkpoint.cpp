@@ -124,7 +124,8 @@ namespace {
                                                         scheduler,
                                                         scheduler,
                                                         test_directory::created(disk_config),
-                                                        log)) {}
+                                                        log,
+                                                        configuration::pump_intervals_t{})) {}
         ~torn_manager_t() {
             manager.reset();
             scheduler->stop();

@@ -69,7 +69,8 @@ namespace {
                                                         scheduler,
                                                         scheduler,
                                                         test_directory::created(disk_config),
-                                                        log)) {
+                                                        log,
+                                                        configuration::pump_intervals_t{})) {
             cleanup();
             std::filesystem::create_directories(resolve_dir());
             REQUIRE_FALSE(manager->bootstrap_system_tables_sync().contains_error());
@@ -479,7 +480,8 @@ namespace {
                                                         scheduler,
                                                         scheduler,
                                                         test_directory::created(disk_config),
-                                                        log)) {}
+                                                        log,
+                                                        configuration::pump_intervals_t{})) {}
         ~reopenable_disk() {
             manager.reset();
             scheduler->stop();

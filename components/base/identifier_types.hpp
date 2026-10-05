@@ -12,7 +12,6 @@ STRONG_TYPEDEF_EXPLICIT(std::string, viewname_t);
 STRONG_TYPEDEF_EXPLICIT(std::string, seqname_t);
 STRONG_TYPEDEF_EXPLICIT(std::string, macroname_t);
 STRONG_TYPEDEF_EXPLICIT(std::string, indexname_t);
-STRONG_TYPEDEF_EXPLICIT(std::string, typename_t);
 STRONG_TYPEDEF_EXPLICIT(std::string, function_name_t);
 STRONG_TYPEDEF_EXPLICIT(std::string, columnname_t);
 STRONG_TYPEDEF_EXPLICIT(std::string, constraint_name_t);

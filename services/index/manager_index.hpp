@@ -100,11 +100,11 @@ namespace services::index {
         manager_index_t(std::pmr::memory_resource* resource,
                         actor_zeta::scheduler_raw scheduler,
                         log_t& log,
-                        std::filesystem::path path_db = {},
-                        uint64_t bitcask_flush_threshold = 1000,
-                        uint64_t bitcask_segment_record_limit = 100,
-                        uint64_t btree_flush_threshold = 1000,
-                        configuration::pump_intervals_t pump = {});
+                        std::filesystem::path path_db,
+                        uint64_t bitcask_flush_threshold,
+                        uint64_t bitcask_segment_record_limit,
+                        uint64_t btree_flush_threshold,
+                        configuration::pump_intervals_t pump);
         ~manager_index_t();
         // Joins the loop thread and keeps its suspended coroutines: a neighbour's loop must not
         // resume against them while they are torn down. Idempotent; the destructor calls it too.

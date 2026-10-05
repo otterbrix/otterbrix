@@ -76,7 +76,8 @@ namespace {
                                                                   config_,
                                                                   log_,
                                                                   components::pipeline::no_mailbox(),
-                                                                  components::pipeline::no_mailbox())) {
+                                                                  components::pipeline::no_mailbox(),
+                                                                  configuration::pump_intervals_t{})) {
             scheduler_->start();
         }
 
@@ -187,7 +188,7 @@ TEST_CASE("wal::txn_reuse::bootstrap_replay_rejects_the_recycled_uncommitted_txn
 
     {
         wal_reader_t reader(&resource, config, log);
-        auto records = reader.read_committed_records(services::wal::id_t{0});
+        auto records = reader.read_committed_records();
         REQUIRE_FALSE(records.has_error());
 
         INFO("the committed transaction of session 1 must replay");
@@ -206,7 +207,7 @@ TEST_CASE("wal::txn_reuse::bootstrap_replay_rejects_the_recycled_uncommitted_txn
     REQUIRE(second_commit_id > orphan_insert_id);
     {
         wal_reader_t reader(&resource, config, log);
-        auto records = reader.read_committed_records(services::wal::id_t{0});
+        auto records = reader.read_committed_records();
         REQUIRE_FALSE(records.has_error());
         REQUIRE(holds_wal_id(records.value(), committed_insert_id));
         REQUIRE(holds_wal_id(records.value(), orphan_insert_id));

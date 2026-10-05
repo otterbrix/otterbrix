@@ -283,9 +283,6 @@ namespace services::index {
         , parked_agents_(resource)
         , pending_void_(resource)
         , pump_(pump) {
-        (void) bitcask_flush_threshold_;
-        (void) bitcask_segment_record_limit_;
-        (void) btree_flush_threshold_;
         // The engine factory creates the directory before it spawns the managers.
         assert(path_db_.empty() || [this] {
             std::error_code ec;

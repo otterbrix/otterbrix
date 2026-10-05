@@ -57,7 +57,8 @@ namespace {
                                                         scheduler,
                                                         scheduler,
                                                         test_directory::created(disk_config),
-                                                        log)) {
+                                                        log,
+                                                        configuration::pump_intervals_t{})) {
             cleanup();
             std::filesystem::create_directories(err_dir());
             REQUIRE_FALSE(manager->bootstrap_system_tables_sync().contains_error());
@@ -618,7 +619,12 @@ TEST_CASE("services::disk::error::a_manager_with_no_agents_refuses_instead_of_an
     std::filesystem::create_directories(cfg.path);
     {
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager(
-            actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, test_directory::created(cfg), log));
+            actor_zeta::spawn<manager_disk_t>(&resource,
+                                              scheduler,
+                                              scheduler,
+                                              test_directory::created(cfg),
+                                              log,
+                                              configuration::pump_intervals_t{}));
 
         auto call = [&](auto fn, auto&&... args) {
             auto [_, future] = actor_zeta::otterbrix::send(manager->address(), fn, std::move(args)...);

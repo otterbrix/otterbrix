@@ -76,7 +76,8 @@ namespace {
                                                                   config_,
                                                                   log_,
                                                                   components::pipeline::no_mailbox(),
-                                                                  components::pipeline::no_mailbox())) {
+                                                                  components::pipeline::no_mailbox(),
+                                                                  configuration::pump_intervals_t{})) {
             scheduler_->start();
         }
 
@@ -141,7 +142,7 @@ TEST_CASE("wal::classification::replay_skips_a_foreign_named_directory") {
 
     {
         wal_reader_t reader(&resource, config, log);
-        auto records = reader.read_committed_records(services::wal::id_t{0});
+        auto records = reader.read_committed_records();
         REQUIRE_FALSE(records.has_error());
         REQUIRE_FALSE(records.value().empty());
     }
@@ -150,7 +151,7 @@ TEST_CASE("wal::classification::replay_skips_a_foreign_named_directory") {
     std::filesystem::rename(db_dir, foreign_dir);
     {
         wal_reader_t reader(&resource, config, log);
-        auto records = reader.read_committed_records(services::wal::id_t{0});
+        auto records = reader.read_committed_records();
         REQUIRE_FALSE(records.has_error());
         INFO("a directory the manager refuses to manage must not be replayed either");
         REQUIRE(records.value().empty());
@@ -161,7 +162,7 @@ TEST_CASE("wal::classification::replay_skips_a_foreign_named_directory") {
     std::filesystem::rename(foreign_dir, half_parse_dir);
     {
         wal_reader_t reader(&resource, config, log);
-        auto records = reader.read_committed_records(services::wal::id_t{0});
+        auto records = reader.read_committed_records();
         REQUIRE_FALSE(records.has_error());
         REQUIRE(records.value().empty());
     }

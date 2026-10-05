@@ -121,14 +121,16 @@ struct admin_fixture : actor_zeta::actor::actor_mixin<admin_fixture> {
                                                           scheduler_,
                                                           scheduler_,
                                                           test_directory::created(disk_config_),
-                                                          log_))
+                                                          log_,
+                                                          configuration::pump_intervals_t{}))
         , wal_config_(disk_path)
         , manager_wal_(actor_zeta::spawn<manager_wal_replicate_t>(resource,
                                                                   scheduler_,
                                                                   wal_config_,
                                                                   log_,
                                                                   manager_disk_->address(),
-                                                                  components::pipeline::no_mailbox()))
+                                                                  components::pipeline::no_mailbox(),
+                                                                  configuration::pump_intervals_t{}))
         // No index manager in this fixture — its absence is named, not defaulted away.
         , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(resource,
                                                                       scheduler_,

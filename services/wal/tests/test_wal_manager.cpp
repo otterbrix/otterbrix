@@ -104,7 +104,8 @@ struct test_wal_manager {
                                                               config_,
                                                               log_,
                                                               components::pipeline::no_mailbox(),
-                                                              components::pipeline::no_mailbox())) {
+                                                              components::pipeline::no_mailbox(),
+                                                              configuration::pump_intervals_t{})) {
         std::filesystem::remove_all(path_);
         std::filesystem::create_directories(path_);
         scheduler_->start();

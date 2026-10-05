@@ -653,8 +653,16 @@ namespace components::types {
 
     void logical_value_t::set_alias(const std::string& alias) { type_.set_alias(alias); }
 
+    // Equal values (operator==) hash equally: a value held in children hashes them, never their storage
+    // pointer, and LIST and ARRAY, which compare equal to each other, share one tag.
     size_t logical_value_t::hash() const noexcept {
-        size_t h = std::hash<uint8_t>{}(static_cast<uint8_t>(type_.type()));
+        const auto tag = type_.type() == logical_type::ARRAY ? logical_type::LIST : type_.type();
+        size_t h = std::hash<uint8_t>{}(static_cast<uint8_t>(tag));
+        const auto hash_children = [this, &h] {
+            for (const auto& child : *vec_ptr()) {
+                boost::hash_combine(h, child.hash());
+            }
+        };
         switch (type_.type()) {
             case logical_type::NA:
                 break;
@@ -670,6 +678,28 @@ namespace components::types {
             case logical_type::UHUGEINT:
                 boost::hash_combine(h, static_cast<uint64_t>(udata128_));
                 boost::hash_combine(h, static_cast<uint64_t>(udata128_ >> 64));
+                break;
+            case logical_type::DECIMAL:
+                if (type_.to_physical_type() == physical_type::INT128) {
+                    boost::hash_combine(h, static_cast<uint64_t>(data128_));
+                    boost::hash_combine(h, static_cast<uint64_t>(data128_ >> 64));
+                } else {
+                    boost::hash_combine(h, data_);
+                }
+                break;
+            case logical_type::TIME_TZ:
+            case logical_type::INTERVAL:
+            case logical_type::LIST:
+            case logical_type::ARRAY:
+            case logical_type::MAP:
+            case logical_type::STRUCT:
+                hash_children();
+                break;
+            case logical_type::UNION:
+            case logical_type::VARIANT:
+                if (data_) {
+                    hash_children();
+                }
                 break;
             default:
                 boost::hash_combine(h, data_);

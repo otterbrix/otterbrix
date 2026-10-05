@@ -49,8 +49,6 @@ namespace components::logical_plan {
         , keys_(resource)
         , index_type_(type) {}
 
-    const std::string& node_create_index_t::name() const noexcept { return indexname_.t; }
-
     index_type node_create_index_t::type() const noexcept { return index_type_; }
 
     keys_base_storage_t& node_create_index_t::keys() noexcept { return keys_; }

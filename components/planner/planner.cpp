@@ -330,12 +330,12 @@ namespace components::planner {
                                                                                : catalog::relkind::view);
             if (cv->materialized()) {
                 // The heap and the catalog rows go in one operator, which undoes the heap if a row is refused.
-                auto mv = logical_plan::make_node_create_matview(r, core::matviewname_t{cv->viewname().t});
-                mv->set_namespace_oid(ns_oid);
-                mv->set_matview_oid(view_oid);
-                mv->set_columns({cv->columns().begin(), cv->columns().end()});
-                mv->set_catalog_writes(std::move(writes));
-                return mv;
+                return logical_plan::make_node_create_matview(r,
+                                                              core::matviewname_t{cv->viewname().t},
+                                                              ns_oid,
+                                                              view_oid,
+                                                              {cv->columns().begin(), cv->columns().end()},
+                                                              std::move(writes));
             }
             for (auto& w : writes) {
                 seq->append_child(make_catalog_write(r, w.table_oid, std::move(w.row)));
@@ -426,7 +426,7 @@ namespace components::planner {
             if (ns_oid == catalog::INVALID_OID || table_oid == catalog::INVALID_OID) {
                 std::pmr::string msg{r};
                 msg.append("CREATE INDEX ");
-                msg.append(ci->name());
+                msg.append(ci->indexname().t);
                 msg.append(": table ");
                 msg.append(ci->target().database.t);
                 msg.append(".");
@@ -441,7 +441,7 @@ namespace components::planner {
                 msg.append("CREATE INDEX: relation ");
                 msg.append(ci->target().database.t);
                 msg.append(".");
-                msg.append(ci->name());
+                msg.append(ci->indexname().t);
                 msg.append(" already exists (oid ");
                 msg.append(std::to_string(static_cast<std::uint64_t>(ci->name_conflict_oid())));
                 msg.append("); no index was created");
@@ -452,7 +452,7 @@ namespace components::planner {
             ci->set_index_oid(index_oid);
 
             auto writes = catalog::build_create_index_writes(r,
-                                                             ci->name(),
+                                                             ci->indexname().t,
                                                              ns_oid,
                                                              table_oid,
                                                              index_oid,

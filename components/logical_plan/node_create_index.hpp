@@ -33,7 +33,6 @@ namespace components::logical_plan {
                                      core::indexname_t indexname = core::indexname_t{std::string{"unnamed"}},
                                      index_type type = index_type::single);
 
-        const std::string& name() const noexcept;
         index_type type() const noexcept;
         keys_base_storage_t& keys() noexcept;
         const keys_base_storage_t& keys() const noexcept { return keys_; }

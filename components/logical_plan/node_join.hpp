@@ -39,7 +39,6 @@ namespace components::logical_plan {
         join_type type() const;
 
         join_algo algo() const noexcept;
-        void set_algo(join_algo algo) noexcept;
         std::size_t left_col() const noexcept;
         std::size_t right_col() const noexcept;
         // Records the detected equi-key column indices (into each side's input chunk)

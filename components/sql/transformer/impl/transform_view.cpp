@@ -40,12 +40,13 @@ namespace components::sql::transform {
 
         auto v = logical_plan::make_node_create_view(resource_,
                                                      core::viewname_t{qn.collection.t},
-                                                     core::query_sql_t{std::move(query_sql)});
+                                                     core::query_sql_t{std::move(query_sql)},
+                                                     false,
+                                                     node.replace);
         v->append_child(std::move(body));
         const std::string db_for_resolve = set_target(*v, qn, target_slots::database);
         register_catalog_resolve_namespace(resource_, &catalog_resolves_, db_for_resolve);
         if (node.replace) {
-            v->set_replace(true);
             register_catalog_resolve_table(resource_, &catalog_resolves_, v->target().database.t, v->viewname().t);
         }
         register_catalog_resolve_types(resource_, &catalog_resolves_, cast_type_names_);

@@ -34,8 +34,6 @@ namespace components::logical_plan {
 
     node_join_t::join_algo node_join_t::algo() const noexcept { return algo_; }
 
-    void node_join_t::set_algo(join_algo algo) noexcept { algo_ = algo; }
-
     std::size_t node_join_t::left_col() const noexcept { return left_col_; }
 
     std::size_t node_join_t::right_col() const noexcept { return right_col_; }

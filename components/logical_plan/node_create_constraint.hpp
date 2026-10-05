@@ -54,9 +54,6 @@ namespace components::logical_plan {
         void set_check_expression_sql(std::string sql) { check_expression_sql_ = std::move(sql); }
 
         const std::vector<components::catalog::oid_t>& check_col_attoids() const noexcept { return check_col_attoids_; }
-        void set_check_col_attoids(std::vector<components::catalog::oid_t> v) noexcept {
-            check_col_attoids_ = std::move(v);
-        }
 
         components::catalog::oid_t ref_table_oid() const noexcept { return ref_table_oid_; }
         void set_ref_table_oid(components::catalog::oid_t oid) noexcept { ref_table_oid_ = oid; }

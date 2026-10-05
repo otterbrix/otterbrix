@@ -58,8 +58,9 @@ namespace components::sql::transform {
         auto target_qn = rangevar_to_qualified_name(cs.into->rel);
         auto matview = logical_plan::make_node_create_view(resource_,
                                                            core::viewname_t{target_qn.collection.t},
-                                                           core::query_sql_t{std::move(body_sql)});
-        matview->set_materialized(true);
+                                                           core::query_sql_t{std::move(body_sql)},
+                                                           true,
+                                                           false);
         matview->append_child(std::move(body));
         const std::string db_for_resolve = set_target(*matview, target_qn, target_slots::database);
         register_catalog_resolve_namespace(resource_, &catalog_resolves_, db_for_resolve);

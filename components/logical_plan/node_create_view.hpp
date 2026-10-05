@@ -19,7 +19,11 @@ namespace components::logical_plan {
     // pg_depend (the dependencies).
     class node_create_view_t final : public node_t {
     public:
-        node_create_view_t(std::pmr::memory_resource* resource, core::viewname_t viewname, core::query_sql_t query_sql);
+        node_create_view_t(std::pmr::memory_resource* resource,
+                           core::viewname_t viewname,
+                           core::query_sql_t query_sql,
+                           bool materialized,
+                           bool replace);
 
         const std::string& query_sql() const { return query_sql_; }
 
@@ -32,11 +36,9 @@ namespace components::logical_plan {
 
         // CREATE MATERIALIZED VIEW: the same bound body, with a heap of its own (relkind 'm') that REFRESH fills.
         bool materialized() const noexcept { return materialized_; }
-        void set_materialized(bool materialized) noexcept { materialized_ = materialized; }
 
         // CREATE OR REPLACE VIEW; replaced_oid() is the view it replaces, INVALID_OID when there is none yet.
         bool replace() const noexcept { return replace_; }
-        void set_replace(bool replace) noexcept { replace_ = replace; }
         components::catalog::oid_t replaced_oid() const noexcept { return replaced_oid_; }
         void set_replaced_oid(components::catalog::oid_t oid) noexcept { replaced_oid_ = oid; }
 
@@ -60,8 +62,8 @@ namespace components::logical_plan {
         core::viewname_t viewname_;
         std::string query_sql_;
         components::catalog::oid_t namespace_oid_{components::catalog::INVALID_OID};
-        bool materialized_{false};
-        bool replace_{false};
+        bool materialized_;
+        bool replace_;
         components::catalog::oid_t replaced_oid_{components::catalog::INVALID_OID};
         std::pmr::vector<table::column_definition_t> columns_;
         std::pmr::vector<view_binding_t> bindings_;
@@ -69,7 +71,10 @@ namespace components::logical_plan {
     };
 
     using node_create_view_ptr = boost::intrusive_ptr<node_create_view_t>;
-    node_create_view_ptr
-    make_node_create_view(std::pmr::memory_resource* resource, core::viewname_t viewname, core::query_sql_t query_sql);
+    node_create_view_ptr make_node_create_view(std::pmr::memory_resource* resource,
+                                               core::viewname_t viewname,
+                                               core::query_sql_t query_sql,
+                                               bool materialized,
+                                               bool replace);
 
 } // namespace components::logical_plan

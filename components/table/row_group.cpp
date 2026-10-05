@@ -179,8 +179,7 @@ namespace components::table {
                                           : types::logical_value_t{collection_->resource(), new_column.type()};
             // The materialized column belongs to the successor, so its filled segments pack into the
             // successor's tails (sealed by the successor's first checkpoint like any other append).
-            column_append_state state;
-            state.pbm = &new_collection->append_packer();
+            column_append_state state{&new_collection->append_packer()};
             auto init = added_column->initialize_append(state);
             if (init.has_error()) {
                 return init.convert_error<std::unique_ptr<row_group_t>>();
@@ -630,7 +629,7 @@ namespace components::table {
         append_state.states = std::make_unique<column_append_state[]>(get_column_count());
         for (uint64_t i = 0; i < get_column_count(); i++) {
             auto& col_data = get_column(i);
-            append_state.states[i].pbm = append_state.pbm;
+            append_state.states[i] = column_append_state{append_state.pbm};
             auto init = col_data.initialize_append(append_state.states[i]);
             if (init.has_error()) {
                 return init; // out_of_memory

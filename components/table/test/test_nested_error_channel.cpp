@@ -70,8 +70,9 @@ namespace {
                                        const std::vector<std::vector<uint64_t>>& rows) {
         built_column_t out;
         out.column = column_data_t::create_column(&env.resource, bm, 0, 0, type);
-        out.pbm = std::make_unique<tstorage::partial_block_manager_t>(bm);
-        out.append_state.pbm = out.pbm.get();
+        out.pbm =
+            std::make_unique<tstorage::partial_block_manager_t>(tstorage::partial_block_manager_t::for_checkpoint(bm));
+        out.append_state = column_append_state{out.pbm.get()};
         REQUIRE_FALSE(out.column->initialize_append(out.append_state).has_error());
 
         vector_t v(&env.resource, type, rows.size());
@@ -225,9 +226,8 @@ TEST_CASE("column scan: a flat-vector scan over a non-flat result refuses on the
         for (uint64_t i = 0; i < 8; i++) {
             v.set_value(i, uint64_t{i});
         }
-        components::table::storage::partial_block_manager_t append_pbm(bm);
-        column_append_state append_state;
-        append_state.pbm = &append_pbm;
+        auto append_pbm = components::table::storage::partial_block_manager_t::for_checkpoint(bm);
+        column_append_state append_state{&append_pbm};
         REQUIRE_FALSE(column->initialize_append(append_state).has_error());
         REQUIRE_FALSE(column->append(append_state, v, 8).has_error());
     }

@@ -646,7 +646,7 @@ TEST_CASE("partial_block_manager: every packed segment offset is 8-byte aligned"
     single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
     REQUIRE(!bm.create_new_database().has_error());
 
-    partial_block_manager_t pbm(bm);
+    auto pbm = partial_block_manager_t::for_checkpoint(bm);
 
     // Offsets are later dereferenced as the segment's own element type, so misalignment is UB.
     auto first = pbm.get_block_allocation(4); // CONSTANT INT32 main segment

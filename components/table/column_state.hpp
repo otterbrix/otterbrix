@@ -102,12 +102,19 @@ namespace components::table {
     };
 
     struct column_append_state {
+        column_append_state() = default;
+        // The packer comes with the state: a row group's column takes the collection's, a nested
+        // column's child its parent's.
+        explicit column_append_state(storage::partial_block_manager_t* pbm)
+            : pbm(pbm) {}
+
         column_segment_t* current = nullptr;
         std::vector<column_append_state> child_appends;
         std::unique_ptr<std::unique_lock<std::mutex>> lock;
         std::unique_ptr<storage::buffer_handle_t> handle;
-        // The collection's shared packer for the segments this append fills; column_data_t::initialize_append
-        // refuses a null one rather than packing through a private packer (one 256 KiB block per segment).
+        // The collection's shared packer for the segments this append fills; never null once an append
+        // starts (column_data_t::initialize_append asserts it): a private packer per append would give each
+        // segment its own 256 KiB block.
         storage::partial_block_manager_t* pbm = nullptr;
     };
 

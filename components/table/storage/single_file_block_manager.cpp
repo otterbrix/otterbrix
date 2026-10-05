@@ -312,20 +312,17 @@ namespace components::table::storage {
     // leaves a block that fails its checksum -- acceptable only because no durable root names a
     // block still being grown (the append packer seals before every checkpoint), so recovery
     // never reads it; a live write failure latches durability_error_ like any other.
-    core::result_wrapper_t<bool> single_file_block_manager_t::write_range(file_buffer_t& buffer,
-                                                                          uint64_t block_id,
-                                                                          uint64_t offset,
-                                                                          uint64_t length) {
+    core::error_t single_file_block_manager_t::write_range_impl(file_buffer_t& buffer,
+                                                                uint64_t block_id,
+                                                                uint64_t offset,
+                                                                uint64_t length) {
         auto* data = buffer.internal_buffer();
         auto alloc_size = buffer.allocation_size();
         auto* checksum_slot = reinterpret_cast<uint64_t*>(data);
         auto* payload = data + sizeof(uint64_t);
         auto payload_size = alloc_size - sizeof(uint64_t);
-        if (offset + length > payload_size) {
-            return core::error_t(core::error_code_t::invalid_parameter,
-                                 std::pmr::string{"write_range past the end of block " + std::to_string(block_id),
-                                                  buffer_manager.resource()});
-        }
+        // The append packer never hands out a range past its block.
+        assert(offset + length <= payload_size);
         *checksum_slot = static_cast<uint64_t>(
             static_cast<uint32_t>(absl::ComputeCrc32c({reinterpret_cast<const char*>(payload), payload_size})));
         const auto location = block_location(block_id);
@@ -346,18 +343,21 @@ namespace components::table::storage {
                                                    std::to_string(location) + ") of " + path_,
                                                buffer_manager.resource()}));
         }
-        return true;
+        return core::error_t::no_error();
     }
 
-    core::result_wrapper_t<bool>
-    single_file_block_manager_t::write_prefix(file_buffer_t& buffer, uint64_t block_id, uint64_t length) {
+    core::error_t
+    single_file_block_manager_t::write_prefix_impl(file_buffer_t& buffer, uint64_t block_id, uint64_t length) {
         // A reused id still carries its previous bytes past the prefix; only a block past the end
         // of the file is guaranteed to read back zeros there (the sparse extension in write_range).
         const uint64_t block_end = block_location(block_id) + buffer.allocation_size();
         if (handle_->file_size() >= block_end) {
-            return checksum_and_write(buffer, block_id);
+            if (auto written = checksum_and_write(buffer, block_id); written.has_error()) {
+                return written.error();
+            }
+            return core::error_t::no_error();
         }
-        return write_range(buffer, block_id, 0, length);
+        return write_range_impl(buffer, block_id, 0, length);
     }
 
     uint64_t single_file_block_manager_t::free_block_id() {

@@ -137,8 +137,7 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> struct_column_data_t::initialize_append(column_append_state& state) {
-        column_append_state validity_append;
-        validity_append.pbm = state.pbm;
+        column_append_state validity_append{state.pbm};
         auto v = validity.initialize_append(validity_append);
         if (v.has_error()) {
             return v; // out_of_memory: no exceptions across actors
@@ -146,8 +145,7 @@ namespace components::table {
         state.child_appends.push_back(std::move(validity_append));
 
         for (auto& sub_column : sub_columns) {
-            column_append_state child_append;
-            child_append.pbm = state.pbm;
+            column_append_state child_append{state.pbm};
             auto child = sub_column->initialize_append(child_append);
             if (child.has_error()) {
                 return child;

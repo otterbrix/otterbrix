@@ -209,12 +209,8 @@ namespace components::table {
     void column_data_t::skip(column_scan_state& state, uint64_t count) { state.next(count); }
 
     core::result_wrapper_t<bool> column_data_t::initialize_append(column_append_state& state) {
-        // Every filled segment is packed by the collection's packer; an append state without one is
-        // a caller that bypassed the collection, not a case to paper over with a private packer.
-        if (state.pbm == nullptr) {
-            return core::error_t(core::error_code_t::invalid_parameter,
-                                 std::pmr::string("column append: the append state names no block packer", resource_));
-        }
+        // Every filled segment is packed by the collection's packer; there is no private one.
+        assert(state.pbm != nullptr && "an append state is built with the collection's packer");
         auto l = data_.lock();
         if (data_.is_empty(l)) {
             auto created = apend_transient_segment(l, start_);
@@ -266,9 +262,8 @@ namespace components::table {
         this->count_ += append_count;
         // The collection's packer: filled segments of every column and every statement share its
         // open tail blocks (a packer per append call gave each 16 KiB segment its own 256 KiB block).
-        assert(state.pbm != nullptr && "initialize_append refuses a state without a packer");
+        // The collection flushes it once per append, after every column.
         storage::partial_block_manager_t& pbm = *state.pbm;
-        bool any_transitioned = false;
         while (true) {
             auto appended = state.current->append(state, uvf, offset, append_count);
             if (appended.has_error()) {
@@ -295,7 +290,6 @@ namespace components::table {
                 if (transitioned.has_error()) {
                     return transitioned;
                 }
-                any_transitioned = true;
                 state.current = data_.last_segment(l);
                 auto init = state.current->initialize_append(state);
                 if (init.has_error()) {
@@ -304,11 +298,6 @@ namespace components::table {
             }
             offset += copied_elements;
             append_count -= copied_elements;
-        }
-        if (any_transitioned) {
-            if (auto flushed = pbm.flush_partial_blocks(); flushed.has_error()) {
-                return flushed; // io_error
-            }
         }
         return true;
     }
@@ -546,7 +535,13 @@ namespace components::table {
                 }
             }
             const auto string_alloc = pbm.get_block_allocation(tight_size);
-            pbm.write_to_block(string_alloc.block_id, string_alloc.offset_in_block, rewritten.data(), tight_size);
+            if (auto written = pbm.write_to_block(string_alloc.block_id,
+                                                  string_alloc.offset_in_block,
+                                                  rewritten.data(),
+                                                  tight_size);
+                written.contains_error()) {
+                return written;
+            }
             auto string_block_handle = block_manager_.register_block(string_alloc.block_id);
             // Adopted markers name real file blocks, kept alive by the reload constructor's registration
             // (test_string_write_through gate H).
@@ -604,7 +599,10 @@ namespace components::table {
                 return pinned.convert_error<bool>();
             }
             auto* payload = pinned.value().ptr() + block_offset;
-            pbm.write_to_block(alloc.block_id, alloc.offset_in_block, payload, segment_size);
+            if (auto written = pbm.write_to_block(alloc.block_id, alloc.offset_in_block, payload, segment_size);
+                written.contains_error()) {
+                return written;
+            }
         }
 
         auto block_handle = block_manager_.register_block(alloc.block_id);
@@ -749,7 +747,7 @@ namespace components::table {
             return children.convert_error<persistent_column_data_t>();
         }
         // A separate, short-lived partial_block_manager re-points the live tail and flushes here (flush-before-evict).
-        storage::partial_block_manager_t repoint_pbm(block_manager_);
+        auto repoint_pbm = storage::partial_block_manager_t::for_checkpoint(block_manager_);
         auto repointed = transition_to_disk(repoint_pbm);
         if (repointed.has_error()) {
             return repointed.convert_error<persistent_column_data_t>();

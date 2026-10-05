@@ -28,7 +28,7 @@ namespace components::table {
                                uint64_t row_group_size)
         : resource_(resource)
         , block_manager_(block_manager)
-        , append_pbm_(block_manager, storage::partial_block_manager_t::FULL_THRESHOLD, true)
+        , append_pbm_(storage::partial_block_manager_t::for_appends(block_manager))
         , row_group_size_(row_group_size)
         , total_rows_(total_rows)
         , types_(std::move(types))
@@ -289,9 +289,10 @@ namespace components::table {
             if (transitioned.has_error()) {
                 return transitioned;
             }
-            if (auto flushed = append_pbm_.flush_partial_blocks(); flushed.has_error()) {
-                return flushed; // io_error: the re-pointed segments' blocks are not on disk
-            }
+        }
+        // Once per append, for every segment re-pointed above or filled inside a column.
+        if (auto flushed = append_pbm_.flush_partial_blocks(); flushed.has_error()) {
+            return flushed; // io_error: the re-pointed segments' blocks are not on disk
         }
         state.current_row += int64_t(total_append_count);
         return new_row_group;
@@ -468,8 +469,8 @@ namespace components::table {
         new_types.push_back(new_column.type());
         // The successor shares this collection's row groups and columns; its first checkpoint may
         // name any tail block still open here, so none may be grown after this point.
-        if (auto sealed = append_pbm_.seal(); sealed.has_error()) {
-            return sealed.convert_error<boost::intrusive_ptr<collection_t>>(); // io_error
+        if (auto sealed = append_pbm_.seal(); sealed.contains_error()) {
+            return sealed; // io_error
         }
         // Plain `new`, never the pmr resource: the intrusive ref count lives inside the
         // object, so `delete` is the matching deallocation (no shared_ptr ever taken here).
@@ -491,6 +492,10 @@ namespace components::table {
 
             result->row_groups_->append_segment(std::move(new_row_group.value()));
         }
+        // The added column's filled segments went into the successor's packer.
+        if (auto flushed = result->append_pbm_.flush_partial_blocks(); flushed.has_error()) {
+            return flushed.convert_error<boost::intrusive_ptr<collection_t>>(); // io_error
+        }
         return result;
     }
 
@@ -501,8 +506,8 @@ namespace components::table {
         new_types.erase(new_types.begin() + static_cast<int64_t>(col_idx));
 
         // Same sharing as add_column: no tail of this collection may be grown once a successor exists.
-        if (auto sealed = append_pbm_.seal(); sealed.has_error()) {
-            return sealed.convert_error<boost::intrusive_ptr<collection_t>>(); // io_error
+        if (auto sealed = append_pbm_.seal(); sealed.contains_error()) {
+            return sealed; // io_error
         }
         // Same allocation note as add_column above.
         auto result = boost::intrusive_ptr<collection_t>(new collection_t(resource_,
@@ -524,8 +529,8 @@ namespace components::table {
         std::vector<storage::row_group_pointer_t> pointers;
 
         // The root written below may name an open tail block; once named it must never be rewritten.
-        if (auto sealed = append_pbm_.seal(); sealed.has_error()) {
-            return sealed.convert_error<std::vector<storage::row_group_pointer_t>>(); // io_error
+        if (auto sealed = append_pbm_.seal(); sealed.contains_error()) {
+            return sealed; // io_error
         }
 
         auto l = row_groups_->lock();

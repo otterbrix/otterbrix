@@ -102,13 +102,7 @@ namespace components::operators {
             if (decisions != nullptr && (decisions->is_null(i) || !decisions->get_value<bool>(i))) {
                 continue;
             }
-            int64_t abs_id;
-            if (chunk.data.front().get_vector_type() == vector::vector_type::DICTIONARY) {
-                abs_id = static_cast<int64_t>(chunk.data.front().indexing().get_index(i));
-            } else {
-                abs_id = chunk.row_ids.data<int64_t>()[i];
-            }
-            batch_ids.data<int64_t>()[index] = abs_id;
+            batch_ids.data<int64_t>()[index] = dml_detail::row_id_of(chunk, i);
             matched_indexing.set_index(index, i);
             index++;
         }
@@ -234,13 +228,7 @@ namespace components::operators {
                         continue;
                     }
                     // Keys on the absolute row id, not the loop index — they diverge with gaps or row groups.
-                    int64_t abs_id;
-                    if (chunk_left.data.front().get_vector_type() == vector::vector_type::DICTIONARY) {
-                        abs_id = static_cast<int64_t>(chunk_left.data.front().indexing().get_index(i));
-                    } else {
-                        abs_id = chunk_left.row_ids.data<int64_t>()[i];
-                    }
-                    batch_ids.data<int64_t>()[index] = abs_id;
+                    batch_ids.data<int64_t>()[index] = dml_detail::row_id_of(chunk_left, i);
                     matched_indexing.set_index(index, i);
                     if (collect_returning) {
                         for (size_t k = 0; k < chunk_right.column_count(); ++k) {

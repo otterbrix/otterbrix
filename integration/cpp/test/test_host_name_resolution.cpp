@@ -1369,3 +1369,21 @@ TEST_CASE("integration::cpp::host_names::a_uid_name_reaches_the_host_whole") {
     CHECK(std::string{other->get_error().what}.find("does not exist") != std::string::npos);
     CHECK(asked_names() == std::vector<std::string>{"m2.shop.orders"});
 }
+
+// Rows of a storage table without columns reach the delete sink by their numbers: LIMIT keeps the statement off
+// the host's one-statement rule. (UPDATE has no column to set on such a table.)
+TEST_CASE("integration::cpp::host_names::delete_rows_without_columns_by_row_number") {
+    HOST_TEST_BOILERPLATE("test_host_names/delete_no_columns")
+    REQUIRE(run(dispatcher,
+                "INSERT INTO otterstax.remote_columns (tbl, col, type, ord) VALUES "
+                "('m2.shop.marks', '', 'NONE', 1);")
+                ->is_success());
+    backend()["m2.shop.marks"] = {{}, {}, {}};
+
+    auto deleted = run(dispatcher, "DELETE FROM m2.shop.marks LIMIT 2;");
+    INFO(error_of(deleted));
+    REQUIRE(deleted->is_success());
+    CHECK(deleted->affected_rows() == std::optional<std::uint64_t>{2});
+    CHECK(write_log() == std::vector<std::string>{"delete m2.shop.marks rows 2"});
+    CHECK(backend()["m2.shop.marks"].size() == 1);
+}

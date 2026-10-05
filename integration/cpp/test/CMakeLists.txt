@@ -122,6 +122,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_delete_affected_count.cpp
         test_dml_affected_rows.cpp
         test_insert_positional_values.cpp
+        test_dml_without_columns.cpp
         test_create_in_missing_database.cpp
         test_long_string_literal.cpp
         test_tinyint_numeric_cast.cpp

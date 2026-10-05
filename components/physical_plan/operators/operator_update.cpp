@@ -305,12 +305,7 @@ namespace components::operators {
             if (decisions != nullptr && (decisions->is_null(i) || !decisions->get_value<bool>(i))) {
                 continue;
             }
-            if (chunk.data.front().get_vector_type() == vector::vector_type::DICTIONARY) {
-                out_chunk.row_ids.data<int64_t>()[index] =
-                    static_cast<int64_t>(chunk.data.front().indexing().get_index(i));
-            } else {
-                out_chunk.row_ids.data<int64_t>()[index] = chunk.row_ids.data<int64_t>()[i];
-            }
+            out_chunk.row_ids.data<int64_t>()[index] = dml_detail::row_id_of(chunk, i);
             matched_indexing.set_index(index, i);
             vector::validate_chunk_capacity(out_chunk, ++index);
         }
@@ -419,12 +414,7 @@ namespace components::operators {
                         continue;
                     }
                     // Keys on the absolute row id of the matched left row, mirroring the simple path's fallback.
-                    if (chunk_left.data.front().get_vector_type() == vector::vector_type::DICTIONARY) {
-                        out_chunk.row_ids.data<int64_t>()[index] =
-                            static_cast<int64_t>(chunk_left.data.front().indexing().get_index(i));
-                    } else {
-                        out_chunk.row_ids.data<int64_t>()[index] = chunk_left.row_ids.data<int64_t>()[i];
-                    }
+                    out_chunk.row_ids.data<int64_t>()[index] = dml_detail::row_id_of(chunk_left, i);
                     left_indexing.set_index(index, i);
                     for (size_t k = 0; k < chunk_right.column_count(); ++k) {
 #ifdef DEV_MODE

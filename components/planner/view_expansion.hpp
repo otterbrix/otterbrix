@@ -37,10 +37,6 @@ namespace components::planner {
         core::error_t error{core::error_t::no_error()};
     };
 
-    // One SQL statement through the parser and the transformer, as a fresh plan; `what` names it in a refusal.
-    core::result_wrapper_t<logical_plan::execution_plan_t>
-    parse_statement(std::pmr::memory_resource* resource, const std::string& sql, std::string_view what);
-
     // Each reference gets its own body -- filter pushdown appends a match child into it, so two
     // references cannot share a subtree (same policy as CTE inlining in optimizer.cpp).
     view_body_t expand_view_body(std::pmr::memory_resource* resource, const core::body_sql_t& view_sql);
@@ -93,6 +89,12 @@ namespace components::planner {
     refresh_matview_plan(std::pmr::memory_resource* resource,
                          const logical_plan::resolved_table_metadata_t& matview,
                          const core::dbname_t& dbname);
+
+    // REFRESH MATERIALIZED VIEW empties the matview first (PostgreSQL 18 matview.c): DELETE FROM dbname.matview,
+    // every row, no limit.
+    logical_plan::execution_plan_t refresh_matview_delete_plan(std::pmr::memory_resource* resource,
+                                                               const logical_plan::resolved_table_metadata_t& matview,
+                                                               const core::dbname_t& dbname);
 
     // A true cycle should be impossible, but this is the loud stop instead of an endless resolve loop.
     inline constexpr std::size_t max_view_expansion_depth = 16;

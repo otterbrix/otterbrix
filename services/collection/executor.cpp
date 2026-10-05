@@ -625,28 +625,12 @@ namespace services::collection::executor {
                                                      : core::error_code_t::schema_error,
                                   std::move(msg)})};
             }
-            const auto quoted = [](const std::string& name) {
-                std::string out{"\""};
-                for (const char c : name) {
-                    out += c;
-                    if (c == '"') {
-                        out += c;
-                    }
-                }
-                return out + "\"";
-            };
             {
-                auto parsed = components::planner::parse_statement(resource(),
-                                                                   "DELETE FROM " + quoted(matview_name.database.t) +
-                                                                       "." + quoted(matview_name.collection.t) + ";",
-                                                                   "materialized view refresh");
-                if (parsed.has_error()) {
-                    co_return execute_result_t{make_cursor(resource(), parsed.error())};
-                }
-                auto emptied = std::move(parsed.value());
-                emptied.commits_when_done = false;
                 auto done = co_await execute_statement_(session,
-                                                        std::move(emptied),
+                                                        components::planner::refresh_matview_delete_plan(
+                                                            resource(),
+                                                            *matview,
+                                                            matview_name.database),
                                                         session_ctx,
                                                         host_names,
                                                         std::pmr::vector<expanded_view_t>{resource()});

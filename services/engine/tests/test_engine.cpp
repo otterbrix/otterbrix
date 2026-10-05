@@ -23,14 +23,6 @@ using namespace services::engine;
 
 namespace {
 
-    template<typename T>
-    concept exposes_dispatcher = requires(const T& stage) { stage.dispatcher_address(); };
-
-    static_assert(!exposes_dispatcher<prepared_engine_t>);
-    static_assert(!exposes_dispatcher<spawned_engine_t>);
-    static_assert(!exposes_dispatcher<bootstrapped_engine_t>);
-    static_assert(exposes_dispatcher<engine_t>);
-
     std::filesystem::path test_root(const std::string& leaf) {
         auto root = std::filesystem::temp_directory_path() /
                     ("otterbrix_engine_test_" + std::to_string(static_cast<long>(::getpid()))) / leaf;
@@ -52,16 +44,11 @@ namespace {
         schedulers_t schedulers() { return {general.get(), exec.get(), disk.get()}; }
 
         core::error_t open() {
-            auto prepared = prepare_engine(&resource, config, log);
-            if (prepared.has_error()) {
-                return prepared.error();
+            auto opened = open_engine(&resource, schedulers(), config, log, {});
+            if (opened.has_error()) {
+                return opened.error();
             }
-            auto spawned = spawn_engine(std::move(prepared.value()), &resource, schedulers(), config, log, {});
-            auto bootstrapped = bootstrap(std::move(spawned));
-            if (bootstrapped.has_error()) {
-                return bootstrapped.error();
-            }
-            engine.emplace(start(std::move(bootstrapped.value())));
+            engine.emplace(std::move(opened.value()));
             return core::error_t::no_error();
         }
 
@@ -95,22 +82,21 @@ namespace {
 
 TEST_CASE("services::engine::directory_lock::a_second_owner_is_refused_across_threads") {
     const auto root = test_root("lock");
-    core::pmr::otterbrix_resource resource;
-
-    auto first = directory_lock_t::acquire(&resource, root);
-    REQUIRE_FALSE(first.has_error());
+    std::optional<host_t> first;
+    first.emplace(root);
+    REQUIRE_FALSE(first->open().contains_error());
 
     bool refused = false;
     std::thread second([&] {
-        auto lock = directory_lock_t::acquire(&resource, root);
-        refused = lock.has_error();
+        host_t host(root);
+        refused = host.open().contains_error() && !host.engine.has_value();
     });
     second.join();
     REQUIRE(refused);
 
-    { auto released = std::move(first.value()); }
-    auto again = directory_lock_t::acquire(&resource, root);
-    REQUIRE_FALSE(again.has_error());
+    first.reset();
+    host_t again(root);
+    REQUIRE_FALSE(again.open().contains_error());
 }
 
 TEST_CASE("services::engine::factory::rows_survive_a_reopen_without_a_wrapper") {
@@ -144,15 +130,6 @@ TEST_CASE("services::engine::factory::a_failed_bootstrap_hands_out_no_engine") {
     auto refusal = host.open();
     REQUIRE(refusal.contains_error());
     REQUIRE_FALSE(host.engine.has_value());
-}
-
-TEST_CASE("services::engine::factory::a_second_engine_on_the_same_directory_is_refused") {
-    const auto root = test_root("second_engine");
-    host_t first(root);
-    REQUIRE_FALSE(first.open().contains_error());
-    host_t second(root);
-    REQUIRE(second.open().contains_error());
-    REQUIRE_FALSE(second.engine.has_value());
 }
 
 namespace {

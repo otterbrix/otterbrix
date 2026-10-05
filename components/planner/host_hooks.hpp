@@ -13,7 +13,7 @@
 #include <memory_resource>
 #include <span>
 
-// What an embedding host plugs in at spawn_engine. Plain function pointers: the engine copies them into every
+// What an embedding host plugs in at open_engine. Plain function pointers: the engine copies them into every
 // executor, so they carry no host state.
 namespace components::planner {
 
@@ -86,7 +86,7 @@ namespace components::planner {
         name_resolution_decide_fn decide = &no_storages;
     };
 
-    // Read once by spawn_engine: every executor copies the rules, so the host's array need not outlive the call.
+    // Read once by open_engine: every executor copies the rules, so the host's array need not outlive the call.
     struct primitives_t final {
         std::span<const optimizer_rule_t> optimizer_rules{};
         name_resolution_hook_t name_resolution{};

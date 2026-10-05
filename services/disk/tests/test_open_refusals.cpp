@@ -638,6 +638,56 @@ TEST_CASE("services::disk::open::rehydrate_refuses_a_table_directory_it_cannot_e
     cleanup_refusal_dir();
 }
 
+// The directory of a lost .otbx that cannot be created stops the start like a file that cannot be examined.
+TEST_CASE("services::disk::open::rehydrate_refuses_a_table_directory_it_cannot_create") {
+    if (::geteuid() == 0) {
+        SKIP("root creates a directory under a read-only one anyway");
+    }
+    cleanup_refusal_dir();
+    auto base = std::filesystem::path(refusal_dir());
+    std::filesystem::create_directories(base);
+
+    catalog::oid_t table_oid = catalog::INVALID_OID;
+    catalog::oid_t ns_oid = catalog::INVALID_OID;
+    {
+        open_fixture fx(base);
+        REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
+        ns_oid = test_create_namespace(fx, "ns_readonly");
+        std::vector<components::table::column_definition_t> cols;
+        cols.emplace_back("value", components::types::complex_logical_type{components::types::logical_type::BIGINT});
+        table_oid = test_create_table(fx, ns_oid, "t_readonly", cols);
+        fx.invoke(&manager_disk_t::create_storage_disk,
+                  session_id_t{},
+                  table_oid,
+                  ns_oid,
+                  cols,
+                  /*is_computed=*/false);
+        append_rows(fx, table_oid, 5);
+        fx.checkpoint(services::wal::id_t{70});
+    }
+
+    // The table's directory is lost, and its namespace directory takes no new entry.
+    const auto table_dir = otbx_at(base, ns_oid, table_oid).parent_path();
+    const auto ns_dir = table_dir.parent_path();
+    std::filesystem::remove_all(table_dir);
+    open_fixture fx(base);
+    REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
+    REQUIRE_FALSE(fx.manager->has_storage(table_oid));
+
+    std::filesystem::permissions(ns_dir,
+                                 std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec,
+                                 std::filesystem::perm_options::replace);
+    auto rehydrated = fx.manager->rehydrate_missing_user_storages_sync();
+    std::filesystem::permissions(ns_dir, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace);
+
+    INFO("rehydrate answered " << (rehydrated.has_error() ? rehydrated.error().what.c_str() : "a count"));
+    REQUIRE(rehydrated.has_error());
+    CHECK(rehydrated.error().type == core::error_code_t::io_error);
+    CHECK_FALSE(std::filesystem::exists(table_dir));
+
+    cleanup_refusal_dir();
+}
+
 TEST_CASE("services::disk::open::a_rehydrate_walk_that_could_not_run_says_so") {
     cleanup_refusal_dir();
     auto base = std::filesystem::path(refusal_dir());

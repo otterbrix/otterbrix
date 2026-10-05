@@ -209,6 +209,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_unique_constraint_e2e.cpp
         test_bounded_dml_flush.cpp
         test_aggregate_pushdown_e2e.cpp
+        test_clause_answers.cpp
         test_pushdown_traffic.cpp
         test_pushed_reduce_scan_lateral.cpp
         test_jsonb_support.cpp

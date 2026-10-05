@@ -116,7 +116,6 @@ namespace components::operators {
 
     // One operator as EXPLAIN sees it; the views live until the sink returns.
     struct explain_entry_t {
-        operator_type type;
         catalog::oid_t oid;
         uint64_t rows;
         std::chrono::nanoseconds time;
@@ -236,19 +235,12 @@ namespace components::operators {
         void explain(const explain_sink& s) const { explain_impl(s); }
 
         // What EXPLAIN prints for this operator: its line, and the lines printed under it.
-        [[nodiscard]] std::pmr::string explain_label() const { return explain_label_impl(); }
+        [[nodiscard]] std::pmr::string explain_label() const;
         [[nodiscard]] std::pmr::vector<std::pmr::string> explain_details() const { return explain_details_impl(); }
 
     protected:
-        // The engine's name for type(), e.g. "Seq Scan", "Hash Join", "Extension Scan": what explain_label() says
-        // unless an override says more.
-        [[nodiscard]] std::pmr::string type_label() const;
-
-        void explain_begin(const explain_sink& s, catalog::oid_t oid) const {
-            const auto label = explain_label();
-            const auto details = explain_details();
-            s.begin(explain_entry_t{type(), oid, analyze_rows_, analyze_time_, analyze_loops_, label, details});
-        }
+        // Allocates nothing for an operator that overrides neither explain_*_impl.
+        void explain_begin(const explain_sink& s, catalog::oid_t oid) const;
 
         // Prevents constant creation of empty chunks just to pass its schema
         void note_emitted() noexcept { emitted_ = true; }
@@ -267,8 +259,8 @@ namespace components::operators {
     private:
         virtual actor_zeta::unique_future<core::error_t> open_impl(pipeline::context_t* ctx);
 
-        // type_label() unless overridden.
-        virtual std::pmr::string explain_label_impl() const;
+        // Empty: the engine's name for type(), e.g. "Seq Scan", "Hash Join", "Extension Scan".
+        virtual std::pmr::string explain_label_impl() const { return std::pmr::string{resource_}; }
         virtual std::pmr::vector<std::pmr::string> explain_details_impl() const {
             return std::pmr::vector<std::pmr::string>{resource_};
         }

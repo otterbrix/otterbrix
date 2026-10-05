@@ -10,90 +10,62 @@ namespace components::operators {
         // are refused by transform_explain; resolve_* run in separate resolve sub-plans; sequence is flattened;
         // empty/batch/unused are never rendered) share one "?".
         std::string_view default_explain_label(operator_type type) {
-            std::string_view label;
             switch (type) {
                 case operator_type::full_scan:
                 case operator_type::transfer_scan:
-                    label = "Seq Scan";
-                    break;
+                    return "Seq Scan";
                 case operator_type::index_scan:
-                    label = "Index Scan";
-                    break;
+                    return "Index Scan";
                 case operator_type::pushed_reduce_scan:
-                    label = "Pushed Aggregate Scan";
-                    break;
+                    return "Pushed Aggregate Scan";
                 case operator_type::hash_join:
-                    label = "Hash Join";
-                    break;
+                    return "Hash Join";
                 case operator_type::join:
-                    label = "Nested Loop";
-                    break;
+                    return "Nested Loop";
                 case operator_type::aggregate:
-                    label = "Aggregate";
-                    break;
+                    return "Aggregate";
                 case operator_type::group_merge:
-                    label = "Finalize Aggregate";
-                    break;
+                    return "Finalize Aggregate";
                 case operator_type::sort:
-                    label = "Sort";
-                    break;
+                    return "Sort";
                 case operator_type::match:
-                    label = "Filter";
-                    break;
+                    return "Filter";
                 case operator_type::having:
-                    label = "Having";
-                    break;
+                    return "Having";
                 case operator_type::select:
-                    label = "Project";
-                    break;
+                    return "Project";
                 case operator_type::distinct:
-                    label = "Unique";
-                    break;
+                    return "Unique";
                 case operator_type::limit:
-                    label = "Limit";
-                    break;
+                    return "Limit";
                 case operator_type::insert:
-                    label = "Insert";
-                    break;
+                    return "Insert";
                 case operator_type::remove:
-                    label = "Delete";
-                    break;
+                    return "Delete";
                 case operator_type::update:
-                    label = "Update";
-                    break;
+                    return "Update";
                 case operator_type::union_op:
-                    label = "Append";
-                    break;
+                    return "Append";
                 case operator_type::recursive_cte:
-                    label = "Recursive Union";
-                    break;
+                    return "Recursive Union";
                 case operator_type::cte_scan:
-                    label = "CTE Scan";
-                    break;
+                    return "CTE Scan";
                 case operator_type::raw_data:
-                    label = "Values Scan";
-                    break;
+                    return "Values Scan";
                 case operator_type::function:
-                    label = "Function Scan";
-                    break;
+                    return "Function Scan";
                 case operator_type::check_constraint:
-                    label = "Check Constraint";
-                    break;
+                    return "Check Constraint";
                 case operator_type::unique_constraint:
-                    label = "Unique Check";
-                    break;
+                    return "Unique Check";
                 case operator_type::fk_check:
-                    label = "FK Check";
-                    break;
+                    return "FK Check";
                 case operator_type::fk_cascade:
-                    label = "FK Cascade";
-                    break;
+                    return "FK Cascade";
                 case operator_type::computed_field_register:
-                    label = "Computed Fields";
-                    break;
+                    return "Computed Fields";
                 case operator_type::extension:
-                    label = "Extension Scan";
-                    break;
+                    return "Extension Scan";
                 case operator_type::unused:
                 case operator_type::empty:
                 case operator_type::sequence:
@@ -120,18 +92,30 @@ namespace components::operators {
                 case operator_type::resolve_constraint:
                 case operator_type::allocate_oids:
                 case operator_type::batch:
-                    label = "?";
                     break;
             }
-            return label;
+            return "?";
         }
     } // namespace
 
-    std::pmr::string operator_t::type_label() const {
-        return std::pmr::string{default_explain_label(type()), resource_};
+    std::pmr::string operator_t::explain_label() const {
+        auto label = explain_label_impl();
+        if (label.empty()) {
+            label = default_explain_label(type());
+        }
+        return label;
     }
 
-    std::pmr::string operator_t::explain_label_impl() const { return type_label(); }
+    void operator_t::explain_begin(const explain_sink& s, catalog::oid_t oid) const {
+        const auto label = explain_label_impl();
+        const auto details = explain_details_impl();
+        s.begin(explain_entry_t{oid,
+                                analyze_rows_,
+                                analyze_time_,
+                                analyze_loops_,
+                                label.empty() ? default_explain_label(type()) : std::string_view{label},
+                                details});
+    }
 
     operator_t::operator_t(std::pmr::memory_resource* resource, log_t log, operator_type type)
         : resource_(resource)

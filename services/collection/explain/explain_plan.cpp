@@ -33,7 +33,6 @@ namespace services::collection {
     void explain_ir_builder::node(const components::operators::explain_entry_t& entry) {
         const auto oid = entry.oid;
         explain_plan_node n(mr_);
-        n.type = entry.type;
         n.rows = entry.rows;
         n.time = entry.time;
         n.loops = entry.loops;

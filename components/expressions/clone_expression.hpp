@@ -29,7 +29,6 @@ namespace components::expressions {
 
         [[nodiscard]] expression_ptr attach(std::pmr::memory_resource* resource) const;
         [[nodiscard]] detached_expression_t copy(std::pmr::memory_resource* target) const;
-        [[nodiscard]] bool empty() const noexcept { return !tree_; }
 
     private:
         explicit detached_expression_t(expression_ptr tree) noexcept;

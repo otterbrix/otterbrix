@@ -20,7 +20,6 @@ namespace services::collection {
     // re-anchor to get_default_resource(), so nodes are built with `mr` and moved into
     // their parent's children.
     struct explain_plan_node {
-        components::operators::operator_type type{components::operators::operator_type::unused};
         // The operator's own line and the lines under it (explain_label / explain_details).
         std::pmr::string label;
         std::pmr::vector<std::pmr::string> details;

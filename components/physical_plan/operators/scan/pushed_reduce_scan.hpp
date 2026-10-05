@@ -43,10 +43,6 @@ namespace components::operators {
             reduced_.clear();
         }
 
-        // The spec instance each storage_reduce send ships: a DEEP COPY onto the
-        // operator's resource (field-by-field — the pmr members' plain copy ctors
-        // would SOCCC onto the default resource). The armed spec_ survives every
-        // send, so a re-driven scan re-runs the SAME reduce.
         [[nodiscard]] pushed_aggregate_spec_t open_spec(std::pmr::memory_resource* target) const;
 
     private:

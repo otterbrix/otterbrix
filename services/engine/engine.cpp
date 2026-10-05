@@ -20,6 +20,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <map>
+#include <optional>
 #include <set>
 #include <sys/file.h>
 #include <system_error>
@@ -368,6 +369,83 @@ namespace services::engine {
         return core::error_t::no_error();
     }
 
+    enum class replay_storage_t : std::uint8_t
+    {
+        existed,
+        created,
+        refused
+    };
+
+    // A row-carrying record needs its table's storage: loaded from its file, or synthesised from the
+    // record's own column types when the file was never written. Refused is logged here.
+    replay_storage_t ensure_replay_storage(services::disk::manager_disk_t& disk,
+                                           log_t& log,
+                                           components::catalog::oid_t table_oid,
+                                           components::catalog::oid_t ns_oid,
+                                           const services::wal::record_t& record) {
+        if (disk.has_storage(table_oid)) {
+            return replay_storage_t::existed;
+        }
+        // A failed load isn't an absent file: don't overwrite committed rows.
+        if (auto load_err = disk.load_storage_for_wal_replay_sync(table_oid, ns_oid); load_err.contains_error()) {
+            error(log,
+                  "engine::replay: table oid={} has a file that did not load ({}) — records for this table are NOT "
+                  "replayed, and no storage is created over it",
+                  static_cast<unsigned>(table_oid),
+                  load_err.what);
+            return replay_storage_t::refused;
+        }
+        if (disk.has_storage(table_oid)) {
+            return replay_storage_t::existed;
+        }
+        if (ns_oid == components::catalog::INVALID_OID) {
+            error(log,
+                  "engine::replay: table oid={} has no pg_class.relnamespace; cannot place its .otbx and refusing to "
+                  "guess — records for this table are NOT replayed",
+                  static_cast<unsigned>(table_oid));
+            return replay_storage_t::refused;
+        }
+        auto types = record.physical_data.front().types();
+        std::vector<components::table::column_definition_t> cols;
+        cols.reserve(types.size());
+        for (const auto& t : types) {
+            cols.emplace_back(t.has_alias() ? t.alias() : std::string{}, t);
+        }
+        auto otbx = disk.path_db() / std::to_string(static_cast<unsigned>(ns_oid)) /
+                    std::to_string(static_cast<unsigned>(table_oid)) / "table.otbx";
+        std::error_code dir_ec;
+        std::filesystem::create_directories(otbx.parent_path(), dir_ec);
+        if (dir_ec) {
+            error(log,
+                  "engine::replay: table oid={} has no directory for its .otbx ({}) — records for this table are NOT "
+                  "replayed",
+                  static_cast<unsigned>(table_oid),
+                  dir_ec.message());
+            return replay_storage_t::refused;
+        }
+        // An unreadable relkind is refused, never defaulted to 'r'.
+        auto relkind_r = disk.relkind_for_oid_sync(table_oid);
+        if (relkind_r.has_error()) {
+            error(log,
+                  "engine::replay: table oid={} has no readable relkind ({}) — refusing to synthesise a storage whose "
+                  "kind is a guess; records for this table are NOT replayed",
+                  static_cast<unsigned>(table_oid),
+                  relkind_r.error().what);
+            return replay_storage_t::refused;
+        }
+        const bool synth_computed = relkind_r.value() == components::catalog::relkind::computed;
+        if (auto synth_err = disk.create_storage_disk_sync(table_oid, ns_oid, std::move(cols), otbx, synth_computed);
+            synth_err.contains_error()) {
+            error(log,
+                  "engine::replay: table oid={} could not be synthesised ({}) — records for this table are NOT "
+                  "replayed",
+                  static_cast<unsigned>(table_oid),
+                  synth_err.what);
+            return replay_storage_t::refused;
+        }
+        return replay_storage_t::created;
+    }
+
     core::error_t bootstrap_parts(engine_parts_t& parts) {
         auto& disk = *parts.disk;
         auto& log = parts.log;
@@ -404,35 +482,31 @@ namespace services::engine {
                 }
                 return it->second;
             };
-            // An unreadable checkpoint floor is not treated as 0, or records would re-apply checkpointed rows.
-            std::unordered_map<components::catalog::oid_t, services::wal::id_t> cp_cache;
-            std::unordered_set<components::catalog::oid_t> cp_unreadable;
-            auto cp_for = [&](components::catalog::oid_t oid) -> services::wal::id_t {
-                if (cp_unreadable.count(oid) != 0) {
-                    return services::wal::id_t{0};
-                }
+            // An unreadable checkpoint floor is not treated as 0, or records would re-apply checkpointed rows:
+            // it answers nullopt, logged once and cached.
+            std::unordered_map<components::catalog::oid_t, std::optional<services::wal::id_t>> cp_cache;
+            auto cp_for = [&](components::catalog::oid_t oid) -> std::optional<services::wal::id_t> {
                 auto [it, inserted] = cp_cache.try_emplace(oid);
-                if (inserted) {
-                    // No namespace + no storage: table created since the last checkpoint, so 0 is correct.
-                    const auto ns_oid = ns_for(oid);
-                    if (ns_oid == components::catalog::INVALID_OID && !disk.has_storage(oid)) {
-                        it->second = services::wal::id_t{0};
-                        return it->second;
-                    }
-                    auto probed = disk.peek_checkpoint_wal_id_from_disk(oid, ns_oid);
-                    if (probed.has_error()) {
-                        error(log,
-                              "engine::replay: table oid={} has no readable checkpoint floor ({}) — its records are "
-                              "NOT replayed, because replaying them could re-apply rows the checkpointed file "
-                              "already holds",
-                              static_cast<unsigned>(oid),
-                              probed.error().what);
-                        cp_unreadable.insert(oid);
-                        cp_cache.erase(oid);
-                        return services::wal::id_t{0};
-                    }
-                    it->second = probed.value();
+                if (!inserted) {
+                    return it->second;
                 }
+                // No namespace + no storage: table created since the last checkpoint, so 0 is correct.
+                const auto ns_oid = ns_for(oid);
+                if (ns_oid == components::catalog::INVALID_OID && !disk.has_storage(oid)) {
+                    it->second = services::wal::id_t{0};
+                    return it->second;
+                }
+                auto probed = disk.peek_checkpoint_wal_id_from_disk(oid, ns_oid);
+                if (probed.has_error()) {
+                    error(log,
+                          "engine::replay: table oid={} has no readable checkpoint floor ({}) — its records are "
+                          "NOT replayed, because replaying them could re-apply rows the checkpointed file "
+                          "already holds",
+                          static_cast<unsigned>(oid),
+                          probed.error().what);
+                    return it->second;
+                }
+                it->second = probed.value();
                 return it->second;
             };
             for (auto& record : parts.wal_records) {
@@ -441,11 +515,11 @@ namespace services::engine {
                 if (record.table_oid == components::catalog::INVALID_OID) {
                     continue;
                 }
-                auto cp_id = cp_for(record.table_oid);
-                if (cp_unreadable.count(record.table_oid) != 0) {
+                const auto cp_id = cp_for(record.table_oid);
+                if (!cp_id.has_value()) {
                     continue;
                 }
-                if (cp_id > services::wal::id_t{0} && record.id <= cp_id) {
+                if (*cp_id > services::wal::id_t{0} && record.id <= *cp_id) {
                     continue;
                 }
                 if (record.table_oid < components::catalog::FIRST_USER_OID) {
@@ -482,72 +556,9 @@ namespace services::engine {
                     switch (r->record_type) {
                         case services::wal::wal_record_type::PHYSICAL_INSERT:
                             if (!r->physical_data.empty()) {
-                                if (!disk.has_storage(table_oid)) {
-                                    // A failed load isn't an absent file: don't overwrite committed rows.
-                                    if (auto load_err = disk.load_storage_for_wal_replay_sync(table_oid, ns_oid);
-                                        load_err.contains_error()) {
-                                        error(log,
-                                              "engine::replay: table oid={} has a file that did not load ({}) — "
-                                              "records for this table are NOT replayed, and no storage is "
-                                              "created over it",
-                                              static_cast<unsigned>(table_oid),
-                                              load_err.what);
-                                        return;
-                                    }
-                                    if (!disk.has_storage(table_oid)) {
-                                        if (ns_oid == components::catalog::INVALID_OID) {
-                                            error(log,
-                                                  "engine::replay: table oid={} has no pg_class.relnamespace; "
-                                                  "cannot place its .otbx and refusing to guess — records for "
-                                                  "this table are NOT replayed",
-                                                  static_cast<unsigned>(table_oid));
-                                            return;
-                                        }
-                                        auto types = r->physical_data.front().types();
-                                        std::vector<components::table::column_definition_t> cols;
-                                        cols.reserve(types.size());
-                                        for (const auto& t : types) {
-                                            cols.emplace_back(t.has_alias() ? t.alias() : std::string{}, t);
-                                        }
-                                        auto otbx = disk.path_db() / std::to_string(static_cast<unsigned>(ns_oid)) /
-                                                    std::to_string(static_cast<unsigned>(table_oid)) / "table.otbx";
-                                        std::error_code dir_ec;
-                                        std::filesystem::create_directories(otbx.parent_path(), dir_ec);
-                                        if (dir_ec) {
-                                            error(log,
-                                                  "engine::replay: table oid={} has no directory for its .otbx ({}) "
-                                                  "— records for this table are NOT replayed",
-                                                  static_cast<unsigned>(table_oid),
-                                                  dir_ec.message());
-                                            return;
-                                        }
-                                        // An unreadable relkind is refused, never defaulted to 'r'.
-                                        auto relkind_r = disk.relkind_for_oid_sync(table_oid);
-                                        if (relkind_r.has_error()) {
-                                            error(log,
-                                                  "engine::replay: table oid={} has no readable relkind ({}) — "
-                                                  "refusing to synthesise a storage whose kind is a guess; "
-                                                  "records for this table are NOT replayed",
-                                                  static_cast<unsigned>(table_oid),
-                                                  relkind_r.error().what);
-                                            return;
-                                        }
-                                        const bool synth_computed =
-                                            relkind_r.value() == components::catalog::relkind::computed;
-                                        if (auto synth_err = disk.create_storage_disk_sync(table_oid,
-                                                                                           ns_oid,
-                                                                                           std::move(cols),
-                                                                                           otbx,
-                                                                                           synth_computed);
-                                            synth_err.contains_error()) {
-                                            error(log,
-                                                  "engine::replay: table oid={} could not be synthesised ({}) — "
-                                                  "records for this table are NOT replayed",
-                                                  static_cast<unsigned>(table_oid),
-                                                  synth_err.what);
-                                            return;
-                                        }
-                                    }
+                                if (ensure_replay_storage(disk, log, table_oid, ns_oid, *r) ==
+                                    replay_storage_t::refused) {
+                                    return;
                                 }
                                 for (auto& chunk : r->physical_data) {
                                     const auto chunk_count = static_cast<uint64_t>(chunk.size());
@@ -585,71 +596,13 @@ namespace services::engine {
                         case services::wal::wal_record_type::PHYSICAL_ADD_COLUMN:
                             // Applies before the dependent PHYSICAL_INSERT (higher wal_id, replays after).
                             if (!r->physical_data.empty()) {
-                                if (!disk.has_storage(table_oid)) {
-                                    if (auto load_err = disk.load_storage_for_wal_replay_sync(table_oid, ns_oid);
-                                        load_err.contains_error()) {
-                                        error(log,
-                                              "engine::replay: table oid={} has a file that did not load ({}) — "
-                                              "records for this table are NOT replayed, and no storage is "
-                                              "created over it",
-                                              static_cast<unsigned>(table_oid),
-                                              load_err.what);
-                                        return;
-                                    }
-                                    if (!disk.has_storage(table_oid)) {
-                                        if (ns_oid == components::catalog::INVALID_OID) {
-                                            error(log,
-                                                  "engine::replay: table oid={} has no pg_class.relnamespace; "
-                                                  "cannot place its .otbx and refusing to guess — records for "
-                                                  "this table are NOT replayed",
-                                                  static_cast<unsigned>(table_oid));
-                                            return;
-                                        }
-                                        auto types = r->physical_data.front().types();
-                                        std::vector<components::table::column_definition_t> cols;
-                                        cols.reserve(types.size());
-                                        for (const auto& t : types) {
-                                            cols.emplace_back(t.has_alias() ? t.alias() : std::string{}, t);
-                                        }
-                                        auto otbx = disk.path_db() / std::to_string(static_cast<unsigned>(ns_oid)) /
-                                                    std::to_string(static_cast<unsigned>(table_oid)) / "table.otbx";
-                                        std::error_code dir_ec;
-                                        std::filesystem::create_directories(otbx.parent_path(), dir_ec);
-                                        if (dir_ec) {
-                                            error(log,
-                                                  "engine::replay: table oid={} has no directory for its .otbx ({}) "
-                                                  "— records for this table are NOT replayed",
-                                                  static_cast<unsigned>(table_oid),
-                                                  dir_ec.message());
-                                            return;
-                                        }
-                                        auto relkind_r = disk.relkind_for_oid_sync(table_oid);
-                                        if (relkind_r.has_error()) {
-                                            error(log,
-                                                  "engine::replay: table oid={} has no readable relkind ({}) — "
-                                                  "refusing to synthesise a storage whose kind is a guess; "
-                                                  "records for this table are NOT replayed",
-                                                  static_cast<unsigned>(table_oid),
-                                                  relkind_r.error().what);
-                                            return;
-                                        }
-                                        const bool synth_computed =
-                                            relkind_r.value() == components::catalog::relkind::computed;
-                                        if (auto synth_err = disk.create_storage_disk_sync(table_oid,
-                                                                                           ns_oid,
-                                                                                           std::move(cols),
-                                                                                           otbx,
-                                                                                           synth_computed);
-                                            synth_err.contains_error()) {
-                                            error(log,
-                                                  "engine::replay: table oid={} could not be synthesised ({}) — "
-                                                  "records for this table are NOT replayed",
-                                                  static_cast<unsigned>(table_oid),
-                                                  synth_err.what);
-                                            return;
-                                        }
-                                        break;
-                                    }
+                                const auto storage = ensure_replay_storage(disk, log, table_oid, ns_oid, *r);
+                                if (storage == replay_storage_t::refused) {
+                                    return;
+                                }
+                                // A storage synthesised from this record already has the added column.
+                                if (storage == replay_storage_t::created) {
+                                    break;
                                 }
                                 if (auto add_err = disk.direct_add_column_sync(table_oid, r->physical_data.front());
                                     add_err.contains_error()) {

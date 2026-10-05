@@ -417,10 +417,11 @@ namespace components::planner {
                                             insert,
                                             body.params ? body.params : logical_plan::make_parameter_node(resource)};
         plan.catalog_resolves = std::move(*body.resolves);
-        sql::transform::register_catalog_resolve_write_target(resource,
-                                                              &plan.catalog_resolves,
-                                                              qualified_name_t{dbname, matview.name},
-                                                              sql::transform::constraint_resolve_kind::outgoing);
+        sql::transform::register_catalog_resolve_write_target(
+            resource,
+            &plan.catalog_resolves,
+            qualified_name_t{core::dbname_t{dbname}, core::relname_t{matview.name}},
+            sql::transform::constraint_resolve_kind::outgoing);
         plan.stored_bodies.push_back({reference, matview});
         return plan;
     }

@@ -58,10 +58,10 @@ namespace components::sql::transform {
     core::error_t refuse_dropped_call_decorations(std::pmr::memory_resource* resource, const FuncCall& call);
 
     inline qualified_name_t rangevar_to_qualified_name(RangeVar* table) {
-        return qualified_name_t{construct(table->uid),
-                                construct(table->catalogname),
-                                construct(table->schemaname),
-                                construct(table->relname)};
+        return qualified_name_t{core::uid_t{construct(table->uid)},
+                                core::dbname_t{construct(table->catalogname)},
+                                core::schema_t{construct(table->schemaname)},
+                                core::relname_t{construct(table->relname)}};
     }
 
     // A REFERENCES target as written; one with a uid or schema segment is refused after resolve.
@@ -85,13 +85,18 @@ namespace components::sql::transform {
         }
         switch (static_cast<table_name>(segments.size())) {
             case table:
-                return qualified_name_t{segments[0]};
+                return qualified_name_t{core::relname_t{segments[0]}};
             case database_table:
-                return qualified_name_t{segments[0], segments[1]};
+                return qualified_name_t{core::dbname_t{segments[0]}, core::relname_t{segments[1]}};
             case database_schema_table:
-                return qualified_name_t{segments[0], segments[1], segments[2]};
+                return qualified_name_t{core::dbname_t{segments[0]},
+                                        core::schema_t{segments[1]},
+                                        core::relname_t{segments[2]}};
             case uuid_database_schema_table:
-                return qualified_name_t{segments[0], segments[1], segments[2], segments[3]};
+                return qualified_name_t{core::uid_t{segments[0]},
+                                        core::dbname_t{segments[1]},
+                                        core::schema_t{segments[2]},
+                                        core::relname_t{segments[3]}};
         }
         std::pmr::string msg{"name has ", resource};
         msg += std::to_string(segments.size());
@@ -137,17 +142,17 @@ namespace components::sql::transform {
     inline std::string database_for(const qualified_name_t& written, namespace_policy policy) {
         switch (policy) {
             case namespace_policy::default_public:
-                return written.database.empty() ? std::string{"public"} : written.database;
+                return written.database.t.empty() ? std::string{"public"} : written.database.t;
             case namespace_policy::public_only:
                 return "public";
             case namespace_policy::as_written:
                 break;
         }
-        return written.database;
+        return written.database.t;
     }
 
     inline const std::string& visible_name(const qualified_name_t& name, const std::string& alias) noexcept {
-        return alias.empty() ? name.collection : alias;
+        return alias.empty() ? name.collection.t : alias;
     }
 
     struct from_element_t {
@@ -192,7 +197,7 @@ namespace components::sql::transform {
         explicit column_ref_t(expressions::key_t field)
             : field(std::move(field)) {}
 
-        bool is_qualified() const noexcept { return !table.collection.empty(); }
+        bool is_qualified() const noexcept { return !table.collection.t.empty(); }
     };
 
     core::result_wrapper_t<column_ref_t>
@@ -413,7 +418,7 @@ namespace components::sql::transform {
 
     // Names a hand-built plan node's catalog target — what transform_* does for SQL-built plans.
     logical_plan::node_ptr
-    name_catalog_target(const std::string& dbname, const std::string& relname, logical_plan::node_ptr node);
+    name_catalog_target(const core::dbname_t& dbname, const core::relname_t& relname, logical_plan::node_ptr node);
 
     // with_constraints gathers INSERT/UPDATE's outgoing or DELETE's referencing constraints.
     // A FROM table as written: database.schema.name keeps its schema slot (to be refused); the uid form keeps its
@@ -448,7 +453,9 @@ namespace components::sql::transform {
                                         logical_plan::catalog_resolves_t* resolves,
                                         const std::vector<std::string>& type_names);
 
-    core::result_wrapper_t<qualified_name_t> called_function(std::pmr::memory_resource* resource, const List* funcname);
+    core::result_wrapper_t<function_qualified_name_t> called_function(std::pmr::memory_resource* resource,
+                                                                      const List* funcname);
+    core::error_t refuse_function_segment(std::pmr::memory_resource* resource, std::string_view written);
 
     void register_catalog_resolve_namespace(std::pmr::memory_resource* resource,
                                             logical_plan::catalog_resolves_t* resolves,

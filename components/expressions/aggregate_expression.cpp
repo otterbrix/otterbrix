@@ -36,7 +36,7 @@ namespace components::expressions {
                                                    const std::string& function_name,
                                                    const key_t& key)
         : expression_i(expression_group::aggregate, key)
-        , child_(make_function_expression(resource, qualified_name_t{function_name})) {}
+        , child_(make_function_expression(resource, function_qualified_name_t{core::function_name_t{function_name}})) {}
 
     aggregate_expression_t::aggregate_expression_t(const expression_ptr& call, const key_t& key)
         : expression_i(expression_group::aggregate, key)
@@ -52,7 +52,7 @@ namespace components::expressions {
 
     const std::string& aggregate_expression_t::function_name() const { return call()->name(); }
 
-    const qualified_name_t& aggregate_expression_t::full_name() const { return call()->full_name(); }
+    const function_qualified_name_t& aggregate_expression_t::full_name() const { return call()->full_name(); }
 
     void aggregate_expression_t::add_function_uid(compute::function_uid uid) { call()->add_function_uid(uid); }
 

@@ -61,7 +61,7 @@ namespace components::sql::transform {
         }
 
         auto qn = rangevar_to_qualified_name(node.relation);
-        const std::string relname_for_resolve = qn.collection;
+        const std::string relname_for_resolve = qn.collection.t;
         auto create_index =
             logical_plan::make_node_create_index(resource_, core::indexname_t{std::string(node.idxname)}, type);
         for (auto key : node.indexParams->lst) {

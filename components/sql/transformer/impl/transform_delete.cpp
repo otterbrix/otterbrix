@@ -17,14 +17,12 @@ namespace components::sql::transform {
         // path below — otherwise an empty source would wrongly delete all rows.
         if (!node.whereClause && (!node.usingClause || node.usingClause->lst.empty())) {
             auto qn = rangevar_to_qualified_name(node.relation);
-            VALUE_OR_RETURN(
-                auto del_limit,
-                build_dml_limit(node.limitCount, core::dbname_t{qn.database}, core::relname_t{qn.collection}, plan));
+            VALUE_OR_RETURN(auto del_limit, build_dml_limit(node.limitCount, qn.database, qn.collection, plan));
             auto del = logical_plan::make_node_delete(
                 resource_,
                 logical_plan::make_node_match(resource_,
-                                              core::dbname_t{qn.database},
-                                              core::relname_t{qn.collection},
+                                              qn.database,
+                                              qn.collection,
                                               make_compare_expression(resource_, compare_type::all_true)),
                 del_limit);
             // The target identity stays ON the node: enrich binds it to a resolved
@@ -69,17 +67,11 @@ namespace components::sql::transform {
             where_expr = make_compare_expression(resource_, compare_type::all_true);
         }
         VALUE_OR_RETURN(auto del_limit,
-                        build_dml_limit(node.limitCount,
-                                        core::dbname_t{names.left_name.database},
-                                        core::relname_t{names.left_name.collection},
-                                        plan));
-        auto del =
-            logical_plan::make_node_delete(resource_,
-                                           logical_plan::make_node_match(resource_,
-                                                                         core::dbname_t{names.left_name.database},
-                                                                         core::relname_t{names.left_name.collection},
-                                                                         where_expr),
-                                           del_limit);
+                        build_dml_limit(node.limitCount, names.left_name.database, names.left_name.collection, plan));
+        auto del = logical_plan::make_node_delete(
+            resource_,
+            logical_plan::make_node_match(resource_, names.left_name.database, names.left_name.collection, where_expr),
+            del_limit);
         // The target identity stays ON the node: enrich binds it to a resolved
         // entry by name and stamps table_oid() + table_metadata() from there.
         set_target(*del, names.left_name);

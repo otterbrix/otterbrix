@@ -39,7 +39,7 @@ namespace components::sql::transform {
         auto qn = rangevar_to_qualified_name(node.view);
 
         auto v = logical_plan::make_node_create_view(resource_,
-                                                     core::viewname_t{qn.collection},
+                                                     core::viewname_t{qn.collection.t},
                                                      core::query_sql_t{std::move(query_sql)});
         v->append_child(std::move(body));
         const std::string db_for_resolve = set_target(*v, qn);

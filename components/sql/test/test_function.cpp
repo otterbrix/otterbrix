@@ -96,10 +96,13 @@ TEST_CASE("components::sql::functions") {
                          R"_($aggregate: {$function: {name: {"db1.some_udf"}, args: {#0, #1}}})_",
                          vec({v(&resource, 5l), v(&resource, 10l)}));
 
-    TEST_SIMPLE_FUNCTION(
-        R"_(SELECT u.d.s.some_udf(text) FROM some_table;)_",
-        R"_($aggregate: {$group: {$function: {name: {"u.d.s.some_udf"}, args: {"text"}}}, $select: {}})_",
-        vec());
+    SECTION("a function name has no uid slot") {
+        auto select = linitial(raw_parser(&arena_resource, "SELECT u.d.s.some_udf(text) FROM some_table;"));
+        auto result = transformer.transform(pg_cell_to_node_cast(select)).finalize();
+        REQUIRE(result.has_error());
+        CHECK(result.error().type == core::error_code_t::invalid_parameter);
+        CHECK(std::string{result.error().what}.find("u.d.s.some_udf") != std::string::npos);
+    }
 
     SECTION("a name with more segments than uid.db.schema.name has no reading") {
         auto select = linitial(raw_parser(&arena_resource, "SELECT a.b.c.d.some_udf(text) FROM some_table;"));

@@ -74,7 +74,7 @@ namespace {
     core::result_wrapper_t<logical_plan::node_ptr>
     swap_decide(std::pmr::memory_resource* res,
                 logical_plan::node_ptr tree,
-                std::span<const planner::unresolved_table_t>,
+                std::span<const qualified_name_t>,
                 std::span<const std::pmr::vector<vector::data_chunk_t>>) {
         swap_externals(tree, res, current_chunks());
         return tree;

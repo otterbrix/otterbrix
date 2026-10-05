@@ -274,7 +274,7 @@ namespace components::sql::transform {
             return core::error_t(core::error_code_t::unimplemented_yet, std::move(msg));
         }
         auto qn = rangevar_to_qualified_name(node.relation);
-        const std::string rel_for_resolve = qn.collection;
+        const std::string rel_for_resolve = qn.collection.t;
         std::string old_name = node.subname ? node.subname : "";
         std::string new_name = node.newname ? node.newname : "";
         // operator_alter_column_rename_t carries the same empty-name no-op as its
@@ -299,8 +299,8 @@ namespace components::sql::transform {
     core::result_wrapper_t<logical_plan::node_ptr>
     transformer::transform_alter_table(AlterTableStmt& node, logical_plan::execution_plan_t* plan) {
         auto qn = rangevar_to_qualified_name(node.relation);
-        const std::string& db = qn.database;
-        const std::string& rel = qn.collection;
+        const std::string& db = qn.database.t;
+        const std::string& rel = qn.collection.t;
         if_exists_ = node.missing_ok;
         // The grammar hands the table subcommands of ALTER VIEW / INDEX / SEQUENCE / MATERIALIZED VIEW /
         // FOREIGN TABLE over as an AlterTableStmt of that kind; they would otherwise change whatever table has

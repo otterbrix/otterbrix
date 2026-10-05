@@ -15,8 +15,8 @@
 #include <set>
 #include <string>
 
-static const database_name_t database_name = "testdatabase";
-static const collection_name_t collection_name = "testcollection";
+static const core::dbname_t database_name{"testdatabase"};
+static const core::relname_t collection_name{"testcollection"};
 
 TEST_CASE("integration::cpp::test_sql_features::is_null") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/is_null"));

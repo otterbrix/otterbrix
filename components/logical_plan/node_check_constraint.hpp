@@ -1,7 +1,7 @@
 #pragma once
 
-#include "identifier_types.hpp"
 #include "node.hpp"
+#include <components/base/identifier_types.hpp>
 #include <components/expressions/expression.hpp>
 #include <components/logical_plan/param_storage.hpp>
 

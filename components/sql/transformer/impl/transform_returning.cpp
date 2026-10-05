@@ -29,7 +29,7 @@ namespace components::sql::transform {
                     // can expand it by result_alias.
                     if (col.is_qualified()) {
                         std::pmr::vector<std::pmr::string> star_path{resource_};
-                        star_path.emplace_back(std::pmr::string{col.table.collection, resource_});
+                        star_path.emplace_back(std::pmr::string{col.table.collection.t, resource_});
                         star_path.emplace_back(std::pmr::string{"*", resource_});
                         out.push_back(make_scalar_expression(resource_,
                                                              scalar_type::star_expand,

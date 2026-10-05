@@ -94,7 +94,7 @@ namespace components::sql::transform {
                 return std::string{};
             }
             VALUE_OR_RETURN(auto called, called_function(resource, call->funcname));
-            return std::move(called.collection);
+            return std::move(called.function.t);
         }
     } // namespace
 
@@ -146,29 +146,30 @@ namespace components::sql::transform {
                 auto* table = pg_ptr_cast<RangeVar>(item);
                 auto written = rangevar_to_qualified_name(table);
                 slot_alias = construct_alias(table->alias);
-                const std::string& visible = slot_alias.empty() ? written.collection : slot_alias;
-                const bool unqualified = written.database.empty() && written.schema.empty() && written.unique_identifier.empty();
+                const std::string& visible = slot_alias.empty() ? written.collection.t : slot_alias;
+                const bool unqualified =
+                    written.database.t.empty() && written.schema.t.empty() && written.unique_identifier.t.empty();
                 if (unqualified) {
-                    if (auto cte = cte_queries_.find(written.collection); cte != cte_queries_.end()) {
-                        slot_name.collection = written.collection;
+                    if (auto cte = cte_queries_.find(written.collection.t); cte != cte_queries_.end()) {
+                        slot_name.collection = written.collection.t;
                         auto agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
                         VALUE_OR_RETURN(auto body, transform_select(*cte->second, plan));
                         agg->append_child(std::move(body));
                         agg->children().back()->set_result_alias(visible);
                         return agg;
                     }
-                    if (recursive_cte_queries_.count(written.collection)) {
-                        slot_name.collection = written.collection;
-                        VALUE_OR_RETURN(auto agg, build_recursive_cte_ref(written.collection, visible, plan));
+                    if (recursive_cte_queries_.count(written.collection.t)) {
+                        slot_name.collection = written.collection.t;
+                        VALUE_OR_RETURN(auto agg, build_recursive_cte_ref(written.collection.t, visible, plan));
                         return agg;
                     }
                 }
                 slot_name = std::move(written);
                 auto agg = logical_plan::make_node_aggregate(resource_,
-                                                             core::uid_t{slot_name.unique_identifier},
-                                                             core::dbname_t{slot_name.database},
-                                                             core::relname_t{slot_name.collection});
-                agg->set_schema(slot_name.schema);
+                                                             slot_name.unique_identifier,
+                                                             slot_name.database,
+                                                             slot_name.collection);
+                agg->set_schema(slot_name.schema.t);
                 if (!slot_alias.empty()) {
                     agg->set_result_alias(slot_alias);
                 }
@@ -226,7 +227,7 @@ namespace components::sql::transform {
                 auto* func = pg_ptr_cast<RangeFunction>(item);
                 slot_alias = construct_alias(func->alias);
                 if (slot_alias.empty()) {
-                    VALUE_OR_RETURN(slot_name.collection, range_function_name(resource_, *func));
+                    VALUE_OR_RETURN(slot_name.collection.t, range_function_name(resource_, *func));
                 }
                 VALUE_OR_RETURN(auto element,
                                 node_join ? transform_from_function(*func, names, node_join, plan)
@@ -264,7 +265,7 @@ namespace components::sql::transform {
             name_collection_t inner;
             RETURN_IF_ERROR(join_dfs(resource, pg_ptr_cast<JoinExpr>(join->larg), node_join, inner, plan));
             auto carry = [&](const qualified_name_t& nm, const std::string& alias) {
-                if (!nm.collection.empty() || !alias.empty()) {
+                if (!nm.collection.t.empty() || !alias.empty()) {
                     names.extra_left.push_back({nm, alias});
                 }
             };
@@ -754,7 +755,7 @@ namespace components::sql::transform {
                         if (res->name) {
                             expr_name = res->name;
                         } else {
-                            expr_name = called.collection;
+                            expr_name = called.function.t;
                         }
 
                         auto expr = make_function_expression(resource_, std::move(called), std::move(args));
@@ -801,7 +802,7 @@ namespace components::sql::transform {
                             VALUE_OR_RETURN(auto col, columnref_to_field(resource_, col_ref, names));
                             if (nodeTag(col_ref->fields->lst.back().data) == T_A_Star && col.is_qualified()) {
                                 std::pmr::vector<std::pmr::string> star_path{resource_};
-                                star_path.emplace_back(std::pmr::string{col.table.collection, resource_});
+                                star_path.emplace_back(std::pmr::string{col.table.collection.t, resource_});
                                 star_path.emplace_back(std::pmr::string{"*", resource_});
                                 if (res->name) {
                                     return core::error_t(

@@ -19,13 +19,13 @@
 #include <core/operations_helper.hpp>
 #include <variant>
 
-static const database_name_t table_database_name = "table_testdatabase";
-static const collection_name_t table_collection_name_simple = "table_testcollection_simple";
-static const collection_name_t table_collection_name_not_null = "table_testcollection_not_null";
-static const collection_name_t table_collection_name_null_defaults = "table_testcollection_null_defaults";
-static const collection_name_t table_collection_name_value_defaults = "table_testcollection_value_defaults";
-static const collection_name_t table_collection_name_value_defaults_not_null =
-    "table_testcollection_value_defaults_not_null";
+static const core::dbname_t table_database_name{"table_testdatabase"};
+static const core::relname_t table_collection_name_simple{"table_testcollection_simple"};
+static const core::relname_t table_collection_name_not_null{"table_testcollection_not_null"};
+static const core::relname_t table_collection_name_null_defaults{"table_testcollection_null_defaults"};
+static const core::relname_t table_collection_name_value_defaults{"table_testcollection_value_defaults"};
+static const core::relname_t table_collection_name_value_defaults_not_null{
+    "table_testcollection_value_defaults_not_null"};
 
 using namespace components;
 using namespace cursor;
@@ -90,7 +90,7 @@ TEST_CASE("integration::cpp::test_collection::insert") {
 
     INFO("initialization");
     {
-        auto create_collection = [&](const collection_name_t& collection,
+        auto create_collection = [&](const core::relname_t& collection,
                                      const std::vector<table::column_definition_t>& columns) {
             auto session = otterbrix::session_id_t();
             test_create_collection(dispatcher, session, table_database_name, collection, columns);
@@ -98,7 +98,7 @@ TEST_CASE("integration::cpp::test_collection::insert") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + table_database_name + ";");
+            dispatcher->execute_sql(session, "CREATE DATABASE " + table_database_name.t + ";");
         }
         create_collection(table_collection_name_simple, columns_simple);
         create_collection(table_collection_name_not_null, columns_not_null);
@@ -110,7 +110,7 @@ TEST_CASE("integration::cpp::test_collection::insert") {
     INFO("full insert");
     {
         // is the same for all
-        auto full_insert = [&](const collection_name_t& collection) {
+        auto full_insert = [&](const core::relname_t& collection) {
             auto chunk = gen_data_chunk(kNumInserts, 0, types, dispatcher->resource());
             auto ins = components::sql::transform::name_catalog_target(
                 table_database_name,
@@ -137,7 +137,7 @@ TEST_CASE("integration::cpp::test_collection::insert") {
         auto swapped_types = types;
         std::swap(swapped_types[0], swapped_types[1]);
 
-        auto reordered_insert = [&](const collection_name_t& collection) {
+        auto reordered_insert = [&](const core::relname_t& collection) {
             auto chunk = gen_data_chunk(kNumInserts, 0, swapped_types, dispatcher->resource());
             auto ins = components::sql::transform::name_catalog_target(
                 table_database_name,
@@ -164,7 +164,7 @@ TEST_CASE("integration::cpp::test_collection::insert") {
         auto changed_types = types;
         changed_types[0] = types::complex_logical_type{types::logical_type::INTEGER, "count_but_integer"};
 
-        auto insert_with_conversion = [&](const collection_name_t& collection) {
+        auto insert_with_conversion = [&](const core::relname_t& collection) {
             auto chunk = gen_data_chunk(kNumInserts, 0, changed_types, dispatcher->resource());
             auto ins = components::sql::transform::name_catalog_target(
                 table_database_name,
@@ -196,7 +196,7 @@ TEST_CASE("integration::cpp::test_collection::insert") {
             fields.emplace_back(dispatcher->resource(), type.alias());
         }
 
-        auto partial_insert = [&](const collection_name_t& collection) {
+        auto partial_insert = [&](const core::relname_t& collection) {
             auto chunk = gen_data_chunk(kNumInserts, 0, partial_types, dispatcher->resource());
             auto ins = components::sql::transform::name_catalog_target(
                 table_database_name,
@@ -209,9 +209,10 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                 session,
                 components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
         };
-        auto select_all = [&](const collection_name_t& collection) {
+        auto select_all = [&](const core::relname_t& collection) {
             auto session = otterbrix::session_id_t();
-            return dispatcher->execute_sql(session, "SELECT * FROM " + table_database_name + "." + collection + ";");
+            return dispatcher->execute_sql(session,
+                                           "SELECT * FROM " + table_database_name.t + "." + collection.t + ";");
         };
 
         INFO("table_collection_name_simple");
@@ -328,7 +329,7 @@ TEST_CASE("integration::cpp::test_collection::insert") {
             fields.emplace_back(dispatcher->resource(), type.alias());
         }
 
-        auto reversed_partial_insert = [&](const collection_name_t& collection) {
+        auto reversed_partial_insert = [&](const core::relname_t& collection) {
             auto chunk = gen_data_chunk(kNumInserts, 0, reversed_partial_types, dispatcher->resource());
             auto ins = components::sql::transform::name_catalog_target(
                 table_database_name,
@@ -341,9 +342,10 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                 session,
                 components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
         };
-        auto select_all = [&](const collection_name_t& collection) {
+        auto select_all = [&](const core::relname_t& collection) {
             auto session = otterbrix::session_id_t();
-            return dispatcher->execute_sql(session, "SELECT * FROM " + table_database_name + "." + collection + ";");
+            return dispatcher->execute_sql(session,
+                                           "SELECT * FROM " + table_database_name.t + "." + collection.t + ";");
         };
 
         INFO("table_collection_name_simple");
@@ -455,7 +457,7 @@ TEST_CASE("integration::cpp::test_collection::insert") {
             fields.emplace_back(dispatcher->resource(), "invalid_key_" + type.alias());
         }
 
-        auto invalid_keys_insert = [&](const collection_name_t& collection) {
+        auto invalid_keys_insert = [&](const core::relname_t& collection) {
             auto chunk = gen_data_chunk(kNumInserts, 0, types, dispatcher->resource());
             auto ins = components::sql::transform::name_catalog_target(
                 table_database_name,

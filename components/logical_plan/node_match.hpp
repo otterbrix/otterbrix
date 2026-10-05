@@ -1,8 +1,8 @@
 #pragma once
 
-#include "identifier_types.hpp"
 #include "node.hpp"
 #include "node_limit.hpp"
+#include <components/base/identifier_types.hpp>
 
 namespace components::logical_plan {
 

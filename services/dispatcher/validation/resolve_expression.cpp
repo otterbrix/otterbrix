@@ -254,7 +254,7 @@ namespace services::dispatcher::validation {
                                                  context_.cast_registry,
                                                  context_.execution_context,
                                                  context_.function_registry,
-                                                 qualified_name_t{"regexp_like"},
+                                                 function_qualified_name_t{core::function_name_t{"regexp_like"}},
                                                  arguments,
                                                  context_.allowed_functions,
                                                  {});

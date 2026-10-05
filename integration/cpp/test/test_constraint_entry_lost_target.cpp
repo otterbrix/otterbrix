@@ -60,8 +60,8 @@ namespace {
                                                                    std::size_t target) {
         auto* resource = d->resource();
         auto node = components::sql::transform::name_catalog_target(
-            db,
-            rel,
+            core::dbname_t{db},
+            core::relname_t{rel},
             logical_plan::make_node_insert(resource, one_row(resource, id, code)));
         logical_plan::execution_plan_t plan{resource, node, logical_plan::make_parameter_node(resource)};
         components::sql::transform::register_catalog_resolve_table(resource, &plan.catalog_resolves, db, rel);

@@ -59,8 +59,9 @@ namespace components::expressions {
             }
             case expression_group::aggregate: {
                 const auto* src = static_cast<const aggregate_expression_t*>(expr.get());
-                auto dst = make_aggregate_over(make_function_expression(resource, qualified_name_t{src->full_name()}),
-                                               src->key());
+                auto dst =
+                    make_aggregate_over(make_function_expression(resource, function_qualified_name_t{src->full_name()}),
+                                        src->key());
                 dst->add_function_uid(src->function_uid());
                 dst->set_signature(src->signature());
                 dst->set_pins({src->pins().begin(), src->pins().end(), resource});
@@ -88,7 +89,8 @@ namespace components::expressions {
                 for (const auto& arg : src->args()) {
                     args.push_back(clone_param(resource, arg));
                 }
-                auto dst = make_function_expression(resource, qualified_name_t{src->full_name()}, std::move(args));
+                auto dst =
+                    make_function_expression(resource, function_qualified_name_t{src->full_name()}, std::move(args));
                 dst->set_key(src->key());
                 dst->add_function_uid(src->function_uid());
                 dst->set_signature(src->signature());

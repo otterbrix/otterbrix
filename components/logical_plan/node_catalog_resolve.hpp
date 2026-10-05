@@ -2,10 +2,10 @@
 
 #include "node.hpp"
 
+#include <components/base/identifier_types.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/fk_info.hpp>
 #include <components/catalog/view_binding.hpp>
-#include <components/logical_plan/identifier_types.hpp>
 #include <components/types/types.hpp>
 
 #include <cstdint>

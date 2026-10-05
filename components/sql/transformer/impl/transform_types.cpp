@@ -32,7 +32,7 @@ namespace components::sql::transform {
     core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_create_type(CompositeTypeStmt& node) {
         VALUE_OR_RETURN(auto fields, get_types(resource_, *node.coldeflist));
         auto written = rangevar_to_qualified_name(node.typevar);
-        auto type = types::complex_logical_type::create_struct(written.collection, fields);
+        auto type = types::complex_logical_type::create_struct(written.collection.t, fields);
         auto type_copy = type;
         auto created = logical_plan::make_node_create_type(resource_, std::move(type_copy));
         // A type always lands in "public"; a name that spells uid or schema goes to enrich to refuse.
@@ -54,7 +54,7 @@ namespace components::sql::transform {
             values.back().set_alias(strVal(cell.data));
         }
         VALUE_OR_RETURN(auto written, qualified_name_of(resource_, *node.typeName));
-        auto type = types::complex_logical_type::create_enum(written.collection, std::move(values));
+        auto type = types::complex_logical_type::create_enum(written.collection.t, std::move(values));
         auto type_copy = type;
         auto created = logical_plan::make_node_create_type(resource_, std::move(type_copy));
         set_target(*created, written);

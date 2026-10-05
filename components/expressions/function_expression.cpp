@@ -2,23 +2,23 @@
 #include <sstream>
 
 namespace components::expressions {
-    function_expression_t::function_expression_t(std::pmr::memory_resource* resource, qualified_name_t&& name)
+    function_expression_t::function_expression_t(std::pmr::memory_resource* resource, function_qualified_name_t&& name)
         : expression_i(expression_group::function, key_t{resource})
         , name_(std::move(name))
         , args_(resource)
         , pins_(resource) {}
 
     function_expression_t::function_expression_t(std::pmr::memory_resource* resource,
-                                                 qualified_name_t&& name,
+                                                 function_qualified_name_t&& name,
                                                  std::pmr::vector<param_storage>&& args)
         : expression_i(expression_group::function, key_t{resource})
         , name_(std::move(name))
         , args_(std::move(args))
         , pins_(resource) {}
 
-    const std::string& function_expression_t::name() const noexcept { return name_.collection; }
+    const std::string& function_expression_t::name() const noexcept { return name_.function.t; }
 
-    const qualified_name_t& function_expression_t::full_name() const noexcept { return name_; }
+    const function_qualified_name_t& function_expression_t::full_name() const noexcept { return name_; }
 
     void function_expression_t::set_key(const key_t& new_key) { key() = new_key; }
 
@@ -71,12 +71,13 @@ namespace components::expressions {
         return name_ == other->name_ && args_ == other->args_;
     }
 
-    function_expression_ptr make_function_expression(std::pmr::memory_resource* resource, qualified_name_t&& name) {
+    function_expression_ptr make_function_expression(std::pmr::memory_resource* resource,
+                                                     function_qualified_name_t&& name) {
         return {new function_expression_t(resource, std::move(name))};
     }
 
     function_expression_ptr make_function_expression(std::pmr::memory_resource* resource,
-                                                     qualified_name_t&& name,
+                                                     function_qualified_name_t&& name,
                                                      std::pmr::vector<param_storage>&& args) {
         return {new function_expression_t(resource, std::move(name), std::move(args))};
     }

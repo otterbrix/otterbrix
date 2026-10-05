@@ -401,16 +401,16 @@ namespace components::sql::transform {
             const logical_plan::node_t& base = node;
             std::string dbname = database_for(written, policy_of(base));
             node.set_dbname(dbname);
-            if constexpr (requires { node.set_relname(written.collection); }) {
-                node.set_relname(written.collection);
+            if constexpr (requires { node.set_relname(written.collection.t); }) {
+                node.set_relname(written.collection.t);
             }
-            constexpr bool keeps_schema = requires { node.set_schema(written.schema); };
+            constexpr bool keeps_schema = requires { node.set_schema(written.schema.t); };
             if constexpr (keeps_schema) {
-                node.set_schema(written.schema);
+                node.set_schema(written.schema.t);
             }
-            const bool leads_elsewhere = !written.unique_identifier.empty() ||
-                                         (!keeps_schema && !written.schema.empty()) ||
-                                         (!written.database.empty() && written.database != dbname);
+            const bool leads_elsewhere = !written.unique_identifier.t.empty() ||
+                                         (!keeps_schema && !written.schema.t.empty()) ||
+                                         (!written.database.t.empty() && written.database.t != dbname);
             if (leads_elsewhere) {
                 catalog_resolves_.external_targets.push_back(logical_plan::external_target_t{written, base.type()});
             }

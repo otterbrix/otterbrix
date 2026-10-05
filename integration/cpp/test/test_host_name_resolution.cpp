@@ -409,11 +409,11 @@ namespace {
     core::result_wrapper_t<std::pmr::vector<logical_plan::execution_plan_t>>
     need_remote_columns(std::pmr::memory_resource* resource,
                         const logical_plan::node_ptr&,
-                        std::span<const planner::unresolved_table_t> unresolved) {
+                        std::span<const qualified_name_t> unresolved) {
         counters().need.fetch_add(1);
         std::pmr::vector<logical_plan::execution_plan_t> reads{resource};
         for (const auto& name : unresolved) {
-            asked_names().push_back(qualified(name.dbname, name.schema, name.relname));
+            asked_names().push_back(qualified(name.database.t, name.schema.t, name.collection.t));
             auto agg = logical_plan::make_node_aggregate(resource,
                                                          core::dbname_t{"otterstax"},
                                                          core::relname_t{"remote_columns"});
@@ -427,8 +427,9 @@ namespace {
                                                             core::relname_t{"remote_columns"},
                                                             std::move(expr)));
             auto params = logical_plan::make_parameter_node(resource);
-            params->add_parameter(core::parameter_id_t{1},
-                                  types::logical_value_t(resource, qualified(name.dbname, name.schema, name.relname)));
+            params->add_parameter(
+                core::parameter_id_t{1},
+                types::logical_value_t(resource, qualified(name.database.t, name.schema.t, name.collection.t)));
             reads.emplace_back(resource, std::move(agg), std::move(params));
         }
         counters().reads.fetch_add(static_cast<int>(reads.size()));
@@ -529,7 +530,7 @@ namespace {
     core::result_wrapper_t<logical_plan::node_ptr>
     decide_remote_nodes(std::pmr::memory_resource* resource,
                         logical_plan::node_ptr tree,
-                        std::span<const planner::unresolved_table_t> unresolved,
+                        std::span<const qualified_name_t> unresolved,
                         std::span<const std::pmr::vector<vector::data_chunk_t>> read_results) {
         counters().decide.fetch_add(1);
         std::vector<declared_t> declared;
@@ -560,7 +561,7 @@ namespace {
                 continue;
             }
             std::sort(ordered.begin(), ordered.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
-            declared_t d{qualified(unresolved[i].dbname, unresolved[i].schema, unresolved[i].relname),
+            declared_t d{qualified(unresolved[i].database.t, unresolved[i].schema.t, unresolved[i].collection.t),
                          std::pmr::vector<types::complex_logical_type>{resource}};
             for (auto& [_, type] : ordered) {
                 d.columns.push_back(std::move(type));

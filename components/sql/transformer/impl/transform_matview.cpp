@@ -57,7 +57,7 @@ namespace components::sql::transform {
 
         auto target_qn = rangevar_to_qualified_name(cs.into->rel);
         auto matview = logical_plan::make_node_create_view(resource_,
-                                                           core::viewname_t{target_qn.collection},
+                                                           core::viewname_t{target_qn.collection.t},
                                                            core::query_sql_t{std::move(body_sql)});
         matview->set_materialized(true);
         matview->append_child(std::move(body));
@@ -74,14 +74,14 @@ namespace components::sql::transform {
         }
         auto qn = rangevar_to_qualified_name(rs.relation);
         auto node = logical_plan::make_node_refresh_matview(resource_,
-                                                            core::matviewname_t{qn.collection},
+                                                            core::matviewname_t{qn.collection.t},
                                                             rs.concurrent,
                                                             !rs.skipData);
         // The matview's identity stays ON the node: enrich binds it to a resolved
         // entry by name, whose metadata carries view_sql (Phase A.A2 reads
         // pg_rewrite.ev_action for relkind='m').
         set_target(*node, qn);
-        register_catalog_resolve_table(resource_, &catalog_resolves_, qn.database, qn.collection);
+        register_catalog_resolve_table(resource_, &catalog_resolves_, qn.database.t, qn.collection.t);
         return node;
     }
 } // namespace components::sql::transform

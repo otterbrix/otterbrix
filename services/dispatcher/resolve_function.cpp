@@ -1,6 +1,7 @@
 #include "resolve_function.hpp"
 
 #include <components/catalog/system_table_schemas.hpp>
+#include <components/sql/transformer/utils.hpp>
 
 #include <algorithm>
 #include <optional>
@@ -27,21 +28,17 @@ namespace services::dispatcher {
         };
 
         core::result_wrapper_t<function_scope> scope_of(std::pmr::memory_resource* resource,
-                                                        const qualified_name_t& name) {
-            if (!name.unique_identifier.empty() || !name.schema.empty()) {
-                return core::error_t(core::error_code_t::invalid_parameter,
-                                     std::pmr::string{"function '" + name.to_string() +
-                                                          "' names a uid or schema segment, which this catalog has no "
-                                                          "place for: call it as [namespace.]name",
-                                                      resource});
+                                                        const function_qualified_name_t& name) {
+            if (!name.schema.t.empty()) {
+                return components::sql::transform::refuse_function_segment(resource, name.to_string());
             }
-            if (name.database.empty()) {
+            if (name.database.t.empty()) {
                 return function_scope::any;
             }
-            if (name.database == "pg_catalog") {
+            if (name.database.t == "pg_catalog") {
                 return function_scope::builtins;
             }
-            if (name.database == "public") {
+            if (name.database.t == "public") {
                 return function_scope::client;
             }
             return core::error_t(core::error_code_t::unimplemented_yet,
@@ -279,7 +276,7 @@ namespace services::dispatcher {
                      const cast_registry_t& cast_registry,
                      const graph_execution_context& context,
                      const function_registry_t& function_registry,
-                     const qualified_name_t& name,
+                     const function_qualified_name_t& name,
                      const std::pmr::vector<complex_logical_type>& arguments,
                      components::compute::function_types_mask allowed_function_types,
                      std::span<const components::compute::function_pin_t> pins) {
@@ -292,7 +289,7 @@ namespace services::dispatcher {
         std::optional<resolved_function_t> best;
         std::optional<total_cost_t> best_cost;
 
-        for (const auto uid : function_registry.find_functions(name.collection)) {
+        for (const auto uid : function_registry.find_functions(name.function.t)) {
             if (!in_scope(scope, uid)) {
                 continue;
             }

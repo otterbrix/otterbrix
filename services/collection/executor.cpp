@@ -884,55 +884,54 @@ namespace services::collection::executor {
             switch (n->type()) {
                 case node_type::aggregate_t: {
                     auto* d = static_cast<const node_aggregate_t*>(n);
-                    return qualified_name_t{static_cast<const std::string&>(d->dbname()),
-                                            static_cast<const std::string&>(d->relname())};
+                    return qualified_name_t{core::dbname_t{d->dbname()}, core::relname_t{d->relname()}};
                 }
                 case node_type::alter_column_t:
                     return {};
                 case node_type::alter_table_t: {
                     auto* d = static_cast<const node_alter_table_t*>(n);
-                    return qualified_name_t{d->dbname(), d->relname()};
+                    return qualified_name_t{core::dbname_t{d->dbname()}, core::relname_t{d->relname()}};
                 }
                 case node_type::create_collection_t: {
                     auto* d = static_cast<const node_create_collection_t*>(n);
-                    return qualified_name_t{d->dbname(), static_cast<const std::string&>(d->relname())};
+                    return qualified_name_t{core::dbname_t{d->dbname()},
+                                            core::relname_t{static_cast<const std::string&>(d->relname())}};
                 }
                 case node_type::create_constraint_t: {
                     auto* d = static_cast<const node_create_constraint_t*>(n);
-                    return qualified_name_t{static_cast<const std::string&>(d->dbname()),
-                                            static_cast<const std::string&>(d->relname())};
+                    return qualified_name_t{core::dbname_t{d->dbname()}, core::relname_t{d->relname()}};
                 }
                 case node_type::create_database_t: {
                     auto* d = static_cast<const node_create_database_t*>(n);
-                    return qualified_name_t{d->dbname(), std::string{}};
+                    return qualified_name_t{core::dbname_t{d->dbname()}, core::relname_t{}};
                 }
                 case node_type::create_index_t: {
                     auto* d = static_cast<const node_create_index_t*>(n);
-                    return qualified_name_t{d->dbname(), d->relname()};
+                    return qualified_name_t{core::dbname_t{d->dbname()}, core::relname_t{d->relname()}};
                 }
                 case node_type::create_macro_t: {
                     auto* d = static_cast<const node_create_macro_t*>(n);
-                    return qualified_name_t{d->dbname(), d->macroname()};
+                    return qualified_name_t{core::dbname_t{d->dbname()}, core::relname_t{d->macroname()}};
                 }
                 case node_type::create_sequence_t: {
                     auto* d = static_cast<const node_create_sequence_t*>(n);
-                    return qualified_name_t{d->dbname(), d->seqname()};
+                    return qualified_name_t{core::dbname_t{d->dbname()}, core::relname_t{d->seqname()}};
                 }
                 case node_type::create_view_t: {
                     auto* d = static_cast<const node_create_view_t*>(n);
-                    return qualified_name_t{d->dbname(), d->viewname()};
+                    return qualified_name_t{core::dbname_t{d->dbname()}, core::relname_t{d->viewname()}};
                 }
                 case node_type::delete_t: {
                     auto* d = static_cast<const node_delete_t*>(n);
-                    return qualified_name_t{d->dbname(), d->relname()};
+                    return qualified_name_t{core::dbname_t{d->dbname()}, core::relname_t{d->relname()}};
                 }
                 case node_type::insert_t: {
                     auto* d = static_cast<const node_insert_t*>(n);
-                    return qualified_name_t{d->dbname(), d->relname()};
+                    return qualified_name_t{core::dbname_t{d->dbname()}, core::relname_t{d->relname()}};
                 }
                 case node_type::update_t: {
                     auto* d = static_cast<const node_update_t*>(n);
-                    return qualified_name_t{d->dbname(), d->relname()};
+                    return qualified_name_t{core::dbname_t{d->dbname()}, core::relname_t{d->relname()}};
                 }
                 case node_type::drop_t: {
                     using components::logical_plan::drop_target_kind;
@@ -942,14 +941,13 @@ namespace services::collection::executor {
                         return {};
                     }
                     if (d->kind() == drop_target_kind::database) {
-                        return qualified_name_t{d->dbname(), std::string{}};
+                        return qualified_name_t{core::dbname_t{d->dbname()}, core::relname_t{}};
                     }
-                    return qualified_name_t{d->dbname(), d->relname()};
+                    return qualified_name_t{core::dbname_t{d->dbname()}, core::relname_t{d->relname()}};
                 }
                 case node_type::match_t: {
                     auto* d = static_cast<const node_match_t*>(n);
-                    return qualified_name_t{static_cast<const std::string&>(d->dbname()),
-                                            static_cast<const std::string&>(d->relname())};
+                    return qualified_name_t{core::dbname_t{d->dbname()}, core::relname_t{d->relname()}};
                 }
                 default:
                     return {};

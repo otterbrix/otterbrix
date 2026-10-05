@@ -149,7 +149,7 @@ namespace components::sql::transform {
         }
 
         auto seq = logical_plan::make_node_create_sequence(resource_,
-                                                           core::seqname_t{qn.collection},
+                                                           core::seqname_t{qn.collection.t},
                                                            start,
                                                            increment,
                                                            min_value,

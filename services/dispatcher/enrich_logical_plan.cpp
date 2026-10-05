@@ -731,7 +731,7 @@ namespace services::catalog_resolve {
 
     core::error_t refuse_referenced_segments(std::pmr::memory_resource* resource, const catalog_resolves_t& resolves) {
         for (const auto& written : resolves.referenced_tables) {
-            if (written.unique_identifier.empty() && written.schema.empty()) {
+            if (written.unique_identifier.t.empty() && written.schema.t.empty()) {
                 continue;
             }
             std::pmr::string msg{"REFERENCES target \"", resource};
@@ -861,15 +861,17 @@ namespace services::catalog_resolve {
         return false;
     }
 
-    std::pmr::vector<components::planner::unresolved_table_t> unresolved_tables(std::pmr::memory_resource* resource,
-                                                                                const catalog_resolves_t& resolves) {
-        std::pmr::vector<components::planner::unresolved_table_t> names{resource};
+    std::pmr::vector<qualified_name_t> unresolved_tables(std::pmr::memory_resource* resource,
+                                                         const catalog_resolves_t& resolves) {
+        std::pmr::vector<qualified_name_t> names{resource};
         if (!resolves.tables) {
             return names;
         }
         for (const auto& entry : resolves.tables->entries()) {
             if (!entry.superseded && !entry.table_md.has_value()) {
-                names.push_back({entry.dbname, entry.schema, entry.relname});
+                names.emplace_back(core::dbname_t{entry.dbname},
+                                   core::schema_t{entry.schema},
+                                   core::relname_t{entry.relname});
             }
         }
         return names;
@@ -1494,7 +1496,7 @@ namespace services::dispatcher {
             std::pmr::string msg{statement_of(target.type), resource};
             msg += " target \"";
             msg += target.written.to_string();
-            if (!target.written.unique_identifier.empty() || !target.written.schema.empty()) {
+            if (!target.written.unique_identifier.t.empty() || !target.written.schema.t.empty()) {
                 msg += "\" names a uid or schema segment, which this catalog has no place for: a relation lives in a "
                        "database — write it as [database.]name; nothing was changed";
             } else {

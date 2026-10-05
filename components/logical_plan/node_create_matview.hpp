@@ -1,7 +1,7 @@
 #pragma once
 
-#include "identifier_types.hpp"
 #include "node.hpp"
+#include <components/base/identifier_types.hpp>
 
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/catalog_write.hpp>

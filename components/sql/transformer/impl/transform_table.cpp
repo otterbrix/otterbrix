@@ -85,7 +85,7 @@ namespace components::sql::transform {
         }
 
         logical_plan::node_ptr created = logical_plan::make_node_create_collection(resource_,
-                                                                                   core::relname_t{qn.collection},
+                                                                                   qn.collection,
                                                                                    std::move(col_defs),
                                                                                    std::move(constraints),
                                                                                    node.if_not_exists);
@@ -107,7 +107,7 @@ namespace components::sql::transform {
                 const std::string ref_db = tc.ref_database.empty() ? dbname : tc.ref_database;
                 auto cstr = logical_plan::make_node_create_constraint(resource_,
                                                                       dbname,
-                                                                      qn.collection,
+                                                                      qn.collection.t,
                                                                       core::constraint_name_t{tc.name},
                                                                       kind,
                                                                       ref_db);
@@ -126,7 +126,7 @@ namespace components::sql::transform {
                     // yet (both oids are minted by the same rewrite) — a lookup would read
                     // as "referenced relation does not exist".
                     const bool self_ref =
-                        !tc.ref_collection.empty() && tc.ref_collection == qn.collection && ref_db == dbname;
+                        !tc.ref_collection.empty() && tc.ref_collection == qn.collection.t && ref_db == dbname;
                     cstr->set_self_reference(self_ref);
                     if (!self_ref && !tc.ref_collection.empty()) {
                         register_catalog_resolve_table(resource_, &catalog_resolves_, ref_db, tc.ref_collection);
@@ -215,7 +215,7 @@ namespace components::sql::transform {
             if_exists_ = node.missing_ok;
             // One drop_behavior_of choke-point for all six DROP arms (bare = restrict_, PostgreSQL parity).
             drop->set_behavior(drop_behavior_of(node.behavior));
-            register_catalog_resolve_table(resource_, &catalog_resolves_, written.database, written.collection);
+            register_catalog_resolve_table(resource_, &catalog_resolves_, written.database.t, written.collection.t);
             return n;
         };
         // The catalog holds a relname and a relnamespace, so the arms below plan at most those two (and
@@ -248,8 +248,8 @@ namespace components::sql::transform {
                     // dynamic cascade), but this is the only place it could be set.
                     drop->set_behavior(drop_behavior_of(node.behavior));
                     std::vector<std::pair<std::string, std::string>> targets;
-                    targets.emplace_back(written.database, written.collection);
-                    targets.emplace_back(written.database, index_name);
+                    targets.emplace_back(written.database.t, written.collection.t);
+                    targets.emplace_back(written.database.t, index_name);
                     register_catalog_resolve_tables(resource_, &catalog_resolves_, targets);
                     return n;
                 };
@@ -261,7 +261,9 @@ namespace components::sql::transform {
                         std::string collection = strVal(it++->data);
                         std::string name = strVal(it->data);
                         auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::index);
-                        return wrap_index(qualified_name_t{database, collection}, name, std::move(n));
+                        return wrap_index(qualified_name_t{core::dbname_t{database}, core::relname_t{collection}},
+                                          name,
+                                          std::move(n));
                     }
                     case database_schema_table: {
                         auto it = drop_name.begin();
@@ -270,7 +272,11 @@ namespace components::sql::transform {
                         std::string collection = strVal(it++->data);
                         std::string name = strVal(it->data);
                         auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::index);
-                        return wrap_index(qualified_name_t{database, schema, collection}, name, std::move(n));
+                        return wrap_index(qualified_name_t{core::dbname_t{database},
+                                                           core::schema_t{schema},
+                                                           core::relname_t{collection}},
+                                          name,
+                                          std::move(n));
                     }
                     case uuid_database_schema_table: {
                         auto it = drop_name.begin();
@@ -280,7 +286,12 @@ namespace components::sql::transform {
                         std::string collection = strVal(it++->data);
                         std::string name = strVal(it->data);
                         auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::index);
-                        return wrap_index(qualified_name_t{uuid, database, schema, collection}, name, std::move(n));
+                        return wrap_index(qualified_name_t{core::uid_t{uuid},
+                                                           core::dbname_t{database},
+                                                           core::schema_t{schema},
+                                                           core::relname_t{collection}},
+                                          name,
+                                          std::move(n));
                     }
                     default:
                         return core::error_t(core::error_code_t::sql_parse_error,
@@ -301,7 +312,7 @@ namespace components::sql::transform {
                 // (planner's rewrite_drop routes drop_target_kind::type there).
                 n->set_behavior(drop_behavior_of(node.behavior));
                 register_catalog_resolve_namespace(resource_, &catalog_resolves_, type_db);
-                register_catalog_resolve_types(resource_, &catalog_resolves_, {written.collection});
+                register_catalog_resolve_types(resource_, &catalog_resolves_, {written.collection.t});
                 return n;
             }
             case OBJECT_SEQUENCE: {

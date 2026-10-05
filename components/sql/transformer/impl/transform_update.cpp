@@ -76,21 +76,18 @@ namespace components::sql::transform {
             VALUE_OR_RETURN(auto where_res, transform_predicate(node.whereClause, names, plan));
             expressions::expression_ptr where_expr = std::move(where_res);
             match = logical_plan::make_node_match(resource_,
-                                                  core::dbname_t{names.left_name.database},
-                                                  core::relname_t{names.left_name.collection},
+                                                  names.left_name.database,
+                                                  names.left_name.collection,
                                                   where_expr);
         } else {
             match = logical_plan::make_node_match(resource_,
-                                                  core::dbname_t{names.left_name.database},
-                                                  core::relname_t{names.left_name.collection},
+                                                  names.left_name.database,
+                                                  names.left_name.collection,
                                                   make_compare_expression(resource_, compare_type::all_true));
         }
 
         VALUE_OR_RETURN(auto upd_limit_res,
-                        build_dml_limit(node.limitCount,
-                                        core::dbname_t{names.left_name.database},
-                                        core::relname_t{names.left_name.collection},
-                                        plan));
+                        build_dml_limit(node.limitCount, names.left_name.database, names.left_name.collection, plan));
         auto upd_limit = std::move(upd_limit_res);
         auto upd = logical_plan::make_node_update(resource_, match, upd_limit, updates, false);
         set_target(*upd, names.left_name);

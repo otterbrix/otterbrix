@@ -101,8 +101,10 @@ namespace components::logical_plan {
         std::string dbname;
         std::string relname;
         std::string type_name;
-        // Table entries: the schema slot of database.schema.name, which the catalog has no place for (refused once
-        // the database is known to exist). Empty for the uid form, which keeps its meaning database.name.
+        // Table entries: the uid and schema slots of uid.database.schema.name, as written, so the host gets the whole
+        // name. The catalog looks a table up by database.name only: a schema slot is refused once the database is
+        // known to exist, except in the uid form, which keeps its meaning database.name.
+        std::string uid;
         std::string schema;
         resolve_direction direction{resolve_direction::outgoing};
         // Constraint entries only: indexes the TABLE node's entries_ for the table it constrains.
@@ -138,9 +140,6 @@ namespace components::logical_plan {
         bool operator==(const resolve_entry_t& other) const noexcept;
     };
 
-    // The schema slot a written table name is looked up by: the uid form keeps its meaning database.name.
-    std::string_view catalog_schema(const qualified_name_t& written) noexcept;
-
     // One per resolve kind for the whole execution plan.
     class node_catalog_resolve_t final : public node_t {
     public:
@@ -155,7 +154,10 @@ namespace components::logical_plan {
         // Appends `entry` unless an equivalent request is already present
         std::size_t add(resolve_entry_t entry);
         std::size_t find(std::string_view dbname, std::string_view name) const noexcept;
-        std::size_t find(std::string_view dbname, std::string_view schema, std::string_view name) const noexcept;
+        std::size_t find(std::string_view uid,
+                         std::string_view dbname,
+                         std::string_view schema,
+                         std::string_view name) const noexcept;
 
     private:
         hash_t hash_impl() const override;
@@ -194,7 +196,8 @@ namespace components::logical_plan {
         [[nodiscard]] const resolve_entry_t* namespace_entry(std::string_view dbname) const noexcept;
         [[nodiscard]] const resolve_entry_t* table_entry(std::string_view dbname,
                                                          std::string_view relname) const noexcept;
-        [[nodiscard]] const resolve_entry_t* table_entry(std::string_view dbname,
+        [[nodiscard]] const resolve_entry_t* table_entry(std::string_view uid,
+                                                         std::string_view dbname,
                                                          std::string_view schema,
                                                          std::string_view relname) const noexcept;
         [[nodiscard]] const resolve_entry_t* table_entry(const qualified_name_t& written) const noexcept;

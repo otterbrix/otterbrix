@@ -92,8 +92,16 @@ namespace {
         return c;
     }
 
-    std::string qualified(std::string_view db, std::string_view schema, std::string_view rel) {
-        std::string out{db};
+    // The whole written name: uid.database.schema.name, empty slots left out.
+    std::string qualified(const qualified_name_t& name) {
+        std::string out;
+        if (!name.unique_identifier.t.empty()) {
+            out += name.unique_identifier.t;
+            out += '.';
+        }
+        out += name.database.t;
+        const std::string_view schema = name.schema.t;
+        const std::string_view rel = name.collection.t;
         if (!schema.empty()) {
             out += '.';
             out += schema;
@@ -386,7 +394,7 @@ namespace {
         counters().need.fetch_add(1);
         std::pmr::vector<logical_plan::execution_plan_t> reads{resource};
         for (const auto& name : unresolved) {
-            asked_names().push_back(qualified(name.database.t, name.schema.t, name.collection.t));
+            asked_names().push_back(qualified(name));
             auto agg = logical_plan::make_node_aggregate(
                 resource,
                 qualified_name_t{core::dbname_t{"otterstax"}, core::relname_t{"remote_columns"}});
@@ -402,7 +410,7 @@ namespace {
             auto params = logical_plan::make_parameter_node(resource);
             params->add_parameter(
                 core::parameter_id_t{1},
-                types::logical_value_t(resource, qualified(name.database.t, name.schema.t, name.collection.t)));
+                types::logical_value_t(resource, qualified(name)));
             reads.emplace_back(resource, std::move(agg), std::move(params));
         }
         counters().reads.fetch_add(static_cast<int>(reads.size()));
@@ -452,7 +460,7 @@ namespace {
                 }
                 answer.storage = core::pmr::make_polymorphic_unique<remote_storage_t>(
                     resource,
-                    qualified(unresolved[i].database.t, unresolved[i].schema.t, unresolved[i].collection.t),
+                    qualified(unresolved[i]),
                     std::pmr::vector<types::complex_logical_type>(answer.columns, resource));
             }
             answers.push_back(std::move(answer));
@@ -1272,4 +1280,26 @@ TEST_CASE("integration::cpp::host_names::a_storage_write_error_reaches_the_curso
               "server m2: new row violates check constraint \"amount_positive\"");
     }
     CHECK(backend()["m2.shop.orders"].size() == 3);
+}
+
+// The host gets the whole written name, the uid slot included: u1.m2.shop.orders and m2.shop.orders are two names.
+TEST_CASE("integration::cpp::host_names::a_uid_name_reaches_the_host_whole") {
+    HOST_TEST_BOILERPLATE("test_host_names/uid_name")
+    REQUIRE(run(dispatcher,
+                "INSERT INTO otterstax.remote_columns (tbl, col, type, ord) VALUES "
+                "('u1.m2.shop.orders', 'id', 'BIGINT', 1), ('u1.m2.shop.orders', 'amount', 'BIGINT', 2);")
+                ->is_success());
+    backend()["u1.m2.shop.orders"] = {{7, 700}};
+
+    auto found = run(dispatcher, "SELECT id, amount FROM u1.m2.shop.orders;");
+    INFO(error_of(found));
+    REQUIRE(found->is_success());
+    CHECK(sorted_int_rows(found) == rows_t{{7, 700}});
+    CHECK(asked_names() == std::vector<std::string>{"u1.m2.shop.orders"});
+
+    asked_names().clear();
+    auto other = run(dispatcher, "SELECT * FROM m2.shop.orders;");
+    REQUIRE(other->is_error());
+    CHECK(std::string{other->get_error().what}.find("does not exist") != std::string::npos);
+    CHECK(asked_names() == std::vector<std::string>{"m2.shop.orders"});
 }

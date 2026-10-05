@@ -319,8 +319,8 @@ namespace services::catalog_resolve {
             std::string_view namespace_dbname{};
             std::string_view type_name{};
             std::string_view secondary_dbname{};
-            // The schema slot of database.schema.name (refused later); empty for the uid form, which keeps its
-            // meaning database.name.
+            // The uid and schema slots of uid.database.schema.name, as written (see resolve_entry_t).
+            std::string_view uid{};
             std::string_view schema{};
         };
 
@@ -329,7 +329,8 @@ namespace services::catalog_resolve {
             const auto& target = node->target();
             target_names_t names{.dbname = target.database.t,
                                  .relname = target.collection.t,
-                                 .schema = catalog_schema(target)};
+                                 .uid = target.unique_identifier.t,
+                                 .schema = target.schema.t};
             switch (node->type()) {
                 case node_type::drop_t: {
                     const auto* d = static_cast<const node_drop_t*>(node);
@@ -406,7 +407,7 @@ namespace services::catalog_resolve {
             {
                 const entry_view_t rn{
                     resolves.namespace_entry(names.namespace_dbname.empty() ? names.dbname : names.namespace_dbname)};
-                const entry_view_t rt{resolves.table_entry(names.dbname, names.schema, names.relname)};
+                const entry_view_t rt{resolves.table_entry(names.uid, names.dbname, names.schema, names.relname)};
                 const entry_view_t rt_index{
                     resolves.table_entry(names.secondary_dbname.empty() ? names.dbname : names.secondary_dbname,
                                          names.secondary_relname)};
@@ -596,6 +597,7 @@ namespace services::catalog_resolve {
             if (!names.relname.empty()) {
                 resolve_entry_t entry;
                 entry.dbname = names.dbname;
+                entry.uid = names.uid;
                 entry.schema = names.schema;
                 entry.relname = names.relname;
                 primary_index = resolves->ensure(resource, resolve_kind::table).add(std::move(entry));
@@ -651,7 +653,7 @@ namespace services::catalog_resolve {
             }
             // A missing database is the first thing wrong with such a name: validate reports it. A storage table
             // keeps its schema slot: the host resolved the whole name.
-            if (entry.storage || entry.schema.empty() ||
+            if (entry.storage || !entry.uid.empty() || entry.schema.empty() ||
                 resolves.namespace_oid(entry.dbname) == components::catalog::INVALID_OID) {
                 continue;
             }
@@ -703,7 +705,8 @@ namespace services::catalog_resolve {
         }
         for (const auto& entry : resolves.tables->entries()) {
             if (!entry.table_md.has_value()) {
-                names.emplace_back(core::dbname_t{entry.dbname},
+                names.emplace_back(core::uid_t{entry.uid},
+                                   core::dbname_t{entry.dbname},
                                    core::schema_t{entry.schema},
                                    core::relname_t{entry.relname});
             }

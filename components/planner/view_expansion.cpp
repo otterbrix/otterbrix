@@ -219,7 +219,7 @@ namespace components::planner {
     namespace {
         std::string written_name(const logical_plan::resolve_entry_t& entry) {
             std::string out;
-            for (const auto* part : {&entry.dbname, &entry.schema}) {
+            for (const auto* part : {&entry.uid, &entry.dbname, &entry.schema}) {
                 if (!part->empty()) {
                     out += *part;
                     out += '.';

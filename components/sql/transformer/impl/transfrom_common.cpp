@@ -9,6 +9,7 @@
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <components/types/logical_value.hpp>
+#include <core/pmr.hpp>
 #include <core/regex/like_to_regex.hpp>
 
 using namespace components::expressions;
@@ -1570,7 +1571,7 @@ namespace components::sql::transform {
 
         // SELECT wrapper, to reuse regular parsing mechanism
         const std::string statement = "SELECT 1 WHERE " + expr_text + ";";
-        std::pmr::monotonic_buffer_resource arena(resource_);
+        core::pmr::arena_resource_t arena(resource_);
         Node* predicate = nullptr;
         try {
             auto* parsed = raw_parser(&arena, statement.c_str());

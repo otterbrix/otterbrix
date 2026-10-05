@@ -1,5 +1,7 @@
 #pragma once
 
+#include <core/pmr.hpp>
+
 #include <cstring>
 #include <memory_resource>
 
@@ -31,7 +33,7 @@ namespace core {
         }
 
     private:
-        std::pmr::monotonic_buffer_resource arena_allocator_;
+        core::pmr::arena_resource_t arena_allocator_;
     };
 
 } // namespace core

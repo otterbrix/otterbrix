@@ -6,6 +6,7 @@
 #include <memory>
 #include <memory_resource>
 #include <string>
+#include <vector>
 
 namespace core::pmr {
 
@@ -29,6 +30,33 @@ namespace core::pmr {
 
         std::pmr::memory_resource* upstream_;
         std::unique_ptr<std::pmr::memory_resource> backing_;
+    };
+
+    // A monotonic arena: deallocate() is a no-op, release() and the destructor give everything back.
+    // One type and one layout in every build. Under ASAN the library (core/pmr.cpp) hands out each
+    // piece as its own upstream allocation, so a write past one piece into the next is seen.
+    class arena_resource_t final : public std::pmr::memory_resource {
+    public:
+        explicit arena_resource_t(std::pmr::memory_resource* upstream);
+        arena_resource_t(const arena_resource_t&) = delete;
+        arena_resource_t& operator=(const arena_resource_t&) = delete;
+        ~arena_resource_t() override;
+
+        void release();
+
+    private:
+        struct piece_t {
+            void* pointer;
+            std::size_t bytes;
+            std::size_t alignment;
+        };
+
+        void* do_allocate(std::size_t bytes, std::size_t alignment) override;
+        void do_deallocate(void* p, std::size_t bytes, std::size_t alignment) override;
+        bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override;
+
+        std::pmr::monotonic_buffer_resource buffer_;
+        std::pmr::vector<piece_t> pieces_;
     };
 
     using pmr_string_stream =

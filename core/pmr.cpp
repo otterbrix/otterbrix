@@ -74,4 +74,34 @@ namespace core::pmr {
         return this == &other;
     }
 
+    arena_resource_t::arena_resource_t(std::pmr::memory_resource* upstream)
+        : buffer_(upstream)
+        , pieces_(upstream) {}
+
+    arena_resource_t::~arena_resource_t() { release(); }
+
+    void arena_resource_t::release() {
+        for (const piece_t& piece : pieces_) {
+            buffer_.upstream_resource()->deallocate(piece.pointer, piece.bytes, piece.alignment);
+        }
+        pieces_.clear();
+        buffer_.release();
+    }
+
+    void* arena_resource_t::do_allocate(std::size_t bytes, std::size_t alignment) {
+#if defined(OTTERBRIX_ADDRESS_SANITIZER)
+        void* pointer = buffer_.upstream_resource()->allocate(bytes, alignment);
+        pieces_.push_back(piece_t{pointer, bytes, alignment});
+        return pointer;
+#else
+        return buffer_.allocate(bytes, alignment);
+#endif
+    }
+
+    void arena_resource_t::do_deallocate(void*, std::size_t, std::size_t) {}
+
+    bool arena_resource_t::do_is_equal(const std::pmr::memory_resource& other) const noexcept {
+        return this == &other;
+    }
+
 } // namespace core::pmr

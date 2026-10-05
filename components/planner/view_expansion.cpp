@@ -12,6 +12,7 @@
 #include <components/sql/parser/parser.h>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
+#include <core/pmr.hpp>
 
 #include <algorithm>
 #include <queue>
@@ -105,7 +106,7 @@ namespace components::planner {
 
     core::result_wrapper_t<view_body_t> expand_view_body(std::pmr::memory_resource* resource,
                                                          const core::body_sql_t& view_sql) {
-        std::pmr::monotonic_buffer_resource parser_arena(resource);
+        core::pmr::arena_resource_t parser_arena(resource);
         void* parse_cell = nullptr;
         // raw_parser really does throw; wrapper_dispatcher_t::execute_sql wraps it the same way. This is the
         // exception -> error_t boundary — removing it would let an exception escape into an actor coroutine.

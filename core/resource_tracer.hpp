@@ -2,6 +2,8 @@
 
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <iostream>
 #include <memory_resource>
 #include <mutex>
@@ -49,20 +51,32 @@ private:
         return ptr;
     }
 
+    // The tracer's only message; there is no print-and-continue.
+    [[noreturn]] static void
+    report_and_abort(const char* what, void* ptr, allocation_info_t allocated, allocation_info_t freed) noexcept {
+        std::fprintf(stderr,
+                     "[resource_tracer] %s at %p (allocated %zu/%zu, freed %zu/%zu)\n",
+                     what,
+                     ptr,
+                     allocated.bytes,
+                     allocated.alignment,
+                     freed.bytes,
+                     freed.alignment);
+        std::abort();
+    }
+
     void do_deallocate(void* ptr, size_t bytes, size_t alignment) override {
+        const allocation_info_t freed{bytes, alignment};
         {
             std::lock_guard<std::mutex> lock(mutex_);
             auto it = live_.find(reinterpret_cast<uintptr_t>(ptr));
             if (it == live_.end()) {
-                std::cerr << "[resource_tracer] WARNING: deallocate of untracked pointer " << ptr << std::endl;
-            } else {
-                if (it->second.bytes != bytes || it->second.alignment != alignment) {
-                    std::cerr << "[resource_tracer] WARNING: size/alignment mismatch at " << ptr << " (allocated "
-                              << it->second.bytes << "/" << it->second.alignment << ", freed " << bytes << "/"
-                              << alignment << ")" << std::endl;
-                }
-                live_.erase(it);
+                report_and_abort("deallocate of a block this tracer does not hold", ptr, {0, 0}, freed);
             }
+            if (it->second.bytes != bytes || it->second.alignment != alignment) {
+                report_and_abort("deallocate with a size or alignment other than allocated", ptr, it->second, freed);
+            }
+            live_.erase(it);
         }
         deallocated_.fetch_add(bytes, std::memory_order_relaxed);
         upstream_->deallocate(ptr, bytes, alignment);

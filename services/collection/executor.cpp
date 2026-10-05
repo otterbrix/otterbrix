@@ -859,6 +859,12 @@ namespace services::collection::executor {
             msg.append("\" does not exist");
             return core::error_t{core::error_code_t::table_not_exists, std::move(msg)};
         };
+        const auto missing_database = [this](std::string_view dbname) {
+            std::pmr::string msg{"database \"", resource()};
+            msg.append(dbname);
+            msg.append("\" does not exist");
+            return core::error_t{core::error_code_t::database_not_exists, std::move(msg)};
+        };
         // A CREATE never writes into a database the catalog does not hold: its rows would have no namespace. IF NOT
         // EXISTS does not cover it, since what is missing is the database, not the object.
         const bool creates_in_a_database =
@@ -867,11 +873,7 @@ namespace services::collection::executor {
             original_type == node_type::create_index_t;
         if (creates_in_a_database && !id.database().empty() &&
             services::dispatcher::check_namespace_exists(resource(), &plan.catalog_resolves, id).contains_error()) {
-            std::pmr::string msg{"database \"", resource()};
-            msg.append(id.database());
-            msg.append("\" does not exist");
-            co_return execute_result_t{
-                make_cursor(resource(), core::error_t{core::error_code_t::database_not_exists, std::move(msg)})};
+            co_return execute_result_t{make_cursor(resource(), missing_database(id.database()))};
         }
         switch (original_type) {
             case node_type::create_database_t:
@@ -1047,11 +1049,7 @@ namespace services::collection::executor {
                         if (auto err =
                                 services::dispatcher::check_namespace_exists(resource(), &plan.catalog_resolves, id);
                             err.contains_error()) {
-                            std::pmr::string msg{"database \"", resource()};
-                            msg.append(id.database());
-                            msg.append("\" does not exist");
-                            error = refuse_missing_target(
-                                core::error_t{core::error_code_t::database_not_exists, std::move(msg)});
+                            error = refuse_missing_target(missing_database(id.database()));
                         } else if (components::catalog::is_catalog_table(drop_node->namespace_oid())) {
                             error = make_cursor(
                                 resource(),
@@ -2480,7 +2478,7 @@ namespace services::collection::executor {
                                                                         components::pipeline::context_t* ctx) {
         opened_sources_t opened{resource()};
         open_sources_(root.get(), ctx, opened);
-        auto open_err = co_await await_all_opened_(opened);
+        auto open_err = co_await await_opened_(opened, nullptr);
         if (open_err.contains_error()) {
             co_return open_err;
         }
@@ -2517,27 +2515,16 @@ namespace services::collection::executor {
         }
     }
 
-    executor_t::unique_future<core::error_t> executor_t::await_opened_in_(opened_sources_t& opened,
-                                                                          components::operators::operator_t* piece) {
+    executor_t::unique_future<core::error_t> executor_t::await_opened_(opened_sources_t& opened,
+                                                                       components::operators::operator_t* piece) {
         std::pmr::vector<components::operators::operator_t*> in_piece{resource()};
-        collect_unexecuted(piece, in_piece);
-        auto first_err = core::error_t::no_error();
-        for (auto& source : opened) {
-            if (!source.ready.valid() || std::find(in_piece.begin(), in_piece.end(), source.op) == in_piece.end()) {
-                continue;
-            }
-            auto err = co_await std::move(source.ready);
-            if (err.contains_error() && !first_err.contains_error()) {
-                first_err = std::move(err);
-            }
+        if (piece != nullptr) {
+            collect_unexecuted(piece, in_piece);
         }
-        co_return first_err;
-    }
-
-    executor_t::unique_future<core::error_t> executor_t::await_all_opened_(opened_sources_t& opened) {
         auto first_err = core::error_t::no_error();
         for (auto& source : opened) {
-            if (!source.ready.valid()) {
+            if (!source.ready.valid() ||
+                (piece != nullptr && std::find(in_piece.begin(), in_piece.end(), source.op) == in_piece.end())) {
                 continue;
             }
             auto err = co_await std::move(source.ready);
@@ -2645,7 +2632,7 @@ namespace services::collection::executor {
 
             plan->prepare();
 
-            if (auto open_err = co_await await_opened_in_(opened, plan.get()); open_err.contains_error()) {
+            if (auto open_err = co_await await_opened_(opened, plan.get()); open_err.contains_error()) {
                 cursor = make_cursor(resource(), std::move(open_err));
                 break;
             }
@@ -2866,7 +2853,7 @@ namespace services::collection::executor {
             plan_data.sub_plans.pop();
         }
 
-        if (auto open_err = co_await await_all_opened_(opened); open_err.contains_error() && cursor->is_success()) {
+        if (auto open_err = co_await await_opened_(opened, nullptr); open_err.contains_error() && cursor->is_success()) {
             cursor = make_cursor(resource(), std::move(open_err));
         }
 

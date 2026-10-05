@@ -58,7 +58,6 @@ namespace components::operators {
         }
 
         // Empty but schema'd, so a downstream OUTER join can NULL-pad and a scalar aggregate can still emit COUNT=0.
-        vector::data_chunk_t make_guard_chunk();
 
         // OFFSET is applied by operator_limit above the scan, so this never needs to skip rows itself.
         actor_zeta::unique_future<core::result_wrapper_t<std::optional<vector::data_chunk_t>>>

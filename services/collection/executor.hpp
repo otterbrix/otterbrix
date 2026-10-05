@@ -247,10 +247,9 @@ namespace services::collection::executor {
                            components::pipeline::context_t* ctx,
                            opened_sources_t& opened);
 
-        // Both await every matching future even after an error and return the first error.
-        unique_future<core::error_t> await_opened_in_(opened_sources_t& opened,
-                                                      components::operators::operator_t* piece);
-        unique_future<core::error_t> await_all_opened_(opened_sources_t& opened);
+        // Awaits the open of every source under `piece` (every source when `piece` is null), even after an error, and
+        // returns the first error.
+        unique_future<core::error_t> await_opened_(opened_sources_t& opened, components::operators::operator_t* piece);
 
         // Precondition: every source under root was opened and its open awaited.
         unique_future<core::error_t> drive_opened_subplan_(components::operators::operator_ptr root,

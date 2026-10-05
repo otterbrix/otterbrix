@@ -1,4 +1,5 @@
 #include "transfer_scan.hpp"
+#include "guard_chunk.hpp"
 
 #include <services/disk/manager_disk.hpp>
 
@@ -15,18 +16,6 @@ namespace components::operators {
         , table_oid_(table_oid)
         , limit_(limit)
         , projected_cols_(std::move(projected_cols)) {}
-
-    vector::data_chunk_t transfer_scan::make_guard_chunk() {
-        if (projected_cols_.empty()) {
-            return vector::data_chunk_t{resource_, guard_types_, 0};
-        }
-        // Pruned-scan contract (PR #477): pruned scans emit FULL-WIDTH chunks whose
-        // non-projected columns are buffer-less placeholders, so column ordinals stay
-        // stable plan-wide (expression key paths are never remapped after prune_columns).
-        // The schema'd 0-row empty-guard must honor the same shape as real batches —
-        // operators above index it by table ordinal.
-        return vector::data_chunk_t{resource_, guard_types_, projected_cols_, 0};
-    }
 
     // --- Push-based streaming pipeline source (PER-BATCH FETCH-NEXT, bounded) ---
     // FIRST call OPENs a position-only cursor (no filter); subsequent calls ADVANCE it, one batch
@@ -161,7 +150,7 @@ namespace components::operators {
                     }
                     guard_types_ = std::move(types_result.value());
                 }
-                co_return make_guard_chunk();
+                co_return make_guard_chunk(resource_, guard_types_, projected_cols_);
             }
             co_return std::nullopt;
         }

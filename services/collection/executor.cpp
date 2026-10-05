@@ -379,14 +379,19 @@ namespace services::collection::executor {
     executor_t::execute_plan_full(components::session::session_id_t session,
                                   components::logical_plan::execution_plan_t plan,
                                   services::dispatcher::txn_session_context_t session_ctx) {
-        co_return co_await execute_statement_(session, std::move(plan), std::move(session_ctx), host_names_t::resolve);
+        co_return co_await execute_statement_(session,
+                                              std::move(plan),
+                                              std::move(session_ctx),
+                                              host_names_t::resolve,
+                                              std::pmr::vector<expanded_view_t>{resource()});
     }
 
     executor_t::unique_future<execute_result_t>
     executor_t::execute_statement_(components::session::session_id_t session,
                                    components::logical_plan::execution_plan_t plan,
                                    services::dispatcher::txn_session_context_t session_ctx,
-                                   host_names_t host_names) {
+                                   host_names_t host_names,
+                                   std::pmr::vector<expanded_view_t> expanded_views) {
         using node_type = components::logical_plan::node_type;
         using components::logical_plan::node_aggregate_t;
         using components::logical_plan::node_catalog_resolve_t;
@@ -419,7 +424,11 @@ namespace services::collection::executor {
                 sub_plan.explain = components::logical_plan::explain_type::analyze;
                 sub_plan.explain_capture_ir = true;
             }
-            auto sub_result = co_await execute_statement_(session, std::move(sub_plan), session_ctx, host_names);
+            auto sub_result = co_await execute_statement_(session,
+                                                          std::move(sub_plan),
+                                                          session_ctx,
+                                                          host_names,
+                                                          std::pmr::vector<expanded_view_t>{resource()});
             if (sub_result.cursor->is_error()) {
                 co_return execute_result_t{std::move(sub_result.cursor)};
             }
@@ -563,11 +572,7 @@ namespace services::collection::executor {
             if (proc_chunks.has_error()) {
                 co_return core::error_on(resource(), proc_chunks.error());
             }
-            co_return pin_view_functions(resource(),
-                                         *view,
-                                         proc_rows_of(resource(), proc_chunks.value()),
-                                         function_registry_,
-                                         body);
+            co_return pin_view_functions(resource(), *view, proc_chunks.value(), function_registry_, body);
         };
 
         auto collect_resolve_nodes = [](const components::logical_plan::catalog_resolves_t& resolves,
@@ -586,17 +591,6 @@ namespace services::collection::executor {
         };
         const std::size_t own_tables = own_entries(plan.catalog_resolves.tables);
         const std::size_t own_types = own_entries(plan.catalog_resolves.types);
-        // Every view this statement reads, as its catalog row described it before the expansion.
-        // The body is read back as the first child of the view's reference.
-        struct expanded_view_t {
-            components::logical_plan::node_ptr reference;
-            components::logical_plan::resolved_table_metadata_t view;
-        };
-        std::pmr::vector<expanded_view_t> expanded_views{resource()};
-        for (auto& stored : plan.stored_bodies) {
-            expanded_views.push_back({std::move(stored.reference), std::move(stored.relation)});
-        }
-
         {
             std::pmr::vector<components::logical_plan::node_ptr> resolve_nodes{resource()};
             collect_resolve_nodes(plan.catalog_resolves, resolve_nodes);
@@ -627,27 +621,15 @@ namespace services::collection::executor {
                                                      : core::error_code_t::schema_error,
                                   std::move(msg)})};
             }
-            const auto quoted = [](const std::string& name) {
-                std::string out{"\""};
-                for (const char c : name) {
-                    out += c;
-                    if (c == '"') {
-                        out += c;
-                    }
-                }
-                return out + "\"";
-            };
             {
-                auto parsed = components::planner::parse_statement(resource(),
-                                                                   "DELETE FROM " + quoted(matview_name.database.t) +
-                                                                       "." + quoted(matview_name.collection.t) + ";",
-                                                                   "materialized view refresh");
-                if (parsed.has_error()) {
-                    co_return execute_result_t{make_cursor(resource(), parsed.error())};
-                }
-                auto emptied = std::move(parsed.value());
-                emptied.commits_when_done = false;
-                auto done = co_await execute_statement_(session, std::move(emptied), session_ctx, host_names);
+                auto done = co_await execute_statement_(session,
+                                                        components::planner::refresh_matview_delete_plan(
+                                                            resource(),
+                                                            *matview,
+                                                            matview_name.database),
+                                                        session_ctx,
+                                                        host_names,
+                                                        std::pmr::vector<expanded_view_t>{resource()});
                 if (done.cursor->is_error()) {
                     co_return done;
                 }
@@ -658,14 +640,19 @@ namespace services::collection::executor {
                     co_return execute_result_t{make_cursor(resource(), refill.error())};
                 }
                 auto insert = std::move(refill.value());
-                if (auto pinned = co_await pin_functions(this,
-                                                         &insert.stored_bodies.front().relation,
-                                                         insert.stored_bodies.front().reference->children().front().get());
+                if (auto pinned =
+                        co_await pin_functions(this, matview, insert.reference->children().front().get());
                     pinned.contains_error()) {
                     co_return execute_result_t{make_cursor(resource(), std::move(pinned))};
                 }
-                insert.commits_when_done = false;
-                auto done = co_await execute_statement_(session, std::move(insert), session_ctx, host_names);
+                insert.plan.commits_when_done = false;
+                std::pmr::vector<expanded_view_t> stored_body{resource()};
+                stored_body.push_back({std::move(insert.reference), *matview});
+                auto done = co_await execute_statement_(session,
+                                                        std::move(insert.plan),
+                                                        session_ctx,
+                                                        host_names,
+                                                        std::move(stored_body));
                 if (done.cursor->is_error()) {
                     co_return done;
                 }
@@ -707,19 +694,13 @@ namespace services::collection::executor {
                 }
                 for (std::size_t i = 0; i < refs.size(); ++i) {
                     auto& ref = refs[i];
-                    auto body = components::planner::expand_view_body(resource(), core::body_sql_t{views[i].view_sql});
-                    if (body.error.contains_error()) {
-                        trace(log_, "executor::execute_plan_full: view expansion failed: {}", body.error.what);
-                        co_return execute_result_t{make_cursor(resource(), std::move(body.error))};
+                    auto bound = components::planner::bind_view_body(resource(), views[i]);
+                    if (bound.has_error()) {
+                        trace(log_, "executor::execute_plan_full: view expansion failed: {}", bound.error().what);
+                        co_return execute_result_t{make_cursor(resource(), bound.error())};
                     }
-                    if (!body.resolves) {
-                        body.resolves.emplace();
-                    }
-                    services::dispatcher::register_plan_targets(resource(), body.plan.get(), &*body.resolves);
-                    if (auto err = components::planner::pin_view_body_names(resource(), *body.resolves, views[i]);
-                        err.contains_error()) {
-                        co_return execute_result_t{make_cursor(resource(), std::move(err))};
-                    }
+                    auto& body = bound.value();
+                    services::dispatcher::register_plan_targets(resource(), body.plan.get(), &body.resolves);
                     if (auto err = co_await pin_functions(this, &views[i], body.plan.get()); err.contains_error()) {
                         co_return execute_result_t{make_cursor(resource(), std::move(err))};
                     }
@@ -734,7 +715,7 @@ namespace services::collection::executor {
                     }
                     if (auto err = components::planner::merge_view_body_resolves(resource(),
                                                                                  plan.catalog_resolves,
-                                                                                 *body.resolves);
+                                                                                 body.resolves);
                         err.contains_error()) {
                         co_return execute_result_t{make_cursor(resource(), std::move(err))};
                     }
@@ -772,8 +753,11 @@ namespace services::collection::executor {
                 std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>> read_results{resource()};
                 read_results.reserve(reads.value().size());
                 for (auto& read : reads.value()) {
-                    auto read_result =
-                        co_await execute_statement_(session, std::move(read), session_ctx, host_names_t::local_only);
+                    auto read_result = co_await execute_statement_(session,
+                                                                   std::move(read),
+                                                                   session_ctx,
+                                                                   host_names_t::local_only,
+                                                                   std::pmr::vector<expanded_view_t>{resource()});
                     if (read_result.cursor->is_error()) {
                         co_return execute_result_t{std::move(read_result.cursor)};
                     }

@@ -15,6 +15,7 @@
 
 #include "catalog_probe.hpp"
 
+#include <iterator>
 #include <limits>
 #include <set>
 #include <string>
@@ -244,18 +245,22 @@ namespace disk_test_helpers {
         const catalog::oid_t rule_oid = oids[1];
         // Catalog rows only: no output columns, bindings or dependencies.
         catalog::oid_batch_t no_columns;
-        auto writes = catalog::build_create_view_writes(&fx.resource,
-                                                        name,
-                                                        ns_oid,
-                                                        view_oid,
-                                                        rule_oid,
-                                                        body_sql,
-                                                        {},
-                                                        no_columns,
-                                                        {},
-                                                        {},
-                                                        /*write_class_row=*/true,
-                                                        catalog::relkind::view);
+        std::vector<catalog::catalog_write_t> writes;
+        writes.push_back(catalog::build_view_class_row(&fx.resource, view_oid, name, ns_oid, catalog::relkind::view));
+        auto body_writes = catalog::build_view_body_writes(&fx.resource,
+                                                           view_oid,
+                                                           {},
+                                                           {},
+                                                           {},
+                                                           ns_oid,
+                                                           rule_oid,
+                                                           name,
+                                                           body_sql,
+                                                           catalog::relkind::view,
+                                                           no_columns);
+        writes.insert(writes.end(),
+                      std::make_move_iterator(body_writes.begin()),
+                      std::make_move_iterator(body_writes.end()));
         std::vector<components::pg_catalog_append_range_t> appends_local;
         append_writes(fx, auto_ctx(), writes, appends_local);
         fx.invoke(&manager_disk_t::storage_publish_commits,

@@ -54,6 +54,13 @@ namespace services::collection::executor {
     oid_alloc_interposer_t* dev_oid_alloc_interposer();
 #endif
 
+    // A view the statement reads, as its catalog row described it before the expansion; the body is read back as the
+    // first child of `reference`. REFRESH MATERIALIZED VIEW hands its stored body over the same way.
+    struct expanded_view_t {
+        components::logical_plan::node_ptr reference;
+        components::logical_plan::resolved_table_metadata_t view;
+    };
+
     // Accumulates across sub-plans: FK cascade DELETE emits one range per child table (last-wins would drop entries).
     struct dml_append_range_t {
         components::catalog::oid_t table_oid;
@@ -212,7 +219,8 @@ namespace services::collection::executor {
         unique_future<execute_result_t> execute_statement_(components::session::session_id_t session,
                                                            components::logical_plan::execution_plan_t plan,
                                                            services::dispatcher::txn_session_context_t session_ctx,
-                                                           host_names_t host_names);
+                                                           host_names_t host_names,
+                                                           std::pmr::vector<expanded_view_t> expanded_views);
 
         plan_t traverse_plan_(components::operators::operator_ptr&& plan,
                               const components::logical_plan::storage_parameters& parameters,

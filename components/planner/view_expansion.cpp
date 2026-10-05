@@ -1,6 +1,7 @@
 #include "view_expansion.hpp"
 
 #include <components/catalog/catalog_codes.hpp>
+#include <components/expressions/compare_expression.hpp>
 #include <components/expressions/remap_parameter_ids.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node_delete.hpp>
@@ -102,23 +103,23 @@ namespace components::planner {
         return out;
     }
 
-    core::result_wrapper_t<logical_plan::execution_plan_t>
-    parse_statement(std::pmr::memory_resource* resource, const std::string& sql, std::string_view what) {
+    core::result_wrapper_t<view_body_t> expand_view_body(std::pmr::memory_resource* resource,
+                                                         const core::body_sql_t& view_sql) {
         std::pmr::monotonic_buffer_resource parser_arena(resource);
         void* parse_cell = nullptr;
         // raw_parser really does throw; wrapper_dispatcher_t::execute_sql wraps it the same way. This is the
         // exception -> error_t boundary — removing it would let an exception escape into an actor coroutine.
         try {
-            auto* parsed = raw_parser(&parser_arena, sql.c_str());
+            auto* parsed = raw_parser(&parser_arena, view_sql.t.c_str());
             // parser.h's list is never null (a `!parsed` test proves nothing) but may be EMPTY or hold several
             // statements; linitial() alone would read past the end of an empty list, or silently drop every
             // statement after the first — so both counts are checked before it's called.
             if (list_length(parsed) == 0) {
-                return schema_error(resource, "the " + std::string{what} + " parsed into no statement");
+                return schema_error(resource, "the view body parsed into no statement");
             }
             if (list_length(parsed) > 1) {
                 return schema_error(resource,
-                                    "the " + std::string{what} + " parsed into " + std::to_string(list_length(parsed)) +
+                                    "the view body parsed into " + std::to_string(list_length(parsed)) +
                                         " statements; exactly one is expected");
             }
             parse_cell = linitial(parsed);
@@ -126,36 +127,35 @@ namespace components::planner {
             return schema_error(resource, ex.what());
         }
         if (!parse_cell) {
-            return schema_error(resource, "the " + std::string{what} + " parsed into an empty statement");
+            return schema_error(resource, "the view body parsed into an empty statement");
         }
-        components::sql::transform::transformer local_transformer(resource, sql.c_str());
-        auto tr = local_transformer.transform(components::sql::transform::pg_cell_to_node_cast(parse_cell)).finalize();
-        if (tr.has_error()) {
+        components::sql::transform::transformer local_transformer(resource, view_sql.t.c_str());
+        auto parsed =
+            local_transformer.transform(components::sql::transform::pg_cell_to_node_cast(parse_cell)).finalize();
+        if (parsed.has_error()) {
             // error_on, not a bare copy: error_t's copy assignment rebuilds the message via std::pmr::string's
             // copy ctor, which doesn't propagate the allocator, landing it on the process default (see
             // error_t's own assignment operators).
-            return core::error_on(resource, tr.error());
-        }
-        return std::move(tr.value());
-    }
-
-    view_body_t expand_view_body(std::pmr::memory_resource* resource, const core::body_sql_t& view_sql) {
-        view_body_t out;
-        auto parsed = parse_statement(resource, view_sql.t, "view body");
-        if (parsed.has_error()) {
-            out.error = core::error_on(resource, parsed.error());
-            return out;
+            return core::error_on(resource, parsed.error());
         }
         // Taking only the last of several flattened plans (a sub-query in the view) would drop the
         // sub_query_results binding ids it carries in the OUTER plan's parameter space — refuse instead.
         if (parsed.value().sub_queries.size() > 1) {
-            out.error = schema_error(resource, "a view body containing a sub-query is not supported yet");
-            return out;
+            return schema_error(resource, "a view body containing a sub-query is not supported yet");
         }
-        out.plan = std::move(parsed.value().sub_queries.back());
-        out.resolves = std::move(parsed.value().catalog_resolves);
-        out.params = std::move(parsed.value().parameters);
-        return out;
+        return view_body_t{std::move(parsed.value().sub_queries.back()),
+                           std::move(parsed.value().parameters),
+                           std::move(parsed.value().catalog_resolves)};
+    }
+
+    core::result_wrapper_t<view_body_t> bind_view_body(std::pmr::memory_resource* resource,
+                                                       const logical_plan::resolved_table_metadata_t& view) {
+        auto body = expand_view_body(resource, core::body_sql_t{view.view_sql});
+        if (body.has_error()) {
+            return body;
+        }
+        RETURN_IF_ERROR(pin_view_body_names(resource, body.value().resolves, view));
+        return body;
     }
 
     core::error_t splice_view_body(logical_plan::node_aggregate_t* ref, logical_plan::node_ptr body) {
@@ -279,8 +279,8 @@ namespace components::planner {
         for (auto& entry : body_resolves.tables->entries()) {
             const auto binding =
                 std::find_if(view.view_bindings.begin(), view.view_bindings.end(), [&entry](const auto& b) {
-                    return (b.refkind == logical_plan::view_refkind::relation ||
-                            b.refkind == logical_plan::view_refkind::host_name) &&
+                    return (b.refkind == components::catalog::view_refkind::relation ||
+                            b.refkind == components::catalog::view_refkind::host_name) &&
                            b.dbname.t == entry.dbname && b.schema.t == entry.schema && b.relname.t == entry.relname;
                 });
             if (binding == view.view_bindings.end()) {
@@ -289,7 +289,7 @@ namespace components::planner {
                                         "its body names \"" + written_name(entry) +
                                             "\", which was not bound when the view was created");
             }
-            if (binding->refkind == logical_plan::view_refkind::relation) {
+            if (binding->refkind == components::catalog::view_refkind::relation) {
                 entry.pin.kind = logical_plan::view_pin_t::kind_t::relation;
                 entry.pin.oid = binding->refobjid;
             } else {
@@ -368,18 +368,15 @@ namespace components::planner {
         return wrapper;
     }
 
-    core::result_wrapper_t<logical_plan::execution_plan_t>
+    core::result_wrapper_t<refresh_matview_plan_t>
     refresh_matview_plan(std::pmr::memory_resource* resource,
                          const logical_plan::resolved_table_metadata_t& matview,
                          const core::dbname_t& dbname) {
-        auto body = expand_view_body(resource, core::body_sql_t{matview.view_sql});
-        if (body.error.contains_error()) {
-            return std::move(body.error);
+        auto bound = bind_view_body(resource, matview);
+        if (bound.has_error()) {
+            return bound.error();
         }
-        if (!body.resolves) {
-            body.resolves.emplace();
-        }
-        RETURN_IF_ERROR(pin_view_body_names(resource, *body.resolves, matview));
+        auto& body = bound.value();
 
         auto reference = logical_plan::make_node_aggregate(resource, qualified_name_t{});
         RETURN_IF_ERROR(splice_view_body(reference.get(), project_view_body(resource, std::move(body.plan), matview)));
@@ -391,12 +388,34 @@ namespace components::planner {
         logical_plan::execution_plan_t plan{resource,
                                             insert,
                                             body.params ? body.params : logical_plan::make_parameter_node(resource)};
-        plan.catalog_resolves = std::move(*body.resolves);
+        plan.catalog_resolves = std::move(body.resolves);
         sql::transform::register_catalog_resolve_write_target(resource,
                                                               &plan.catalog_resolves,
                                                               target,
                                                               sql::transform::constraint_resolve_kind::outgoing);
-        plan.stored_bodies.push_back({reference, matview});
+        return refresh_matview_plan_t{std::move(plan), std::move(reference)};
+    }
+
+    logical_plan::execution_plan_t refresh_matview_delete_plan(std::pmr::memory_resource* resource,
+                                                               const logical_plan::resolved_table_metadata_t& matview,
+                                                               const core::dbname_t& dbname) {
+        const core::relname_t relname{matview.name};
+        const qualified_name_t target{dbname, relname};
+        auto del = sql::transform::name_catalog_target(
+            dbname,
+            relname,
+            logical_plan::make_node_delete(
+                resource,
+                logical_plan::make_node_match(
+                    resource,
+                    target,
+                    expressions::make_compare_expression(resource, expressions::compare_type::all_true)),
+                logical_plan::make_node_limit(resource, logical_plan::limit_t::unlimit())));
+        logical_plan::execution_plan_t plan{resource, std::move(del), logical_plan::make_parameter_node(resource)};
+        sql::transform::register_catalog_resolve_write_target(resource,
+                                                              &plan.catalog_resolves,
+                                                              target,
+                                                              sql::transform::constraint_resolve_kind::referencing);
         return plan;
     }
 

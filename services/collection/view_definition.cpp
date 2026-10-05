@@ -2,14 +2,15 @@
 
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/helpers.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/expressions/udf_references.hpp>
-#include <components/logical_plan/node_extension.hpp>
 #include <components/physical_plan/operators/catalog_util.hpp>
 #include <components/planner/view_expansion.hpp>
 #include <services/dispatcher/validate_logical_plan.hpp>
 
 #include <algorithm>
+#include <cassert>
 #include <cctype>
 
 namespace services::collection {
@@ -95,10 +96,12 @@ namespace services::collection {
             }
         }
 
-        std::string describe_matchers(std::pmr::memory_resource* resource, std::string_view proargmatchers) {
+        // A signature text outside its grammar is a corrupt catalog: the decoder's error, never the raw text.
+        core::result_wrapper_t<std::string> describe_matchers(std::pmr::memory_resource* resource,
+                                                              std::string_view proargmatchers) {
             auto parameters = catalog::decode_proargmatchers(resource, proargmatchers);
             if (parameters.has_error()) {
-                return std::string{proargmatchers};
+                return parameters.error();
             }
             std::string out;
             for (const auto& parameter : parameters.value()) {
@@ -112,43 +115,17 @@ namespace services::collection {
         }
 
         // "twice(int8)": the function as a pg_rewrite_ref 'f' row or a pg_proc row records it.
-        std::string describe_function(std::pmr::memory_resource* resource,
-                                      std::string_view name,
-                                      std::string_view proargmatchers) {
-            return std::string{name} + "(" + describe_matchers(resource, proargmatchers) + ")";
+        core::result_wrapper_t<std::string> describe_function(std::pmr::memory_resource* resource,
+                                                              std::string_view name,
+                                                              std::string_view proargmatchers) {
+            auto matchers = describe_matchers(resource, proargmatchers);
+            if (matchers.has_error()) {
+                return matchers.error();
+            }
+            return std::string{name} + "(" + matchers.value() + ")";
         }
 
-        // refspec of an 'f' row: the pg_proc proargmatchers and prorettype of the signature it was bound to.
-        constexpr char function_spec_separator = ';';
-
-        std::string function_spec(const std::string& proargmatchers, const std::string& prorettype) {
-            return proargmatchers + function_spec_separator + prorettype;
-        }
-
-        void collect_host_nodes(std::pmr::memory_resource* resource,
-                                const node_t* node,
-                                std::pmr::vector<std::pair<std::string, std::string>>& out) {
-            if (!node) {
-                return;
-            }
-            if (node->type() == components::logical_plan::node_type::extension_t) {
-                const auto* ext = static_cast<const components::logical_plan::node_extension_t*>(node);
-                std::string name{ext->name()};
-                if (std::none_of(out.begin(), out.end(), [&](const auto& seen) { return seen.first == name; })) {
-                    out.emplace_back(std::move(name), host_node_spec(resource, ext->columns()));
-                }
-            }
-            for (const auto& c : node->children()) {
-                collect_host_nodes(resource, c.get(), out);
-            }
-        }
     } // namespace
-
-    std::string host_node_spec(std::pmr::memory_resource* resource,
-                               const std::pmr::vector<components::types::complex_logical_type>& columns) {
-        std::pmr::vector<components::types::complex_logical_type> fields(columns.begin(), columns.end(), resource);
-        return catalog::encode_type_spec(components::types::complex_logical_type::create_struct("host", fields));
-    }
 
     core::error_t check_expanded_view(std::pmr::memory_resource* resource,
                                       const components::logical_plan::resolved_table_metadata_t& view,
@@ -234,40 +211,37 @@ namespace services::collection {
                                           const components::compute::function_registry_t& registry,
                                           std::span<const components::compute::function_pin_t> uses,
                                           std::span<const services::disk::resolve_function_result_t> rows) {
-        auto bindings = view.bindings();
-        auto dependencies = view.dependencies();
+        auto& bindings = view.bindings();
+        auto& dependencies = view.dependencies();
         for (const auto& use : uses) {
+            // The validated body called these: the registry holds each function and the signature its call took.
             const auto* function = registry.get_function(use.uid);
-            if (function == nullptr) {
-                continue;
-            }
+            assert(function != nullptr);
             const auto signatures = components::operators::proc_signatures(resource, *function);
-            if (use.signature >= signatures.size()) {
-                continue;
-            }
+            assert(use.signature < signatures.size());
             const auto& signature = signatures[use.signature];
             const auto row = std::find_if(rows.begin(), rows.end(), [&](const auto& r) {
-                return r.name == function->name() && r.proargmatchers == signature.proargmatchers;
+                return r.name == function->name() && r.signature == signature;
             });
             if (row == rows.end()) {
-                return core::error_t{core::error_code_t::unrecognized_function,
-                                     std::pmr::string{"function " +
-                                                          describe_function(resource,
-                                                                            function->name(),
-                                                                            signature.proargmatchers) +
-                                                          " called by the view body has no pg_proc row",
-                                                      resource}};
+                auto described = describe_function(resource, function->name(), signature.proargmatchers);
+                if (described.has_error()) {
+                    return core::error_on(resource, described.error());
+                }
+                return core::error_t{
+                    core::error_code_t::unrecognized_function,
+                    std::pmr::string{"function " + described.value() + " called by the view body has no pg_proc row",
+                                     resource}};
             }
             catalog::view_binding_t binding;
             binding.refkind = catalog::view_refkind::function;
             binding.relname = function->name();
             binding.refobjid = row->oid;
-            binding.refspec = function_spec(signature.proargmatchers, signature.prorettype);
+            binding.proargmatchers = signature.proargmatchers;
+            binding.prorettype = signature.prorettype;
             bindings.push_back(std::move(binding));
             add_dependency(dependencies, catalog::well_known_oid::pg_proc_table, row->oid);
         }
-        view.set_bindings(std::move(bindings));
-        view.set_dependencies(std::move(dependencies));
         return core::error_t::no_error();
     }
 
@@ -283,11 +257,20 @@ namespace services::collection {
         return out;
     }
 
-    core::error_t pin_view_functions(std::pmr::memory_resource* resource,
-                                     const components::logical_plan::resolved_table_metadata_t& view,
-                                     std::span<const services::disk::resolve_function_result_t> rows,
-                                     const components::compute::function_registry_t& registry,
-                                     node_t* body) {
+    core::error_t
+    pin_view_functions(std::pmr::memory_resource* resource,
+                       const components::logical_plan::resolved_table_metadata_t& view,
+                       const std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>>& proc_chunks,
+                       const components::compute::function_registry_t& registry,
+                       node_t* body) {
+        std::pmr::vector<services::disk::resolve_function_result_t> rows{resource};
+        for (const auto& chunks : proc_chunks) {
+            for (const auto& chunk : chunks) {
+                for (std::uint64_t i = 0; i < chunk.size(); ++i) {
+                    rows.push_back(catalog::decode_pg_proc_row(chunk, i));
+                }
+            }
+        }
         struct named_pin_t {
             std::string name;
             components::compute::function_pin_t pin;
@@ -297,11 +280,11 @@ namespace services::collection {
             if (binding.refkind != catalog::view_refkind::function) {
                 continue;
             }
-            const auto separator = binding.refspec.find(function_spec_separator);
-            const std::string proargmatchers = binding.refspec.substr(0, separator);
-            const std::string prorettype =
-                separator == std::string::npos ? std::string{} : binding.refspec.substr(separator + 1);
-            const std::string pinned = describe_function(resource, binding.relname.t, proargmatchers);
+            auto described = describe_function(resource, binding.relname.t, binding.proargmatchers);
+            if (described.has_error()) {
+                return core::error_on(resource, described.error());
+            }
+            const std::string& pinned = described.value();
             const auto row = std::find_if(rows.begin(), rows.end(), [&binding](const auto& r) {
                 return r.oid == binding.refobjid;
             });
@@ -310,13 +293,16 @@ namespace services::collection {
             if (row == rows.end()) {
                 return components::planner::view_stale_error(resource, view.name, created_over + " no longer exists");
             }
-            if (row->name != binding.relname.t || row->proargmatchers != proargmatchers) {
-                return components::planner::view_stale_error(
-                    resource,
-                    view.name,
-                    created_over + " is now " + describe_function(resource, row->name, row->proargmatchers));
+            if (row->name != binding.relname.t || row->signature.proargmatchers != binding.proargmatchers) {
+                auto now = describe_function(resource, row->name, row->signature.proargmatchers);
+                if (now.has_error()) {
+                    return core::error_on(resource, now.error());
+                }
+                return components::planner::view_stale_error(resource,
+                                                             view.name,
+                                                             created_over + " is now " + now.value());
             }
-            if (row->prorettype != prorettype) {
+            if (row->signature.prorettype != binding.prorettype) {
                 return components::planner::view_stale_error(resource,
                                                              view.name,
                                                              created_over + " returns another type now");
@@ -329,8 +315,7 @@ namespace services::collection {
                 }
                 const auto signatures = components::operators::proc_signatures(resource, *function);
                 for (std::size_t index = 0; index < signatures.size() && !found; ++index) {
-                    if (signatures[index].proargmatchers == proargmatchers &&
-                        signatures[index].prorettype == prorettype) {
+                    if (signatures[index] == row->signature) {
                         pins.push_back({binding.relname.t, {uid, index}});
                         found = true;
                     }
@@ -361,33 +346,6 @@ namespace services::collection {
         return core::error_t::no_error();
     }
 
-    std::pmr::vector<services::disk::resolve_function_result_t>
-    proc_rows_of(std::pmr::memory_resource* resource,
-                 const std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>>& per_key) {
-        std::pmr::vector<services::disk::resolve_function_result_t> out{resource};
-        for (const auto& chunks : per_key) {
-            for (const auto& chunk : chunks) {
-                for (std::uint64_t i = 0; i < chunk.size(); ++i) {
-                    services::disk::resolve_function_result_t r;
-                    r.found = true;
-                    r.oid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
-                    r.name = std::string{chunk.get_value<std::string_view>(1, i)};
-                    if (!chunk.is_null(4, i)) {
-                        r.prouid = chunk.get_value<std::uint64_t>(4, i);
-                    }
-                    if (!chunk.is_null(5, i)) {
-                        r.proargmatchers = std::string{chunk.get_value<std::string_view>(5, i)};
-                    }
-                    if (!chunk.is_null(6, i)) {
-                        r.prorettype = std::string{chunk.get_value<std::string_view>(6, i)};
-                    }
-                    out.push_back(std::move(r));
-                }
-            }
-        }
-        return out;
-    }
-
     core::error_t describe_view_body(std::pmr::memory_resource* resource,
                                      components::logical_plan::node_create_view_t& view,
                                      const dispatcher::validation::named_schema& output,
@@ -395,10 +353,6 @@ namespace services::collection {
                                      std::size_t own_tables,
                                      std::size_t own_types,
                                      const dispatcher::validation::column_uses_t& uses) {
-        using components::logical_plan::view_refkind::host_name;
-        using components::logical_plan::view_refkind::host_node;
-        using components::logical_plan::view_refkind::relation;
-
         std::pmr::vector<components::table::column_definition_t> columns{resource};
         columns.reserve(output.size());
         for (std::size_t i = 0; i < output.size(); ++i) {
@@ -433,10 +387,10 @@ namespace services::collection {
                 binding.schema = entry.schema;
                 binding.relname = entry.relname;
                 if (entry.storage) {
-                    binding.refkind = host_name;
+                    binding.refkind = catalog::view_refkind::host_name;
                 } else if (entry.table_md.has_value() && entry.table_md->table_oid != view.replaced_oid()) {
                     // The view OR REPLACE names is a lookup of the statement, not of the body.
-                    binding.refkind = relation;
+                    binding.refkind = catalog::view_refkind::relation;
                     binding.refobjid = entry.table_md->table_oid;
                     bound_tables.push_back(binding.refobjid);
                     if (user_object(binding.refobjid)) {
@@ -461,16 +415,6 @@ namespace services::collection {
                     add_dependency(dependencies, catalog::well_known_oid::pg_type_table, entries[i].type_md->type_oid);
                 }
             }
-        }
-
-        std::pmr::vector<std::pair<std::string, std::string>> host_nodes{resource};
-        collect_host_nodes(resource, view.body().get(), host_nodes);
-        for (auto& [name, spec] : host_nodes) {
-            catalog::view_binding_t binding;
-            binding.refkind = host_node;
-            binding.relname = std::move(name);
-            binding.refspec = std::move(spec);
-            bindings.push_back(std::move(binding));
         }
 
         view.set_columns(std::move(columns));

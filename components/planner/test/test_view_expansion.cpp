@@ -184,12 +184,11 @@ namespace {
     logical_plan::resolved_table_metadata_t view_bound_to_t() {
         logical_plan::resolved_table_metadata_t view;
         view.name = "v";
-        view.view_bindings.push_back({logical_plan::view_refkind::relation,
+        view.view_bindings.push_back({components::catalog::view_refkind::relation,
                                       core::dbname_t{"db"},
                                       core::schema_t{},
                                       core::relname_t{"t"},
-                                      16500,
-                                      ""});
+                                      16500});
         return view;
     }
 
@@ -241,16 +240,15 @@ TEST_CASE("planner::view_expansion::refresh is an insert into the matview over i
     matview.table_oid = 4243;
     matview.relkind = components::catalog::relkind::materialized_view;
     matview.view_sql = "SELECT a FROM db.t";
-    matview.view_bindings.push_back({logical_plan::view_refkind::relation,
+    matview.view_bindings.push_back({components::catalog::view_refkind::relation,
                                      core::dbname_t{"db"},
                                      core::schema_t{},
                                      core::relname_t{"t"},
-                                     16500,
-                                     ""});
+                                     16500});
 
     auto refresh = refresh_matview_plan(res(), matview, core::dbname_t{"db"});
     REQUIRE_FALSE(refresh.has_error());
-    auto& plan = refresh.value();
+    auto& plan = refresh.value().plan;
 
     const auto* root = plan.sub_queries.back().get();
     REQUIRE(root->type() == logical_plan::node_type::insert_t);
@@ -259,10 +257,8 @@ TEST_CASE("planner::view_expansion::refresh is an insert into the matview over i
     CHECK(insert->target().collection.t == "mv");
     REQUIRE(insert->children().size() == 1);
 
-    INFO("the source is the reference the body is spliced into, listed for the read's staleness check");
-    REQUIRE(plan.stored_bodies.size() == 1);
-    CHECK(plan.stored_bodies.front().reference.get() == insert->children().front().get());
-    CHECK(plan.stored_bodies.front().relation.name == "mv");
+    INFO("the source is the reference the body is spliced into, returned for the read's staleness check");
+    CHECK(refresh.value().reference.get() == insert->children().front().get());
     const auto* body = insert->children().front()->children().front().get();
     REQUIRE(body->type() == logical_plan::node_type::aggregate_t);
     CHECK(static_cast<const logical_plan::node_aggregate_t*>(body)->target().collection.t == "t");

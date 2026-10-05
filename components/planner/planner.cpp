@@ -28,6 +28,7 @@
 #include <logical_plan/node_update.hpp>
 
 #include <algorithm>
+#include <iterator>
 #include <boost/smart_ptr/intrusive_ptr.hpp>
 #include <string_view>
 
@@ -305,7 +306,34 @@ namespace components::planner {
             const bool replacing = cv->replaced_oid() != catalog::INVALID_OID;
             const catalog::oid_t view_oid = replacing ? cv->replaced_oid() : oid_batch.allocate();
             const catalog::oid_t rule_oid = oid_batch.allocate();
-
+            const char relkind = cv->materialized() ? catalog::relkind::materialized_view : catalog::relkind::view;
+            std::vector<catalog::catalog_write_t> writes;
+            if (!replacing) {
+                writes.push_back(catalog::build_view_class_row(r, view_oid, cv->viewname().t, ns_oid, relkind));
+            }
+            auto body_writes = catalog::build_view_body_writes(r,
+                                                               view_oid,
+                                                               cv->columns(),
+                                                               cv->bindings(),
+                                                               cv->dependencies(),
+                                                               ns_oid,
+                                                               rule_oid,
+                                                               cv->viewname().t,
+                                                               cv->query_sql(),
+                                                               relkind,
+                                                               oid_batch);
+            writes.insert(writes.end(),
+                          std::make_move_iterator(body_writes.begin()),
+                          std::make_move_iterator(body_writes.end()));
+            if (cv->materialized()) {
+                // The heap and the catalog rows go in one operator, which undoes the heap if a row is refused.
+                return logical_plan::make_node_create_matview(r,
+                                                              core::matviewname_t{cv->viewname().t},
+                                                              ns_oid,
+                                                              view_oid,
+                                                              std::move(cv->columns()),
+                                                              std::move(writes));
+            }
             auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));
             if (replacing) {
                 using namespace catalog::well_known_oid;
@@ -314,28 +342,6 @@ namespace components::planner {
                 seq->append_child(logical_plan::make_node_catalog_delete(r, pg_rewrite_table, std::int64_t{2}, view_oid));
                 seq->append_child(
                     logical_plan::make_node_catalog_delete(r, pg_rewrite_ref_table, std::int64_t{0}, view_oid));
-            }
-            auto writes = catalog::build_create_view_writes(r,
-                                                            cv->viewname().t,
-                                                            ns_oid,
-                                                            view_oid,
-                                                            rule_oid,
-                                                            cv->query_sql(),
-                                                            cv->columns(),
-                                                            oid_batch,
-                                                            cv->bindings(),
-                                                            cv->dependencies(),
-                                                            /*write_class_row=*/!replacing,
-                                                            cv->materialized() ? catalog::relkind::materialized_view
-                                                                               : catalog::relkind::view);
-            if (cv->materialized()) {
-                // The heap and the catalog rows go in one operator, which undoes the heap if a row is refused.
-                return logical_plan::make_node_create_matview(r,
-                                                              core::matviewname_t{cv->viewname().t},
-                                                              ns_oid,
-                                                              view_oid,
-                                                              {cv->columns().begin(), cv->columns().end()},
-                                                              std::move(writes));
             }
             for (auto& w : writes) {
                 seq->append_child(make_catalog_write(r, w.table_oid, std::move(w.row)));
@@ -631,9 +637,6 @@ namespace components::planner {
                     return rewrite_create_view(r, node, oid_batch);
                 case node_type::create_macro_t:
                     return rewrite_create_macro(r, node, oid_batch);
-                case node_type::refresh_matview_t:
-                    // The executor runs REFRESH as statements of its own; it never reaches here.
-                    return node;
                 case node_type::create_constraint_t:
                     return rewrite_create_constraint(r, node, oid_batch);
                 case node_type::create_type_t:

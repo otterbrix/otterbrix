@@ -356,6 +356,63 @@ namespace components::operators {
         co_return core::error_t::no_error();
     }
 
+    actor_zeta::unique_future<core::error_t> drop_function_rows(std::pmr::memory_resource* resource,
+                                                                pipeline::context_t* ctx,
+                                                                const std::pmr::vector<catalog::oid_t>& function_oids,
+                                                                function_rows_drop_t mode,
+                                                                catalog::drop_behavior_t behavior,
+                                                                const std::string& function_name) {
+        constexpr catalog::oid_t pg_proc_coll = catalog::well_known_oid::pg_proc_table;
+        if (mode == function_rows_drop_t::with_dependents) {
+            for (const auto oid : function_oids) {
+                auto dropped = co_await drop_with_dependents(resource,
+                                                             ctx,
+                                                             pg_proc_coll,
+                                                             oid,
+                                                             behavior,
+                                                             qualified_name_t{core::relname_t{function_name}},
+                                                             catalog::relkind::regular,
+                                                             core::columnname_t{});
+                if (dropped.contains_error()) {
+                    co_return dropped;
+                }
+            }
+            co_return core::error_t::no_error();
+        }
+
+        constexpr catalog::oid_t pg_depend_coll = catalog::well_known_oid::pg_depend_table;
+        std::pmr::vector<services::disk::pg_catalog_delete_spec_t> specs(resource);
+        specs.reserve(function_oids.size() * 2);
+        for (const auto oid : function_oids) {
+            specs.push_back({pg_proc_coll, std::int64_t{0}, oid});
+            specs.push_back({pg_depend_coll, std::int64_t{1}, oid});
+        }
+        if (ctx->txn.transaction_id != 0) {
+            ctx->pg_catalog_delete_tables.insert(pg_proc_coll);
+            ctx->pg_catalog_delete_tables.insert(pg_depend_coll);
+        }
+        execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
+        auto [_d, df] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                    &services::disk::manager_disk_t::delete_pg_catalog_rows_many,
+                                                    exec_ctx,
+                                                    std::move(specs));
+        auto deleted = co_await std::move(df);
+        if (deleted.has_error()) {
+            co_return core::error_on(resource, deleted.error());
+        }
+        // Every pg_proc spec is at an even index, its own edges right after it.
+        for (std::size_t i = 0; i < deleted.value().size(); i += 2) {
+            if (deleted.value()[i] == 0) {
+                co_return core::error_t{core::error_code_t::other_error,
+                                        std::pmr::string{"register_udf: no pg_proc row was deleted for '" +
+                                                             function_name +
+                                                             "' — the function is still in the catalog",
+                                                         resource}};
+            }
+        }
+        co_return core::error_t::no_error();
+    }
+
     operator_dynamic_cascade_delete_t::operator_dynamic_cascade_delete_t(std::pmr::memory_resource* resource,
                                                                          log_t log,
                                                                          catalog::oid_t seed_classid,

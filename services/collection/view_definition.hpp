@@ -16,7 +16,7 @@ namespace services::collection {
     // What a validated CREATE VIEW body was bound to, stamped onto the node for the planner to write:
     //  - the output columns (names must be unique and present, types persistable);
     //  - a pg_rewrite_ref row per table name of the body itself (its first `own_tables` resolve entries): 'r' with
-    //    the relation's oid, 'h' for a name the host resolved; an 'x' row per host node with its declared columns;
+    //    the relation's oid, 'h' for a name the host resolved;
     //  - a pg_depend edge per user relation, per column of it the body reads, per user type of its first
     //    `own_types` type entries (PostgreSQL 18 skips pinned objects, oid < FIRST_USER_OID).
     core::error_t describe_view_body(std::pmr::memory_resource* resource,
@@ -54,22 +54,15 @@ namespace services::collection {
                        const components::logical_plan::resolved_table_metadata_t& view);
 
     // A read of a view calls the functions CREATE VIEW bound its body to: each 'f' row's oid still is that name and
-    // signature in pg_proc (`rows`, read by oid; else the view is stale), and this process holds it (else it is
-    // not registered). Every call of the body by that name then resolves among the pinned signatures alone.
-    core::error_t pin_view_functions(std::pmr::memory_resource* resource,
-                                     const components::logical_plan::resolved_table_metadata_t& view,
-                                     std::span<const services::disk::resolve_function_result_t> rows,
-                                     const components::compute::function_registry_t& registry,
-                                     components::logical_plan::node_t* body);
-
-    // pg_proc chunks of a read by oid as rows.
-    std::pmr::vector<services::disk::resolve_function_result_t>
-    proc_rows_of(std::pmr::memory_resource* resource,
-                 const std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>>& per_key);
-
-    // A host node's declared columns as one comparable text.
-    std::string host_node_spec(std::pmr::memory_resource* resource,
-                               const std::pmr::vector<components::types::complex_logical_type>& columns);
+    // signature in pg_proc (`proc_chunks`, read by the view_function_oids; else the view is stale), and this process
+    // holds it (else it is not registered). Every call of the body by that name then resolves among the pinned
+    // signatures alone.
+    core::error_t
+    pin_view_functions(std::pmr::memory_resource* resource,
+                       const components::logical_plan::resolved_table_metadata_t& view,
+                       const std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>>& proc_chunks,
+                       const components::compute::function_registry_t& registry,
+                       components::logical_plan::node_t* body);
 
     // A read of a view is what CREATE VIEW recorded (Trino 483 checkViewStaleness): the validated body answers as
     // many columns as were stored, each named the same without regard to case and of exactly the stored type. A host

@@ -43,22 +43,28 @@ namespace components::catalog {
                                                               std::int64_t max_value,
                                                               bool cycle);
 
-    // The view's pg_class row (unless `write_class_row` is false: OR REPLACE keeps the old one), one pg_attribute
-    // row per output column (attoids minted from `oid_batch` and stamped back), pg_rewrite (the text), one
-    // pg_rewrite_ref row per binding, pg_depend: view -> namespace and one 'n' edge per dependency. `relkind` is
-    // relkind::view or relkind::materialized_view (pg_class.relkind and pg_rewrite.ev_type).
-    std::vector<catalog_write_t> build_create_view_writes(std::pmr::memory_resource* resource,
-                                                          const std::string& name,
-                                                          oid_t namespace_oid,
-                                                          oid_t view_oid,
-                                                          oid_t rule_oid,
-                                                          const std::string& body_sql,
-                                                          std::span<table::column_definition_t> columns,
-                                                          oid_batch_t& oid_batch,
-                                                          std::span<const view_binding_t> bindings,
-                                                          std::span<const view_dependency_t> dependencies,
-                                                          bool write_class_row,
-                                                          char relkind);
+    // The view's pg_class row. OR REPLACE keeps the old one, so what depends on the view stays. `relkind` is
+    // relkind::view or relkind::materialized_view.
+    catalog_write_t build_view_class_row(std::pmr::memory_resource* resource,
+                                         oid_t view_oid,
+                                         const std::string& name,
+                                         oid_t namespace_oid,
+                                         char relkind);
+
+    // Everything of a view but its pg_class row: one pg_attribute row per output column (attoids minted from
+    // `oid_batch` and stamped back), pg_depend: view -> namespace and one 'n' edge per dependency, pg_rewrite (the
+    // text, ev_type = `relkind`), one pg_rewrite_ref row per binding.
+    std::vector<catalog_write_t> build_view_body_writes(std::pmr::memory_resource* resource,
+                                                        oid_t view_oid,
+                                                        std::span<table::column_definition_t> columns,
+                                                        std::span<const view_binding_t> bindings,
+                                                        std::span<const view_dependency_t> dependencies,
+                                                        oid_t namespace_oid,
+                                                        oid_t rule_oid,
+                                                        const std::string& name,
+                                                        const std::string& body_sql,
+                                                        char relkind,
+                                                        oid_batch_t& oid_batch);
 
     // pg_class relkind='F' (not 'm', which is reserved for materialized_view) + pg_depend(macro->ns 'n').
     std::vector<catalog_write_t> build_create_macro_writes(std::pmr::memory_resource* resource,

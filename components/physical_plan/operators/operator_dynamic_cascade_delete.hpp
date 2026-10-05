@@ -22,6 +22,23 @@ namespace components::operators {
                                                                   char relkind,
                                                                   const core::columnname_t& column);
 
+    // How the pg_proc rows of a function go. with_dependents: the way any DROP takes its dependents
+    // (unregister_udf). keep_dependents: the rows and the edges they own (objid) only; the edges of what depends on
+    // them (refobjid) stay, because register_udf writes the rows again under the same oids.
+    enum class function_rows_drop_t
+    {
+        with_dependents,
+        keep_dependents
+    };
+
+    actor_zeta::unique_future<core::error_t>
+    drop_function_rows(std::pmr::memory_resource* resource,
+                       pipeline::context_t* ctx,
+                       const std::pmr::vector<components::catalog::oid_t>& function_oids,
+                       function_rows_drop_t mode,
+                       components::catalog::drop_behavior_t behavior,
+                       const std::string& function_name);
+
     // Universal cascade-delete operator. Walks pg_depend at runtime starting
     // from a (seed_classid, seed_objid) seed and deletes the transitive
     // closure inline using catalog::plan_drop.

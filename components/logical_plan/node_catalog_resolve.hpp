@@ -34,7 +34,6 @@ namespace components::logical_plan {
         std::string atttypspec;
     };
 
-    namespace view_refkind = components::catalog::view_refkind;
     using components::catalog::view_binding_t;
 
     struct resolved_table_metadata_t {

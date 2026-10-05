@@ -8,7 +8,7 @@ namespace components::logical_plan {
                                                  core::matviewname_t matviewname,
                                                  components::catalog::oid_t namespace_oid,
                                                  components::catalog::oid_t matview_oid,
-                                                 std::vector<table::column_definition_t> columns,
+                                                 std::pmr::vector<table::column_definition_t> columns,
                                                  std::vector<components::catalog::catalog_write_t> catalog_writes)
         : node_t(resource, node_type::create_matview_t)
         , matviewname_(std::move(matviewname))
@@ -29,7 +29,7 @@ namespace components::logical_plan {
                                                      core::matviewname_t matviewname,
                                                      components::catalog::oid_t namespace_oid,
                                                      components::catalog::oid_t matview_oid,
-                                                     std::vector<table::column_definition_t> columns,
+                                                     std::pmr::vector<table::column_definition_t> columns,
                                                      std::vector<components::catalog::catalog_write_t> catalog_writes) {
         return {new node_create_matview_t{resource,
                                           std::move(matviewname),

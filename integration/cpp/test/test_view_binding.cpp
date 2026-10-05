@@ -170,8 +170,13 @@ namespace {
         return {rows.value().begin(), rows.value().end()};
     }
 
-    // No statement gives a function's oid another signature; this does, to see a view read refuse it.
-    void forge_proc_row(view_space_t& space, catalog::oid_t oid, logical_type input, logical_type output) {
+    // No statement gives a function's oid another signature; this does, to see a view read refuse it. The signature
+    // is the text pg_proc stores, so a test can also put text there that no encoder writes.
+    void forge_proc_row(view_space_t& space,
+                        catalog::oid_t oid,
+                        const std::string& name,
+                        const std::string& proargmatchers,
+                        const std::string& prorettype) {
         auto* resource = space.dispatcher()->resource();
         components::table::transaction_data td{0, 0};
         td.snapshot_horizon = std::numeric_limits<uint64_t>::max();
@@ -184,15 +189,14 @@ namespace {
                                                          std::move(specs));
         spin_until_ready(deleted);
         REQUIRE_FALSE(std::move(deleted).take_ready().has_error());
-        auto writes = catalog::build_create_function_writes(
-            resource,
-            "twice",
-            catalog::well_known_oid::pg_catalog_namespace,
-            oid,
-            1,
-            0,
-            catalog::encode_proargmatchers({components::compute::parameter_type::exact(input)}),
-            catalog::encode_prorettype({components::compute::output_type::fixed(output)}));
+        auto writes = catalog::build_create_function_writes(resource,
+                                                            name,
+                                                            catalog::well_known_oid::pg_catalog_namespace,
+                                                            oid,
+                                                            1,
+                                                            0,
+                                                            proargmatchers,
+                                                            prorettype);
         auto [_a, appended] = actor_zeta::otterbrix::send(space.disk_address(),
                                                           &services::disk::manager_disk_t::append_pg_catalog_row,
                                                           ctx,
@@ -200,6 +204,20 @@ namespace {
                                                           std::move(writes.front().row));
         spin_until_ready(appended);
         REQUIRE_FALSE(std::move(appended).take_ready().has_error());
+    }
+
+    void forge_proc_row(view_space_t& space,
+                        catalog::oid_t oid,
+                        const std::string& name,
+                        logical_type input,
+                        logical_type output) {
+        const components::compute::parameter_type inputs[] = {components::compute::parameter_type::exact(input)};
+        const components::compute::output_type outputs[] = {components::compute::output_type::fixed(output)};
+        forge_proc_row(space,
+                       oid,
+                       name,
+                       catalog::encode_proargmatchers(inputs),
+                       catalog::encode_prorettype(outputs));
     }
 
     bool depends_on(otterbrix::wrapper_dispatcher_t* d, catalog::oid_t objid, catalog::oid_t refobjid) {
@@ -835,7 +853,7 @@ TEST_CASE("integration::cpp::view_binding::a_function_of_two_signatures_has_two_
     REQUIRE(rows.size() == 2);
     CHECK(rows[0].oid != rows[1].oid);
     CHECK(rows[0].prouid == rows[1].prouid);
-    CHECK(rows[0].proargmatchers != rows[1].proargmatchers);
+    CHECK(rows[0].signature.proargmatchers != rows[1].signature.proargmatchers);
 }
 
 // After a restart a function of another input signature is a new overload; the view over the old one stays, and does
@@ -934,9 +952,10 @@ TEST_CASE("integration::cpp::view_binding::a_view_depends_on_the_overload_it_cal
     run_ok(d, "CREATE VIEW vb.v AS SELECT twice(a) AS t2 FROM vb.t;");
     const auto v = std::to_string(oid_of(d, "v"));
     const auto rows = proc_rows(space, "twice");
-    const auto bigint_row = std::find_if(rows.begin(), rows.end(), [](const auto& r) {
-        return r.proargmatchers ==
-               catalog::encode_proargmatchers({components::compute::parameter_type::exact(logical_type::BIGINT)});
+    const components::compute::parameter_type bigint[] = {
+        components::compute::parameter_type::exact(logical_type::BIGINT)};
+    const auto bigint_row = std::find_if(rows.begin(), rows.end(), [&bigint](const auto& r) {
+        return r.signature.proargmatchers == catalog::encode_proargmatchers(bigint);
     });
     REQUIRE(bigint_row != rows.end());
     auto pinned = run_ok(d,
@@ -973,9 +992,92 @@ TEST_CASE("integration::cpp::view_binding::a_view_whose_function_oid_has_another
     REQUIRE_FALSE(d->register_udf(otterbrix::session_id_t(), make_twice(d->resource())).contains_error());
     run_ok(d, "CREATE VIEW vb.v AS SELECT twice(a) AS t2 FROM vb.t;");
     const auto fn_oid = proc_rows(space, "twice").front().oid;
-    forge_proc_row(space, fn_oid, logical_type::DOUBLE, logical_type::DOUBLE);
+    forge_proc_row(space, fn_oid, "twice", logical_type::DOUBLE, logical_type::DOUBLE);
 
     CHECK(error_text(exec(d, "SELECT t2 FROM vb.v;")) ==
           "view \"v\" is stale: function twice(int8) it was created over (oid " + std::to_string(fn_oid) +
               ") is now twice(float8); recreate the view");
+}
+
+namespace {
+    struct total_state_t {
+        std::int64_t value{0};
+    };
+
+    components::compute::aggregate_state_layout_t
+    total_layout(const std::pmr::vector<components::types::complex_logical_type>&) {
+        return components::compute::aggregate_state_of<total_state_t>();
+    }
+
+    core::error_t total_update(components::compute::kernel_context&,
+                               const components::vector::data_chunk_t& in,
+                               core::span<const uint32_t> groups,
+                               components::compute::aggregate_states_t states) {
+        for (std::uint64_t row = 0; row < in.size(); ++row) {
+            states.at<total_state_t>(groups[row]).value += in.data[0].data<std::int64_t>()[row];
+        }
+        return core::error_t::no_error();
+    }
+
+    core::error_t total_finalize(components::compute::kernel_context&,
+                                 components::compute::aggregate_states_t states,
+                                 uint64_t first,
+                                 uint64_t count,
+                                 components::vector::vector_t& out) {
+        for (uint64_t row = 0; row < count; ++row) {
+            out.data<std::int64_t>()[row] = states.at<total_state_t>(first + row).value;
+        }
+        return core::error_t::no_error();
+    }
+
+    // An aggregate UDF: the sum of its BIGINT argument.
+    std::unique_ptr<components::compute::aggregate_function> make_total(std::pmr::memory_resource* resource) {
+        using namespace components::compute;
+        function_doc doc{"total", "total", {"arg"}, false};
+        auto fn = std::make_unique<aggregate_function>("total", arity::unary(), doc, 1);
+        kernel_signature_t sig(function_type_t::aggregate,
+                               {parameter_type::exact(logical_type::BIGINT)},
+                               {output_type::fixed(logical_type::BIGINT)});
+        aggregate_kernel k{std::move(sig), total_layout, total_update, total_finalize};
+        REQUIRE_FALSE(fn->add_kernel(resource, std::move(k)).contains_error());
+        return fn;
+    }
+} // namespace
+
+// An aggregate call is a function call like any other (PostgreSQL 18 Aggref.aggfnoid): the view is bound to the
+// aggregate's pg_proc row, and a function recreated under that oid with another signature makes the view stale.
+TEST_CASE("integration::cpp::view_binding::a_view_over_an_aggregate_function_is_bound_to_it") {
+    view_space_t space(config_for("udf_pinned_aggregate"));
+    auto* d = space.dispatcher();
+    seed(d);
+    REQUIRE_FALSE(d->register_udf(otterbrix::session_id_t(), make_total(d->resource())).contains_error());
+    run_ok(d, "CREATE VIEW vb.v AS SELECT total(a) AS s FROM vb.t;");
+    CHECK(bigints(run_ok(d, "SELECT s FROM vb.v;")) == std::set<std::int64_t>{3});
+    const auto fn_oid = proc_rows(space, "total").front().oid;
+    CHECK(depends_on(d, oid_of(d, "v"), fn_oid));
+    CHECK(run_ok(d,
+                 "SELECT refobjid FROM pg_catalog.pg_rewrite_ref WHERE ev_class = " + std::to_string(oid_of(d, "v")) +
+                     " AND refkind = 'f' AND relname = 'total';")
+              ->size() == 1);
+
+    forge_proc_row(space, fn_oid, "total", logical_type::DOUBLE, logical_type::DOUBLE);
+    CHECK(error_text(exec(d, "SELECT s FROM vb.v;")) ==
+          "view \"v\" is stale: function total(int8) it was created over (oid " + std::to_string(fn_oid) +
+              ") is now total(float8); recreate the view");
+}
+
+// A pg_proc signature no encoder writes is a corrupt catalog, not a name to print as it is.
+TEST_CASE("integration::cpp::view_binding::a_function_signature_outside_its_grammar_is_corruption") {
+    view_space_t space(config_for("udf_corrupt_signature"));
+    auto* d = space.dispatcher();
+    seed(d);
+    REQUIRE_FALSE(d->register_udf(otterbrix::session_id_t(), make_twice(d->resource())).contains_error());
+    run_ok(d, "CREATE VIEW vb.v AS SELECT twice(a) AS t2 FROM vb.t;");
+    const auto fn_oid = proc_rows(space, "twice").front().oid;
+    forge_proc_row(space, fn_oid, "twice", "garbage", proc_rows(space, "twice").front().signature.prorettype);
+
+    auto read = exec(d, "SELECT t2 FROM vb.v;");
+    REQUIRE(read->is_error());
+    CHECK(read->get_error().type == core::error_code_t::data_corruption);
+    CHECK(error_text(read) == "pg_proc.proargmatchers \"garbage\" is outside its grammar");
 }

@@ -85,16 +85,17 @@ namespace components::operators {
                 co_return;
             }
             const auto live_rows = live != nullptr ? proc_signatures(resource_, *live)
-                                                   : std::pmr::vector<proc_signature_t>{resource_};
+                                                   : std::pmr::vector<components::catalog::proc_signature_t>{resource_};
             std::pmr::vector<components::catalog::oid_t> rows{resource_};
             for (const auto& m : matches_r.value()) {
                 bool drop = false;
                 if (live != nullptr) {
                     drop = std::any_of(live_rows.begin(), live_rows.end(), [&m](const auto& row) {
-                        return row.proargmatchers == m.proargmatchers;
+                        return row == m.signature;
                     });
                 } else {
-                    auto parameters = components::catalog::decode_proargmatchers(resource_, m.proargmatchers);
+                    auto parameters =
+                        components::catalog::decode_proargmatchers(resource_, m.signature.proargmatchers);
                     if (parameters.has_error()) {
                         set_error(parameters.error());
                         mark_failed();
@@ -111,20 +112,16 @@ namespace components::operators {
                 }
             }
             found = found || !rows.empty();
-            for (const auto oid : rows) {
-                auto dropped = co_await drop_with_dependents(resource_,
-                                                             ctx,
-                                                             components::catalog::well_known_oid::pg_proc_table,
-                                                             oid,
-                                                             behavior_,
-                                                             qualified_name_t{core::relname_t{function_name_}},
-                                                             components::catalog::relkind::regular,
-                                                             core::columnname_t{});
-                if (dropped.contains_error()) {
-                    set_error(dropped);
-                    mark_failed();
-                    co_return;
-                }
+            if (auto dropped = co_await drop_function_rows(resource_,
+                                                           ctx,
+                                                           rows,
+                                                           function_rows_drop_t::with_dependents,
+                                                           behavior_,
+                                                           function_name_);
+                dropped.contains_error()) {
+                set_error(dropped);
+                mark_failed();
+                co_return;
             }
         }
         if (!found) {

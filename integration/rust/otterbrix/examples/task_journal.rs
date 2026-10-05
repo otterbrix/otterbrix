@@ -24,8 +24,8 @@ fn main() {
 pub fn run(data_dir: &Path) -> Result<(), Error> {
     let db = Database::open(Config::new(data_dir))?;
 
-    db.create_database("tracker")?;
-    db.create_collection("tracker", "tasks")?;
+    db.execute("CREATE DATABASE tracker;")?;
+    db.execute("CREATE TABLE tracker.tasks();")?;
 
     db.execute(
         "INSERT INTO tracker.tasks (id, title, priority, done) VALUES \

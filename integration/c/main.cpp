@@ -1,18 +1,14 @@
 #include "otterbrix.h"
 
 #include <components/cursor/cursor.hpp>
-#include <components/logical_plan/node_create_collection.hpp>
-#include <components/logical_plan/node_drop.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <components/types/logical_value.hpp>
 #include <components/types/types.hpp>
 #include <core/result_wrapper.hpp>
 #include <integration/cpp/base_spaces.hpp>
 
-#include <algorithm>
 #include <atomic>
 #include <cassert>
-#include <cctype>
 #include <cstring>
 #include <exception>
 #include <stdexcept>
@@ -112,22 +108,6 @@ namespace {
         } catch (...) {
             return nullptr;
         }
-    }
-
-    // A name the C API takes as written must already be lower case: SQL folds an unquoted name (PostgreSQL 18), so
-    // a mixed-case one could never be reached from SQL.
-    core::error_t
-    refuse_upper_case(std::pmr::memory_resource* resource, std::string_view entry, const std::string& name) {
-        if (std::none_of(name.begin(), name.end(), [](char c) {
-                return std::isupper(static_cast<unsigned char>(c)) != 0;
-            })) {
-            return core::error_t::no_error();
-        }
-        std::pmr::string msg{entry, resource};
-        msg.append(": name \"");
-        msg.append(name);
-        msg.append("\" must be lower case");
-        return core::error_t{core::error_code_t::invalid_parameter, std::move(msg)};
     }
 
     cursor_ptr unknown_exception_cursor(pod_space_t* pod) {
@@ -271,112 +251,6 @@ execute_sql_params(otterbrix_ptr ptr, string_view_t query_raw, const sql_param_t
             }
         }
         auto cursor = pod_space->space->dispatcher()->execute_sql_with_params(session, query, bound);
-        return store_cursor(pod_space, std::move(cursor));
-    } catch (const std::exception& ex) {
-        return exception_cursor(pod_space, ex);
-    } catch (...) {
-        return unknown_exception_cursor(pod_space);
-    }
-}
-
-extern "C" cursor_ptr create_database(otterbrix_ptr ptr, string_view_t database_name) {
-    pod_space_t* pod_space = nullptr;
-    try {
-        pod_space = live_otterbrix(ptr);
-        if (pod_space == nullptr) {
-            return nullptr;
-        }
-        auto session = otterbrix::session_id_t();
-        std::string database = string_view_to_string(database_name);
-        auto* dispatcher = pod_space->space->dispatcher();
-        if (auto refused = refuse_upper_case(dispatcher->resource(), "create_database", database);
-            refused.contains_error()) {
-            return store_cursor(pod_space, components::cursor::make_cursor(dispatcher->resource(), std::move(refused)));
-        }
-        auto cursor = dispatcher->execute_sql(session, "CREATE DATABASE " + database + ";");
-        return store_cursor(pod_space, std::move(cursor));
-    } catch (const std::exception& ex) {
-        return exception_cursor(pod_space, ex);
-    } catch (...) {
-        return unknown_exception_cursor(pod_space);
-    }
-}
-
-extern "C" cursor_ptr create_collection(otterbrix_ptr ptr, string_view_t database_name, string_view_t collection_name) {
-    pod_space_t* pod_space = nullptr;
-    try {
-        pod_space = live_otterbrix(ptr);
-        if (pod_space == nullptr) {
-            return nullptr;
-        }
-        auto session = otterbrix::session_id_t();
-        std::string database = string_view_to_string(database_name);
-        std::string collection = string_view_to_string(collection_name);
-        auto* dispatcher = pod_space->space->dispatcher();
-        if (auto refused = refuse_upper_case(dispatcher->resource(), "create_collection", collection);
-            refused.contains_error()) {
-            return store_cursor(pod_space, components::cursor::make_cursor(dispatcher->resource(), std::move(refused)));
-        }
-        auto node = components::logical_plan::make_node_create_collection(dispatcher->resource(),
-                                                                          core::relname_t{collection},
-                                                                          {},
-                                                                          {});
-        // Naming the target is all this plan owes: the executor registers the
-        // catalog lookup for every target the tree names.
-        node->set_dbname(database);
-        auto cursor =
-            dispatcher->execute_plan(session,
-                                     components::logical_plan::execution_plan_t{dispatcher->resource(), node, nullptr});
-        return store_cursor(pod_space, std::move(cursor));
-    } catch (const std::exception& ex) {
-        return exception_cursor(pod_space, ex);
-    } catch (...) {
-        return unknown_exception_cursor(pod_space);
-    }
-}
-
-extern "C" cursor_ptr drop_database(otterbrix_ptr ptr, string_view_t database_name) {
-    pod_space_t* pod_space = nullptr;
-    try {
-        pod_space = live_otterbrix(ptr);
-        if (pod_space == nullptr) {
-            return nullptr;
-        }
-        auto session = otterbrix::session_id_t();
-        std::string database = string_view_to_string(database_name);
-        auto* dispatcher = pod_space->space->dispatcher();
-        auto node = components::logical_plan::make_node_drop(dispatcher->resource(),
-                                                             components::logical_plan::drop_target_kind::database);
-        node->set_dbname(database);
-        auto cursor =
-            dispatcher->execute_plan(session,
-                                     components::logical_plan::execution_plan_t{dispatcher->resource(), node, nullptr});
-        return store_cursor(pod_space, std::move(cursor));
-    } catch (const std::exception& ex) {
-        return exception_cursor(pod_space, ex);
-    } catch (...) {
-        return unknown_exception_cursor(pod_space);
-    }
-}
-
-extern "C" cursor_ptr drop_collection(otterbrix_ptr ptr, string_view_t database_name, string_view_t collection_name) {
-    pod_space_t* pod_space = nullptr;
-    try {
-        pod_space = live_otterbrix(ptr);
-        if (pod_space == nullptr) {
-            return nullptr;
-        }
-        auto session = otterbrix::session_id_t();
-        std::string database = string_view_to_string(database_name);
-        std::string collection = string_view_to_string(collection_name);
-        auto* dispatcher = pod_space->space->dispatcher();
-        auto node = components::logical_plan::make_node_drop(dispatcher->resource(),
-                                                             components::logical_plan::drop_target_kind::collection);
-        node->set_dbname(database);
-        node->set_relname(collection);
-        auto cursor =
-            dispatcher->execute_plan(session,
-                                     components::logical_plan::execution_plan_t{dispatcher->resource(), node, nullptr});
         return store_cursor(pod_space, std::move(cursor));
     } catch (const std::exception& ex) {
         return exception_cursor(pod_space, ex);

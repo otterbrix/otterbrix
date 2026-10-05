@@ -66,14 +66,14 @@ namespace {
 
 } // namespace
 
-// Mirrors ddl.rs create_database_returns_cursor / create_collection_returns_cursor; the drop_* path
+// Mirrors ddl.rs create_database_returns_cursor / create_collection_returns_cursor; the DROP path
 // is otherwise untested on the C++ side.
 
-TEST_CASE("c-api: create_database returns successful empty cursor", "[c-api][ddl]") {
+TEST_CASE("c-api: CREATE DATABASE returns successful empty cursor", "[c-api][ddl]") {
     test_db_t t("create_database");
     REQUIRE(t.ptr != nullptr);
 
-    cursor_ptr cur = create_database(t.ptr, sv(std::string("mydb")));
+    cursor_ptr cur = execute_sql(t.ptr, sv(std::string("CREATE DATABASE mydb;")));
     REQUIRE(cur != nullptr);
     REQUIRE(cursor_is_success(cur));
     REQUIRE_FALSE(cursor_is_error(cur));
@@ -81,27 +81,24 @@ TEST_CASE("c-api: create_database returns successful empty cursor", "[c-api][ddl
     release_cursor(cur);
 }
 
-TEST_CASE("c-api: create_collection returns successful empty cursor", "[c-api][ddl]") {
+TEST_CASE("c-api: CREATE TABLE without columns returns successful empty cursor", "[c-api][ddl]") {
     test_db_t t("create_collection");
     REQUIRE(t.ptr != nullptr);
 
-    cursor_ptr db_cur = create_database(t.ptr, sv(std::string("mydb")));
-    REQUIRE(db_cur != nullptr);
-    REQUIRE(cursor_is_success(db_cur));
-    release_cursor(db_cur);
+    run_ok(t.ptr, "CREATE DATABASE mydb;");
 
-    cursor_ptr cur = create_collection(t.ptr, sv(std::string("mydb")), sv(std::string("users")));
+    cursor_ptr cur = execute_sql(t.ptr, sv(std::string("CREATE TABLE mydb.users();")));
     REQUIRE(cur != nullptr);
     REQUIRE(cursor_is_success(cur));
     REQUIRE(cursor_size(cur) == 0);
     release_cursor(cur);
 }
 
-TEST_CASE("c-api: create_collection in a database that does not exist is refused", "[c-api][ddl]") {
+TEST_CASE("c-api: CREATE TABLE in a database that does not exist is refused", "[c-api][ddl]") {
     test_db_t t("create_collection_no_db");
     REQUIRE(t.ptr != nullptr);
 
-    cursor_ptr cur = create_collection(t.ptr, sv(std::string("nodb")), sv(std::string("t")));
+    cursor_ptr cur = execute_sql(t.ptr, sv(std::string("CREATE TABLE nodb.t();")));
     REQUIRE(cur != nullptr);
     REQUIRE(cursor_is_error(cur));
     error_message refusal = cursor_get_error(cur);
@@ -110,35 +107,16 @@ TEST_CASE("c-api: create_collection in a database that does not exist is refused
     otterbrix_free_string(refusal.message);
     release_cursor(cur);
 
-    cursor_ptr db_cur = create_database(t.ptr, sv(std::string("otherdb")));
-    REQUIRE(cursor_is_success(db_cur));
-    release_cursor(db_cur);
-    cursor_ptr other = create_collection(t.ptr, sv(std::string("otherdb")), sv(std::string("t")));
+    run_ok(t.ptr, "CREATE DATABASE otherdb;");
+    cursor_ptr other = execute_sql(t.ptr, sv(std::string("CREATE TABLE otherdb.t();")));
     REQUIRE(other != nullptr);
     CHECK(cursor_is_success(other));
     release_cursor(other);
 }
 
-// Same rule as create_collection: a database name is taken as written, so it must already be lower case.
-TEST_CASE("c-api: create_database takes a lower-case name only", "[c-api][ddl]") {
+TEST_CASE("c-api: CREATE DATABASE folds an unquoted name to lower case", "[c-api][ddl]") {
     test_db_t t("create_database_case");
     REQUIRE(t.ptr != nullptr);
-
-    cursor_ptr mixed = create_database(t.ptr, sv(std::string("TestDatabase")));
-    REQUIRE(mixed != nullptr);
-    CHECK(cursor_is_error(mixed));
-    error_message refusal = cursor_get_error(mixed);
-    REQUIRE(refusal.message != nullptr);
-    CHECK(std::string(refusal.message) == "create_database: name \"TestDatabase\" must be lower case");
-    otterbrix_free_string(refusal.message);
-    release_cursor(mixed);
-
-    cursor_ptr catalog = execute_sql(t.ptr,
-                                     sv(std::string("SELECT nspname FROM pg_catalog.pg_namespace "
-                                                    "WHERE nspname = 'testdatabase';")));
-    REQUIRE(cursor_is_success(catalog));
-    CHECK(cursor_size(catalog) == 0);
-    release_cursor(catalog);
 
     run_ok(t.ptr, "CREATE DATABASE SqlDatabase;");
     cursor_ptr folded = execute_sql(t.ptr,
@@ -154,12 +132,8 @@ TEST_CASE("c-api: document flow in a database created through the C API", "[c-ap
     test_db_t t("document_flow");
     REQUIRE(t.ptr != nullptr);
 
-    cursor_ptr db_cur = create_database(t.ptr, sv(std::string("docdb")));
-    REQUIRE(cursor_is_success(db_cur));
-    release_cursor(db_cur);
-    cursor_ptr coll_cur = create_collection(t.ptr, sv(std::string("docdb")), sv(std::string("docs")));
-    REQUIRE(cursor_is_success(coll_cur));
-    release_cursor(coll_cur);
+    run_ok(t.ptr, "CREATE DATABASE docdb;");
+    run_ok(t.ptr, "CREATE TABLE docdb.docs();");
 
     run_ok(t.ptr, "INSERT INTO docdb.docs (id, name) VALUES (1, 'a'), (2, 'b');");
     run_ok(t.ptr, "INSERT INTO docdb.docs (id, score) VALUES (3, 30);");
@@ -169,30 +143,13 @@ TEST_CASE("c-api: document flow in a database created through the C API", "[c-ap
     release_cursor(read);
 }
 
-// SQL folds an unquoted name to lower case, so a table created under a mixed-case name could never be read back.
-TEST_CASE("c-api: create_collection takes a lower-case name only", "[c-api][ddl]") {
+// SQL folds an unquoted table name to lower case, so a mixed-case INSERT reaches the lower-case table.
+TEST_CASE("c-api: an unquoted table name folds to lower case", "[c-api][ddl]") {
     test_db_t t("create_collection_case");
     REQUIRE(t.ptr != nullptr);
     run_ok(t.ptr, "CREATE DATABASE db;");
 
-    cursor_ptr mixed = create_collection(t.ptr, sv(std::string("db")), sv(std::string("TestCollection")));
-    REQUIRE(mixed != nullptr);
-    CHECK(cursor_is_error(mixed));
-    error_message refusal = cursor_get_error(mixed);
-    REQUIRE(refusal.message != nullptr);
-    CHECK(std::string(refusal.message) == "create_collection: name \"TestCollection\" must be lower case");
-    otterbrix_free_string(refusal.message);
-    release_cursor(mixed);
-    cursor_ptr catalog =
-        execute_sql(t.ptr,
-                    sv(std::string("SELECT relname FROM pg_catalog.pg_class WHERE relname = 'TestCollection';")));
-    REQUIRE(cursor_is_success(catalog));
-    CHECK(cursor_size(catalog) == 0);
-    release_cursor(catalog);
-
-    cursor_ptr lower = create_collection(t.ptr, sv(std::string("db")), sv(std::string("testcollection")));
-    REQUIRE(cursor_is_success(lower));
-    release_cursor(lower);
+    run_ok(t.ptr, "CREATE TABLE db.testcollection();");
     run_ok(t.ptr, "INSERT INTO db.TestCollection (id) VALUES (1);");
     cursor_ptr read = execute_sql(t.ptr, sv(std::string("SELECT id FROM db.testcollection;")));
     REQUIRE(cursor_is_success(read));
@@ -200,28 +157,21 @@ TEST_CASE("c-api: create_collection takes a lower-case name only", "[c-api][ddl]
     release_cursor(read);
 }
 
-TEST_CASE("c-api: drop_collection then drop_database succeed with empty cursors", "[c-api][ddl]") {
+TEST_CASE("c-api: DROP TABLE then DROP DATABASE succeed with empty cursors", "[c-api][ddl]") {
     test_db_t t("drop");
     REQUIRE(t.ptr != nullptr);
 
-    cursor_ptr db_cur = create_database(t.ptr, sv(std::string("dropme")));
-    REQUIRE(db_cur != nullptr);
-    REQUIRE(cursor_is_success(db_cur));
-    release_cursor(db_cur);
+    run_ok(t.ptr, "CREATE DATABASE dropme;");
+    run_ok(t.ptr, "CREATE TABLE dropme.t();");
 
-    cursor_ptr coll_cur = create_collection(t.ptr, sv(std::string("dropme")), sv(std::string("t")));
-    REQUIRE(coll_cur != nullptr);
-    REQUIRE(cursor_is_success(coll_cur));
-    release_cursor(coll_cur);
-
-    cursor_ptr drop_coll = drop_collection(t.ptr, sv(std::string("dropme")), sv(std::string("t")));
+    cursor_ptr drop_coll = execute_sql(t.ptr, sv(std::string("DROP TABLE dropme.t;")));
     REQUIRE(drop_coll != nullptr);
     REQUIRE(cursor_is_success(drop_coll));
     REQUIRE_FALSE(cursor_is_error(drop_coll));
     REQUIRE(cursor_size(drop_coll) == 0);
     release_cursor(drop_coll);
 
-    cursor_ptr drop_db = drop_database(t.ptr, sv(std::string("dropme")));
+    cursor_ptr drop_db = execute_sql(t.ptr, sv(std::string("DROP DATABASE dropme;")));
     REQUIRE(drop_db != nullptr);
     REQUIRE(cursor_is_success(drop_db));
     REQUIRE_FALSE(cursor_is_error(drop_db));
@@ -372,15 +322,8 @@ TEST_CASE("c-api: cursor_has_next is true on non-empty SELECT", "[c-api][cursor]
     test_db_t t("has_next");
     REQUIRE(t.ptr != nullptr);
 
-    cursor_ptr db_cur = create_database(t.ptr, sv(std::string("db")));
-    REQUIRE(db_cur != nullptr);
-    REQUIRE(cursor_is_success(db_cur));
-    release_cursor(db_cur);
-
-    cursor_ptr coll_cur = create_collection(t.ptr, sv(std::string("db")), sv(std::string("t")));
-    REQUIRE(coll_cur != nullptr);
-    REQUIRE(cursor_is_success(coll_cur));
-    release_cursor(coll_cur);
+    run_ok(t.ptr, "CREATE DATABASE db;");
+    run_ok(t.ptr, "CREATE TABLE db.t();");
 
     run_ok(t.ptr, "INSERT INTO db.t (x) VALUES (1), (2), (3);");
 

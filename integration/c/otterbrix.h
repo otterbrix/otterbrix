@@ -79,13 +79,6 @@ typedef struct sql_param_t {
 
 cursor_ptr execute_sql_params(otterbrix_ptr ptr, string_view_t query, const sql_param_t* params, size_t param_count);
 
-// database_name must be lower case: SQL folds an unquoted name, so a mixed-case database could not be named back.
-cursor_ptr create_database(otterbrix_ptr ptr, string_view_t database_name);
-// collection_name must be lower case: SQL folds an unquoted name, so a mixed-case table could not be read back.
-cursor_ptr create_collection(otterbrix_ptr ptr, string_view_t database_name, string_view_t collection_name);
-cursor_ptr drop_database(otterbrix_ptr ptr, string_view_t database_name);
-cursor_ptr drop_collection(otterbrix_ptr ptr, string_view_t database_name, string_view_t collection_name);
-
 void release_cursor(cursor_ptr ptr);
 int32_t cursor_size(cursor_ptr ptr);
 // The rows an INSERT / UPDATE / DELETE wrote go to *rows; false (and *rows untouched) for a statement that writes no

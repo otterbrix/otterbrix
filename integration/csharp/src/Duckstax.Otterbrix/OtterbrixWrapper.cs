@@ -171,16 +171,6 @@ namespace Duckstax.Otterbrix
                    ExactSpelling = false,
                    CallingConvention = CallingConvention.Cdecl)]
         private static extern CursorHandle ExecuteSQL(EngineHandle otterbrix, StringPasser sql);
-        [DllImport(libotterbrix,
-                   EntryPoint = "create_database",
-                   ExactSpelling = false,
-                   CallingConvention = CallingConvention.Cdecl)]
-        private static extern CursorHandle CreateDatabase(EngineHandle otterbrix, StringPasser databaseName);
-        [DllImport(libotterbrix,
-                   EntryPoint = "create_collection",
-                   ExactSpelling = false,
-                   CallingConvention = CallingConvention.Cdecl)]
-        private static extern CursorHandle CreateCollection(EngineHandle otterbrix, StringPasser databaseName, StringPasser collectionName);
 
         public OtterbrixWrapper(Config config) {
             otterbrix = OtterbrixCreate(new TransferConfig(ref config), out TransferErrorMessage refusal);
@@ -196,12 +186,6 @@ namespace Duckstax.Otterbrix
 
         public CursorWrapper Execute(string sql) {
             return new CursorWrapper(ExecuteSQL(otterbrix, new StringPasser(ref sql)));
-        }
-        public CursorWrapper CreateDatabase(string databaseName) {
-            return new CursorWrapper(CreateDatabase(otterbrix, new StringPasser(ref databaseName)));
-        }
-        public CursorWrapper CreateCollection(string databaseName, string collectionName) {
-            return new CursorWrapper(CreateCollection(otterbrix, new StringPasser(ref databaseName), new StringPasser(ref collectionName)));
         }
 
         private readonly EngineHandle otterbrix;

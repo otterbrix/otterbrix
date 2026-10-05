@@ -8,15 +8,15 @@ mod common;
 #[test]
 fn create_database_returns_cursor() {
     let db = common::open_test_db();
-    let cursor = db.create_database("mydb").unwrap();
+    let cursor = db.execute("CREATE DATABASE mydb;").unwrap();
     assert_eq!(cursor.size(), 0);
 }
 
 #[test]
 fn create_collection_returns_cursor() {
     let db = common::open_test_db();
-    db.create_database("mydb").unwrap();
-    let cursor = db.create_collection("mydb", "users").unwrap();
+    db.execute("CREATE DATABASE mydb;").unwrap();
+    let cursor = db.execute("CREATE TABLE mydb.users();").unwrap();
     assert_eq!(cursor.size(), 0);
 }
 
@@ -31,10 +31,10 @@ fn create_table_via_sql() {
 #[test]
 fn drop_collection_then_database() {
     let db = common::open_test_db();
-    db.create_database("dropme").unwrap();
-    db.create_collection("dropme", "t").unwrap();
-    db.drop_collection("dropme", "t").unwrap();
-    db.drop_database("dropme").unwrap();
+    db.execute("CREATE DATABASE dropme;").unwrap();
+    db.execute("CREATE TABLE dropme.t();").unwrap();
+    db.execute("DROP TABLE dropme.t;").unwrap();
+    db.execute("DROP DATABASE dropme;").unwrap();
 }
 
 #[test]

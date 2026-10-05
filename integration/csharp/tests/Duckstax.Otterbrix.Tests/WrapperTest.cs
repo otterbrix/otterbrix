@@ -98,8 +98,8 @@ public class Tests
     public void Base() {
         using OtterbrixWrapper otterbrix = Open("Base");
         {
-            using (CursorWrapper created = otterbrix.CreateDatabase("testdatabase")) Assert.IsTrue(created.IsSuccess());
-            using (CursorWrapper created = otterbrix.CreateCollection("testdatabase", "testcollection")) Assert.IsTrue(created.IsSuccess());
+            using (CursorWrapper created = otterbrix.Execute("CREATE DATABASE testdatabase;")) Assert.IsTrue(created.IsSuccess());
+            using (CursorWrapper created = otterbrix.Execute("CREATE TABLE testdatabase.testcollection();")) Assert.IsTrue(created.IsSuccess());
         }
         {
             string query = "INSERT INTO testdatabase.testcollection (name, count) VALUES ";
@@ -226,8 +226,8 @@ public class Tests
     public void GroupBy() {
         using OtterbrixWrapper otterbrix = Open("GroupBy");
         {
-            using (CursorWrapper created = otterbrix.CreateDatabase("testdatabase")) Assert.IsTrue(created.IsSuccess());
-            using (CursorWrapper created = otterbrix.CreateCollection("testdatabase", "testcollection")) Assert.IsTrue(created.IsSuccess());
+            using (CursorWrapper created = otterbrix.Execute("CREATE DATABASE testdatabase;")) Assert.IsTrue(created.IsSuccess());
+            using (CursorWrapper created = otterbrix.Execute("CREATE TABLE testdatabase.testcollection();")) Assert.IsTrue(created.IsSuccess());
         }
         {
             string query = "INSERT INTO testdatabase.testcollection (name, count) VALUES ";
@@ -288,33 +288,13 @@ public class Tests
         }
     }
 
-    // SQL folds an unquoted name, so the names CreateDatabase / CreateCollection take as written must be lower case.
-    [Test]
-    public void MixedCaseNamesAreRefused() {
-        using OtterbrixWrapper otterbrix = Open("MixedCaseNamesAreRefused");
-        {
-            using CursorWrapper database = otterbrix.CreateDatabase("TestDatabase");
-            Assert.IsTrue(database.IsError());
-            Assert.That(database.GetError().type, Is.EqualTo(ErrorCode.InvalidParameter));
-            Assert.That(database.GetError().what, Is.EqualTo("create_database: name \"TestDatabase\" must be lower case"));
-        }
-        {
-            using CursorWrapper database = otterbrix.CreateDatabase("testdatabase");
-            Assert.IsTrue(database.IsSuccess());
-            using CursorWrapper collection = otterbrix.CreateCollection("testdatabase", "TestCollection");
-            Assert.IsTrue(collection.IsError());
-            Assert.That(collection.GetError().what,
-                        Is.EqualTo("create_collection: name \"TestCollection\" must be lower case"));
-        }
-    }
-
     [Test]
     public void InvalidQueries() {
         using OtterbrixWrapper otterbrix = Open("InvalidQueries");
         {
-            using CursorWrapper database = otterbrix.CreateDatabase("testdatabase");
+            using CursorWrapper database = otterbrix.Execute("CREATE DATABASE testdatabase;");
             Assert.IsTrue(database.IsSuccess());
-            using CursorWrapper collection = otterbrix.CreateCollection("testdatabase", "testcollection");
+            using CursorWrapper collection = otterbrix.Execute("CREATE TABLE testdatabase.testcollection();");
             Assert.IsTrue(collection.IsSuccess());
         }
         {
@@ -348,9 +328,9 @@ public class Tests
 
         using OtterbrixWrapper otterbrix = Open("TestJoin");
         {
-            using (CursorWrapper created = otterbrix.CreateDatabase(databaseName)) Assert.IsTrue(created.IsSuccess());
-            using (CursorWrapper created = otterbrix.CreateCollection(databaseName, collectionName1)) Assert.IsTrue(created.IsSuccess());
-            using (CursorWrapper created = otterbrix.CreateCollection(databaseName, collectionName2)) Assert.IsTrue(created.IsSuccess());
+            using (CursorWrapper created = otterbrix.Execute("CREATE DATABASE " + databaseName + ";")) Assert.IsTrue(created.IsSuccess());
+            using (CursorWrapper created = otterbrix.Execute("CREATE TABLE " + databaseName + "." + collectionName1 + "();")) Assert.IsTrue(created.IsSuccess());
+            using (CursorWrapper created = otterbrix.Execute("CREATE TABLE " + databaseName + "." + collectionName2 + "();")) Assert.IsTrue(created.IsSuccess());
         }
         {
             string query = "";

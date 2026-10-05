@@ -194,8 +194,7 @@ pub(crate) fn materialize_cursor(cursor: &Cursor<'_>) -> Result<(Vec<OtterbrixRo
         });
     }
 
-    let rows_affected = cursor.affected_rows().unwrap_or(row_count as u64);
-    Ok((rows, rows_affected))
+    Ok((rows, cursor.row_count()))
 }
 
 fn cell_to_value(cell: ObValue, col_logical: Option<LogicalType>) -> OtterbrixValue {

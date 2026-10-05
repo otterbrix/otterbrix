@@ -210,17 +210,6 @@ namespace services::engine {
             }
         }
 
-        if (!config.disk.path.empty()) {
-            const auto legacy_catalog_otbx = config.disk.path / "catalog.otbx";
-            std::error_code exists_ec;
-            if (std::filesystem::exists(legacy_catalog_otbx, exists_ec)) {
-                return startup_error(resource,
-                                     core::error_code_t::invalid_parameter,
-                                     "Legacy catalog format detected at " + legacy_catalog_otbx.string() +
-                                         ". Remove the file and restart — pg_catalog is the source of truth.");
-            }
-        }
-
         auto parts = std::make_unique<engine_parts_t>(resource, log, std::move(lock));
 
         services::wal::id_t last_wal_id{0};

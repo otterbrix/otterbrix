@@ -538,8 +538,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                               qualified_name_t{table_database_name, table_other_collection_name},
                                               std::move(expr)),
                 logical_plan::make_node_limit(dispatcher->resource(), logical_plan::limit_t::unlimit()),
-                {std::move(update_expr)},
-                false);
+                {std::move(update_expr)});
             update_inner->append_child(logical_plan::make_node_raw_data(dispatcher->resource(), std::move(data)));
             update_inner->set_result_alias("initial_table");
             update_inner->children().back()->set_result_alias("from_table");

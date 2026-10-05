@@ -48,7 +48,6 @@ namespace services::planner::impl {
                                                                                         context.log.clone(),
                                                                                         table_oid,
                                                                                         node_update->updates(),
-                                                                                        node_update->upsert(),
                                                                                         std::move(returning)));
             plan->set_table_has_indexes(node->table_has_indexes());
             VALUE_OR_RETURN(auto scan, create_plan_match(context, node_match, limit));
@@ -63,7 +62,6 @@ namespace services::planner::impl {
                                                                                     context.log.clone(),
                                                                                     table_oid,
                                                                                     node_update->updates(),
-                                                                                    node_update->upsert(),
                                                                                     std::move(returning),
                                                                                     node_match->expressions()[0],
                                                                                     limit.limit()));

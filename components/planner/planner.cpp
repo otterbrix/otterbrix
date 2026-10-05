@@ -562,21 +562,10 @@ namespace components::planner {
             auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));
             for (const auto& sub : alter->subcommands()) {
                 if (sub.kind == logical_plan::alter_table_kind::add_column) {
-                    // DEFAULT coercion happens later in executor.cpp; this only gets each ADD COLUMN a
-                    // writable node_alter_column_t for that later cast.
-                    auto col = sub.column;
-                    if (col.type().type() == components::types::logical_type::UNKNOWN) {
-                        const auto lt = catalog::pg_name_to_logical_type(col.type().type_name());
-                        if (lt != components::types::logical_type::UNKNOWN) {
-                            const std::string alias = col.type().has_alias() ? col.type().alias() : std::string{};
-                            col.type() = components::types::complex_logical_type{lt};
-                            if (!alias.empty())
-                                col.type().set_alias(alias);
-                        }
-                    }
+                    // The executor already typed the column and cast its DEFAULT, as for CREATE TABLE.
                     auto add = logical_plan::make_node_alter_column(r, logical_plan::alter_column_op::add);
                     add->set_table_oid(table_oid);
-                    add->set_column(std::move(col));
+                    add->set_column(sub.column);
                     seq->append_child(add);
                 } else if (sub.kind == logical_plan::alter_table_kind::rename_column) {
                     auto rename = logical_plan::make_node_alter_column(r, logical_plan::alter_column_op::rename);

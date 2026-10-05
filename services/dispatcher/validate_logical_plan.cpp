@@ -645,25 +645,14 @@ namespace services::dispatcher {
                              std::pmr::string{"type: \'" + alias + "\' is not registered in catalog", resource});
     }
 
-    core::error_t convert_column_defaults(std::pmr::memory_resource* resource,
-                                          const components::casts::cast_registry_t* cast_registry,
-                                          const components::graph_execution_context& execution_context,
-                                          std::vector<components::table::column_definition_t>& columns) {
-        // Shared with ALTER TABLE ADD COLUMN (services/collection/executor.cpp).
-        const auto gate_persistable = [&](const components::table::column_definition_t& column) {
-            std::string encoded;
-            return components::catalog::encode_default_spec(resource, column.default_value(), encoded);
-        };
-        for (auto& column : columns) {
-            if (!column.has_default_value()) {
-                continue;
-            }
-            if (column.default_value().type() == column.type()) {
-                if (auto ec = gate_persistable(column); ec.contains_error()) {
-                    return ec;
-                }
-                continue;
-            }
+    core::error_t convert_column_default(std::pmr::memory_resource* resource,
+                                         const components::casts::cast_registry_t* cast_registry,
+                                         const components::graph_execution_context& execution_context,
+                                         components::table::column_definition_t& column) {
+        if (!column.has_default_value()) {
+            return core::error_t::no_error();
+        }
+        if (column.default_value().type() != column.type()) {
             const auto& written = column.default_value();
             auto conversion =
                 cast_registry->resolve(written.type(), column.type(), components::casts::cast_type::assignment);
@@ -680,11 +669,9 @@ namespace services::dispatcher {
                 return error;
             }
             column.set_default_value(converted.value(0));
-            if (auto ec = gate_persistable(column); ec.contains_error()) {
-                return ec;
-            }
         }
-        return core::error_t::no_error();
+        std::string encoded;
+        return components::catalog::encode_default_spec(resource, column.default_value(), encoded);
     }
 
     core::error_t gate_persistable_type(std::pmr::memory_resource* resource,

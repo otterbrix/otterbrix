@@ -550,6 +550,42 @@ namespace services::collection::executor {
         co_return core::error_t::no_error();
     }
 
+    core::error_t executor_t::prepare_column_(const components::logical_plan::catalog_resolves_t& resolves,
+                                              std::span<const std::string> search_path,
+                                              const components::graph_execution_context& settings,
+                                              components::table::column_definition_t& column) {
+        using components::types::logical_type;
+        auto& type = column.type();
+        if (type.type() == logical_type::UNKNOWN && !type.type_name().empty()) {
+            const std::string alias = type.has_alias() ? type.alias() : std::string{};
+            if (const auto builtin = components::catalog::pg_name_to_logical_type(type.type_name());
+                builtin != logical_type::UNKNOWN) {
+                type = components::types::complex_logical_type{builtin};
+            } else {
+                if (auto missing =
+                        services::dispatcher::check_type_exists(resource(), &resolves, type.type_name(), search_path);
+                    missing.contains_error()) {
+                    return missing;
+                }
+                if (const auto* md = services::catalog_resolve::probe_type_in_path(resolves,
+                                                                                   std::string_view(type.type_name()),
+                                                                                   search_path)) {
+                    type = md->type;
+                }
+            }
+            if (!alias.empty()) {
+                type.set_alias(alias);
+            }
+        }
+        if (auto unpersistable = services::dispatcher::gate_persistable_type(resource(),
+                                                                             "column '" + column.name() + "'",
+                                                                             column.type());
+            unpersistable.contains_error()) {
+            return unpersistable;
+        }
+        return services::dispatcher::convert_column_default(resource(), &cast_registry_, settings, column);
+    }
+
     executor_t::own_entries_t
     executor_t::own_entries_of(const components::logical_plan::catalog_resolves_t& resolves) noexcept {
         return {resolves.tables ? resolves.tables->entries().size() : std::size_t{0},
@@ -1169,66 +1205,15 @@ namespace services::collection::executor {
                                                           std::pmr::string{"collection already exists", resource()}});
                     }
                 } else {
-                    const std::string target_db{id.database()};
-                    const auto str_path = services::catalog_resolve::build_type_search_path_str(target_db);
+                    const auto search_path = services::catalog_resolve::build_type_search_path_str(id.database());
                     for (auto& col_def : n->column_definitions()) {
-                        if (col_def.type().type() == logical_type::UNKNOWN) {
-                            if (col_def.type().type_name().empty()) {
-                                break;
-                            }
-                            const auto lt = components::catalog::pg_name_to_logical_type(col_def.type().type_name());
-                            if (lt != logical_type::UNKNOWN) {
-                                std::string alias = col_def.type().has_alias() ? col_def.type().alias() : std::string{};
-                                col_def.type() = components::types::complex_logical_type{lt};
-                                if (!alias.empty()) {
-                                    col_def.type().set_alias(alias);
-                                }
-                                continue;
-                            }
-                            if (auto err =
-                                    services::dispatcher::check_type_exists(resource(),
-                                                                            &plan.catalog_resolves,
-                                                                            col_def.type().type_name(),
-                                                                            std::span<const std::string>(str_path));
-                                err.contains_error()) {
-                                error = make_cursor(resource(), err);
-                            }
-                            if (!error) {
-                                const auto* md = services::catalog_resolve::probe_type_in_path(
-                                    plan.catalog_resolves,
-                                    std::string_view(col_def.type().type_name()),
-                                    std::span<const std::string>(str_path));
-                                if (md) {
-                                    std::string alias =
-                                        col_def.type().has_alias() ? col_def.type().alias() : std::string{};
-                                    col_def.type() = md->type;
-                                    if (!alias.empty()) {
-                                        col_def.type().set_alias(alias);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if (!error) {
-                        for (const auto& col_def : n->column_definitions()) {
-                            if (auto type_err =
-                                    services::dispatcher::gate_persistable_type(resource(),
-                                                                                "column '" + col_def.name() + "'",
-                                                                                col_def.type());
-                                type_err.contains_error()) {
-                                error = make_cursor(resource(), type_err);
-                                break;
-                            }
-                        }
-                    }
-                    if (!error) {
-                        if (auto default_err =
-                                services::dispatcher::convert_column_defaults(resource(),
-                                                                              &cast_registry_,
-                                                                              context_storage.execution_context,
-                                                                              n->column_definitions());
-                            default_err.contains_error()) {
-                            error = make_cursor(resource(), default_err);
+                        if (auto invalid = prepare_column_(plan.catalog_resolves,
+                                                           search_path,
+                                                           context_storage.execution_context,
+                                                           col_def);
+                            invalid.contains_error()) {
+                            error = make_cursor(resource(), std::move(invalid));
+                            break;
                         }
                     }
                 }
@@ -1342,42 +1327,17 @@ namespace services::collection::executor {
                         co_return execute_result_t{make_cursor(resource())};
                     }
                 }
-                const std::string default_path[] = {"public", "pg_catalog"};
+                const auto search_path = services::catalog_resolve::build_type_search_path_str(id.database());
                 for (auto& cmd : subcommands) {
                     if (cmd.kind != components::logical_plan::alter_table_kind::add_column) {
                         continue;
                     }
-                    // Same type resolution as a CREATE TABLE column: a built-in by name, else a registered type.
-                    auto& column_type = cmd.column.type();
-                    if (column_type.type() == logical_type::UNKNOWN &&
-                        components::catalog::pg_name_to_logical_type(column_type.type_name()) ==
-                            logical_type::UNKNOWN) {
-                        if (auto err =
-                                services::dispatcher::check_type_exists(resource(),
-                                                                        &plan.catalog_resolves,
-                                                                        column_type.type_name(),
-                                                                        std::span<const std::string>(default_path));
-                            err.contains_error()) {
-                            error = make_cursor(resource(), err);
-                            break;
-                        }
-                        if (const auto* md = services::catalog_resolve::probe_type_in_path(
-                                plan.catalog_resolves,
-                                std::string_view(column_type.type_name()),
-                                std::span<const std::string>(default_path))) {
-                            std::string alias = column_type.has_alias() ? column_type.alias() : std::string{};
-                            column_type = md->type;
-                            if (!alias.empty()) {
-                                column_type.set_alias(alias);
-                            }
-                        }
-                    }
-                    if (auto type_err =
-                            services::dispatcher::gate_persistable_type(resource(),
-                                                                        "column '" + cmd.column.name() + "'",
-                                                                        cmd.column.type());
-                        type_err.contains_error()) {
-                        error = make_cursor(resource(), type_err);
+                    if (auto invalid = prepare_column_(plan.catalog_resolves,
+                                                       search_path,
+                                                       context_storage.execution_context,
+                                                       cmd.column);
+                        invalid.contains_error()) {
+                        error = make_cursor(resource(), std::move(invalid));
                         break;
                     }
                 }
@@ -1793,45 +1753,6 @@ namespace services::collection::executor {
                         }
                     }
                 } else if (original_type == node_type::alter_table_t) {
-                    {
-                        std::pmr::vector<components::logical_plan::node_t*> pending{resource()};
-                        std::pmr::vector<components::logical_plan::node_alter_column_t*> add_nodes{resource()};
-                        std::vector<components::table::column_definition_t> add_columns;
-                        pending.push_back(plan.sub_queries.back().get());
-                        while (!pending.empty()) {
-                            auto* pending_node = pending.back();
-                            pending.pop_back();
-                            if (!pending_node) {
-                                continue;
-                            }
-                            if (pending_node->type() == node_type::alter_column_t) {
-                                auto* alter_column =
-                                    static_cast<components::logical_plan::node_alter_column_t*>(pending_node);
-                                if (alter_column->op() == components::logical_plan::alter_column_op::add &&
-                                    alter_column->column().has_default_value()) {
-                                    add_nodes.push_back(alter_column);
-                                    add_columns.push_back(alter_column->column());
-                                }
-                                continue;
-                            }
-                            for (const auto& child : pending_node->children()) {
-                                pending.push_back(child.get());
-                            }
-                        }
-                        if (!add_columns.empty()) {
-                            if (auto default_err =
-                                    services::dispatcher::convert_column_defaults(resource(),
-                                                                                  &cast_registry_,
-                                                                                  context_storage.execution_context,
-                                                                                  add_columns);
-                                default_err.contains_error()) {
-                                co_return execute_result_t{make_cursor(resource(), std::move(default_err))};
-                            }
-                            for (std::size_t i = 0; i < add_nodes.size(); ++i) {
-                                add_nodes[i]->set_column(std::move(add_columns[i]));
-                            }
-                        }
-                    }
                     components::execution_context_t enriched_ctx{session,
                                                                  resolve_txn,
                                                                  context_storage.execution_context.timezone_offset};

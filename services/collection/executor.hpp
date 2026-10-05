@@ -277,6 +277,14 @@ namespace services::collection::executor {
                                                            own_entries_t own,
                                                            const std::pmr::vector<expanded_view_t>& expanded_views);
 
+        // A column as CREATE TABLE and ALTER TABLE ... ADD COLUMN take it: a type written by its catalog name is that
+        // built-in, another unknown name a type on `search_path` (the table database's); the type must be persistable
+        // and the DEFAULT is cast to it.
+        core::error_t prepare_column_(const components::logical_plan::catalog_resolves_t& resolves,
+                                      std::span<const std::string> search_path,
+                                      const components::graph_execution_context& settings,
+                                      components::table::column_definition_t& column);
+
         enum class alter_subcommands_t : bool
         {
             remain,

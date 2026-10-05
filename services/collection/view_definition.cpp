@@ -10,6 +10,7 @@
 #include <services/dispatcher/validate_logical_plan.hpp>
 
 #include <algorithm>
+#include <cassert>
 #include <cctype>
 
 namespace services::collection {
@@ -95,10 +96,12 @@ namespace services::collection {
             }
         }
 
-        std::string describe_matchers(std::pmr::memory_resource* resource, std::string_view proargmatchers) {
+        // A signature text outside its grammar is a corrupt catalog: the decoder's error, never the raw text.
+        core::result_wrapper_t<std::string> describe_matchers(std::pmr::memory_resource* resource,
+                                                              std::string_view proargmatchers) {
             auto parameters = catalog::decode_proargmatchers(resource, proargmatchers);
             if (parameters.has_error()) {
-                return std::string{proargmatchers};
+                return parameters.error();
             }
             std::string out;
             for (const auto& parameter : parameters.value()) {
@@ -112,10 +115,14 @@ namespace services::collection {
         }
 
         // "twice(int8)": the function as a pg_rewrite_ref 'f' row or a pg_proc row records it.
-        std::string describe_function(std::pmr::memory_resource* resource,
-                                      std::string_view name,
-                                      std::string_view proargmatchers) {
-            return std::string{name} + "(" + describe_matchers(resource, proargmatchers) + ")";
+        core::result_wrapper_t<std::string> describe_function(std::pmr::memory_resource* resource,
+                                                              std::string_view name,
+                                                              std::string_view proargmatchers) {
+            auto matchers = describe_matchers(resource, proargmatchers);
+            if (matchers.has_error()) {
+                return matchers.error();
+            }
+            return std::string{name} + "(" + matchers.value() + ")";
         }
 
     } // namespace
@@ -207,26 +214,24 @@ namespace services::collection {
         auto& bindings = view.bindings();
         auto& dependencies = view.dependencies();
         for (const auto& use : uses) {
+            // The validated body called these: the registry holds each function and the signature its call took.
             const auto* function = registry.get_function(use.uid);
-            if (function == nullptr) {
-                continue;
-            }
+            assert(function != nullptr);
             const auto signatures = components::operators::proc_signatures(resource, *function);
-            if (use.signature >= signatures.size()) {
-                continue;
-            }
+            assert(use.signature < signatures.size());
             const auto& signature = signatures[use.signature];
             const auto row = std::find_if(rows.begin(), rows.end(), [&](const auto& r) {
                 return r.name == function->name() && r.signature == signature;
             });
             if (row == rows.end()) {
-                return core::error_t{core::error_code_t::unrecognized_function,
-                                     std::pmr::string{"function " +
-                                                          describe_function(resource,
-                                                                            function->name(),
-                                                                            signature.proargmatchers) +
-                                                          " called by the view body has no pg_proc row",
-                                                      resource}};
+                auto described = describe_function(resource, function->name(), signature.proargmatchers);
+                if (described.has_error()) {
+                    return core::error_on(resource, described.error());
+                }
+                return core::error_t{
+                    core::error_code_t::unrecognized_function,
+                    std::pmr::string{"function " + described.value() + " called by the view body has no pg_proc row",
+                                     resource}};
             }
             catalog::view_binding_t binding;
             binding.refkind = catalog::view_refkind::function;
@@ -275,7 +280,11 @@ namespace services::collection {
             if (binding.refkind != catalog::view_refkind::function) {
                 continue;
             }
-            const std::string pinned = describe_function(resource, binding.relname.t, binding.proargmatchers);
+            auto described = describe_function(resource, binding.relname.t, binding.proargmatchers);
+            if (described.has_error()) {
+                return core::error_on(resource, described.error());
+            }
+            const std::string& pinned = described.value();
             const auto row = std::find_if(rows.begin(), rows.end(), [&binding](const auto& r) {
                 return r.oid == binding.refobjid;
             });
@@ -285,10 +294,13 @@ namespace services::collection {
                 return components::planner::view_stale_error(resource, view.name, created_over + " no longer exists");
             }
             if (row->name != binding.relname.t || row->signature.proargmatchers != binding.proargmatchers) {
-                return components::planner::view_stale_error(
-                    resource,
-                    view.name,
-                    created_over + " is now " + describe_function(resource, row->name, row->signature.proargmatchers));
+                auto now = describe_function(resource, row->name, row->signature.proargmatchers);
+                if (now.has_error()) {
+                    return core::error_on(resource, now.error());
+                }
+                return components::planner::view_stale_error(resource,
+                                                             view.name,
+                                                             created_over + " is now " + now.value());
             }
             if (row->signature.prorettype != binding.prorettype) {
                 return components::planner::view_stale_error(resource,

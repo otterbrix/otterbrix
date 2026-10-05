@@ -1065,3 +1065,19 @@ TEST_CASE("integration::cpp::view_binding::a_view_over_an_aggregate_function_is_
           "view \"v\" is stale: function total(int8) it was created over (oid " + std::to_string(fn_oid) +
               ") is now total(float8); recreate the view");
 }
+
+// A pg_proc signature no encoder writes is a corrupt catalog, not a name to print as it is.
+TEST_CASE("integration::cpp::view_binding::a_function_signature_outside_its_grammar_is_corruption") {
+    view_space_t space(config_for("udf_corrupt_signature"));
+    auto* d = space.dispatcher();
+    seed(d);
+    REQUIRE_FALSE(d->register_udf(otterbrix::session_id_t(), make_twice(d->resource())).contains_error());
+    run_ok(d, "CREATE VIEW vb.v AS SELECT twice(a) AS t2 FROM vb.t;");
+    const auto fn_oid = proc_rows(space, "twice").front().oid;
+    forge_proc_row(space, fn_oid, "twice", "garbage", proc_rows(space, "twice").front().signature.prorettype);
+
+    auto read = exec(d, "SELECT t2 FROM vb.v;");
+    REQUIRE(read->is_error());
+    CHECK(read->get_error().type == core::error_code_t::data_corruption);
+    CHECK(error_text(read) == "pg_proc.proargmatchers \"garbage\" is outside its grammar");
+}

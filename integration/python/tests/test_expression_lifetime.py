@@ -34,8 +34,6 @@ A crash cannot be asserted from inside the process it kills, so each case runs
 in a child and the parent reads its exit code.
 """
 
-import os
-import shutil
 import subprocess
 import sys
 
@@ -113,12 +111,9 @@ check()
 """
 
 
-def _run(body, dirname):
-    path = os.path.join(os.getcwd(), dirname)
-    if os.path.exists(path):
-        shutil.rmtree(path)
+def _run(body, database):
     return subprocess.run(
-        [sys.executable, "-c", _PREAMBLE + body + '\nprint("SURVIVED")\n', path],
+        [sys.executable, "-c", _PREAMBLE + body + '\nprint("SURVIVED")\n', str(database)],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         universal_newlines=True,
@@ -132,17 +127,17 @@ def _assert_intact(proc):
     assert "SURVIVED" in proc.stdout, proc.stdout
 
 
-def test_an_expression_survives_its_connection_being_released():
-    proc = _run(_RELEASE_CONNECTION, "test_expression_lifetime_released")
+def test_an_expression_survives_its_connection_being_released(tmp_path):
+    proc = _run(_RELEASE_CONNECTION, tmp_path / "released_db")
     _assert_intact(proc)
 
 
-def test_an_expression_stays_readable_after_its_connection_is_closed():
-    proc = _run(_CLOSE_CONNECTION, "test_expression_lifetime_closed")
+def test_an_expression_stays_readable_after_its_connection_is_closed(tmp_path):
+    proc = _run(_CLOSE_CONNECTION, tmp_path / "closed_db")
     _assert_intact(proc)
 
 
-def test_building_on_a_closed_connection_is_refused_not_aborted():
-    proc = _run(_BUILD_AFTER_CLOSE, "test_expression_lifetime_build_after_close")
+def test_building_on_a_closed_connection_is_refused_not_aborted(tmp_path):
+    proc = _run(_BUILD_AFTER_CLOSE, tmp_path / "build_after_close_db")
     _assert_intact(proc)
     assert "REFUSED=6/6" in proc.stdout, proc.stdout

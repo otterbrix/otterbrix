@@ -8,7 +8,7 @@ namespace core::pmr {
 
     namespace {
 
-        std::unique_ptr<std::pmr::memory_resource> make_backing(std::pmr::memory_resource* upstream) {
+        std::unique_ptr<std::pmr::memory_resource> make_backing([[maybe_unused]] std::pmr::memory_resource* upstream) {
 #if defined(OTTERBRIX_ADDRESS_SANITIZER)
             // A pooled sub-block overflow stays inside a block ASAN considers live and is never
             // reported; the tracer gives ASAN one redzoned block per object instead.

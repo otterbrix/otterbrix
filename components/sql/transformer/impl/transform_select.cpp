@@ -320,12 +320,14 @@ namespace components::sql::transform {
         // libpg_query does not synthesize a JoinExpr for a comma FROM list; jointype_to_ql promotes
         // the synthesized quals=NULL JOIN_INNER to join_type::cross, and WHERE supplies the predicate.
         if (from_items->lst.size() > 1) {
+            // The synthesized node lives with the parse tree it joins, not on the transformer's resource.
+            std::pmr::memory_resource* parse_arena = from_items->lst.get_allocator().resource();
             auto it = from_items->lst.begin();
             Node* acc = pg_ptr_cast<Node>(it->data);
             ++it;
             for (; it != from_items->lst.end(); ++it) {
                 auto* rhs = pg_ptr_cast<Node>(it->data);
-                JoinExpr* synth = makeNode(resource_, JoinExpr);
+                JoinExpr* synth = makeNode(parse_arena, JoinExpr);
                 synth->jointype = JOIN_INNER;
                 synth->isNatural = false;
                 synth->larg = acc;

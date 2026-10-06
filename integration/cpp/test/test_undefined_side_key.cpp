@@ -13,20 +13,15 @@
 namespace {
     using namespace components;
     using test_helpers::exec;
+    using test_helpers::ok;
     using expressions::compare_type;
     using key = expressions::key_t;
 
     template<typename D>
-    bool okq(D* d, const std::string& query) {
-        auto c = exec(d, query);
-        return c && c->is_success();
-    }
-
-    template<typename D>
     void seed(D* d) {
-        REQUIRE(okq(d, "CREATE DATABASE m;"));
-        REQUIRE(okq(d, "CREATE TABLE m.t (id BIGINT, v BIGINT);"));
-        REQUIRE(okq(d, "INSERT INTO m.t (id, v) VALUES (1,10),(2,20),(3,30);"));
+        REQUIRE(ok(d, "CREATE DATABASE m;"));
+        REQUIRE(ok(d, "CREATE TABLE m.t (id BIGINT, v BIGINT);"));
+        REQUIRE(ok(d, "INSERT INTO m.t (id, v) VALUES (1,10),(2,20),(3,30);"));
     }
 
     template<typename D>

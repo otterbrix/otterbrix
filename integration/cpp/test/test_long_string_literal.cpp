@@ -32,10 +32,9 @@ TEST_CASE("integration::cpp::long_string_literal::round_trips_whole") {
     test_clear_directory(config);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
-    auto run = [&](const std::string& sql) { return dispatcher->execute_sql(otterbrix::session_id_t(), sql); };
 
-    REQUIRE(run("CREATE DATABASE d;")->is_success());
-    REQUIRE(run("CREATE TABLE d.t (id BIGINT, s TEXT);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE d;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE d.t (id BIGINT, s TEXT);")->is_success());
 
     SECTION("stored and read back") {
         std::size_t id = 0;
@@ -43,10 +42,12 @@ TEST_CASE("integration::cpp::long_string_literal::round_trips_whole") {
             INFO("literal of " << length << " bytes");
             const auto text = letters(length);
             ++id;
-            auto inserted = run("INSERT INTO d.t (id, s) VALUES (" + std::to_string(id) + ", '" + text + "');");
+            auto inserted = test_helpers::exec(dispatcher,
+                                               "INSERT INTO d.t (id, s) VALUES (" + std::to_string(id) + ", '" +
+                                                   text + "');");
             INFO((inserted->is_error() ? std::string{inserted->get_error().what} : std::string{"ok"}));
             REQUIRE(inserted->is_success());
-            auto read = run("SELECT s FROM d.t WHERE id = " + std::to_string(id) + ";");
+            auto read = test_helpers::exec(dispatcher, "SELECT s FROM d.t WHERE id = " + std::to_string(id) + ";");
             REQUIRE(read->is_success());
             CHECK(first_text(read) == text);
         }
@@ -54,7 +55,7 @@ TEST_CASE("integration::cpp::long_string_literal::round_trips_whole") {
     // More than one stored string may hold (262132 bytes), and enough for the overread to fault without ASAN.
     SECTION("a 1 MB literal in a query") {
         const auto text = letters(std::size_t{1024} * 1024);
-        auto read = run("SELECT '" + text + "' AS s;");
+        auto read = test_helpers::exec(dispatcher, "SELECT '" + text + "' AS s;");
         INFO((read->is_error() ? std::string{read->get_error().what} : std::string{"ok"}));
         REQUIRE(read->is_success());
         CHECK(first_text(read) == text);

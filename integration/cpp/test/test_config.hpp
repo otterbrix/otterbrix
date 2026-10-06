@@ -124,6 +124,25 @@ namespace test_helpers {
         return dispatcher->execute_sql(otterbrix::session_id_t(), sql);
     }
 
+    inline bool ok(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& sql) {
+        return exec(dispatcher, sql)->is_success();
+    }
+
+    // A crash image: the live directory copied as it lies on disk, replacing whatever `to` held.
+    inline void copy_crash_image(const std::filesystem::path& from, const std::filesystem::path& to) {
+        std::error_code ec;
+        std::filesystem::remove_all(to, ec);
+        if (!ec) {
+            std::filesystem::create_directories(to.parent_path(), ec);
+        }
+        if (!ec) {
+            std::filesystem::copy(from, to, std::filesystem::copy_options::recursive, ec);
+        }
+        if (ec) {
+            FAIL("copy_crash_image: '" << from.string() << "' -> '" << to.string() << "': " << ec.message());
+        }
+    }
+
     // No disk flag and no wal flag: every table is disk-backed and every write is journalled,
     // so `path` is where the data goes, full stop.
     inline configuration::config make_test_config(const std::filesystem::path& path) {

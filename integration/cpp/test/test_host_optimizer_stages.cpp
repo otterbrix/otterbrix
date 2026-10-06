@@ -70,7 +70,7 @@ namespace {
 
     void run_ok(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& sql) {
         INFO(sql);
-        REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), sql)->is_success());
+        REQUIRE(test_helpers::ok(dispatcher, sql));
     }
 
 } // namespace

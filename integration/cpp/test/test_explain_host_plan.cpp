@@ -15,6 +15,7 @@
 
 namespace {
     using test_helpers::exec;
+    using test_helpers::ok;
     namespace sql = components::sql;
 
     // A parsed statement becomes a plan only through finalize(), which carries the EXPLAIN mode, the
@@ -24,12 +25,6 @@ namespace {
     concept exposes_bare_root = requires(const T& result) { result.node_ptr(); } ||
                                 requires(const T& result) { result.params_ptr(); };
     static_assert(!exposes_bare_root<sql::transform::transform_result>);
-
-    template<typename D>
-    bool okq(D* d, const std::string& query) {
-        auto c = exec(d, query);
-        return c && c->is_success();
-    }
 
     template<typename D>
     uint64_t count_rows(D* d) {
@@ -45,9 +40,9 @@ TEST_CASE("integration::cpp::explain_host_plan::explain_delete_never_deletes") {
     auto config = test_helpers::make_test_config(integration_fixture_path("explain_host_plan/delete"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(okq(d, "CREATE DATABASE m;"));
-    REQUIRE(okq(d, "CREATE TABLE m.t (id BIGINT);"));
-    REQUIRE(okq(d, "INSERT INTO m.t (id) VALUES (1),(2),(3);"));
+    REQUIRE(ok(d, "CREATE DATABASE m;"));
+    REQUIRE(ok(d, "CREATE TABLE m.t (id BIGINT);"));
+    REQUIRE(ok(d, "INSERT INTO m.t (id) VALUES (1),(2),(3);"));
     REQUIRE(count_rows(d) == 3);
 
     auto* resource = d->resource();

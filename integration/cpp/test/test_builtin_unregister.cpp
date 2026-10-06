@@ -8,7 +8,6 @@
 
 #include <atomic>
 #include <chrono>
-#include <sstream>
 #include <string>
 #include <thread>
 
@@ -58,16 +57,11 @@ namespace {
     void seed(otterbrix::wrapper_dispatcher_t* d) {
         REQUIRE(exec(d, "CREATE DATABASE bdb;")->is_success());
         REQUIRE(exec(d, "CREATE TABLE bdb.t (id bigint);")->is_success());
-        std::size_t done = 0;
-        while (done < kRows) {
-            const std::size_t batch = std::min<std::size_t>(512, kRows - done);
-            std::stringstream q;
-            q << "INSERT INTO bdb.t (id) VALUES ";
-            for (std::size_t i = 0; i < batch; ++i) {
-                q << "(" << (done + i) << ")" << (i + 1 == batch ? ";" : ", ");
-            }
-            REQUIRE(exec(d, q.str())->is_success());
-            done += batch;
+        for (std::size_t done = 0; done < kRows; done += 512) {
+            const auto batch = static_cast<unsigned>(std::min<std::size_t>(512, kRows - done));
+            REQUIRE(seed_rows(d, "bdb.t", "id", batch, [done](unsigned i) {
+                        return "(" + std::to_string(done + i) + ")";
+                    })->is_success());
         }
     }
 

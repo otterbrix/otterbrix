@@ -10,10 +10,7 @@
 #include <string>
 
 namespace {
-    components::cursor::cursor_t_ptr exec(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& sql) {
-        auto session = otterbrix::session_id_t();
-        return dispatcher->execute_sql(session, sql);
-    }
+    using test_helpers::exec;
 
     std::string error_text(const components::cursor::cursor_t& cur) {
         return cur.is_error() ? std::string{cur.get_error().what.begin(), cur.get_error().what.end()}

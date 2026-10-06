@@ -56,6 +56,10 @@ namespace services::collection::executor {
 
     void dev_set_oid_alloc_interposer(oid_alloc_interposer_t* interposer);
     oid_alloc_interposer_t* dev_oid_alloc_interposer();
+
+    // Test seam: the executor is about to await what `source` promised, its open or its next batch.
+    using source_await_hook_fn = void (*)(const components::operators::operator_t* source);
+    void dev_set_source_await_hook(source_await_hook_fn hook) noexcept; // nullptr = off
 #endif
 
     // A view the statement reads, as its catalog row described it before the expansion; the body is read back as the

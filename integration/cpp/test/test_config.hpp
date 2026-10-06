@@ -112,6 +112,15 @@ public:
         : otterbrix::base_otterbrix_t(test_open_engine(config, primitives)) {}
 };
 
+// A test reads the catalog through SQL; only one that corrupts it on purpose writes through the disk actor.
+class catalog_forging_spaces_t final : public otterbrix::base_otterbrix_t {
+public:
+    explicit catalog_forging_spaces_t(const configuration::config& config)
+        : otterbrix::base_otterbrix_t(test_open_engine(config)) {}
+
+    actor_zeta::address_t disk_address() const noexcept { return engine().disk_address(); }
+};
+
 // Named, not global, so it can't collide with anonymous-namespace exec/seed helpers other test files define.
 namespace test_helpers {
 

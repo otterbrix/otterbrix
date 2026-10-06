@@ -8,14 +8,12 @@
 #include <components/table/storage/single_file_block_manager.hpp>
 #include <components/physical_plan/operators/operator_unregister_udf.hpp>
 #include <components/table/test/fault_injection_file.hpp>
-#include <services/disk/manager_disk.hpp>
 
 #include <algorithm>
 #include <filesystem>
 #include <limits>
 #include <memory>
 #include <string>
-#include <thread>
 #include <utility>
 #include <vector>
 
@@ -132,23 +130,13 @@ namespace {
     // "the read refused" — distinct from every honest row count, including zero.
     constexpr std::size_t kReadRefused = static_cast<std::size_t>(-1);
 
+    // Unqualified: the qualifier of pg_catalog.pg_proc is resolved through pg_namespace, which a case below poisons.
     std::size_t pg_proc_rows_named(otterbrix::otterbrix_t& space, const std::string& name) {
-        table::transaction_data td{0, 0};
-        td.snapshot_horizon = std::numeric_limits<uint64_t>::max();
-        execution_context_t exec_ctx{otterbrix::session_id_t{}, td, {}};
-        auto [_, fut] = actor_zeta::otterbrix::send(space.engine().disk_address(),
-                                                    &services::disk::manager_disk_t::resolve_function_by_name,
-                                                    exec_ctx,
-                                                    name);
-        for (int i = 0; i < 2000000 && !fut.is_ready(); ++i) {
-            std::this_thread::yield();
-        }
-        REQUIRE(fut.is_ready());
-        auto matches = std::move(fut).take_ready();
-        if (matches.has_error()) {
+        auto cur = test_helpers::exec(space.dispatcher(), "SELECT proname FROM pg_proc WHERE proname = '" + name + "';");
+        if (cur->is_error()) {
             return kReadRefused;
         }
-        return matches.value().size();
+        return cur->size();
     }
 
     // The engine answers a call to the function only if its registries hold it.

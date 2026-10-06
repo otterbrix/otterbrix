@@ -44,6 +44,20 @@ namespace {
         return chunk;
     }
 
+    // Under ASAN the string arena takes one upstream block per stored string, so a gather that copies
+    // each string once would scale with the rows here for a reason that has nothing to do with boxing.
+    // The arena's own blocks are taken out of both measurements; what is left is everything else.
+    std::size_t string_arena_allocations(const vector::data_chunk_t& chunk) {
+        std::size_t total = 0;
+        for (const auto& column : chunk.data) {
+            const auto auxiliary = column.auxiliary();
+            REQUIRE(auxiliary);
+            REQUIRE(auxiliary->type() == vector::vector_buffer_type::STRING);
+            total += static_cast<const vector::string_vector_buffer_t*>(auxiliary.get())->upstream_allocations();
+        }
+        return total;
+    }
+
     // No expression: the predicate is `always`, so every row survives and what is measured is the
     // copy itself rather than a condition graph.
     std::size_t allocations_for(uint64_t rows) {
@@ -66,7 +80,9 @@ namespace {
         const std::size_t taken = arena.allocations();
         REQUIRE(out.size() == 1);
         REQUIRE(out.front().size() == rows);
-        return taken;
+        const std::size_t own = string_arena_allocations(out.front());
+        REQUIRE(own <= taken);
+        return taken - own;
     }
 
     // The shape filter_batch_ used to have: one logical_value_t per surviving cell, taken apart
@@ -89,7 +105,10 @@ namespace {
             }
         }
         out_chunk.set_cardinality(rows);
-        return arena.allocations();
+        const std::size_t taken = arena.allocations();
+        const std::size_t own = string_arena_allocations(out_chunk);
+        REQUIRE(own <= taken);
+        return taken - own;
     }
 } // namespace
 

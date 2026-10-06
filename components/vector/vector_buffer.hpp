@@ -116,6 +116,8 @@ namespace components::vector {
         void* empty_string(size_t size);
         void add_heap_reference(std::unique_ptr<vector_buffer_t> heap);
         void reset();
+        // The string arena's own upstream blocks; heaps handed over by add_heap_reference are not counted.
+        std::size_t upstream_allocations() const noexcept { return string_buffer_.upstream_allocations(); }
 
     private:
         core::string_buffer_t string_buffer_;

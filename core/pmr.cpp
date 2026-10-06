@@ -55,9 +55,25 @@ namespace core::pmr {
         return this == &other;
     }
 
+    void* arena_resource_t::upstream_counter_t::do_allocate(std::size_t bytes, std::size_t alignment) {
+        ++allocations_;
+        return upstream_->allocate(bytes, alignment);
+    }
+
+    void arena_resource_t::upstream_counter_t::do_deallocate(void* p, std::size_t bytes, std::size_t alignment) {
+        upstream_->deallocate(p, bytes, alignment);
+    }
+
+    bool arena_resource_t::upstream_counter_t::do_is_equal(const std::pmr::memory_resource& other) const noexcept {
+        return this == &other;
+    }
+
     arena_resource_t::arena_resource_t(std::pmr::memory_resource* upstream)
-        : buffer_(upstream)
-        , pieces_(upstream) {}
+        : upstream_(upstream)
+        , buffer_(&upstream_)
+        , pieces_(&upstream_) {}
+
+    std::size_t arena_resource_t::upstream_allocations() const noexcept { return upstream_.allocations(); }
 
     arena_resource_t::~arena_resource_t() { release(); }
 

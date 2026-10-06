@@ -44,6 +44,10 @@ namespace core::pmr {
 
         void release();
 
+        // Blocks the arena itself took from its upstream: the monotonic buffer's chunks, or under
+        // ASAN one per piece plus the growth of the piece list. Never reset, release() included.
+        std::size_t upstream_allocations() const noexcept;
+
     private:
         struct piece_t {
             void* pointer;
@@ -51,10 +55,27 @@ namespace core::pmr {
             std::size_t alignment;
         };
 
+        class upstream_counter_t final : public std::pmr::memory_resource {
+        public:
+            explicit upstream_counter_t(std::pmr::memory_resource* upstream) noexcept
+                : upstream_(upstream) {}
+
+            std::size_t allocations() const noexcept { return allocations_; }
+
+        private:
+            void* do_allocate(std::size_t bytes, std::size_t alignment) override;
+            void do_deallocate(void* p, std::size_t bytes, std::size_t alignment) override;
+            bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override;
+
+            std::pmr::memory_resource* upstream_;
+            std::size_t allocations_{0};
+        };
+
         void* do_allocate(std::size_t bytes, std::size_t alignment) override;
         void do_deallocate(void* p, std::size_t bytes, std::size_t alignment) override;
         bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override;
 
+        upstream_counter_t upstream_;
         std::pmr::monotonic_buffer_resource buffer_;
         std::pmr::vector<piece_t> pieces_;
     };

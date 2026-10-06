@@ -1,6 +1,5 @@
 // Crash-point matrix around the FIRST checkpoint of a table: a crash image (recursive copy of the
 // live directory) is reopened and must come up with every committed row, at every point.
-// OTTERBRIX_CRASH_IMAGE_KEEP=<dir> also copies each image there for offline inspection.
 
 #include "integration_fixture_path.hpp"
 #include "test_config.hpp"
@@ -8,7 +7,6 @@
 #include <components/table/storage/single_file_block_manager.hpp>
 
 #include <catch2/catch_test_macros.hpp>
-#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <random>
@@ -19,13 +17,6 @@ namespace {
     constexpr std::uintmax_t kBlockStart = components::table::storage::BLOCK_START;
 
     using test_helpers::exec;
-
-    void take_crash_image(const configuration::config& config, const std::filesystem::path& crash_dir, const char* tag) {
-        test_helpers::copy_crash_image(config.main_path, crash_dir);
-        if (const char* keep = std::getenv("OTTERBRIX_CRASH_IMAGE_KEEP")) {
-            test_helpers::copy_crash_image(config.main_path, std::filesystem::path(keep) / tag);
-        }
-    }
 
     std::vector<std::filesystem::path> otbx_files(const std::filesystem::path& root) {
         std::vector<std::filesystem::path> out;
@@ -78,9 +69,7 @@ namespace {
 
     int64_t count_rows(otterbrix::wrapper_dispatcher_t* d, const std::string& table) {
         auto cur = exec(d, "SELECT COUNT(*) FROM " + table + ";");
-        if (cur->is_error()) {
-            WARN("count over " << table << ": " << cur->get_error().what.c_str());
-        }
+        INFO("count over " << table << ": " << (cur->is_error() ? cur->get_error().what.c_str() : "ok"));
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         return cur->value(0, 0).value<int64_t>();
@@ -114,7 +103,7 @@ TEST_CASE("integration::cpp::crash_first_ckpt::P1_after_create_only") {
         auto* d = space.dispatcher();
         REQUIRE(exec(d, "CREATE DATABASE w;")->is_success());
         REQUIRE(exec(d, "CREATE TABLE w.t (id bigint, payload text);")->is_success());
-        take_crash_image(config, crash_dir, "p1_after_create_only");
+        test_helpers::copy_crash_image(config.main_path, crash_dir);
     }
     {
         auto crash_config = test_create_config(crash_dir);
@@ -141,17 +130,14 @@ TEST_CASE("integration::cpp::crash_first_ckpt::P2_after_small_dml") {
     test_clear_directory(config);
     config.log.level = log_t::level::off;
     const auto crash_dir = integration_fixture_path("crash_first_ckpt/p2_crash");
-    std::uintmax_t otbx_bytes = 0;
     {
         test_spaces space(config);
         auto* d = space.dispatcher();
         REQUIRE(exec(d, "CREATE DATABASE w;")->is_success());
         REQUIRE(exec(d, "CREATE TABLE w.t (id bigint, payload text);")->is_success());
         insert_rows(d, "w.t", 0, 20, kPayload);
-        take_crash_image(config, crash_dir, "p2_after_small_dml");
-        otbx_bytes = largest_otbx(config.main_path);
+        test_helpers::copy_crash_image(config.main_path, crash_dir);
     }
-    WARN("P2 largest table.otbx: " << otbx_bytes);
     {
         auto crash_config = test_create_config(crash_dir);
         crash_config.log.level = log_t::level::warn;
@@ -191,10 +177,9 @@ TEST_CASE("integration::cpp::crash_first_ckpt::P3_after_write_through_multi_tabl
         test_spaces space(config);
         auto* d = space.dispatcher();
         before_crash(d);
-        take_crash_image(config, crash_dir, "p3_after_write_through");
+        test_helpers::copy_crash_image(config.main_path, crash_dir);
         image_bytes = largest_otbx(config.main_path);
     }
-    WARN("P3 largest table.otbx in the crash image: " << image_bytes);
     REQUIRE(image_bytes > kBlockStart);
     std::uintmax_t after_bytes = 0;
     {
@@ -239,7 +224,7 @@ TEST_CASE("integration::cpp::crash_first_ckpt::P3_after_write_through_multi_tabl
         CHECK(count_rows(d, "a.t") == kRows - 100 + 10);
         control_bytes = largest_otbx(control_config.main_path);
     }
-    WARN("P3 largest table.otbx after reopen + checkpoint: " << after_bytes << " (crash-free run " << control_bytes
+    INFO("P3 largest table.otbx after reopen + checkpoint: " << after_bytes << " (crash-free run " << control_bytes
                                                               << ", image " << image_bytes << ")");
     CHECK(after_bytes == control_bytes);
     {
@@ -270,9 +255,9 @@ TEST_CASE("integration::cpp::crash_first_ckpt::P4_P5_after_first_checkpoint_then
         REQUIRE(exec(d, "CREATE TABLE w.t (id bigint, payload text);")->is_success());
         insert_rows(d, "w.t", 0, kRows, kPayload);
         REQUIRE(exec(d, "CHECKPOINT;")->is_success());
-        take_crash_image(config, crash4, "p4_after_first_checkpoint");
+        test_helpers::copy_crash_image(config.main_path, crash4);
         insert_rows(d, "w.t", kRows, 2 * kRows, kPayload);
-        take_crash_image(config, crash5, "p5_write_through_after_root");
+        test_helpers::copy_crash_image(config.main_path, crash5);
     }
     {
         auto crash_config = test_create_config(crash4);
@@ -306,7 +291,7 @@ TEST_CASE("integration::cpp::crash_first_ckpt::P6_torn_first_header") {
         REQUIRE(exec(d, "CREATE DATABASE w;")->is_success());
         REQUIRE(exec(d, "CREATE TABLE w.t (id bigint, payload text);")->is_success());
         insert_rows(d, "w.t", 0, kRows, kPayload);
-        take_crash_image(config, crash_dir, "p6_torn_first_header");
+        test_helpers::copy_crash_image(config.main_path, crash_dir);
     }
     const auto otbx = user_otbx(crash_dir);
     REQUIRE_FALSE(otbx.empty());
@@ -345,7 +330,7 @@ TEST_CASE("integration::cpp::crash_first_ckpt::P7_slot_rot_after_first_checkpoin
         REQUIRE(exec(d, "CREATE TABLE w.t (id bigint, payload text);")->is_success());
         insert_rows(d, "w.t", 0, kRows, kPayload);
         REQUIRE(exec(d, "CHECKPOINT;")->is_success());
-        take_crash_image(config, crash_dir, "p7_slot_rot_after_first_checkpoint");
+        test_helpers::copy_crash_image(config.main_path, crash_dir);
     }
     const auto otbx = user_otbx(crash_dir);
     REQUIRE_FALSE(otbx.empty());

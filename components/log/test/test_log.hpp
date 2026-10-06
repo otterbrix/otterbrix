@@ -5,6 +5,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <string>
 #include <string_view>
 #include <system_error>
 
@@ -28,4 +31,15 @@ inline log_t make_test_log() {
         std::abort();
     }
     return make_test_log("test", temporary / "otterbrix_test_logs");
+}
+
+// Everything the log files under `directory` hold, one file after another.
+inline std::string log_text(const std::filesystem::path& directory) {
+    std::string text;
+    std::error_code ec;
+    for (std::filesystem::directory_iterator it{directory, ec}, end; !ec && it != end; it.increment(ec)) {
+        std::ifstream in(it->path());
+        text.append(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    return text;
 }

@@ -6,8 +6,6 @@
 
 #include <csignal>
 #include <filesystem>
-#include <fstream>
-#include <iterator>
 #include <string>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -20,13 +18,14 @@ TEST_CASE("core::assert::test_string_view") {
     REQUIRE_NOTHROW([&]() { assertion_log_msg(nullptr, true, message); }());
 }
 namespace {
-    std::string read_all(const std::filesystem::path& directory) {
-        std::string text;
-        for (const auto& entry : std::filesystem::directory_iterator(directory)) {
-            std::ifstream in(entry.path());
-            text.append(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
-        }
-        return text;
+    // A failed assertion must reach the log it was given and not the other one.
+    struct log_pair_t {
+        log_t other;
+        log_t own;
+    };
+
+    log_pair_t make_log_pair(const std::filesystem::path& root) {
+        return log_pair_t{make_test_log("other", root / "other"), make_test_log("own", root / "own")};
     }
 } // namespace
 
@@ -34,8 +33,6 @@ TEST_CASE("core::assert::a_failed_assertion_reports_through_the_given_log") {
     const auto root = std::filesystem::temp_directory_path() /
                       ("otterbrix_assert_log_" + std::to_string(static_cast<long>(::getpid())));
     std::filesystem::remove_all(root);
-    const auto own = root / "own";
-    const auto other = root / "other";
 
     if constexpr (core::detail::enable_assert) {
         // A debug build aborts: the failure is a signal death of a child process.
@@ -44,9 +41,8 @@ TEST_CASE("core::assert::a_failed_assertion_reports_through_the_given_log") {
         if (child == 0) {
             // Catch2 installs a SIGABRT handler; reset it so the abort reaches waitpid as a signal death.
             ::signal(SIGABRT, SIG_DFL);
-            auto other_log = make_test_log("other", other);
-            auto own_log = make_test_log("own", own);
-            assertion_log_msg(&own_log, 1 + 1 == 3, "the given log carries this");
+            auto logs = make_log_pair(root);
+            assertion_log_msg(&logs.own, 1 + 1 == 3, "the given log carries this");
             ::_exit(0);
         }
         int status = 0;
@@ -54,12 +50,11 @@ TEST_CASE("core::assert::a_failed_assertion_reports_through_the_given_log") {
         REQUIRE(WIFSIGNALED(status));
     } else {
         // An NDEBUG build reports the same and throws InvariantError, naming the condition and the message.
-        auto other_log = make_test_log("other", other);
-        auto own_log = make_test_log("own", own);
-        REQUIRE_THROWS_WITH([&] { assertion_log_msg(&own_log, 1 + 1 == 3, "the given log carries this"); }(),
+        auto logs = make_log_pair(root);
+        REQUIRE_THROWS_WITH([&] { assertion_log_msg(&logs.own, 1 + 1 == 3, "the given log carries this"); }(),
                             "invariant (1 + 1 == 3) violation: the given log carries this");
     }
-    CHECK(read_all(own).find("the given log carries this") != std::string::npos);
-    CHECK(read_all(other).find("the given log carries this") == std::string::npos);
+    CHECK(log_text(root / "own").find("the given log carries this") != std::string::npos);
+    CHECK(log_text(root / "other").find("the given log carries this") == std::string::npos);
     std::filesystem::remove_all(root);
 }

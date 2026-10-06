@@ -1,4 +1,5 @@
 #include "manager_disk.hpp"
+#include <services/dev_pump.hpp>
 #include <actor-zeta/spawn.hpp>
 #include <algorithm>
 #include <array>
@@ -457,6 +458,9 @@ namespace services::disk {
                         }
                     }
                 }
+#ifdef DEV_MODE
+                const dev_pump_wait_t pump_probe{in_flight.empty()};
+#endif
                 std::unique_lock<std::mutex> lk(mutex_);
                 pump_cv_.wait_for(lk, in_flight.empty() ? pump_.idle : pump_.in_flight, [this] {
                     return !inbox_.empty() || !loop_running_.load(std::memory_order_acquire);

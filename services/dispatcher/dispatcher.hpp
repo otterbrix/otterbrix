@@ -44,6 +44,11 @@ namespace services::disk {
 
 namespace services::dispatcher {
 
+#ifdef DEV_MODE
+    // Test seam: how many statements had to wait for their session's turn.
+    std::uint64_t dev_statements_waited_turn() noexcept;
+#endif
+
     // Thin router + txn-state mailbox service + executor-pool admin: per-query work lives entirely
     // in executor_t; the dispatcher owns only state that must stay global — txn_manager_ (reachable
     // solely through the txn_*_msg handlers below), default_settings_, the executor pool, DROP-GC flags.

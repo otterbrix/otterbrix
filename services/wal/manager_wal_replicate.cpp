@@ -1,4 +1,5 @@
 #include "manager_wal_replicate.hpp"
+#include <services/dev_pump.hpp>
 
 #include <core/file/list_dir.hpp>
 
@@ -229,6 +230,9 @@ namespace services::wal {
 
                 poll_auto_checkpoint_();
 
+#ifdef DEV_MODE
+                const dev_pump_wait_t pump_probe{in_flight.empty()};
+#endif
                 std::unique_lock<std::mutex> lock(mutex_);
                 pump_cv_.wait_for(lock, in_flight.empty() ? pump_.idle : pump_.in_flight, [this] {
                     return !inbox_.empty() || !loop_running_.load(std::memory_order_acquire);

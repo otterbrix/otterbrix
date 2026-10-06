@@ -38,6 +38,7 @@
 #include <services/wal/manager_wal_replicate.hpp>
 #include <components/log/test/test_log.hpp>
 #include <services/disk/tests/test_directory.hpp>
+#include <core/tests/wait_ready.hpp>
 
 // dispatcher_dir() carries ::getpid() so parallel ctest shards never share a disk directory.
 
@@ -165,12 +166,7 @@ struct dispatcher_fixture : actor_zeta::actor::actor_mixin<dispatcher_fixture> {
 
     template<typename T>
     T pump(actor_zeta::unique_future<T>&& fut) {
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
-        while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
-            scheduler_->run(1000);
-            std::this_thread::yield();
-        }
-        REQUIRE(fut.is_ready());
+        REQUIRE(test_helpers::wait_ready(fut, scheduler_));
         auto out = std::move(fut).take_ready();
         // Drain the post-result DDL/DML tail (catalog writes, commit pipeline).
         scheduler_->run(10000);

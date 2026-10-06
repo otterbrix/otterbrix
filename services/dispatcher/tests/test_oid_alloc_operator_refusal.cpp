@@ -30,6 +30,7 @@
 #include <services/wal/manager_wal_replicate.hpp>
 #include <components/log/test/test_log.hpp>
 #include <services/disk/tests/test_directory.hpp>
+#include <core/tests/wait_ready.hpp>
 
 // operator_register_udf_t (pg_proc), operator_register_cast_t (pg_cast) and
 // operator_alter_column_add_t (pg_attribute) each run their own one-OID round at execute time.
@@ -186,12 +187,7 @@ struct oid_round_fixture : actor_zeta::actor::actor_mixin<oid_round_fixture> {
 
     template<typename T>
     T pump(actor_zeta::unique_future<T>&& fut) {
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
-        while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
-            scheduler_->run(1000);
-            std::this_thread::yield();
-        }
-        REQUIRE(fut.is_ready());
+        REQUIRE(test_helpers::wait_ready(fut, scheduler_));
         return std::move(fut).take_ready();
     }
 
@@ -241,13 +237,8 @@ struct oid_round_fixture : actor_zeta::actor::actor_mixin<oid_round_fixture> {
 
     components::cursor::cursor_t_ptr take_result() {
         REQUIRE(pending_future_);
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
-        while (!pending_future_->is_ready() && std::chrono::steady_clock::now() < deadline) {
-            scheduler_->run(1000);
-            std::this_thread::yield();
-        }
         REQUIRE(pending_future_->valid());
-        REQUIRE(pending_future_->is_ready());
+        REQUIRE(test_helpers::wait_ready(*pending_future_, scheduler_));
         auto result = std::move(*pending_future_).take_ready();
         pending_future_.reset();
         step();

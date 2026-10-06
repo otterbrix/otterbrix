@@ -20,6 +20,7 @@
 #include <cstdlib>
 #include <thread>
 #include <unordered_map>
+#include <core/tests/wait_ready.hpp>
 
 using namespace components;
 
@@ -343,7 +344,6 @@ namespace {
 
     // A hung executor must fail the run, not wedge it: the dispatcher wait has no deadline of its own.
     cursor::cursor_t_ptr execute_within_deadline(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& sql) {
-        constexpr auto deadline = std::chrono::seconds(30);
         std::atomic<bool> done{false};
         cursor::cursor_t_ptr cursor;
         std::thread worker([&] {
@@ -351,15 +351,11 @@ namespace {
             cursor = dispatcher->execute_sql(session, sql);
             done.store(true, std::memory_order_release);
         });
-        const auto until = std::chrono::steady_clock::now() + deadline;
-        while (!done.load(std::memory_order_acquire)) {
-            if (std::chrono::steady_clock::now() > until) {
-                std::fprintf(stderr,
-                             "extension_source: query exceeded %llds, executor hung\n",
-                             static_cast<long long>(deadline.count()));
-                std::abort();
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        if (!test_helpers::wait_until([&] { return done.load(std::memory_order_acquire); })) {
+            std::fprintf(stderr,
+                         "extension_source: query exceeded %llds, executor hung\n",
+                         static_cast<long long>(test_helpers::reply_deadline.count()));
+            std::abort();
         }
         worker.join();
         return cursor;

@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <string>
 #include <thread>
+#include <core/tests/wait_ready.hpp>
 
 // PIN (loud-refusal policy): a reader that ARRIVES between the two phases of a checkpoint round
 // — after compact() renumbered the physical row ids, before repopulate_indexes_after_compaction
@@ -58,17 +59,6 @@ namespace {
         gate_guard_t(const gate_guard_t&) = delete;
         gate_guard_t& operator=(const gate_guard_t&) = delete;
     };
-
-    bool wait_flag(const std::atomic<bool>& flag, std::chrono::seconds timeout) {
-        const auto deadline = std::chrono::steady_clock::now() + timeout;
-        while (!flag.load(std::memory_order_acquire)) {
-            if (std::chrono::steady_clock::now() > deadline) {
-                return false;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
-        return true;
-    }
 
     std::string probe_sql(int64_t probe_id) {
         return "SELECT id FROM rdb.t WHERE k = " + std::to_string(10 * probe_id) + ";";
@@ -148,7 +138,7 @@ TEST_CASE("integration::cpp::index_stale_window::reader_in_window_is_refused_not
         std::thread checkpointer([&] { cp_cur = d->execute_sql(cp_session, "CHECKPOINT;"); });
 
         INFO("the round must reach the between-phases seam");
-        REQUIRE(wait_flag(guard.gate.reached, std::chrono::seconds(30)));
+        REQUIRE(test_helpers::wait_until([&] { return guard.gate.reached.load(); }));
 
         // The round is parked: compaction BEHIND, index rebuild AHEAD. This reader arrives
         // inside the window.

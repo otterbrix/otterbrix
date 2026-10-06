@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <string>
 #include <thread>
+#include <core/tests/wait_ready.hpp>
 
 // The byte threshold is checked only inside commit_txn (manager_wal_replicate.cpp), and with the
 // WAL switched off commit_txn short-circuits before the trigger -- so the 16 MB default, and any
@@ -58,11 +59,6 @@ TEST_CASE("integration::cpp::auto_checkpoint::the byte threshold starts a round"
     }
 
     // The round is started by a self-send, so it completes after the committing statement returns.
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
-    while (services::wal::auto_checkpoint_rounds() == 0 && std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
-
     INFO("rows written: " << (next_id - 1) << ", threshold: " << kThresholdBytes << " bytes");
-    CHECK(services::wal::auto_checkpoint_rounds() > 0);
+    CHECK(test_helpers::wait_until([] { return services::wal::auto_checkpoint_rounds() > 0; }));
 }

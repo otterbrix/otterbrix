@@ -13,6 +13,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <core/tests/wait_ready.hpp>
 
 // operator_commit_transaction adds commit_id to transaction_manager_t::in_flight_commits_ on its first
 // hop and removes it on its last, so a co_return between them leaks it past ROLLBACK; since the set is
@@ -60,11 +61,7 @@ namespace {
     }
 
     bool await_deferred_deletes_at(uint64_t target) {
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-        while (services::index::index_deferred_deletes() > target && std::chrono::steady_clock::now() < deadline) {
-            std::this_thread::yield();
-        }
-        return services::index::index_deferred_deletes() <= target;
+        return test_helpers::wait_until([target] { return services::index::index_deferred_deletes() <= target; });
     }
 
 } // namespace

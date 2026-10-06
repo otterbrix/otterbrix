@@ -19,6 +19,7 @@
 #include <services/wal/manager_wal_replicate.hpp>
 #include <components/log/test/test_log.hpp>
 #include <services/disk/tests/test_directory.hpp>
+#include <core/tests/wait_ready.hpp>
 
 // Same SQL fixture drives dispatcher::execute_plan; each case compares the cursor against pg_catalog state.
 
@@ -105,12 +106,7 @@ namespace {
         template<typename Fn, typename... Args>
         auto disk_invoke(Fn fn, Args&&... args) {
             auto [_, fut] = actor_zeta::otterbrix::send(manager_disk_->address(), fn, std::forward<Args>(args)...);
-            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-            while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
-                scheduler_->run(1000);
-                std::this_thread::yield();
-            }
-            REQUIRE(fut.is_ready());
+            REQUIRE(test_helpers::wait_ready(fut, scheduler_));
             return std::move(fut).take_ready();
         }
 
@@ -127,13 +123,8 @@ namespace {
         cursor_t_ptr take_result() {
             // A multi-actor co_await chain may not drain in one step(), so pump until ready or a 5s deadline.
             REQUIRE(pending_future_);
-            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-            while (!pending_future_->is_ready() && std::chrono::steady_clock::now() < deadline) {
-                scheduler_->run(1000);
-                std::this_thread::yield();
-            }
             REQUIRE(pending_future_->valid());
-            REQUIRE(pending_future_->is_ready());
+            REQUIRE(test_helpers::wait_ready(*pending_future_, scheduler_));
             auto result = std::move(*pending_future_).take_ready();
             pending_future_.reset();
             step();
@@ -146,12 +137,7 @@ namespace {
                                                 {}};
             auto [_, fut] =
                 actor_zeta::otterbrix::send(manager_disk_->address(), &manager_disk_t::resolve_namespace, ctx, name);
-            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-            while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
-                scheduler_->run(1000);
-                std::this_thread::yield();
-            }
-            REQUIRE(fut.is_ready());
+            REQUIRE(test_helpers::wait_ready(fut, scheduler_));
             // The reader has its own error channel; a failed read must not be conflated with found=false.
             auto r = std::move(fut).take_ready();
             REQUIRE_FALSE(r.has_error());

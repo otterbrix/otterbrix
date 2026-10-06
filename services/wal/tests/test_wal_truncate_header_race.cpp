@@ -27,6 +27,7 @@
 #include <services/wal/wal_page.hpp>
 #include <services/wal/wal_page_reader.hpp>
 #include <components/log/test/test_log.hpp>
+#include <core/tests/wait_ready.hpp>
 
 // ONE PAGE, ONE READ: deciding a segment's fate from TWO reads of the same page (verify, then a
 // second read_page_header that swallows its own failure into a zeroed header) lets a read that
@@ -130,11 +131,7 @@ namespace {
 
     template<typename F>
     decltype(auto) await_ready(F& fut) {
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-        while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
-            std::this_thread::yield();
-        }
-        REQUIRE(fut.is_ready());
+        REQUIRE(test_helpers::wait_ready(fut));
         return std::move(fut).take_ready();
     }
 

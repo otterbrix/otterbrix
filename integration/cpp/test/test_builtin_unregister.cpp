@@ -118,7 +118,7 @@ TEST_CASE("integration::cpp::builtin_unregister::a_pushed_filter_outlives_an_unr
     reader.join();
     unregisterer.join();
 
-    INFO("the unregister answered while the reader was parked between batches: " << answered_while_parked);
+    REQUIRE(answered_while_parked);
     CHECK(unregistered.contains_error());
     REQUIRE(reader_cursor != nullptr);
     INFO("reader: " << (reader_cursor->is_error() ? reader_cursor->get_error().what.c_str() : "<ok>"));

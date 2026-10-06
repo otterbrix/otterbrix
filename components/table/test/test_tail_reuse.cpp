@@ -175,7 +175,6 @@ TEST_CASE("tail_reuse: segments filled by successive appends share one block unt
     const auto before = payload_blocks(*table);
     REQUIRE(before.size() >= 6);
     std::set<uint64_t> distinct(before.begin(), before.end());
-    WARN("[tailreuse] " << before.size() << " filled string segments live in " << distinct.size() << " block(s)");
     REQUIRE(distinct.size() <= 2);
 
     checkpoint_production(bm, *table);
@@ -257,7 +256,7 @@ TEST_CASE("tail_reuse: a crash while a tail block is being rewritten loses only 
     // The next block write is the tail's rewrite: tear it and crash.
     plan.torn_at_write = plan.writes_seen + 1;
     auto second = append_rows(*table, env, 1300, 300);
-    WARN("[tailreuse] append across the torn rewrite: " << (second.has_error() ? "refused" : "accepted"));
+    REQUIRE(second.has_error());
     SECTION("the OS lost everything after the last fsync") { scope.last()->crash_revert(); }
     SECTION("the torn half landed on disk") { plan.crashed = true; }
 

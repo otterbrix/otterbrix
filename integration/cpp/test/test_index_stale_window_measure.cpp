@@ -290,7 +290,7 @@ TEST_CASE("integration::cpp::index_stale_window::natural_timing_30k", "[.][stale
     run_natural_leg(d, st, 36, "natural-30k");
 }
 
-TEST_CASE("integration::cpp::index_stale_window::seam_between_compact_and_rebuild") {
+TEST_CASE("integration::cpp::index_stale_window::seam_between_compact_and_rebuild", "[.][stalewindow]") {
     auto config = make_config("seam");
     gate_guard_t guard;
     test_spaces space(config);

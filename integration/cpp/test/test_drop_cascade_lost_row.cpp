@@ -12,6 +12,7 @@
 #include <limits>
 #include <string>
 #include <thread>
+#include <core/tests/wait_ready.hpp>
 
 // A DROP CASCADE step's own-row delete ({classid, col 0, objid}) must count nonzero: a zero means
 // the catalog never held the planned object, so proceeding would push storage/index drops over a
@@ -74,10 +75,7 @@ namespace {
                                                     exec_ctx,
                                                     catalog::well_known_oid::pg_depend_table,
                                                     std::move(row));
-        for (int i = 0; i < 2000000 && !fut.is_ready(); ++i) {
-            std::this_thread::yield();
-        }
-        REQUIRE(fut.is_ready());
+        REQUIRE(test_helpers::wait_ready(fut));
         auto appended = std::move(fut).take_ready();
         REQUIRE_FALSE(appended.has_error());
     }

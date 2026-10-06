@@ -24,6 +24,7 @@
 #include <limits>
 #include <string>
 #include <thread>
+#include <core/tests/wait_ready.hpp>
 
 namespace {
 
@@ -80,10 +81,7 @@ namespace {
                                                     catalog::well_known_oid::pg_depend_table,
                                                     std::move(row));
         // Disk actor runs on its own scheduler; poll rather than block-wait.
-        for (int i = 0; i < 2000000 && !fut.is_ready(); ++i) {
-            std::this_thread::yield();
-        }
-        REQUIRE(fut.is_ready());
+        REQUIRE(test_helpers::wait_ready(fut));
         auto appended = std::move(fut).take_ready();
         REQUIRE_FALSE(appended.has_error());
     }

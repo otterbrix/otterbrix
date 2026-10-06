@@ -31,6 +31,7 @@
 #include <unistd.h>
 #include <components/log/test/test_log.hpp>
 #include <services/disk/tests/test_directory.hpp>
+#include <core/tests/wait_ready.hpp>
 
 // append_pg_catalog_row calls write_physical_insert before the storage append — WAL-then-storage.
 
@@ -100,11 +101,7 @@ namespace {
         template<typename Fn, typename... Args>
         auto invoke(Fn fn, Args&&... args) {
             auto [_, future] = actor_zeta::otterbrix::send(disk->address(), fn, std::forward<Args>(args)...);
-            for (int i = 0; i < 100000 && !future.is_ready(); ++i) {
-                scheduler->run(1000);
-                std::this_thread::yield();
-            }
-            REQUIRE(future.is_ready());
+            REQUIRE(test_helpers::wait_ready(future, scheduler));
             return std::move(future).take_ready();
         }
 
@@ -608,11 +605,7 @@ TEST_CASE("services::disk::wal_catalog::a_growth_append_journals_the_add_column_
                                                         services::wal::wal_sync_mode::NORMAL,
                                                         catalog::well_known_oid::main_database,
                                                         std::uint64_t{1000});
-            for (int i = 0; i < 400000 && !cf.is_ready(); ++i) {
-                fx.scheduler->run(1);
-                std::this_thread::yield();
-            }
-            REQUIRE(cf.is_ready());
+            REQUIRE(test_helpers::wait_ready(cf, fx.scheduler));
             REQUIRE_FALSE(std::move(cf).take_ready().has_error());
         }
 

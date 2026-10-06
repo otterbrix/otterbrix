@@ -18,6 +18,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <core/tests/wait_ready.hpp>
 
 using namespace test_helpers;
 using components::cursor::cursor_t_ptr;
@@ -80,14 +81,6 @@ namespace {
         return out;
     }
 
-    template<typename Future>
-    void spin_until_ready(Future& fut) {
-        for (int i = 0; i < 2000000 && !fut.is_ready(); ++i) {
-            std::this_thread::yield();
-        }
-        REQUIRE(fut.is_ready());
-    }
-
     // No statement can take a view's dependencies away; this does, so the relation under it can go.
     void forget_dependencies(catalog_forging_spaces_t& space, catalog::oid_t view_oid) {
         auto* resource = space.dispatcher()->resource();
@@ -100,7 +93,7 @@ namespace {
                                                     &services::disk::manager_disk_t::delete_pg_catalog_rows_many,
                                                     ctx,
                                                     std::move(specs));
-        spin_until_ready(fut);
+        REQUIRE(test_helpers::wait_ready(fut));
         auto deleted = std::move(fut).take_ready();
         REQUIRE_FALSE(deleted.has_error());
     }
@@ -195,7 +188,7 @@ namespace {
                                                          &services::disk::manager_disk_t::delete_pg_catalog_rows_many,
                                                          ctx,
                                                          std::move(specs));
-        spin_until_ready(deleted);
+        REQUIRE(test_helpers::wait_ready(deleted));
         REQUIRE_FALSE(std::move(deleted).take_ready().has_error());
         auto writes = catalog::build_create_function_writes(resource,
                                                             name,
@@ -210,7 +203,7 @@ namespace {
                                                           ctx,
                                                           writes.front().table_oid,
                                                           std::move(writes.front().row));
-        spin_until_ready(appended);
+        REQUIRE(test_helpers::wait_ready(appended));
         REQUIRE_FALSE(std::move(appended).take_ready().has_error());
     }
 
@@ -248,7 +241,7 @@ namespace {
                                                           ctx,
                                                           catalog::well_known_oid::pg_depend_table,
                                                           std::move(row));
-        spin_until_ready(appended);
+        REQUIRE(test_helpers::wait_ready(appended));
         REQUIRE_FALSE(std::move(appended).take_ready().has_error());
     }
 

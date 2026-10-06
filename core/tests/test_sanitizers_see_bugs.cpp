@@ -68,8 +68,10 @@ namespace {
         return outcome;
     }
 
+    // macOS's wait macros cast their argument to int*, so a const status would trip -Wcast-qual.
     bool exited_with(const child_outcome_t& outcome, int code) {
-        return WIFEXITED(outcome.status) && WEXITSTATUS(outcome.status) == code;
+        int status = outcome.status;
+        return WIFEXITED(status) && WEXITSTATUS(status) == code;
     }
 
     bool says(const child_outcome_t& outcome, const char* text) { return outcome.err.find(text) != std::string::npos; }
@@ -78,7 +80,8 @@ namespace {
 
 #if defined(OTTERBRIX_ADDRESS_SANITIZER)
     bool aborted(const child_outcome_t& outcome) {
-        return WIFSIGNALED(outcome.status) && WTERMSIG(outcome.status) == SIGABRT;
+        int status = outcome.status;
+        return WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT;
     }
 
     void use_after_free() {

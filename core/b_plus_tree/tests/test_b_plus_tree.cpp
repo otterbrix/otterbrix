@@ -1353,6 +1353,12 @@ TEST_CASE("core::b_plus_tree::segment_tree_remove_charges_a_multi_block_key_once
     CHECK(tree.count() == kPerKey);
     CHECK(tree.unique_indices_count() == 1);
 
+    for (auto& dummy : doomed_items) {
+        resource.deallocate(dummy.buffer, dummy.size);
+    }
+    for (auto& dummy : survivor_items) {
+        resource.deallocate(dummy.buffer, dummy.size);
+    }
     if (directory_exists(fs, testing_directory)) {
         remove_directory(fs, testing_directory);
     }
@@ -1423,12 +1429,14 @@ TEST_CASE("core::b_plus_tree::flush_does_not_write_uninitialised_memory") {
         segment_tree_t tree(&resource,
                             key_getter,
                             open_file(fs, fname, file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE));
+        std::vector<dummy_alloc> items;
         for (uint64_t i = 0; i < 4; i++) {
             dummy_alloc dummy;
             dummy.size = DEFAULT_BLOCK_SIZE / 32;
             dummy.buffer = static_cast<data_ptr_t>(resource.allocate(dummy.size));
             std::memset(dummy.buffer, 0, dummy.size);
             write_unaligned<uint64_t>(dummy.buffer, i);
+            items.push_back(dummy);
             REQUIRE(tree.append(dummy.buffer, dummy.size));
         }
         REQUIRE(tree.flush());
@@ -1441,6 +1449,10 @@ TEST_CASE("core::b_plus_tree::flush_does_not_write_uninitialised_memory") {
         auto handle = open_file(fs, fname, file_flags::READ);
         handle->read(static_cast<void*>(tail.data()), tail.size(), kLeafHeaderSize - tail.size());
         CHECK(std::all_of(tail.begin(), tail.end(), [](uint8_t b) { return b == 0; }));
+
+        for (auto& dummy : items) {
+            resource.deallocate(dummy.buffer, dummy.size);
+        }
     }
 }
 
@@ -1467,15 +1479,21 @@ TEST_CASE("core::b_plus_tree::loading_a_leaf_leaves_nothing_to_flush") {
         segment_tree_t tree(&resource,
                             key_getter,
                             open_file(fs, fname, file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE));
+        std::vector<dummy_alloc> items;
         for (uint64_t i = 0; i < 200; i++) {
             dummy_alloc dummy;
             dummy.size = DEFAULT_BLOCK_SIZE / 32;
             dummy.buffer = static_cast<data_ptr_t>(resource.allocate(dummy.size));
             std::memset(dummy.buffer, 0, dummy.size);
             write_unaligned<uint64_t>(dummy.buffer, i);
+            items.push_back(dummy);
             REQUIRE(tree.append(dummy.buffer, dummy.size));
         }
         REQUIRE(tree.flush());
+
+        for (auto& dummy : items) {
+            resource.deallocate(dummy.buffer, dummy.size);
+        }
     }
 
     {
@@ -1506,6 +1524,8 @@ TEST_CASE("core::b_plus_tree::loading_a_leaf_leaves_nothing_to_flush") {
         core::b_plus_tree::reset_leaf_flushes();
         REQUIRE(reopened.flush());
         REQUIRE(core::b_plus_tree::leaf_flushes() == 1);
+
+        resource.deallocate(extra.buffer, extra.size);
     }
 }
 
@@ -1530,12 +1550,14 @@ TEST_CASE("core::b_plus_tree::flush_reports_io_failure_and_stays_dirty") {
     { auto create = open_file(fs, fname, file_flags::WRITE | file_flags::FILE_CREATE); }
 
     segment_tree_t tree(&resource, key_getter, open_file(fs, fname, file_flags::READ));
+    std::vector<dummy_alloc> items;
     for (uint64_t i = 0; i < 8; i++) {
         dummy_alloc dummy;
         dummy.size = DEFAULT_BLOCK_SIZE / 32;
         dummy.buffer = static_cast<data_ptr_t>(resource.allocate(dummy.size));
         std::memset(dummy.buffer, 0, dummy.size);
         write_unaligned<uint64_t>(dummy.buffer, i);
+        items.push_back(dummy);
         REQUIRE(tree.append(dummy.buffer, dummy.size));
     }
 
@@ -1544,6 +1566,10 @@ TEST_CASE("core::b_plus_tree::flush_reports_io_failure_and_stays_dirty") {
 
     INFO("and the leaf must still be dirty, so a retry actually retries");
     CHECK_FALSE(tree.flush());
+
+    for (auto& dummy : items) {
+        resource.deallocate(dummy.buffer, dummy.size);
+    }
 }
 
 // Regression: flush() returned early with no leaves left, and nothing unlinks a leaf file, so load() rebuilt the whole pre-delete tree.
@@ -1566,12 +1592,14 @@ TEST_CASE("core::b_plus_tree::flush_persists_an_emptied_tree") {
 
     {
         btree_t tree(&resource, fs, testing_directory, key_getter);
+        std::vector<dummy_alloc> items;
         for (uint64_t i = 0; i < kItems; i++) {
             dummy_alloc dummy;
             dummy.size = DEFAULT_BLOCK_SIZE / 32;
             dummy.buffer = static_cast<data_ptr_t>(resource.allocate(dummy.size));
             std::memset(dummy.buffer, 0, dummy.size);
             write_unaligned<uint64_t>(dummy.buffer, i);
+            items.push_back(dummy);
             REQUIRE(tree.append(dummy.buffer, dummy.size));
         }
         REQUIRE(tree.flush());
@@ -1581,6 +1609,10 @@ TEST_CASE("core::b_plus_tree::flush_persists_an_emptied_tree") {
         }
         REQUIRE(tree.size() == 0);
         REQUIRE(tree.flush());
+
+        for (auto& dummy : items) {
+            resource.deallocate(dummy.buffer, dummy.size);
+        }
     }
 
     {

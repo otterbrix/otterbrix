@@ -338,9 +338,3 @@ TEST_CASE("integration::clean_break_startup::sequence_view_macro_via_pg_class") 
     }
     std::filesystem::remove_all(dir);
 }
-
-TEST_CASE("integration::clean_break_startup::wal_replay_split_pg_catalog_first") {
-    SUCCEED("base_spaces.cpp PHASE 2 splits WAL records by collection prefix: pg_catalog.* "
-            "replay sequentially, user collections in parallel — see test_wal_pool for the "
-            "replay path itself");
-}

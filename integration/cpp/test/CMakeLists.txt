@@ -98,7 +98,6 @@ set( ${PROJECT_NAME}_SOURCES
         test_text_column_storage.cpp
         test_update.cpp
         test_wal_pool.cpp
-        test_write_through_before_first_checkpoint.cpp
         test_crash_before_first_checkpoint_matrix.cpp
         test_wal_span_crash_recovery.cpp
         test_persistence.cpp

@@ -31,7 +31,7 @@
 #include <vector>
 
 #include "index_fixture_path.hpp"
-#include <components/log/test_log.hpp>
+#include <components/log/test/test_log.hpp>
 
 using components::expressions::compare_type;
 using components::session::session_id_t;
@@ -162,7 +162,7 @@ namespace {
 
 TEST_CASE("services::index::bitcask_index_agent_t rebuild clear keeps other transactions' staged batches") {
     auto resource = core::pmr::otterbrix_resource();
-    auto log = make_test_log("python", "/tmp/docker_logs/");
+    auto log = make_test_log();
     const auto path = fresh_index_root("otterbrix_test_index_agent_rebuild_clear_bitcask");
 
     auto agent_result = bitcask_index_agent_t::create(&resource,
@@ -183,7 +183,7 @@ TEST_CASE("services::index::bitcask_index_agent_t rebuild clear keeps other tran
 
 TEST_CASE("services::index::btree_index_agent_t rebuild clear keeps other transactions' staged batches") {
     auto resource = core::pmr::otterbrix_resource();
-    auto log = make_test_log("python", "/tmp/docker_logs/");
+    auto log = make_test_log();
     const auto path = fresh_index_root("otterbrix_test_index_agent_rebuild_clear_btree");
 
     auto agent_result = btree_index_agent_t::create(&resource,

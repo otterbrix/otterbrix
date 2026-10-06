@@ -26,7 +26,7 @@
 #include <limits>
 #include <thread>
 #include <unistd.h>
-#include <components/log/test_log.hpp>
+#include <components/log/test/test_log.hpp>
 #include <services/disk/tests/test_directory.hpp>
 
 using namespace services::disk;

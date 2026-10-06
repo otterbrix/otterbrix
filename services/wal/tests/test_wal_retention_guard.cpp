@@ -24,7 +24,7 @@
 #include <core/executor.hpp>
 #include <core/pmr.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
-#include <components/log/test_log.hpp>
+#include <components/log/test/test_log.hpp>
 
 using namespace services;
 using namespace services::wal;
@@ -72,7 +72,7 @@ namespace {
     struct wal_env_t {
         explicit wal_env_t(const std::filesystem::path& path, size_t max_segment_size = 0, bool wipe = true)
             : path_(path)
-            , log_(make_test_log("python", "/tmp/docker_logs/"))
+            , log_(make_test_log())
             , scheduler_(new actor_zeta::shared_work(2, 1000))
             , config_([&] {
                 if (wipe) {

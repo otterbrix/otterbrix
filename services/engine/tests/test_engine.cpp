@@ -17,7 +17,7 @@
 #include <thread>
 #include <sys/resource.h>
 #include <unistd.h>
-#include <components/log/test_log.hpp>
+#include <components/log/test/test_log.hpp>
 
 using namespace services::engine;
 

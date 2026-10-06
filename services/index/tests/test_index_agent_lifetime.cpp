@@ -33,7 +33,7 @@
 #include <services/index/manager_index.hpp>
 
 #include "index_fixture_path.hpp"
-#include <components/log/test_log.hpp>
+#include <components/log/test/test_log.hpp>
 #include <services/disk/tests/test_directory.hpp>
 
 using services::index::tests::index_fixture_path;
@@ -100,7 +100,7 @@ namespace {
 
 TEST_CASE("services::index::drop_index keeps the agent alive under an outstanding read") {
     auto resource = core::pmr::otterbrix_resource();
-    auto log = make_test_log("python", "/tmp/docker_logs/");
+    auto log = make_test_log();
 
     const std::filesystem::path path{index_fixture_path("agent_lifetime")};
     std::filesystem::remove_all(path);

@@ -22,7 +22,7 @@
 #include <limits>
 #include <thread>
 #include <unistd.h>
-#include <components/log/test_log.hpp>
+#include <components/log/test/test_log.hpp>
 #include <services/disk/tests/test_directory.hpp>
 
 using namespace services::disk;
@@ -46,7 +46,7 @@ namespace {
         std::unique_ptr<services::wal::manager_wal_replicate_t, actor_zeta::pmr::deleter_t> wal;
 
         explicit recovery_fixture(const std::string& dir, bool bootstrap = true)
-            : log(make_test_log("python", "/tmp/docker_logs/"))
+            : log(make_test_log())
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , wal_config([&]() {
                 configuration::config_wal c;

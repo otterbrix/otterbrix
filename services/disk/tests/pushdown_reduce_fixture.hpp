@@ -28,7 +28,7 @@
 #include <thread>
 #include <unistd.h>
 #include <vector>
-#include <components/log/test_log.hpp>
+#include <components/log/test/test_log.hpp>
 #include <services/disk/tests/test_directory.hpp>
 
 namespace pushdown_reduce_test {
@@ -51,7 +51,7 @@ namespace pushdown_reduce_test {
         std::unique_ptr<services::disk::manager_disk_t, actor_zeta::pmr::deleter_t> manager;
 
         fixture()
-            : log(make_test_log("python", "/tmp/docker_logs/"))
+            : log(make_test_log())
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
                 configuration::config_disk c;

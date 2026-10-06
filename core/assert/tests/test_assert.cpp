@@ -11,7 +11,7 @@
 #include <string>
 #include <sys/wait.h>
 #include <unistd.h>
-#include <components/log/test_log.hpp>
+#include <components/log/test/test_log.hpp>
 
 TEST_CASE("core::assert::test_ok") { REQUIRE_NOTHROW([&]() { assertion_log_msg(nullptr, true, "ok"); }()); }
 

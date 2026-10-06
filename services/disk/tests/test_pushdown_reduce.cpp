@@ -23,7 +23,7 @@
 #include <limits>
 #include <map>
 #include <vector>
-#include <components/log/test_log.hpp>
+#include <components/log/test/test_log.hpp>
 #include <services/disk/tests/test_directory.hpp>
 
 using namespace services::disk;
@@ -358,7 +358,7 @@ TEST_CASE("pushdown_reduce: group_merge synthesizes the scalar empty-input row")
 // (which reads as "no groups produced"). Not reachable today, but pinned through the contract.
 TEST_CASE("pushdown_reduce: a manager with no agents refuses instead of folding to nothing") {
     core::pmr::otterbrix_resource resource;
-    auto log = make_test_log("python", "/tmp/docker_logs/");
+    auto log = make_test_log();
     auto* scheduler = new core::non_thread_scheduler::scheduler_test_t(1, 1);
     configuration::config_disk cfg;
     cfg.path = reduce_dir() + "/no_agents";

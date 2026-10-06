@@ -21,7 +21,7 @@
 #include <thread>
 #include <unistd.h>
 #include <vector>
-#include <components/log/test_log.hpp>
+#include <components/log/test/test_log.hpp>
 #include <services/disk/tests/test_directory.hpp>
 
 using namespace services::disk;
@@ -53,7 +53,7 @@ namespace {
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
 
         explicit disk_only_fixture(const std::filesystem::path& path)
-            : log(make_test_log("python", "/tmp/docker_logs/"))
+            : log(make_test_log())
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
                 configuration::config_disk c;
@@ -223,7 +223,7 @@ TEST_CASE("services::disk::sysboot::restart_loads_all_10") {
 // Empty config_disk.path makes bootstrap refuse, instead of manufacturing a relative-path db under the CWD.
 TEST_CASE("services::disk::sysboot::no_path_is_safe_noop") {
     core::pmr::otterbrix_resource resource;
-    log_t log = make_test_log("python", "/tmp/docker_logs/");
+    log_t log = make_test_log();
     auto* scheduler = new core::non_thread_scheduler::scheduler_test_t(1, 1);
     configuration::config_disk c;
     c.path.clear(); // truly empty — config_disk default is current_path()/wal

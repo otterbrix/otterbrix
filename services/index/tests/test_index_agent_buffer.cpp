@@ -31,7 +31,7 @@
 #include <vector>
 
 #include "index_fixture_path.hpp"
-#include <components/log/test_log.hpp>
+#include <components/log/test/test_log.hpp>
 
 using components::expressions::compare_type;
 using components::session::session_id_t;
@@ -134,7 +134,7 @@ namespace {
 
 TEST_CASE("services::index::btree_index_agent_t buffers a transaction's own writes") {
     auto resource = core::pmr::otterbrix_resource();
-    auto log = make_test_log("python", "/tmp/docker_logs/");
+    auto log = make_test_log();
     const auto path = fresh_index_root("otterbrix_test_index_agent_buffer_btree");
 
     auto agent_result =
@@ -237,7 +237,7 @@ TEST_CASE("services::index::btree_index_agent_t buffers a transaction's own writ
 // a merge that only knew equality would drop a transaction's own write from a range query.
 TEST_CASE("services::index::btree_index_agent_t answers every predicate over staged rows") {
     auto resource = core::pmr::otterbrix_resource();
-    auto log = make_test_log("python", "/tmp/docker_logs/");
+    auto log = make_test_log();
     const auto path = fresh_index_root("otterbrix_test_index_agent_buffer_btree_predicates");
 
     auto agent_result =
@@ -272,7 +272,7 @@ TEST_CASE("services::index::btree_index_agent_t answers every predicate over sta
 
 TEST_CASE("services::index::bitcask_index_agent_t buffers a transaction's own writes") {
     auto resource = core::pmr::otterbrix_resource();
-    auto log = make_test_log("python", "/tmp/docker_logs/");
+    auto log = make_test_log();
     const auto path = fresh_index_root("otterbrix_test_index_agent_buffer_bitcask");
 
     auto agent_result = bitcask_index_agent_t::create(&resource,
@@ -400,7 +400,7 @@ void null_keys_answer_only_the_null_tests(Agent& agent, std::pmr::memory_resourc
 
 TEST_CASE("services::index::btree_index_agent_t answers the null tests over NULL keys") {
     auto resource = core::pmr::otterbrix_resource();
-    auto log = make_test_log("python", "/tmp/docker_logs/");
+    auto log = make_test_log();
     const auto path = fresh_index_root("otterbrix_test_index_agent_buffer_null_key_btree");
 
     auto agent_result =
@@ -415,7 +415,7 @@ TEST_CASE("services::index::btree_index_agent_t answers the null tests over NULL
 
 TEST_CASE("services::index::bitcask_index_agent_t answers the null tests over NULL keys") {
     auto resource = core::pmr::otterbrix_resource();
-    auto log = make_test_log("python", "/tmp/docker_logs/");
+    auto log = make_test_log();
     const auto path = fresh_index_root("otterbrix_test_index_agent_buffer_null_key_bitcask");
 
     auto agent_result = bitcask_index_agent_t::create(&resource,
@@ -436,7 +436,7 @@ TEST_CASE("services::index::bitcask_index_agent_t answers the null tests over NU
 
 TEST_CASE("services::index::a NULL key is indexed properly") {
     auto resource = core::pmr::otterbrix_resource();
-    auto log = make_test_log("python", "/tmp/docker_logs/");
+    auto log = make_test_log();
     const auto path = fresh_index_root("otterbrix_test_index_agent_buffer_null_key_ranges");
 
     auto agent_result =
@@ -473,7 +473,7 @@ TEST_CASE("services::index::a NULL key is indexed properly") {
 // into an index this call failed to empty.
 TEST_CASE("services::index::bitcask_index_agent_t hands back the store's refusal to clear") {
     auto resource = core::pmr::otterbrix_resource();
-    auto log = make_test_log("python", "/tmp/docker_logs/");
+    auto log = make_test_log();
     const auto path = fresh_index_root("otterbrix_test_index_agent_refused_clear");
 
     auto agent_result = bitcask_index_agent_t::create(&resource,
@@ -541,7 +541,7 @@ TEST_CASE("services::index::bitcask_index_agent_t hands back the store's refusal
 // force_flush to report and mis-attribute.
 TEST_CASE("services::index::bitcask_index_agent_t reports a merge refusal in the round that met it") {
     auto resource = core::pmr::otterbrix_resource();
-    auto log = make_test_log("python", "/tmp/docker_logs/");
+    auto log = make_test_log();
     const auto path = fresh_index_root("index_agent_merge_attribution");
     const auto index_dir =
         path / std::to_string(static_cast<unsigned>(kTableOid)) / std::to_string(static_cast<unsigned>(kIndexOid));

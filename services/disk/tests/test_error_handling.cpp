@@ -21,7 +21,7 @@
 #include <limits>
 #include <thread>
 #include <unistd.h>
-#include <components/log/test_log.hpp>
+#include <components/log/test/test_log.hpp>
 #include <services/disk/tests/test_directory.hpp>
 
 using namespace services::disk;
@@ -46,7 +46,7 @@ namespace {
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
 
         fixture()
-            : log(make_test_log("python", "/tmp/docker_logs/"))
+            : log(make_test_log())
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
                 configuration::config_disk c;
@@ -611,7 +611,7 @@ TEST_CASE("services::disk::error::fetch_limit_counts_visible_rows_not_requested_
 TEST_CASE("services::disk::error::a_manager_with_no_agents_refuses_instead_of_answering_empty") {
     // No bootstrap: zero agents means no system tables to seed, and seeding isn't under test.
     core::pmr::otterbrix_resource resource;
-    auto log = make_test_log("python", "/tmp/docker_logs/");
+    auto log = make_test_log();
     auto* scheduler = new core::non_thread_scheduler::scheduler_test_t(1, 1);
     configuration::config_disk cfg;
     cfg.path = err_dir() + "/no_agents";

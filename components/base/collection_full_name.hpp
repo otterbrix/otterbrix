@@ -23,8 +23,7 @@ namespace qualified_name_detail {
 } // namespace qualified_name_detail
 
 // Qualified SQL table identity. Retained at the SQL parser / error reporting
-// / membership-cache boundary; storage routing uses pg_class.oid
-// (see docs/oid-migration-strategy.md, Phase 8+9 COMPLETE 2026-05-10).
+// / membership-cache boundary; storage routing uses pg_class.oid.
 //
 // The 4-part shape (uuid.db.schema.table) mirrors PostgreSQL-style fully-
 // qualified identifiers — `unique_identifier` is the optional uuid prefix

@@ -7,14 +7,12 @@
 #include <components/compute/function.hpp>
 #include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/test/fault_injection_file.hpp>
-#include <services/disk/manager_disk.hpp>
 
 #include <algorithm>
 #include <filesystem>
 #include <limits>
 #include <memory>
 #include <string>
-#include <thread>
 #include <utility>
 #include <vector>
 
@@ -170,22 +168,13 @@ namespace {
 
     constexpr std::size_t kReadRefused = static_cast<std::size_t>(-1);
 
-    std::size_t pg_proc_rows_named(otterbrix::otterbrix_t& space, const std::string& name) {
-        auto td = table::transaction_data::committed();
-        execution_context_t exec_ctx{otterbrix::session_id_t{}, td, {}};
-        auto [_, fut] = actor_zeta::otterbrix::send(space.engine().disk_address(),
-                                                    &services::disk::manager_disk_t::resolve_function_by_name,
-                                                    exec_ctx,
-                                                    name);
-        for (int i = 0; i < 2000000 && !fut.is_ready(); ++i) {
-            std::this_thread::yield();
-        }
-        REQUIRE(fut.is_ready());
-        auto matches = std::move(fut).take_ready();
-        if (matches.has_error()) {
+    std::size_t pg_proc_rows_named(test_spaces& space, const std::string& name) {
+        auto cur = test_helpers::exec(space.dispatcher(),
+                                      "SELECT proname FROM pg_catalog.pg_proc WHERE proname = '" + name + "';");
+        if (cur->is_error()) {
             return kReadRefused;
         }
-        return matches.value().size();
+        return cur->size();
     }
 
 } // namespace
@@ -197,7 +186,7 @@ TEST_CASE("integration::cpp::test_catalog_read_refusal::register_udf_fails_when_
     config.log.level = log_t::level::off;
 
     {
-        otterbrix::otterbrix_t space(test_open_engine(config));
+        test_spaces space(config);
         auto* dispatcher = space.dispatcher();
         auto first = dispatcher->register_udf(otterbrix::session_id_t(), make_probe_unary(dispatcher->resource()));
         REQUIRE_FALSE(first.contains_error());
@@ -215,7 +204,7 @@ TEST_CASE("integration::cpp::test_catalog_read_refusal::register_udf_fails_when_
     std::vector<uint64_t> reads;
     {
         recording_scope_t recorder(reads, marker);
-        otterbrix::otterbrix_t probe(test_open_engine(probe_config));
+        test_spaces probe(probe_config);
         REQUIRE(pg_proc_rows_named(probe, kFuncName) == 1);
     }
     REQUIRE_FALSE(reads.empty());
@@ -236,7 +225,7 @@ TEST_CASE("integration::cpp::test_catalog_read_refusal::register_udf_fails_when_
     plan.fail_reads_at_location = data_block;
     one_table_fault_scope_t fault(plan, marker);
 
-    otterbrix::otterbrix_t space(test_open_engine(config));
+    test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     INFO("poisoned pg_proc block offset " << data_block);
     REQUIRE(plan.reads_failed > 0); // the poison landed, and the start survived it
@@ -266,7 +255,7 @@ TEST_CASE("integration::cpp::test_catalog_read_refusal::a_healthy_second_overloa
     auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
-    otterbrix::otterbrix_t space(test_open_engine(config));
+    test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
     auto first = dispatcher->register_udf(otterbrix::session_id_t(), make_probe_unary(dispatcher->resource()));

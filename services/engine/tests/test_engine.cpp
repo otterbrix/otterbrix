@@ -17,7 +17,8 @@
 #include <thread>
 #include <sys/resource.h>
 #include <unistd.h>
-#include <components/log/test_log.hpp>
+#include <components/log/test/test_log.hpp>
+#include <core/tests/wait_ready.hpp>
 
 using namespace services::engine;
 
@@ -63,9 +64,7 @@ namespace {
                                                            &services::dispatcher::manager_dispatcher_t::execute_plan,
                                                            components::session::session_id_t(),
                                                            std::move(plan.value()));
-            while (!future.is_ready()) {
-                std::this_thread::sleep_for(std::chrono::microseconds(100));
-            }
+            REQUIRE(test_helpers::wait_ready(future));
             return std::move(future).take_ready();
         }
 
@@ -174,7 +173,8 @@ TEST_CASE("services::engine::pump::a_query_to_an_idle_engine_does_not_wait_for_t
     REQUIRE(host.execute("CREATE DATABASE lat;")->is_success());
     REQUIRE(host.execute("CREATE TABLE lat.t (id BIGINT);")->is_success());
     REQUIRE(host.execute("INSERT INTO lat.t (id) VALUES (1), (2);")->is_success());
-    std::this_thread::sleep_for(idle + idle / 4);
+    const auto idle_for = idle + idle / 4;
+    std::this_thread::sleep_for(idle_for);
 
     const auto started = std::chrono::steady_clock::now();
     auto cur = host.execute("SELECT id FROM lat.t;");
@@ -182,8 +182,8 @@ TEST_CASE("services::engine::pump::a_query_to_an_idle_engine_does_not_wait_for_t
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 2);
-    INFO("a SELECT on an engine idle for 2.5 s took " << elapsed.count() << " ms, idle interval "
-                                                       << idle.count() << " ms");
+    INFO("a SELECT on an engine idle for " << idle_for.count() << " ms took " << elapsed.count()
+                                           << " ms, idle interval " << idle.count() << " ms");
     CHECK(elapsed < idle / 2);
 }
 

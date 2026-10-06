@@ -26,7 +26,7 @@
 #include <services/wal/manager_wal_replicate.hpp>
 #include <services/wal/wal_page.hpp>
 #include <services/wal/wal_page_reader.hpp>
-#include <components/log/test_log.hpp>
+#include <components/log/test/test_log.hpp>
 
 // ONE PAGE, ONE READ: deciding a segment's fate from TWO reads of the same page (verify, then a
 // second read_page_header that swallows its own failure into a zeroed header) lets a read that
@@ -163,7 +163,7 @@ namespace {
     struct wal_env_t {
         explicit wal_env_t(const std::filesystem::path& path, size_t max_segment_size = 0)
             : path_(path)
-            , log_(make_test_log("python", "/tmp/docker_logs/"))
+            , log_(make_test_log())
             , scheduler_(new actor_zeta::shared_work(2, 1000))
             , config_(make_config(path, max_segment_size))
             , manager_(actor_zeta::spawn<manager_wal_replicate_t>(&resource_,

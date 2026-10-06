@@ -25,7 +25,7 @@
 #include <services/wal/wal_sync_mode.hpp>
 #include <thread>
 #include <unistd.h>
-#include <components/log/test_log.hpp>
+#include <components/log/test/test_log.hpp>
 
 using namespace services::wal;
 using namespace components::session;
@@ -70,7 +70,7 @@ struct test_wal_worker {
     test_wal_worker(const std::filesystem::path& path)
         : path_(path)
         , resource_()
-        , log_(make_test_log("python", "/tmp/docker_logs/"))
+        , log_(make_test_log())
         , scheduler_(new actor_zeta::shared_work(3, 1000))
         , config_([&]() {
             configuration::config_wal c(path);
@@ -308,7 +308,7 @@ TEST_CASE("wal_worker::corruption_stop") {
         std::filesystem::create_directories(test_path);
 
         core::pmr::otterbrix_resource resource;
-        auto log = make_test_log("python", "/tmp/docker_logs/");
+        auto log = make_test_log();
         auto scheduler = std::make_unique<actor_zeta::shared_work>(3, 1000);
         configuration::config_wal config(test_path);
 
@@ -372,7 +372,7 @@ TEST_CASE("wal_worker::corruption_stop") {
     REQUIRE(corrupted);
 
     core::pmr::otterbrix_resource resource;
-    auto log = make_test_log("python", "/tmp/docker_logs/");
+    auto log = make_test_log();
     auto scheduler = std::make_unique<actor_zeta::shared_work>(3, 1000);
     configuration::config_wal config(test_path);
 
@@ -414,7 +414,7 @@ TEST_CASE("wal_worker::crc_chain_startup") {
         std::filesystem::create_directories(test_path);
 
         core::pmr::otterbrix_resource resource;
-        auto log = make_test_log("python", "/tmp/docker_logs/");
+        auto log = make_test_log();
         auto scheduler = std::make_unique<actor_zeta::shared_work>(3, 1000);
         configuration::config_wal config(test_path);
 
@@ -464,7 +464,7 @@ TEST_CASE("wal_worker::crc_chain_startup") {
 
     {
         core::pmr::otterbrix_resource resource;
-        auto log = make_test_log("python", "/tmp/docker_logs/");
+        auto log = make_test_log();
         auto scheduler = std::make_unique<actor_zeta::shared_work>(3, 1000);
         configuration::config_wal config(test_path);
 
@@ -511,7 +511,7 @@ TEST_CASE("wal_worker::segment_rotation") {
     std::filesystem::create_directories(test_path);
 
     core::pmr::otterbrix_resource resource;
-    auto log = make_test_log("python", "/tmp/docker_logs/");
+    auto log = make_test_log();
     auto scheduler = std::make_unique<actor_zeta::shared_work>(3, 1000);
     configuration::config_wal config(test_path);
     config.max_segment_size = 8192;
@@ -605,7 +605,7 @@ TEST_CASE("wal_worker::fsync_full_mode") {
     std::filesystem::create_directories(test_path);
 
     core::pmr::otterbrix_resource resource;
-    auto log = make_test_log("python", "/tmp/docker_logs/");
+    auto log = make_test_log();
     auto scheduler = std::make_unique<actor_zeta::shared_work>(3, 1000);
     configuration::config_wal config(test_path);
 
@@ -665,7 +665,7 @@ TEST_CASE("wal_worker::fsync_off_mode") {
     std::filesystem::create_directories(test_path);
 
     core::pmr::otterbrix_resource resource;
-    auto log = make_test_log("python", "/tmp/docker_logs/");
+    auto log = make_test_log();
     auto scheduler = std::make_unique<actor_zeta::shared_work>(3, 1000);
     configuration::config_wal config(test_path);
 

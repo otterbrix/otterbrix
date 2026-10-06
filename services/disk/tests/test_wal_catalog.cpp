@@ -29,8 +29,9 @@
 #include <limits>
 #include <thread>
 #include <unistd.h>
-#include <components/log/test_log.hpp>
+#include <components/log/test/test_log.hpp>
 #include <services/disk/tests/test_directory.hpp>
+#include <core/tests/wait_ready.hpp>
 
 // append_pg_catalog_row calls write_physical_insert before the storage append — WAL-then-storage.
 
@@ -58,7 +59,7 @@ namespace {
 
         // wire_wal=false leaves manager_wal_addr_ empty: storage mutates but emits no WAL record.
         explicit fixture(const std::string& dir, bool wire_wal = true)
-            : log(make_test_log("python", "/tmp/docker_logs/"))
+            : log(make_test_log())
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , wal_config([&]() {
                 configuration::config_wal c;
@@ -100,11 +101,7 @@ namespace {
         template<typename Fn, typename... Args>
         auto invoke(Fn fn, Args&&... args) {
             auto [_, future] = actor_zeta::otterbrix::send(disk->address(), fn, std::forward<Args>(args)...);
-            for (int i = 0; i < 100000 && !future.is_ready(); ++i) {
-                scheduler->run(1000);
-                std::this_thread::yield();
-            }
-            REQUIRE(future.is_ready());
+            REQUIRE(test_helpers::wait_ready(future, scheduler));
             return std::move(future).take_ready();
         }
 
@@ -118,7 +115,7 @@ namespace {
     namespace wk = components::catalog::well_known_oid;
 
     std::size_t pg_catalog_physical_count(const std::string& dir) {
-        auto log = make_test_log("python", "/tmp/docker_logs/");
+        auto log = make_test_log();
         configuration::config_wal c;
         c.path = dir;
         core::pmr::otterbrix_resource reader_resource;
@@ -136,7 +133,7 @@ namespace {
     }
 
     std::size_t pg_catalog_records_for(const std::string& dir, components::catalog::oid_t target_oid) {
-        auto log = make_test_log("python", "/tmp/docker_logs/");
+        auto log = make_test_log();
         configuration::config_wal c;
         c.path = dir;
         core::pmr::otterbrix_resource reader_resource;
@@ -158,7 +155,7 @@ namespace {
         components::catalog::oid_t table_oid;
     };
     std::vector<phys_rec_t> pg_catalog_physical_sequence(const std::string& dir) {
-        auto log = make_test_log("python", "/tmp/docker_logs/");
+        auto log = make_test_log();
         configuration::config_wal c;
         c.path = dir;
         core::pmr::otterbrix_resource reader_resource;
@@ -346,7 +343,7 @@ TEST_CASE("services::disk::wal_catalog::all_records_under_pg_catalog_database") 
         cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
         test_create_table(fx, ns_oid, "t", cols);
     }
-    auto log = make_test_log("python", "/tmp/docker_logs/");
+    auto log = make_test_log();
     configuration::config_wal c;
     c.path = dir;
     core::pmr::otterbrix_resource reader_resource;
@@ -519,7 +516,7 @@ TEST_CASE("services::disk::wal_catalog::wal_disabled_append_no_record") {
 
 namespace {
     std::size_t add_column_records_for(const std::string& dir, components::catalog::oid_t target_oid) {
-        auto log = make_test_log("python", "/tmp/docker_logs/");
+        auto log = make_test_log();
         configuration::config_wal c;
         c.path = dir;
         core::pmr::otterbrix_resource reader_resource;
@@ -608,11 +605,7 @@ TEST_CASE("services::disk::wal_catalog::a_growth_append_journals_the_add_column_
                                                         services::wal::wal_sync_mode::NORMAL,
                                                         catalog::well_known_oid::main_database,
                                                         std::uint64_t{1000});
-            for (int i = 0; i < 400000 && !cf.is_ready(); ++i) {
-                fx.scheduler->run(1);
-                std::this_thread::yield();
-            }
-            REQUIRE(cf.is_ready());
+            REQUIRE(test_helpers::wait_ready(cf, fx.scheduler));
             REQUIRE_FALSE(std::move(cf).take_ready().has_error());
         }
 
@@ -624,7 +617,7 @@ TEST_CASE("services::disk::wal_catalog::a_growth_append_journals_the_add_column_
     INFO("exactly one PHYSICAL_ADD_COLUMN record, and it precedes its PHYSICAL_INSERT in wal order");
     REQUIRE(add_column_records_for(dir, table_oid) == 1);
     {
-        auto log = make_test_log("python", "/tmp/docker_logs/");
+        auto log = make_test_log();
         configuration::config_wal c;
         c.path = dir;
         core::pmr::otterbrix_resource reader_resource;
@@ -724,7 +717,7 @@ TEST_CASE("services::disk::wal_catalog::the_backfill_stamp_survives_a_kill_throu
     core::pmr::otterbrix_resource reader_resource;
     configuration::config_wal wal_c;
     wal_c.path = dir;
-    auto reader_log = make_test_log("python", "/tmp/docker_logs/");
+    auto reader_log = make_test_log();
     services::wal::wal_reader_t reader(&reader_resource, wal_c, reader_log);
     auto records_result = reader.read_committed_records();
     REQUIRE_FALSE(records_result.has_error());

@@ -8,14 +8,9 @@
 
 namespace {
     using test_helpers::exec;
+    using test_helpers::ok;
     // Cells as text, so a failing CHECK prints the values; "NULL" for a null cell.
     using L = std::vector<std::string>;
-
-    template<typename D>
-    bool okq(D* d, const std::string& sql) {
-        auto c = exec(d, sql);
-        return c && c->is_success();
-    }
 
     template<typename D>
     L col(D* d, const std::string& sql, uint64_t column = 0) {
@@ -33,10 +28,10 @@ namespace {
 
     template<typename D>
     void seed(D* d) {
-        REQUIRE(okq(d, "CREATE DATABASE m;"));
-        REQUIRE(okq(d, "CREATE TABLE m.t (id BIGINT, g BIGINT);"));
-        REQUIRE(okq(d, "INSERT INTO m.t (id, g) VALUES (1,1),(2,1),(3,2);"));
-        REQUIRE(okq(d, "CREATE TABLE m.e (id BIGINT);"));
+        REQUIRE(ok(d, "CREATE DATABASE m;"));
+        REQUIRE(ok(d, "CREATE TABLE m.t (id BIGINT, g BIGINT);"));
+        REQUIRE(ok(d, "INSERT INTO m.t (id, g) VALUES (1,1),(2,1),(3,2);"));
+        REQUIRE(ok(d, "CREATE TABLE m.e (id BIGINT);"));
     }
 } // namespace
 
@@ -71,8 +66,8 @@ TEST_CASE("integration::cpp::constant_aggregates::many_chunks") {
     auto config = test_helpers::make_test_config(integration_fixture_path("constant_aggregates/many_chunks"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(okq(d, "CREATE DATABASE m;"));
-    REQUIRE(okq(d, "CREATE TABLE m.big (id BIGINT);"));
+    REQUIRE(ok(d, "CREATE DATABASE m;"));
+    REQUIRE(ok(d, "CREATE TABLE m.big (id BIGINT);"));
     auto seeded = test_helpers::seed_rows(d, "m.big", "id", 2500, [](unsigned i) {
         return "(" + std::to_string(i) + ")";
     });

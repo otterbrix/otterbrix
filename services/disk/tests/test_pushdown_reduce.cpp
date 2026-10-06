@@ -23,8 +23,9 @@
 #include <limits>
 #include <map>
 #include <vector>
-#include <components/log/test_log.hpp>
+#include <components/log/test/test_log.hpp>
 #include <services/disk/tests/test_directory.hpp>
+#include <core/tests/wait_ready.hpp>
 
 using namespace services::disk;
 using namespace pushdown_reduce_test;
@@ -358,7 +359,7 @@ TEST_CASE("pushdown_reduce: group_merge synthesizes the scalar empty-input row")
 // (which reads as "no groups produced"). Not reachable today, but pinned through the contract.
 TEST_CASE("pushdown_reduce: a manager with no agents refuses instead of folding to nothing") {
     core::pmr::otterbrix_resource resource;
-    auto log = make_test_log("python", "/tmp/docker_logs/");
+    auto log = make_test_log();
     auto* scheduler = new core::non_thread_scheduler::scheduler_test_t(1, 1);
     configuration::config_disk cfg;
     cfg.path = reduce_dir() + "/no_agents";
@@ -380,11 +381,7 @@ TEST_CASE("pushdown_reduce: a manager with no agents refuses instead of folding 
                                                        std::vector<size_t>{},
                                                        open_txn(88),
                                                        build_sum_spec(&resource, /*group_col=*/-1, /*val_col=*/0));
-        for (int i = 0; i < 100000 && !future.is_ready(); ++i) {
-            scheduler->run(1000);
-            std::this_thread::yield();
-        }
-        REQUIRE(future.is_ready());
+        REQUIRE(test_helpers::wait_ready(future, scheduler));
         REQUIRE(std::move(future).take_ready().has_error());
     }
     scheduler->stop();

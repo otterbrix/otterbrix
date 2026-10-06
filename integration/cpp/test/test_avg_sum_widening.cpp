@@ -12,12 +12,7 @@
 namespace {
     using components::types::logical_type;
     using test_helpers::exec;
-
-    template<typename D>
-    bool okq(D* d, const std::string& sql) {
-        auto c = exec(d, sql);
-        return c && c->is_success();
-    }
+    using test_helpers::ok;
 
     std::string type_name(const components::types::complex_logical_type& type) {
         switch (type.type()) {
@@ -116,13 +111,13 @@ namespace {
 
     template<typename D>
     void seed(D* d) {
-        REQUIRE(okq(d, "CREATE DATABASE m;"));
-        REQUIRE(okq(d, "CREATE TABLE m.t (g BIGINT, b BIGINT, i INT, s SMALLINT, y TINYINT, r REAL, f DOUBLE);"));
-        REQUIRE(okq(d,
+        REQUIRE(ok(d, "CREATE DATABASE m;"));
+        REQUIRE(ok(d, "CREATE TABLE m.t (g BIGINT, b BIGINT, i INT, s SMALLINT, y TINYINT, r REAL, f DOUBLE);"));
+        REQUIRE(ok(d,
                     "INSERT INTO m.t (g, b, i, s, y, r, f) VALUES "
                     "(1, 1, 1, 1, 1, 1.0, 1.0), (1, 2, 2, 2, 2, 2.0, 2.0), (2, 3, 3, 3, 3, 3.0, 3.0), "
                     "(2, 4, 4, 4, 4, 4.0, 4.0), (2, 6, 6, 6, 6, 6.0, 6.0);"));
-        REQUIRE(okq(d, "CREATE TABLE m.e (b BIGINT, i INT, d DECIMAL(10,2));"));
+        REQUIRE(ok(d, "CREATE TABLE m.e (b BIGINT, i INT, d DECIMAL(10,2));"));
     }
 } // namespace
 
@@ -158,8 +153,8 @@ TEST_CASE("integration::cpp::avg_sum_widening::small_int_total") {
     auto config = test_helpers::make_test_config(integration_fixture_path("avg_sum_widening/small_int"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(okq(d, "CREATE DATABASE m;"));
-    REQUIRE(okq(d, "CREATE TABLE m.s (v SMALLINT, w INT);"));
+    REQUIRE(ok(d, "CREATE DATABASE m;"));
+    REQUIRE(ok(d, "CREATE TABLE m.s (v SMALLINT, w INT);"));
     // 1500 rows: the fold crosses chunk boundaries.
     auto seeded = test_helpers::seed_rows(d, "m.s", "v, w", 1500, [](unsigned) {
         return std::string{"(200, 2000000)"};
@@ -177,9 +172,9 @@ TEST_CASE("integration::cpp::avg_sum_widening::bigint_sum_overflow_is_an_error")
     auto config = test_helpers::make_test_config(integration_fixture_path("avg_sum_widening/overflow"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(okq(d, "CREATE DATABASE m;"));
-    REQUIRE(okq(d, "CREATE TABLE m.t (g BIGINT, b BIGINT);"));
-    REQUIRE(okq(d, "INSERT INTO m.t (g, b) VALUES (1, 9223372036854775807), (1, 1), (2, 5);"));
+    REQUIRE(ok(d, "CREATE DATABASE m;"));
+    REQUIRE(ok(d, "CREATE TABLE m.t (g BIGINT, b BIGINT);"));
+    REQUIRE(ok(d, "INSERT INTO m.t (g, b) VALUES (1, 9223372036854775807), (1, 1), (2, 5);"));
 
     for (const char* sql : {"SELECT sum(b) FROM m.t;",
                             "SELECT g, sum(b) FROM m.t GROUP BY g;",
@@ -199,9 +194,9 @@ TEST_CASE("integration::cpp::avg_sum_widening::decimal") {
     auto config = test_helpers::make_test_config(integration_fixture_path("avg_sum_widening/decimal"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(okq(d, "CREATE DATABASE m;"));
-    REQUIRE(okq(d, "CREATE TABLE m.t (g BIGINT, x DECIMAL(10,2));"));
-    REQUIRE(okq(d, "INSERT INTO m.t (g, x) VALUES (1, 1.00), (1, 2.00), (1, 2.00), (2, -1.25), (2, -2.50);"));
+    REQUIRE(ok(d, "CREATE DATABASE m;"));
+    REQUIRE(ok(d, "CREATE TABLE m.t (g BIGINT, x DECIMAL(10,2));"));
+    REQUIRE(ok(d, "INSERT INTO m.t (g, x) VALUES (1, 1.00), (1, 2.00), (1, 2.00), (2, -1.25), (2, -2.50);"));
 
     CHECK(cell(d, "SELECT sum(x) FROM m.t;") == "DECIMAL(38,2):125");
     // 1.25 / 5 = 0.25

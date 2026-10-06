@@ -21,8 +21,9 @@
 #include <thread>
 #include <unistd.h>
 #include <vector>
-#include <components/log/test_log.hpp>
+#include <components/log/test/test_log.hpp>
 #include <services/disk/tests/test_directory.hpp>
+#include <core/tests/wait_ready.hpp>
 
 using namespace services::disk;
 using namespace components::catalog;
@@ -53,7 +54,7 @@ namespace {
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
 
         explicit disk_only_fixture(const std::filesystem::path& path)
-            : log(make_test_log("python", "/tmp/docker_logs/"))
+            : log(make_test_log())
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
                 configuration::config_disk c;
@@ -77,11 +78,7 @@ namespace {
         template<typename Fn, typename... Args>
         auto invoke(Fn fn, Args&&... args) {
             auto [_, future] = actor_zeta::otterbrix::send(manager->address(), fn, std::forward<Args>(args)...);
-            for (int i = 0; i < 100000 && !future.is_ready(); ++i) {
-                scheduler->run(1000);
-                std::this_thread::yield();
-            }
-            REQUIRE(future.is_ready());
+            REQUIRE(test_helpers::wait_ready(future, scheduler));
             return std::move(future).take_ready();
         }
 
@@ -97,11 +94,7 @@ namespace {
                                                        components::session::session_id_t{},
                                                        wal_id,
                                                        std::numeric_limits<uint64_t>::max());
-            for (int i = 0; i < 100000 && !cf.is_ready(); ++i) {
-                scheduler->run(1000);
-                std::this_thread::yield();
-            }
-            REQUIRE(cf.is_ready());
+            REQUIRE(test_helpers::wait_ready(cf, scheduler));
             // Sealed floor can never run ahead of the wal id this round reports.
             auto sealed = std::move(cf).take_ready();
             REQUIRE(sealed <= wal_id);
@@ -223,7 +216,7 @@ TEST_CASE("services::disk::sysboot::restart_loads_all_10") {
 // Empty config_disk.path makes bootstrap refuse, instead of manufacturing a relative-path db under the CWD.
 TEST_CASE("services::disk::sysboot::no_path_is_safe_noop") {
     core::pmr::otterbrix_resource resource;
-    log_t log = make_test_log("python", "/tmp/docker_logs/");
+    log_t log = make_test_log();
     auto* scheduler = new core::non_thread_scheduler::scheduler_test_t(1, 1);
     configuration::config_disk c;
     c.path.clear(); // truly empty — config_disk default is current_path()/wal

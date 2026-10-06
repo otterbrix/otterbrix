@@ -23,7 +23,7 @@
 #include <core/result_wrapper.hpp>
 #include <services/disk/manager_disk.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
-#include <components/log/test_log.hpp>
+#include <components/log/test/test_log.hpp>
 #include <services/disk/tests/test_directory.hpp>
 
 // Pins that the pool-admin API answers a typed error, not a bare `bool`; that an executor
@@ -114,7 +114,7 @@ struct admin_fixture : actor_zeta::actor::actor_mixin<admin_fixture> {
         : actor_zeta::actor::actor_mixin<admin_fixture>()
         , resource_(resource)
         , disk_path_(scrubbed(disk_path))
-        , log_(make_test_log("python", "/tmp/docker_logs/"))
+        , log_(make_test_log())
         , scheduler_(new core::non_thread_scheduler::scheduler_test_t(1, 1))
         , disk_config_(disk_path)
         , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource,

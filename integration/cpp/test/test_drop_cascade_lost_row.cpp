@@ -5,9 +5,6 @@
 
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/ddl_metadata_builder.hpp>
-#include <components/catalog/helpers.hpp>
-#include <components/compute/function.hpp>
-#include <components/physical_plan/operators/operator_data.hpp>
 #include <services/disk/manager_disk.hpp>
 
 #include <unistd.h>
@@ -15,6 +12,7 @@
 #include <limits>
 #include <string>
 #include <thread>
+#include <core/tests/wait_ready.hpp>
 
 // A DROP CASCADE step's own-row delete ({classid, col 0, objid}) must count nonzero: a zero means
 // the catalog never held the planned object, so proceeding would push storage/index drops over a
@@ -26,82 +24,43 @@ namespace {
 
     namespace catalog = components::catalog;
 
-    // snapshot_horizon = max reads every committed row, not the calling transaction's view.
-    template<typename Key>
-    core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>
-    catalog_chunks_with(otterbrix::otterbrix_t& space, catalog::oid_t table_oid, std::uint64_t key_col, Key key) {
-        auto* resource = space.dispatcher()->resource();
-        components::table::transaction_data td{0, 0};
-        td.snapshot_horizon = std::numeric_limits<uint64_t>::max();
-        components::execution_context_t exec_ctx{otterbrix::session_id_t{}, td, {}};
-        std::pmr::vector<std::uint64_t> key_cols(resource);
-        key_cols.emplace_back(key_col);
-        auto [_, fut] = actor_zeta::otterbrix::send(space.engine().disk_address(),
-                                                    &services::disk::manager_disk_t::read_chunks_by_key,
-                                                    exec_ctx,
-                                                    table_oid,
-                                                    std::move(key_cols),
-                                                    components::operators::make_key_chunk(resource, key),
-                                                    std::pmr::vector<std::uint64_t>{resource});
-        for (int i = 0; i < 2000000 && !fut.is_ready(); ++i) {
-            std::this_thread::yield();
-        }
-        REQUIRE(fut.is_ready());
-        return std::move(fut).take_ready();
+    std::size_t rows_where(otterbrix::wrapper_dispatcher_t* d,
+                           const std::string& table,
+                           const std::string& column,
+                           catalog::oid_t oid) {
+        auto cur = exec(d,
+                        "SELECT " + column + " FROM pg_catalog." + table + " WHERE " + column + " = " +
+                            std::to_string(oid) + ";");
+        REQUIRE(cur->is_success());
+        return cur->size();
     }
 
-    template<typename Key>
-    std::size_t
-    catalog_rows_with(otterbrix::otterbrix_t& space, catalog::oid_t table_oid, std::uint64_t key_col, Key key) {
-        auto batches = catalog_chunks_with(space, table_oid, key_col, key);
-        REQUIRE_FALSE(batches.has_error());
-        std::size_t rows = 0;
-        for (const auto& chunk : batches.value()) {
-            rows += static_cast<std::size_t>(chunk.size());
-        }
-        return rows;
-    }
-
-    catalog::oid_t table_oid_named(otterbrix::otterbrix_t& space, const std::string& name) {
-        auto batches = catalog_chunks_with(space,
-                                           catalog::well_known_oid::pg_class_table,
-                                           catalog::pg_class_col::relname,
-                                           std::string_view{name});
-        REQUIRE_FALSE(batches.has_error());
-        for (const auto& chunk : batches.value()) {
-            for (uint64_t i = 0; i < chunk.size(); ++i) {
-                if (!chunk.is_null(0, i)) {
-                    return static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
-                }
+    // The oid in column 0 of the first row `sql` answers; INVALID_OID when it answers none.
+    catalog::oid_t first_oid(otterbrix::wrapper_dispatcher_t* d, const std::string& sql) {
+        auto cur = exec(d, sql);
+        REQUIRE(cur->is_success());
+        for (const auto& chunk : cur->chunks()) {
+            if (chunk.size() != 0) {
+                return static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, 0));
             }
         }
         return catalog::INVALID_OID;
+    }
+
+    catalog::oid_t table_oid_named(otterbrix::wrapper_dispatcher_t* d, const std::string& name) {
+        return first_oid(d, "SELECT oid FROM pg_catalog.pg_class WHERE relname = '" + name + "';");
     }
 
     // The PK row carries no confrelid, so this key selects the FK alone.
-    catalog::oid_t fk_oid_referencing(otterbrix::otterbrix_t& space, catalog::oid_t parent_oid) {
-        auto batches = catalog_chunks_with(space,
-                                           catalog::well_known_oid::pg_constraint_table,
-                                           catalog::pg_constraint_col::confrelid,
-                                           parent_oid);
-        REQUIRE_FALSE(batches.has_error());
-        for (const auto& chunk : batches.value()) {
-            for (uint64_t i = 0; i < chunk.size(); ++i) {
-                if (chunk.is_null(0, i) || chunk.is_null(catalog::pg_constraint_col::contype, i)) {
-                    continue;
-                }
-                const auto contype_cell = chunk.get_value<std::string_view>(catalog::pg_constraint_col::contype, i);
-                if (!contype_cell.empty() && contype_cell.front() == 'f') {
-                    return static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
-                }
-            }
-        }
-        return catalog::INVALID_OID;
+    catalog::oid_t fk_oid_referencing(otterbrix::wrapper_dispatcher_t* d, catalog::oid_t parent_oid) {
+        return first_oid(d,
+                         "SELECT oid FROM pg_catalog.pg_constraint WHERE confrelid = " + std::to_string(parent_oid) +
+                             " AND contype = 'f';");
     }
 
     // Forges the edge instead of deleting a real row: a td{0,0} delete would leave a ghost the
     // DROP's own scan still marks, failing through the commit-drain replay instead of the path under test.
-    void forge_depend_edge(otterbrix::otterbrix_t& space,
+    void forge_depend_edge(catalog_forging_spaces_t& space,
                            catalog::oid_t classid,
                            catalog::oid_t objid,
                            catalog::oid_t refclassid,
@@ -111,15 +70,12 @@ namespace {
         td.snapshot_horizon = std::numeric_limits<uint64_t>::max();
         components::execution_context_t exec_ctx{otterbrix::session_id_t{}, td, {}};
         auto row = catalog::build_pg_depend_row(resource, classid, objid, refclassid, refobjid, /*deptype=*/'n');
-        auto [_, fut] = actor_zeta::otterbrix::send(space.engine().disk_address(),
+        auto [_, fut] = actor_zeta::otterbrix::send(space.disk_address(),
                                                     &services::disk::manager_disk_t::append_pg_catalog_row,
                                                     exec_ctx,
                                                     catalog::well_known_oid::pg_depend_table,
                                                     std::move(row));
-        for (int i = 0; i < 2000000 && !fut.is_ready(); ++i) {
-            std::this_thread::yield();
-        }
-        REQUIRE(fut.is_ready());
+        REQUIRE(test_helpers::wait_ready(fut));
         auto appended = std::move(fut).take_ready();
         REQUIRE_FALSE(appended.has_error());
     }
@@ -132,28 +88,23 @@ namespace {
 
 TEST_CASE("integration::cpp::drop_cascade_lost_row::planned_step_without_a_catalog_row_refuses") {
     auto config = make_test_config(fixture_path("lost"));
-    otterbrix::otterbrix_t space(test_open_engine(config));
+    catalog_forging_spaces_t space(config);
     auto* d = space.dispatcher();
 
     REQUIRE(exec(d, "CREATE DATABASE lost;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE lost.parent (id bigint PRIMARY KEY);")->is_success());
 
-    const auto parent_oid = table_oid_named(space, "parent");
+    const auto parent_oid = table_oid_named(d, "parent");
     REQUIRE(parent_oid != catalog::INVALID_OID);
 
     const catalog::oid_t ghost_oid = catalog::FIRST_USER_OID + 777777;
-    REQUIRE(catalog_rows_with(space,
-                              catalog::well_known_oid::pg_constraint_table,
-                              catalog::pg_constraint_col::oid,
-                              ghost_oid) == 0);
+    REQUIRE(rows_where(d, "pg_constraint", "oid", ghost_oid) == 0);
     forge_depend_edge(space,
                       catalog::well_known_oid::pg_constraint_table,
                       ghost_oid,
                       catalog::well_known_oid::pg_class_table,
                       parent_oid);
-    REQUIRE(
-        catalog_rows_with(space, catalog::well_known_oid::pg_depend_table, catalog::pg_depend_col::objid, ghost_oid) ==
-        1);
+    REQUIRE(rows_where(d, "pg_depend", "objid", ghost_oid) == 1);
 
     // CASCADE is required since #638: bare DROP = RESTRICT, whose gate would refuse on the
     // forged edge before the walk could reach the ghost step this case is about.
@@ -165,14 +116,13 @@ TEST_CASE("integration::cpp::drop_cascade_lost_row::planned_step_without_a_catal
     const std::string what{cur->get_error().what.begin(), cur->get_error().what.end()};
     REQUIRE(what.find("has no catalog row") != std::string::npos);
 
-    REQUIRE(catalog_rows_with(space, catalog::well_known_oid::pg_class_table, catalog::pg_class_col::oid, parent_oid) ==
-            1);
+    REQUIRE(rows_where(d, "pg_class", "oid", parent_oid) == 1);
     REQUIRE(exec(d, "SELECT * FROM lost.parent;")->is_success());
 }
 
 TEST_CASE("integration::cpp::drop_cascade_lost_row::diamond_dependent_is_judged_once") {
     auto config = make_test_config(fixture_path("diamond"));
-    otterbrix::otterbrix_t space(test_open_engine(config));
+    test_spaces space(config);
     auto* d = space.dispatcher();
 
     REQUIRE(exec(d, "CREATE DATABASE dia;")->is_success());
@@ -180,9 +130,9 @@ TEST_CASE("integration::cpp::drop_cascade_lost_row::diamond_dependent_is_judged_
     REQUIRE(
         exec(d, "CREATE TABLE dia.child (pid bigint, FOREIGN KEY (pid) REFERENCES dia.parent (id));")->is_success());
 
-    const auto parent_oid = table_oid_named(space, "parent");
+    const auto parent_oid = table_oid_named(d, "parent");
     REQUIRE(parent_oid != catalog::INVALID_OID);
-    const auto fk_oid = fk_oid_referencing(space, parent_oid);
+    const auto fk_oid = fk_oid_referencing(d, parent_oid);
     REQUIRE(fk_oid != catalog::INVALID_OID);
 
     // The walker emits each object once per FINISHED node, not once per edge reaching it, so an
@@ -194,10 +144,6 @@ TEST_CASE("integration::cpp::drop_cascade_lost_row::diamond_dependent_is_judged_
                              : std::string{"success"}));
     REQUIRE(cur->is_success());
 
-    REQUIRE(catalog_rows_with(space,
-                              catalog::well_known_oid::pg_constraint_table,
-                              catalog::pg_constraint_col::oid,
-                              fk_oid) == 0);
-    REQUIRE(catalog_rows_with(space, catalog::well_known_oid::pg_class_table, catalog::pg_class_col::oid, parent_oid) ==
-            0);
+    REQUIRE(rows_where(d, "pg_constraint", "oid", fk_oid) == 0);
+    REQUIRE(rows_where(d, "pg_class", "oid", parent_oid) == 0);
 }

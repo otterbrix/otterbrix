@@ -31,7 +31,7 @@
 #include <vector>
 
 #include "index_fixture_path.hpp"
-#include <components/log/test_log.hpp>
+#include <components/log/test/test_log.hpp>
 #include <services/disk/tests/test_directory.hpp>
 
 using components::expressions::compare_type;
@@ -125,7 +125,7 @@ namespace {
 
 TEST_CASE("services::index::a committed delete reaches the store only once the horizon passes it") {
     auto resource = core::pmr::otterbrix_resource();
-    auto log = make_test_log("python", "/tmp/docker_logs/");
+    auto log = make_test_log();
     const auto path = fresh_index_root("otterbrix_test_index_delete_horizon");
 
     auto scheduler = std::make_unique<actor_zeta::shared_work>(1, 100);
@@ -214,7 +214,7 @@ TEST_CASE("services::index::a committed delete reaches the store only once the h
 // DROP INDEX destroys the agent, so an outlived queue entry would be a send to a torn-down routing entry.
 TEST_CASE("services::index::tearing an index down drops the erases it was still owed") {
     auto resource = core::pmr::otterbrix_resource();
-    auto log = make_test_log("python", "/tmp/docker_logs/");
+    auto log = make_test_log();
     const auto path = fresh_index_root("otterbrix_test_index_delete_horizon_drop");
 
     auto scheduler = std::make_unique<actor_zeta::shared_work>(1, 100);

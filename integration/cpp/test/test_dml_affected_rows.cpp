@@ -58,11 +58,10 @@ TEST_CASE("integration::cpp::dml_affected_rows::plain_writes") {
         check_written(db.run("INSERT INTO ar.copy (id, v) SELECT id, v FROM ar.t;"), 2);
     }
     SECTION("more rows than one batch") {
-        std::string values;
-        for (int i = 0; i < 2500; ++i) {
-            values += (i ? ", (" : "(") + std::to_string(100 + i) + ", 0)";
-        }
-        check_written(db.run("INSERT INTO ar.t (id, v) VALUES " + values + ";"), 2500);
+        check_written(test_helpers::seed_rows(db.space->dispatcher(), "ar.t", "id, v", 2500, [](unsigned i) {
+                          return "(" + std::to_string(100 + i) + ", 0)";
+                      }),
+                      2500);
         check_written(db.run("DELETE FROM ar.t WHERE id >= 100;"), 2500);
     }
 }

@@ -116,13 +116,12 @@ namespace {
             const std::string payload(512, 'x');
             std::int64_t next_id = 1;
             for (int statement = 0; statement < kMaxStatements && !g_round_parked; ++statement) {
-                std::string sql = "INSERT INTO sdb.t (id, k, payload) VALUES ";
-                for (int row = 0; row < 64; ++row, ++next_id) {
-                    sql += (row == 0 ? "(" : ", (") + std::to_string(next_id) + ", " + std::to_string(10 * next_id) +
-                           ", '" + payload + "')";
-                }
-                sql += ";";
-                if (!exec(d, sql)->is_success()) {
+                const auto inserted = seed_rows(d, "sdb.t", "id, k, payload", 64, [&](unsigned row) {
+                    const auto id = next_id + static_cast<std::int64_t>(row);
+                    return "(" + std::to_string(id) + ", " + std::to_string(10 * id) + ", '" + payload + "')";
+                });
+                next_id += 64;
+                if (!inserted->is_success()) {
                     return 2;
                 }
             }

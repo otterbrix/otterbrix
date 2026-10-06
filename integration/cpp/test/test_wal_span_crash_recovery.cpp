@@ -9,28 +9,22 @@
 #include <string>
 
 namespace {
-    struct sql_t {
-        otterbrix::wrapper_dispatcher_t* d;
-        auto operator()(const std::string& sql) const {
-            auto session = otterbrix::session_id_t();
-            return d->execute_sql(session, sql);
-        }
-    };
+    using test_helpers::exec;
 
     std::string payload_of(int id) { return "p" + std::to_string(id) + std::string(static_cast<size_t>(id % 13), 'q'); }
 
-    void insert_committed(const sql_t& exec, int from, int to) {
+    void insert_committed(otterbrix::wrapper_dispatcher_t* d, int from, int to) {
         for (int base = from; base < to; base += 50) {
-            std::string sql = "INSERT INTO w.t (id, payload) VALUES ";
-            for (int i = base; i < std::min(to, base + 50); ++i) {
-                sql += (i != base ? ", (" : "(") + std::to_string(i) + ", '" + payload_of(i) + "')";
-            }
-            REQUIRE(exec(sql + ";")->is_success());
+            const auto batch = static_cast<unsigned>(std::min(to, base + 50) - base);
+            REQUIRE(test_helpers::seed_rows(d, "w.t", "id, payload", batch, [base](unsigned i) {
+                        const int id = base + static_cast<int>(i);
+                        return "(" + std::to_string(id) + ", '" + payload_of(id) + "')";
+                    })->is_success());
         }
     }
 
-    void verify_all(const sql_t& exec, int rows) {
-        auto cur = exec("SELECT id, payload FROM w.t ORDER BY id;");
+    void verify_all(otterbrix::wrapper_dispatcher_t* d, int rows) {
+        auto cur = exec(d, "SELECT id, payload FROM w.t ORDER BY id;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == static_cast<size_t>(rows));
         for (size_t r = 0; r < cur->size(); ++r) {
@@ -51,11 +45,10 @@ TEST_CASE("integration::cpp::wal_span_crash_recovery::committed_inserts_after_a_
     constexpr int kRows = 1000;
     {
         test_spaces space(config);
-        sql_t exec{space.dispatcher()};
-        REQUIRE(exec("CREATE DATABASE w;")->is_success());
-        REQUIRE(exec("CREATE TABLE w.t (id bigint, payload text);")->is_success());
-        auto txn = otterbrix::session_id_t();
         auto* d = space.dispatcher();
+        REQUIRE(exec(d, "CREATE DATABASE w;")->is_success());
+        REQUIRE(exec(d, "CREATE TABLE w.t (id bigint, payload text);")->is_success());
+        auto txn = otterbrix::session_id_t();
         REQUIRE(d->execute_sql(txn, "BEGIN;")->is_success());
         const std::string stale(200, 'z');
         for (int base = 0; base < kRows; base += 50) {
@@ -66,25 +59,23 @@ TEST_CASE("integration::cpp::wal_span_crash_recovery::committed_inserts_after_a_
             REQUIRE(d->execute_sql(txn, sql + ";")->is_success());
         }
         REQUIRE(d->execute_sql(txn, "ROLLBACK;")->is_success());
-        insert_committed(exec, 0, kRows);
-        verify_all(exec, kRows);
-        std::filesystem::remove_all(crash_dir);
-        std::filesystem::create_directories(crash_dir.parent_path());
-        std::filesystem::copy(config.main_path, crash_dir, std::filesystem::copy_options::recursive);
+        insert_committed(d, 0, kRows);
+        verify_all(d, kRows);
+        test_helpers::copy_crash_image(config.main_path, crash_dir);
     }
     auto crash_config = test_create_config(crash_dir);
     crash_config.log.level = log_t::level::off;
     {
         test_spaces space(crash_config);
-        sql_t exec{space.dispatcher()};
-        verify_all(exec, kRows);
-        REQUIRE(exec("CHECKPOINT;")->is_success());
-        verify_all(exec, kRows);
-        insert_committed(exec, kRows, kRows + 200);
+        auto* d = space.dispatcher();
+        verify_all(d, kRows);
+        REQUIRE(exec(d, "CHECKPOINT;")->is_success());
+        verify_all(d, kRows);
+        insert_committed(d, kRows, kRows + 200);
     }
     {
         test_spaces space(crash_config);
-        sql_t exec{space.dispatcher()};
-        verify_all(exec, kRows + 200);
+        auto* d = space.dispatcher();
+        verify_all(d, kRows + 200);
     }
 }

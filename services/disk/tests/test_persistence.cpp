@@ -29,8 +29,9 @@
 #include <limits>
 #include <thread>
 #include <unistd.h>
-#include <components/log/test_log.hpp>
+#include <components/log/test/test_log.hpp>
 #include <services/disk/tests/test_directory.hpp>
+#include <core/tests/wait_ready.hpp>
 
 using namespace services::disk;
 namespace catalog = components::catalog;
@@ -52,7 +53,7 @@ namespace {
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
 
         explicit fresh_disk(const std::filesystem::path& path)
-            : log(make_test_log("python", "/tmp/docker_logs/"))
+            : log(make_test_log())
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
                 configuration::config_disk c;
@@ -82,11 +83,7 @@ namespace {
         template<typename Fn, typename... Args>
         auto invoke(Fn fn, Args&&... args) {
             auto [_, future] = actor_zeta::otterbrix::send(manager->address(), fn, std::forward<Args>(args)...);
-            for (int i = 0; i < 100000 && !future.is_ready(); ++i) {
-                scheduler->run(1000);
-                std::this_thread::yield();
-            }
-            REQUIRE(future.is_ready());
+            REQUIRE(test_helpers::wait_ready(future, scheduler));
             return std::move(future).take_ready();
         }
 
@@ -96,11 +93,7 @@ namespace {
                                                        session_id_t{},
                                                        wal_id,
                                                        std::numeric_limits<uint64_t>::max());
-            for (int i = 0; i < 100000 && !cf.is_ready(); ++i) {
-                scheduler->run(1000);
-                std::this_thread::yield();
-            }
-            REQUIRE(cf.is_ready());
+            REQUIRE(test_helpers::wait_ready(cf, scheduler));
             (void) std::move(cf).take_ready();
         }
     };

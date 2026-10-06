@@ -28,7 +28,7 @@
 #include <services/disk/manager_disk.hpp>
 #include <services/disk/tests/catalog_probe.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
-#include <components/log/test_log.hpp>
+#include <components/log/test/test_log.hpp>
 #include <services/disk/tests/test_directory.hpp>
 
 // operator_register_udf_t (pg_proc), operator_register_cast_t (pg_cast) and
@@ -141,7 +141,7 @@ struct oid_round_fixture : actor_zeta::actor::actor_mixin<oid_round_fixture> {
         : actor_zeta::actor::actor_mixin<oid_round_fixture>()
         , resource_(resource)
         , disk_path_(scrubbed(disk_path))
-        , log_(make_test_log("python", "/tmp/docker_logs/"))
+        , log_(make_test_log())
         , scheduler_(new core::non_thread_scheduler::scheduler_test_t(1, 1))
         , disk_config_(disk_path)
         , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource,

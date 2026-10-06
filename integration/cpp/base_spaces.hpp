@@ -32,10 +32,10 @@ namespace otterbrix {
 
         log_t& get_log();
         wrapper_dispatcher_t* dispatcher();
-        const services::engine::engine_t& engine() const;
 
     protected:
         explicit base_otterbrix_t(host_ptr host);
+        const services::engine::engine_t& engine() const;
 
     private:
         host_ptr host_;

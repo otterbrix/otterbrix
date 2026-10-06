@@ -9,7 +9,10 @@ foreach(input SOURCE_DIR BINARY_DIR BUILD_TYPE PROFILE WORK_DIR CONAN)
     endif()
 endforeach()
 
-set(reference "otterbrix/0.0.0-package-test@package_test/tmp")
+set(version "0.0.0-package-test")
+set(user "package_test")
+set(channel "tmp")
+set(reference "otterbrix/${version}@${user}/${channel}")
 
 function(run_step name)
     execute_process(COMMAND ${ARGN}
@@ -31,10 +34,9 @@ foreach(file demo_ast.hpp demo_extension.cpp demo_extension.hpp demo_gram.y demo
 endforeach()
 file(WRITE "${WORK_DIR}/conanfile.txt" "[requires]\n${reference}\n\n[generators]\nCMakeDeps\nCMakeToolchain\n")
 
-string(REGEX MATCH "^otterbrix/([^@]+)@([^/]+)/(.+)$" parsed "${reference}")
 run_step("conan export-pkg"
          "${CONAN}" export-pkg "${SOURCE_DIR}" -pr:h "${PROFILE}" -pr:b default
-         --version "${CMAKE_MATCH_1}" --user "${CMAKE_MATCH_2}" --channel "${CMAKE_MATCH_3}"
+         --version "${version}" --user "${user}" --channel "${channel}"
          -of "${BINARY_DIR}" --test-folder=)
 run_step("conan install" "${CONAN}" install "${WORK_DIR}" -pr:h "${PROFILE}" -pr:b default -of "${WORK_DIR}/build")
 # The package's own bison/flex wrappers: a prebuilt bison carries the m4 path of the machine that built it.

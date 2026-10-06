@@ -28,7 +28,7 @@
 #include <vector>
 
 #include "../../../components/table/test/fault_injection_file.hpp"
-#include <components/log/test_log.hpp>
+#include <components/log/test/test_log.hpp>
 #include <services/disk/tests/test_directory.hpp>
 
 // Every crash here goes through the real T3 fault seam driving table_storage_t's production
@@ -113,7 +113,7 @@ namespace {
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
 
         explicit torn_manager_t(const std::filesystem::path& path)
-            : log(make_test_log("python", "/tmp/docker_logs/"))
+            : log(make_test_log())
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
                 configuration::config_disk c;

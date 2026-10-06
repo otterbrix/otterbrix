@@ -4,18 +4,13 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <components/catalog/catalog_oids.hpp>
-#include <components/catalog/helpers.hpp>
-#include <components/physical_plan/operators/operator_data.hpp>
 #include <components/table/test/fault_injection_file.hpp>
-#include <services/disk/manager_disk.hpp>
 #include <services/wal/wal_page.hpp>
 
 #include <cstdint>
 #include <filesystem>
-#include <limits>
 #include <memory>
 #include <string>
-#include <thread>
 
 // Refuse the WAL write behind DROP's catalog scrub (DEV_MODE seam, services/wal/wal_page.hpp)
 // and assert CONTENT after COMMIT, not ROLLBACK, so a scrub that silently no-oped couldn't pass.
@@ -52,67 +47,36 @@ namespace {
     // "the read refused" — distinct from every honest row count, including zero.
     constexpr std::size_t kReadRefused = static_cast<std::size_t>(-1);
 
-    // Reads the catalog as a snapshot that sees every COMMITTED row.
-    template<typename Key>
-    core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>
-    catalog_chunks_with(otterbrix::otterbrix_t& space, catalog::oid_t table_oid, std::uint64_t key_col, Key key) {
-        auto* resource = space.dispatcher()->resource();
-        auto td = table::transaction_data::committed();
-        execution_context_t exec_ctx{otterbrix::session_id_t{}, td, {}};
-        std::pmr::vector<std::uint64_t> key_cols(resource);
-        key_cols.emplace_back(key_col);
-        auto [_, fut] = actor_zeta::otterbrix::send(space.engine().disk_address(),
-                                                    &services::disk::manager_disk_t::read_chunks_by_key,
-                                                    exec_ctx,
-                                                    table_oid,
-                                                    std::move(key_cols),
-                                                    components::operators::make_key_chunk(resource, key),
-                                                    std::pmr::vector<std::uint64_t>{resource});
-        for (int i = 0; i < 2000000 && !fut.is_ready(); ++i) {
-            std::this_thread::yield();
-        }
-        REQUIRE(fut.is_ready());
-        return std::move(fut).take_ready();
-    }
-
-    template<typename Key>
-    std::size_t
-    catalog_rows_with(otterbrix::otterbrix_t& space, catalog::oid_t table_oid, std::uint64_t key_col, Key key) {
-        auto batches = catalog_chunks_with(space, table_oid, key_col, key);
-        if (batches.has_error()) {
+    std::size_t pg_class_rows_named(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& name) {
+        auto cur =
+            test_helpers::exec(dispatcher, "SELECT relname FROM pg_catalog.pg_class WHERE relname = '" + name + "';");
+        if (cur->is_error()) {
             return kReadRefused;
         }
-        std::size_t rows = 0;
-        for (const auto& chunk : batches.value()) {
-            rows += static_cast<std::size_t>(chunk.size());
-        }
-        return rows;
+        return cur->size();
     }
 
-    std::size_t pg_class_rows_named(otterbrix::otterbrix_t& space, const std::string& name) {
-        return catalog_rows_with(space,
-                                 catalog::well_known_oid::pg_class_table,
-                                 catalog::pg_class_col::relname,
-                                 std::string_view{name});
-    }
-
-    catalog::oid_t table_oid_named(otterbrix::otterbrix_t& space, const std::string& name) {
-        auto batches = catalog_chunks_with(space,
-                                           catalog::well_known_oid::pg_class_table,
-                                           catalog::pg_class_col::relname,
-                                           std::string_view{name});
-        REQUIRE_FALSE(batches.has_error());
-        for (const auto& chunk : batches.value()) {
-            for (uint64_t i = 0; i < chunk.size(); ++i) {
-                if (!chunk.is_null(0, i)) {
-                    return static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
-                }
+    catalog::oid_t table_oid_named(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& name) {
+        auto cur =
+            test_helpers::exec(dispatcher, "SELECT oid FROM pg_catalog.pg_class WHERE relname = '" + name + "';");
+        REQUIRE(cur->is_success());
+        for (const auto& chunk : cur->chunks()) {
+            if (chunk.size() != 0) {
+                return static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, 0));
             }
         }
         return catalog::INVALID_OID;
     }
 
-    // added_at_commit_id is column 10 of the LIVE row, dropped_at_commit_id column 11 of the TOMBSTONE row.
+    std::size_t pg_index_rows_for(otterbrix::wrapper_dispatcher_t* dispatcher, catalog::oid_t index_oid) {
+        auto cur = test_helpers::exec(dispatcher,
+                                      "SELECT indexrelid FROM pg_catalog.pg_index WHERE indexrelid = " +
+                                          std::to_string(index_oid) + ";");
+        REQUIRE(cur->is_success());
+        return cur->size();
+    }
+
+    // added_at_commit_id is read off the LIVE row, dropped_at_commit_id off the TOMBSTONE row.
     struct column_rows_t {
         std::size_t live = 0;
         std::size_t tombstones = 0;
@@ -120,35 +84,29 @@ namespace {
         std::int64_t dropped_at_commit_id = 0;
     };
 
-    column_rows_t
-    pg_attribute_rows_for(otterbrix::otterbrix_t& space, catalog::oid_t table_oid, std::string_view attname) {
-        auto batches = catalog_chunks_with(space,
-                                           catalog::well_known_oid::pg_attribute_table,
-                                           catalog::pg_attribute_col::attrelid,
-                                           table_oid);
-        REQUIRE_FALSE(batches.has_error());
+    column_rows_t pg_attribute_rows_for(otterbrix::wrapper_dispatcher_t* dispatcher,
+                                        catalog::oid_t table_oid,
+                                        std::string_view attname) {
+        auto cur = test_helpers::exec(dispatcher,
+                                      "SELECT attisdropped, added_at_commit_id, dropped_at_commit_id FROM "
+                                      "pg_catalog.pg_attribute WHERE attrelid = " +
+                                          std::to_string(table_oid) + " AND attname = '" + std::string(attname) +
+                                          "';");
+        REQUIRE(cur->is_success());
         column_rows_t out{};
-        for (const auto& chunk : batches.value()) {
+        for (const auto& chunk : cur->chunks()) {
             for (uint64_t i = 0; i < chunk.size(); ++i) {
-                if (chunk.is_null(2, i)) {
-                    continue;
-                }
-                // Bind before comparing: get_value<string_view> points into the chunk's own buffer.
-                const auto name_cell = chunk.get_value<std::string_view>(2, i);
-                if (name_cell != attname) {
-                    continue;
-                }
-                const bool dropped = !chunk.is_null(7, i) && chunk.get_value<bool>(7, i);
+                const bool dropped = !chunk.is_null(0, i) && chunk.get_value<bool>(0, i);
                 if (dropped) {
                     ++out.tombstones;
-                    if (chunk.column_count() > 11 && !chunk.is_null(11, i)) {
-                        out.dropped_at_commit_id = chunk.get_value<std::int64_t>(11, i);
+                    if (!chunk.is_null(2, i)) {
+                        out.dropped_at_commit_id = chunk.get_value<std::int64_t>(2, i);
                     }
                     continue;
                 }
                 ++out.live;
-                if (chunk.column_count() > 10 && !chunk.is_null(10, i)) {
-                    out.added_at_commit_id = chunk.get_value<std::int64_t>(10, i);
+                if (!chunk.is_null(1, i)) {
+                    out.added_at_commit_id = chunk.get_value<std::int64_t>(1, i);
                 }
             }
         }
@@ -183,11 +141,11 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::drop_table_fails_when_
     wal_fault_scope_t fault;
     fault.faulty_marker = "wal_"; // WAL segment files only; the .otbx files stay untouched
 
-    otterbrix::otterbrix_t space(test_open_engine(config));
+    test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     seed_wide_table(dispatcher);
 
-    REQUIRE(pg_class_rows_named(space, kTableName) == 1);
+    REQUIRE(pg_class_rows_named(dispatcher, kTableName) == 1);
 
     auto txn = otterbrix::session_id_t();
     REQUIRE(dispatcher->execute_sql(txn, "BEGIN;")->is_success());
@@ -206,7 +164,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::drop_table_fails_when_
     INFO("COMMIT after the refused DROP TABLE: "
          << (committed->is_error() ? std::string(committed->get_error().what.c_str()) : std::string("success")));
 
-    const auto rows = pg_class_rows_named(space, kTableName);
+    const auto rows = pg_class_rows_named(dispatcher, kTableName);
     INFO("pg_class rows named '" << kTableName << "' after the refused DROP TABLE + COMMIT: " << rows);
     CHECK(rows == 1);
 }
@@ -217,17 +175,17 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::a_healthy_drop_table_s
     auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
-    otterbrix::otterbrix_t space(test_open_engine(config));
+    test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     seed_wide_table(dispatcher);
-    CHECK(pg_class_rows_named(space, kTableName) == 1);
+    CHECK(pg_class_rows_named(dispatcher, kTableName) == 1);
 
     auto txn = otterbrix::session_id_t();
     REQUIRE(dispatcher->execute_sql(txn, "BEGIN;")->is_success());
     REQUIRE(dispatcher->execute_sql(txn, "DROP TABLE del." + kTableName + ";")->is_success());
     REQUIRE(dispatcher->execute_sql(txn, "COMMIT;")->is_success());
 
-    CHECK(pg_class_rows_named(space, kTableName) == 0);
+    CHECK(pg_class_rows_named(dispatcher, kTableName) == 0);
 }
 
 // delete_pg_catalog_rows_inner's scan must carry ctx->txn, or it can't see an unpublished row.
@@ -236,14 +194,14 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::a_column_added_and_dro
     auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
-    otterbrix::otterbrix_t space(test_open_engine(config));
+    test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     const std::string table = "add_drop_t";
     seed_plain_table(dispatcher, table);
 
-    const auto table_oid = table_oid_named(space, table);
+    const auto table_oid = table_oid_named(dispatcher, table);
     REQUIRE(table_oid != catalog::INVALID_OID);
-    REQUIRE(pg_attribute_rows_for(space, table_oid, "c").live == 0);
+    REQUIRE(pg_attribute_rows_for(dispatcher, table_oid, "c").live == 0);
 
     auto txn = otterbrix::session_id_t();
     REQUIRE(dispatcher->execute_sql(txn, "BEGIN;")->is_success());
@@ -260,7 +218,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::a_column_added_and_dro
     CHECK(committed->is_success());
 
     // The DROP's tombstone legitimately stays behind: attnum is never reused.
-    const auto rows = pg_attribute_rows_for(space, table_oid, "c");
+    const auto rows = pg_attribute_rows_for(dispatcher, table_oid, "c");
     INFO("pg_attribute rows for column 'c' after COMMIT: live=" << rows.live << " tombstones=" << rows.tombstones);
     CHECK(rows.live == 0);
 }
@@ -271,19 +229,19 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::a_column_added_and_dro
     auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
-    otterbrix::otterbrix_t space(test_open_engine(config));
+    test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     const std::string table = "add_drop_ac_t";
     seed_plain_table(dispatcher, table);
 
-    const auto table_oid = table_oid_named(space, table);
+    const auto table_oid = table_oid_named(dispatcher, table);
     REQUIRE(table_oid != catalog::INVALID_OID);
 
     REQUIRE(test_helpers::exec(dispatcher, "ALTER TABLE del." + table + " ADD COLUMN c bigint;")->is_success());
-    REQUIRE(pg_attribute_rows_for(space, table_oid, "c").live == 1);
+    REQUIRE(pg_attribute_rows_for(dispatcher, table_oid, "c").live == 1);
 
     REQUIRE(test_helpers::exec(dispatcher, "ALTER TABLE del." + table + " DROP COLUMN c;")->is_success());
-    CHECK(pg_attribute_rows_for(space, table_oid, "c").live == 0);
+    CHECK(pg_attribute_rows_for(dispatcher, table_oid, "c").live == 0);
 }
 
 // update_pg_attribute_commit_id_field_inner must scan with ctx.txn, or use_inserted_version
@@ -293,12 +251,12 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_in_transaction_add_
     auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
-    otterbrix::otterbrix_t space(test_open_engine(config));
+    test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     const std::string table = "added_at_t";
     seed_plain_table(dispatcher, table);
 
-    const auto table_oid = table_oid_named(space, table);
+    const auto table_oid = table_oid_named(dispatcher, table);
     REQUIRE(table_oid != catalog::INVALID_OID);
 
     auto txn = otterbrix::session_id_t();
@@ -306,7 +264,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_in_transaction_add_
     REQUIRE(dispatcher->execute_sql(txn, "ALTER TABLE del." + table + " ADD COLUMN c bigint;")->is_success());
     REQUIRE(dispatcher->execute_sql(txn, "COMMIT;")->is_success());
 
-    const auto rows = pg_attribute_rows_for(space, table_oid, "c");
+    const auto rows = pg_attribute_rows_for(dispatcher, table_oid, "c");
     CHECK(rows.live == 1);
     CHECK(rows.added_at_commit_id != 0);
 }
@@ -317,22 +275,22 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_autocommit_add_colu
     auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
-    otterbrix::otterbrix_t space(test_open_engine(config));
+    test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     const std::string table = "added_at_auto_t";
     seed_plain_table(dispatcher, table);
 
-    const auto table_oid = table_oid_named(space, table);
+    const auto table_oid = table_oid_named(dispatcher, table);
     REQUIRE(table_oid != catalog::INVALID_OID);
 
     REQUIRE(test_helpers::exec(dispatcher, "ALTER TABLE del." + table + " ADD COLUMN c bigint;")->is_success());
 
-    const auto rows = pg_attribute_rows_for(space, table_oid, "c");
+    const auto rows = pg_attribute_rows_for(dispatcher, table_oid, "c");
     CHECK(rows.live == 1);
     CHECK(rows.added_at_commit_id != 0);
 
     // CREATE TABLE passes added_at_commit_id=0 on purpose ("always visible"); nothing backfills it.
-    CHECK(pg_attribute_rows_for(space, table_oid, "a").added_at_commit_id == 0);
+    CHECK(pg_attribute_rows_for(dispatcher, table_oid, "a").added_at_commit_id == 0);
 }
 
 // One ALTER alone cannot reach merge_update_loop_internal's leg; a second patch does, hence two here.
@@ -341,19 +299,19 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::two_added_columns_each
     auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
-    otterbrix::otterbrix_t space(test_open_engine(config));
+    test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     const std::string table = "added_at_twice_t";
     seed_plain_table(dispatcher, table);
 
-    const auto table_oid = table_oid_named(space, table);
+    const auto table_oid = table_oid_named(dispatcher, table);
     REQUIRE(table_oid != catalog::INVALID_OID);
 
     REQUIRE(test_helpers::exec(dispatcher, "ALTER TABLE del." + table + " ADD COLUMN c bigint;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "ALTER TABLE del." + table + " ADD COLUMN d bigint;")->is_success());
 
-    const auto c = pg_attribute_rows_for(space, table_oid, "c");
-    const auto d = pg_attribute_rows_for(space, table_oid, "d");
+    const auto c = pg_attribute_rows_for(dispatcher, table_oid, "c");
+    const auto d = pg_attribute_rows_for(dispatcher, table_oid, "d");
     CHECK(c.live == 1);
     CHECK(d.live == 1);
     CHECK(c.added_at_commit_id != 0);
@@ -363,7 +321,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::two_added_columns_each
     // A third ALTER runs the merge leg again: it used to come back with a DANGLING attname.
     // Floor: test_update_merge.cpp, a_merged_string_update_owns_its_bytes.
     REQUIRE(test_helpers::exec(dispatcher, "ALTER TABLE del." + table + " ADD COLUMN e bigint;")->is_success());
-    const auto e = pg_attribute_rows_for(space, table_oid, "e");
+    const auto e = pg_attribute_rows_for(dispatcher, table_oid, "e");
     CHECK(e.live == 1);
     CHECK(e.added_at_commit_id > d.added_at_commit_id);
 
@@ -387,20 +345,20 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::a_dropped_columns_tomb
     auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
-    otterbrix::otterbrix_t space(test_open_engine(config));
+    test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     const std::string table = "dropped_at_t";
     seed_plain_table(dispatcher, table);
 
-    const auto table_oid = table_oid_named(space, table);
+    const auto table_oid = table_oid_named(dispatcher, table);
     REQUIRE(table_oid != catalog::INVALID_OID);
 
     REQUIRE(test_helpers::exec(dispatcher, "ALTER TABLE del." + table + " ADD COLUMN c bigint;")->is_success());
-    const auto added = pg_attribute_rows_for(space, table_oid, "c");
+    const auto added = pg_attribute_rows_for(dispatcher, table_oid, "c");
     REQUIRE(added.live == 1);
 
     REQUIRE(test_helpers::exec(dispatcher, "ALTER TABLE del." + table + " DROP COLUMN c;")->is_success());
-    const auto rows = pg_attribute_rows_for(space, table_oid, "c");
+    const auto rows = pg_attribute_rows_for(dispatcher, table_oid, "c");
     CHECK(rows.live == 0);
     REQUIRE(rows.tombstones == 1);
     CHECK(rows.dropped_at_commit_id != 0);
@@ -421,15 +379,15 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_added_columns_commi
 
     INFO("phase 1: ALTER ... ADD COLUMN; the scope exit checkpoints");
     {
-        otterbrix::otterbrix_t space(test_open_engine(config));
+        test_spaces space(config);
         auto* dispatcher = space.dispatcher();
         seed_plain_table(dispatcher, table);
 
-        table_oid = table_oid_named(space, table);
+        table_oid = table_oid_named(dispatcher, table);
         REQUIRE(table_oid != catalog::INVALID_OID);
 
         REQUIRE(test_helpers::exec(dispatcher, "ALTER TABLE del." + table + " ADD COLUMN c bigint;")->is_success());
-        const auto rows = pg_attribute_rows_for(space, table_oid, "c");
+        const auto rows = pg_attribute_rows_for(dispatcher, table_oid, "c");
         REQUIRE(rows.live == 1);
         REQUIRE(rows.added_at_commit_id != 0);
         added_at_before = rows.added_at_commit_id;
@@ -437,10 +395,10 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_added_columns_commi
 
     INFO("phase 2: reopen the same directory — the stamp has to come back off the disk");
     {
-        otterbrix::otterbrix_t space(test_open_engine(config));
+        test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
-        const auto rows = pg_attribute_rows_for(space, table_oid, "c");
+        const auto rows = pg_attribute_rows_for(dispatcher, table_oid, "c");
         INFO("added_at_commit_id was " << added_at_before << " before the restart and " << rows.added_at_commit_id
                                        << " after");
         CHECK(rows.live == 1);
@@ -458,10 +416,10 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_added_columns_commi
 
     INFO("phase 3: a second restart, so the row written after the first one is covered too");
     {
-        otterbrix::otterbrix_t space(test_open_engine(config));
+        test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
-        const auto rows = pg_attribute_rows_for(space, table_oid, "c");
+        const auto rows = pg_attribute_rows_for(dispatcher, table_oid, "c");
         INFO("added_at_commit_id after the second restart = " << rows.added_at_commit_id);
         CHECK(rows.live == 1);
         CHECK(rows.added_at_commit_id == added_at_before);
@@ -480,12 +438,12 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_in_transaction_rena
     auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
-    otterbrix::otterbrix_t space(test_open_engine(config));
+    test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     const std::string table = "rename_t";
     seed_plain_table(dispatcher, table);
 
-    const auto table_oid = table_oid_named(space, table);
+    const auto table_oid = table_oid_named(dispatcher, table);
     REQUIRE(table_oid != catalog::INVALID_OID);
 
     auto txn = otterbrix::session_id_t();
@@ -497,8 +455,8 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_in_transaction_rena
     CHECK(renamed->is_success());
     REQUIRE(dispatcher->execute_sql(txn, "COMMIT;")->is_success());
 
-    const auto old_rows = pg_attribute_rows_for(space, table_oid, "c");
-    const auto new_rows = pg_attribute_rows_for(space, table_oid, "d");
+    const auto old_rows = pg_attribute_rows_for(dispatcher, table_oid, "c");
+    const auto new_rows = pg_attribute_rows_for(dispatcher, table_oid, "d");
     INFO("pg_attribute after the in-transaction RENAME: live 'c'=" << old_rows.live << " live 'd'=" << new_rows.live);
     CHECK(old_rows.live == 0);
     CHECK(new_rows.live == 1);
@@ -509,7 +467,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_in_transaction_crea
     auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
-    otterbrix::otterbrix_t space(test_open_engine(config));
+    test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     const std::string table = "indexed_t";
     seed_plain_table(dispatcher, table);
@@ -519,11 +477,10 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_in_transaction_crea
     REQUIRE(dispatcher->execute_sql(txn, "CREATE INDEX one_row_idx ON del." + table + " (a);")->is_success());
     REQUIRE(dispatcher->execute_sql(txn, "COMMIT;")->is_success());
 
-    const auto index_oid = table_oid_named(space, "one_row_idx");
+    const auto index_oid = table_oid_named(dispatcher, "one_row_idx");
     REQUIRE(index_oid != catalog::INVALID_OID);
 
-    const auto rows =
-        catalog_rows_with(space, catalog::well_known_oid::pg_index_table, catalog::pg_index_col::indexrelid, index_oid);
+    const auto rows = pg_index_rows_for(dispatcher, index_oid);
     INFO("pg_index rows for indexrelid " << static_cast<unsigned>(index_oid)
                                          << " after the in-transaction CREATE INDEX: " << rows);
     CHECK(rows == 1);

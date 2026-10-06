@@ -99,11 +99,7 @@ inline otterbrix::base_otterbrix_t::host_ptr test_open_engine(const configuratio
 }
 
 inline otterbrix::otterbrix_ptr test_make_otterbrix(const configuration::config& config) {
-    auto made = otterbrix::make_otterbrix(config);
-    if (made.has_error()) {
-        FAIL("the engine refused to start at '" << config.main_path.string() << "': " << made.error().what);
-    }
-    return made.value();
+    return otterbrix::otterbrix_ptr{new otterbrix::otterbrix_t(test_open_engine(config))};
 }
 
 class test_spaces final : public otterbrix::base_otterbrix_t {
@@ -112,11 +108,39 @@ public:
         : otterbrix::base_otterbrix_t(test_open_engine(config, primitives)) {}
 };
 
+// A test reads the catalog through SQL; only one that corrupts it on purpose writes through the disk actor.
+class catalog_forging_spaces_t final : public otterbrix::base_otterbrix_t {
+public:
+    explicit catalog_forging_spaces_t(const configuration::config& config)
+        : otterbrix::base_otterbrix_t(test_open_engine(config)) {}
+
+    actor_zeta::address_t disk_address() const noexcept { return engine().disk_address(); }
+};
+
 // Named, not global, so it can't collide with anonymous-namespace exec/seed helpers other test files define.
 namespace test_helpers {
 
     inline components::cursor::cursor_t_ptr exec(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& sql) {
         return dispatcher->execute_sql(otterbrix::session_id_t(), sql);
+    }
+
+    inline bool ok(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& sql) {
+        return exec(dispatcher, sql)->is_success();
+    }
+
+    // A crash image: the live directory copied as it lies on disk, replacing whatever `to` held.
+    inline void copy_crash_image(const std::filesystem::path& from, const std::filesystem::path& to) {
+        std::error_code ec;
+        std::filesystem::remove_all(to, ec);
+        if (!ec) {
+            std::filesystem::create_directories(to.parent_path(), ec);
+        }
+        if (!ec) {
+            std::filesystem::copy(from, to, std::filesystem::copy_options::recursive, ec);
+        }
+        if (ec) {
+            FAIL("copy_crash_image: '" << from.string() << "' -> '" << to.string() << "': " << ec.message());
+        }
     }
 
     // No disk flag and no wal flag: every table is disk-backed and every write is journalled,

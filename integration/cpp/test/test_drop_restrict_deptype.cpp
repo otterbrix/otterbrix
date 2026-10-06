@@ -16,7 +16,6 @@
 #include <components/logical_plan/execution_plan.hpp>
 #include <components/logical_plan/node_alter_table.hpp>
 #include <components/logical_plan/node_drop.hpp>
-#include <components/physical_plan/operators/operator_data.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <services/disk/manager_disk.hpp>
 
@@ -25,6 +24,7 @@
 #include <limits>
 #include <string>
 #include <thread>
+#include <core/tests/wait_ready.hpp>
 
 namespace {
 
@@ -38,78 +38,33 @@ namespace {
 
     namespace catalog = components::catalog;
 
-    // Disk actor runs on its own scheduler; poll rather than block-wait.
-    template<typename Future>
-    void spin_until_ready(Future& fut) {
-        for (int i = 0; i < 2000000 && !fut.is_ready(); ++i) {
-            std::this_thread::yield();
-        }
-        REQUIRE(fut.is_ready());
-    }
-
-    template<typename Key>
-    core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>
-    catalog_chunks_with(otterbrix::otterbrix_t& space, catalog::oid_t table_oid, std::uint64_t key_col, Key key) {
-        auto* resource = space.dispatcher()->resource();
-        components::table::transaction_data td{0, 0};
-        td.snapshot_horizon = std::numeric_limits<uint64_t>::max();
-        components::execution_context_t exec_ctx{otterbrix::session_id_t{}, td, {}};
-        std::pmr::vector<std::uint64_t> key_cols(resource);
-        key_cols.emplace_back(key_col);
-        auto [_, fut] = actor_zeta::otterbrix::send(space.engine().disk_address(),
-                                                    &services::disk::manager_disk_t::read_chunks_by_key,
-                                                    exec_ctx,
-                                                    table_oid,
-                                                    std::move(key_cols),
-                                                    components::operators::make_key_chunk(resource, key),
-                                                    std::pmr::vector<std::uint64_t>{resource});
-        spin_until_ready(fut);
-        return std::move(fut).take_ready();
-    }
-
-    catalog::oid_t table_oid_named(otterbrix::otterbrix_t& space, const std::string& name) {
-        auto batches = catalog_chunks_with(space,
-                                           catalog::well_known_oid::pg_class_table,
-                                           catalog::pg_class_col::relname,
-                                           std::string_view{name});
-        REQUIRE_FALSE(batches.has_error());
-        for (const auto& chunk : batches.value()) {
-            for (uint64_t i = 0; i < chunk.size(); ++i) {
-                if (!chunk.is_null(0, i)) {
-                    return static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
-                }
+    // The oid in column 0 of the first row `sql` answers; INVALID_OID when it answers none.
+    catalog::oid_t first_oid(otterbrix::wrapper_dispatcher_t* d, const std::string& sql) {
+        auto cur = exec(d, sql);
+        REQUIRE(cur->is_success());
+        for (const auto& chunk : cur->chunks()) {
+            if (chunk.size() != 0) {
+                return static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, 0));
             }
         }
         return catalog::INVALID_OID;
+    }
+
+    catalog::oid_t table_oid_named(otterbrix::wrapper_dispatcher_t* d, const std::string& name) {
+        return first_oid(d, "SELECT oid FROM pg_catalog.pg_class WHERE relname = '" + name + "';");
     }
 
     // Mirrors operator_alter_column_drop.cpp's own resolution: pg_attribute
     // keyed on attrelid, matched by attname.
-    catalog::oid_t attoid_of(otterbrix::otterbrix_t& space, catalog::oid_t table_oid, const std::string& column) {
-        auto batches = catalog_chunks_with(space,
-                                           catalog::well_known_oid::pg_attribute_table,
-                                           catalog::pg_attribute_col::attrelid,
-                                           table_oid);
-        REQUIRE_FALSE(batches.has_error());
-        for (const auto& chunk : batches.value()) {
-            if (chunk.column_count() < 3) {
-                continue;
-            }
-            for (uint64_t i = 0; i < chunk.size(); ++i) {
-                if (chunk.is_null(0, i) || chunk.is_null(2, i)) {
-                    continue;
-                }
-                if (chunk.get_value<std::string_view>(2, i) == column) {
-                    return static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
-                }
-            }
-        }
-        return catalog::INVALID_OID;
+    catalog::oid_t attoid_of(otterbrix::wrapper_dispatcher_t* d, catalog::oid_t table_oid, const std::string& column) {
+        return first_oid(d,
+                         "SELECT attoid FROM pg_catalog.pg_attribute WHERE attrelid = " + std::to_string(table_oid) +
+                             " AND attname = '" + column + "';");
     }
 
     // No writer in this engine emits the (classid, deptype) combination the
     // case below needs, so it is forged directly through the disk manager.
-    void forge_depend_edge(otterbrix::otterbrix_t& space,
+    void forge_depend_edge(catalog_forging_spaces_t& space,
                            catalog::oid_t classid,
                            catalog::oid_t objid,
                            catalog::oid_t refclassid,
@@ -120,12 +75,13 @@ namespace {
         td.snapshot_horizon = std::numeric_limits<uint64_t>::max();
         components::execution_context_t exec_ctx{otterbrix::session_id_t{}, td, {}};
         auto row = catalog::build_pg_depend_row(resource, classid, objid, refclassid, refobjid, deptype);
-        auto [_, fut] = actor_zeta::otterbrix::send(space.engine().disk_address(),
+        auto [_, fut] = actor_zeta::otterbrix::send(space.disk_address(),
                                                     &services::disk::manager_disk_t::append_pg_catalog_row,
                                                     exec_ctx,
                                                     catalog::well_known_oid::pg_depend_table,
                                                     std::move(row));
-        spin_until_ready(fut);
+        // Disk actor runs on its own scheduler; poll rather than block-wait.
+        REQUIRE(test_helpers::wait_ready(fut));
         auto appended = std::move(fut).take_ready();
         REQUIRE_FALSE(appended.has_error());
     }
@@ -259,16 +215,16 @@ TEST_CASE("integration::cpp::drop_restrict::column_referenced_by_a_foreign_key_i
 TEST_CASE("integration::cpp::drop_restrict::a_non_constraint_blocking_edge_refuses_the_column_drop") {
     auto config = make_test_config(fixture_path("foreign_blocker"));
     config.log.level = log_t::level::off;
-    otterbrix::otterbrix_t space(test_open_engine(config));
+    catalog_forging_spaces_t space(config);
     auto* d = space.dispatcher();
 
     run_ok(d, "CREATE DATABASE dr;");
     run_ok(d, "CREATE TABLE dr.t (a bigint, b bigint);");
     run_ok(d, "INSERT INTO dr.t (a, b) VALUES (1, 10);");
 
-    const auto table_oid = table_oid_named(space, "t");
+    const auto table_oid = table_oid_named(d, "t");
     REQUIRE(table_oid != components::catalog::INVALID_OID);
-    const auto att_a = attoid_of(space, table_oid, "a");
+    const auto att_a = attoid_of(d, table_oid, "a");
     REQUIRE(att_a != components::catalog::INVALID_OID);
 
     // An object in pg_class depending on column a through a NORMAL edge. Its oid
@@ -324,7 +280,7 @@ TEST_CASE("integration::cpp::drop_restrict::table_referenced_by_a_foreign_key_is
 TEST_CASE("integration::cpp::drop_restrict::a_normal_dependent_behind_an_owned_index_refuses_the_table_drop") {
     auto config = make_test_config(fixture_path("behind_auto_chain"));
     config.log.level = log_t::level::off;
-    otterbrix::otterbrix_t space(test_open_engine(config));
+    catalog_forging_spaces_t space(config);
     auto* d = space.dispatcher();
 
     run_ok(d, "CREATE DATABASE dr;");
@@ -333,8 +289,8 @@ TEST_CASE("integration::cpp::drop_restrict::a_normal_dependent_behind_an_owned_i
     run_ok(d, "CREATE TABLE dr.other (b bigint);");
     run_ok(d, "INSERT INTO dr.other (b) VALUES (7);");
 
-    const auto index_oid = table_oid_named(space, "ix_a");
-    const auto other_oid = table_oid_named(space, "other");
+    const auto index_oid = table_oid_named(d, "ix_a");
+    const auto other_oid = table_oid_named(d, "other");
     REQUIRE(index_oid != components::catalog::INVALID_OID);
     REQUIRE(other_oid != components::catalog::INVALID_OID);
     forge_depend_edge(space,

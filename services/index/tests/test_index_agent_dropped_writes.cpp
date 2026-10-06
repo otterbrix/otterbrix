@@ -27,7 +27,7 @@
 #include <vector>
 
 #include "index_fixture_path.hpp"
-#include <components/log/test_log.hpp>
+#include <components/log/test/test_log.hpp>
 
 using components::session::session_id_t;
 using components::types::logical_value_t;
@@ -64,7 +64,7 @@ namespace {
 
 TEST_CASE("services::index::btree_index_agent_t refuses writes after its drop") {
     auto resource = core::pmr::otterbrix_resource();
-    auto log = make_test_log("python", "/tmp/docker_logs/");
+    auto log = make_test_log();
     const auto path = fresh_index_root("otterbrix_test_index_agent_dropped_writes_btree");
 
     auto agent_result =
@@ -158,7 +158,7 @@ TEST_CASE("services::index::btree_index_agent_t refuses writes after its drop") 
 
 TEST_CASE("services::index::bitcask_index_agent_t refuses writes after its drop") {
     auto resource = core::pmr::otterbrix_resource();
-    auto log = make_test_log("python", "/tmp/docker_logs/");
+    auto log = make_test_log();
     const auto path = fresh_index_root("otterbrix_test_index_agent_dropped_writes_bitcask");
 
     auto agent_result = bitcask_index_agent_t::create(&resource,

@@ -38,16 +38,19 @@ namespace {
             disk_path = base + "/disk";
             main_path = base + "/main";
 
+            error_message refusal{};
+            ptr = otterbrix_create(config(), &refusal);
+            REQUIRE(refusal.message == nullptr);
+        }
+
+        config_t config() const {
             config_t cfg{};
             cfg.level = 0;
             cfg.log_path = sv(log_path);
             cfg.wal_path = sv(wal_path);
             cfg.disk_path = sv(disk_path);
             cfg.main_path = sv(main_path);
-
-            error_message refusal{};
-            ptr = otterbrix_create(cfg, &refusal);
-            REQUIRE(refusal.message == nullptr);
+            return cfg;
         }
 
         ~test_db_t() {
@@ -452,12 +455,7 @@ TEST_CASE("c-api: a second engine on the same main_path is refused", "[c-api][li
     test_db_t first("same_main_path");
     REQUIRE(first.ptr != nullptr);
 
-    config_t cfg{};
-    cfg.level = 0;
-    cfg.log_path = sv(first.log_path);
-    cfg.wal_path = sv(first.wal_path);
-    cfg.disk_path = sv(first.disk_path);
-    cfg.main_path = sv(first.main_path);
+    const config_t cfg = first.config();
 
     error_message refusal{};
     REQUIRE(otterbrix_create(cfg, &refusal) == nullptr);
@@ -493,12 +491,7 @@ TEST_CASE("c-api: a cursor and a value outlive otterbrix_destroy", "[c-api][life
     otterbrix_destroy(t.ptr);
     t.ptr = nullptr;
 
-    config_t cfg{};
-    cfg.level = 0;
-    cfg.log_path = sv(t.log_path);
-    cfg.wal_path = sv(t.wal_path);
-    cfg.disk_path = sv(t.disk_path);
-    cfg.main_path = sv(t.main_path);
+    const config_t cfg = t.config();
 
     CHECK(cursor_size(cur) == 1);
     char* name = cursor_column_name(cur, 0);

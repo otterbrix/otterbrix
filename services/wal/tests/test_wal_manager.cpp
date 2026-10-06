@@ -23,7 +23,7 @@
 #include <services/wal/wal_sync_mode.hpp>
 #include <thread>
 #include <unistd.h>
-#include <components/log/test_log.hpp>
+#include <components/log/test/test_log.hpp>
 
 using namespace services::wal;
 using namespace components::session;
@@ -72,7 +72,7 @@ struct test_wal_manager {
     test_wal_manager(const std::filesystem::path& path, std::uintmax_t auto_checkpoint_threshold_bytes = 0)
         : path_(path)
         , resource_()
-        , log_(make_test_log("python", "/tmp/docker_logs/"))
+        , log_(make_test_log())
         , scheduler_(new actor_zeta::shared_work(3, 1000))
         , config_([&]() {
             configuration::config_wal c(path);

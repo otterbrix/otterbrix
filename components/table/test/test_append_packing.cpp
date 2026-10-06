@@ -82,7 +82,7 @@ TEST_CASE("append_packing: blocks issued while appending stay proportional to th
 
     const uint64_t issued = bm.dev_issued_ids().size();
     const uint64_t block = tstorage::DEFAULT_BLOCK_ALLOC_SIZE;
-    WARN("[packing] " << ROWS << " rows, payload " << payload_bytes << " B: " << issued << " blocks issued");
+    INFO("[packing] " << ROWS << " rows, payload " << payload_bytes << " B: " << issued << " blocks issued");
     // The packed payload (strings + 8 B ids + offsets) fits twice the raw payload, plus the open tails.
     CHECK(issued * block <= 2 * payload_bytes + tstorage::partial_block_manager_t::MAX_OPEN_TAILS * block);
 

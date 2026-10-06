@@ -32,4 +32,14 @@ namespace test_helpers {
         return future.is_ready();
     }
 
+    // For a condition the engine reaches on its own threads: a counter, a flag a seam raised.
+    template<typename Predicate>
+    [[nodiscard]] bool wait_until(Predicate&& reached, std::chrono::steady_clock::duration limit = reply_deadline) {
+        const auto deadline = std::chrono::steady_clock::now() + limit;
+        while (!reached() && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        return reached();
+    }
+
 } // namespace test_helpers

@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <string>
 #include <thread>
+#include <core/tests/wait_ready.hpp>
 
 // PIN (loud-refusal policy): a reader that ARRIVES between the two phases of a checkpoint round
 // — after compact() renumbered the physical row ids, before repopulate_indexes_after_compaction
@@ -29,7 +30,6 @@ namespace {
     constexpr int64_t kRows = 3000;
     constexpr int64_t kSlide = 1000;
     constexpr int kAttempts = 6;
-    constexpr int kDelayMs = 100;
 
     struct repopulate_hold_gate_t final : components::operators::checkpoint_repopulate_gate_t {
         std::atomic<bool> armed{false};
@@ -58,17 +58,6 @@ namespace {
         gate_guard_t(const gate_guard_t&) = delete;
         gate_guard_t& operator=(const gate_guard_t&) = delete;
     };
-
-    bool wait_flag(const std::atomic<bool>& flag, std::chrono::seconds timeout) {
-        const auto deadline = std::chrono::steady_clock::now() + timeout;
-        while (!flag.load(std::memory_order_acquire)) {
-            if (std::chrono::steady_clock::now() > deadline) {
-                return false;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
-        return true;
-    }
 
     std::string probe_sql(int64_t probe_id) {
         return "SELECT id FROM rdb.t WHERE k = " + std::to_string(10 * probe_id) + ";";
@@ -148,20 +137,26 @@ TEST_CASE("integration::cpp::index_stale_window::reader_in_window_is_refused_not
         std::thread checkpointer([&] { cp_cur = d->execute_sql(cp_session, "CHECKPOINT;"); });
 
         INFO("the round must reach the between-phases seam");
-        REQUIRE(wait_flag(guard.gate.reached, std::chrono::seconds(30)));
+        REQUIRE(test_helpers::wait_until([&] { return guard.gate.reached.load(); }));
 
         // The round is parked: compaction BEHIND, index rebuild AHEAD. This reader arrives
         // inside the window.
         auto rd_session = otterbrix::session_id_t();
         components::cursor::cursor_t_ptr rd_cur;
-        std::thread reader([&] { rd_cur = d->execute_sql(rd_session, probe); });
+        std::atomic<bool> read_done{false};
+        std::thread reader([&] {
+            rd_cur = d->execute_sql(rd_session, probe);
+            read_done.store(true);
+        });
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(kDelayMs));
+        // The round stays parked until the reader has its answer, so the answer is the window's.
+        const bool answered_in_window = test_helpers::wait_until([&] { return read_done.load(); });
         guard.gate.released.store(true, std::memory_order_release);
         reader.join();
         checkpointer.join();
         guard.gate.reset();
 
+        REQUIRE(answered_in_window);
         REQUIRE(cp_cur->is_success());
 
         const char* shape = "clean";
@@ -220,6 +215,6 @@ TEST_CASE("integration::cpp::index_stale_window::reader_in_window_is_refused_not
     REQUIRE(missing == 0);
     REQUIRE(extra == 0);
     // ...and the reader in the window is REFUSED, not accidentally clean: the unfixed tree
-    // measured 6/6 corrupt at this delay, so 6/6 refusals is the deterministic expectation.
+    // measured 6/6 corrupt inside the window, so 6/6 refusals is the deterministic expectation.
     REQUIRE(refused == kAttempts);
 }

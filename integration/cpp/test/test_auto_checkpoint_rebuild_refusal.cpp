@@ -23,6 +23,7 @@
 #include <system_error>
 #include <thread>
 #include <vector>
+#include <core/tests/wait_ready.hpp>
 
 // A refused rebuild must abandon run_auto_checkpoint's round instead of falling through to
 // truncation, since nothing rebuilds an index at startup or during replay. Truncation is detected
@@ -287,11 +288,7 @@ namespace {
              ++i) {
             churn_once(d, next_id);
         }
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
-        while (services::wal::auto_checkpoint_rounds() == 0 && std::chrono::steady_clock::now() < deadline) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        }
-        return services::wal::auto_checkpoint_rounds() > 0;
+        return test_helpers::wait_until([] { return services::wal::auto_checkpoint_rounds() > 0; });
     }
 
 } // namespace
@@ -340,14 +337,19 @@ TEST_CASE("integration::cpp::auto_checkpoint_rebuild_refusal::a_refused_rebuild_
     // Must drain the deferred-delete queue before arming: its horizon sweep also lists the index
     // directory (bitcask_index_agent_t::pay_merge_debt), tripping the flush refusal instead of this rebuild.
     {
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
-        while (services::index::index_deferred_deletes() != 0 && std::chrono::steady_clock::now() < deadline) {
+        // Each churn commits, and a commit advances the horizon the sweep waits for.
+        const bool drained = test_helpers::wait_until([&] {
+            if (services::index::index_deferred_deletes() == 0) {
+                return true;
+            }
             churn_once(d, churn_id);
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        }
+            return false;
+        });
         INFO("the deferred-erase queue has to be empty before the fault goes in");
-        REQUIRE(services::index::index_deferred_deletes() == 0);
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        REQUIRE(drained);
+        // The sweep sends its erases before the meter reaches zero; a read through the index queues
+        // behind them, so its answer means the erases and their merge have run.
+        REQUIRE(index_disagreements_with_the_full_scan(d) == 0);
     }
 
     const auto bitcask_dir = find_bitcask_dir(config.disk.path);

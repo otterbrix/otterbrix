@@ -10,6 +10,7 @@
 #include <chrono>
 #include <string>
 #include <thread>
+#include <core/tests/wait_ready.hpp>
 
 // A builtin belongs to every registry copy, the disk agents' included, and a scan filter pushed to disk
 // runs it between batches; so a builtin is never unregistered.
@@ -42,17 +43,6 @@ namespace {
         gate_guard_t(const gate_guard_t&) = delete;
         gate_guard_t& operator=(const gate_guard_t&) = delete;
     };
-
-    bool wait_flag(const std::atomic<bool>& flag, std::chrono::seconds timeout) {
-        const auto deadline = std::chrono::steady_clock::now() + timeout;
-        while (!flag.load(std::memory_order_acquire)) {
-            if (std::chrono::steady_clock::now() > deadline) {
-                return false;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
-        return true;
-    }
 
     void seed(otterbrix::wrapper_dispatcher_t* d) {
         REQUIRE(exec(d, "CREATE DATABASE bdb;")->is_success());
@@ -103,7 +93,7 @@ TEST_CASE("integration::cpp::builtin_unregister::a_pushed_filter_outlives_an_unr
         [&] { reader_cursor = d->execute_sql(otterbrix::session_id_t(), "SELECT id FROM bdb.t WHERE abs(id) >= 0;"); });
 
     INFO("the reader must reach the between-batches seam");
-    REQUIRE(wait_flag(guard.gate.reached, std::chrono::seconds(30)));
+    REQUIRE(test_helpers::wait_until([&] { return guard.gate.reached.load(); }));
 
     std::atomic<bool> unregister_answered{false};
     core::error_t unregistered = core::error_t::no_error();
@@ -112,7 +102,7 @@ TEST_CASE("integration::cpp::builtin_unregister::a_pushed_filter_outlives_an_unr
         unregister_answered.store(true, std::memory_order_release);
     });
     // The reader's executor is parked in the scan, not blocked: the unregister reaches it between batches.
-    const bool answered_while_parked = wait_flag(unregister_answered, std::chrono::seconds(5));
+    const bool answered_while_parked = test_helpers::wait_until([&] { return unregister_answered.load(); });
 
     guard.gate.released.store(true, std::memory_order_release);
     reader.join();

@@ -20,6 +20,7 @@
 #include <cstdlib>
 #include <thread>
 #include <unordered_map>
+#include <core/tests/wait_ready.hpp>
 
 using namespace components;
 
@@ -104,6 +105,11 @@ namespace {
         std::atomic<int> next_on_open_ctx{0};
         std::atomic<int> destroyed_in_flight{0};
         std::array<std::atomic<bool>, kSlots> ready{};
+        // A fetch answers only once this many opens were issued: overlapping opens, by an event.
+        std::atomic<int> answer_when_opened{0};
+        // A fetch answers only after every fetch opened before it: uneven completion, by an event.
+        std::atomic<bool> answer_in_open_order{false};
+        std::atomic<bool> answer_wait_ran_out{false};
 
         void reset() {
             slots_used.store(0);
@@ -115,6 +121,9 @@ namespace {
             next_before_ready.store(0);
             next_on_open_ctx.store(0);
             destroyed_in_flight.store(0);
+            answer_when_opened.store(0);
+            answer_in_open_order.store(false);
+            answer_wait_ran_out.store(false);
             for (auto& r : ready) {
                 r.store(false);
             }
@@ -176,7 +185,7 @@ namespace {
 
     private:
         actor_zeta::unique_future<core::error_t> open_impl(components::pipeline::context_t* ctx) override {
-            open_probe().opens.fetch_add(1);
+            const int ordinal = open_probe().opens.fetch_add(1);
             open_probe().ready[slot_].store(false);
             const int in_flight = open_probe().fetches_in_flight.fetch_add(1) + 1;
             int peak = open_probe().peak_fetches_in_flight.load();
@@ -192,7 +201,16 @@ namespace {
             std::thread([p = std::move(promise),
                          outcome = std::move(outcome),
                          d = fetch_latency_,
-                         slot = slot_]() mutable {
+                         slot = slot_,
+                         ordinal]() mutable {
+                auto& probe = open_probe();
+                const bool may_answer = test_helpers::wait_until([&probe, ordinal] {
+                    return probe.opens.load() >= probe.answer_when_opened.load() &&
+                           (!probe.answer_in_open_order.load() || probe.fetches_done.load() >= ordinal);
+                });
+                if (!may_answer) {
+                    probe.answer_wait_ran_out.store(true);
+                }
                 std::this_thread::sleep_for(d);
                 open_probe().fetches_done.fetch_add(1);
                 open_probe().fetches_in_flight.fetch_sub(1);
@@ -343,7 +361,6 @@ namespace {
 
     // A hung executor must fail the run, not wedge it: the dispatcher wait has no deadline of its own.
     cursor::cursor_t_ptr execute_within_deadline(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& sql) {
-        constexpr auto deadline = std::chrono::seconds(30);
         std::atomic<bool> done{false};
         cursor::cursor_t_ptr cursor;
         std::thread worker([&] {
@@ -351,15 +368,11 @@ namespace {
             cursor = dispatcher->execute_sql(session, sql);
             done.store(true, std::memory_order_release);
         });
-        const auto until = std::chrono::steady_clock::now() + deadline;
-        while (!done.load(std::memory_order_acquire)) {
-            if (std::chrono::steady_clock::now() > until) {
-                std::fprintf(stderr,
-                             "extension_source: query exceeded %llds, executor hung\n",
-                             static_cast<long long>(deadline.count()));
-                std::abort();
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        if (!test_helpers::wait_until([&] { return done.load(std::memory_order_acquire); })) {
+            std::fprintf(stderr,
+                         "extension_source: query exceeded %llds, executor hung\n",
+                         static_cast<long long>(test_helpers::reply_deadline.count()));
+            std::abort();
         }
         worker.join();
         return cursor;
@@ -672,11 +685,13 @@ TEST_CASE("integration::cpp::extension_source::sources_open_in_parallel") {
     EXT_TEST_BOILERPLATE(integration_fixture_path("test_ext_parallel_open/base"))
     constexpr int kSources = 4;
     open_probe().reset();
+    open_probe().answer_when_opened.store(kSources);
     auto cursor = run_over_remote(dispatcher,
                                   n_way_join("s", kSources),
-                                  fetch_on_open_tables(res, "s", same_latency(kSources, std::chrono::milliseconds(50))));
+                                  fetch_on_open_tables(res, "s", same_latency(kSources, std::chrono::milliseconds(0))));
     REQUIRE(cursor->is_success());
     REQUIRE(cursor->size() == 2);
+    CHECK_FALSE(open_probe().answer_wait_ran_out.load());
     CHECK(open_probe().opens.load() == kSources);
     CHECK(open_probe().peak_fetches_in_flight.load() == kSources);
     CHECK(open_probe().opens_at_first_next.load() == kSources);
@@ -707,15 +722,13 @@ TEST_CASE("integration::cpp::extension_source::failed_open_awaits_the_rest") {
 TEST_CASE("integration::cpp::extension_source::uneven_open_latencies") {
     EXT_TEST_BOILERPLATE(integration_fixture_path("test_ext_uneven_open/base"))
     open_probe().reset();
-    auto cursor = run_over_remote(
-        dispatcher,
-        n_way_join("u", 3),
-        fetch_on_open_tables(
-            res,
-            "u",
-            {std::chrono::milliseconds(10), std::chrono::milliseconds(50), std::chrono::milliseconds(200)}));
+    open_probe().answer_in_open_order.store(true);
+    auto cursor = run_over_remote(dispatcher,
+                                  n_way_join("u", 3),
+                                  fetch_on_open_tables(res, "u", same_latency(3, std::chrono::milliseconds(0))));
     REQUIRE(cursor->is_success());
     REQUIRE(sorted_rows(cursor) == std::vector<std::vector<int64_t>>{{10, 11, 12}, {20, 21, 22}});
+    CHECK_FALSE(open_probe().answer_wait_ran_out.load());
     CHECK(open_probe().opens.load() == 3);
     CHECK(open_probe().next_before_ready.load() == 0);
 }

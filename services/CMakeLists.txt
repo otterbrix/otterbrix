@@ -6,6 +6,8 @@ set( ${PROJECT_NAME}_HEADERS
 )
 
 set(${PROJECT_NAME}_SOURCES
+        dev_pump.cpp
+
     # collection
         collection/executor.cpp
         collection/view_definition.cpp

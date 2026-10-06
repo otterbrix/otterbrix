@@ -1,4 +1,5 @@
 #include "dispatcher.hpp"
+#include <services/dev_pump.hpp>
 #include <atomic>
 
 #include <components/casts/default_casts.hpp>
@@ -200,6 +201,9 @@ namespace services::dispatcher {
                     poll_pending();
                 }
 
+#ifdef DEV_MODE
+                const dev_pump_wait_t pump_probe{in_flight.empty()};
+#endif
                 std::unique_lock<std::mutex> lk(mutex_);
                 pump_cv_.wait_for(lk, in_flight.empty() ? pump_.idle : pump_.in_flight, [this] {
                     return !inbox_.empty() || !loop_running_.load(std::memory_order_acquire);
@@ -1054,6 +1058,14 @@ namespace services::dispatcher {
         return txn;
     }
 
+#ifdef DEV_MODE
+    namespace {
+        std::atomic<std::uint64_t> g_statements_waited_turn{0};
+    } // namespace
+
+    std::uint64_t dev_statements_waited_turn() noexcept { return g_statements_waited_turn.load(); }
+#endif
+
     manager_dispatcher_t::unique_future<void>
     manager_dispatcher_t::take_turn_(components::session::session_id_t session,
                                      components::table::transaction_control_t control) {
@@ -1063,6 +1075,9 @@ namespace services::dispatcher {
             co_return;
         }
         trace(log_, "manager_dispatcher_t::take_turn_: session {} waits for its running transaction", session.data());
+#ifdef DEV_MODE
+        g_statements_waited_turn.fetch_add(1);
+#endif
         actor_zeta::promise<void> admitted(resource());
         auto turn = admitted.get_future();
         order.waiting.push_back(waiting_statement_t{control, std::move(admitted)});

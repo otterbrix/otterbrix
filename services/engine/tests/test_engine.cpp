@@ -7,6 +7,7 @@
 #include <components/sql/transformer/utils.hpp>
 #include <core/pmr.hpp>
 #include <services/dispatcher/dispatcher.hpp>
+#include <services/dev_pump.hpp>
 #include <services/engine/engine.hpp>
 
 #include <chrono>
@@ -15,7 +16,6 @@
 #include <optional>
 #include <string>
 #include <thread>
-#include <sys/resource.h>
 #include <unistd.h>
 #include <components/log/test/test_log.hpp>
 #include <core/tests/wait_ready.hpp>
@@ -133,58 +133,50 @@ TEST_CASE("services::engine::factory::a_failed_bootstrap_hands_out_no_engine") {
 
 namespace {
 
-    double process_cpu_seconds() {
-        rusage usage{};
-        REQUIRE(::getrusage(RUSAGE_SELF, &usage) == 0);
-        const auto seconds = [](const timeval& t) {
-            return static_cast<double>(t.tv_sec) + static_cast<double>(t.tv_usec) / 1e6;
-        };
-        return seconds(usage.ru_utime) + seconds(usage.ru_stime);
+    // The dispatcher, disk, index and WAL loops.
+    constexpr std::uint64_t kPumpLoops = 4;
+
+    // An idle interval no test outlives: a loop that sleeps it out instead of being woken never answers.
+    constexpr auto kNeverWakesByItself = std::chrono::hours(1);
+
+    bool every_loop_waits_idle() {
+        return test_helpers::wait_until([] { return services::dev_pump_idle_waiters() == kPumpLoops; });
     }
 
 } // namespace
 
-// Process CPU time, not per-thread: it is the one measure both macOS and Linux give without
-// naming the loop threads, and a spinning loop burns a whole core per wall second.
+// A spinning loop comes out of its wait over and over; an idle one waits for work or its interval.
 TEST_CASE("services::engine::pump::an_idle_engine_burns_no_cpu") {
     const auto root = test_root("idle_cpu");
     host_t host(root);
+    host.config.execution.pump.idle = kNeverWakesByItself;
     REQUIRE_FALSE(host.open().contains_error());
     REQUIRE(host.execute("CREATE DATABASE idle;")->is_success());
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    REQUIRE(every_loop_waits_idle());
 
-    const auto cpu_before = process_cpu_seconds();
-    std::this_thread::sleep_for(std::chrono::seconds(1));
-    const auto cpu_spent = process_cpu_seconds() - cpu_before;
-    INFO("CPU seconds spent by an idle engine over one wall second: " << cpu_spent);
-    CHECK(cpu_spent < 0.2);
+    const auto wakeups_before = services::dev_pump_wakeups();
+    for (int i = 0; i < 100000; ++i) {
+        std::this_thread::yield();
+    }
+    INFO("loop wake-ups while every loop was idle: " << services::dev_pump_wakeups() - wakeups_before);
+    CHECK(services::dev_pump_wakeups() == wakeups_before);
+    CHECK(services::dev_pump_idle_waiters() == kPumpLoops);
 }
 
-// A request wakes each idle loop it reaches, so it never waits out the idle interval.
-// The bound is half the idle interval, not an absolute latency: under gcc ASAN with
-// fast_unwind_on_malloc=0 the SELECT alone takes ~160 ms, while a missed wake-up costs the
-// remaining ~1.5 s of an idle wait.
+// A request wakes each idle loop it reaches: with an idle interval of an hour, a missed wake-up never answers.
 TEST_CASE("services::engine::pump::a_query_to_an_idle_engine_does_not_wait_for_the_idle_interval") {
-    constexpr auto idle = std::chrono::milliseconds(2000);
     const auto root = test_root("idle_latency");
     host_t host(root);
-    host.config.execution.pump.idle = idle;
+    host.config.execution.pump.idle = kNeverWakesByItself;
     REQUIRE_FALSE(host.open().contains_error());
     REQUIRE(host.execute("CREATE DATABASE lat;")->is_success());
     REQUIRE(host.execute("CREATE TABLE lat.t (id BIGINT);")->is_success());
     REQUIRE(host.execute("INSERT INTO lat.t (id) VALUES (1), (2);")->is_success());
-    const auto idle_for = idle + idle / 4;
-    std::this_thread::sleep_for(idle_for);
+    REQUIRE(every_loop_waits_idle());
 
-    const auto started = std::chrono::steady_clock::now();
     auto cur = host.execute("SELECT id FROM lat.t;");
-    const auto elapsed =
-        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 2);
-    INFO("a SELECT on an engine idle for " << idle_for.count() << " ms took " << elapsed.count()
-                                           << " ms, idle interval " << idle.count() << " ms");
-    CHECK(elapsed < idle / 2);
 }
 
 TEST_CASE("services::engine::pump::intervals_out_of_order_are_refused_at_startup") {

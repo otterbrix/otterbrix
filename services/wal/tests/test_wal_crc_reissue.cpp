@@ -29,6 +29,7 @@
 #include <services/wal/wal_page_reader.hpp>
 #include <services/wal/wal_reader.hpp>
 #include <components/log/test/test_log.hpp>
+#include <core/tests/wait_ready.hpp>
 
 // A CRC break must not make the allocator forget what is on disk: recover_from_disk() took the id
 // allocator's resume point from the same replay scan, so it resumed below ids still on disk and reissued them.
@@ -53,11 +54,7 @@ namespace {
 
     template<typename F>
     decltype(auto) await_ready(F& fut) {
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-        while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
-            std::this_thread::yield();
-        }
-        REQUIRE(fut.is_ready());
+        REQUIRE(test_helpers::wait_ready(fut));
         return std::move(fut).take_ready();
     }
 

@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <string>
 #include <thread>
+#include <core/tests/wait_ready.hpp>
 
 // index_type::hashed (bitcask) journals every committed statement (bitcask.txn.log/.applied); every other
 // index_type takes the bulk path and journals nothing. Row counts can't tell the routes apart -- both end
@@ -59,11 +60,7 @@ namespace {
     }
 
     void await_deferred_index_deletes() {
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-        while (services::index::index_deferred_deletes() != 0 && std::chrono::steady_clock::now() < deadline) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
-        REQUIRE(services::index::index_deferred_deletes() == 0);
+        REQUIRE(test_helpers::wait_until([] { return services::index::index_deferred_deletes() == 0; }));
     }
 
 } // namespace

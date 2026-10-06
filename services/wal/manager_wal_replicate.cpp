@@ -1,4 +1,5 @@
 #include "manager_wal_replicate.hpp"
+#include <services/dev_pump.hpp>
 
 #include <core/file/list_dir.hpp>
 
@@ -38,7 +39,7 @@ namespace services::wal {
     manager_wal_replicate_t::dev_park_round_(session_id_t session, auto_checkpoint_point_t point) {
         while (true) {
             const auto gate = g_auto_checkpoint_gate.load();
-            const auto park = gate == nullptr ? auto_checkpoint_park_t::go : gate(point);
+            const auto park = gate == nullptr ? auto_checkpoint_park_t::go : gate(point, round_end_waiter_.has_value());
             if (park == auto_checkpoint_park_t::on_index && manager_index_ != actor_zeta::address_t::empty_address()) {
                 auto [_ping, ping] = actor_zeta::otterbrix::send(manager_index_,
                                                                  &services::index::manager_index_t::all_indexed_oids,
@@ -229,6 +230,9 @@ namespace services::wal {
 
                 poll_auto_checkpoint_();
 
+#ifdef DEV_MODE
+                const dev_pump_wait_t pump_probe{in_flight.empty()};
+#endif
                 std::unique_lock<std::mutex> lock(mutex_);
                 pump_cv_.wait_for(lock, in_flight.empty() ? pump_.idle : pump_.in_flight, [this] {
                     return !inbox_.empty() || !loop_running_.load(std::memory_order_acquire);

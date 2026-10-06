@@ -26,6 +26,7 @@
 #include <thread>
 #include <unistd.h>
 #include <components/log/test/test_log.hpp>
+#include <core/tests/wait_ready.hpp>
 
 using namespace services::wal;
 using namespace components::session;
@@ -50,11 +51,7 @@ static const std::filesystem::path base_wal_worker_path =
 template<typename F>
 static decltype(auto) await_ready(F& fut) {
     // Wall-clock deadline: under TSAN or parallel-ctest oversubscription no fixed yield budget is safe.
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::yield();
-    }
-    REQUIRE(fut.is_ready());
+    REQUIRE(test_helpers::wait_ready(fut));
     return std::move(fut).take_ready();
 }
 

@@ -19,6 +19,7 @@
 #include <thread>
 #include <unistd.h>
 #include <vector>
+#include <core/tests/wait_ready.hpp>
 
 // A crash between compacting a table and rebuilding its indexes can leave a POST-COMPACT TABLE
 // UNDER PRE-COMPACT INDEXES that SURVIVES restart; closing this needs a durable fact — "these
@@ -219,12 +220,8 @@ TEST_CASE("integration::cpp::index_stale_marker_crash::a_restart_may_not_wire_an
                     ->is_success());
 
         {
-            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
-            while (services::index::index_deferred_deletes() != 0 && std::chrono::steady_clock::now() < deadline) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(5));
-            }
             INFO("the deferred-erase queue has to be empty before the fault goes in");
-            REQUIRE(services::index::index_deferred_deletes() == 0);
+            REQUIRE(test_helpers::wait_until([] { return services::index::index_deferred_deletes() == 0; }));
 
             // AND LANDED: a zero meter only proves the erase reached the mailbox, not that it finished.
             // MEASURED: shortening this wait to zero did not fail in 8 runs (5 idle, 3 under 24-way load).

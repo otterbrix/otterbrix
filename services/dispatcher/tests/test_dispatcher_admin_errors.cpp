@@ -25,6 +25,7 @@
 #include <services/wal/manager_wal_replicate.hpp>
 #include <components/log/test/test_log.hpp>
 #include <services/disk/tests/test_directory.hpp>
+#include <core/tests/wait_ready.hpp>
 
 // Pins that the pool-admin API answers a typed error, not a bare `bool`; that an executor
 // refusing to drop an overload stops the catalog purge; and that txn_accumulate_msg on a session
@@ -158,12 +159,7 @@ struct admin_fixture : actor_zeta::actor::actor_mixin<admin_fixture> {
 
     template<typename T>
     T pump(actor_zeta::unique_future<T>&& fut) {
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
-        while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
-            scheduler_->run(1000);
-            std::this_thread::yield();
-        }
-        REQUIRE(fut.is_ready());
+        REQUIRE(test_helpers::wait_ready(fut, scheduler_));
         return std::move(fut).take_ready();
     }
 

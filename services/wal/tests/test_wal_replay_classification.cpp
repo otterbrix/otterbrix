@@ -26,6 +26,7 @@
 #include <thread>
 #include <unistd.h>
 #include <components/log/test/test_log.hpp>
+#include <core/tests/wait_ready.hpp>
 
 // A directory name that doesn't round-trip through to_string(oid) is foreign and must be skipped by both
 // manager_wal_replicate_t's classification and wal_reader_t's replay, or its ids escape next_wal_id()
@@ -47,11 +48,7 @@ namespace {
 
     template<typename F>
     decltype(auto) await_ready(F& fut) {
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-        while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
-            std::this_thread::yield();
-        }
-        REQUIRE(fut.is_ready());
+        REQUIRE(test_helpers::wait_ready(fut));
         return std::move(fut).take_ready();
     }
 

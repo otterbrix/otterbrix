@@ -99,11 +99,7 @@ inline otterbrix::base_otterbrix_t::host_ptr test_open_engine(const configuratio
 }
 
 inline otterbrix::otterbrix_ptr test_make_otterbrix(const configuration::config& config) {
-    auto made = otterbrix::make_otterbrix(config);
-    if (made.has_error()) {
-        FAIL("the engine refused to start at '" << config.main_path.string() << "': " << made.error().what);
-    }
-    return made.value();
+    return otterbrix::otterbrix_ptr{new otterbrix::otterbrix_t(test_open_engine(config))};
 }
 
 class test_spaces final : public otterbrix::base_otterbrix_t {

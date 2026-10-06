@@ -141,7 +141,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::drop_table_fails_when_
     wal_fault_scope_t fault;
     fault.faulty_marker = "wal_"; // WAL segment files only; the .otbx files stay untouched
 
-    otterbrix::otterbrix_t space(test_open_engine(config));
+    test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     seed_wide_table(dispatcher);
 
@@ -175,7 +175,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::a_healthy_drop_table_s
     auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
-    otterbrix::otterbrix_t space(test_open_engine(config));
+    test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     seed_wide_table(dispatcher);
     CHECK(pg_class_rows_named(dispatcher, kTableName) == 1);
@@ -194,7 +194,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::a_column_added_and_dro
     auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
-    otterbrix::otterbrix_t space(test_open_engine(config));
+    test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     const std::string table = "add_drop_t";
     seed_plain_table(dispatcher, table);
@@ -229,7 +229,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::a_column_added_and_dro
     auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
-    otterbrix::otterbrix_t space(test_open_engine(config));
+    test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     const std::string table = "add_drop_ac_t";
     seed_plain_table(dispatcher, table);
@@ -251,7 +251,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_in_transaction_add_
     auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
-    otterbrix::otterbrix_t space(test_open_engine(config));
+    test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     const std::string table = "added_at_t";
     seed_plain_table(dispatcher, table);
@@ -275,7 +275,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_autocommit_add_colu
     auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
-    otterbrix::otterbrix_t space(test_open_engine(config));
+    test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     const std::string table = "added_at_auto_t";
     seed_plain_table(dispatcher, table);
@@ -299,7 +299,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::two_added_columns_each
     auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
-    otterbrix::otterbrix_t space(test_open_engine(config));
+    test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     const std::string table = "added_at_twice_t";
     seed_plain_table(dispatcher, table);
@@ -345,7 +345,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::a_dropped_columns_tomb
     auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
-    otterbrix::otterbrix_t space(test_open_engine(config));
+    test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     const std::string table = "dropped_at_t";
     seed_plain_table(dispatcher, table);
@@ -379,7 +379,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_added_columns_commi
 
     INFO("phase 1: ALTER ... ADD COLUMN; the scope exit checkpoints");
     {
-        otterbrix::otterbrix_t space(test_open_engine(config));
+        test_spaces space(config);
         auto* dispatcher = space.dispatcher();
         seed_plain_table(dispatcher, table);
 
@@ -395,7 +395,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_added_columns_commi
 
     INFO("phase 2: reopen the same directory — the stamp has to come back off the disk");
     {
-        otterbrix::otterbrix_t space(test_open_engine(config));
+        test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
         const auto rows = pg_attribute_rows_for(dispatcher, table_oid, "c");
@@ -416,7 +416,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_added_columns_commi
 
     INFO("phase 3: a second restart, so the row written after the first one is covered too");
     {
-        otterbrix::otterbrix_t space(test_open_engine(config));
+        test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
         const auto rows = pg_attribute_rows_for(dispatcher, table_oid, "c");
@@ -438,7 +438,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_in_transaction_rena
     auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
-    otterbrix::otterbrix_t space(test_open_engine(config));
+    test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     const std::string table = "rename_t";
     seed_plain_table(dispatcher, table);
@@ -467,7 +467,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_in_transaction_crea
     auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
-    otterbrix::otterbrix_t space(test_open_engine(config));
+    test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     const std::string table = "indexed_t";
     seed_plain_table(dispatcher, table);

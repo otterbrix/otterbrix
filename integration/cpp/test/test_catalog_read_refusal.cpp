@@ -168,7 +168,7 @@ namespace {
 
     constexpr std::size_t kReadRefused = static_cast<std::size_t>(-1);
 
-    std::size_t pg_proc_rows_named(otterbrix::otterbrix_t& space, const std::string& name) {
+    std::size_t pg_proc_rows_named(test_spaces& space, const std::string& name) {
         auto cur = test_helpers::exec(space.dispatcher(),
                                       "SELECT proname FROM pg_catalog.pg_proc WHERE proname = '" + name + "';");
         if (cur->is_error()) {
@@ -186,7 +186,7 @@ TEST_CASE("integration::cpp::test_catalog_read_refusal::register_udf_fails_when_
     config.log.level = log_t::level::off;
 
     {
-        otterbrix::otterbrix_t space(test_open_engine(config));
+        test_spaces space(config);
         auto* dispatcher = space.dispatcher();
         auto first = dispatcher->register_udf(otterbrix::session_id_t(), make_probe_unary(dispatcher->resource()));
         REQUIRE_FALSE(first.contains_error());
@@ -204,7 +204,7 @@ TEST_CASE("integration::cpp::test_catalog_read_refusal::register_udf_fails_when_
     std::vector<uint64_t> reads;
     {
         recording_scope_t recorder(reads, marker);
-        otterbrix::otterbrix_t probe(test_open_engine(probe_config));
+        test_spaces probe(probe_config);
         REQUIRE(pg_proc_rows_named(probe, kFuncName) == 1);
     }
     REQUIRE_FALSE(reads.empty());
@@ -225,7 +225,7 @@ TEST_CASE("integration::cpp::test_catalog_read_refusal::register_udf_fails_when_
     plan.fail_reads_at_location = data_block;
     one_table_fault_scope_t fault(plan, marker);
 
-    otterbrix::otterbrix_t space(test_open_engine(config));
+    test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     INFO("poisoned pg_proc block offset " << data_block);
     REQUIRE(plan.reads_failed > 0); // the poison landed, and the start survived it
@@ -255,7 +255,7 @@ TEST_CASE("integration::cpp::test_catalog_read_refusal::a_healthy_second_overloa
     auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
-    otterbrix::otterbrix_t space(test_open_engine(config));
+    test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
     auto first = dispatcher->register_udf(otterbrix::session_id_t(), make_probe_unary(dispatcher->resource()));

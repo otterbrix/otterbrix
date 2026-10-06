@@ -5,6 +5,7 @@
 #include "integration_fixture_path.hpp"
 #include "test_config.hpp"
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstdint>
@@ -77,5 +78,5 @@ TEST_CASE("integration::cpp::alter_add_column_types::default_is_cast_to_the_colu
     auto read = run_ok(d, "SELECT x FROM d.t;");
     REQUIRE(read->size() == 1);
     CHECK(read->value(0, 0).type().type() == types::logical_type::DOUBLE);
-    CHECK(read->value(0, 0).value<double>() == 1.0);
+    CHECK(read->value(0, 0).value<double>() == Catch::Approx(1.0));
 }

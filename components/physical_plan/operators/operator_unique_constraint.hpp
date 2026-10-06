@@ -31,6 +31,8 @@ namespace components::operators {
                                      std::vector<std::vector<std::string>> unique_groups,
                                      std::vector<std::vector<std::string>> conflict_groups = {});
 
+        actor_zeta::unique_future<core::error_t> check_rows(pipeline::context_t* ctx, const chunks_vector_t& in_chunks);
+
         const operator_data_ptr& conflict_rows() const noexcept { return conflict_rows_; }
         const std::pmr::vector<conflict_holder_t>& conflict_holders() const noexcept { return conflict_holders_; }
 

@@ -1219,7 +1219,7 @@ namespace services::dispatcher {
         out.created_storage_oids = txn_t->drain_created_storages();
         out.created_indexes = txn_t->drain_created_indexes();
         // No publish barrier here — txn_publish_msg runs it after storage/WAL, so no snapshot sees it half-flipped.
-        out.commit_id = txn_manager_.commit(session);
+        out.commit_id = txn_manager_.commit(session, &out.commit_view);
         co_return out;
     }
 

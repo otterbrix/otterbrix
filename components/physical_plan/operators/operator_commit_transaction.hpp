@@ -30,6 +30,12 @@ namespace components::operators {
 
     private:
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
+        // constraints can be broken between last test and commit attempt by a concurrent transaction
+        // TODO: check other constraints as well
+        actor_zeta::unique_future<core::error_t>
+        check_unique_keys_(pipeline::context_t* ctx,
+                           const components::table::transaction_data& commit_snapshot,
+                           const std::vector<components::pg_catalog_append_range_t>& appends);
         // Releases commit_id and undoes every write, as ROLLBACK would.
         actor_zeta::unique_future<void>
         refuse_(pipeline::context_t* ctx, components::table::txn_abort_drain_t undo, core::error_t refusal);

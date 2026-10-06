@@ -72,6 +72,8 @@ namespace components::table {
         uint64_t snapshot_horizon{std::numeric_limits<uint64_t>::max()};
         // Plain std::vector, not pmr: pmr allocators don't propagate on copy/move assignment.
         std::vector<uint64_t> in_flight_snapshot;
+        // Commit snapshot only
+        std::vector<uint64_t> committing;
     };
     [[nodiscard]] bool version_visible(const transaction_data& txn, uint64_t stamp) noexcept;
 

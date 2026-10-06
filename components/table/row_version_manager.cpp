@@ -27,7 +27,7 @@ namespace components::table {
             if (txn.transaction_id != 0 && id == txn.transaction_id)
                 return true;
             if (id >= TRANSACTION_ID_START)
-                return false;
+                return std::binary_search(txn.committing.begin(), txn.committing.end(), id);
             if (id > txn.snapshot_horizon)
                 return false;
             if (std::binary_search(txn.in_flight_snapshot.begin(), txn.in_flight_snapshot.end(), id))

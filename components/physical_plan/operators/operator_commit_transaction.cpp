@@ -1,7 +1,11 @@
 #include "operator_commit_transaction.hpp"
 
+#include <components/catalog/unique_key.hpp>
 #include <components/context/context.hpp>
 #include <components/context/execution_context.hpp>
+#include <components/logical_plan/node_catalog_resolve.hpp>
+#include <components/physical_plan/operators/operator_resolve_constraint.hpp>
+#include <components/physical_plan/operators/operator_unique_constraint.hpp>
 #include <components/physical_plan/operators/transaction_teardown.hpp>
 #include <services/disk/manager_disk.hpp>
 #include <services/dispatcher/dispatcher.hpp>
@@ -11,6 +15,7 @@
 
 #include <algorithm>
 #include <iterator>
+#include <map>
 #include <set>
 #include <vector>
 
@@ -42,6 +47,7 @@ namespace components::operators {
         std::set<components::catalog::oid_t> base_delete_tables;
         std::vector<components::catalog::oid_t> dropped_storage_oids;
         std::vector<components::table::created_index_t> created_indexes;
+        components::table::commit_view_t commit_view;
         // Until the WAL marker, the only record of this transaction's writes: the drain emptied it.
         components::table::txn_abort_drain_t undo;
         if (ctx->current_message_sender != actor_zeta::address_t::empty_address()) {
@@ -60,6 +66,7 @@ namespace components::operators {
             base_delete_tables = std::move(drain.base_delete_tables);
             dropped_storage_oids = std::move(drain.dropped_storage_oids);
             created_indexes = std::move(drain.created_indexes);
+            commit_view = std::move(drain.commit_view);
             commit_id_ = drain.commit_id;
         }
 
@@ -67,6 +74,13 @@ namespace components::operators {
 
         bool prepares = txn_data.transaction_id != 0 && commit_id_ > 0 &&
                         ctx->disk_address != actor_zeta::address_t::empty_address();
+        if (prepares && !commit_view.snapshot_is_current && !undo.base_appends.empty()) {
+            if (auto refused = co_await check_unique_keys_(ctx, commit_view.snapshot, undo.base_appends);
+                refused.contains_error()) {
+                co_await refuse_(ctx, std::move(undo), std::move(refused));
+                co_return;
+            }
+        }
         auto prepared_tables = tables_to_prepare(undo, resource_);
         if (prepares && !prepared_tables.empty()) {
             auto [_pr, prf] = actor_zeta::otterbrix::send(
@@ -432,6 +446,81 @@ namespace components::operators {
         co_await revert_transaction(resource_, ctx, log(), std::move(undo));
         set_error(std::move(refusal));
         co_return;
+    }
+
+    actor_zeta::unique_future<core::error_t> operator_commit_transaction_t::check_unique_keys_(
+        pipeline::context_t* ctx,
+        const components::table::transaction_data& commit_snapshot,
+        const std::vector<components::pg_catalog_append_range_t>& appends) {
+        std::pmr::map<components::catalog::oid_t, std::pmr::vector<int64_t>> appended_rows(resource_);
+        for (const auto& range : appends) {
+            auto& rows = appended_rows[range.table_oid];
+            for (uint64_t offset = 0; offset < range.count; ++offset) {
+                rows.push_back(range.start_row + static_cast<int64_t>(offset));
+            }
+        }
+
+        pipeline::context_t check_ctx(ctx->parameters, ctx->disk_address, ctx->index_address, ctx->wal_address);
+        check_ctx.session = ctx->session;
+        // operator_resolve_constraint_t has to see current state
+        check_ctx.txn = commit_snapshot;
+        check_ctx.execution_context = ctx->execution_context;
+        check_ctx.runner = ctx->runner;
+
+        for (const auto& [table_oid, rows] : appended_rows) {
+            auto tables = logical_plan::make_node_catalog_resolve(resource_, logical_plan::resolve_kind::table);
+            logical_plan::resolve_entry_t table_entry;
+            table_entry.table_md = logical_plan::resolved_table_metadata_t{};
+            table_entry.table_md->table_oid = table_oid;
+            tables->entries().push_back(std::move(table_entry));
+            auto constraints =
+                logical_plan::make_node_catalog_resolve(resource_, logical_plan::resolve_kind::constraint);
+            logical_plan::resolve_entry_t constraint_entry;
+            constraint_entry.target = 0;
+            constraints->entries().push_back(std::move(constraint_entry));
+
+            operator_ptr resolve(
+                new operator_resolve_constraint_t(resource_, log_.clone(), constraints.get(), tables.get()));
+            co_await resolve->await_async_and_resume(&check_ctx);
+            if (resolve->has_error()) {
+                co_return resolve->get_error();
+            }
+            const auto& keys = constraints->entries().front().unique_constraints;
+            if (keys.empty()) {
+                continue;
+            }
+
+            vector::vector_t row_ids(resource_, types::logical_type::BIGINT, rows.size());
+            std::copy(rows.begin(), rows.end(), row_ids.data<int64_t>());
+            auto [_fetch, fetch_future] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                                      &services::disk::manager_disk_t::storage_fetch,
+                                                                      ctx->session,
+                                                                      table_oid,
+                                                                      std::move(row_ids),
+                                                                      rows.size(),
+                                                                      std::vector<size_t>{},
+                                                                      commit_snapshot,
+                                                                      components::table::fetch_visibility_t::SNAPSHOT,
+                                                                      int64_t{-1},
+                                                                      services::disk::k_fetch_epoch_unchecked);
+            auto fetched = co_await std::move(fetch_future);
+            if (fetched.has_error()) {
+                co_return fetched.error();
+            }
+            // Every appended row was deleted by this transaction, and can not break constraint
+            if (fetched.value().empty()) {
+                continue;
+            }
+            boost::intrusive_ptr<operator_unique_constraint_t> check(
+                new operator_unique_constraint_t(resource_,
+                                                 log_.clone(),
+                                                 table_oid,
+                                                 catalog::unique_key_columns(keys)));
+            if (auto refused = co_await check->check_rows(&check_ctx, fetched.value()); refused.contains_error()) {
+                co_return refused;
+            }
+        }
+        co_return core::error_t::no_error();
     }
 
 } // namespace components::operators

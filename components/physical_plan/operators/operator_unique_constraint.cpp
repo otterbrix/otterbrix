@@ -233,8 +233,16 @@ namespace components::operators {
             mark_executed();
             co_return;
         }
-        auto& in_chunks = source->chunks();
+        if (auto checked = co_await check_rows(ctx, source->chunks()); checked.contains_error()) {
+            set_error(checked);
+            co_return;
+        }
+        output_ = resolve_cursor_output(left_, source);
+        mark_executed();
+    }
 
+    actor_zeta::unique_future<core::error_t>
+    operator_unique_constraint_t::check_rows(pipeline::context_t* ctx, const chunks_vector_t& in_chunks) {
         std::pmr::unordered_set<int64_t> written(resource_);
         for (const auto& chunk : in_chunks) {
             const auto* ids = chunk.row_ids.data<int64_t>();
@@ -265,8 +273,7 @@ namespace components::operators {
             conflict_keys.emplace_back();
             if (auto built = build_key_chunks(resource_, in_chunks, group, &conflict_keys.back());
                 built.contains_error()) {
-                set_error(built);
-                co_return;
+                co_return built;
             }
             if (auto held = co_await find_held_keys_(ctx,
                                                      group,
@@ -277,8 +284,7 @@ namespace components::operators {
                                                      &failed,
                                                      &holders);
                 held.contains_error()) {
-                set_error(held);
-                co_return;
+                co_return held;
             }
         }
         if (!conflict_keys.empty()) {
@@ -295,16 +301,14 @@ namespace components::operators {
             }
             std::pmr::vector<vector::data_chunk_t> key_chunks(resource_);
             if (auto built = build_key_chunks(resource_, in_chunks, group, &key_chunks); built.contains_error()) {
-                set_error(built);
-                co_return;
+                co_return built;
             }
             std::pmr::vector<std::pmr::vector<vector::data_chunk_t>*> groups(resource_);
             groups.push_back(&key_chunks);
             if (find_duplicates(resource_, groups, in_chunks, failed, true, nullptr, nullptr)) {
-                set_error(core::error_t{
+                co_return core::error_t{
                     core::error_code_t::other_error,
-                    std::pmr::string{"UNIQUE constraint violated: duplicate key within write batch", resource_}});
-                co_return;
+                    std::pmr::string{"UNIQUE constraint violated: duplicate key within write batch", resource_}};
             }
             row_flags_t held(resource_);
             held.reserve(in_chunks.size());
@@ -313,13 +317,11 @@ namespace components::operators {
             }
             if (auto lookup = co_await find_held_keys_(ctx, group, key_chunks, written, failed, true, &held, nullptr);
                 lookup.contains_error()) {
-                set_error(lookup);
-                co_return;
+                co_return lookup;
             }
             if (any_flagged(held)) {
-                set_error(core::error_t{core::error_code_t::other_error,
-                                        std::pmr::string{"UNIQUE constraint violated: key already exists", resource_}});
-                co_return;
+                co_return core::error_t{core::error_code_t::other_error,
+                                        std::pmr::string{"UNIQUE constraint violated: key already exists", resource_}};
             }
         }
 
@@ -345,9 +347,7 @@ namespace components::operators {
                 conflict_rows_->append_chunk(std::move(rows));
             }
         }
-
-        output_ = resolve_cursor_output(left_, source);
-        mark_executed();
+        co_return core::error_t::no_error();
     }
 
     actor_zeta::unique_future<core::error_t>

@@ -23,6 +23,12 @@ namespace components::table {
         uint64_t txn_id;
     };
 
+    struct commit_view_t {
+        transaction_data snapshot;
+        // snapshot is up to date, and no additional checks are required
+        bool snapshot_is_current{false};
+    };
+
     // An index CREATE INDEX made (table oid + pg_index.indexrelid); parked until COMMIT/ABORT resolves it.
     struct created_index_t {
         components::catalog::oid_t table_oid;

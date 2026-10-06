@@ -50,6 +50,7 @@ namespace services::dispatcher {
     struct txn_commit_drain_t {
         uint64_t commit_id{0};
         components::table::transaction_data txn{0, 0};
+        components::table::commit_view_t commit_view{};
         std::vector<components::pg_catalog_append_range_t> swap_appends{};
         std::set<components::catalog::oid_t> swap_deletes{};
         std::vector<components::pg_attribute_commit_id_backfill_t> swap_backfills{};

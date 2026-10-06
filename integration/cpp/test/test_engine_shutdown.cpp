@@ -7,7 +7,6 @@
 #include <services/wal/manager_wal_replicate.hpp>
 
 #include <atomic>
-#include <chrono>
 #include <csignal>
 #include <cstdint>
 #include <filesystem>
@@ -27,26 +26,10 @@ namespace {
 
     constexpr std::uintmax_t kThresholdBytes = 64 * 1024;
     constexpr int kMaxStatements = 400;
-    constexpr auto kParkLimit = std::chrono::seconds(5);
-
-    using clock_type = std::chrono::steady_clock;
 
     std::atomic<bool> g_round_parked{false};
     std::atomic<bool> g_final_checkpoint_compacted{false};
-    std::atomic<std::int64_t> g_round_parked_at{0};
-    std::atomic<std::int64_t> g_flush_parked_at{0};
     std::filesystem::path g_marker;
-
-    std::int64_t now_ticks() { return clock_type::now().time_since_epoch().count(); }
-
-    bool expired(const std::atomic<std::int64_t>& since) {
-        return clock_type::now() - clock_type::time_point(clock_type::duration(since.load())) > kParkLimit;
-    }
-
-    void note_first_park(std::atomic<std::int64_t>& since) {
-        std::int64_t unset = 0;
-        since.compare_exchange_strong(unset, now_ticks());
-    }
 
     bool rebuild_marker_names_an_index() {
         std::ifstream in(g_marker);
@@ -62,28 +45,26 @@ namespace {
         }
     };
 
-    // Bug B: a round parked on the index manager across the whole shutdown.
-    auto_checkpoint_park_t park_on_index_at_start(auto_checkpoint_point_t point) {
+    // Bug B: a round parked on the index manager until the shutdown waits for it, so the shutdown always
+    // finds the round in flight.
+    auto_checkpoint_park_t park_on_index_at_start(auto_checkpoint_point_t point, bool shutdown_waits) {
         if (point != auto_checkpoint_point_t::round_start) {
             return auto_checkpoint_park_t::go;
         }
-        note_first_park(g_round_parked_at);
         g_round_parked = true;
-        return expired(g_round_parked_at) ? auto_checkpoint_park_t::go : auto_checkpoint_park_t::on_index;
+        return shutdown_waits ? auto_checkpoint_park_t::go : auto_checkpoint_park_t::on_index;
     }
 
     // Bug A: the round flushes the indexes only after the final CHECKPOINT has rebuilt them and
-    // cleared the rebuild marker, then stays parked past the end of the shutdown.
-    auto_checkpoint_park_t flush_after_the_final_checkpoint(auto_checkpoint_point_t point) {
+    // cleared the rebuild marker, then stays parked past the end of the shutdown. A shutdown that
+    // waits for the round releases it before any final CHECKPOINT can run.
+    auto_checkpoint_park_t flush_after_the_final_checkpoint(auto_checkpoint_point_t point, bool shutdown_waits) {
         if (point == auto_checkpoint_point_t::round_start) {
-            note_first_park(g_round_parked_at);
             g_round_parked = true;
             const bool final_rebuilt = g_final_checkpoint_compacted && !rebuild_marker_names_an_index();
-            return final_rebuilt || expired(g_round_parked_at) ? auto_checkpoint_park_t::go
-                                                               : auto_checkpoint_park_t::on_dispatcher;
+            return final_rebuilt || shutdown_waits ? auto_checkpoint_park_t::go : auto_checkpoint_park_t::on_dispatcher;
         }
-        note_first_park(g_flush_parked_at);
-        return expired(g_flush_parked_at) ? auto_checkpoint_park_t::go : auto_checkpoint_park_t::on_dispatcher;
+        return shutdown_waits ? auto_checkpoint_park_t::go : auto_checkpoint_park_t::on_dispatcher;
     }
 
     configuration::config shutdown_config(const std::string& leaf) {

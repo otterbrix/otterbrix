@@ -36,6 +36,7 @@ namespace services::wal {
 
     // Test seam: a round parks at `point` for as long as the gate says so, pinging the named
     // manager between answers so the WAL loop keeps serving every other message meanwhile.
+    // `shutdown_waits` is whether the engine's shutdown has asked to stop rounds and waits for this one to end.
     enum class auto_checkpoint_point_t : std::uint8_t
     {
         round_start,
@@ -47,7 +48,7 @@ namespace services::wal {
         on_index,
         on_dispatcher
     };
-    using auto_checkpoint_gate_fn = auto_checkpoint_park_t (*)(auto_checkpoint_point_t);
+    using auto_checkpoint_gate_fn = auto_checkpoint_park_t (*)(auto_checkpoint_point_t, bool shutdown_waits);
     void dev_set_auto_checkpoint_gate(auto_checkpoint_gate_fn gate); // nullptr = off
 #endif
 

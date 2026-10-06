@@ -38,7 +38,7 @@ namespace services::wal {
     manager_wal_replicate_t::dev_park_round_(session_id_t session, auto_checkpoint_point_t point) {
         while (true) {
             const auto gate = g_auto_checkpoint_gate.load();
-            const auto park = gate == nullptr ? auto_checkpoint_park_t::go : gate(point);
+            const auto park = gate == nullptr ? auto_checkpoint_park_t::go : gate(point, round_end_waiter_.has_value());
             if (park == auto_checkpoint_park_t::on_index && manager_index_ != actor_zeta::address_t::empty_address()) {
                 auto [_ping, ping] = actor_zeta::otterbrix::send(manager_index_,
                                                                  &services::index::manager_index_t::all_indexed_oids,

@@ -28,21 +28,13 @@ namespace components::vector {
 
     string_vector_buffer_t::string_vector_buffer_t(std::pmr::memory_resource* resource)
         : vector_buffer_t(resource, vector_buffer_type::STRING)
-        , string_buffer_(resource)
-        , refs_(resource) {}
+        , string_buffer_(resource) {}
 
     void* string_vector_buffer_t::insert(void* data, size_t size) { return string_buffer_.insert(data, size); }
 
     void* string_vector_buffer_t::empty_string(size_t size) { return string_buffer_.empty_string(size); }
 
-    void string_vector_buffer_t::add_heap_reference(std::unique_ptr<vector_buffer_t> heap) {
-        refs_.push_back(std::move(heap));
-    }
-
-    void string_vector_buffer_t::reset() {
-        string_buffer_.reset();
-        refs_.clear();
-    }
+    void string_vector_buffer_t::reset() { string_buffer_.reset(); }
 
     dictionary_vector_buffer_t::dictionary_vector_buffer_t(const indexing_vector_t& select)
         : vector_buffer_t(select.resource(), vector_buffer_type::DICTIONARY)

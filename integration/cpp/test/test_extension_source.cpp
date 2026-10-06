@@ -11,6 +11,7 @@
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <services/collection/context_storage.hpp>
+#include <services/collection/executor.hpp>
 
 #include <algorithm>
 #include <array>
@@ -25,6 +26,58 @@
 using namespace components;
 
 namespace {
+
+    // The sources this file builds, and whether the executor has reported awaiting the promise each handed out last.
+    struct await_watch_t {
+        static constexpr std::size_t kSlots = 64;
+        std::array<std::atomic<const operators::operator_t*>, kSlots> sources{};
+        std::array<std::atomic<bool>, kSlots> awaited{};
+        std::atomic<std::size_t> used{0};
+
+        std::size_t watch(const operators::operator_t* source) noexcept {
+            const auto slot = used.fetch_add(1) % kSlots;
+            awaited[slot].store(false);
+            sources[slot].store(source);
+            return slot;
+        }
+
+        void note(const operators::operator_t* source) noexcept {
+            for (std::size_t slot = 0; slot < kSlots; ++slot) {
+                if (sources[slot].load() == source) {
+                    awaited[slot].store(true);
+                }
+            }
+        }
+
+        void reset() noexcept {
+            used.store(0);
+            for (std::size_t slot = 0; slot < kSlots; ++slot) {
+                sources[slot].store(nullptr);
+                awaited[slot].store(false);
+            }
+        }
+    };
+
+    await_watch_t& await_watch() {
+        static await_watch_t watch;
+        return watch;
+    }
+
+    void note_awaited_source(const operators::operator_t* source) { await_watch().note(source); }
+
+    // Every case here runs with the executor reporting the sources it awaits.
+    struct source_await_hook_scope_t {
+        source_await_hook_scope_t() {
+            await_watch().reset();
+            services::collection::executor::dev_set_source_await_hook(&note_awaited_source);
+        }
+        ~source_await_hook_scope_t() { services::collection::executor::dev_set_source_await_hook(nullptr); }
+        source_await_hook_scope_t(const source_await_hook_scope_t&) = delete;
+        source_await_hook_scope_t& operator=(const source_await_hook_scope_t&) = delete;
+    };
+
+    // Answers that ran out of time waiting to be awaited; an executor that never awaits leaves them here.
+    std::atomic<int> g_answers_never_awaited{0};
 
     struct rows_spec_t {
         std::string col_a;
@@ -56,7 +109,8 @@ namespace {
         mock_source_op_t(std::pmr::memory_resource* resource, log_t log, rows_spec_t spec, bool async_delivery)
             : operators::read_only_operator_t(resource, std::move(log), operators::operator_type::extension)
             , spec_(std::move(spec))
-            , async_delivery_(async_delivery) {}
+            , async_delivery_(async_delivery)
+            , watch_slot_(await_watch().watch(this)) {}
 
         [[nodiscard]] operators::pipeline_role role() const noexcept override {
             return operators::pipeline_role::source;
@@ -74,8 +128,13 @@ namespace {
             if (async_delivery_) {
                 // Fulfills from a background thread after the executor has begun awaiting, modeling
                 // a host backend actor answering a fetch; the promise outlives this stack frame.
-                std::thread([p = std::move(promise), chunk = build_pairs(resource(), spec_)]() mutable {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                await_watch().awaited[watch_slot_].store(false);
+                std::thread([p = std::move(promise),
+                             chunk = build_pairs(resource(), spec_),
+                             slot = watch_slot_]() mutable {
+                    if (!test_helpers::wait_until([slot] { return await_watch().awaited[slot].load(); })) {
+                        g_answers_never_awaited.fetch_add(1);
+                    }
                     p.set_value(core::result_wrapper_t<std::optional<vector::data_chunk_t>>{std::move(chunk)});
                 }).detach();
             } else {
@@ -91,6 +150,7 @@ namespace {
         rows_spec_t spec_;
         bool async_delivery_{true};
         bool drained_{false};
+        std::size_t watch_slot_;
     };
 
     struct open_probe_t {
@@ -109,6 +169,9 @@ namespace {
         std::atomic<int> answer_when_opened{0};
         // A fetch answers only after every fetch opened before it: uneven completion, by an event.
         std::atomic<bool> answer_in_open_order{false};
+        // A fetch answers only once the executor awaits it: every open after a failed one is still in
+        // flight when the executor sees the failure.
+        std::atomic<bool> answer_when_awaited{false};
         std::atomic<bool> answer_wait_ran_out{false};
 
         void reset() {
@@ -123,6 +186,7 @@ namespace {
             destroyed_in_flight.store(0);
             answer_when_opened.store(0);
             answer_in_open_order.store(false);
+            answer_when_awaited.store(false);
             answer_wait_ran_out.store(false);
             for (auto& r : ready) {
                 r.store(false);
@@ -147,7 +211,8 @@ namespace {
             , spec_(std::move(spec))
             , fetch_latency_(fetch_latency)
             , fail_open_(fail_open)
-            , slot_(open_probe().slots_used.fetch_add(1) % open_probe_t::kSlots) {}
+            , slot_(open_probe().slots_used.fetch_add(1) % open_probe_t::kSlots)
+            , watch_slot_(await_watch().watch(this)) {}
 
         ~fetch_on_open_source_op_t() override {
             if (opened_ && !open_probe().ready[slot_].load()) {
@@ -187,6 +252,7 @@ namespace {
         actor_zeta::unique_future<core::error_t> open_impl(components::pipeline::context_t* ctx) override {
             const int ordinal = open_probe().opens.fetch_add(1);
             open_probe().ready[slot_].store(false);
+            await_watch().awaited[watch_slot_].store(false);
             const int in_flight = open_probe().fetches_in_flight.fetch_add(1) + 1;
             int peak = open_probe().peak_fetches_in_flight.load();
             while (in_flight > peak && !open_probe().peak_fetches_in_flight.compare_exchange_weak(peak, in_flight)) {
@@ -202,11 +268,13 @@ namespace {
                          outcome = std::move(outcome),
                          d = fetch_latency_,
                          slot = slot_,
+                         watch_slot = watch_slot_,
                          ordinal]() mutable {
                 auto& probe = open_probe();
-                const bool may_answer = test_helpers::wait_until([&probe, ordinal] {
+                const bool may_answer = test_helpers::wait_until([&probe, watch_slot, ordinal] {
                     return probe.opens.load() >= probe.answer_when_opened.load() &&
-                           (!probe.answer_in_open_order.load() || probe.fetches_done.load() >= ordinal);
+                           (!probe.answer_in_open_order.load() || probe.fetches_done.load() >= ordinal) &&
+                           (!probe.answer_when_awaited.load() || await_watch().awaited[watch_slot].load());
                 });
                 if (!may_answer) {
                     probe.answer_wait_ran_out.store(true);
@@ -224,6 +292,7 @@ namespace {
         std::chrono::milliseconds fetch_latency_;
         bool fail_open_;
         std::size_t slot_;
+        std::size_t watch_slot_;
         const components::pipeline::context_t* open_ctx_{nullptr};
         bool drained_{false};
         bool opened_{false};
@@ -470,6 +539,7 @@ static remote_tables_t one_table(std::pmr::memory_resource* res,
     auto config = test_create_config(DIR);                                                                             \
     test_clear_directory(config);                                                                                      \
     test_spaces space(config, remote_host()); /* the host's name resolution, given at engine start */                 \
+    source_await_hook_scope_t source_await_hook;                                                                       \
     remote_server_reset_t remote_server_reset;                                                                         \
     auto dispatcher = space.dispatcher();                                                                              \
     auto* res = dispatcher->resource();
@@ -484,10 +554,12 @@ TEST_CASE("integration::cpp::extension_source::sync_single_leaf") {
 
 TEST_CASE("integration::cpp::extension_source::async_single_leaf") {
     EXT_TEST_BOILERPLATE(integration_fixture_path("test_ext_async/base"))
+    g_answers_never_awaited.store(0);
     auto tables = one_table(res, "remote.t1", "key", "val", {{1, 10}, {2, 20}, {3, 30}}, /*async=*/true);
     auto cursor = run_over_remote(dispatcher, "SELECT * FROM remote.t1;", tables);
     REQUIRE(cursor->is_success());
     REQUIRE(cursor->size() == 3);
+    CHECK(g_answers_never_awaited.load() == 0);
 }
 
 TEST_CASE("integration::cpp::extension_source::empty_result") {
@@ -704,15 +776,18 @@ TEST_CASE("integration::cpp::extension_source::failed_open_awaits_the_rest") {
     EXT_TEST_BOILERPLATE(integration_fixture_path("test_ext_failed_open/base"))
     constexpr int kSources = 4;
     for (int failing = 0; failing < kSources; ++failing) {
-        std::vector<std::chrono::milliseconds> latencies = same_latency(kSources, std::chrono::milliseconds(200));
-        latencies[static_cast<std::size_t>(failing)] = std::chrono::milliseconds(0);
         const std::string prefix = "f" + std::to_string(failing) + "_";
         open_probe().reset();
+        open_probe().answer_when_awaited.store(true);
         auto cursor = run_over_remote(dispatcher,
                                       n_way_join(prefix, kSources),
-                                      fetch_on_open_tables(res, prefix, latencies, failing));
+                                      fetch_on_open_tables(res,
+                                                           prefix,
+                                                           same_latency(kSources, std::chrono::milliseconds(0)),
+                                                           failing));
         INFO("failing source " << failing);
         REQUIRE(cursor->is_error());
+        CHECK_FALSE(open_probe().answer_wait_ran_out.load());
         CHECK(cursor->get_error().what == "backend unavailable");
         CHECK(open_probe().fetches_done.load() == open_probe().opens.load());
         CHECK(open_probe().destroyed_in_flight.load() == 0);

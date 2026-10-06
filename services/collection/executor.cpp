@@ -70,6 +70,7 @@ namespace services::collection::executor {
         std::atomic<uint64_t> g_dml_flush_count{0};
         std::atomic<uint64_t> g_index_reconcile_staged_ranges{0};
         std::atomic<void (*)(uint64_t)> g_dml_pre_drive_hook{nullptr};
+        std::atomic<source_await_hook_fn> g_source_await_hook{nullptr};
         oid_alloc_interposer_t* g_oid_alloc_interposer = nullptr;
     } // namespace
 
@@ -80,6 +81,7 @@ namespace services::collection::executor {
         return g_index_reconcile_staged_ranges.load(std::memory_order_relaxed);
     }
     void dev_set_dml_pre_drive_hook(void (*hook)(uint64_t)) noexcept { g_dml_pre_drive_hook.store(hook); }
+    void dev_set_source_await_hook(source_await_hook_fn hook) noexcept { g_source_await_hook.store(hook); }
 
     void dev_set_oid_alloc_interposer(oid_alloc_interposer_t* interposer) { g_oid_alloc_interposer = interposer; }
     oid_alloc_interposer_t* dev_oid_alloc_interposer() { return g_oid_alloc_interposer; }
@@ -2310,7 +2312,13 @@ namespace services::collection::executor {
             };
             while (true) {
                 const analyze_scope scope{analyze};
-                auto next = co_await source->source_next(ctx);
+                auto pending_next = source->source_next(ctx);
+#ifdef DEV_MODE
+                if (auto* hook = g_source_await_hook.load()) {
+                    hook(source);
+                }
+#endif
+                auto next = co_await std::move(pending_next);
                 if (next.has_error()) {
                     co_await release_source_cursor(resource());
                     co_return next.convert_error<ops::chunks_vector_t>();
@@ -2501,6 +2509,11 @@ namespace services::collection::executor {
                 (piece != nullptr && std::find(in_piece.begin(), in_piece.end(), source.op) == in_piece.end())) {
                 continue;
             }
+#ifdef DEV_MODE
+            if (auto* hook = g_source_await_hook.load()) {
+                hook(source.op);
+            }
+#endif
             auto err = co_await std::move(source.ready);
             if (err.contains_error() && !first_err.contains_error()) {
                 first_err = std::move(err);

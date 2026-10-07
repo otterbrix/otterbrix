@@ -417,10 +417,23 @@ TEST_CASE("append_count: STRING, a chunk spanning three segments refused at its 
             auto held = exhaust_pool(env);
             auto small = top_up_pool(env, segment_size, 3);
             INFO("held whole-block pins: " << held.size() << ", segment-sized pins: " << small.size());
+#ifdef DEV_MODE
+            const auto freed_before = bm.dev_freed_ids().size();
+#endif
             auto appended = table->append(chunk, state);
             REQUIRE(appended.has_error());
             INFO("refusal: " << appended.error().what);
             CHECK(appended.error().type == core::error_code_t::out_of_memory);
+#ifdef DEV_MODE
+            // The written-through segments' blocks go back to the file, and none of them is still named.
+            const auto& freed = bm.dev_freed_ids();
+            CHECK(freed.size() > freed_before);
+            std::pmr::vector<uint64_t> live(&env.resource);
+            table->row_group()->collect_disk_block_ids(live);
+            for (auto it = freed.begin() + static_cast<std::ptrdiff_t>(freed_before); it != freed.end(); ++it) {
+                CHECK(std::find(live.begin(), live.end(), *it) == live.end());
+            }
+#endif
         }
         auto infos = table->get_column_segment_info();
         uint64_t string_segments = 0;
@@ -509,6 +522,11 @@ TEST_CASE("append_count: STRING, a chunk crossing a row-group boundary refused i
         REQUIRE(table->row_group()->row_group_tree()->segment_at(1) == nullptr);
         CHECK(column_of(*table, 0).count() == kept_rows);
         CHECK(column_of(*table, 1).count() == kept_rows);
+        {
+            std::vector<row_t> cells;
+            REQUIRE(scan_rows(*table, env, &cells) == kept_rows);
+            CHECK(cell_string(cells.back().v, shape_t::STRING) == "kept");
+        }
 
         good_append(env, *table, shape_t::STRING, "ok");
         std::vector<row_t> cells;

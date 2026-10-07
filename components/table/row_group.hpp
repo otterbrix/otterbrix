@@ -33,6 +33,9 @@ namespace components::table {
     class column_definition_t;
     class collection_t;
 
+    [[nodiscard]] core::error_t
+    unwind_refused(const core::error_t& cause, const core::error_t& unwind, std::pmr::memory_resource* resource);
+
     class row_group_t : public segment_base_t<row_group_t> {
     public:
         friend class column_data_t;
@@ -110,6 +113,7 @@ namespace components::table {
         [[nodiscard]] core::result_wrapper_t<bool> initialize_append(row_group_append_state& append_state);
         [[nodiscard]] core::result_wrapper_t<bool>
         append(row_group_append_state& append_state, vector::data_chunk_t& chunk, uint64_t append_count);
+        [[nodiscard]] core::error_t unwind_append(int64_t start_row, uint64_t column_count);
 
         void get_column_segment_info(uint64_t row_group_index, std::vector<column_segment_info>& result);
 

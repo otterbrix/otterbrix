@@ -94,6 +94,7 @@ namespace components::table {
         // Reverts only the table's tail: row groups past row_start go whole, the one holding it is truncated;
         // any other range is refused.
         core::result_wrapper_t<bool> revert_append(int64_t row_start, uint64_t count);
+        [[nodiscard]] core::error_t settle_unwind(std::pmr::vector<uint64_t> erased_blocks);
         void commit_all_deletes(uint64_t txn_id, uint64_t commit_id);
         void revert_all_deletes(uint64_t txn_id);
         void cleanup_append(int64_t start, uint64_t count);

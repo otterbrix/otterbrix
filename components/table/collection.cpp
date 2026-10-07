@@ -298,6 +298,32 @@ namespace components::table {
         return new_row_group;
     }
 
+    core::error_t collection_t::settle_unwind(std::pmr::vector<uint64_t> erased_blocks) {
+        if (erased_blocks.empty()) {
+            if (auto flushed = append_pbm_.flush_partial_blocks(); flushed.has_error()) {
+                return flushed.error();
+            }
+            return core::error_t::no_error();
+        }
+        // An open tail would take the next append's segments into a freed block.
+        if (auto sealed = append_pbm_.seal(); sealed.contains_error()) {
+            return sealed;
+        }
+        std::pmr::vector<uint64_t> live(resource_);
+        collect_disk_block_ids(live);
+        std::sort(live.begin(), live.end());
+        std::sort(erased_blocks.begin(), erased_blocks.end());
+        erased_blocks.erase(std::unique(erased_blocks.begin(), erased_blocks.end()), erased_blocks.end());
+        for (uint64_t block_id : erased_blocks) {
+            if (std::binary_search(live.begin(), live.end(), block_id) || block_manager_.registry_alive(block_id)) {
+                continue;
+            }
+            block_manager_.mark_as_free(block_id);
+            block_manager_.unregister_block(block_id);
+        }
+        return core::error_t::no_error();
+    }
+
     void collection_t::finalize_append(table_append_state& state, transaction_data txn) {
         auto remaining = state.total_append_count;
         auto row_group = state.start_row_group;

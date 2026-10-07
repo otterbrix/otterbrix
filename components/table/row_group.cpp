@@ -7,6 +7,7 @@
 #include <components/table/storage/buffer_manager.hpp>
 #include <components/table/storage/partial_block_manager.hpp>
 #include <cstdlib>
+#include <iterator>
 #include <limits>
 #include <unordered_map>
 #include <vector/data_chunk.hpp>
@@ -647,11 +648,51 @@ namespace components::table {
             auto appended = col_data.append(state.states[i], chunk.data[i], append_count);
             allocation_size_ += col_data.allocation_size() - prev_allocation_size;
             if (appended.has_error()) {
+                for (uint64_t c = 0; c <= i; c++) {
+                    state.states[c].release_pins();
+                }
+                auto unwound = unwind_append(this->start + static_cast<int64_t>(state.offset_in_row_group), i + 1);
+                if (unwound.contains_error()) {
+                    return unwind_refused(appended.error(), unwound, collection_->resource());
+                }
                 return appended; // out_of_memory
             }
         }
         state.offset_in_row_group += append_count;
         return true;
+    }
+
+    core::error_t row_group_t::unwind_append(int64_t start_row, uint64_t column_count) {
+        auto* resource = collection_->resource();
+        std::pmr::vector<uint64_t> before(resource);
+        collect_disk_block_ids(before);
+        core::error_t first_error = core::error_t::no_error();
+        for (uint64_t c = 0; c < column_count; c++) {
+            auto reverted = get_column(c).revert_append(start_row);
+            if (reverted.has_error() && !first_error.contains_error()) {
+                first_error = reverted.error();
+            }
+        }
+        std::pmr::vector<uint64_t> after(resource);
+        collect_disk_block_ids(after);
+        std::sort(before.begin(), before.end());
+        before.erase(std::unique(before.begin(), before.end()), before.end());
+        std::sort(after.begin(), after.end());
+        std::pmr::vector<uint64_t> erased(resource);
+        std::set_difference(before.begin(), before.end(), after.begin(), after.end(), std::back_inserter(erased));
+        auto settled = collection_->settle_unwind(std::move(erased));
+        if (first_error.contains_error()) {
+            return first_error;
+        }
+        return settled;
+    }
+
+    core::error_t
+    unwind_refused(const core::error_t& cause, const core::error_t& unwind, std::pmr::memory_resource* resource) {
+        std::pmr::string what(cause.what, resource);
+        what.append("; its unwind was refused: ");
+        what.append(unwind.what);
+        return core::error_t(core::error_code_t::data_corruption, std::move(what));
     }
 
     uint64_t row_group_t::committed_row_count() {

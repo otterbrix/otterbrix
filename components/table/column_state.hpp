@@ -108,6 +108,8 @@ namespace components::table {
         explicit column_append_state(storage::partial_block_manager_t* pbm)
             : pbm(pbm) {}
 
+        void release_pins();
+
         column_segment_t* current = nullptr;
         std::vector<column_append_state> child_appends;
         std::unique_ptr<std::unique_lock<std::mutex>> lock;

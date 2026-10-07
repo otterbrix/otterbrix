@@ -259,7 +259,6 @@ namespace components::table {
     core::result_wrapper_t<bool>
     column_data_t::append_data(column_append_state& state, vector::unified_vector_format& uvf, uint64_t append_count) {
         uint64_t offset = 0;
-        this->count_ += append_count;
         // The collection's packer: filled segments of every column and every statement share its
         // open tail blocks (a packer per append call gave each 16 KiB segment its own 256 KiB block).
         // The collection flushes it once per append, after every column.
@@ -270,6 +269,7 @@ namespace components::table {
                 return appended.convert_error<bool>();
             }
             uint64_t copied_elements = appended.value();
+            this->count_ += copied_elements;
             if (copied_elements == append_count) {
                 break;
             }

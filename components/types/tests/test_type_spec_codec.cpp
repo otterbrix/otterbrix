@@ -56,7 +56,6 @@ TEST_CASE("types::type_spec_codec::every_plain_scalar_roundtrips") {
     auto resource = core::pmr::otterbrix_resource();
 
     const logical_type scalars[] = {
-        logical_type::NA,
         logical_type::ANY,
         logical_type::BOOLEAN,
         logical_type::TINYINT,
@@ -490,4 +489,25 @@ TEST_CASE("types::type_spec_codec::encode_refuses_what_decode_refuses") {
         auto decoded = decode_type_spec(&resource, deepest_spec.data(), deepest_spec.size());
         REQUIRE_FALSE(decoded.has_error());
     }
+}
+
+TEST_CASE("types::type_spec_codec::NA_is_not_a_stored_type") {
+    auto resource = core::pmr::otterbrix_resource();
+
+    std::pmr::vector<std::byte> spec(&resource);
+    auto encoded = encode_type_spec(complex_logical_type{logical_type::NA}, spec);
+    REQUIRE(encoded.has_error());
+
+    spec.clear();
+    auto nested_list =
+        encode_type_spec(complex_logical_type::create_list(complex_logical_type{logical_type::NA}), spec);
+    REQUIRE(nested_list.has_error());
+
+    std::pmr::vector<std::byte> stale(&resource);
+    stale.push_back(static_cast<std::byte>(static_cast<uint8_t>(logical_type::NA)));
+    stale.push_back(std::byte{0});
+    auto decoded = decode_type_spec(&resource, stale.data(), stale.size());
+    REQUIRE(decoded.has_error());
+    CHECK(decoded.error().type == core::error_code_t::data_corruption);
+    CHECK(std::string{decoded.error().what}.find("NULL (NA) is not a stored type") != std::string::npos);
 }

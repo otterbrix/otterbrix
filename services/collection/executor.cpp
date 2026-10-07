@@ -585,6 +585,11 @@ namespace services::collection::executor {
             unpersistable.contains_error()) {
             return unpersistable;
         }
+        if (auto unstorable =
+                services::dispatcher::gate_storable_type(resource(), "column '" + column.name() + "'", column.type());
+            unstorable.contains_error()) {
+            return unstorable;
+        }
         return services::dispatcher::convert_column_default(resource(), &cast_registry_, settings, column);
     }
 

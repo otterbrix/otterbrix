@@ -14,6 +14,7 @@
 #include <components/casts/cast_registry.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/catalog/table_id.hpp>
+#include <components/table/column_data.hpp>
 #include <components/compute/function.hpp>
 #include <components/compute/kernel_signature.hpp>
 #include <components/expressions/aggregate_expression.hpp>
@@ -694,6 +695,19 @@ namespace services::dispatcher {
                 core::error_code_t::schema_error,
                 std::pmr::string{subject + " cannot be persisted: " + std::string(encoded.error().what.c_str()),
                                  resource});
+        }
+        return core::error_t::no_error();
+    }
+
+    core::error_t gate_storable_type(std::pmr::memory_resource* resource,
+                                     const std::string& subject,
+                                     const components::types::complex_logical_type& type) {
+        if (auto refused = components::table::column_data_t::validate_column_type(type, resource);
+            refused.contains_error()) {
+            return core::error_t(core::error_code_t::schema_error,
+                                 std::pmr::string{subject + " of type " + validation::describe_type(type) +
+                                                      " cannot be stored: " + std::string(refused.what.c_str()),
+                                                  resource});
         }
         return core::error_t::no_error();
     }

@@ -88,6 +88,10 @@ namespace services::dispatcher {
                                                       const std::string& subject,
                                                       const components::types::complex_logical_type& type);
 
+    [[nodiscard]] core::error_t gate_storable_type(std::pmr::memory_resource* resource,
+                                                   const std::string& subject,
+                                                   const components::types::complex_logical_type& type);
+
     // Resolve every CHECK predicate the plan's DML nodes carry, against the table each one guards.
     // Called after enrich_plan, which is what parses the predicates out of the catalog.
     [[nodiscard]] core::error_t

@@ -21,6 +21,15 @@ namespace services::collection {
 
         bool user_object(catalog::oid_t oid) { return oid >= catalog::FIRST_USER_OID; }
 
+        components::types::complex_logical_type
+        view_column_type(const components::types::complex_logical_type& output) {
+            if (output.type() != components::types::logical_type::NA) {
+                return output;
+            }
+            return components::types::complex_logical_type(components::types::logical_type::STRING_LITERAL,
+                                                           output.has_alias() ? output.alias() : std::string{});
+        }
+
         void add_dependency(std::pmr::vector<catalog::view_dependency_t>& out,
                             catalog::oid_t refclassid,
                             catalog::oid_t refobjid) {
@@ -147,7 +156,7 @@ namespace services::collection {
                 return stale("its column " + std::to_string(i + 1) + " is now \"" + name + "\", it was created as \"" +
                              stored.attname + "\"");
             }
-            if (!(types[i] == stored.type)) {
+            if (!(view_column_type(types[i]) == stored.type)) {
                 return stale("its column \"" + stored.attname + "\" is now " +
                              dispatcher::validation::describe_type(types[i]) + ", it was created as " +
                              dispatcher::validation::describe_type(stored.type));
@@ -389,7 +398,7 @@ namespace services::collection {
         std::pmr::vector<components::table::column_definition_t> columns{resource};
         columns.reserve(output.size());
         for (std::size_t i = 0; i < output.size(); ++i) {
-            const auto& type = output[i].type;
+            const auto type = view_column_type(output[i].type);
             const std::string name = type.has_alias() ? type.alias() : std::string{};
             if (name.empty()) {
                 return core::error_t{core::error_code_t::schema_error,
@@ -404,6 +413,12 @@ namespace services::collection {
             if (auto gate = dispatcher::gate_persistable_type(resource, "view column '" + name + "'", type);
                 gate.contains_error()) {
                 return gate;
+            }
+            if (view.materialized()) {
+                if (auto storable = dispatcher::gate_storable_type(resource, "view column '" + name + "'", type);
+                    storable.contains_error()) {
+                    return storable;
+                }
             }
             columns.emplace_back(name, type);
         }

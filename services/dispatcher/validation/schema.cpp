@@ -42,7 +42,12 @@ namespace services::dispatcher::validation {
                 if (type.extension() != nullptr && !type.type_name().empty()) {
                     return type.type_name();
                 }
+                if (type.type() == logical_type::UNKNOWN) {
+                    return "unknown";
+                }
                 break;
+            case logical_type::NA:
+                return "unknown";
             case logical_type::LIST:
             case logical_type::ARRAY:
                 return describe_type(type.child_type()) + "[]";

@@ -409,6 +409,17 @@ namespace components::table {
         // Checked before any node exists (a constructor can't refuse); STRUCT must be named, UNION is exempt
         // because create_union deliberately leaves the alias empty.
         const auto physical = type.to_physical_type();
+        switch (physical) {
+            case types::physical_type::NA:
+            case types::physical_type::UNKNOWN:
+            case types::physical_type::INVALID:
+            case types::physical_type::BIT:
+                return core::error_t(core::error_code_t::invalid_parameter,
+                                     std::pmr::string("a table column cannot be built from a type without storage",
+                                                      resource));
+            default:
+                break;
+        }
         if (physical == types::physical_type::STRUCT) {
             if (type.type() != types::logical_type::UNION && type.is_unnamed()) {
                 return core::error_t(
@@ -422,6 +433,14 @@ namespace components::table {
                 }
             }
             return core::error_t::no_error();
+        }
+        if (physical == types::physical_type::ARRAY) {
+            const auto* array = type.extension_as<types::array_logical_type_extension>();
+            if (array == nullptr || array->size() == 0) {
+                return core::error_t(
+                    core::error_code_t::invalid_parameter,
+                    std::pmr::string("a table column cannot be built from an array of no elements", resource));
+            }
         }
         if (physical == types::physical_type::LIST || physical == types::physical_type::ARRAY) {
             return validate_column_type(type.child_type(), resource);

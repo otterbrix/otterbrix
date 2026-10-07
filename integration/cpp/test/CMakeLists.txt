@@ -128,6 +128,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_alter_add_column_reads.cpp
         test_alter_add_column_types.cpp
         test_typed_null_without_storage.cpp
+        test_matview_null_column.cpp
         test_computed_drop_complex_type.cpp
         test_multiple_primary_keys.cpp
         test_sql_features.cpp

@@ -54,7 +54,6 @@ namespace {
 
 TEST_CASE("catalog::encoder_domains::every_plain_scalar_the_gate_blesses_survives_the_flat_writer") {
     const logical_type plain_scalars[] = {
-        logical_type::NA,
         logical_type::ANY,
         logical_type::BOOLEAN,
         logical_type::TINYINT,

@@ -465,3 +465,79 @@ TEST_CASE("append_count: STRING, a chunk spanning three segments refused at its 
     }
     std::remove(path.c_str());
 }
+
+TEST_CASE("append_count: STRING, a chunk crossing a row-group boundary refused in the next row group",
+          "[append_count][string][row_group]") {
+    const std::string path = db_path("row_group");
+    std::remove(path.c_str());
+    env_t env;
+    const uint64_t kept_rows = DEFAULT_VECTOR_CAPACITY - 2;
+    auto string_chunk = [&](data_table_t& table, const std::vector<std::string>& payloads, int64_t first_k) {
+        auto types = table.copy_types();
+        data_chunk_t chunk(&env.resource, types, payloads.size());
+        chunk.set_cardinality(payloads.size());
+        for (uint64_t i = 0; i < payloads.size(); i++) {
+            chunk.set_value(0, i, first_k + static_cast<int64_t>(i));
+            chunk.set_value(1, i, std::string_view{payloads[i]});
+        }
+        return chunk;
+    };
+    {
+        tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
+        REQUIRE(!bm.create_new_database().has_error());
+        auto table = make_table(env, bm, shape_t::STRING);
+        REQUIRE(table->row_group()->row_group_size() == DEFAULT_VECTOR_CAPACITY);
+        {
+            auto chunk = string_chunk(*table, std::vector<std::string>(kept_rows, "kept"), 0);
+            table_append_state state(&env.resource);
+            REQUIRE_FALSE(table->append_lock(state).has_error());
+            REQUIRE_FALSE(table->initialize_append(state).has_error());
+            REQUIRE_FALSE(table->append(chunk, state).has_error());
+            table->finalize_append(state, transaction_data::committed());
+        }
+        {
+            auto chunk = string_chunk(*table, {"a", "b", std::string(5000, 'x')}, 1000000);
+            table_append_state state(&env.resource);
+            REQUIRE_FALSE(table->append_lock(state).has_error());
+            REQUIRE_FALSE(table->initialize_append(state).has_error());
+            auto held = exhaust_pool(env);
+            auto appended = table->append(chunk, state);
+            REQUIRE(appended.has_error());
+            INFO("refusal: " << appended.error().what);
+            CHECK(appended.error().type == core::error_code_t::out_of_memory);
+        }
+        REQUIRE(table->row_group()->row_group_tree()->segment_at(1) == nullptr);
+        CHECK(column_of(*table, 0).count() == kept_rows);
+        CHECK(column_of(*table, 1).count() == kept_rows);
+
+        good_append(env, *table, shape_t::STRING, "ok");
+        std::vector<row_t> cells;
+        REQUIRE(scan_rows(*table, env, &cells) == kept_rows + 1);
+        CHECK(cells.back().k == GOOD_K);
+        CHECK(cell_string(cells.back().v, shape_t::STRING) == "ok");
+
+        checkpoint_production(bm, *table);
+        auto pointers = read_pointers(env, bm);
+        REQUIRE(pointers.size() == 1);
+        CHECK(pointers[0].tuple_count == kept_rows + 1);
+        for (const auto& node : pointers[0].data_pointers) {
+            INFO("persisted: " << describe(node));
+            require_consistent(node, kept_rows + 1);
+            for (const auto& child : node.children) {
+                require_consistent(child, kept_rows + 1);
+            }
+        }
+    }
+    {
+        tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
+        REQUIRE(!bm.load_existing_database().has_error());
+        auto loaded = reload_table(env, bm);
+        INFO("reload: " << (loaded.has_error() ? loaded.error().what : std::pmr::string{"ok"}));
+        REQUIRE_FALSE(loaded.has_error());
+        std::vector<row_t> cells;
+        REQUIRE(scan_rows(*loaded.value(), env, &cells) == kept_rows + 1);
+        CHECK(cells.back().k == GOOD_K);
+        CHECK(cell_string(cells.back().v, shape_t::STRING) == "ok");
+    }
+    std::remove(path.c_str());
+}

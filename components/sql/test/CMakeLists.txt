@@ -4,6 +4,7 @@ add_definitions(-DDEV_MODE)
 
 set(${PROJECT_NAME}_SOURCES
         test_primitive.cpp
+        test_array_null_literal.cpp
         test_create_drop.cpp
         test_select.cpp
         test_delete.cpp

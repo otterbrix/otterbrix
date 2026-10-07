@@ -81,17 +81,53 @@ TEST_CASE("integration::cpp::matview_null_column::a_view_over_SELECT_NULL_record
     CHECK(read->value(0, 0).is_null());
 }
 
-TEST_CASE("integration::cpp::matview_null_column::a_matview_over_an_array_of_NULL_is_refused") {
-    test_spaces space(config_for("array_of_null"));
+TEST_CASE("integration::cpp::matview_null_column::a_matview_over_an_array_of_NULL_is_text_array_and_holds_rows") {
+    auto config = config_for("array_of_null");
+    {
+        test_spaces space(config);
+        auto* d = space.dispatcher();
+        run_ok(d, "CREATE DATABASE d;");
+        run_ok(d, "CREATE TABLE d.src (a bigint);");
+        run_ok(d, "INSERT INTO d.src (a) VALUES (1), (2);");
+        run_ok(d, "CREATE MATERIALIZED VIEW d.mv AS SELECT a, array[NULL] AS x FROM d.src WITH NO DATA;");
+        run_ok(d, "REFRESH MATERIALIZED VIEW d.mv;");
+        auto filled = run_ok(d, "SELECT a, x FROM d.mv;");
+        REQUIRE(filled->size() == 2);
+        const auto x = filled->chunks().front().types()[1];
+        REQUIRE(x.type() == types::logical_type::ARRAY);
+        CHECK(x.child_type().type() == types::logical_type::STRING_LITERAL);
+        REQUIRE(filled->value(1, 0).children().size() == 1);
+        CHECK(filled->value(1, 0).children()[0].is_null());
+        run_ok(d, "CHECKPOINT;");
+    }
+    {
+        auto host = otterbrix::base_otterbrix_t::open(config, {});
+        INFO("restart: " << (host.has_error() ? host.error().what : "ok"));
+        REQUIRE_FALSE(host.has_error());
+        otterbrix::otterbrix_ptr engine{new otterbrix::otterbrix_t(std::move(host.value()))};
+        auto again = run_ok(engine->dispatcher(), "SELECT a, x FROM d.mv;");
+        REQUIRE(again->size() == 2);
+        REQUIRE(again->value(1, 1).children().size() == 1);
+        CHECK(again->value(1, 1).children()[0].is_null());
+    }
+}
+
+TEST_CASE("integration::cpp::matview_null_column::a_view_over_an_array_of_NULL_answers_text_array") {
+    test_spaces space(config_for("view_array_of_null"));
     auto* d = space.dispatcher();
     run_ok(d, "CREATE DATABASE d;");
-    run_ok(d, "CREATE TABLE d.src (a bigint);");
-    run_ok(d, "INSERT INTO d.src (a) VALUES (1), (2);");
-    const auto why =
-        run_refused(d, "CREATE MATERIALIZED VIEW d.mv AS SELECT a, array[NULL] AS x FROM d.src WITH NO DATA;");
-    INFO("refusal: " << why);
-    CHECK(why.find("'x'") != std::string::npos);
-    CHECK(run_ok(d, "SELECT a FROM d.src;")->size() == 2);
+    run_ok(d, "CREATE VIEW d.v AS SELECT array[NULL] AS x;");
+    auto read = run_ok(d, "SELECT * FROM d.v;");
+    REQUIRE(read->size() == 1);
+    const auto x = read->chunks().front().types()[0];
+    REQUIRE(x.type() == types::logical_type::ARRAY);
+    CHECK(x.child_type().type() == types::logical_type::STRING_LITERAL);
+    run_ok(d, "CREATE VIEW d.vv AS SELECT array[array[NULL]] AS x;");
+    auto nested = run_ok(d, "SELECT * FROM d.vv;");
+    const auto xx = nested->chunks().front().types()[0];
+    REQUIRE(xx.type() == types::logical_type::ARRAY);
+    REQUIRE(xx.child_type().type() == types::logical_type::ARRAY);
+    CHECK(xx.child_type().child_type().type() == types::logical_type::STRING_LITERAL);
 }
 
 TEST_CASE("integration::cpp::matview_null_column::a_matview_over_an_empty_array_is_refused") {

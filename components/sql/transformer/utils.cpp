@@ -1314,6 +1314,9 @@ namespace components::sql::transform {
                                      std::pmr::string{"array has inconsistent element types", resource});
             }
         }
+        if (!element_type_found) {
+            element_type = types::complex_logical_type{types::logical_type::STRING_LITERAL};
+        }
         return types::logical_value_t::create_array(resource, element_type, std::move(values));
     }
 

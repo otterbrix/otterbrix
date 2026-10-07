@@ -45,6 +45,7 @@ set(${PROJECT_NAME}_SOURCES
         test_construction_error_move.cpp
         test_append_packing.cpp
         test_tail_reuse.cpp
+        test_append_count.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

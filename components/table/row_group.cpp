@@ -175,9 +175,6 @@ namespace components::table {
 
         uint64_t rows_to_write = count;
         if (rows_to_write > 0) {
-            const types::logical_value_t fill_value =
-                default_value.has_value() ? *default_value
-                                          : types::logical_value_t{collection_->resource(), new_column.type()};
             // The materialized column belongs to the successor, so its filled segments pack into the
             // successor's tails (sealed by the successor's first checkpoint like any other append).
             column_append_state state{&new_collection->append_packer()};
@@ -187,8 +184,10 @@ namespace components::table {
             }
             for (uint64_t i = 0; i < rows_to_write; i += vector::DEFAULT_VECTOR_CAPACITY) {
                 uint64_t rows_in_this_vector = std::min<uint64_t>(rows_to_write - i, vector::DEFAULT_VECTOR_CAPACITY);
-                result.reference(fill_value);
-                if (!default_value.has_value()) {
+                if (default_value.has_value() && !default_value->is_null()) {
+                    result.reference(*default_value);
+                } else {
+                    result.set_vector_type(vector::vector_type::CONSTANT);
                     result.set_null(true);
                 }
                 auto appended = added_column->append(state, result, rows_in_this_vector);

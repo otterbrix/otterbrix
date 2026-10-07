@@ -116,6 +116,9 @@ namespace components::casts {
                                                      const types::complex_logical_type& target) const {
         // NULL from the parser must be converted to a usable type.
         if (source.type() == types::logical_type::NA) {
+            if (target.to_physical_type() == types::physical_type::INVALID) {
+                return std::nullopt;
+            }
             return cast_info{cast_type::implicit,
                              cast_cost{.precision_loss = 0, .footprint = static_cast<uint32_t>(target.size())}};
         }

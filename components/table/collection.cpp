@@ -530,6 +530,9 @@ namespace components::table {
 
     core::result_wrapper_t<boost::intrusive_ptr<collection_t>>
     collection_t::add_column(column_definition_t& new_column) {
+        if (auto err = column_data_t::validate_column_type(new_column.type(), resource_); err.contains_error()) {
+            return err;
+        }
         // Named-resource copy: std::pmr::vector's plain copy ctor asks
         // select_on_container_copy_construction, which for polymorphic_allocator is
         // default-constructed — without this the successor's schema would land on the

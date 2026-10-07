@@ -2,6 +2,7 @@ project(test_table)
 
 set(${PROJECT_NAME}_SOURCES
         test_column.cpp
+        test_add_column_null_fill.cpp
         test_table.cpp
         test_block_manager.cpp
         test_block_reachability.cpp

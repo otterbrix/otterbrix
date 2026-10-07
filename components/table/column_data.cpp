@@ -304,9 +304,10 @@ namespace components::table {
 
     core::result_wrapper_t<bool> column_data_t::revert_append(int64_t start_row) {
         auto l = data_.lock();
+        count_ = static_cast<uint64_t>(start_row - start_);
         auto last_segment = data_.last_segment(l);
         if (!last_segment) {
-            return true; // no segments -> nothing was appended -> nothing to revert
+            return true;
         }
         if (start_row >= last_segment->start + static_cast<int64_t>(last_segment->count)) {
             assert(start_row == last_segment->start + static_cast<int64_t>(last_segment->count));
@@ -319,13 +320,18 @@ namespace components::table {
                                  std::pmr::string("column revert: no segment brackets the revert row", resource_));
         }
         auto segment = data_.segment_at(l, static_cast<int64_t>(segment_index));
-        auto& transient = *segment;
-
-        data_.erase_segments(l, segment_index);
-
-        count_ = static_cast<uint64_t>(start_row - start_);
+        if (segment->start == start_row) {
+            // Truncating to zero rows pinned a written-through segment's block: the buffer the pool had just
+            // refused (test_append_count, the three-segment case).
+            data_.erase_segments(l, segment_index);
+            if (segment_index > 0) {
+                data_.segment_at(l, static_cast<int64_t>(segment_index) - 1)->next = nullptr;
+            }
+            return true;
+        }
+        data_.erase_segments(l, segment_index + 1);
         segment->next = nullptr;
-        return transient.revert_append(static_cast<uint64_t>(start_row));
+        return segment->revert_append(static_cast<uint64_t>(start_row));
     }
 
     uint64_t column_data_t::fetch(column_scan_state& state, int64_t row_id, vector::vector_t& result) {

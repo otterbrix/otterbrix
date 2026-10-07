@@ -1558,6 +1558,12 @@ namespace components::table {
         // STRING's cumulative dictionary size must roll back to the last kept row's offset, or a re-appended
         // string's offset spans the reverted payload too. BIT's tail bits must reset to valid before reuse.
         // Fixed-size segments just had raw values overwritten, so reverting only drops the count.
+        // A disk segment takes no more appends (column_data_t::initialize_append opens a transient after it):
+        // pinning it read a block the refused append had not flushed yet (test_append_count, row-group case).
+        if (block && block->is_reloadable()) {
+            count = start_row - static_cast<uint64_t>(start);
+            return true;
+        }
         if (type.to_physical_type() == types::physical_type::STRING) {
             uint64_t new_count = start_row - static_cast<uint64_t>(start);
             auto& buffer_manager = block->buffer_manager;

@@ -203,10 +203,10 @@ namespace components::table {
 
         void erase_segments(std::unique_lock<std::mutex>& l, uint64_t segment_start) {
             load_all_segments(l);
-            if (segment_start >= nodes_.size() - 1) {
+            if (segment_start >= nodes_.size()) {
                 return;
             }
-            nodes_.erase(nodes_.begin() + static_cast<int64_t>(segment_start) + 1, nodes_.end());
+            nodes_.erase(nodes_.begin() + static_cast<int64_t>(segment_start), nodes_.end());
         }
 
         bool try_segment_index(std::unique_lock<std::mutex>& l, int64_t row_number, uint64_t& result) {

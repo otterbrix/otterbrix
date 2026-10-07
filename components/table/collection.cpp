@@ -386,7 +386,7 @@ namespace components::table {
             segments[later].node->collect_disk_block_ids(released);
         }
         release_disk_blocks(block_manager_, std::move(released));
-        row_groups_->erase_segments(l, segment_index);
+        row_groups_->erase_segments(l, segment_index + 1);
 
         auto* row_group = row_groups_->segment_at(l, static_cast<int64_t>(segment_index));
         row_group->next = nullptr;

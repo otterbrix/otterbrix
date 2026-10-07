@@ -280,9 +280,13 @@ namespace components::table {
             new_row_group = true;
             auto next_start = current_row_group->start + static_cast<int64_t>(state.append_state.offset_in_row_group);
 
-            auto l = row_groups_->lock();
-            append_row_group(l, next_start);
-            auto last_row_group = row_groups_->last_segment(l);
+            // The lock covers the tree mutation only: unwind_append below takes it itself.
+            row_group_t* last_row_group = nullptr;
+            {
+                auto l = row_groups_->lock();
+                append_row_group(l, next_start);
+                last_row_group = row_groups_->last_segment(l);
+            }
             auto init = last_row_group->initialize_append(state.append_state);
             if (init.has_error()) {
                 return unwind_append(state, entry_row_group, entry_offset, total_append_count, init.error());

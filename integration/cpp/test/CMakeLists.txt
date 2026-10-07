@@ -211,6 +211,12 @@ set( ${PROJECT_NAME}_SOURCES
         test_rollback_freezes_checkpoint.cpp
         test_wal_replay_rowid_drift.cpp
 
+        concurrency/concurrency.cpp
+        concurrency/test_visibility.cpp
+        concurrency/test_row_conflicts.cpp
+        concurrency/test_constraints.cpp
+        concurrency/test_ddl.cpp
+
         # TODO: casts for dynamic schema
         # stress tests with sanitizer are incredibly slow
         # $<$<NOT:$<BOOL:${ENABLE_ASAN}>>:stress_test_sql_features.cpp>

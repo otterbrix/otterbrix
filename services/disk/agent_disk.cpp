@@ -2330,6 +2330,8 @@ namespace services::disk {
             const char* ns_alias;
             core::error_code_t code;
             const char* kind;
+            // A row with this flag set is a tombstone and holds no name; -1 when the catalog has none
+            int64_t tombstone_col;
         };
 
         const catalog_name_key_t* catalog_name_key_for(components::catalog::oid_t table_oid) {
@@ -2339,19 +2341,30 @@ namespace services::disk {
                                                              "relname",
                                                              "relnamespace",
                                                              core::error_code_t::table_already_exists,
-                                                             "relation"};
+                                                             "relation",
+                                                             int64_t{-1}};
             static constexpr catalog_name_key_t pg_namespace_key{cat::pg_namespace_col::nspname,
                                                                  int64_t{-1},
                                                                  "nspname",
                                                                  nullptr,
                                                                  core::error_code_t::database_already_exists,
-                                                                 "database"};
+                                                                 "database",
+                                                                 int64_t{-1}};
             static constexpr catalog_name_key_t pg_type_key{cat::pg_type_col::typname,
                                                             static_cast<int64_t>(cat::pg_type_col::typnamespace),
                                                             "typname",
                                                             "typnamespace",
                                                             core::error_code_t::type_already_exists,
-                                                            "type"};
+                                                            "type",
+                                                            int64_t{-1}};
+            static constexpr catalog_name_key_t pg_attribute_key{
+                cat::pg_attribute_col::attname,
+                static_cast<int64_t>(cat::pg_attribute_col::attrelid),
+                "attname",
+                "attrelid",
+                core::error_code_t::already_exists,
+                "column",
+                static_cast<int64_t>(cat::pg_attribute_col::attisdropped)};
             switch (table_oid) {
                 case cat::well_known_oid::pg_class_table:
                     return &pg_class_key;
@@ -2359,6 +2372,8 @@ namespace services::disk {
                     return &pg_namespace_key;
                 case cat::well_known_oid::pg_type_table:
                     return &pg_type_key;
+                case cat::well_known_oid::pg_attribute_table:
+                    return &pg_attribute_key;
                 default:
                     return nullptr;
             }
@@ -2386,9 +2401,11 @@ namespace services::disk {
             }
             int64_t in_name_col = -1;
             int64_t in_ns_col = -1;
+            int64_t in_tombstone_col = -1;
             if (row.column_count() == def->columns.size()) {
                 in_name_col = static_cast<int64_t>(key.name_col);
                 in_ns_col = key.ns_col;
+                in_tombstone_col = key.tombstone_col;
             } else {
                 for (uint64_t c = 0; c < row.column_count(); c++) {
                     if (!row.data[c].type().has_alias()) {
@@ -2413,44 +2430,68 @@ namespace services::disk {
             if (key.ns_col >= 0) {
                 projected.push_back(static_cast<size_t>(key.ns_col));
             }
+            if (key.tombstone_col >= 0) {
+                projected.push_back(static_cast<size_t>(key.tombstone_col));
+            }
+            auto is_tombstone = [](const components::vector::data_chunk_t& rows, int64_t column, uint64_t index) {
+                return column >= 0 && !rows.is_null(static_cast<uint64_t>(column), index) &&
+                       rows.get_value<bool>(static_cast<uint64_t>(column), index);
+            };
 
+            struct incoming_name_t {
+                std::string_view name;
+                bool has_ns;
+                std::uint32_t ns;
+            };
+            std::pmr::vector<incoming_name_t> incoming(resource);
             for (uint64_t in_r = 0; in_r < row.size(); in_r++) {
-                if (row.is_null(static_cast<uint64_t>(in_name_col), in_r)) {
+                if (row.is_null(static_cast<uint64_t>(in_name_col), in_r) ||
+                    is_tombstone(row, in_tombstone_col, in_r)) {
                     continue;
                 }
-                const auto in_name = row.get_value<std::string_view>(static_cast<uint64_t>(in_name_col), in_r);
                 const bool has_ns =
                     key.ns_col >= 0 && in_ns_col >= 0 && !row.is_null(static_cast<uint64_t>(in_ns_col), in_r);
-                const std::uint32_t in_ns =
-                    has_ns ? row.get_value<std::uint32_t>(static_cast<uint64_t>(in_ns_col), in_r) : 0;
+                incoming.push_back(
+                    incoming_name_t{row.get_value<std::string_view>(static_cast<uint64_t>(in_name_col), in_r),
+                                    has_ns,
+                                    has_ns ? row.get_value<std::uint32_t>(static_cast<uint64_t>(in_ns_col), in_r) : 0});
+            }
+            if (incoming.empty()) {
+                return core::error_t::no_error();
+            }
 
-                for (uint64_t offset = 0; offset < total; offset += components::vector::DEFAULT_VECTOR_CAPACITY) {
-                    const uint64_t n = std::min<uint64_t>(components::vector::DEFAULT_VECTOR_CAPACITY, total - offset);
-                    components::vector::vector_t window_ids(resource, components::types::logical_type::BIGINT, n);
-                    auto* ids = window_ids.data<int64_t>();
-                    for (uint64_t i = 0; i < n; i++) {
-                        ids[i] = static_cast<int64_t>(offset + i);
+            // One pass over the catalog for every name this append brings
+            for (uint64_t offset = 0; offset < total; offset += components::vector::DEFAULT_VECTOR_CAPACITY) {
+                const uint64_t n = std::min<uint64_t>(components::vector::DEFAULT_VECTOR_CAPACITY, total - offset);
+                components::vector::vector_t window_ids(resource, components::types::logical_type::BIGINT, n);
+                auto* ids = window_ids.data<int64_t>();
+                for (uint64_t i = 0; i < n; i++) {
+                    ids[i] = static_cast<int64_t>(offset + i);
+                }
+                components::vector::data_chunk_t chunk(resource, types, n);
+                auto fetch_r = entry.storage->fetch(chunk,
+                                                    window_ids,
+                                                    n,
+                                                    projected,
+                                                    txn,
+                                                    components::table::fetch_visibility_t::RAW);
+                if (fetch_r.has_error()) {
+                    return fetch_r.error();
+                }
+                const auto* got_ids = chunk.row_ids.data<int64_t>();
+                for (uint64_t i = 0; i < chunk.size(); i++) {
+                    if (chunk.is_null(key.name_col, i) || is_tombstone(chunk, key.tombstone_col, i)) {
+                        continue;
                     }
-                    components::vector::data_chunk_t chunk(resource, types, n);
-                    auto fetch_r = entry.storage->fetch(chunk,
-                                                        window_ids,
-                                                        n,
-                                                        projected,
-                                                        txn,
-                                                        components::table::fetch_visibility_t::RAW);
-                    if (fetch_r.has_error()) {
-                        return fetch_r.error();
-                    }
-                    const auto* got_ids = chunk.row_ids.data<int64_t>();
-                    for (uint64_t i = 0; i < chunk.size(); i++) {
-                        if (chunk.is_null(key.name_col, i)) {
+                    auto held_name = chunk.get_value<std::string_view>(key.name_col, i);
+                    bool held_has_ns = key.ns_col >= 0 && !chunk.is_null(static_cast<uint64_t>(key.ns_col), i);
+                    std::uint32_t held_ns =
+                        held_has_ns ? chunk.get_value<std::uint32_t>(static_cast<uint64_t>(key.ns_col), i) : 0;
+                    for (const auto& wanted : incoming) {
+                        if (held_name != wanted.name) {
                             continue;
                         }
-                        if (chunk.get_value<std::string_view>(key.name_col, i) != in_name) {
-                            continue;
-                        }
-                        if (has_ns && !chunk.is_null(static_cast<uint64_t>(key.ns_col), i) &&
-                            chunk.get_value<std::uint32_t>(static_cast<uint64_t>(key.ns_col), i) != in_ns) {
+                        if (wanted.has_ns && held_has_ns && held_ns != wanted.ns) {
                             continue;
                         }
                         const uint64_t stamp = table.row_group()->delete_stamp(got_ids[i]);
@@ -2459,7 +2500,7 @@ namespace services::disk {
                         }
                         std::pmr::string msg{key.kind, resource};
                         msg += " '";
-                        msg.append(in_name.data(), in_name.size());
+                        msg.append(wanted.name.data(), wanted.name.size());
                         msg += "' already exists: the catalog holds a live row under this name "
                                "(committed, or pending in another transaction)";
                         return core::error_t{key.code, std::move(msg)};

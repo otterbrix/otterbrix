@@ -18,6 +18,7 @@
 #include <thread>
 #include <unistd.h>
 #include <components/log/test/test_log.hpp>
+#include <core/tests/skip_under_root.hpp>
 #include <core/tests/wait_ready.hpp>
 
 using namespace services::engine;
@@ -194,9 +195,7 @@ TEST_CASE("services::engine::pump::intervals_out_of_order_are_refused_at_startup
 }
 
 TEST_CASE("services::engine::log::a_log_directory_that_cannot_be_written_answers_an_error") {
-    if (::geteuid() == 0) {
-        SKIP("root writes into a read-only directory anyway");
-    }
+    test_helpers::skip_under_root();
     const auto root = test_root("log_refusal");
     std::filesystem::permissions(root, std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec);
     auto refused = make_log("refused", root / "log");

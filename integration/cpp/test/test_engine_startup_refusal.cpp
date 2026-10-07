@@ -2,6 +2,7 @@
 #include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <core/tests/skip_under_root.hpp>
 
 #include <components/catalog/catalog_oids.hpp>
 
@@ -9,7 +10,6 @@
 #include <fstream>
 #include <string>
 #include <thread>
-#include <unistd.h>
 
 using namespace test_helpers;
 
@@ -90,9 +90,7 @@ TEST_CASE("integration::cpp::engine_startup_refusal::a_directory_owned_from_anot
 
 // An unreadable table directory is a refused start, not an exception out of the directory walk.
 TEST_CASE("integration::cpp::engine_startup_refusal::an_unreadable_namespace_directory_answers_an_error") {
-    if (::geteuid() == 0) {
-        SKIP("root reads a chmod 000 directory anyway");
-    }
+    test_helpers::skip_under_root();
     auto config = make_test_config(integration_fixture_path("test_engine_startup_refusal/unreadable_namespace"));
     config.log.level = log_t::level::off;
     {

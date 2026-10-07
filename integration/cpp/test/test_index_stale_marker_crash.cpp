@@ -19,6 +19,7 @@
 #include <thread>
 #include <unistd.h>
 #include <vector>
+#include <core/tests/skip_under_root.hpp>
 #include <core/tests/wait_ready.hpp>
 
 // A crash between compacting a table and rebuilding its indexes can leave a POST-COMPACT TABLE
@@ -195,6 +196,7 @@ namespace {
 // Nothing durable recorded the renumbering, so the restart wired the stale bitcask store as
 // current and 34 of 34 probes disagreed with the table's own full scan, permanently.
 TEST_CASE("integration::cpp::index_stale_marker_crash::a_restart_may_not_wire_an_index_left_naming_precompact_rows") {
+    test_helpers::skip_under_root();
     auto config = test_create_config(fixture_root() + "/orig");
     test_clear_directory(config);
     config.log.level = log_t::level::off;

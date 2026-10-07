@@ -26,6 +26,7 @@
 #include <thread>
 #include <unistd.h>
 #include <components/log/test/test_log.hpp>
+#include <core/tests/skip_under_root.hpp>
 #include <core/tests/wait_ready.hpp>
 
 // A directory name that doesn't round-trip through to_string(oid) is foreign and must be skipped by both
@@ -170,9 +171,7 @@ TEST_CASE("wal::classification::replay_skips_a_foreign_named_directory") {
 // An entry under the WAL root whose kind cannot be read may be a database directory holding committed
 // transactions, so replay refuses instead of skipping it. A dangling symlink names nothing and is no such entry.
 TEST_CASE("wal::classification::an_entry_that_cannot_be_examined_refuses_replay") {
-    if (::geteuid() == 0) {
-        SKIP("root examines a mode-000 directory anyway");
-    }
+    test_helpers::skip_under_root();
     const auto path = base_path() / "unexaminable_entry";
     const auto blocked = base_path() / "unexaminable_blocked";
     std::filesystem::remove_all(path);

@@ -21,6 +21,7 @@
 #include <components/vector/data_chunk.hpp>
 #include <core/executor.hpp>
 #include <core/pmr.hpp>
+#include <core/tests/skip_under_root.hpp>
 
 #include <services/index/index_agent_contract.hpp>
 #include <services/index/manager_index.hpp>
@@ -417,6 +418,7 @@ TEST_CASE("services::index::manager::a catchup staging the agent refused fails t
 
 // An entry must leave the deferred-erase queue only after the erase succeeds, or a refused erase is never retried.
 TEST_CASE("services::index::manager::a refused deferred erase is re-queued, not forgotten") {
+    test_helpers::skip_under_root();
     auto resource = core::pmr::otterbrix_resource();
     auto log = make_test_log();
     const auto path = fresh_index_root("index_manager_deferred_erase_requeue");

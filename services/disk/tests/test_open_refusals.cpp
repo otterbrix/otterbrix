@@ -31,6 +31,7 @@
 #include <vector>
 #include <components/log/test/test_log.hpp>
 #include <services/disk/tests/test_directory.hpp>
+#include <core/tests/skip_under_root.hpp>
 #include <core/tests/wait_ready.hpp>
 
 // The open path must not let a real failure collapse into the value a legitimate empty state also
@@ -588,9 +589,7 @@ TEST_CASE("services::disk::open::a_table_file_that_does_not_load_refuses_the_sta
 // A table directory that cannot be examined is not a table whose file was lost: rehydrate refuses
 // instead of recreating the file over whatever the directory holds.
 TEST_CASE("services::disk::open::rehydrate_refuses_a_table_directory_it_cannot_examine") {
-    if (::geteuid() == 0) {
-        SKIP("root examines a mode-000 directory anyway");
-    }
+    test_helpers::skip_under_root();
     cleanup_refusal_dir();
     auto base = std::filesystem::path(refusal_dir());
     std::filesystem::create_directories(base);
@@ -633,9 +632,7 @@ TEST_CASE("services::disk::open::rehydrate_refuses_a_table_directory_it_cannot_e
 
 // The directory of a lost .otbx that cannot be created stops the start like a file that cannot be examined.
 TEST_CASE("services::disk::open::rehydrate_refuses_a_table_directory_it_cannot_create") {
-    if (::geteuid() == 0) {
-        SKIP("root creates a directory under a read-only one anyway");
-    }
+    test_helpers::skip_under_root();
     cleanup_refusal_dir();
     auto base = std::filesystem::path(refusal_dir());
     std::filesystem::create_directories(base);

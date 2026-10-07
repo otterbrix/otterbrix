@@ -15,6 +15,7 @@
 #include <core/executor.hpp>
 #include <core/pmr.hpp>
 #include <core/result_wrapper.hpp>
+#include <core/tests/skip_under_root.hpp>
 
 #include <services/index/bitcask_index_agent.hpp>
 #include <services/index/btree_index_agent.hpp>
@@ -540,6 +541,7 @@ TEST_CASE("services::index::bitcask_index_agent_t hands back the store's refusal
 // surface in the round that met it, not get parked in pending_write_error_ for the next
 // force_flush to report and mis-attribute.
 TEST_CASE("services::index::bitcask_index_agent_t reports a merge refusal in the round that met it") {
+    test_helpers::skip_under_root();
     auto resource = core::pmr::otterbrix_resource();
     auto log = make_test_log();
     const auto path = fresh_index_root("index_agent_merge_attribution");

@@ -23,6 +23,7 @@
 #include <system_error>
 #include <thread>
 #include <vector>
+#include <core/tests/skip_under_root.hpp>
 #include <core/tests/wait_ready.hpp>
 
 // A refused rebuild must abandon run_auto_checkpoint's round instead of falling through to
@@ -295,6 +296,7 @@ namespace {
 
 // Measured on the unfixed build: truncation still ran, unlinking twelve of thirteen captured segments.
 TEST_CASE("integration::cpp::auto_checkpoint_rebuild_refusal::a_refused_rebuild_may_not_cost_the_journal") {
+    test_helpers::skip_under_root();
     auto config = test_create_config(integration_fixture_path("test_auto_checkpoint_rebuild_refusal/db"));
     test_clear_directory(config);
     config.log.level = log_t::level::off;

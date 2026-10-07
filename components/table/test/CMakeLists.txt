@@ -50,6 +50,7 @@ set(${PROJECT_NAME}_SOURCES
         test_append_count.cpp
         test_unwind_limits.cpp
         test_compact_packer_bound.cpp
+        test_checkpoint_blocks.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

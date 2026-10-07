@@ -797,16 +797,14 @@ namespace components::table {
         if (children.has_error()) {
             return children.convert_error<persistent_column_data_t>();
         }
-        // A separate, short-lived partial_block_manager re-points the live tail and flushes here (flush-before-evict).
-        // The live segments switch inside that flush, once their blocks are on the file; a refused
-        // flush (or a packer that dies here with its placements) leaves them transient and readable.
-        auto repoint_pbm = storage::partial_block_manager_t::for_checkpoint(block_manager_);
-        auto repointed = transition_to_disk(repoint_pbm);
+        // The live tail is re-pointed through the SAME packer as the root copies of every column and
+        // row group of this checkpoint; its segments switch once collection_t::checkpoint flushed it.
+        // Rejected: a packer per column, flushed here -- every live tail and its validity child's took
+        // a dedicated 256 KiB block each round: 67 blocks and a 17.6 MB file for 100 rows x 32
+        // INTEGER (test_checkpoint_blocks).
+        auto repointed = transition_to_disk(partial_block_manager);
         if (repointed.has_error()) {
             return repointed.convert_error<persistent_column_data_t>();
-        }
-        if (auto flushed = repoint_pbm.flush_partial_blocks(); flushed.has_error()) {
-            return flushed.convert_error<persistent_column_data_t>(); // io_error
         }
         return persistent;
     }

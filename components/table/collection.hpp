@@ -21,17 +21,6 @@ namespace components::table {
 
     class data_table_t;
 
-    class row_group_segment_tree_t : public segment_tree_t<row_group_t, true> {
-    public:
-        explicit row_group_segment_tree_t(collection_t& collection);
-        ~row_group_segment_tree_t() override;
-
-    protected:
-        collection_t& collection_;
-        uint64_t current_row_group_;
-        uint64_t max_row_group_;
-    };
-
     // marks blocks as free
     void release_disk_blocks(storage::block_manager_t& block_manager, std::pmr::vector<uint64_t> block_ids);
 
@@ -54,12 +43,10 @@ namespace components::table {
 
         bool is_empty() const;
 
-        void append_row_group(std::unique_lock<std::mutex>& l, int64_t start_row);
         row_group_t* append_row_group(int64_t start_row);
         row_group_t* row_group(int64_t index);
 
         void initialize_scan(collection_scan_state& state, const std::vector<storage_index_t>& column_ids);
-        void initialize_create_index_scan(create_index_scan_state& state);
         void initialize_scan_with_offset(collection_scan_state& state,
                                          const std::vector<storage_index_t>& column_ids,
                                          int64_t start_row,
@@ -138,7 +125,7 @@ namespace components::table {
 
         uint64_t row_group_size() const { return row_group_size_; }
 
-        row_group_segment_tree_t* row_group_tree() { return row_groups_.get(); }
+        segment_tree_t<row_group_t>* row_group_tree() { return row_groups_.get(); }
 
         std::pmr::memory_resource* resource() const noexcept { return resource_; }
 
@@ -148,7 +135,6 @@ namespace components::table {
         void set_total_rows(uint64_t total) { total_rows_ = total; }
 
     private:
-        bool is_empty(std::unique_lock<std::mutex>&) const;
         [[nodiscard]] core::error_t unwind_append(table_append_state& state,
                                                   row_group_t* entry_row_group,
                                                   uint64_t entry_offset,
@@ -167,7 +153,7 @@ namespace components::table {
         std::pmr::vector<types::complex_logical_type> types_;
         int64_t row_start_;
         // Exclusive; a shared_ptr stood here though nothing shared it -- every consumer uses .get()/operator->.
-        std::unique_ptr<row_group_segment_tree_t> row_groups_;
+        std::unique_ptr<segment_tree_t<row_group_t>> row_groups_;
         uint64_t allocation_size_;
     };
 

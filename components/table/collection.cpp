@@ -12,14 +12,6 @@
 
 namespace components::table {
 
-    row_group_segment_tree_t::row_group_segment_tree_t(collection_t& collection)
-        : collection_(collection)
-        , current_row_group_(0)
-        , max_row_group_(0) {}
-
-    // because of linking issues default has to be written here
-    row_group_segment_tree_t::~row_group_segment_tree_t() = default;
-
     collection_t::collection_t(std::pmr::memory_resource* resource,
                                storage::block_manager_t& block_manager,
                                std::pmr::vector<types::complex_logical_type> types,
@@ -34,7 +26,7 @@ namespace components::table {
         , types_(std::move(types))
         , row_start_(row_start)
         , allocation_size_(0) {
-        row_groups_ = std::make_unique<row_group_segment_tree_t>(*this);
+        row_groups_ = std::make_unique<segment_tree_t<row_group_t>>();
     }
 
     uint64_t collection_t::total_rows() const { return total_rows_.load(); }
@@ -66,17 +58,12 @@ namespace components::table {
         types_ = std::move(types);
     }
 
-    void collection_t::append_row_group(std::unique_lock<std::mutex>& l, int64_t start_row) {
+    row_group_t* collection_t::append_row_group(int64_t start_row) {
         assert(start_row >= row_start_);
         auto new_row_group = std::make_unique<row_group_t>(this, start_row, 0U);
         new_row_group->initialize_empty(types_);
-        row_groups_->append_segment(l, std::move(new_row_group));
-    }
-
-    row_group_t* collection_t::append_row_group(int64_t start_row) {
-        auto l = row_groups_->lock();
-        append_row_group(l, start_row);
-        return row_groups_->last_segment(l);
+        row_groups_->append_segment(std::move(new_row_group));
+        return row_groups_->last_segment();
     }
 
     collection_t::~collection_t() = default;
@@ -94,10 +81,6 @@ namespace components::table {
         while (row_group && !row_group->initialize_scan(state)) {
             row_group = row_groups_->next_segment(row_group);
         }
-    }
-
-    void collection_t::initialize_create_index_scan(create_index_scan_state& state) {
-        state.segment_lock = row_groups_->lock();
     }
 
     void collection_t::initialize_scan_with_offset(collection_scan_state& state,
@@ -161,16 +144,11 @@ namespace components::table {
 #endif
         for (uint64_t i = 0; i < fetch_count; i++) {
             auto row_id = row_ids[i];
-            row_group_t* row_group;
-            {
-                uint64_t segment_index;
-                auto l = row_groups_->lock();
-                if (!row_groups_->try_segment_index(l, row_id, segment_index)) {
-                    // Names no row group: dropped from the answer. Stamps below name only
-                    // gathered rows, so the drop is visible, not masked.
-                    continue;
-                }
-                row_group = row_groups_->segment_at(l, static_cast<int64_t>(segment_index));
+            auto* row_group = row_groups_->get_segment(row_id);
+            if (!row_group) {
+                // Names no row group: dropped from the answer. Stamps below name only
+                // gathered rows, so the drop is visible, not masked.
+                continue;
             }
             // Asked before the gather so an invisible row costs no column read. row_id stays
             // collection-absolute; row_version_manager_t::fetch rebases internally.
@@ -193,10 +171,7 @@ namespace components::table {
 #endif
     }
 
-    bool collection_t::is_empty() const {
-        auto l = row_groups_->lock();
-        return is_empty(l);
-    }
+    bool collection_t::is_empty() const { return row_groups_->is_empty(); }
 
     uint64_t collection_t::calculate_size() {
         uint64_t res = 0;
@@ -218,8 +193,6 @@ namespace components::table {
         }
     }
 
-    bool collection_t::is_empty(std::unique_lock<std::mutex>& l) const { return row_groups_->is_empty(l); }
-
     core::result_wrapper_t<bool> collection_t::initialize_append(table_append_state& state) {
         // Type validated first: create_column's constructors cannot refuse a type they cannot
         // represent, or an unnamed struct throws inside struct_column_data_t's ctor and hangs the
@@ -233,11 +206,10 @@ namespace components::table {
         state.current_row = state.row_start;
         state.total_append_count = 0;
 
-        auto l = row_groups_->lock();
-        if (is_empty(l)) {
-            append_row_group(l, row_start_);
+        if (row_groups_->is_empty()) {
+            append_row_group(row_start_);
         }
-        state.start_row_group = row_groups_->last_segment(l);
+        state.start_row_group = row_groups_->last_segment();
         assert(row_start_ + static_cast<int64_t>(total_rows_.load()) ==
                state.start_row_group->start + static_cast<int64_t>(state.start_row_group->count));
         state.append_state.pbm = &append_pbm_;
@@ -280,13 +252,7 @@ namespace components::table {
             new_row_group = true;
             auto next_start = current_row_group->start + static_cast<int64_t>(state.append_state.offset_in_row_group);
 
-            // The lock covers the tree mutation only: unwind_append below takes it itself.
-            row_group_t* last_row_group = nullptr;
-            {
-                auto l = row_groups_->lock();
-                append_row_group(l, next_start);
-                last_row_group = row_groups_->last_segment(l);
-            }
+            auto last_row_group = append_row_group(next_start);
             auto init = last_row_group->initialize_append(state.append_state);
             if (init.has_error()) {
                 return unwind_append(state, entry_row_group, entry_offset, total_append_count, init.error());
@@ -317,20 +283,12 @@ namespace components::table {
             state.append_state.states[c].release_pins();
         }
         std::pmr::vector<uint64_t> erased(resource_);
-        {
-            auto l = row_groups_->lock();
-            const auto& segments = row_groups_->reference_segments(l);
-            uint64_t entry_index = 0;
-            while (entry_index < segments.size() && segments[entry_index].node.get() != entry_row_group) {
-                entry_index++;
-            }
-            assert(entry_index < segments.size() && "the append started in a row group of this collection");
-            for (uint64_t later = entry_index + 1; later < segments.size(); later++) {
-                segments[later].node->collect_disk_block_ids(erased);
-            }
-            row_groups_->erase_segments(l, entry_index + 1);
-            entry_row_group->next = nullptr;
+        assert(row_groups_->has_segment(entry_row_group) && "the append started in a row group of this collection");
+        const auto& segments = row_groups_->reference_segments();
+        for (uint64_t later = entry_row_group->index + 1; later < segments.size(); later++) {
+            segments[later]->collect_disk_block_ids(erased);
         }
+        row_groups_->erase_segments(entry_row_group->index + 1);
         state.append_state.row_group = entry_row_group;
         state.append_state.offset_in_row_group = entry_offset;
         state.total_append_count -= append_count;
@@ -414,14 +372,9 @@ namespace components::table {
     }
 
     uint64_t collection_t::delete_stamp(int64_t row_id) {
-        row_group_t* row_group = nullptr;
-        {
-            uint64_t segment_index;
-            auto l = row_groups_->lock();
-            if (!row_groups_->try_segment_index(l, row_id, segment_index)) {
-                return NOT_DELETED_ID;
-            }
-            row_group = row_groups_->segment_at(l, static_cast<int64_t>(segment_index));
+        auto* row_group = row_groups_->get_segment(row_id);
+        if (!row_group) {
+            return NOT_DELETED_ID;
         }
         return row_group->delete_stamp(row_id);
     }
@@ -447,22 +400,20 @@ namespace components::table {
         if (count == 0) {
             return true;
         }
-        auto l = row_groups_->lock();
         uint64_t segment_index;
-        if (!row_groups_->try_segment_index(l, row_start, segment_index)) {
+        if (!row_groups_->try_segment_index(row_start, segment_index)) {
             return core::error_t(core::error_code_t::data_corruption,
                                  std::pmr::string("table revert: no row group brackets the revert row", resource_));
         }
-        const auto& segments = row_groups_->reference_segments(l);
+        const auto& segments = row_groups_->reference_segments();
         std::pmr::vector<uint64_t> released{resource_};
         for (uint64_t later = segment_index + 1; later < segments.size(); ++later) {
-            segments[later].node->collect_disk_block_ids(released);
+            segments[later]->collect_disk_block_ids(released);
         }
         release_disk_blocks(block_manager_, std::move(released));
-        row_groups_->erase_segments(l, segment_index + 1);
+        row_groups_->erase_segments(segment_index + 1);
 
-        auto* row_group = row_groups_->segment_at(l, static_cast<int64_t>(segment_index));
-        row_group->next = nullptr;
+        auto* row_group = row_groups_->segment_at(static_cast<int64_t>(segment_index));
         total_rows_ = static_cast<uint64_t>(row_start - row_start_);
         return row_group->revert_append(static_cast<uint64_t>(row_start - row_group->start));
     }
@@ -474,7 +425,7 @@ namespace components::table {
         auto segments = data.row_groups_->move_segments();
 
         for (auto& entry : segments) {
-            auto& row_group = entry.node;
+            auto& row_group = entry;
             row_group->move_to_collection(this, index);
 
             index += static_cast<int64_t>(row_group->count);
@@ -609,10 +560,9 @@ namespace components::table {
             return sealed; // io_error
         }
 
-        auto l = row_groups_->lock();
-        auto& segments = row_groups_->reference_segments(l);
+        auto& segments = row_groups_->reference_segments();
         for (const auto& segment : segments) {
-            auto pointer = segment.node->write_to_disk(partial_block_manager);
+            auto pointer = segment->write_to_disk(partial_block_manager);
             if (pointer.has_error()) {
                 return pointer.convert_error<std::vector<storage::row_group_pointer_t>>(); // out_of_memory
             }

@@ -2,8 +2,9 @@
 
 #include <atomic>
 #include <cassert>
+#include <cstdint>
+#include <iterator>
 #include <memory>
-#include <mutex>
 #include <vector>
 
 namespace components::table {
@@ -13,209 +14,58 @@ namespace components::table {
     public:
         segment_base_t(int64_t start, uint64_t count)
             : start(start)
-            , count(count)
-            , next(nullptr) {}
+            , count(count) {}
 
         int64_t start;
         std::atomic<uint64_t> count;
-        T* next;
+        // Rejected: a `next` link. Every erase and replace had to re-point it by hand, and a forgotten one
+        // dangled; the successor is the entry after this one.
         uint64_t index = 0;
     };
 
+    // Rejected: a lock. A tree has one owner (the table's disk agent), so no second thread ever waited on
+    // it, while the refused-append unwind took it again from under itself (test_unwind_limits L0/L0b).
     template<class T>
-    struct segment_node_t {
-        int64_t row_start;
-        std::unique_ptr<T> node;
-    };
-
-    template<class T, bool SUPPORTS_LAZY_LOADING = false>
     class segment_tree_t {
         class segment_iteration_helper;
 
     public:
-        explicit segment_tree_t()
-            : finished_loading_(true) {}
-        virtual ~segment_tree_t() = default;
+        segment_tree_t() = default;
+        segment_tree_t(const segment_tree_t&) = delete;
+        segment_tree_t(segment_tree_t&&) = delete;
+        segment_tree_t& operator=(const segment_tree_t&) = delete;
+        segment_tree_t& operator=(segment_tree_t&&) = delete;
 
-        std::unique_lock<std::mutex> lock() { return std::unique_lock(node_lock_); }
-
-        bool is_empty(std::unique_lock<std::mutex>& l) { return root_segment(l) == nullptr; }
-
-        T* root_segment() {
-            auto l = lock();
-            return root_segment(l);
-        }
-
-        T* root_segment(std::unique_lock<std::mutex>& l) {
-            if (nodes_.empty()) {
-                load_next_segment(l);
-            }
-            return root_segment_internal();
-        }
-        std::vector<segment_node_t<T>> move_segments(std::unique_lock<std::mutex>& l) {
-            load_all_segments(l);
-            return std::move(nodes_);
-        }
-        std::vector<segment_node_t<T>> move_segments() {
-            auto l = lock();
-            return move_segments(l);
-        }
-
-        const std::vector<segment_node_t<T>>& reference_segments(std::unique_lock<std::mutex>& l) {
-            load_all_segments(l);
-            return nodes_;
-        }
-        const std::vector<segment_node_t<T>>& reference_segments() {
-            auto l = lock();
-            return reference_segments(l);
-        }
-
-        uint64_t segment_count() {
-            auto l = lock();
-            return segment_count(l);
-        }
-        uint64_t segment_count(std::unique_lock<std::mutex>&) { return nodes_.size(); }
-        T* segment_at(int64_t index) {
-            auto l = lock();
-            return segment_at(l, index);
-        }
-        T* segment_at(std::unique_lock<std::mutex>& l, int64_t index) {
+        bool is_empty() const noexcept { return nodes_.empty(); }
+        uint64_t segment_count() const noexcept { return nodes_.size(); }
+        T* root_segment() const noexcept { return nodes_.empty() ? nullptr : nodes_.front().get(); }
+        T* last_segment() const noexcept { return nodes_.empty() ? nullptr : nodes_.back().get(); }
+        // Negative numbers start from the back.
+        T* segment_at(int64_t index) const noexcept {
             if (index < 0) {
-                load_all_segments(l);
                 index += static_cast<int64_t>(nodes_.size());
                 if (index < 0) {
                     return nullptr;
                 }
-                return nodes_[static_cast<uint64_t>(index)].node.get();
-            } else {
-                while (uint64_t(index) >= nodes_.size() && load_next_segment(l)) {
-                }
-                if (uint64_t(index) >= nodes_.size()) {
-                    return nullptr;
-                }
-                return nodes_[static_cast<uint64_t>(index)].node.get();
             }
+            return static_cast<uint64_t>(index) < nodes_.size() ? nodes_[static_cast<uint64_t>(index)].get() : nullptr;
         }
-        T* next_segment(T* segment) {
-            if (!SUPPORTS_LAZY_LOADING) {
-                return segment->next;
-            }
-            if (finished_loading_) {
-                return segment->next;
-            }
-            auto l = lock();
-            return next_segment(l, segment);
-        }
-        T* next_segment(std::unique_lock<std::mutex>& l, T* segment) {
+        T* next_segment(const T* segment) const noexcept {
             if (!segment) {
                 return nullptr;
             }
-            assert(nodes_[segment->index].node.get() == segment);
-            return segment_at(l, static_cast<int64_t>(segment->index + 1));
+            assert(has_segment(segment));
+            return segment_at(static_cast<int64_t>(segment->index) + 1);
+        }
+        bool has_segment(const T* segment) const noexcept {
+            return segment && segment->index < nodes_.size() && nodes_[segment->index].get() == segment;
         }
 
-        T* last_segment(std::unique_lock<std::mutex>& l) {
-            load_all_segments(l);
-            if (nodes_.empty()) {
-                return nullptr;
-            }
-            return nodes_.back().node.get();
-        }
-        // Returns nullptr when no segment brackets `row_number`, never throws: a throw here
+        // False when no segment brackets `row_number`, never throws: a throw here
         // would unwind across the disk agent's mailbox into a coroutine whose
         // unhandled_exception() is empty, hanging the statement instead of failing it (rules
         // 2/9). Every caller reports the miss on its own error channel.
-        T* get_segment(int64_t row_number) {
-            auto l = lock();
-            return get_segment(l, row_number);
-        }
-        T* get_segment(std::unique_lock<std::mutex>& l, int64_t row_number) {
-            uint64_t index;
-            if (!try_segment_index(l, row_number, index)) {
-                return nullptr;
-            }
-            return nodes_[index].node.get();
-        }
-
-        void append_segment_internal(std::unique_lock<std::mutex>&, std::unique_ptr<T> segment) {
-            assert(segment);
-            if (!nodes_.empty()) {
-                nodes_.back().node->next = segment.get();
-            }
-            segment_node_t<T> node;
-            segment->index = nodes_.size();
-            segment->next = nullptr;
-            node.row_start = segment->start;
-            node.node = std::move(segment);
-            nodes_.push_back(std::move(node));
-        }
-        void append_segment(std::unique_ptr<T> segment) {
-            auto l = lock();
-            append_segment(l, std::move(segment));
-        }
-        void append_segment(std::unique_lock<std::mutex>& l, std::unique_ptr<T> segment) {
-            load_all_segments(l);
-            append_segment_internal(l, std::move(segment));
-        }
-        bool has_segment(T* segment) {
-            auto l = lock();
-            return has_segment(l, segment);
-        }
-        bool has_segment(std::unique_lock<std::mutex>&, T* segment) {
-            return segment->index < nodes_.size() && nodes_[segment->index].node.get() == segment;
-        }
-
-        void replace(segment_tree_t<T>& other) {
-            auto l = lock();
-            replace(l, other);
-        }
-        void replace(std::unique_lock<std::mutex>& l, segment_tree_t<T>& other) {
-            other.load_all_segments(l);
-            nodes_ = std::move(other.nodes_);
-        }
-
-        // Swap the backing of a SINGLE node in place (write-through re-point): the new node must
-        // carry the SAME row range (start/count/row_start) as the one it replaces -- only its block backing
-        // differs (managed in-memory -> disk-backed). Preserves index/row_start and FIXES the intrusive list:
-        //   * the new node inherits the old node's index, start and next link,
-        //   * the PREVIOUS node's next link is re-pointed at the new node,
-        //   * (the new node's own next already pointed at by the next node's link is unchanged -- that link
-        //     lives on the *next* node and still references position index+1, which is untouched).
-        // Caller must hold the tree lock. The old node (and its managed block_handle) is released on return.
-        void replace_segment_at_index(std::unique_lock<std::mutex>& l, uint64_t index, std::unique_ptr<T> new_node) {
-            load_all_segments(l);
-            assert(index < nodes_.size());
-            assert(new_node);
-            auto& entry = nodes_[index];
-            assert(new_node->start == entry.node->start);
-            assert(new_node->count.load() == entry.node->count.load());
-            // Inherit the old node's intrusive-list position.
-            new_node->index = index;
-            new_node->next = entry.node->next;
-            // Re-point the previous node's forward link at the new node so iteration stays intact.
-            if (index > 0) {
-                nodes_[index - 1].node->next = new_node.get();
-            }
-            // row_start is unchanged (same start); swap the backing.
-            entry.row_start = new_node->start;
-            entry.node = std::move(new_node);
-        }
-
-        void erase_segments(std::unique_lock<std::mutex>& l, uint64_t segment_start) {
-            load_all_segments(l);
-            if (segment_start >= nodes_.size()) {
-                return;
-            }
-            nodes_.erase(nodes_.begin() + static_cast<int64_t>(segment_start), nodes_.end());
-        }
-
-        bool try_segment_index(std::unique_lock<std::mutex>& l, int64_t row_number, uint64_t& result) {
-            while (nodes_.empty() ||
-                   row_number >= nodes_.back().row_start + static_cast<int64_t>(nodes_.back().node->count)) {
-                if (!load_next_segment(l)) {
-                    break;
-                }
-            }
+        bool try_segment_index(int64_t row_number, uint64_t& result) const noexcept {
             if (nodes_.empty()) {
                 return false;
             }
@@ -224,18 +74,16 @@ namespace components::table {
             while (lower <= upper) {
                 uint64_t index = (lower + upper) / 2;
                 assert(index < nodes_.size());
-                auto& entry = nodes_[index];
-                assert(entry.row_start == entry.node->start);
-                if (row_number < entry.row_start) {
-                    // Half-open guard: index 0 cannot move `upper` lower without underflowing the
-                    // unsigned cursor (index - 1 wraps to UINT64_MAX). A row_number below the first
-                    // segment's row_start has no containing segment — stop instead of looping into
-                    // an out-of-range index.
+                const auto& entry = *nodes_[index];
+                if (row_number < entry.start) {
+                    // Half-open guard: index 0 cannot move `upper` lower without underflowing the unsigned
+                    // cursor (index - 1 wraps to UINT64_MAX). A row_number below the first segment's start
+                    // has no containing segment -- stop instead of looping into an out-of-range index.
                     if (index == 0) {
                         break;
                     }
                     upper = index - 1;
-                } else if (row_number >= entry.row_start + static_cast<int64_t>(entry.node->count)) {
+                } else if (row_number >= entry.start + static_cast<int64_t>(entry.count)) {
                     lower = index + 1;
                 } else {
                     result = index;
@@ -244,111 +92,87 @@ namespace components::table {
             }
             return false;
         }
-
-        segment_iteration_helper segments() { return segment_iteration_helper(*this); }
-
-        std::vector<T*> copy_segments() {
-            auto l = lock();
-            load_all_segments(l);
-            std::vector<T*> result;
-            result.reserve(nodes_.size());
-            for (auto& entry : nodes_) {
-                result.push_back(entry.node.get());
-            }
-            return result;
+        T* get_segment(int64_t row_number) const noexcept {
+            uint64_t index;
+            return try_segment_index(row_number, index) ? nodes_[index].get() : nullptr;
         }
 
-        // Rebuilds the row_start map from the segments' own starts. False = a gap between
-        // nodes (a broken tree invariant); the map is left UNTOUCHED rather than half-rebuilt,
-        // which would misroute try_segment_index's binary search. Never throws.
-        [[nodiscard]] bool reinitialize() {
-            if (nodes_.empty()) {
-                return true;
+        const std::vector<std::unique_ptr<T>>& reference_segments() const noexcept { return nodes_; }
+        // Takes the list out of this tree, which is left empty.
+        std::vector<std::unique_ptr<T>> move_segments() { return std::move(nodes_); }
+        segment_iteration_helper segments() const { return segment_iteration_helper(*this); }
+
+        void append_segment(std::unique_ptr<T> segment) {
+            assert(segment);
+            segment->index = nodes_.size();
+            nodes_.push_back(std::move(segment));
+        }
+
+        // The new node carries the SAME row range; only its block backing differs. The old node is freed here.
+        void replace_segment_at_index(uint64_t index, std::unique_ptr<T> new_node) {
+            assert(new_node);
+            assert(index < nodes_.size());
+            assert(new_node->start == nodes_[index]->start);
+            assert(new_node->count.load() == nodes_[index]->count.load());
+            new_node->index = index;
+            nodes_[index] = std::move(new_node);
+        }
+
+        void erase_segments(uint64_t segment_start) {
+            if (segment_start >= nodes_.size()) {
+                return;
             }
-            int64_t offset = nodes_[0].node->start;
-            for (auto& entry : nodes_) {
-                if (entry.node->start != offset) {
+            nodes_.erase(nodes_.begin() + static_cast<int64_t>(segment_start), nodes_.end());
+        }
+
+        // False = a gap between nodes (a broken tree invariant). Never throws.
+        [[nodiscard]] bool contiguous() const noexcept {
+            for (uint64_t i = 1; i < nodes_.size(); i++) {
+                if (nodes_[i]->start != nodes_[i - 1]->start + static_cast<int64_t>(nodes_[i - 1]->count)) {
                     return false;
                 }
-                offset += static_cast<int64_t>(entry.node->count);
-            }
-            offset = nodes_[0].node->start;
-            for (auto& entry : nodes_) {
-                entry.row_start = offset;
-                offset += static_cast<int64_t>(entry.node->count);
             }
             return true;
         }
 
-    protected:
-        std::atomic<bool> finished_loading_;
-
-        virtual std::unique_ptr<T> load_segment() { return nullptr; }
-
     private:
-        std::vector<segment_node_t<T>> nodes_;
-        std::mutex node_lock_;
+        std::vector<std::unique_ptr<T>> nodes_;
 
-        T* root_segment_internal() { return nodes_.empty() ? nullptr : nodes_[0].node.get(); }
-
+        // Rejected: an end iterator taken at begin(). A loop body that erased the tail read past the new end;
+        // the iterator compares its position with the live size instead.
         class segment_iteration_helper {
             class segment_iterator;
 
         public:
-            explicit segment_iteration_helper(segment_tree_t& tree)
+            explicit segment_iteration_helper(const segment_tree_t& tree)
                 : tree_(tree) {}
 
-            segment_iterator begin() { return segment_iterator(tree_, tree_.root_segment()); }
-            segment_iterator end() { return segment_iterator(tree_, nullptr); }
+            segment_iterator begin() const { return segment_iterator(tree_); }
+            std::default_sentinel_t end() const { return std::default_sentinel; }
 
         private:
-            segment_tree_t& tree_;
+            const segment_tree_t& tree_;
 
             class segment_iterator {
             public:
-                segment_iterator(segment_tree_t& tree, T* current)
-                    : tree(tree)
-                    , current(current) {}
-
-                segment_tree_t& tree;
-                T* current;
-
-                void next() { current = tree.next_segment(current); }
+                explicit segment_iterator(const segment_tree_t& tree)
+                    : tree_(tree) {}
 
                 segment_iterator& operator++() {
-                    next();
+                    ++index_;
                     return *this;
                 }
-                bool operator!=(const segment_iterator& other) const { return current != other.current; }
+                bool operator!=(std::default_sentinel_t) const { return index_ < tree_.nodes_.size(); }
                 T& operator*() const {
-                    assert(current);
-                    return *current;
+                    assert(index_ < tree_.nodes_.size());
+                    return *tree_.nodes_[index_];
                 }
+
+            private:
+                const segment_tree_t& tree_;
+                uint64_t index_ = 0;
             };
         };
-
-        bool load_next_segment(std::unique_lock<std::mutex>& l) {
-            if (!SUPPORTS_LAZY_LOADING) {
-                return false;
-            }
-            if (finished_loading_) {
-                return false;
-            }
-            auto result = load_segment();
-            if (result) {
-                append_segment_internal(l, std::move(result));
-                return true;
-            }
-            return false;
-        }
-
-        void load_all_segments(std::unique_lock<std::mutex>& l) {
-            if (!SUPPORTS_LAZY_LOADING) {
-                return;
-            }
-            while (load_next_segment(l)) {
-            }
-        }
     };
 
 } // namespace components::table

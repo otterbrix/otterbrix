@@ -16,7 +16,8 @@ namespace components::vector {
 }
 
 namespace components::table {
-    class row_group_segment_tree_t;
+    template<class T>
+    class segment_tree_t;
     class collection_t;
     class data_table_t;
     class table_scan_state;
@@ -63,7 +64,7 @@ namespace components::table {
         uint64_t vector_index;
         int64_t max_row_group_row;
         std::vector<column_scan_state> column_scans;
-        row_group_segment_tree_t* row_groups;
+        segment_tree_t<row_group_t>* row_groups;
         int64_t max_row;
         uint64_t batch_index;
         vector::indexing_vector_t valid_indexing;
@@ -130,10 +131,6 @@ namespace components::table {
     public:
         create_index_scan_state(std::pmr::memory_resource* resource)
             : table_scan_state(resource) {}
-
-        // Segment-tree lock, NOT one of the per-table locks removed with the single-owner
-        // proof: it belongs to row_group_segment_tree_t and is out of that scope.
-        std::unique_lock<std::mutex> segment_lock;
     };
 
     struct table_append_state {

@@ -87,10 +87,10 @@ namespace components::table {
             segment.start = start_ + static_cast<int64_t>(offset);
             offset += segment.count;
         }
-        if (!data_.reinitialize()) {
+        if (!data_.contiguous()) {
             std::fprintf(stderr,
                          "components::table::column_data_t::set_start: segment starts are not contiguous after "
-                         "re-basing; the row_start map was left untouched\n");
+                         "re-basing\n");
         }
     }
 
@@ -211,23 +211,22 @@ namespace components::table {
     core::result_wrapper_t<bool> column_data_t::initialize_append(column_append_state& state) {
         // Every filled segment is packed by the collection's packer; there is no private one.
         assert(state.pbm != nullptr && "an append state is built with the collection's packer");
-        auto l = data_.lock();
-        if (data_.is_empty(l)) {
-            auto created = apend_transient_segment(l, start_);
+        if (data_.is_empty()) {
+            auto created = apend_transient_segment(start_);
             if (created.has_error()) {
                 return created; // out_of_memory
             }
         }
-        auto segment = data_.last_segment(l);
+        auto segment = data_.last_segment();
         // A disk-loaded segment is READ-ONLY (shared buffer); is_reloadable(), not block_offset()==0,
         // is the real test -- the checkpointer can pack the first column at offset 0 too.
         const bool is_disk_loaded = segment->block && segment->block->is_reloadable();
         if (is_disk_loaded || segment->block_offset() != 0) {
-            auto created = apend_transient_segment(l, segment->start + static_cast<int64_t>(segment->count));
+            auto created = apend_transient_segment(segment->start + static_cast<int64_t>(segment->count));
             if (created.has_error()) {
                 return created; // out_of_memory
             }
-            segment = data_.last_segment(l);
+            segment = data_.last_segment();
         }
         state.current = segment;
         auto init = state.current->initialize_append(state);
@@ -275,22 +274,21 @@ namespace components::table {
             }
 
             {
-                auto l = data_.lock();
                 // Capture the filled segment's index before appending the next one: state.current moves off it below.
-                const uint64_t filled_index = data_.segment_count(l) - 1;
+                const uint64_t filled_index = data_.segment_count() - 1;
                 // Release the pin before the swap frees its block_handle_t, or it unpins through
                 // freed memory (see the [appendpin] test).
                 state.handle.reset();
                 auto created =
-                    apend_transient_segment(l, state.current->start + static_cast<int64_t>(state.current->count));
+                    apend_transient_segment(state.current->start + static_cast<int64_t>(state.current->count));
                 if (created.has_error()) {
                     return created; // out_of_memory
                 }
-                auto transitioned = transition_segment_to_disk(l, filled_index, pbm);
+                auto transitioned = transition_segment_to_disk(filled_index, pbm);
                 if (transitioned.has_error()) {
                     return transitioned;
                 }
-                state.current = data_.last_segment(l);
+                state.current = data_.last_segment();
                 auto init = state.current->initialize_append(state);
                 if (init.has_error()) {
                     return init;
@@ -303,9 +301,8 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> column_data_t::revert_append(int64_t start_row) {
-        auto l = data_.lock();
         count_ = static_cast<uint64_t>(start_row - start_);
-        auto last_segment = data_.last_segment(l);
+        auto last_segment = data_.last_segment();
         if (!last_segment) {
             return true;
         }
@@ -314,23 +311,19 @@ namespace components::table {
             return true;
         }
         uint64_t segment_index;
-        if (!data_.try_segment_index(l, start_row, segment_index)) {
+        if (!data_.try_segment_index(start_row, segment_index)) {
             // Names a row the tree doesn't bracket; truncating nearby would manufacture the desync revert undoes.
             return core::error_t(core::error_code_t::data_corruption,
                                  std::pmr::string("column revert: no segment brackets the revert row", resource_));
         }
-        auto segment = data_.segment_at(l, static_cast<int64_t>(segment_index));
+        auto segment = data_.segment_at(static_cast<int64_t>(segment_index));
         if (segment->start == start_row) {
             // Truncating to zero rows pinned a written-through segment's block: the buffer the pool had just
             // refused (test_append_count, the three-segment case).
-            data_.erase_segments(l, segment_index);
-            if (segment_index > 0) {
-                data_.segment_at(l, static_cast<int64_t>(segment_index) - 1)->next = nullptr;
-            }
+            data_.erase_segments(segment_index);
             return true;
         }
-        data_.erase_segments(l, segment_index + 1);
-        segment->next = nullptr;
+        data_.erase_segments(segment_index + 1);
         return segment->revert_append(static_cast<uint64_t>(start_row));
     }
 
@@ -476,8 +469,7 @@ namespace components::table {
         return std::make_unique<standard_column_data_t>(resource, block_manager, column_index, start_row, type, parent);
     }
 
-    core::result_wrapper_t<bool> column_data_t::apend_transient_segment(std::unique_lock<std::mutex>& l,
-                                                                        int64_t start_row) {
+    core::result_wrapper_t<bool> column_data_t::apend_transient_segment(int64_t start_row) {
         const auto block_size = block_manager_.block_size();
         const auto type_size = type_.size();
 
@@ -492,14 +484,13 @@ namespace components::table {
             return new_segment.convert_error<bool>();
         }
         allocation_size_ += segment_size;
-        data_.append_segment(l, std::move(new_segment.value()));
+        data_.append_segment(std::move(new_segment.value()));
         return true;
     }
 
-    core::result_wrapper_t<bool> column_data_t::transition_segment_to_disk(std::unique_lock<std::mutex>& l,
-                                                                           uint64_t segment_index,
+    core::result_wrapper_t<bool> column_data_t::transition_segment_to_disk(uint64_t segment_index,
                                                                            storage::partial_block_manager_t& pbm) {
-        auto* segment = data_.segment_at(l, static_cast<int64_t>(segment_index));
+        auto* segment = data_.segment_at(static_cast<int64_t>(segment_index));
         if (!segment) {
             return true;
         }
@@ -596,7 +587,7 @@ namespace components::table {
                 g_transitions_with_live_pin.fetch_add(1, std::memory_order_relaxed);
             }
 #endif
-            data_.replace_segment_at_index(l, segment_index, std::move(disk_segment));
+            data_.replace_segment_at_index(segment_index, std::move(disk_segment));
             return true;
         }
 
@@ -649,7 +640,7 @@ namespace components::table {
             g_transitions_with_live_pin.fetch_add(1, std::memory_order_relaxed);
         }
 #endif
-        data_.replace_segment_at_index(l, segment_index, std::move(new_segment));
+        data_.replace_segment_at_index(segment_index, std::move(new_segment));
         return true;
     }
 
@@ -668,10 +659,9 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> column_data_t::transition_to_disk(storage::partial_block_manager_t& pbm) {
-        auto l = data_.lock();
-        const uint64_t count = data_.segment_count(l);
+        const uint64_t count = data_.segment_count();
         for (uint64_t i = 0; i < count; i++) {
-            auto transitioned = transition_segment_to_disk(l, i, pbm);
+            auto transitioned = transition_segment_to_disk(i, pbm);
             if (transitioned.has_error()) {
                 return transitioned; // io_error / out_of_memory
             }
@@ -790,7 +780,6 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> column_data_t::initialize_column(const persistent_column_data_t& persistent_data) {
-        auto l = data_.lock();
         for (uint32_t i = 0; i < persistent_data.data_pointers.size(); i++) {
             const auto& dp = persistent_data.data_pointers[i];
             if (dp.segment_size > block_manager_.block_size()) {
@@ -820,7 +809,7 @@ namespace components::table {
             if (i < persistent_data.segment_statistics.size() && persistent_data.segment_statistics[i].has_stats()) {
                 segment->set_segment_statistics(persistent_data.segment_statistics[i]);
             }
-            data_.append_segment(l, std::move(segment));
+            data_.append_segment(std::move(segment));
         }
         // The persisted count is authoritative: disagreement with the segment sum is data_corruption, not adopted.
         if (persistent_data.count == 0) {

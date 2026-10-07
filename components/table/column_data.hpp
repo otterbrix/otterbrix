@@ -145,11 +145,9 @@ namespace components::table {
         virtual void collect_disk_block_ids(std::pmr::vector<uint64_t>& out) const;
 
     protected:
-        [[nodiscard]] core::result_wrapper_t<bool> apend_transient_segment(std::unique_lock<std::mutex>& l,
-                                                                           int64_t start_row);
+        [[nodiscard]] core::result_wrapper_t<bool> apend_transient_segment(int64_t start_row);
 
-        [[nodiscard]] core::result_wrapper_t<bool> transition_segment_to_disk(std::unique_lock<std::mutex>& l,
-                                                                              uint64_t segment_index,
+        [[nodiscard]] core::result_wrapper_t<bool> transition_segment_to_disk(uint64_t segment_index,
                                                                               storage::partial_block_manager_t& pbm);
 
         uint64_t

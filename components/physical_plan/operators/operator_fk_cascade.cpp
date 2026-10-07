@@ -29,6 +29,28 @@ namespace components::operators {
             co_return;
         }
         const auto& in_chunks = output_->chunks();
+        std::pmr::vector<std::pmr::vector<std::int64_t>> per_row_child_ids(resource_);
+        if (auto found = co_await find_children(ctx, in_chunks, &per_row_child_ids); found.contains_error()) {
+            set_error(found);
+            mark_failed();
+            co_return;
+        }
+        if (ctx->txn.transaction_id != 0) {
+            components::table::referenced_delete_t removed{fk_.parent_table_oid, {}};
+            for (const auto& chunk : in_chunks) {
+                const auto* ids = chunk.row_ids.data<int64_t>();
+                removed.row_ids.insert(removed.row_ids.end(), ids, ids + chunk.size());
+            }
+            ctx->referenced_deletes.push_back(std::move(removed));
+        }
+
+        co_await apply_action_(ctx, per_row_child_ids);
+    }
+
+    actor_zeta::unique_future<core::error_t>
+    operator_fk_cascade_t::find_children(pipeline::context_t* ctx,
+                                         const chunks_vector_t& in_chunks,
+                                         std::pmr::vector<std::pmr::vector<std::int64_t>>* per_row_child_ids) {
         execution_context_t exec_ctx{ctx->session, ctx->txn, ctx->execution_context.timezone_offset};
 
         const auto& par_indices = fk_.parent_col_indices;
@@ -40,9 +62,7 @@ namespace components::operators {
             what.append(" referencing column(s) vs ");
             what.append(std::to_string(par_indices.size()).c_str());
             what.append(" referenced column(s)");
-            set_error(core::error_t{core::error_code_t::invalid_constraint, std::move(what)});
-            mark_failed();
-            co_return;
+            co_return core::error_t{core::error_code_t::invalid_constraint, std::move(what)};
         }
 
         // `absent` means the key never resolved, not that it matched nothing.
@@ -57,30 +77,23 @@ namespace components::operators {
                 what.append("\" ");
             }
             what.append("has no resolved position in the parent row — the ON DELETE action cannot be evaluated");
-            set_error(core::error_t{core::error_code_t::invalid_constraint, std::move(what)});
-            mark_failed();
-            co_return;
+            co_return core::error_t{core::error_code_t::invalid_constraint, std::move(what)};
         }
         if (par_indices.empty()) {
-            set_error(
-                core::error_t{core::error_code_t::invalid_constraint,
-                              std::pmr::string{"FK constraint: no referenced columns resolved — the ON DELETE action "
-                                               "cannot be evaluated",
-                                               resource_}});
-            mark_failed();
-            co_return;
+            co_return core::error_t{core::error_code_t::invalid_constraint,
+                                    std::pmr::string{"FK constraint: no referenced columns resolved — the ON DELETE "
+                                                     "action cannot be evaluated",
+                                                     resource_}};
         }
 
-        if (fk_.del_action == 'd' && fk_.child_col_default_specs.size() < fk_.child_col_schema_indices.size()) {
+        if (fk_.del_action == 'd' && fk_.child_col_default_specs.size() < fk_.child_col_indices.size()) {
             std::pmr::string what{"FK constraint: ON DELETE SET DEFAULT has ", resource_};
             what.append(std::to_string(fk_.child_col_default_specs.size()).c_str());
             what.append(" default spec(s) for ");
-            what.append(std::to_string(fk_.child_col_schema_indices.size()).c_str());
+            what.append(std::to_string(fk_.child_col_indices.size()).c_str());
             what.append(" referencing column(s) — a column with no spec would silently be set to "
                         "NULL instead of its default");
-            set_error(core::error_t{core::error_code_t::invalid_constraint, std::move(what)});
-            mark_failed();
-            co_return;
+            co_return core::error_t{core::error_code_t::invalid_constraint, std::move(what)};
         }
 
         std::pmr::vector<std::string> key_cols(resource_);
@@ -91,7 +104,7 @@ namespace components::operators {
 
         // chunk.data[] doesn't bound-check, so this guards par_indices explicitly. The scan below runs under
         // exec_ctx's transaction, so a child row this txn already deleted is filtered out.
-        auto refuse_narrow_parent = [&](std::size_t width, std::size_t pidx, std::size_t slot) {
+        auto refuse_narrow_parent = [&](std::size_t width, std::size_t pidx, std::size_t slot) -> core::error_t {
             std::pmr::string what{"FK constraint: the matched parent rows have ", resource_};
             what.append(std::to_string(width).c_str());
             what.append(" column(s), too few to hold referenced column ");
@@ -103,20 +116,17 @@ namespace components::operators {
             what.append("at position ");
             what.append(std::to_string(pidx).c_str());
             what.append(" — the ON DELETE action cannot be evaluated");
-            set_error(core::error_t{core::error_code_t::invalid_constraint, std::move(what)});
-            mark_failed();
+            return core::error_t{core::error_code_t::invalid_constraint, std::move(what)};
         };
 
         std::pmr::vector<types::complex_logical_type> key_types(resource_);
         key_types.reserve(par_indices.size());
         for (std::size_t j = 0; j < par_indices.size(); ++j) {
             if (par_indices[j] >= in_chunks.front().column_count()) {
-                refuse_narrow_parent(in_chunks.front().column_count(), par_indices[j], j);
-                co_return;
+                co_return refuse_narrow_parent(in_chunks.front().column_count(), par_indices[j], j);
             }
             key_types.push_back(in_chunks.front().data[par_indices[j]].type());
         }
-        std::pmr::vector<std::pmr::vector<std::int64_t>> per_row_child_ids(resource_);
         for (const auto& chunk : in_chunks) {
             if (chunk.size() == 0) {
                 continue;
@@ -124,8 +134,7 @@ namespace components::operators {
             components::vector::data_chunk_t keys(resource_, key_types, chunk.size());
             for (std::size_t j = 0; j < par_indices.size(); ++j) {
                 if (par_indices[j] >= chunk.column_count()) {
-                    refuse_narrow_parent(chunk.column_count(), par_indices[j], j);
-                    co_return;
+                    co_return refuse_narrow_parent(chunk.column_count(), par_indices[j], j);
                 }
                 components::vector::vector_ops::copy(chunk.data[par_indices[j]], keys.data[j], chunk.size(), 0, 0);
             }
@@ -144,15 +153,21 @@ namespace components::operators {
                                                           std::move(keys));
             auto chunk_child_ids_r = co_await std::move(sfut);
             if (chunk_child_ids_r.has_error()) {
-                set_error(chunk_child_ids_r.error());
-                co_return;
+                co_return chunk_child_ids_r.error();
             }
             auto& chunk_child_ids = chunk_child_ids_r.value();
             for (auto& ids : chunk_child_ids) {
-                per_row_child_ids.push_back(std::move(ids));
+                per_row_child_ids->push_back(std::move(ids));
             }
         }
+        co_return core::error_t::no_error();
+    }
 
+    actor_zeta::unique_future<void>
+    operator_fk_cascade_t::apply_action_(pipeline::context_t* ctx,
+                                         const std::pmr::vector<std::pmr::vector<std::int64_t>>& per_row_child_ids) {
+        execution_context_t exec_ctx{ctx->session, ctx->txn, ctx->execution_context.timezone_offset};
+        std::size_t absent = std::numeric_limits<std::size_t>::max();
         switch (fk_.del_action) {
             case 'a': // NO ACTION
             case 'r': // RESTRICT
@@ -238,8 +253,8 @@ namespace components::operators {
                     break;
 
                 const bool is_set_null = (fk_.del_action == 'n');
-                for (std::size_t ci = 0; ci < fk_.child_col_schema_indices.size(); ++ci) {
-                    const auto schema_idx = fk_.child_col_schema_indices[ci];
+                for (std::size_t ci = 0; ci < fk_.child_col_indices.size(); ++ci) {
+                    const auto schema_idx = fk_.child_col_indices[ci];
                     if (schema_idx == absent) {
                         std::pmr::string what{"FK constraint: referencing column ", resource_};
                         if (ci < fk_.child_col_names.size()) {

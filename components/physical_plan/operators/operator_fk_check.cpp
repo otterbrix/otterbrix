@@ -30,7 +30,17 @@ namespace components::operators {
             mark_executed();
             co_return;
         }
-        const auto& in_chunks = source->chunks();
+        if (auto checked = co_await check_rows(ctx, source->chunks()); checked.contains_error()) {
+            set_error(checked);
+            mark_failed();
+            co_return;
+        }
+        output_ = resolve_cursor_output(left_, source);
+        mark_executed();
+    }
+
+    actor_zeta::unique_future<core::error_t> operator_fk_check_t::check_rows(pipeline::context_t* ctx,
+                                                                             const chunks_vector_t& in_chunks) {
         execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
         const auto& indices = fk_.child_col_indices;
@@ -46,21 +56,17 @@ namespace components::operators {
             what.append(" referencing column(s) vs ");
             what.append(std::to_string(fk_.parent_col_names.size()).c_str());
             what.append(" referenced column(s)");
-            set_error(core::error_t{core::error_code_t::invalid_constraint, std::move(what)});
-            mark_failed();
-            co_return;
+            co_return core::error_t{core::error_code_t::invalid_constraint, std::move(what)};
         }
 
         // Different defect from the arity check: an unresolved position takes the QUIETEST path (every row
         // skipped, qualifying count 0, which is this operator's SUCCESS) — an FK silently checked against
         // nothing. Refuse and name the column instead. (Positions are constant per FK.)
         if (indices.empty()) {
-            set_error(core::error_t{
+            co_return core::error_t{
                 core::error_code_t::invalid_constraint,
                 std::pmr::string{"FK constraint: no referencing column resolved to a position in the written row",
-                                 resource_}});
-            mark_failed();
-            co_return;
+                                 resource_}};
         }
         for (std::size_t i = 0; i < indices.size(); ++i) {
             if (indices[i] != absent) {
@@ -69,9 +75,7 @@ namespace components::operators {
             std::pmr::string what{"FK constraint: referencing column \"", resource_};
             what.append(i < fk_.child_col_names.size() ? fk_.child_col_names[i].c_str() : "?");
             what.append("\" has no position in the written row");
-            set_error(core::error_t{core::error_code_t::invalid_constraint, std::move(what)});
-            mark_failed();
-            co_return;
+            co_return core::error_t{core::error_code_t::invalid_constraint, std::move(what)};
         }
 
         // Parent key column names are the same for every row; hoist them once.
@@ -102,9 +106,7 @@ namespace components::operators {
                     std::pmr::string what{"FK constraint: referencing column \"", resource_};
                     what.append(i < fk_.child_col_names.size() ? fk_.child_col_names[i].c_str() : "?");
                     what.append("\" is outside the written row");
-                    set_error(core::error_t{core::error_code_t::invalid_constraint, std::move(what)});
-                    mark_failed();
-                    co_return;
+                    co_return core::error_t{core::error_code_t::invalid_constraint, std::move(what)};
                 }
             }
             components::vector::indexing_vector_t selection(resource_, chunk.size() == 0 ? 1 : chunk.size());
@@ -126,10 +128,9 @@ namespace components::operators {
                     if (all_null)
                         continue;
                     if (any_null) {
-                        set_error(core::error_t{
+                        co_return core::error_t{
                             core::error_code_t::other_error,
-                            std::pmr::string{"FK MATCH FULL: partial null in foreign key columns", resource_}});
-                        co_return;
+                            std::pmr::string{"FK MATCH FULL: partial null in foreign key columns", resource_}};
                     }
                 } else {
                     // MATCH SIMPLE (default): any-NULL → skip.
@@ -146,9 +147,7 @@ namespace components::operators {
         }
 
         if (qcount == 0) {
-            output_ = resolve_cursor_output(left_, source);
-            mark_executed();
-            co_return;
+            co_return core::error_t::no_error();
         }
 
         // Verified one input chunk at a time (bounded keys-chunk; gathering all batches would overflow
@@ -190,24 +189,21 @@ namespace components::operators {
             if (matches_r.has_error()) {
                 // A failed parent-key read is not a miss; treating it as one lets the
                 // operation proceed on data that was never read.
-                set_error(matches_r.error());
-                co_return;
+                co_return matches_r.error();
             }
             auto& matches = matches_r.value();
 
             // Any missing parent (empty match list) is a violation.
             for (std::size_t i = 0; i < matches.size(); ++i) {
                 if (matches[i].empty()) {
-                    set_error(core::error_t{
+                    co_return core::error_t{
                         core::error_code_t::other_error,
                         std::pmr::string{"FK constraint violated: referenced row not found in parent table",
-                                         resource_}});
-                    co_return;
+                                         resource_}};
                 }
             }
         }
-        output_ = resolve_cursor_output(left_, source);
-        mark_executed();
+        co_return core::error_t::no_error();
     }
 
 } // namespace components::operators

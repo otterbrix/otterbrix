@@ -79,6 +79,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_fk_omitted_ref_columns.cpp
         test_fk_parent_column_drop.cpp
         test_fk_default_column.cpp
+        test_fk_positions_after_drop.cpp
         test_check_expr_unenforceable.cpp
         test_inline_constraints.cpp
         test_constraint_entry_lost_target.cpp

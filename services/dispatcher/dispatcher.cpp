@@ -1218,6 +1218,7 @@ namespace services::dispatcher {
         out.dropped_storage_oids = txn_t->drain_dropped_storages();
         out.created_storage_oids = txn_t->drain_created_storages();
         out.created_indexes = txn_t->drain_created_indexes();
+        out.referenced_deletes = txn_t->drain_referenced_deletes();
         // No publish barrier here — txn_publish_msg runs it after storage/WAL, so no snapshot sees it half-flipped.
         out.commit_id = txn_manager_.commit(session, &out.commit_view);
         co_return out;
@@ -1303,6 +1304,9 @@ namespace services::dispatcher {
         }
         for (auto& index : payload.created_indexes) {
             txn_t->accumulate_created_index(std::move(index));
+        }
+        for (auto& rows : payload.referenced_deletes) {
+            txn_t->accumulate_referenced_delete(std::move(rows));
         }
         co_return core::error_t::no_error();
     }

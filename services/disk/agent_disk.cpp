@@ -1019,7 +1019,7 @@ namespace services::disk {
                                                 const components::table::transaction_data& txn,
                                                 std::pmr::memory_resource* resource,
                                                 PerBatch&& fn) {
-        auto all_types = storage.types();
+        auto all_types = storage.types(txn);
         scan_position.next_row = 0;
         scan_position.max_row = static_cast<int64_t>(storage.total_rows());
         while (!scan_position.drained && scan_position.next_row < scan_position.max_row) {
@@ -1445,12 +1445,12 @@ namespace services::disk {
                 std::pmr::string{"fk semi-join: key chunk arity does not match key columns", resource}};
         }
 
-        const auto& cols = storage.columns();
+        const auto visible_types = storage.types(txn);
 
         std::pmr::vector<components::types::complex_logical_type> stored_key_types{resource};
         stored_key_types.reserve(key_col_indices.size());
         for (auto ci : key_col_indices) {
-            stored_key_types.push_back(cols[ci].type());
+            stored_key_types.push_back(visible_types[ci]);
         }
         components::vector::data_chunk_t norm_keys(resource, stored_key_types, nkeys);
         norm_keys.set_cardinality(nkeys);
@@ -1585,8 +1585,10 @@ namespace services::disk {
     }
 
     // Must error, not return empty, or a misrouted/corrupt read looks like "Database does not exist".
+    // Positions count only the columns `txn` sees: the scan reads its ids in that numbering
     static core::error_t resolve_key_col_indices(const collection_storage_entry_t* entry,
                                                  const std::pmr::vector<std::string>& key_col_names,
+                                                 const components::table::transaction_data& txn,
                                                  std::pmr::vector<std::uint64_t>& out_indices,
                                                  std::pmr::memory_resource* resource) {
         if (entry == nullptr || entry->storage == nullptr) {
@@ -1601,11 +1603,16 @@ namespace services::disk {
         out_indices.reserve(key_col_names.size());
         for (const auto& kname : key_col_names) {
             std::size_t col_idx = cols.size();
-            for (std::size_t ci = 0; ci < cols.size(); ++ci) {
-                if (cols[ci].name() == kname) {
-                    col_idx = ci;
+            std::size_t visible = 0;
+            for (const auto& column : cols) {
+                if (!column.visible_to(txn)) {
+                    continue;
+                }
+                if (column.name() == kname) {
+                    col_idx = visible;
                     break;
                 }
+                ++visible;
             }
             if (col_idx == cols.size()) {
                 std::pmr::string what{"keyed read: table has no column ", resource};
@@ -1649,7 +1656,7 @@ namespace services::disk {
         auto it = storages_.find(table_oid);
         const collection_storage_entry_t* entry = (it == storages_.end()) ? nullptr : it->second.get();
         std::pmr::vector<std::uint64_t> key_col_indices{resource()};
-        if (auto resolved = resolve_key_col_indices(entry, key_col_names, key_col_indices, resource());
+        if (auto resolved = resolve_key_col_indices(entry, key_col_names, txn, key_col_indices, resource());
             resolved.contains_error()) {
             co_return resolved;
         }

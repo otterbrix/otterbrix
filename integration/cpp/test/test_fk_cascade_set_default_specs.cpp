@@ -46,9 +46,8 @@ TEST_CASE("fk cascade: SET DEFAULT with fewer default specs than columns is refu
     catalog::fk_info_t fk;
     fk.child_col_names = {"pid"};
     fk.parent_col_names = {"id"};
-    fk.child_col_indices = {0};
+    fk.child_col_indices = {1};
     fk.parent_col_indices = {0};
-    fk.child_col_schema_indices = {1};
     fk.child_col_default_specs = {}; // shorter than the position list — the poison.
     fk.child_table_oid = catalog::oid_t{16385};
     fk.parent_table_oid = catalog::oid_t{16386};

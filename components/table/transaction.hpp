@@ -29,6 +29,11 @@ namespace components::table {
         bool snapshot_is_current{false};
     };
 
+    struct referenced_delete_t {
+        catalog::oid_t table_oid;
+        std::vector<int64_t> row_ids;
+    };
+
     // An index CREATE INDEX made (table oid + pg_index.indexrelid); parked until COMMIT/ABORT resolves it.
     struct created_index_t {
         components::catalog::oid_t table_oid;
@@ -181,6 +186,12 @@ namespace components::table {
             created_indexes_.clear();
             return out;
         }
+        void accumulate_referenced_delete(referenced_delete_t rows) { referenced_deletes_.push_back(std::move(rows)); }
+        std::vector<referenced_delete_t> drain_referenced_deletes() {
+            std::vector<referenced_delete_t> out(std::move(referenced_deletes_));
+            referenced_deletes_.clear();
+            return out;
+        }
 
         // Lets the commit-drain handler ABORT an empty COMMIT instead of allocating a commit_id for a no-op.
         bool has_accumulated() const {
@@ -226,6 +237,7 @@ namespace components::table {
 
         std::vector<components::catalog::oid_t> created_storage_oids_;
         std::vector<created_index_t> created_indexes_;
+        std::vector<referenced_delete_t> referenced_deletes_;
     };
 
 } // namespace components::table

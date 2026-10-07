@@ -344,6 +344,7 @@ namespace services::collection::executor {
         out.applied_setting = result.applied_setting;
         out.applied_setting_value = std::move(result.applied_setting_value);
         out.captured_explain_ir = std::move(captured_ir);
+        out.referenced_deletes = std::move(result.referenced_deletes);
         co_return std::move(out);
     }
 
@@ -496,6 +497,16 @@ namespace services::collection::executor {
         services::dispatcher::register_plan_targets(resource(), plan.sub_queries.back().get(), &plan.catalog_resolves);
 
         services::context_storage_t context_storage(resource(), log_.clone(), session_ctx.settings);
+
+        if (original_type == node_type::transaction_t && plan.explain == components::logical_plan::explain_type::none &&
+            static_cast<const components::logical_plan::node_transaction_t*>(plan.sub_queries.back().get())->op() ==
+                components::logical_plan::transaction_op::commit) {
+            co_return co_await run_commit_pipeline_(session,
+                                                    resolve_txn,
+                                                    context_storage.execution_context,
+                                                    session_ctx.lowest_active_start_time,
+                                                    /*ddl_mode=*/false);
+        }
 
         const bool needs_ddl_txn =
             original_type == node_type::create_collection_t || original_type == node_type::create_constraint_t ||
@@ -1656,6 +1667,7 @@ namespace services::collection::executor {
                 payload.dropped_storage_oids = std::move(exec_result.dropped_storage_oids);
                 payload.created_storage_oids = std::move(exec_result.created_storage_oids);
                 payload.created_indexes = std::move(exec_result.created_indexes);
+                payload.referenced_deletes = std::move(exec_result.referenced_deletes);
                 trace(log_,
                       "executor::execute_plan_full: txn {} — accumulating {} appends, {} deletes ({})",
                       resolve_txn.transaction_id,
@@ -2441,6 +2453,10 @@ namespace services::collection::executor {
                 result_tracking.created_indexes.push_back(std::move(index));
             }
             pipeline_context.created_indexes.clear();
+            for (auto& rows : pipeline_context.referenced_deletes) {
+                result_tracking.referenced_deletes.push_back(std::move(rows));
+            }
+            pipeline_context.referenced_deletes.clear();
             if (pipeline_context.committed_id != 0) {
                 result_tracking.commit_id = pipeline_context.committed_id;
             }
@@ -2460,6 +2476,73 @@ namespace services::collection::executor {
                                      const components::graph_execution_context& settings,
                                      uint64_t lowest_active_start_time,
                                      bool ddl_mode) {
+        using components::logical_plan::resolve_direction;
+        using components::logical_plan::resolve_entry_t;
+        using components::logical_plan::resolve_kind;
+
+        // The drain takes the commit snapshot, which the constraints are resolved under
+        services::commit_input_t input;
+        if (parent_address_ != actor_zeta::address_t::empty_address()) {
+            auto [_dr, drain_future] =
+                actor_zeta::otterbrix::send(parent_address_,
+                                            &services::dispatcher::manager_dispatcher_t::txn_commit_drain_msg,
+                                            session,
+                                            txn.transaction_id);
+            input.drain = co_await std::move(drain_future);
+        }
+        const auto& drain = input.drain;
+        // Nothing committed since the transaction's snapshot: what its statements checked still holds
+        const bool rechecks = drain.txn.transaction_id != 0 && drain.commit_id > 0 &&
+                              disk_address_ != actor_zeta::address_t::empty_address() &&
+                              !drain.commit_view.snapshot_is_current &&
+                              (!drain.base_appends.empty() || !drain.base_delete_tables.empty());
+        components::logical_plan::catalog_resolves_t resolves;
+        if (rechecks) {
+            auto& tables = resolves.ensure(resource(), resolve_kind::table);
+            auto& constraints = resolves.ensure(resource(), resolve_kind::constraint);
+            // Every written table is resolved: one a commit before this one dropped refuses the commit
+            auto request_table = [&](components::catalog::oid_t table_oid) {
+                resolve_entry_t table;
+                table.relation_oid = table_oid;
+                return tables.add(std::move(table));
+            };
+            auto request_constraints = [&](components::catalog::oid_t table_oid, resolve_direction direction) {
+                resolve_entry_t constraint;
+                constraint.target = request_table(table_oid);
+                constraint.direction = direction;
+                constraints.add(std::move(constraint));
+            };
+            for (const auto& append : drain.base_appends) {
+                request_constraints(append.table_oid, resolve_direction::outgoing);
+            }
+            for (const auto table_oid : drain.base_delete_tables) {
+                request_table(table_oid);
+            }
+            for (const auto& removed : drain.referenced_deletes) {
+                request_constraints(removed.table_oid, resolve_direction::referencing);
+            }
+            auto root = boost::intrusive_ptr<components::logical_plan::node_t>(
+                new components::logical_plan::node_sequence_t(resource()));
+            root->append_child(resolves.tables);
+            if (!constraints.empty()) {
+                root->append_child(resolves.constraints);
+            }
+            services::context_storage_t resolve_storage(resource(), log_.clone(), settings);
+            resolve_storage.catalog_resolves = &resolves;
+            auto resolved = co_await execute_plan(
+                session,
+                components::logical_plan::execution_plan_t{resource(),
+                                                           std::move(root),
+                                                           components::logical_plan::make_parameter_node(resource())},
+                std::move(resolve_storage),
+                drain.commit_view.snapshot,
+                lowest_active_start_time,
+                std::pmr::vector<explain_plan_node>{resource()});
+            if (resolved.cursor->is_error()) {
+                input.resolve_error = resolved.cursor->get_error();
+            }
+        }
+
         auto commit_node =
             components::logical_plan::make_node_transaction(resource(),
                                                             components::logical_plan::transaction_op::commit);
@@ -2471,6 +2554,8 @@ namespace services::collection::executor {
         }
         auto cparams = components::logical_plan::make_parameter_node(resource());
         services::context_storage_t cstor(resource(), log_.clone(), settings);
+        cstor.catalog_resolves = rechecks ? &resolves : nullptr;
+        cstor.commit_input = &input;
         co_return co_await execute_plan(
             session,
             components::logical_plan::execution_plan_t{resource(), std::move(commit_node), std::move(cparams)},

@@ -77,6 +77,7 @@ namespace components::logical_plan {
         std::string dbname;
         std::string relname;
         std::string type_name;
+        components::catalog::oid_t relation_oid{components::catalog::INVALID_OID};
         resolve_direction direction{resolve_direction::outgoing};
         // Constraint entries only: indexes the TABLE node's entries_ for the table it constrains.
         std::size_t target{no_target};

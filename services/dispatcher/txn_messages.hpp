@@ -65,6 +65,7 @@ namespace services::dispatcher {
         // dropped_storage_oids above (the COMMIT counterpart of the DROP side).
         std::vector<components::catalog::oid_t> created_storage_oids{};
         std::vector<components::table::created_index_t> created_indexes{};
+        std::vector<components::table::referenced_delete_t> referenced_deletes{};
     };
 
     // Payload of txn_accumulate_msg: every range an executor statement parks on
@@ -94,11 +95,12 @@ namespace services::dispatcher {
         // COMMIT publishes them and ABORT drops the still-uncommitted artifacts.
         std::vector<components::catalog::oid_t> created_storage_oids{};
         std::vector<components::table::created_index_t> created_indexes{};
+        std::vector<components::table::referenced_delete_t> referenced_deletes{};
 
         bool empty() const noexcept {
             return base_appends.empty() && base_deletes.empty() && pg_catalog_appends.empty() &&
                    pg_catalog_delete_tables.empty() && backfills.empty() && dropped_storage_oids.empty() &&
-                   created_storage_oids.empty() && created_indexes.empty();
+                   created_storage_oids.empty() && created_indexes.empty() && referenced_deletes.empty();
         }
     };
 

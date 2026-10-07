@@ -113,32 +113,6 @@ namespace services::dispatcher { namespace {
         return core::error_t::no_error();
     }
 
-    // FK columns resolve positionally against statement columns then DEFAULT fill-list columns, in that
-    // order; an unresolved position silently qualifies 0 rows, so `pid bigint DEFAULT 42` inserts unchecked.
-    std::pmr::vector<std::string> insert_chunk_column_names(std::pmr::memory_resource* resource,
-                                                            const components::logical_plan::node_insert_t* node) {
-        std::pmr::vector<std::string> names(resource);
-        const auto& bindings = node->column_bindings();
-        const auto& fill = node->fill_list();
-        if (!bindings.empty()) {
-            auto source_of = components::logical_plan::insert_target_order(resource, bindings, fill);
-            names.reserve(source_of.size());
-            for (const auto source : source_of) {
-                names.emplace_back(source < bindings.size() ? bindings[source].target_name.c_str()
-                                                            : fill[source - bindings.size()].name.c_str());
-            }
-            return names;
-        }
-        names.reserve(node->key_translation().size() + node->fill_list().size());
-        for (const auto& key : node->key_translation()) {
-            names.emplace_back(key.as_string());
-        }
-        for (const auto& column : node->fill_list()) {
-            names.emplace_back(column.name.c_str());
-        }
-        return names;
-    }
-
     std::vector<std::pair<std::string, uint64_t>>
     collect_array_size_reqs(const components::logical_plan::resolved_table_metadata_t& md) {
         std::vector<std::pair<std::string, uint64_t>> array_reqs;
@@ -1012,21 +986,7 @@ namespace services::dispatcher { namespace {
                 const auto* constraints =
                     resolves ? resolves->constraints_for(node->table_oid(), resolve_direction::outgoing) : nullptr;
                 if (constraints) {
-                    auto fks = constraints->fks;
-                    const auto chunk_columns = insert_chunk_column_names(resource, node);
-                    for (auto& fk : fks) {
-                        for (const auto& col_name : fk.child_col_names) {
-                            std::size_t pos = std::numeric_limits<std::size_t>::max();
-                            for (std::size_t i = 0; i < chunk_columns.size(); ++i) {
-                                if (chunk_columns[i] == col_name) {
-                                    pos = i;
-                                    break;
-                                }
-                            }
-                            fk.child_col_indices.push_back(pos);
-                        }
-                    }
-                    node->set_outgoing_fks(std::move(fks));
+                    node->set_outgoing_fks(constraints->fks);
                     node->set_check_exprs(constraints->check_exprs);
                     {
                         std::vector<std::pair<std::string, components::expressions::expression_ptr>> predicates;
@@ -1051,27 +1011,10 @@ namespace services::dispatcher { namespace {
             case node_type::update_t: {
                 auto* node = static_cast<node_update_t*>(root.get());
                 enrich_update_sync(node);
-                const auto* md = node->table_metadata();
                 const auto* constraints =
                     resolves ? resolves->constraints_for(node->table_oid(), resolve_direction::outgoing) : nullptr;
                 if (constraints) {
-                    auto fks = constraints->fks;
-                    if (md) {
-                        for (auto& fk : fks) {
-                            fk.child_col_indices.clear();
-                            for (const auto& col_name : fk.child_col_names) {
-                                std::size_t pos = std::numeric_limits<std::size_t>::max();
-                                for (const auto& col : md->columns) {
-                                    if (col.attname == col_name && col.chunk_position >= 0) {
-                                        pos = static_cast<std::size_t>(col.chunk_position);
-                                        break;
-                                    }
-                                }
-                                fk.child_col_indices.push_back(pos);
-                            }
-                        }
-                    }
-                    node->set_outgoing_fks(std::move(fks));
+                    node->set_outgoing_fks(constraints->fks);
                     node->set_check_exprs(constraints->check_exprs);
                     {
                         std::vector<std::pair<std::string, components::expressions::expression_ptr>> predicates;
@@ -1100,20 +1043,7 @@ namespace services::dispatcher { namespace {
                     const auto* constraints =
                         resolves ? resolves->constraints_for(tbl->table_oid, resolve_direction::referencing) : nullptr;
                     if (constraints) {
-                        auto fks = constraints->fks;
-                        for (auto& fk : fks) {
-                            for (const auto& col_name : fk.parent_col_names) {
-                                std::size_t pos = std::numeric_limits<std::size_t>::max();
-                                for (std::size_t i = 0; i < tbl->columns.size(); ++i) {
-                                    if (tbl->columns[i].attname == col_name) {
-                                        pos = i;
-                                        break;
-                                    }
-                                }
-                                fk.parent_col_indices.push_back(pos);
-                            }
-                        }
-                        node->set_referencing_fks(std::move(fks));
+                        node->set_referencing_fks(constraints->fks);
                     }
                 }
                 break;

@@ -10,6 +10,7 @@
 #include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/physical_plan/operators/operator_data.hpp>
+#include <services/dispatcher/txn_messages.hpp>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -44,6 +45,11 @@ namespace services {
                            const components::logical_plan::node_ptr&);
     } // namespace planner
 
+    struct commit_input_t {
+        dispatcher::txn_commit_drain_t drain;
+        core::error_t resolve_error{core::error_t::no_error()};
+    };
+
     struct context_storage_t {
         std::pmr::memory_resource* resource;
         log_t log;
@@ -69,6 +75,8 @@ namespace services {
         const components::logical_plan::storage_parameters* parameters = nullptr;
         // Every catalog lookup the plan depends on, owned by the execution_plan_t
         const components::logical_plan::catalog_resolves_t* catalog_resolves = nullptr;
+        // Set for a COMMIT plan only;
+        commit_input_t* commit_input = nullptr;
         // oid -> resolved_table_metadata_t* stamped by Pass 1's
         // operator_resolve_table_t. Plan generators (transfer_scan in
         // create_plan_match / create_plan_aggregate) use it to forward live

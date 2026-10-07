@@ -68,6 +68,8 @@ namespace components::pipeline {
         // Mirror of dropped_storage_oids for CREATE: publishable at COMMIT, revertible at ABORT.
         std::vector<catalog::oid_t> created_storage_oids;
         std::vector<components::table::created_index_t> created_indexes;
+        // Recorded by operator_fk_cascade_t
+        std::vector<components::table::referenced_delete_t> referenced_deletes;
         // commit_id drained by operator_commit_transaction_t, for follow-ups like an inline CREATE INDEX commit.
         uint64_t committed_id{0};
 
